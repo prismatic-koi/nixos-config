@@ -51,15 +51,11 @@ const (
 // process-wide config.Load() singleton cache.
 var loadRestoreConfig = func() config.Config { return config.Load() }
 
-// loadRestoreProfiles loads profiles.json for the restore code path.
-// It is a package-level variable so tests can inject a fake profiles file
-// without depending on XDG_CONFIG_HOME or the filesystem.
-var loadRestoreProfiles = func() (*config.ProfilesFile, error) { return config.LoadProfiles() }
-
 // onRestoreSessionCreate is called just before session.Create in
 // restoreProjectSession. In production it is nil (no-op). Tests may set it to
-// capture the session.Opts and assert that ConfigContent is populated correctly.
-// The hook is invoked with a snapshot of opts before Create is called.
+// capture the session.Opts and assert that the restored fields are populated
+// correctly. The hook is invoked with a snapshot of opts before Create is
+// called.
 var onRestoreSessionCreate func(opts session.Opts)
 
 var restoreCmd = &cobra.Command{
@@ -290,15 +286,14 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 		restoreHarness, _ = harness.New("pi", "", nil, "", "")
 	}
 	opts := session.Opts{
-		Headless:         true,
-		Agent:            session.DefaultAgentForSession(s.SessionName, directory, "", d),
-		SessionName:      s.SessionName,
-		Layout:           session.LayoutFull,
-		SkipStatusSeed:   true,
-		IsolationMode:    string(isoMode),
-		ConfigEnvVarName: restoreHarness.ConfigEnvVar(),
-		RuntimeEnvVars:   restoreHarness.RuntimeEnv(),
-		HarnessName:      restoreHarnessName,
+		Headless:       true,
+		Agent:          session.DefaultAgentForSession(s.SessionName, directory, "", d),
+		SessionName:    s.SessionName,
+		Layout:         session.LayoutFull,
+		SkipStatusSeed: true,
+		IsolationMode:  string(isoMode),
+		RuntimeEnvVars: restoreHarness.RuntimeEnv(),
+		HarnessName:    restoreHarnessName,
 		// PIExtensionDir for host-mode pi launches (#2065).
 		PIExtensionDir: cfg.PIExtensionDir,
 	}
@@ -322,63 +317,6 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 			opts.HarnessPipeSockPath = pipePath
 		} else {
 			proglog.Warnf("[prism restore] warning: could not resolve harness pipe path for %q: %v\n", s.SessionName, pipeErr)
-		}
-	}
-
-	// In sandboxed mode (bwrap or sandbox-exec), inject the role-specific
-	// config blob as the harness config env var. This mirrors the pattern in
-	// spawn.go.
-	// Profile load errors are non-fatal for restore: log and skip config
-	// injection so the session is still recreated without it, rather than
-	// aborting the entire restore run.
-	//
-	// Host-mode sessions skip this entirely because they run the agent directly
-	// with the host's real harness config via xdg.configFile.
-	if isoCaps.NeedsConfigBlob {
-		pf, pfErr := loadRestoreProfiles()
-		if pfErr != nil {
-			fmt.Fprintf(os.Stderr, "restore %q: load profiles: %v — skipping config injection\n", s.SessionName, pfErr)
-		} else {
-			effectiveRole := session.DefaultAgentForSession(s.SessionName, directory, "", d)
-			lookupRole := effectiveRole
-			if lookupRole == "" {
-				lookupRole = "coordinator"
-			}
-			resolvedProfile, _, profErr := config.ResolveActiveProfile(pf, "")
-			if profErr != nil {
-				fmt.Fprintf(os.Stderr, "restore %q: resolve active profile: %v — skipping config injection\n", s.SessionName, profErr)
-			} else {
-				content, bccErr := config.BuildConfigContent(pf, resolvedProfile, lookupRole, "", "", "")
-				if bccErr != nil {
-					fmt.Fprintf(os.Stderr, "restore %q: build config content: %v — skipping config injection\n", s.SessionName, bccErr)
-				} else {
-					opts.ConfigContent = content
-				}
-			}
-		}
-
-		// For bwrap sessions, write the harness config file to disk now
-		// so it is present before the agent pane opens. prism agent-run
-		// reconstructs a container.Manager from DB state (which does not carry
-		// ConfigContent), so the file must be written here at restore time via
-		// the deterministic temp path. The bwrap.go mount-emission block checks
-		// file existence (os.Stat) rather than cfg.ConfigContent, so it picks
-		// this up correctly.
-		//
-		// IMPORTANT: the path key used here must match the one used by Manager
-		// internally. Manager.name = container.NameForSession(s.SessionName),
-		// and Manager.harnessConfigFilePath() calls HarnessConfigFilePath(m.name).
-		// Isolator.WriteHarnessConfigBlob translates the prism session name to
-		// the container name internally so this call site stays mode-agnostic
-		// (D3, issue #1133). Mirrors the pattern in spawn.go.
-		if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
-			if err := writeHarnessConfigBlobFor(isoMode, s.SessionName, opts.ConfigContent, "restore"); err != nil {
-				// Non-fatal: log and continue with restore. The session will
-				// still be re-spawned; it just won't have the harness config
-				// mounted. This matches the general "restore is best-effort"
-				// posture (profile load errors are also non-fatal above).
-				fmt.Fprintf(os.Stderr, "restore %q: write harness config: %v — session will spawn without config mounted\n", s.SessionName, err)
-			}
 		}
 	}
 
@@ -456,7 +394,7 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	// agent serve port allocated.
 
 	// Invoke the test hook (nil in production) with a snapshot of opts
-	// so tests can assert ConfigContent and other fields without intercepting
+	// so tests can assert the restored fields without intercepting
 	// session.Create.
 	if onRestoreSessionCreate != nil {
 		onRestoreSessionCreate(opts)

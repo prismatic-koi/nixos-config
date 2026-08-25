@@ -1432,11 +1432,11 @@ A lookup table of log patterns, their causes, and remediation hints:
 
 - **`statfs <path>: no such file or directory`** — the sandbox was told to bind-mount a path that does not exist on the host. Check the preceding log line for the full launch command. See incident #751 for a historical example.
 
-- **`startup-connect timeout fired`** — the session started but the sidecar never received the first SSE event from the agent. Usual causes: a misconfigured `harness-config.json` (agent not declared, malformed JSON), a missing bind-mount, or a missing `--agent` flag value. Check the sidecar log for the launch command line and any JSON parse errors.
+- **`startup-connect timeout fired`** — the session started but the sidecar never received the first SSE event from the agent. Usual causes: a missing bind-mount, a missing `--agent` flag value, or a profile slot whose model the provider refuses. Check the sidecar log for the launch command line and any errors.
 
 - **Session rows present in `prism sessions list` but no events in `prism checkin`** — the agent process either never started or died immediately after creation. Run `prism logs <session>` to see the full launch command line and its stderr output.
 
-- **Session name doesn't match expected shape** (e.g. `~review` where `~review-1-review-code` is expected) — the agent-list construction produced the wrong agent names, or the `--agent` flag value is incorrect. Check the session's `harness-config.json` for the `agent` block contents and the sidecar log for the `--agent` flag value used in the command line.
+- **Session name doesn't match expected shape** (e.g. `~review` where `~review-1-review-code` is expected) — the agent-list construction produced the wrong agent names, or the `--agent` flag value is incorrect. Check the sidecar log for the `--agent` flag value used in the command line.
 
 - **Zombie DB rows (session in `prism sessions list` but no live tmux session)** — a previous session's process died without cleaning up DB state. Use `prism cleanup --yes --session <name>` to end the row (stamps `ended_at`, releases any dangling port, clears the pi resume linkage) so it drops out of the active-session view. The row itself is preserved; re-spawning on the same branch name reuses it by re-seeding `state` back to `idle`.
 

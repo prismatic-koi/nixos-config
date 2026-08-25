@@ -2047,14 +2047,8 @@ func TestBwrapBuildArgs_AllRemapsHaveCorrectDestinations(t *testing.T) {
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
 		AllocatedPort: 14010,
-		ConfigContent: `{"model":"claude-3-5-sonnet"}`,
 	})
 	defer cleanup()
-
-	// Write the harness config temp file as Create() would.
-	if err := os.WriteFile(m.harnessConfigFilePath(), []byte(`{"model":"claude-3-5-sonnet"}`), 0o600); err != nil {
-		t.Fatalf("WriteFile harness config: %v", err)
-	}
 
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
@@ -2190,16 +2184,10 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 		AllocatedPort: 14020,
 		AgentRole:     "worker",
 		InitialPrompt: "implement the feature",
-		ConfigContent: `{"model":"claude-3-5-sonnet"}`,
 		GitUserName:   "Test User",
 		GitUserEmail:  "test@example.com",
 	})
 	defer cleanup()
-
-	// Write the harness config temp file.
-	if err := os.WriteFile(m.harnessConfigFilePath(), []byte(m.cfg.ConfigContent), 0o600); err != nil {
-		t.Fatalf("WriteFile harness config: %v", err)
-	}
 
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)

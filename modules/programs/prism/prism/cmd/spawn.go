@@ -633,18 +633,18 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		return err
 	}
 
-	// Load the profiles file. It carries container role configs, model profile
-	// overrides, and agent_env_vars for host-mode injection. Always attempt to
-	// load; treat missing file as fatal only when container mode or --profile
-	// is active (those paths strictly require the file). For host-mode sessions
-	// without a profile flag, a missing file is non-fatal — agent env vars
-	// simply won't be injected.
+	// Load the profiles file. It carries the per-role slots (model, provider,
+	// thinking) and agent_env_vars for host-mode injection. Always attempt to
+	// load; treat a missing file as fatal only when a sandboxed mode or
+	// --profile is active (those paths strictly require the file). For
+	// host-mode sessions without a profile flag, a missing file is non-fatal —
+	// agent env vars simply won't be injected.
 	var pf *config.ProfilesFile
 	{
 		var loadErr error
 		pf, loadErr = config.LoadProfiles()
 		if loadErr != nil {
-			if isoCaps.NeedsConfigBlob || profileFlag != "" {
+			if isoCaps.RequiresProfilesFile || profileFlag != "" {
 				return loadErr
 			}
 			proglog.Warnf("[prism spawn] warning: could not load profiles.json (agent env vars will not be injected): %v\n", loadErr)
@@ -665,8 +665,6 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		return err
 	}
 	_ = profileSource // intentionally unused — kept for future debug logging
-	// configContent is populated below, after the session role is determined.
-	var configContent string
 
 	// Resolve the bare repo root from the current pane path (or --repo flag).
 	bareRoot, err := resolveBareRoot(repoFlag)
@@ -804,37 +802,10 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 			return err
 		}
 
-		// Generate the pi harness config for this session's root role.
-		// BuildConfigContent applies the profile's slot model/variant and
-		// honours any --model/--variant overrides on the root role only.
-		var bccErr error
-		configContent, bccErr = config.BuildConfigContent(pf, resolvedProfile, plannedRole, modelFlag, variantFlag, providerFlag)
-		if bccErr != nil {
-			return bccErr
-		}
-
 		// Pi is the sole harness. Use it directly unless --harness was
 		// explicitly set by the caller.
 		if !cmd.Flags().Changed("harness") {
 			harnessFlag = "pi"
-		}
-	}
-
-	// If no profile is active but --model, --variant, or --provider were
-	// passed, still generate a minimal config so the overrides take effect.
-	if configContent == "" && (modelFlag != "" || variantFlag != "" || providerFlag != "") {
-		rootRole := agentFlag
-		if rootRole == "" {
-			if branch == "main" {
-				rootRole = "coordinator"
-			} else {
-				rootRole = "worker"
-			}
-		}
-		var bccErr error
-		configContent, bccErr = config.BuildConfigContent(pf, resolvedProfile, rootRole, modelFlag, variantFlag, providerFlag)
-		if bccErr != nil {
-			return bccErr
 		}
 	}
 
@@ -877,33 +848,6 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 			rollbackCreatedWorktree(bareRoot, createdWorktree, "prism spawn")
 		}
 	}()
-
-	// For bwrap sessions, write the opencode.json config file to disk now so
-	// it is present before the agent pane opens. prism agent-run reconstructs
-	// a container.Manager from DB state (which does not carry ConfigContent),
-	// so the file must be written here at spawn time via the deterministic temp
-	// path. The bwrap.go mount-emission block checks file existence (os.Stat)
-	// rather than cfg.ConfigContent, so it picks this up correctly.
-	//
-	// Host mode does NOT need this write — it uses ~/.config/opencode/opencode.json
-	// directly via xdg.configFile.
-	//
-	// IMPORTANT: the path key used here must match the one used by Manager
-	// internally. Manager.name = container.NameForSession(tmuxSessionName)
-	// (e.g. "prism-nixos-config-feat"), and Manager.harnessConfigFilePath()
-	// calls HarnessConfigFilePath(m.name). The Isolator.WriteHarnessConfigBlob
-	// method translates the prism session name to the container name internally
-	// so this call site stays mode-agnostic (D3, issue #1133).
-	if isoCaps.NeedsConfigBlob && configContent != "" {
-		tmuxSessionName := session.NameFor(worktreePath, bareRoot)
-		iso, isoErr := container.For(isolationMode, container.ConstructorOpts{Name: tmuxSessionName})
-		if isoErr != nil {
-			return fmt.Errorf("spawn: %w", isoErr)
-		}
-		if err := iso.WriteHarnessConfigBlob(tmuxSessionName, configContent); err != nil {
-			return fmt.Errorf("spawn: %w", err)
-		}
-	}
 
 	// Build SpawnOpts and call session.SpawnSession — the single shared
 	// primitive for creating a prism session end-to-end (port allocation,
@@ -977,11 +921,9 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		// leave this empty — SpawnSession then writes the durable rows
 		// without an invoker field and skips the bus_messages notification.
 		InvokerSession:   os.Getenv("PRISM_SESSION_NAME"),
-		ConfigContent:    configContent,
 		Layout:           session.LayoutFull,
 		IsolationMode:    string(isolationMode),
 		PluginHostPath:   cfg.SidecarPluginPath,
-		ConfigEnvVarName: h.ConfigEnvVar(),
 		RuntimeEnvVars:   h.RuntimeEnv(),
 		HarnessName:      harnessFlag,
 		ModelsByRole:     modelsByRole,
@@ -1588,26 +1530,17 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 	if rootRole == "" {
 		rootRole = "coordinator"
 	}
-	// --provider is rejected alongside --abtest (issue #2852), so the provider
-	// override is always empty on this path and each leg keeps its own profile
-	// slot's provider.
-	configContent, err := config.BuildConfigContent(a.pf, a.profileName, rootRole, a.modelFlag, a.variantFlag, "")
-	if err != nil {
-		return "", worktreePath, err
+	// Validate that this leg's profile defines a slot for the root role. The
+	// slot's model, provider, and thinking level reach pi over argv, resolved
+	// at agent-run time by populatePIConfig.
+	if a.pf != nil && a.profileName != "" {
+		if err := config.RequireSlot(a.pf, a.profileName, rootRole); err != nil {
+			return "", worktreePath, err
+		}
 	}
 
 	sessionName = session.NameFor(worktreePath, a.bareRoot)
 	agentRole := session.DefaultAgent(worktreePath, a.agentFlag)
-
-	if a.isoCaps.NeedsConfigBlob && configContent != "" {
-		iso, isoErr := container.For(a.isolationMode, container.ConstructorOpts{Name: sessionName})
-		if isoErr != nil {
-			return "", worktreePath, fmt.Errorf("spawn --abtest: %w", isoErr)
-		}
-		if err := iso.WriteHarnessConfigBlob(sessionName, configContent); err != nil {
-			return "", worktreePath, fmt.Errorf("spawn --abtest: %w", err)
-		}
-	}
 
 	h, _ := harness.New(a.harnessFlag, "", nil, "", "")
 	isolationFlagRaw, _ := cmd.Flags().GetString("isolation")
@@ -1627,15 +1560,13 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		// InvokerSession for the durable spawn_intent / spawn_failed events
 		// SpawnSession writes at the chokepoint (#2364). See the main
 		// spawn path above for the full rationale.
-		InvokerSession:   os.Getenv("PRISM_SESSION_NAME"),
-		ConfigContent:    configContent,
-		Layout:           session.LayoutFull,
-		IsolationMode:    string(a.isolationMode),
-		PluginHostPath:   a.cfg.SidecarPluginPath,
-		ConfigEnvVarName: h.ConfigEnvVar(),
-		RuntimeEnvVars:   h.RuntimeEnv(),
-		HarnessName:      a.harnessFlag,
-		ModelsByRole:     a.modelsByRole,
+		InvokerSession: os.Getenv("PRISM_SESSION_NAME"),
+		Layout:         session.LayoutFull,
+		IsolationMode:  string(a.isolationMode),
+		PluginHostPath: a.cfg.SidecarPluginPath,
+		RuntimeEnvVars: h.RuntimeEnv(),
+		HarnessName:    a.harnessFlag,
+		ModelsByRole:   a.modelsByRole,
 		// CLI overrides flow through to the tmux pane command (issue #2086).
 		Model:      a.modelFlag,
 		Variant:    a.variantFlag,

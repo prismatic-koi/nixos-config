@@ -158,8 +158,8 @@ func TestCapabilities_Bwrap(t *testing.T) {
 	if caps.IsContainer {
 		t.Error("bwrap: IsContainer should be false")
 	}
-	if !caps.NeedsConfigBlob {
-		t.Error("bwrap: NeedsConfigBlob should be true")
+	if !caps.RequiresProfilesFile {
+		t.Error("bwrap: RequiresProfilesFile should be true")
 	}
 	if !caps.NeedsHostAPISocket {
 		t.Error("bwrap: NeedsHostAPISocket should be true")
@@ -182,8 +182,8 @@ func TestCapabilities_SandboxExec(t *testing.T) {
 	if caps.IsContainer {
 		t.Error("sandbox-exec: IsContainer should be false")
 	}
-	if !caps.NeedsConfigBlob {
-		t.Error("sandbox-exec: NeedsConfigBlob should be true")
+	if !caps.RequiresProfilesFile {
+		t.Error("sandbox-exec: RequiresProfilesFile should be true")
 	}
 	if !caps.NeedsHostAPISocket {
 		t.Error("sandbox-exec: NeedsHostAPISocket should be true")
@@ -200,8 +200,8 @@ func TestCapabilities_Host(t *testing.T) {
 	if caps.IsContainer {
 		t.Error("host: IsContainer should be false")
 	}
-	if caps.NeedsConfigBlob {
-		t.Error("host: NeedsConfigBlob should be false")
+	if caps.RequiresProfilesFile {
+		t.Error("host: RequiresProfilesFile should be false")
 	}
 	if caps.NeedsHostAPISocket {
 		t.Error("host: NeedsHostAPISocket should be false")

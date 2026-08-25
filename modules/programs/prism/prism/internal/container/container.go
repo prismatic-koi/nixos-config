@@ -119,17 +119,6 @@ type Config struct {
 	// harness config and cause "model not supported" errors).
 	AgentModel string
 
-	// ConfigContent is the JSON blob for the container's opencode.json config
-	// file. When non-empty, it is written to a temp file and bind-mounted into
-	// the container at /root/.config/opencode/opencode.json so that opencode
-	// serve picks up the correct model, variant, and plugin overrides at runtime.
-	//
-	// Using a mounted config file (rather than the OPENCODE_CONFIG_CONTENT env
-	// var) allows plugin paths to be specified as relative paths (e.g.
-	// "./plugins/my-plugin") that resolve correctly relative to the config
-	// file's location inside the container.
-	ConfigContent string
-
 	// PluginHostPath is retained for compatibility but is no longer used by
 	// the container — the entire plugins/ directory is now mounted read-only
 	// via the config allowlist in buildRunArgs.
@@ -537,8 +526,8 @@ var tempDir = os.TempDir
 // stem identifies the artefact (e.g. "gitdir", "ssh-config"); suffix is ""
 // for most artefacts and ".sb" for the sandbox-exec SBPL profile.
 //
-// It is a free function so that exported helpers like HarnessConfigFilePath
-// can share the same path logic without requiring a Manager receiver.
+// It is a free function so that exported helpers can share the same path
+// logic without requiring a Manager receiver.
 func sessionTempPath(stem, suffix, name string) string {
 	return filepath.Join(tempDir(), "prism-"+stem+"-"+name+suffix)
 }
@@ -587,35 +576,6 @@ func (m *Manager) GitconfigFilePath() string { return m.gitconfigFilePath() }
 // git verify-commit to work with SSH signing.
 func (m *Manager) allowedSignersFilePath() string {
 	return m.tempPath("allowed-signers", "")
-}
-
-// harnessConfigFilePath returns the host path for the temporary opencode.json
-// config file written before container start. The file is mounted read-only
-// at /root/.config/opencode/opencode.json inside the container so that plugin
-// paths (e.g. "./plugins/my-plugin") resolve correctly relative to the config
-// file location.
-func (m *Manager) harnessConfigFilePath() string {
-	return HarnessConfigFilePath(m.name)
-}
-
-// HarnessConfigFilePath returns the host path for the temporary opencode.json
-// config file for the given session name. The path is deterministic and
-// derived from the session name, so callers outside the Manager (e.g.
-// cmd/spawn.go) can write the file before the Manager is constructed.
-// Delegates to sessionTempPath so all per-session paths share one naming rule.
-func HarnessConfigFilePath(sessionName string) string {
-	return sessionTempPath("harness-config", "", sessionName)
-}
-
-// WriteHarnessConfig writes content to the temp opencode.json file for the
-// given session name. It creates or overwrites the file with mode 0o644.
-// Returns a wrapped error on failure.
-func WriteHarnessConfig(sessionName, content string) error {
-	path := HarnessConfigFilePath(sessionName)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("container: write harness config for session %q: %w", sessionName, err)
-	}
-	return nil
 }
 
 // SandboxSshHosts are the forge hosts the generated sandbox ssh config

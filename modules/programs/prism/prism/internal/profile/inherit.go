@@ -31,10 +31,9 @@ import (
 // The returned name is suitable for both downstream uses on the
 // child-spawn path:
 //
-//   - As the `activeProfile` argument to
-//     `review.ResolveAgentConfigContent` so the per-agent
-//     opencode.json blob written at spawn time honours the parent's
-//     profile (relevant for bwrap / sandbox-exec children).
+//   - As the `activeProfile` for the review round's `config.RequireSlot`
+//     gate, so the slot each reviewer runs on is the parent's profile
+//     slot rather than the host default.
 //   - As `session.SpawnOpts.ProfileName` so the child's own
 //     `spawn_inputs.profile_name` row is populated, downstream
 //     `prism stats` / archive queries reflect the inherited profile,

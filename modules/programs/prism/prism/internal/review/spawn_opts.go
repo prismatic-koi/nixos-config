@@ -32,10 +32,9 @@ import (
 // across the 5 agents in one fan-out; per-agent fields vary.
 type reviewerSpawnInput struct {
 	// Per-agent.
-	AgentName          string
-	AgentSession       string
-	Prompt             string
-	AgentConfigContent string
+	AgentName    string
+	AgentSession string
+	Prompt       string
 
 	// Round-level (constant across all 5 reviewers).
 	Repo               string
@@ -81,13 +80,11 @@ func newReviewerSpawnOpts(in reviewerSpawnInput) session.SpawnOpts {
 		Prompt:             in.Prompt,
 		PromptSource:       "review-fanout",
 		PromptTemplateHash: in.PromptTemplateHash,
-		ConfigContent:      in.AgentConfigContent,
 		Layout:             session.LayoutAgentOnly,
 		IsolationMode:      in.IsolationMode,
 		PluginHostPath:     in.PluginHostPath,
 		WorktreeReadOnly:   true,
 		GroupID:            in.GroupID,
-		ConfigEnvVarName:   in.HarnessHandle.ConfigEnvVar(),
 		RuntimeEnvVars:     in.HarnessHandle.RuntimeEnv(),
 		HarnessName:        in.HarnessName,
 		ModelsByRole:       in.ModelsByRole,

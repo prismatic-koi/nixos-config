@@ -322,7 +322,6 @@ func buildInvestigateSpawnOpts(database *db.DB, invokerSession, promptText, supp
 		Layout:           session.LayoutAgentOnly,
 		IsolationMode:    string(isoMode),
 		PluginHostPath:   cfg.SidecarPluginPath,
-		ConfigEnvVarName: h.ConfigEnvVar(),
 		RuntimeEnvVars:   h.RuntimeEnv(),
 		HarnessName:      harnessName,
 		ForceFresh:       true,

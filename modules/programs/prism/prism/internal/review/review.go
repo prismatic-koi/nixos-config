@@ -285,9 +285,10 @@ type Opts struct {
 	// (#2065). Empty value falls back to no --extension flag on host mode;
 	// container modes get the flag via container.PIInvocation regardless.
 	PIExtensionDir string
-	// ProfilesFile is the loaded profiles.json, used to resolve per-agent
-	// config content via BuildConfigContent. When nil, no config injection is
-	// performed.
+	// ProfilesFile is the loaded profiles.json. It supplies the active
+	// profile for the round (profile.InheritFromParent) and the per-agent
+	// slot the RequireSlot gate validates. When nil, the round falls back to
+	// the state-file / nix-default profile chain.
 	ProfilesFile *config.ProfilesFile
 	// OnProgress is an optional callback invoked for each progress event:
 	// spawn, finish, timeout, and spawn failure. It receives a formatted
@@ -307,10 +308,8 @@ type Opts struct {
 	// cfg.DefaultIsolationMode rather than silently falling back to host.
 	IsolationMode string
 	// ModelsByRole is an optional per-role model override map (C.2,
-	// issue #1122). When a role appears in the map, its model entry overrides
-	// the profile default for that agent's opencode.json config blob.
-	// The map is applied in run.go via config.BuildConfigContent with a model
-	// override after the per-agent config is resolved from ProfilesFile.
+	// issue #1122). It is forwarded to session.SpawnOpts.ModelsByRole, which
+	// hands it to the sidecar as repeated --model-override flags.
 	// Nil or empty means no per-role overrides — all agents use the profile
 	// default (equivalent to pre-C.2 behaviour).
 	ModelsByRole map[string]string

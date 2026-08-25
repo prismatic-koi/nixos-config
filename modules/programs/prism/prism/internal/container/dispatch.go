@@ -10,7 +10,6 @@
 //
 //   - Available()                 — D1: replaces checkBwrapPlatform / checkSandboxExecPlatform / CheckAvailability
 //   - Cap()                       — D2: replaces checkConcurrencyCap / checkBwrapConcurrencyCap / checkSandboxExecConcurrencyCap dispatch
-//   - WriteHarnessConfigBlob()    — D3: replaces the NeedsConfigBlob && configContent != "" / WriteHarnessConfig sites
 //   - AgentPaneCmd()              — D4: replaces the BuildOpencodeCmd switch in internal/session/session.go
 //   - SidecarFlags()              — D5: replaces the per-mode argv builder in internal/session/sidecar.go
 //   - ArchivePaths()              — D6: replaces the per-mode resolveStorageRoot switch in internal/archive/archive.go (stopgap pending #1142)
@@ -193,7 +192,6 @@ type SidecarFlagOpts struct {
 	AgentRole      string
 	PluginHostPath string
 	InitialPrompt  string
-	ConfigContent  string
 }
 
 // AgentPaneOpts carries the inputs that AgentPaneCmd consumes. Mirrors the
@@ -316,19 +314,6 @@ func (b *bwrapIsolator) Cap(ctx context.Context, dbPath string) CapStatus {
 	}
 }
 
-// WriteHarnessConfigBlob writes the opencode.json config blob to the
-// deterministic per-session temp path. For bwrap the file is bind-mounted
-// into the sandbox by the arg builder (bwrap.go:419). The same call-site
-// gate (NeedsConfigBlob && content != "") already filtered out empty
-// content; this method returns nil on empty input to keep the contract
-// identical.
-func (b *bwrapIsolator) WriteHarnessConfigBlob(sessionName, content string) error {
-	if content == "" {
-		return nil
-	}
-	return WriteHarnessConfig(NameForSession(sessionName), content)
-}
-
 // AgentPaneCmd returns the tmux pane command for bwrap:
 // "<abs-path>/prism agent-run --session <name>". The bwrap sandbox is owned
 // by the tmux pane (not the sidecar), so the agent-run dispatch reads the
@@ -353,7 +338,7 @@ func (b *bwrapIsolator) AgentPaneCmd(opts AgentPaneOpts) (string, error) {
 }
 
 // SidecarFlags returns the sidecar argv extensions for bwrap: --port and the
-// common AgentRole / PluginHostPath / InitialPrompt / ConfigContent flags.
+// common AgentRole / PluginHostPath / InitialPrompt flags.
 // Mirrors the pre-refactor branch in StartSidecarWithOpts
 // (internal/session/sidecar.go:336-352).
 func (b *bwrapIsolator) SidecarFlags(opts SidecarFlagOpts) []string {
@@ -411,17 +396,6 @@ func (s *sandboxExecIsolator) Cap(ctx context.Context, dbPath string) CapStatus 
 		InFlight: inFlight,
 		Note:     note,
 	}
-}
-
-// WriteHarnessConfigBlob writes the opencode.json config blob to the
-// deterministic per-session temp path. For sandbox-exec the file is read
-// directly by the agent at its real host path (sandbox-exec shares the host
-// filesystem; the agent's $HOME is the real host home since Step 5 of #2132).
-func (s *sandboxExecIsolator) WriteHarnessConfigBlob(sessionName, content string) error {
-	if content == "" {
-		return nil
-	}
-	return WriteHarnessConfig(NameForSession(sessionName), content)
 }
 
 // AgentPaneCmd returns the tmux pane command for sandbox-exec — same shape
@@ -484,14 +458,6 @@ func (h *hostIsolator) Available() error {
 // applies — host sessions consume neither container slots nor sandbox slots).
 func (h *hostIsolator) Cap(ctx context.Context, dbPath string) CapStatus {
 	return CapStatus{Mode: config.IsolationHost, Limit: 0}
-}
-
-// WriteHarnessConfigBlob is a no-op for host mode: opencode reads
-// ~/.config/opencode/opencode.json directly via xdg.configFile, so there is
-// no per-session blob to write. Mirrors the call-site gate (NeedsConfigBlob
-// is false for host).
-func (h *hostIsolator) WriteHarnessConfigBlob(sessionName, content string) error {
-	return nil
 }
 
 // AgentPaneCmd returns DirectCmd unchanged — host mode runs the agent
@@ -602,9 +568,6 @@ func commonHostAPISidecarFlags(opts SidecarFlagOpts) []string {
 	}
 	if opts.InitialPrompt != "" {
 		out = append(out, "--initial-prompt", opts.InitialPrompt)
-	}
-	if opts.ConfigContent != "" {
-		out = append(out, "--config-content", opts.ConfigContent)
 	}
 	return out
 }

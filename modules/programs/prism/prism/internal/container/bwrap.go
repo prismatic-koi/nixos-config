@@ -51,7 +51,7 @@ func (b *bwrapIsolator) Name() config.IsolationMode {
 }
 
 // Capabilities returns the bwrap feature flags:
-//   - NeedsConfigBlob: config blob must be written to disk before agent-run.
+//   - RequiresProfilesFile: profiles.json supplies the per-role slot.
 //   - NeedsHostAPISocket: the sidecar binds the host-API socket for in-sandbox proxy calls.
 //   - RestartOnExit: the sidecar restart-loop fires to relaunch agent-run on exit.
 //   - NeedsStartupConnectTimeout: bwrap-specific startup-connect timeout in the sidecar.
@@ -59,7 +59,7 @@ func (b *bwrapIsolator) Capabilities() Capabilities {
 	return Capabilities{
 		IsContainer:                false,
 		OwnsContainerLifecycle:     false,
-		NeedsConfigBlob:            true,
+		RequiresProfilesFile:       true,
 		NeedsHostAPISocket:         true,
 		UsesContainerHarness:       false,
 		RestartOnExit:              true,

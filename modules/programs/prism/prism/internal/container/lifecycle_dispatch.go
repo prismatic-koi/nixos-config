@@ -97,9 +97,7 @@ func lookupAgentRunHandler(mode config.IsolationMode) AgentRunHandler {
 // EnsureRemoved cleans up the per-session temp files written by PrepareBwrap.
 // Bwrap sessions do not own a container lifecycle — there is nothing to stop
 // or rm — so this method is a temp-file unlink only. Mirrors the per-session
-// list in cmd/cleanup.go:1055-1059 (the legacy 5-file cleanup; the
-// harness-config file is intentionally excluded — see cleanupLegacyTempFiles
-// for the rationale).
+// list in cmd/cleanup.go:1055-1059 (the legacy 5-file cleanup).
 func (b *bwrapIsolator) EnsureRemoved(ctx context.Context, m *Manager) {
 	cleanupLegacyTempFiles(b.name)
 }
@@ -119,10 +117,10 @@ func (b *bwrapIsolator) Reset(ctx context.Context) error {
 	return nil
 }
 
-// Prepare writes the per-session temp files (SSH config, gitconfig,
-// opencode.json config) that bwrap needs at start time and returns the
-// complete bwrap argument list. Mirrors the pre-refactor body of
-// Manager.PrepareBwrap (internal/container/container.go:581).
+// Prepare writes the per-session temp files (SSH config, gitconfig) that
+// bwrap needs at start time and returns the complete bwrap argument list.
+// Mirrors the pre-refactor body of Manager.PrepareBwrap
+// (internal/container/container.go:581).
 //
 // Like the previous implementation, this also pre-creates bind-mount source
 // directories so bwrap (which silently fails on missing sources) can find
@@ -136,13 +134,6 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 	// Write the gitconfig.
 	if err := b.WriteGitconfig(m); err != nil {
 		return nil, fmt.Errorf("container: bwrap: write gitconfig: %w", err)
-	}
-
-	// Write the harness config file, if provided.
-	if m.cfg.ConfigContent != "" {
-		if err := os.WriteFile(m.harnessConfigFilePath(), []byte(m.cfg.ConfigContent), 0o644); err != nil {
-			return nil, fmt.Errorf("container: bwrap: write harness config: %w", err)
-		}
 	}
 
 	// Pre-create directories referenced as bind-mount sources.
@@ -407,12 +398,9 @@ func (h *hostIsolator) AgentRun(ctx context.Context, opts AgentRunOpts) error {
 // 5-file list: gitdir, wt-gitdir, ssh-config, gitconfig, allowed-signers).
 // The removals are best-effort — missing files are silently ignored.
 //
-// The harness-config, SBPL-profile, and session-work-dir files are
-// deliberately NOT cleaned here: those are owned by the Manager-level
-// lifecycle (Manager.EnsureRemoved retains the full cleanup list). Tests
-// that exercise the cleanup.go shortcut path (see cmd/restore_test.go's
-// legacy-mode coverage) rely on the
-// harness-config file surviving this cleanup.
+// The SBPL-profile and session-work-dir files are deliberately NOT cleaned
+// here: those are owned by the Manager-level lifecycle
+// (Manager.EnsureRemoved retains the full cleanup list).
 func cleanupLegacyTempFiles(name string) {
 	_ = os.Remove(sessionTempPath("gitdir", "", name))
 	_ = os.Remove(sessionTempPath("wt-gitdir", "", name))

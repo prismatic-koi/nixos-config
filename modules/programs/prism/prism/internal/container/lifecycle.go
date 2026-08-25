@@ -36,7 +36,6 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.sshConfigFilePath())
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
-	_ = os.Remove(m.harnessConfigFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
 	// Remove the per-session work dir (generated ssh-config / gitconfig /
 	// allowed_signers, kube-cache, chromium skeleton — issue #2213). This
@@ -147,7 +146,6 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.sshConfigFilePath())
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
-	_ = os.Remove(m.harnessConfigFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
 	// Remove the per-session work dir (issue #2213).
 	if sessionDir, err := m.sessionWorkDirPath(); err == nil {

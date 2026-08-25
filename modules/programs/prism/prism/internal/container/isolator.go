@@ -30,13 +30,12 @@ type Capabilities struct {
 	// startup branch will never fire.
 	OwnsContainerLifecycle bool
 
-	// NeedsConfigBlob means the harness config blob must be supplied via
-	// env-var or on-disk file before the process starts. True for bwrap
+	// RequiresProfilesFile means profiles.json must load successfully before
+	// a session can start in this mode: the per-role slot supplies the model,
+	// provider, and thinking level that reach pi over argv. True for bwrap
 	// and sandbox-exec; false for host.
-	// Cites: cmd/spawn.go:339-392, cmd/switch.go:308-348,
-	//        cmd/restore.go:346-393, cmd/pr.go:120-186,
-	//        internal/review/run.go:131-149, :356-374.
-	NeedsConfigBlob bool
+	// Cites: cmd/pr.go:225-240, cmd/review.go:435-445.
+	RequiresProfilesFile bool
 
 	// NeedsHostAPISocket means the sidecar binds the host-API Unix socket for
 	// this mode. True for bwrap and sandbox-exec; false for host.
@@ -153,18 +152,6 @@ type Isolator interface {
 	//
 	// Cites: cmd/concurrency.go (per-mode helpers, since unified).
 	Cap(ctx context.Context, dbPath string) CapStatus
-
-	// WriteHarnessConfigBlob writes the harness configuration blob (the
-	// role-specific opencode.json) to the deterministic per-session temp
-	// path so it can be read back by the sandbox at start time. The same
-	// gate that the call site applies (NeedsConfigBlob && content != "")
-	// is encoded here as: empty content is a no-op, host returns nil.
-	// sessionName is the prism session name; the isolator translates it
-	// to the container name internally so the path matches the read site
-	// (Manager.opencodeConfigFilePath).
-	// Cites: cmd/spawn.go:386-392, cmd/pr.go:171-177, cmd/restore.go:385-388,
-	//        cmd/switch.go:316-348 / :400-403, cmd/switch_project.go:161-503.
-	WriteHarnessConfigBlob(sessionName, content string) error
 
 	// AgentPaneCmd returns the shell command string emitted into the tmux
 	// agent pane for this session.
