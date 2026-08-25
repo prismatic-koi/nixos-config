@@ -250,7 +250,10 @@ var prCmd = &cobra.Command{
 		if lookupRole == "" {
 			lookupRole = "coordinator"
 		}
-		configContent, err := config.BuildConfigContent(pf, resolvedProfile, lookupRole, modelFlag, variantFlag)
+		// prism pr has no --provider flag (issue #2852 scopes the override to
+		// prism spawn), so the provider override is always empty here and the
+		// profile slot's provider stays in effect.
+		configContent, err := config.BuildConfigContent(pf, resolvedProfile, lookupRole, modelFlag, variantFlag, "")
 		if err != nil {
 			return err
 		}

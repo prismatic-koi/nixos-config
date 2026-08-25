@@ -45,6 +45,8 @@ package cmd
 //	                    sourced from `prism spawn --model`, issue #2086)
 //	--variant <name>   variant/thinking-level override (overrides profile slot's
 //	                    thinking; sourced from `prism spawn --variant`, issue #2086)
+//	--provider <name>  routing-provider override (overrides profile slot's
+//	                    provider; sourced from `prism spawn --provider`, issue #2852)
 
 import (
 	"context"
@@ -105,6 +107,9 @@ func init() {
 	// values fall back to the slot, matching the pre-#2086 behaviour.
 	agentRunCmd.Flags().String("model", "", "Model identifier override (overrides profile slot's model; sourced from prism spawn --model)")
 	agentRunCmd.Flags().String("variant", "", "Variant/thinking-level override (overrides profile slot's thinking; sourced from prism spawn --variant)")
+	// --provider: pi-only routing override forwarded from `prism spawn`
+	// (issue #2852). Empty value falls back to the slot's provider.
+	agentRunCmd.Flags().String("provider", "", "Routing-provider override (overrides profile slot's provider; sourced from prism spawn --provider)")
 	rootCmd.AddCommand(agentRunCmd)
 
 	// Register the per-mode AgentRun handlers with the container package
@@ -137,6 +142,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	sessionName, _ := cmd.Flags().GetString("session")
 	modelOverride, _ := cmd.Flags().GetString("model")
 	variantOverride, _ := cmd.Flags().GetString("variant")
+	providerOverride, _ := cmd.Flags().GetString("provider")
 
 	// Open the agent-run log file as early as possible so that pre-exec
 	// `[timing]` markers can be written to it and the failure point is
@@ -203,7 +209,11 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	// read them without re-parsing argv. Cleared by clearAgentRunStatus.
 	// Empty fields mean "no override" — the active profile slot's value
 	// is used unchanged (issue #2086).
-	storeAgentRunOverrides(sessionName, piOverrides{Model: modelOverride, Variant: variantOverride})
+	storeAgentRunOverrides(sessionName, piOverrides{
+		Model:    modelOverride,
+		Variant:  variantOverride,
+		Provider: providerOverride,
+	})
 
 	return iso.AgentRun(cmd.Context(), container.AgentRunOpts{
 		SessionName: sessionName,
@@ -754,10 +764,13 @@ func logAgentRunWarning(logFile *os.File, format string, args ...any) {
 // for the pi harness (issue #2086). Empty fields mean "no override" and the
 // active profile slot's value is used unchanged. A non-empty Model wins over
 // slot.Model; a non-empty Variant wins over slot.Thinking (pi consumes both
-// via --model and --thinking on its argv in PIInvocation).
+// via --model and --thinking on its argv in PIInvocation). A non-empty
+// Provider wins over slot.Provider (pi consumes it via --provider on the same
+// argv; issue #2852).
 type piOverrides struct {
-	Model   string
-	Variant string
+	Model    string
+	Variant  string
+	Provider string
 }
 
 // populatePIConfig fills the PI-specific fields on ctrCfg for harness=pi sessions.
@@ -790,7 +803,10 @@ type piOverrides struct {
 //     `--variant` (issue #2086). A non-empty Model override wins over
 //     slot.Model; a non-empty Variant override wins over slot.Thinking.
 //     Empty override fields leave the slot value unchanged so the
-//     pre-#2086 default path is preserved.
+//     pre-#2086 default path is preserved. A non-empty Provider override
+//     wins over slot.Provider on the same terms (issue #2852). This whole
+//     function runs only for harness=pi sessions — both call sites gate on
+//     that — so the provider override cannot reach a non-pi launch.
 func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, cfg config.Config, overrides piOverrides) error {
 	// Load profiles.json.
 	pf, pfErr := config.LoadProfiles()
@@ -873,6 +889,13 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	}
 	if overrides.Variant != "" {
 		ctrCfg.PIThinking = overrides.Variant
+	}
+	// Issue #2852: the routing-provider override. An empty value falls
+	// through to slot.Provider unchanged, so no blank `--provider ""` can
+	// ever reach pi's argv — PIInvocation omits the flag for an empty
+	// PIProvider.
+	if overrides.Provider != "" {
+		ctrCfg.PIProvider = overrides.Provider
 	}
 
 	// Resolve the pi binary path. This must be the absolute store

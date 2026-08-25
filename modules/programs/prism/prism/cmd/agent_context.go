@@ -160,6 +160,20 @@ var precedenceRules = map[string][]string{
 		"~/.config/prism/config.json default_isolation_mode field",
 		"compiled-in default (host)",
 	},
+	// Model and provider are separate axes with the same two rungs. They are
+	// listed apart because a value on one axis does not select the other, and
+	// because pi treats a mismatch between them as a warning, not an error:
+	// pi strips a --model value's "<provider>/" prefix only when the prefix
+	// equals --provider. On a mismatch pi builds a custom model id instead.
+	// Keep the two flags in agreement (issue #2852).
+	"model": {
+		"--model flag on prism spawn",
+		"profile slot model field in ~/.config/prism/profiles.json (lowest)",
+	},
+	"provider": {
+		"--provider flag on prism spawn (pi harness only)",
+		"profile slot provider field in ~/.config/prism/profiles.json (lowest)",
+	},
 }
 
 var agentContextCmd = &cobra.Command{

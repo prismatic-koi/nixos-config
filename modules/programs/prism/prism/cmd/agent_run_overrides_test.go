@@ -172,7 +172,8 @@ func TestPopulatePIConfig_CLIOverrideWins(t *testing.T) {
 	if ctrCfg.PIThinking != "high" {
 		t.Errorf("PIThinking = %q, want override value %q", ctrCfg.PIThinking, "high")
 	}
-	// Provider is not overridable today and must still come from the slot.
+	// No provider override was supplied here, so PIProvider must still come
+	// from the slot (the #2852 fall-through case).
 	if ctrCfg.PIProvider != "anthropic" {
 		t.Errorf("PIProvider = %q, want slot value %q", ctrCfg.PIProvider, "anthropic")
 	}
@@ -193,6 +194,77 @@ func TestPopulatePIConfig_CLIOverrideWins(t *testing.T) {
 	}
 	if argvHasPair(args, "--thinking", "medium") {
 		t.Errorf("slot thinking leaked into argv after override: %v", args)
+	}
+}
+
+// TestPopulatePIConfig_ProviderOverrideWins is the issue #2852 core guard:
+// a non-empty Provider override replaces the profile slot's provider on
+// ctrCfg.PIProvider, and therefore on the final pi argv that PIInvocation
+// builds from the container.Config.
+func TestPopulatePIConfig_ProviderOverrideWins(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("populatePIConfig depends on POSIX exec semantics")
+	}
+	configHome, _ := isolateForPopulatePIConfig(t)
+	// writeProfiles pins the slot provider to "anthropic".
+	writeProfiles(t, configHome, "test", "anthropic/claude-opus-4-7", "medium")
+
+	ctrCfg := container.Config{}
+	cfg := config.Config{PIExtensionDir: "/nix/store/fake-ext"}
+	overrides := piOverrides{Provider: "openrouter"}
+	if err := populatePIConfig(&ctrCfg, "prism-test@session", "worker", cfg, overrides); err != nil {
+		t.Fatalf("populatePIConfig: %v", err)
+	}
+
+	if ctrCfg.PIProvider != "openrouter" {
+		t.Errorf("PIProvider = %q, want override value %q", ctrCfg.PIProvider, "openrouter")
+	}
+	// The other axes must be untouched by a provider-only override.
+	if ctrCfg.PIModel != "anthropic/claude-opus-4-7" {
+		t.Errorf("PIModel = %q, want slot value %q", ctrCfg.PIModel, "anthropic/claude-opus-4-7")
+	}
+	if ctrCfg.PIThinking != "medium" {
+		t.Errorf("PIThinking = %q, want slot value %q", ctrCfg.PIThinking, "medium")
+	}
+
+	// End-to-end: the override must land on the final pi argv, and the slot
+	// provider must not leak alongside it.
+	args := container.PIInvocation(ctrCfg)
+	if !argvHasPair(args, "--provider", "openrouter") {
+		t.Errorf("pi argv missing --provider override: %v", args)
+	}
+	if argvHasPair(args, "--provider", "anthropic") {
+		t.Errorf("slot provider leaked into argv after override: %v", args)
+	}
+}
+
+// TestPopulatePIConfig_EmptyProviderFallsThroughToSlot is the issue #2852
+// edge-case AC: an empty-string provider override leaves the slot value
+// unchanged, so no blank `--provider ""` argument can ever be emitted.
+func TestPopulatePIConfig_EmptyProviderFallsThroughToSlot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("populatePIConfig depends on POSIX exec semantics")
+	}
+	configHome, _ := isolateForPopulatePIConfig(t)
+	writeProfiles(t, configHome, "test", "anthropic/claude-opus-4-7", "medium")
+
+	ctrCfg := container.Config{}
+	cfg := config.Config{PIExtensionDir: "/nix/store/fake-ext"}
+	// Explicitly empty — the shape produced when --provider is not passed.
+	overrides := piOverrides{Provider: ""}
+	if err := populatePIConfig(&ctrCfg, "prism-test@session", "worker", cfg, overrides); err != nil {
+		t.Fatalf("populatePIConfig: %v", err)
+	}
+
+	if ctrCfg.PIProvider != "anthropic" {
+		t.Errorf("PIProvider = %q, want slot value %q", ctrCfg.PIProvider, "anthropic")
+	}
+	args := container.PIInvocation(ctrCfg)
+	if argvHasPair(args, "--provider", "") {
+		t.Errorf("blank --provider argument emitted: %v", args)
+	}
+	if !argvHasPair(args, "--provider", "anthropic") {
+		t.Errorf("expected the slot provider on the argv: %v", args)
 	}
 }
 
@@ -223,11 +295,14 @@ func TestPopulatePIConfig_PartialOverride_ModelOnly(t *testing.T) {
 }
 
 // TestAgentRunCmd_FlagsRegistered asserts the help surface promised by the
-// AC: `prism agent-run --help` lists --model and --variant. Cobra's flag
-// lookup is the closest verifiable analogue to "appears in --help" without
-// re-exec'ing the binary.
+// AC: `prism agent-run --help` lists --model, --variant, and --provider.
+// Cobra's flag lookup is the closest verifiable analogue to "appears in
+// --help" without re-exec'ing the binary. The registration is load-bearing
+// beyond help text: the bwrap / sandbox-exec pane command passes these flags
+// on the argv, so an unregistered flag makes `prism agent-run` fail to parse
+// its own launch command.
 func TestAgentRunCmd_FlagsRegistered(t *testing.T) {
-	for _, name := range []string{"session", "model", "variant"} {
+	for _, name := range []string{"session", "model", "variant", "provider"} {
 		if f := agentRunCmd.Flags().Lookup(name); f == nil {
 			t.Errorf("expected agentRunCmd to define flag --%s", name)
 		}
@@ -241,16 +316,16 @@ func TestAgentRunCmd_FlagsRegistered(t *testing.T) {
 // sandbox-exec.
 func TestStoreLoadAgentRunOverrides_Roundtrip(t *testing.T) {
 	const session = "prism-test@cache-roundtrip"
-	storeAgentRunOverrides(session, piOverrides{Model: "M", Variant: "V"})
+	storeAgentRunOverrides(session, piOverrides{Model: "M", Variant: "V", Provider: "P"})
 	t.Cleanup(func() { clearAgentRunStatus(session) })
 
 	got := loadAgentRunOverrides(session)
-	if got.Model != "M" || got.Variant != "V" {
-		t.Errorf("loadAgentRunOverrides = %+v, want {Model:M Variant:V}", got)
+	if got.Model != "M" || got.Variant != "V" || got.Provider != "P" {
+		t.Errorf("loadAgentRunOverrides = %+v, want {Model:M Variant:V Provider:P}", got)
 	}
 
 	// Empty zero value when nothing stored.
-	if zero := loadAgentRunOverrides("prism-test@no-such-entry"); zero.Model != "" || zero.Variant != "" {
+	if zero := loadAgentRunOverrides("prism-test@no-such-entry"); zero.Model != "" || zero.Variant != "" || zero.Provider != "" {
 		t.Errorf("expected zero piOverrides for unknown key; got %+v", zero)
 	}
 

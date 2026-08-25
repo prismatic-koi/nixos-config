@@ -14,6 +14,7 @@ package cmd
 //	--profile <name>             model profile to use from ~/.config/prism/profiles.json
 //	--model <name>               model identifier override (overrides profile's primary model)
 //	--variant <name>             model variant override (overrides all agents' variant)
+//	--provider <name>            routing provider override (overrides the profile slot's provider; pi harness only)
 //	--model-override role=model  per-role model override (repeatable); overrides --model for that role
 //	--isolation <mode>           isolation mode: bwrap, sandbox-exec, or host (default: from config.json)
 //	--containers                 enable the per-session filtering podman API socket proxy (default: off)
@@ -74,6 +75,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	abtestFlag, _ := cmd.Flags().GetStringArray("abtest")
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
+	providerFlag, _ := cmd.Flags().GetString("provider")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
 	ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
@@ -108,6 +110,13 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	// fast feedback before the round-trip to the host API.
 	if len(abtestFlag) > 0 && cmd.Flags().Changed("profile") {
 		return fmt.Errorf("--abtest and --profile are mutually exclusive")
+	}
+	// --provider carries the same restrictions as on the direct path (issue
+	// #2852). Both are validated client-side so the error surfaces at the
+	// proxy boundary with the same wording as the host-shell path, matching
+	// the --isolation precedent above.
+	if err := validateProviderFlag(providerFlag, harnessFlag, len(abtestFlag) > 0); err != nil {
+		return err
 	}
 	// Validate --abtest count early: we only allow 0 or 2 values.
 	if len(abtestFlag) == 1 || len(abtestFlag) > 2 {
@@ -186,6 +195,12 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 			"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 			"abtest":                 abtestFlag,
 		}
+		// Unreachable in practice — validateProviderFlag above rejects
+		// --provider alongside --abtest — but forwarding keeps the two body
+		// builders symmetric if that rule is ever relaxed.
+		if providerFlag != "" {
+			body["provider"] = providerFlag
+		}
 		// See the non-abtest body construction below for why --pr is forwarded
 		// as "pr" rather than resolved to a branch client-side (issue #2432).
 		if prFlag != "" {
@@ -257,6 +272,12 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 		"reuse":                  reuseFlag,
 	}
+	// Only forward "provider" when the user actually passed a value. An empty
+	// string must never reach the host-side spawn as an explicit override —
+	// the slot provider has to stay in effect (issue #2852).
+	if providerFlag != "" {
+		body["provider"] = providerFlag
+	}
 	// Forward --pr as "pr" (preserving PR identity end-to-end, issue #2432)
 	// rather than resolving it to a branch client-side. Otherwise forward the
 	// (possibly empty, meaning "host picks a timestamped default") branch.
@@ -327,6 +348,36 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	return nil
 }
 
+// validateProviderFlag enforces the two restrictions on `prism spawn
+// --provider <name>` (issue #2852). Both the direct (host-shell) path and the
+// proxy path call it before any session state is created, so a rejected
+// combination leaves no worktree, no tmux session, and no DB row behind.
+//
+//  1. A non-pi --harness is rejected, and the error names both flags. This is
+//     a deliberate deviation from --model / --variant, which are silently
+//     scoped to pi: provider decides routing and billing, so silently
+//     ignoring it would produce a confidently wrong user.
+//  2. --abtest is rejected, matching the existing --profile rule. Each abtest
+//     arm draws its provider from its own profile slot by design.
+//
+// An empty providerFlag always passes: the flag was not given, so the profile
+// slot's provider stays in effect.
+func validateProviderFlag(providerFlag, harnessFlag string, abtest bool) error {
+	if providerFlag == "" {
+		return nil
+	}
+	if abtest {
+		return fmt.Errorf("--abtest and --provider are mutually exclusive")
+	}
+	if !container.IsPIHarness(harnessFlag) {
+		return fmt.Errorf(
+			"--provider %q requires the pi harness, but --harness %q was given: "+
+				"drop --provider or use --harness pi",
+			providerFlag, harnessFlag)
+	}
+	return nil
+}
+
 var spawnCmd = &cobra.Command{
 	Use:   "spawn",
 	Short: "Create a new worktree from the current (or named) repo and switch to it",
@@ -344,6 +395,7 @@ func init() {
 	spawnCmd.Flags().StringArray("abtest", nil, "A/B test: spawn two sessions with the given profile names (e.g. --abtest profileA --abtest profileB); mutually exclusive with --profile")
 	spawnCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
+	spawnCmd.Flags().String("provider", "", "Routing provider override for all agents (e.g. anthropic, openrouter); overrides the profile slot's provider. Pi harness only; mutually exclusive with --abtest. When --model also carries a provider prefix, make the two agree — pi only strips a matching prefix.")
 	spawnCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	spawnCmd.Flags().Bool("containers", false, "Enable the per-session filtering podman API socket proxy (containers feature, #2317). Default: off. Combine with bwrap or sandbox-exec isolation; host mode bypasses the proxy.")
@@ -442,6 +494,16 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	if len(abtestProfiles) > 0 && cmd.Flags().Changed("profile") {
 		return fmt.Errorf("--abtest and --profile are mutually exclusive")
 	}
+	// --provider validation (issue #2852). Both checks run here, before any
+	// side effect, so a rejected combination creates no worktree, no tmux
+	// session, and no DB row. The harness check deliberately precedes the
+	// harness-registry lookup further down so the error names BOTH flags
+	// rather than reporting an unknown harness.
+	providerFlag, _ := cmd.Flags().GetString("provider")
+	providerHarnessFlag, _ := cmd.Flags().GetString("harness")
+	if err := validateProviderFlag(providerFlag, providerHarnessFlag, len(abtestProfiles) > 0); err != nil {
+		return err
+	}
 	// Route to the abtest path when --abtest is provided with exactly two profiles.
 	if len(abtestProfiles) > 0 {
 		if len(abtestProfiles) != 2 {
@@ -456,6 +518,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	repoFlag, _ := cmd.Flags().GetString("repo")
 	agentFlag, _ := cmd.Flags().GetString("agent")
 	// profileFlag was already read above for the abtest mutual-exclusion check.
+	// providerFlag was already read above for the --provider validation.
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
@@ -745,7 +808,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		// BuildConfigContent applies the profile's slot model/variant and
 		// honours any --model/--variant overrides on the root role only.
 		var bccErr error
-		configContent, bccErr = config.BuildConfigContent(pf, resolvedProfile, plannedRole, modelFlag, variantFlag)
+		configContent, bccErr = config.BuildConfigContent(pf, resolvedProfile, plannedRole, modelFlag, variantFlag, providerFlag)
 		if bccErr != nil {
 			return bccErr
 		}
@@ -757,9 +820,9 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 
-	// If no profile is active but --model or --variant were passed, still
-	// generate a minimal config so the overrides take effect.
-	if configContent == "" && (modelFlag != "" || variantFlag != "") {
+	// If no profile is active but --model, --variant, or --provider were
+	// passed, still generate a minimal config so the overrides take effect.
+	if configContent == "" && (modelFlag != "" || variantFlag != "" || providerFlag != "") {
 		rootRole := agentFlag
 		if rootRole == "" {
 			if branch == "main" {
@@ -769,7 +832,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 			}
 		}
 		var bccErr error
-		configContent, bccErr = config.BuildConfigContent(pf, resolvedProfile, rootRole, modelFlag, variantFlag)
+		configContent, bccErr = config.BuildConfigContent(pf, resolvedProfile, rootRole, modelFlag, variantFlag, providerFlag)
 		if bccErr != nil {
 			return bccErr
 		}
@@ -928,10 +991,14 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		// receive --model / --variant on the final argv.
 		Model:   modelFlag,
 		Variant: variantFlag,
+		// Provider override (issue #2852). Validated above as pi-only, so
+		// every downstream emit site sees a pi harness when it is non-empty.
+		Provider: providerFlag,
 		// ── spawn_inputs audit fields (#2087) ─────────────────────────
 		ProfileName:          resolvedProfile,
 		ModelFlag:            modelFlag,
 		VariantFlag:          variantFlag,
+		ProviderFlag:         providerFlag,
 		AgentFlag:            agentFlag,
 		HarnessFlag:          harnessFlag,
 		IsolationFlag:        isolationFlagRaw,
@@ -1521,7 +1588,10 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 	if rootRole == "" {
 		rootRole = "coordinator"
 	}
-	configContent, err := config.BuildConfigContent(a.pf, a.profileName, rootRole, a.modelFlag, a.variantFlag)
+	// --provider is rejected alongside --abtest (issue #2852), so the provider
+	// override is always empty on this path and each leg keeps its own profile
+	// slot's provider.
+	configContent, err := config.BuildConfigContent(a.pf, a.profileName, rootRole, a.modelFlag, a.variantFlag, "")
 	if err != nil {
 		return "", worktreePath, err
 	}

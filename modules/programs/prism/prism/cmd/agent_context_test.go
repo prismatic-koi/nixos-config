@@ -215,7 +215,9 @@ func TestAgentContextPrecedenceKeys(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
 	}
 
-	for _, key := range []string{"profile", "isolation"} {
+	// "model" and "provider" were added by issue #2852: `prism agent-context`
+	// must document that the CLI flag beats the profile slot on both axes.
+	for _, key := range []string{"profile", "isolation", "model", "provider"} {
 		chain, ok := doc.Precedence[key]
 		if !ok {
 			t.Errorf("precedence map missing required key %q", key)
@@ -224,6 +226,20 @@ func TestAgentContextPrecedenceKeys(t *testing.T) {
 		if len(chain) == 0 {
 			t.Errorf("precedence[%q] must not be empty", key)
 		}
+	}
+
+	// The provider chain must state both rungs in order: the CLI flag wins
+	// over the profile slot's provider.
+	providerChain := doc.Precedence["provider"]
+	if len(providerChain) < 2 {
+		t.Fatalf("precedence[\"provider\"] = %v, want at least two rungs", providerChain)
+	}
+	if !strings.Contains(providerChain[0], "--provider") {
+		t.Errorf("precedence[\"provider\"][0] = %q, want it to name the --provider flag", providerChain[0])
+	}
+	if !strings.Contains(providerChain[len(providerChain)-1], "profile") {
+		t.Errorf("precedence[\"provider\"] lowest rung = %q, want it to name the profile slot",
+			providerChain[len(providerChain)-1])
 	}
 }
 

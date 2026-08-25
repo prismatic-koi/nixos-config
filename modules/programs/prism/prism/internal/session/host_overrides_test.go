@@ -116,6 +116,97 @@ func TestBuildDirectAgentCmd_NonPiHarness_NoOverrideFlags(t *testing.T) {
 	}
 }
 
+// ── issue #2852: the host-mode --provider clause ────────────────────────────
+//
+// Unlike the variant axis, the provider axis needs no flag-name translation:
+// prism's --provider and pi's --provider are the same flag.
+
+// TestBuildDirectAgentCmd_HostModeProviderOverride asserts that Opts.Provider
+// produces `--provider <P>` on the direct pi launch command.
+func TestBuildDirectAgentCmd_HostModeProviderOverride(t *testing.T) {
+	opts := Opts{
+		Agent:       "worker",
+		SessionName: "myrepo@branch",
+		HarnessName: "pi",
+		Provider:    "openrouter",
+	}
+	cmd := buildDirectAgentCmd(opts)
+	if !strings.Contains(cmd, "--provider 'openrouter'") {
+		t.Errorf("expected --provider 'openrouter' in direct cmd; got %q", cmd)
+	}
+}
+
+// TestBuildDirectAgentCmd_HostModeNoProvider_NoFlag is the #2852
+// no-regression guard: an empty Provider must never render a --provider
+// argument with an empty value.
+func TestBuildDirectAgentCmd_HostModeNoProvider_NoFlag(t *testing.T) {
+	opts := Opts{
+		Agent:       "worker",
+		SessionName: "myrepo@branch",
+		HarnessName: "pi",
+		Model:       "anthropic/claude-opus-4-8",
+	}
+	cmd := buildDirectAgentCmd(opts)
+	if strings.Contains(cmd, "--provider") {
+		t.Errorf("--provider must not appear when Opts.Provider is empty; got %q", cmd)
+	}
+}
+
+// TestBuildDirectAgentCmd_NonPiHarness_NoProviderFlag is the #2852 edge-case
+// AC for the host-mode emit site: a non-pi harness never receives --provider.
+func TestBuildDirectAgentCmd_NonPiHarness_NoProviderFlag(t *testing.T) {
+	opts := Opts{
+		Agent:       "worker",
+		SessionName: "myrepo@branch",
+		HarnessName: "opencode", // not pi
+		Provider:    "openrouter",
+	}
+	cmd := buildDirectAgentCmd(opts)
+	if strings.Contains(cmd, "--provider") {
+		t.Errorf("--provider must not appear for non-pi harness; got %q", cmd)
+	}
+}
+
+// TestBuildDirectAgentCmd_ProviderBeforePrompt verifies --provider lands
+// before any positional prompt, for the same reason --model does: pi would
+// otherwise parse the flag as message bytes.
+func TestBuildDirectAgentCmd_ProviderBeforePrompt(t *testing.T) {
+	opts := Opts{
+		Agent:       "worker",
+		SessionName: "myrepo@branch",
+		HarnessName: "pi",
+		Provider:    "openrouter",
+		Prompt:      "do the thing",
+	}
+	cmd := buildDirectAgentCmd(opts)
+	providerIdx := strings.Index(cmd, "--provider")
+	promptIdx := strings.Index(cmd, "--prompt")
+	if providerIdx == -1 || promptIdx == -1 {
+		t.Fatalf("expected --provider and --prompt both present; got %q", cmd)
+	}
+	if providerIdx > promptIdx {
+		t.Errorf("--provider (at %d) must appear before --prompt (at %d) in %q", providerIdx, promptIdx, cmd)
+	}
+}
+
+// TestBuildOptsForLayout_ForwardsProvider pins the SpawnOpts → Opts
+// forwarding for the provider axis (issue #2852), so a refactor cannot drop
+// the field between cmd/spawn.go and the emitters.
+func TestBuildOptsForLayout_ForwardsProvider(t *testing.T) {
+	spawnOpts := SpawnOpts{
+		SessionName: "myrepo@branch",
+		Worktree:    "/tmp/wt",
+		AgentRole:   "worker",
+		Prompt:      "do the thing",
+		HarnessName: "pi",
+		Provider:    "openrouter",
+	}
+	got := buildOptsForLayout(spawnOpts, 14000, "")
+	if got.Provider != "openrouter" {
+		t.Errorf("Opts.Provider = %q, want forwarded value", got.Provider)
+	}
+}
+
 // TestBuildOptsForLayout_ForwardsModelAndVariant pins the SpawnOpts → Opts
 // forwarding so a future refactor cannot silently drop the override fields
 // between cmd/spawn.go (which sets SpawnOpts) and buildDirectAgentCmd /

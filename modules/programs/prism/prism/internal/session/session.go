@@ -236,6 +236,16 @@ type Opts struct {
 	// override path); in bwrap and sandbox-exec modes it flows through
 	// AgentPaneOpts. Issue #2086.
 	Variant string
+
+	// Provider, when non-empty, is the CLI-supplied routing-provider override
+	// (`prism spawn --provider <P>`). In host mode, buildDirectAgentCmd
+	// appends `--provider <P>` to the pi argv so it wins over the profile
+	// slot's provider. In bwrap and sandbox-exec modes the value is threaded
+	// into AgentPaneOpts so the `prism agent-run` tmux pane command carries it
+	// forward to the populatePIConfig override path. Empty value omits the
+	// flag and the profile slot's provider is used unchanged. Scoped to the pi
+	// harness at every emit site. Issue #2852.
+	Provider string
 }
 
 // ValidatePILaunchOpts checks Opts against the requirements for a host-mode
@@ -408,6 +418,11 @@ func BuildAgentCmd(opts Opts) (string, error) {
 		// already carries the flags via buildDirectAgentCmd above.
 		Model:   opts.Model,
 		Variant: opts.Variant,
+		// Provider (issue #2852) rides the same seam. HarnessName is
+		// forwarded alongside it because appendAgentRunOverrides gates the
+		// provider clause on a pi harness name.
+		Provider:    opts.Provider,
+		HarnessName: opts.HarnessName,
 	})
 }
 
@@ -473,7 +488,12 @@ func buildDirectAgentCmd(opts Opts) string {
 	// than as positional message bytes. Empty values omit the flag and the
 	// profile slot's model/variant is used unchanged (no-regression default
 	// path).
-	if opts.HarnessName == "pi" || opts.HarnessName == "" {
+	if container.IsPIHarness(opts.HarnessName) {
+		// --provider first, mirroring container.PIInvocation's flag order so
+		// the host-mode and sandboxed argvs read the same way (issue #2852).
+		if opts.Provider != "" {
+			cmd += " --provider " + shellQuote(opts.Provider)
+		}
 		if opts.Model != "" {
 			cmd += " --model " + shellQuote(opts.Model)
 		}

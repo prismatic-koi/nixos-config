@@ -348,7 +348,7 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 			if profErr != nil {
 				fmt.Fprintf(os.Stderr, "restore %q: resolve active profile: %v — skipping config injection\n", s.SessionName, profErr)
 			} else {
-				content, bccErr := config.BuildConfigContent(pf, resolvedProfile, lookupRole, "", "")
+				content, bccErr := config.BuildConfigContent(pf, resolvedProfile, lookupRole, "", "", "")
 				if bccErr != nil {
 					fmt.Fprintf(os.Stderr, "restore %q: build config content: %v — skipping config injection\n", s.SessionName, bccErr)
 				} else {

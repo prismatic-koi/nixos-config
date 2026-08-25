@@ -190,7 +190,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			if roleModel, ok := opts.ModelsByRole[ag.Name]; ok {
 				// Rebuild the config with the overridden model, preserving the
 				// profile's variant (pass "" variant override to keep profile value).
-				patched, patchErr := config.BuildConfigContent(opts.ProfilesFile, activeProfile, ag.Name, roleModel, "")
+				patched, patchErr := config.BuildConfigContent(opts.ProfilesFile, activeProfile, ag.Name, roleModel, "", "")
 				if patchErr != nil {
 					spawnErr[i] = fmt.Errorf("review: apply --model-override for %s: %w", ag.Name, patchErr)
 					if opts.OnProgress != nil {
@@ -512,7 +512,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		// Apply per-role model override (C.2, issue #1122).
 		if agentConfigContent != "" && len(opts.ModelsByRole) > 0 {
 			if roleModel, ok := opts.ModelsByRole[ag.Name]; ok {
-				patched, patchErr := config.BuildConfigContent(opts.ProfilesFile, activeProfile, ag.Name, roleModel, "")
+				patched, patchErr := config.BuildConfigContent(opts.ProfilesFile, activeProfile, ag.Name, roleModel, "", "")
 				if patchErr != nil {
 					spawnErr[i] = fmt.Errorf("review: apply --model-override for %s: %w", ag.Name, patchErr)
 					if opts.OnProgress != nil {

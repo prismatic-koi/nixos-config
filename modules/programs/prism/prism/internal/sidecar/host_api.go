@@ -1347,6 +1347,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Absence of the field (the pre-#1263 behaviour) is treated as an empty map.
 	// See issue #1263 (C2.PROXY proxy-spawn model-override parity).
 	//
+	// Optional field "provider" carries the --provider CLI flag value (issue
+	// #2852). It is forwarded as --provider to the host-side prism spawn when
+	// non-empty. The host-side spawn re-runs the same pi-harness and --abtest
+	// validation the proxy client already ran, so an arbitrary HTTP caller
+	// cannot bypass those rules by posting here directly. An absent field
+	// (older client, non-prism caller) means no override, and the profile
+	// slot's provider stays in effect.
+	//
 	// Optional field "abtest" accepts a two-element array of profile names that
 	// are forwarded as --abtest flags to the host-side prism spawn. Exactly 0
 	// or 2 values are accepted; 1 or 3+ return HTTP 400. When abtest is set,
@@ -1379,6 +1387,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Profile               string   `json:"profile"`
 			Model                 string   `json:"model"`
 			Variant               string   `json:"variant"`
+			Provider              string   `json:"provider"` // see #2852 in the doc comment above
 			Isolation             string   `json:"isolation"`
 			Harness               string   `json:"harness"`
 			IgnoreConcurrencyCap  bool     `json:"ignore_concurrency_cap"`
@@ -1562,6 +1571,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.Variant != "" {
 			args = append(args, "--variant", req.Variant)
 		}
+		if req.Provider != "" {
+			args = append(args, "--provider", req.Provider)
+		}
 		if req.Isolation != "" {
 			args = append(args, "--isolation", req.Isolation)
 		}
@@ -1608,6 +1620,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Variant != "" {
 			logArgs = append(logArgs, "--variant", req.Variant)
+		}
+		if req.Provider != "" {
+			logArgs = append(logArgs, "--provider", req.Provider)
 		}
 		if req.Isolation != "" {
 			logArgs = append(logArgs, "--isolation", req.Isolation)

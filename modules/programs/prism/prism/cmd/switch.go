@@ -105,7 +105,7 @@ func injectContainerConfig(path string, pf *config.ProfilesFile, opts *session.O
 	if profErr != nil {
 		return profErr
 	}
-	content, err := config.BuildConfigContent(pf, resolvedProfile, lookupRole, "", "")
+	content, err := config.BuildConfigContent(pf, resolvedProfile, lookupRole, "", "", "")
 	if err != nil {
 		return err
 	}
