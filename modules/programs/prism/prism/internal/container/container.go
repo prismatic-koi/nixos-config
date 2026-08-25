@@ -811,8 +811,8 @@ func (m *Manager) worktreeGitdirFilePath() string {
 // WorktreeGitdirFilePath is the exported version of worktreeGitdirFilePath for tests.
 func (m *Manager) WorktreeGitdirFilePath() string { return m.worktreeGitdirFilePath() }
 
-// PrepareBwrap writes the per-session temp files (SSH config, gitconfig,
-// opencode.json config) and returns the
+// PrepareBwrap writes the per-session temp files (SSH config, gitconfig)
+// and returns the
 // complete bwrap argument list via bwrapIsolator.BuildArgs. It does NOT write
 // the gitdir fixup files (prism-gitdir-*, prism-wt-gitdir-*) because bwrap
 // uses Dst==Src mounts, so the host git paths are visible at their exact

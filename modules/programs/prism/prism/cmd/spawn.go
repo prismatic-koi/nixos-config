@@ -782,7 +782,24 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// The session role is the explicit --agent flag when set, otherwise
 	// inferred from the branch name (main → coordinator, anything else →
 	// worker, mirroring session.DefaultAgent).
-	if pf != nil && resolvedProfile != "" {
+	//
+	// Keyed on resolvedProfile alone, NOT on `pf != nil && resolvedProfile
+	// != ""` (#2854 review round 2). A nil pf paired with a non-empty
+	// profile name is reachable — profiles.json fails to load (non-fatal in
+	// host mode with no --profile), while the active-profile state file still
+	// names a profile, which ResolveActiveProfile returns unchanged. Before
+	// #2854 the second config.BuildConfigContent call below this block
+	// rejected that state, so `prism spawn` failed. Letting RequireSlot's
+	// nil-pf branch fire preserves the rejection and keeps `prism spawn` and
+	// `prism pr` (cmd/pr.go) deciding the same misconfiguration the same way.
+	//
+	// One deliberate widening: the old rejection only fired when --model,
+	// --variant, or --provider was passed, because that is what gated the
+	// block that produced it. This gate does not check those flags. A state
+	// file naming a profile that cannot be read is broken whether or not an
+	// override accompanies it, and the narrower form would leave the two
+	// commands disagreeing again.
+	if resolvedProfile != "" {
 		plannedRole := agentFlag
 		if plannedRole == "" {
 			if branch == "main" {

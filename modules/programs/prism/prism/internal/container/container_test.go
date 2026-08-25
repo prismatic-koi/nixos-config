@@ -535,7 +535,7 @@ func TestWaitHealthy_ReturnsOnContextCancel(t *testing.T) {
 	}
 }
 
-// ── harness config mount tests ──────────────────────────────────────────────
+// ── credential env var tests ────────────────────────────────────────────────
 
 func TestCredentialEnvVars_NoGitIdentityEnvVars(t *testing.T) {
 	// AC-11: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME,

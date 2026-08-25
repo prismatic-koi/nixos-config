@@ -311,8 +311,8 @@ type Opts struct {
 	// issue #1122). It is forwarded to session.SpawnOpts.ModelsByRole, which
 	// hands it to the sidecar as repeated --model-override flags.
 	//
-	// Do not read this as "the reviewer runs on this model" (#2854 review
-	// round 1). The map terminates at cmd/sidecar.go, which resolves it to
+	// Do not read this as "the reviewer runs on this model" (issue #2863).
+	// The map terminates at cmd/sidecar.go, which resolves it to
 	// sidecar.Opts.AgentModel and records that on the agent_status.agent_model
 	// reporting column. It does not reach pi's argv: the model pi runs on is
 	// resolved at agent-run time by populatePIConfig, from the profile slot

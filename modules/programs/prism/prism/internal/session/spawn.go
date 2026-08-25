@@ -1172,9 +1172,12 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	mode := opts.IsolationMode
 	// When IsolationMode is not set, resolve the machine default from config
 	// rather than silently falling back to host. A silent host fallback breaks
-	// bwrap sessions: review agents would run without the sandbox, pick up the
-	// host harness config (which only defines the build agent), and trigger the
-	// recursive review explosion described in issue #1001.
+	// bwrap sessions: review agents would run unsandboxed with the invoking
+	// session's own agent identity and trigger the recursive review explosion
+	// described in issue #1001. (#1001's original mechanism was a per-agent
+	// harness-config blob that pinned each reviewer's identity; #2854 retired
+	// that blob as unread. Reviewer identity now rides on the --agent flag,
+	// but the fallback is still wrong for the sandbox reason alone.)
 	if mode == "" {
 		mode = string(config.Load().DefaultIsolationMode)
 	}

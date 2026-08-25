@@ -240,7 +240,7 @@ type Isolator interface {
 	Reset(ctx context.Context) error
 
 	// Prepare materialises any per-session temp files (SSH config,
-	// gitconfig, harness config, session work dir, SBPL profile) that
+	// gitconfig, session work dir, SBPL profile) that
 	// the sandbox needs at start time and returns the complete argument
 	// list for the sandbox launcher. Bwrap returns the bwrap argv;
 	// sandbox-exec returns the sandbox-exec argv. Host returns nil
