@@ -241,6 +241,27 @@ func TestAgentContextPrecedenceKeys(t *testing.T) {
 		t.Errorf("precedence[\"provider\"] lowest rung = %q, want it to name the profile slot",
 			providerChain[len(providerChain)-1])
 	}
+
+	// The model chain has THREE rungs. --model-override names a single role
+	// and beats --model for that role (cmd/spawn.go's flag description; the
+	// agentRole lookup in cmd/sidecar.go). Publishing --model as the highest
+	// rung is a false statement to every agent that reads agent-context, so
+	// the top rung is pinned here.
+	modelChain := doc.Precedence["model"]
+	if len(modelChain) < 3 {
+		t.Fatalf("precedence[\"model\"] = %v, want at least three rungs", modelChain)
+	}
+	if !strings.Contains(modelChain[0], "--model-override") {
+		t.Errorf("precedence[\"model\"][0] = %q, want it to name --model-override (it outranks --model)",
+			modelChain[0])
+	}
+	if !strings.Contains(modelChain[1], "--model") || strings.Contains(modelChain[1], "--model-override") {
+		t.Errorf("precedence[\"model\"][1] = %q, want the plain --model flag", modelChain[1])
+	}
+	if !strings.Contains(modelChain[len(modelChain)-1], "profile") {
+		t.Errorf("precedence[\"model\"] lowest rung = %q, want it to name the profile slot",
+			modelChain[len(modelChain)-1])
+	}
 }
 
 // TestAgentContextHiddenExcluded verifies that hidden commands are absent

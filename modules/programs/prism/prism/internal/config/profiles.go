@@ -294,6 +294,15 @@ func BuildConfigContent(pf *ProfilesFile, profileName, rootRole, modelOverride, 
 	// provider already reaches pi through the argv channel (PIInvocation's
 	// --provider), and emitting it here as well would change the no-flag
 	// behaviour of every existing session.
+	//
+	// Known conflict, do not re-derive it (#2854): the whole output of this
+	// function is injected as PI_CONFIG_CONTENT, and pi does not read that
+	// variable — measured as zero references in pi 0.84.2. Issue #2086 found
+	// the same dead letter and chose to retire the transport (its "Recommended
+	// fix — option 2", item 3), but delivered only the argv half. AC #3 of
+	// #2852 asked for this key regardless, so it is emitted here and the
+	// retire-vs-keep decision is tracked in #2854. Nothing depends on it: the
+	// argv channel carries the provider on every isolation mode.
 	if providerOverride != "" {
 		cfg["defaultProvider"] = providerOverride
 	}

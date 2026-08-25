@@ -160,13 +160,26 @@ var precedenceRules = map[string][]string{
 		"~/.config/prism/config.json default_isolation_mode field",
 		"compiled-in default (host)",
 	},
-	// Model and provider are separate axes with the same two rungs. They are
-	// listed apart because a value on one axis does not select the other, and
-	// because pi treats a mismatch between them as a warning, not an error:
-	// pi strips a --model value's "<provider>/" prefix only when the prefix
-	// equals --provider. On a mismatch pi builds a custom model id instead.
-	// Keep the two flags in agreement (issue #2852).
+	// Model and provider are separate axes. They are listed apart because a
+	// value on one axis does not select the other, and because pi treats a
+	// mismatch between them as a warning, not an error: pi strips a --model
+	// value's "<provider>/" prefix only when the prefix equals --provider. On
+	// a mismatch pi builds a custom model id instead. Keep the two in
+	// agreement (issue #2852).
+	//
+	// The model axis has three rungs, not two: --model-override names a single
+	// role and beats --model for that role only (see the flag description in
+	// cmd/spawn.go and the agentRole lookup in cmd/sidecar.go).
+	//
+	// The provider axis has two rungs because --model-override has no
+	// provider-only form. It can still reach the provider axis indirectly: the
+	// role=model format admits a "<provider>/" model-id prefix, so
+	// --model-override <role>=openrouter/foo alongside --provider anthropic
+	// produces exactly the prefix mismatch described above, for that one role.
+	// That is an interaction, not a rung, so it stays in this comment rather
+	// than in the ordered chain below.
 	"model": {
+		"--model-override role=model flag on prism spawn (that role only)",
 		"--model flag on prism spawn",
 		"profile slot model field in ~/.config/prism/profiles.json (lowest)",
 	},
