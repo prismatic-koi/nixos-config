@@ -224,6 +224,22 @@ type AgentPaneOpts struct {
 	// Sourced from `prism spawn --variant` (issue #2086). Empty value omits
 	// the flag and the slot's thinking is used unchanged.
 	Variant string
+
+	// Provider, when non-empty, is appended to the bwrap/sandbox-exec tmux
+	// pane command as `--provider <P>` so that `prism agent-run` overrides
+	// the active profile slot's provider on the final pi argv. Sourced from
+	// `prism spawn --provider` (issue #2852). Empty value omits the flag and
+	// the slot's provider is used unchanged.
+	//
+	// Emission is gated on HarnessName below: a non-pi harness never receives
+	// the flag.
+	Provider string
+
+	// HarnessName is the session's harness ("pi", or empty which defaults to
+	// pi). It gates the pi-only `--provider` clause in
+	// appendAgentRunOverrides (issue #2852). Callers that do not set it get
+	// the pi default, matching the rest of the launch path.
+	HarnessName string
 }
 
 // ArchivePaths describes the per-mode paths that the archive copy step
@@ -518,15 +534,23 @@ func (h *hostIsolator) LogPaths() LogPaths {
 // shared helpers
 // ----------------------------------------------------------------------------
 
-// appendAgentRunOverrides appends `--model <X>` and/or `--variant <Y>` to the
-// `prism agent-run` tmux pane command when those overrides are set on opts.
-// Shared between the bwrap and sandbox-exec isolators because both modes
-// dispatch the agent via `prism agent-run` (which then re-reads the session
-// row, populates a container.Config, and launches pi via PIInvocation).
+// appendAgentRunOverrides appends `--model <X>`, `--variant <Y>` and/or
+// `--provider <P>` to the `prism agent-run` tmux pane command when those
+// overrides are set on opts. Shared between the bwrap and sandbox-exec
+// isolators because both modes dispatch the agent via `prism agent-run`
+// (which then re-reads the session row, populates a container.Config, and
+// launches pi via PIInvocation).
 //
 // Issue #2086: without these flags the `--model` / `--variant` values passed
 // to `prism spawn` are silently dropped — `populatePIConfig` only consults
 // the active profile slot, so the CLI override never reaches pi's argv.
+//
+// Issue #2852 adds `--provider` on the same seam, with one difference: the
+// provider clause is gated on a pi harness name. `prism spawn` already
+// rejects `--provider` alongside a non-pi `--harness` before any session is
+// created, so this gate is defence in depth — provider decides routing and
+// billing, and a non-pi harness must never be handed a flag it would either
+// reject or read with an unrelated meaning.
 func appendAgentRunOverrides(cmd string, opts AgentPaneOpts) string {
 	if opts.Model != "" {
 		cmd += " --model " + shellQuoteContainer(opts.Model)
@@ -534,7 +558,18 @@ func appendAgentRunOverrides(cmd string, opts AgentPaneOpts) string {
 	if opts.Variant != "" {
 		cmd += " --variant " + shellQuoteContainer(opts.Variant)
 	}
+	if opts.Provider != "" && IsPIHarness(opts.HarnessName) {
+		cmd += " --provider " + shellQuoteContainer(opts.Provider)
+	}
 	return cmd
+}
+
+// IsPIHarness reports whether name selects the pi harness. An empty name is
+// pi, matching harnessBinary in internal/session and the pi-scoped clauses in
+// buildDirectAgentCmd. It is the single predicate every pi-only emit site
+// consults so the gates cannot drift apart (issue #2852).
+func IsPIHarness(name string) bool {
+	return name == "pi" || name == ""
 }
 
 // shellQuoteContainer wraps s in single quotes for shell-safe embedding. It is

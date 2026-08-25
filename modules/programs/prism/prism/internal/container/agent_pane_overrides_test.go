@@ -181,6 +181,136 @@ func TestBwrapAgentPaneCmd_ShellQuoting_SingleQuotedValues(t *testing.T) {
 	}
 }
 
+// ── issue #2852: the --provider clause ────────────────────────────────────────
+
+// TestBwrapAgentPaneCmd_ProviderFlagAppended asserts that AgentPaneOpts.Provider
+// lands on the tmux pane command as `--provider <P>` for a pi harness, so
+// `prism agent-run` can override the profile slot's provider on pi's argv.
+func TestBwrapAgentPaneCmd_ProviderFlagAppended(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
+	iso := &bwrapIsolator{}
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
+		SessionName: "prism-test@bwrap",
+		Provider:    "openrouter",
+		HarnessName: "pi",
+	})
+	if err != nil {
+		t.Fatalf("bwrap AgentPaneCmd: unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "--provider 'openrouter'") {
+		t.Errorf("expected --provider in pane cmd; got %q", got)
+	}
+}
+
+// TestSandboxExecAgentPaneCmd_ProviderFlagAppended mirrors the bwrap case —
+// both isolators share appendAgentRunOverrides, so a divergence is a real bug.
+func TestSandboxExecAgentPaneCmd_ProviderFlagAppended(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
+	iso := &sandboxExecIsolator{}
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
+		SessionName: "prism-test@sbx",
+		Provider:    "openrouter",
+		HarnessName: "pi",
+	})
+	if err != nil {
+		t.Fatalf("sandbox-exec AgentPaneCmd: unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "--provider 'openrouter'") {
+		t.Errorf("expected --provider in pane cmd; got %q", got)
+	}
+}
+
+// TestBwrapAgentPaneCmd_ProviderDefaultsToPiHarness verifies that an empty
+// HarnessName counts as pi, matching every other pi-scoped clause in the
+// launch path (harnessBinary, the --extension gate, the --exclude-tools gate).
+func TestBwrapAgentPaneCmd_ProviderDefaultsToPiHarness(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
+	iso := &bwrapIsolator{}
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
+		SessionName: "prism-test@bwrap",
+		Provider:    "openrouter",
+	})
+	if err != nil {
+		t.Fatalf("bwrap AgentPaneCmd: unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "--provider 'openrouter'") {
+		t.Errorf("empty HarnessName must be treated as pi; got %q", got)
+	}
+}
+
+// TestBwrapAgentPaneCmd_ProviderSuppressedForNonPiHarness is the #2852
+// edge-case AC: no --provider emit site fires for a non-pi harness. `prism
+// spawn` already rejects that combination up front, so reaching this branch
+// means an internal caller built a mismatched AgentPaneOpts — the flag must
+// still be withheld rather than handed to a harness that would read it with
+// an unrelated meaning.
+func TestBwrapAgentPaneCmd_ProviderSuppressedForNonPiHarness(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
+	iso := &bwrapIsolator{}
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
+		SessionName: "prism-test@bwrap",
+		Provider:    "openrouter",
+		HarnessName: "not-pi",
+	})
+	if err != nil {
+		t.Fatalf("bwrap AgentPaneCmd: unexpected error: %v", err)
+	}
+	if strings.Contains(got, "--provider") {
+		t.Errorf("--provider must not be emitted for a non-pi harness; got %q", got)
+	}
+}
+
+// TestBwrapAgentPaneCmd_EmptyProviderEmitsNoFlag is the #2852 no-regression
+// case: an empty override must never render a blank --provider argument with
+// an empty value, which pi would read as an explicit (and invalid) provider
+// name.
+func TestBwrapAgentPaneCmd_EmptyProviderEmitsNoFlag(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
+	iso := &bwrapIsolator{}
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
+		SessionName: "prism-test@bwrap",
+		HarnessName: "pi",
+		Model:       "anthropic/claude-opus-4-8",
+	})
+	if err != nil {
+		t.Fatalf("bwrap AgentPaneCmd: unexpected error: %v", err)
+	}
+	if strings.Contains(got, "--provider") {
+		t.Errorf("--provider must be absent when Provider is empty; got %q", got)
+	}
+}
+
+// TestAppendAgentRunOverrides_ProviderShellQuoted ensures the provider value
+// goes through shellQuoteContainer like the other overrides — the pane command
+// is wrapped in `sh -c` by tmux, so an unquoted value is an injection risk.
+func TestAppendAgentRunOverrides_ProviderShellQuoted(t *testing.T) {
+	got := appendAgentRunOverrides("prism agent-run", AgentPaneOpts{
+		Provider:    "danger'name",
+		HarnessName: "pi",
+	})
+	want := `--provider 'danger'\''name'`
+	if !strings.Contains(got, want) {
+		t.Errorf("expected shell-escaped Provider %q in cmd; got %q", want, got)
+	}
+}
+
+// TestIsPIHarness pins the single predicate every pi-only emit site consults.
+func TestIsPIHarness(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"pi", true},
+		{"", true},
+		{"not-pi", false},
+		{"PI", false},
+	} {
+		if got := IsPIHarness(tc.name); got != tc.want {
+			t.Errorf("IsPIHarness(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestBwrapAgentPaneCmd_EmptySessionName_FallsBackToDirect verifies the
 // defensive fallback: when SessionName is empty the pane command is the
 // host-mode DirectCmd unchanged. Pre-#2086 behaviour; the override fields

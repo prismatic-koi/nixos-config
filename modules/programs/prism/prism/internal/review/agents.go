@@ -142,5 +142,5 @@ func ResolveAgentConfigContent(isolationMode string, pf *config.ProfilesFile, ag
 	if pf == nil && activeProfile != "" {
 		return "", fmt.Errorf("review: %s mode requires a profiles file to resolve per-agent config for %q; got nil ProfilesFile", isolationMode, agentName)
 	}
-	return config.BuildConfigContent(pf, activeProfile, agentName, "", "")
+	return config.BuildConfigContent(pf, activeProfile, agentName, "", "", "")
 }

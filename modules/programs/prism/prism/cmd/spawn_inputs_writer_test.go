@@ -72,6 +72,7 @@ func TestSpawnInputsFromOpts_FullFlagSet(t *testing.T) {
 		ProfileName:          "anthropic",
 		ModelFlag:            "anthropic/claude-opus-4-8",
 		VariantFlag:          "high",
+		ProviderFlag:         "openrouter",
 		AgentFlag:            "worker",
 		HarnessFlag:          "pi",
 		IsolationFlag:        "bwrap",
@@ -113,6 +114,10 @@ func TestSpawnInputsFromOpts_FullFlagSet(t *testing.T) {
 	assertStringPtr(t, "ProfileName", got.ProfileName, "anthropic")
 	assertStringPtr(t, "ModelFlag", got.ModelFlag, "anthropic/claude-opus-4-8")
 	assertStringPtr(t, "VariantFlag", got.VariantFlag, "high")
+	// ProviderFlag is the issue #2852 audit column: the resolved --provider
+	// value must survive the round trip so a retro can compare the intended
+	// routing provider against the session's actual outcome.
+	assertStringPtr(t, "ProviderFlag", got.ProviderFlag, "openrouter")
 	assertStringPtr(t, "AgentFlag", got.AgentFlag, "worker")
 	assertStringPtr(t, "HarnessFlag", got.HarnessFlag, "pi")
 	assertStringPtr(t, "IsolationFlag", got.IsolationFlag, "bwrap")
@@ -192,6 +197,7 @@ func TestSpawnInputsFromOpts_EmptyFlagsRoundTripAsNull(t *testing.T) {
 		"ProfileName":           got.ProfileName,
 		"ModelFlag":             got.ModelFlag,
 		"VariantFlag":           got.VariantFlag,
+		"ProviderFlag":          got.ProviderFlag,
 		"AgentFlag":             got.AgentFlag,
 		"HarnessFlag":           got.HarnessFlag,
 		"IsolationFlag":         got.IsolationFlag,

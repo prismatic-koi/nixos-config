@@ -60,6 +60,28 @@ func TestPIInvocation_NoOptionalFlags(t *testing.T) {
 	}
 }
 
+// TestPIInvocation_EmptyProviderOmitsFlagWhenOthersSet is the issue #2852
+// edge-case AC at the final argv layer: an empty provider override falls
+// through to the slot value, and when that is empty too no blank
+// `--provider ""` argument is emitted. TestPIInvocation_NoOptionalFlags
+// covers the all-empty config; this covers the realistic fall-through shape
+// where model and thinking are populated and only the provider is not.
+func TestPIInvocation_EmptyProviderOmitsFlagWhenOthersSet(t *testing.T) {
+	cfg := Config{
+		PIBinaryPath:          "/nix/store/abc-pi/bin/pi",
+		PIModel:               "anthropic/claude-opus-4",
+		PIThinking:            "high",
+		PIExtensionSandboxDir: "/etc/prism/pi-extensions",
+	}
+	args := PIInvocation(cfg)
+	if hasArg(args, "--provider") {
+		t.Errorf("--provider must be absent when PIProvider is empty; got %v", redactedArgs(args))
+	}
+	if !hasPair(args, "--model", "anthropic/claude-opus-4") {
+		t.Errorf("expected --model to still be emitted; got %v", redactedArgs(args))
+	}
+}
+
 // TestPIInvocation_OffThinkingPassedThrough verifies that thinking="off"
 // (the zero value in profiles after #1299) is passed as --thinking off to
 // PI — not translated or dropped.

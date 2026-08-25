@@ -47,7 +47,7 @@ func sampleProfilesFile() *config.ProfilesFile {
 // ── BuildConfigContent tests ──────────────────────────────────────────────────
 
 func TestBuildConfigContent_NoFlags(t *testing.T) {
-	result, err := config.BuildConfigContent(nil, "", "", "", "")
+	result, err := config.BuildConfigContent(nil, "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestBuildConfigContent_NoFlags(t *testing.T) {
 // resolves the coordinator slot's model when rootRole="coordinator".
 func TestBuildConfigContent_ProfileOnly_Coordinator(t *testing.T) {
 	pf := sampleProfilesFile()
-	result, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "")
+	result, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestBuildConfigContent_ProfileOnly_Coordinator(t *testing.T) {
 // rootRole="worker" resolves the worker slot, not coordinator's.
 func TestBuildConfigContent_ProfileOnly_Worker(t *testing.T) {
 	pf := sampleProfilesFile()
-	result, err := config.BuildConfigContent(pf, "anthropic", "worker", "", "")
+	result, err := config.BuildConfigContent(pf, "anthropic", "worker", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestBuildConfigContent_ProfileOnly_Worker(t *testing.T) {
 // TestBuildConfigContent_ProfileOnly_ReviewGoal verifies the review-goal slot.
 func TestBuildConfigContent_ProfileOnly_ReviewGoal(t *testing.T) {
 	pf := sampleProfilesFile()
-	result, err := config.BuildConfigContent(pf, "gemini-hybrid", "review-goal", "", "")
+	result, err := config.BuildConfigContent(pf, "gemini-hybrid", "review-goal", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestBuildConfigContent_ProfileOnly_ReviewGoal(t *testing.T) {
 func TestBuildConfigContent_ProfileAndModelOverride(t *testing.T) {
 	pf := sampleProfilesFile()
 	// --profile anthropic --model custom/model --agent coordinator
-	result, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "custom/model", "")
+	result, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "custom/model", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestBuildConfigContent_ProfileAndModelOverride(t *testing.T) {
 // --variant V overrides the root role's variant.
 func TestBuildConfigContent_ProfileAndVariantOverride(t *testing.T) {
 	pf := sampleProfilesFile()
-	result, err := config.BuildConfigContent(pf, "gemini-hybrid", "worker", "", "low")
+	result, err := config.BuildConfigContent(pf, "gemini-hybrid", "worker", "", "low", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -175,10 +175,78 @@ func TestBuildConfigContent_ProfileAndVariantOverride(t *testing.T) {
 	}
 }
 
+// TestBuildConfigContent_ProviderOverrideEmitsDefaultProvider is the issue
+// #2852 AC at the config-content layer: `prism spawn --provider <P>` must put
+// pi's `defaultProvider` settings key into the root/coordinator session's
+// config content, so the root session is not left silently ignoring the flag
+// while its spawned panes honour it.
+func TestBuildConfigContent_ProviderOverrideEmitsDefaultProvider(t *testing.T) {
+	pf := sampleProfilesFile()
+	result, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "", "openrouter")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v (raw %q)", err, result)
+	}
+	if cfg["defaultProvider"] != "openrouter" {
+		t.Errorf("defaultProvider: got %v, want openrouter", cfg["defaultProvider"])
+	}
+	// The profile's own model/variant must survive alongside the override.
+	if cfg["model"] != "anthropic/claude-opus-4-7" {
+		t.Errorf("model: got %v, want the profile slot's model", cfg["model"])
+	}
+}
+
+// TestBuildConfigContent_ProviderOnly verifies that --provider P without
+// --profile, --model, or --variant still produces config content carrying
+// only defaultProvider. Without this the early "nothing set" return would
+// swallow a lone --provider.
+func TestBuildConfigContent_ProviderOnly(t *testing.T) {
+	result, err := config.BuildConfigContent(nil, "", "coordinator", "", "", "openrouter")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v (raw %q)", err, result)
+	}
+	if cfg["defaultProvider"] != "openrouter" {
+		t.Errorf("defaultProvider: got %v, want openrouter", cfg["defaultProvider"])
+	}
+	if _, ok := cfg["model"]; ok {
+		t.Error("unexpected top-level model when only provider is set")
+	}
+	if _, ok := cfg["variant"]; ok {
+		t.Error("unexpected variant when only provider is set")
+	}
+}
+
+// TestBuildConfigContent_EmptyProviderKeepsSlotProvider is the #2852
+// no-regression case: an empty provider override emits no defaultProvider
+// key at all, so the profile slot's provider stays in effect and the output
+// is byte-identical to the pre-#2852 shape.
+func TestBuildConfigContent_EmptyProviderKeepsSlotProvider(t *testing.T) {
+	pf := sampleProfilesFile()
+	result, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v (raw %q)", err, result)
+	}
+	if _, ok := cfg["defaultProvider"]; ok {
+		t.Errorf("defaultProvider must be absent when no override is passed; got %v", cfg["defaultProvider"])
+	}
+}
+
 // TestBuildConfigContent_ModelOnly verifies that --model X without --profile
 // sets only the root role's model (no "agent" map, single top-level model).
 func TestBuildConfigContent_ModelOnly(t *testing.T) {
-	result, err := config.BuildConfigContent(nil, "", "coordinator", "anthropic/claude-haiku-4-5", "")
+	result, err := config.BuildConfigContent(nil, "", "coordinator", "anthropic/claude-haiku-4-5", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -199,7 +267,7 @@ func TestBuildConfigContent_ModelOnly(t *testing.T) {
 // TestBuildConfigContent_VariantOnly verifies that --variant X without
 // --profile sets only the root role's variant.
 func TestBuildConfigContent_VariantOnly(t *testing.T) {
-	result, err := config.BuildConfigContent(nil, "", "coordinator", "", "high")
+	result, err := config.BuildConfigContent(nil, "", "coordinator", "", "high", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -220,7 +288,7 @@ func TestBuildConfigContent_VariantOnly(t *testing.T) {
 // TestBuildConfigContent_UnknownProfile verifies that an unknown profile returns an error.
 func TestBuildConfigContent_UnknownProfile(t *testing.T) {
 	pf := sampleProfilesFile()
-	_, err := config.BuildConfigContent(pf, "nonexistent", "coordinator", "", "")
+	_, err := config.BuildConfigContent(pf, "nonexistent", "coordinator", "", "", "")
 	if err == nil {
 		t.Fatal("expected error for unknown profile, got nil")
 	}
@@ -238,7 +306,7 @@ func TestBuildConfigContent_OffThinkingTranslatesToNoneVariant(t *testing.T) {
 			},
 		},
 	}
-	out, err := config.BuildConfigContent(pf, "off-test", "coordinator", "", "")
+	out, err := config.BuildConfigContent(pf, "off-test", "coordinator", "", "", "")
 	if err != nil {
 		t.Fatalf("BuildConfigContent: %v", err)
 	}
@@ -259,7 +327,7 @@ func TestBuildConfigContent_OffThinkingTranslatesToNoneVariant(t *testing.T) {
 // non-zero thinking level (e.g. "medium") is passed through unchanged.
 func TestBuildConfigContent_NonZeroThinkingPassesThrough(t *testing.T) {
 	pf := sampleProfilesFile()
-	out, err := config.BuildConfigContent(pf, "gemini-hybrid", "worker", "", "")
+	out, err := config.BuildConfigContent(pf, "gemini-hybrid", "worker", "", "", "")
 	if err != nil {
 		t.Fatalf("BuildConfigContent: %v", err)
 	}
@@ -278,11 +346,11 @@ func TestBuildConfigContent_NonZeroThinkingPassesThrough(t *testing.T) {
 func TestBuildConfigContent_AnthropicCoordinatorNotEqualWorker(t *testing.T) {
 	pf := sampleProfilesFile()
 
-	coordResult, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "")
+	coordResult, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "", "")
 	if err != nil {
 		t.Fatalf("coordinator: %v", err)
 	}
-	workerResult, err := config.BuildConfigContent(pf, "anthropic", "worker", "", "")
+	workerResult, err := config.BuildConfigContent(pf, "anthropic", "worker", "", "", "")
 	if err != nil {
 		t.Fatalf("worker: %v", err)
 	}
@@ -311,7 +379,7 @@ func TestBuildConfigContent_AnthropicCoordinatorNotEqualWorker(t *testing.T) {
 func TestBuildConfigContent_WorkerModelOverrideDoesNotAffectOtherRoles(t *testing.T) {
 	pf := sampleProfilesFile()
 	// Spawn with worker role + model override.
-	workerResult, err := config.BuildConfigContent(pf, "anthropic", "worker", "anthropic/claude-haiku-4-5", "")
+	workerResult, err := config.BuildConfigContent(pf, "anthropic", "worker", "anthropic/claude-haiku-4-5", "", "")
 	if err != nil {
 		t.Fatalf("worker override: %v", err)
 	}
@@ -323,7 +391,7 @@ func TestBuildConfigContent_WorkerModelOverrideDoesNotAffectOtherRoles(t *testin
 
 	// Coordinator role (separate call, simulating a different session) must
 	// retain its profile model — the worker override must not bleed over.
-	coordResult, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "")
+	coordResult, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "", "")
 	if err != nil {
 		t.Fatalf("coordinator: %v", err)
 	}

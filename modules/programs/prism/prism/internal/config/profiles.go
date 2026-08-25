@@ -230,12 +230,16 @@ func variantFromThinking(thinking string) string {
 //     root role's model; other roles are unaffected (pi sessions have a
 //     single root agent per session).
 //   - If variantOverride is non-empty, set "variant" on the root role only.
+//   - If providerOverride is non-empty, set "defaultProvider" (pi's settings
+//     key for the routing provider) on the root role only. Sourced from
+//     `prism spawn --provider` (issue #2852). An empty value emits no key at
+//     all, so the profile slot's provider stays in effect.
 //   - Returns ("", nil) when no flags are set (no injection needed).
 //
 // pf may be nil when no profile flag is used; it is only consulted when
 // profileName is non-empty.
-func BuildConfigContent(pf *ProfilesFile, profileName, rootRole, modelOverride, variantOverride string) (string, error) {
-	if profileName == "" && modelOverride == "" && variantOverride == "" {
+func BuildConfigContent(pf *ProfilesFile, profileName, rootRole, modelOverride, variantOverride, providerOverride string) (string, error) {
+	if profileName == "" && modelOverride == "" && variantOverride == "" && providerOverride == "" {
 		return "", nil
 	}
 
@@ -284,6 +288,23 @@ func BuildConfigContent(pf *ProfilesFile, profileName, rootRole, modelOverride, 
 	}
 	if rootVariant != "" {
 		cfg["variant"] = rootVariant
+	}
+	// defaultProvider is emitted ONLY for an explicit CLI override (#2852).
+	// The profile slot's provider is deliberately not mirrored here: the slot
+	// provider already reaches pi through the argv channel (PIInvocation's
+	// --provider), and emitting it here as well would change the no-flag
+	// behaviour of every existing session.
+	//
+	// Known conflict, do not re-derive it (#2854): the whole output of this
+	// function is injected as PI_CONFIG_CONTENT, and pi does not read that
+	// variable — measured as zero references in pi 0.84.2. Issue #2086 found
+	// the same dead letter and chose to retire the transport (its "Recommended
+	// fix — option 2", item 3), but delivered only the argv half. AC #3 of
+	// #2852 asked for this key regardless, so it is emitted here and the
+	// retire-vs-keep decision is tracked in #2854. Nothing depends on it: the
+	// argv channel carries the provider on every isolation mode.
+	if providerOverride != "" {
+		cfg["defaultProvider"] = providerOverride
 	}
 
 	if len(cfg) == 0 {

@@ -31,7 +31,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 42
+	currentSchemaVersion = 43
 )
 
 // DB wraps a SQLite connection.
@@ -285,6 +285,10 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
     variant_flag           TEXT,
     agent_flag             TEXT,
     harness_flag           TEXT,
+    -- Raw --provider flag value as the user passed it (NULL = flag omitted,
+    -- the slot provider is in effect). Added in #2852 so a routing-provider
+    -- override is auditable alongside model_flag and variant_flag.
+    provider_flag          TEXT,
     -- Raw --isolation flag value as the user passed it (NULL = flag omitted,
     -- default in effect). Preserved as audit trail; the actual mode the
     -- session ran under lives in isolation_mode (below). Added pre-#2105.
@@ -1031,6 +1035,9 @@ func runMigrations(conn sqlExecutor) error {
 	if err := migrateV41ToV42(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV42ToV43(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -1521,6 +1528,46 @@ func migrateV41ToV42(conn sqlExecutor, version *int) error {
 		return fmt.Errorf("db: migration v41\u2192v42: bump version: %w", err)
 	}
 	*version = 42
+	return nil
+}
+
+// migrateV42ToV43 adds a nullable provider_flag column to spawn_inputs
+// (issue #2852).
+//
+// The column records the raw `prism spawn --provider <name>` value, so a
+// session spawned against an alternative routing provider is auditable the
+// same way model_flag and variant_flag already are. It is written by
+// InsertSpawnInputs from SpawnOpts.ProviderFlag.
+//
+// No backfill — the flag did not exist before this migration, so every
+// pre-migration row genuinely had no provider override and NULL is the
+// truthful value.
+//
+// The ALTER TABLE is guarded by a pragma_table_info check so the migration is
+// idempotent: on a fresh database the declarative schema block above already
+// created the column, and a second run matches the guard and does nothing.
+// The column is nullable, so the ALTER TABLE adds it with an implicit NULL
+// default and does not rewrite existing rows or lose data on a populated
+// database.
+func migrateV42ToV43(conn sqlExecutor, version *int) error {
+	if *version >= 43 {
+		return nil
+	}
+	var exists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('spawn_inputs') WHERE name = 'provider_flag'`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("db: migration v42\u2192v43: check spawn_inputs.provider_flag column: %w", err)
+	}
+	if exists == 0 {
+		if _, err := conn.Exec(`ALTER TABLE spawn_inputs ADD COLUMN provider_flag TEXT`); err != nil {
+			return fmt.Errorf("db: migration v42\u2192v43: add spawn_inputs.provider_flag: %w", err)
+		}
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 43`); err != nil {
+		return fmt.Errorf("db: migration v42\u2192v43: bump version: %w", err)
+	}
+	*version = 43
 	return nil
 }
 
@@ -2983,6 +3030,10 @@ type SpawnInputs struct {
 	VariantFlag *string
 	AgentFlag   *string
 	HarnessFlag *string
+	// ProviderFlag is the raw --provider flag value as the user passed it
+	// (issue #2852). nil when the flag was omitted, in which case the
+	// profile slot's provider was in effect.
+	ProviderFlag *string
 	// IsolationFlag is the raw --isolation flag value as the user passed
 	// it. nil when the flag was omitted (the common case). Preserved as an
 	// audit trail; downstream readers that want the actual mode the
@@ -3053,6 +3104,7 @@ func (d *DB) InsertSpawnInputs(si SpawnInputs) error {
 INSERT OR IGNORE INTO spawn_inputs (
     instance_id,
     profile_name, model_flag, variant_flag, agent_flag, harness_flag,
+    provider_flag,
     isolation_flag, host_mode_flag, containers_flag,
     pr_number, branch_flag, ignore_concurrency_cap,
     isolation_mode,
@@ -3064,6 +3116,7 @@ INSERT OR IGNORE INTO spawn_inputs (
 ) VALUES (
     ?,
     ?, ?, ?, ?, ?,
+    ?,
     ?, ?, ?,
     ?, ?, ?,
     ?,
@@ -3075,6 +3128,7 @@ INSERT OR IGNORE INTO spawn_inputs (
 )`,
 		si.InstanceID,
 		si.ProfileName, si.ModelFlag, si.VariantFlag, si.AgentFlag, si.HarnessFlag,
+		si.ProviderFlag,
 		si.IsolationFlag, boolToInt(si.HostModeFlag), boolToInt(si.ContainersFlag),
 		si.PRNumber, si.BranchFlag, boolToInt(si.IgnoreConcurrencyCap),
 		si.IsolationMode,
@@ -3097,6 +3151,7 @@ func (d *DB) SpawnInputsByInstanceID(instanceID string) (*SpawnInputs, error) {
 SELECT
     instance_id,
     profile_name, model_flag, variant_flag, agent_flag, harness_flag,
+    provider_flag,
     isolation_flag, host_mode_flag, containers_flag,
     pr_number, branch_flag, ignore_concurrency_cap,
     isolation_mode,
@@ -3110,6 +3165,7 @@ WHERE instance_id = ?`
 	row := d.conn.QueryRow(q, instanceID)
 	var si SpawnInputs
 	var profileName, modelFlag, variantFlag, agentFlag, harnessFlag, isolationFlag sql.NullString
+	var providerFlag sql.NullString
 	var isolationMode sql.NullString
 	var prNumber sql.NullInt64
 	var branchFlag, modelVariantOverrides, skillsManifestHash, promptTemplateHash, agentPromptHash sql.NullString
@@ -3118,6 +3174,7 @@ WHERE instance_id = ?`
 	err := row.Scan(
 		&si.InstanceID,
 		&profileName, &modelFlag, &variantFlag, &agentFlag, &harnessFlag,
+		&providerFlag,
 		&isolationFlag, &hostModeFlag, &containersFlag,
 		&prNumber, &branchFlag, &ignoreConcurrencyCap,
 		&isolationMode,
@@ -3147,6 +3204,9 @@ WHERE instance_id = ?`
 	}
 	if harnessFlag.Valid {
 		si.HarnessFlag = &harnessFlag.String
+	}
+	if providerFlag.Valid {
+		si.ProviderFlag = &providerFlag.String
 	}
 	if isolationFlag.Valid {
 		si.IsolationFlag = &isolationFlag.String

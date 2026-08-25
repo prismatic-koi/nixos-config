@@ -215,7 +215,9 @@ func TestAgentContextPrecedenceKeys(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
 	}
 
-	for _, key := range []string{"profile", "isolation"} {
+	// "model" and "provider" were added by issue #2852: `prism agent-context`
+	// must document that the CLI flag beats the profile slot on both axes.
+	for _, key := range []string{"profile", "isolation", "model", "provider"} {
 		chain, ok := doc.Precedence[key]
 		if !ok {
 			t.Errorf("precedence map missing required key %q", key)
@@ -224,6 +226,41 @@ func TestAgentContextPrecedenceKeys(t *testing.T) {
 		if len(chain) == 0 {
 			t.Errorf("precedence[%q] must not be empty", key)
 		}
+	}
+
+	// The provider chain must state both rungs in order: the CLI flag wins
+	// over the profile slot's provider.
+	providerChain := doc.Precedence["provider"]
+	if len(providerChain) < 2 {
+		t.Fatalf("precedence[\"provider\"] = %v, want at least two rungs", providerChain)
+	}
+	if !strings.Contains(providerChain[0], "--provider") {
+		t.Errorf("precedence[\"provider\"][0] = %q, want it to name the --provider flag", providerChain[0])
+	}
+	if !strings.Contains(providerChain[len(providerChain)-1], "profile") {
+		t.Errorf("precedence[\"provider\"] lowest rung = %q, want it to name the profile slot",
+			providerChain[len(providerChain)-1])
+	}
+
+	// The model chain has THREE rungs. --model-override names a single role
+	// and beats --model for that role (cmd/spawn.go's flag description; the
+	// agentRole lookup in cmd/sidecar.go). Publishing --model as the highest
+	// rung is a false statement to every agent that reads agent-context, so
+	// the top rung is pinned here.
+	modelChain := doc.Precedence["model"]
+	if len(modelChain) < 3 {
+		t.Fatalf("precedence[\"model\"] = %v, want at least three rungs", modelChain)
+	}
+	if !strings.Contains(modelChain[0], "--model-override") {
+		t.Errorf("precedence[\"model\"][0] = %q, want it to name --model-override (it outranks --model)",
+			modelChain[0])
+	}
+	if !strings.Contains(modelChain[1], "--model") || strings.Contains(modelChain[1], "--model-override") {
+		t.Errorf("precedence[\"model\"][1] = %q, want the plain --model flag", modelChain[1])
+	}
+	if !strings.Contains(modelChain[len(modelChain)-1], "profile") {
+		t.Errorf("precedence[\"model\"] lowest rung = %q, want it to name the profile slot",
+			modelChain[len(modelChain)-1])
 	}
 }
 
