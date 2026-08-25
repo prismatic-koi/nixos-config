@@ -1526,18 +1526,10 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 	}
 	worktreePath = created.Path
 
-	rootRole := a.plannedRole
-	if rootRole == "" {
-		rootRole = "coordinator"
-	}
-	// Validate that this leg's profile defines a slot for the root role. The
-	// slot's model, provider, and thinking level reach pi over argv, resolved
-	// at agent-run time by populatePIConfig.
-	if a.pf != nil && a.profileName != "" {
-		if err := config.RequireSlot(a.pf, a.profileName, rootRole); err != nil {
-			return "", worktreePath, err
-		}
-	}
+	// No profile validation here: runAbtestSpawn already ran
+	// config.RequireSlot(pf, profileName, plannedRole) for BOTH legs before
+	// any side effect, and plannedRole is assigned unconditionally upstream.
+	// A second check on this path could never fire (#2854 review round 1).
 
 	sessionName = session.NameFor(worktreePath, a.bareRoot)
 	agentRole := session.DefaultAgent(worktreePath, a.agentFlag)

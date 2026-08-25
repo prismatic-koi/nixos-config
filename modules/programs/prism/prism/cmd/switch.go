@@ -326,6 +326,43 @@ var switchCmd = &cobra.Command{
 				switchHarnessName, strings.Join(harness.Names(), ", "))
 		}
 
+		// Validate the active profile before any session state is created
+		// (#2854).
+		//
+		// Before the harness-config transport was retired, these same two
+		// checks ran per path inside injectContainerConfig, which resolved the
+		// active profile and rejected an unknown name on its way to building
+		// the (now removed) config blob. Both read only the profiles file and
+		// the active-profile state file, so neither depends on the path: they
+		// are hoisted here and run once.
+		//
+		// Without this gate a corrupt active-profile state file — or one
+		// naming a profile that profiles.json no longer defines, e.g. a stale
+		// "ox-alpha" after #2857 dropped it — surfaces inside the agent pane
+		// at `prism agent-run` (populatePIConfig → RequireSlot), after the DB
+		// row, the harness port, the tmux session, and the sidecar all exist.
+		//
+		// Known divergence from the pre-#2854 gate: that one keyed off the
+		// effective capabilities AFTER the per-path isolation override, this
+		// one keys off the command-level mode. The override changes only
+		// whether the check runs, never its result, so the difference is
+		// confined to a path that overrides across the host/sandbox boundary.
+		// Slot presence is deliberately NOT checked here: the old gate did not
+		// check it either (BuildConfigContent left the model empty on a slot
+		// miss rather than erroring), and the role is not known until the path
+		// is resolved.
+		if isoCaps.RequiresProfilesFile && pf != nil {
+			switchProfile, _, switchProfErr := config.ResolveActiveProfile(pf, "")
+			if switchProfErr != nil {
+				return switchProfErr
+			}
+			if switchProfile != "" {
+				if err := config.RequireProfile(pf, switchProfile); err != nil {
+					return err
+				}
+			}
+		}
+
 		// Populate harness-specific env var names from the adapter so that
 		// no harness-specific string literals appear in session.go.
 		// harnessFlag was validated above so the error is unreachable.

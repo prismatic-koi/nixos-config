@@ -171,6 +171,18 @@ var precedenceRules = map[string][]string{
 	// role and beats --model for that role only (see the flag description in
 	// cmd/spawn.go and the agentRole lookup in cmd/sidecar.go).
 	//
+	// DISPUTED (#2854 review round 1, escalated — do not "fix" this inline).
+	// A trace of --model-override during that review found it terminating at
+	// sidecar.Opts.AgentModel, which cmd/sidecar.go writes to the
+	// agent_status.agent_model reporting column and passes to harness.New. The
+	// pi adapter stores that value and returns it only from EffectiveModel; it
+	// never reaches pi's argv or a prompt payload, and populatePIConfig
+	// resolves pi's model from the profile slot plus agent-run's own --model
+	// without consulting any per-role map. If that trace is right, this rung
+	// labels rather than selects, and the fix is a change to --model-override
+	// itself — not to this string. Tracked separately so it gets its own
+	// review rather than riding on a transport-retirement PR.
+	//
 	// The provider axis has two rungs because --model-override has no
 	// provider-only form. It can still reach the provider axis indirectly: the
 	// role=model format admits a "<provider>/" model-id prefix, so

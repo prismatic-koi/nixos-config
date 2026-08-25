@@ -244,17 +244,35 @@ var prCmd = &cobra.Command{
 			return profErr
 		}
 
-		// Validate that the resolved profile defines a slot for this session's
-		// root role before any session state is created. The slot's model,
-		// provider, and thinking level reach pi over argv — resolved at
-		// agent-run time by populatePIConfig (bwrap / sandbox-exec) or emitted
-		// by buildDirectAgentCmd (host).
+		// Validate the resolved profile before any session state is created.
+		//
+		// This replaces the validation that config.BuildConfigContent supplied
+		// as a side effect before #2854 retired it. It is deliberately NOT a
+		// like-for-like restoration — RequireSlot is strictly stronger:
+		//
+		//   - BuildConfigContent rejected a nil profiles file paired with a
+		//     non-empty profile name, and rejected an unknown profile name.
+		//     RequireSlot rejects both, so the guard stays keyed on
+		//     resolvedProfile alone: a state file naming a profile while
+		//     profiles.json failed to load must still fail here, as it did
+		//     before.
+		//   - BuildConfigContent did NOT check slot presence. It looked the
+		//     role up with a comma-ok and silently emitted an empty model on a
+		//     miss. RequireSlot errors instead, so a profile with no slot for
+		//     this session's root role is now rejected where it previously
+		//     proceeded. That is intentional: it matches the gate cmd/spawn.go
+		//     already applies, and a session with no slot for its own role has
+		//     no model to run on.
+		//
+		// The slot's model, provider, and thinking level reach pi over argv —
+		// resolved at agent-run time by populatePIConfig (bwrap /
+		// sandbox-exec) or emitted by buildDirectAgentCmd (host).
 		effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
 		lookupRole := effectiveRole
 		if lookupRole == "" {
 			lookupRole = "coordinator"
 		}
-		if pf != nil && resolvedProfile != "" {
+		if resolvedProfile != "" {
 			if err := config.RequireSlot(pf, resolvedProfile, lookupRole); err != nil {
 				return err
 			}

@@ -142,6 +142,62 @@ func TestRequireSlot_NilProfilesFile(t *testing.T) {
 	}
 }
 
+// ── RequireProfile tests (#2854) ─────────────────────────────────────────
+//
+// RequireProfile carries the profile-existence half of RequireSlot for call
+// sites that must validate before the session role is known. It replaces the
+// validation config.BuildConfigContent used to supply as a side effect on the
+// `prism switch` path.
+
+func TestRequireProfile_PassesWhenPresent(t *testing.T) {
+	pf := sampleProfilesFile()
+	if err := config.RequireProfile(pf, "anthropic"); err != nil {
+		t.Errorf("RequireProfile(anthropic): unexpected error: %v", err)
+	}
+}
+
+// TestRequireProfile_FailsWhenProfileUnknown is the #2857 regression shape:
+// a state file still naming a profile that profiles.json no longer defines
+// (e.g. "ox-alpha") must be rejected, and the message must list what IS
+// available so the user can recover.
+func TestRequireProfile_FailsWhenProfileUnknown(t *testing.T) {
+	pf := sampleProfilesFile()
+	err := config.RequireProfile(pf, "ox-alpha")
+	if err == nil {
+		t.Fatal("expected error for unknown profile, got nil")
+	}
+	if !contains(err.Error(), "ox-alpha") {
+		t.Errorf("error must name the unknown profile; got %q", err)
+	}
+	if !contains(err.Error(), "anthropic") {
+		t.Errorf("error must list available profiles; got %q", err)
+	}
+}
+
+func TestRequireProfile_NilProfilesFile(t *testing.T) {
+	err := config.RequireProfile(nil, "anthropic")
+	if err == nil {
+		t.Fatal("expected error for nil pf, got nil")
+	}
+	if !contains(err.Error(), "not loaded") {
+		t.Errorf("nil-pf error must say the profiles file was not loaded; got %q", err)
+	}
+}
+
+// TestRequireSlot_DelegatesUnknownProfileToRequireProfile pins the delegation
+// so the two call sites cannot drift into two different error texts.
+func TestRequireSlot_DelegatesUnknownProfileToRequireProfile(t *testing.T) {
+	pf := sampleProfilesFile()
+	slotErr := config.RequireSlot(pf, "ox-alpha", "coordinator")
+	profErr := config.RequireProfile(pf, "ox-alpha")
+	if slotErr == nil || profErr == nil {
+		t.Fatal("both must error for an unknown profile")
+	}
+	if slotErr.Error() != profErr.Error() {
+		t.Errorf("unknown-profile message drifted:\n RequireSlot:    %q\n RequireProfile: %q", slotErr, profErr)
+	}
+}
+
 // ── LoadProfiles tests ────────────────────────────────────────────────────────
 
 func TestLoadProfiles_MissingFile(t *testing.T) {

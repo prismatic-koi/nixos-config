@@ -172,6 +172,25 @@ func SlotForRole(pf *ProfilesFile, profileName, role string) (RoleSlot, bool) {
 	return slot, ok
 }
 
+// RequireProfile validates that pf defines the named profile. It returns nil
+// when the profile is present, or a descriptive error listing every profile
+// the file currently defines.
+//
+// RequireSlot runs this same check first and then narrows to a single role.
+// RequireProfile exists for call sites that must validate the profile before
+// the session role is known — `prism switch` resolves the role per path, after
+// this gate has already run (#2854).
+func RequireProfile(pf *ProfilesFile, profileName string) error {
+	if pf == nil {
+		return fmt.Errorf("profiles: profile %q requested but profiles file not loaded", profileName)
+	}
+	if _, ok := pf.Profiles[profileName]; !ok {
+		return fmt.Errorf("profiles: unknown profile %q — available: %s",
+			profileName, strings.Join(AvailableProfileNames(pf), ", "))
+	}
+	return nil
+}
+
 // RequireSlot validates that the named profile defines a slot for the given
 // session role. It returns nil when the slot is present, or a descriptive
 // error listing every role the active profile currently defines.
@@ -180,14 +199,15 @@ func SlotForRole(pf *ProfilesFile, profileName, role string) (RoleSlot, bool) {
 // cannot be resolved against the active profile must fail early with a clear
 // diagnostic.
 func RequireSlot(pf *ProfilesFile, profileName, role string) error {
+	// The nil branch stays here rather than delegating to RequireProfile so
+	// the message names the role the caller asked for.
 	if pf == nil {
 		return fmt.Errorf("profiles: profile %q requires slot %q but profiles file not loaded", profileName, role)
 	}
-	entry, ok := pf.Profiles[profileName]
-	if !ok {
-		return fmt.Errorf("profiles: unknown profile %q — available: %s",
-			profileName, strings.Join(AvailableProfileNames(pf), ", "))
+	if err := RequireProfile(pf, profileName); err != nil {
+		return err
 	}
+	entry := pf.Profiles[profileName]
 	if _, ok := entry[role]; ok {
 		return nil
 	}
