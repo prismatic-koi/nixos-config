@@ -231,9 +231,13 @@ func variantFromThinking(thinking string) string {
 //     single root agent per session).
 //   - If variantOverride is non-empty, set "variant" on the root role only.
 //   - If providerOverride is non-empty, set "defaultProvider" on the root role
-//     only (issue #2852). pi treats defaultProvider as a settings field
-//     (settings.md), so it rides the same config-content channel as model /
-//     variant. An empty value leaves the slot's provider in effect.
+//     only (issue #2852). An empty value leaves the slot's provider in effect.
+//
+// Known-inert transport (#2086, #2854): pi does not read PI_CONFIG_CONTENT
+// (verified against pi 0.84.2), so the blob this function produces — model,
+// variant, and defaultProvider alike — is dead-lettered on every isolation
+// mode. The emit is kept because #2852's AC requires the config content to
+// carry the override; retirement of the transport is tracked in #2854.
 //   - Returns ("", nil) when no flags are set (no injection needed).
 //
 // pf may be nil when no profile flag is used; it is only consulted when
