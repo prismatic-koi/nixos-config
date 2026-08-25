@@ -201,8 +201,26 @@
         });
     });
     
-    observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true
-    });
+    // At document-start `document.documentElement` can still be null for an
+    // instant, which throws "parameter 1 is not of type 'Node'" from
+    // `observe`. Defer starting the observer until the node exists, without
+    // changing anything about what it does once it starts.
+    function startObserving() {
+        observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true
+        });
+    }
+
+    if (document.documentElement) {
+        startObserving();
+    } else {
+        const readyObserver = new MutationObserver(function() {
+            if (document.documentElement) {
+                readyObserver.disconnect();
+                startObserving();
+            }
+        });
+        readyObserver.observe(document, { childList: true, subtree: true });
+    }
 })();
