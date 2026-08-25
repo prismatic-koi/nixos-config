@@ -187,9 +187,12 @@ type Config struct {
 	// path is the subject under test.
 	CheckinPrivilegedRepos []string
 	// AgentModel is the model identifier for the agent role (e.g.
-	// "anthropic/claude-sonnet-4-6"), read from the harness config at startup.
+	// "anthropic/claude-sonnet-4-6"), resolved by cmd/sidecar.go from
+	// --model-override or the harness adapter's EffectiveModel.
 	// When non-empty it is seeded into root_model_id in the DB so that
 	// buildPromptBody can include the model in the prompt_async body (#557).
+	// This is a reporting value: it does not select the model pi runs on.
+	// See issue #2863.
 	AgentModel string
 	// ModelsByRole is the per-role model override map (C.2). When non-nil
 	// it takes precedence over AgentModel for any role present in the map.

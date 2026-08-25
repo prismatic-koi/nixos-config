@@ -191,12 +191,6 @@ func (a *Adapter) ExtractEventType(evt harness.HarnessEvent) string {
 	return ""
 }
 
-// ConfigEnvVar returns the environment variable name PI uses for config
-// content injection. PI follows the convention PI_CONFIG_CONTENT.
-func (a *Adapter) ConfigEnvVar() string {
-	return "PI_CONFIG_CONTENT"
-}
-
 // RuntimeEnv returns additional environment variables needed by the PI process.
 // PI_OFFLINE=1 suppresses telemetry and update-check network calls, matching
 // the behaviour of the host shell alias that always sets this variable.

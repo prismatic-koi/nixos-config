@@ -2,7 +2,6 @@ package review_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1154,170 +1153,6 @@ func TestFormatResults_NoFileWrittenToTmp(t *testing.T) {
 	}
 }
 
-// ── ResolveAgentConfigContent ─────────────────────────────────────────────────
-
-// sampleReviewProfilesFile returns a ProfilesFile with all five review agents
-// defined as flat per-role slots (#1612).
-func sampleReviewProfilesFile() *config.ProfilesFile {
-	return &config.ProfilesFile{
-		Default: "anthropic",
-		Profiles: map[string]config.ProfileEntry{
-			"anthropic": {
-				"review-goal":     {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
-				"review-code":     {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
-				"review-security": {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
-				"review-qa":       {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
-				"review-context":  {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
-				"coordinator":     {Provider: "anthropic", Model: "anthropic/claude-opus-4-7"},
-				"worker":          {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
-			},
-			"gemini-hybrid": {
-				"review-goal":     {Provider: "google", Model: "google/gemini-3.1-pro-preview", Thinking: "medium"},
-				"review-code":     {Provider: "google", Model: "google/gemini-3.1-pro-preview", Thinking: "medium"},
-				"review-security": {Provider: "google", Model: "google/gemini-3.1-pro-preview"},
-				"review-qa":       {Provider: "google", Model: "google/gemini-3.1-pro-preview"},
-				"review-context":  {Provider: "google", Model: "google/gemini-3.1-pro-preview"},
-				"coordinator":     {Provider: "anthropic", Model: "anthropic/claude-opus-4-7"},
-				"worker":          {Provider: "google", Model: "google/gemini-3.1-pro-preview", Thinking: "medium"},
-			},
-		},
-	}
-}
-
-// TestResolveAgentConfigContent_HostMode verifies that host mode (isolationMode="host"
-// or "") always returns ("", nil) regardless of ProfilesFile or agent name.
-func TestResolveAgentConfigContent_HostMode(t *testing.T) {
-	pf := sampleReviewProfilesFile()
-	for _, isolationMode := range []string{"host", ""} {
-		for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context", "worker"} {
-			blob, err := review.ResolveAgentConfigContent(isolationMode, pf, agentName, "")
-			if err != nil {
-				t.Errorf("host mode %q, agent %q: unexpected error: %v", isolationMode, agentName, err)
-			}
-			if blob != "" {
-				t.Errorf("host mode %q, agent %q: expected empty blob, got %q", isolationMode, agentName, blob)
-			}
-		}
-	}
-	// nil ProfilesFile in host mode must also be safe.
-	blob, err := review.ResolveAgentConfigContent("host", nil, "review-goal", "")
-	if err != nil {
-		t.Errorf("host mode, nil pf: unexpected error: %v", err)
-	}
-	if blob != "" {
-		t.Errorf("host mode, nil pf: expected empty blob, got %q", blob)
-	}
-	blob, err = review.ResolveAgentConfigContent("", nil, "review-goal", "")
-	if err != nil {
-		t.Errorf("empty isolation mode, nil pf: unexpected error: %v", err)
-	}
-	if blob != "" {
-		t.Errorf("empty isolation mode, nil pf: expected empty blob, got %q", blob)
-	}
-}
-
-// TestResolveAgentConfigContent_NilProfilesFileNoActiveProfile verifies that
-// bwrap mode with a nil ProfilesFile and no activeProfile returns ("", nil)
-// (no profile configured — the harness uses its built-in defaults).
-func TestResolveAgentConfigContent_NilProfilesFileNoActiveProfile(t *testing.T) {
-	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
-		blob, err := review.ResolveAgentConfigContent("bwrap", nil, agentName, "")
-		if err != nil {
-			t.Errorf("bwrap mode, nil pf, no activeProfile, agent %q: unexpected error: %v", agentName, err)
-		}
-		if blob != "" {
-			t.Errorf("bwrap mode, nil pf, no activeProfile, agent %q: expected empty blob, got %q", agentName, blob)
-		}
-	}
-}
-
-// TestResolveAgentConfigContent_NilProfilesFileWithActiveProfile verifies that
-// bwrap mode with a nil ProfilesFile and a non-empty activeProfile returns an
-// explicit error (a profile was requested but cannot be loaded).
-func TestResolveAgentConfigContent_NilProfilesFileWithActiveProfile(t *testing.T) {
-	_, err := review.ResolveAgentConfigContent("bwrap", nil, "review-goal", "gemini-hybrid")
-	if err == nil {
-		t.Error("bwrap mode, nil pf, activeProfile='gemini-hybrid': expected error, got nil")
-	}
-	if !findSubstring(err.Error(), "nil ProfilesFile") {
-		t.Errorf("error should mention 'nil ProfilesFile', got: %v", err)
-	}
-}
-
-// TestResolveAgentConfigContent_BwrapMode_Success verifies that all five
-// per-agent review config blobs are resolved correctly in bwrap mode when the
-// ProfilesFile is fully populated with an active profile.
-func TestResolveAgentConfigContent_BwrapMode_Success(t *testing.T) {
-	pf := sampleReviewProfilesFile()
-	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
-		blob, err := review.ResolveAgentConfigContent("bwrap", pf, agentName, "anthropic")
-		if err != nil {
-			t.Errorf("bwrap mode, agent %q: unexpected error: %v", agentName, err)
-			continue
-		}
-		if blob == "" {
-			t.Errorf("bwrap mode, agent %q: expected non-empty blob, got empty", agentName)
-			continue
-		}
-		// Must carry the profile's model for this agent.
-		if !findSubstring(blob, "anthropic/claude-sonnet-4-6") {
-			t.Errorf("bwrap mode, agent %q: blob %q does not contain anthropic/claude-sonnet-4-6", agentName, blob)
-		}
-	}
-}
-
-// TestResolveAgentConfigContent_WorkerRoleInBwrap verifies that the worker
-// role is resolved correctly in bwrap mode (it's a valid slot in the profile).
-func TestResolveAgentConfigContent_WorkerRoleInBwrap(t *testing.T) {
-	pf := sampleReviewProfilesFile()
-	blob, err := review.ResolveAgentConfigContent("bwrap", pf, "worker", "anthropic")
-	if err != nil {
-		t.Fatalf("bwrap mode, agent 'worker': unexpected error: %v", err)
-	}
-	if blob == "" {
-		t.Error("bwrap mode, agent 'worker': expected non-empty blob for worker slot")
-	}
-}
-
-// TestResolveAgentConfigContent_OverlaysRuntimeActiveProfile is the behaviour
-// gate for review fan-out: when a non-default activeProfile is passed, the
-// resolved blob must carry the active profile's models, not the default's.
-func TestResolveAgentConfigContent_OverlaysRuntimeActiveProfile(t *testing.T) {
-	pf := sampleReviewProfilesFile()
-
-	blob, err := review.ResolveAgentConfigContent("bwrap", pf, "review-goal", "gemini-hybrid")
-	if err != nil {
-		t.Fatalf("ResolveAgentConfigContent: %v", err)
-	}
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(blob), &parsed); err != nil {
-		t.Fatalf("unmarshal blob: %v", err)
-	}
-	// Top-level model must be the gemini model for review-goal slot.
-	if got, want := parsed["model"], "google/gemini-3.1-pro-preview"; got != want {
-		t.Errorf("model = %v, want %v (gemini-hybrid review-goal slot)", got, want)
-	}
-	// Variant: thinking=medium → variant=medium.
-	if got, want := parsed["variant"], "medium"; got != want {
-		t.Errorf("variant = %v, want %v", got, want)
-	}
-}
-
-// TestResolveAgentConfigContent_DefaultProfile verifies that passing the
-// default profile name resolves the default profile's model.
-func TestResolveAgentConfigContent_DefaultProfile(t *testing.T) {
-	pf := sampleReviewProfilesFile()
-	for _, active := range []string{"anthropic"} {
-		blob, err := review.ResolveAgentConfigContent("bwrap", pf, "review-goal", active)
-		if err != nil {
-			t.Fatalf("active=%q: %v", active, err)
-		}
-		if !findSubstring(blob, "anthropic/claude-sonnet-4-6") {
-			t.Errorf("active=%q: blob %q does not contain default model", active, blob)
-		}
-	}
-}
-
 // ── FormatAgentDisplayName ────────────────────────────────────────────────────
 
 // TestFormatAgentDisplayName_AllAgents verifies that the five review agent
@@ -1581,9 +1416,11 @@ func TestPollAgents_ProgressCallback_Timeout(t *testing.T) {
 // returns an error. This covers the spawn-failure path AC from issue #782:
 // "unit tests verify the progress-line output format for spawn-failure path."
 //
-// The ResolveAgentConfigContent failure path fires after successful DB
-// operations (UpsertStatus, AllocatePort) but before any tmux session is
-// created — so no tmux is needed for this test.
+// The RequireSlot gate fires before the agent loop and before any DB write or
+// tmux session — so no tmux is needed for this test. (Pre-#2854 the failure
+// came from ResolveAgentConfigContent, which sat inside the loop and so ran
+// after UpsertStatus and AllocatePort. The gate that replaced it is strictly
+// earlier, which is why no per-agent progress line is emitted.)
 func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "prism.db")
 

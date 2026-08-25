@@ -5,8 +5,7 @@ package cmd
 // This command is invoked by the tmux agent window when the resolved isolation
 // mode is "bwrap" or "sandbox-exec". It reconstructs the container.Manager
 // from the session's DB row and config, writes the per-session temp files
-// (SSH config, gitconfig,
-// opencode.json), and then runs:
+// (SSH config, gitconfig), and then runs:
 //
 //	bwrap <args...>        (bwrap mode — supervised child with PTY, Linux-only)
 //	sandbox-exec <args...> (sandbox-exec mode — supervised child with kqueue lifecycle, Darwin-only; see #1018)
@@ -409,7 +408,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		return fmt.Errorf("agent-run: prepare bwrap args: %w", err)
 	}
 	// `[timing] bwrap-args build`: time spent assembling the bwrap argv plus
-	// writing the per-session SSH config / gitconfig / opencode.json temp files
+	// writing the per-session SSH config / gitconfig temp files
 	// (PrepareBwrap does both). Emitted before the binary lookup and exec so
 	// that an exec-stage failure still leaves this marker in the agent-run log.
 	logTimingTo(logFile, "bwrap-args build", time.Since(argsBuildStart))

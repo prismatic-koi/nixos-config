@@ -33,84 +33,34 @@ const killSidecarTimeout = 2 * time.Second
 // ── session management ────────────────────────────────────────────────────────
 
 // applyPathIsolationOverride checks cfg.ProjectIsolationOverrides for path and,
-// if a valid override is found, updates opts.IsolationMode in place and returns
-// the overridden IsolationMode plus new Capabilities. If no override applies,
-// the original isoMode and isoCaps are returned unchanged.
+// if a valid override is found, updates opts.IsolationMode in place. If no
+// override applies, opts is left unchanged.
 //
 // When the override changes the sandbox/host boundary (e.g. sandbox-exec →
-// host), AgentEnvVars are injected from pf when the effective mode is host
-// (NeedsConfigBlob=false). This handles the case where the machine default is
-// a sandboxed mode (AgentEnvVars skipped at opts construction time) but the
-// path override switches to host mode, which requires env var injection.
+// host), AgentEnvVars are injected from pf when the effective mode is host.
+// This handles the case where the machine default is a sandboxed mode
+// (AgentEnvVars skipped at opts construction time) but the path override
+// switches to host mode, which requires env var injection.
 //
 // pf may be nil; the AgentEnvVars injection is a no-op when pf is nil.
 //
 // The caller is responsible for passing a non-nil opts pointer. Logging is
 // done to stderr at info level when an override fires.
-func applyPathIsolationOverride(path string, cfg config.Config, opts *session.Opts, isoMode config.IsolationMode, isoCaps container.Capabilities, pf *config.ProfilesFile) (config.IsolationMode, container.Capabilities) {
+func applyPathIsolationOverride(path string, cfg config.Config, opts *session.Opts, isoCaps container.Capabilities, pf *config.ProfilesFile) {
 	override := cfg.IsolationOverrideForPath(path)
 	if override == "" {
-		return isoMode, isoCaps
+		return
 	}
 	proglog.Infof("[prism switch] using isolation override %q for path %q\n", override, path)
 	opts.IsolationMode = string(override)
 	effCaps := container.CapabilitiesFor(override)
 	// When the override crosses the sandbox/host boundary (sandboxed → host),
 	// inject AgentEnvVars that would normally be set at opts construction time.
-	// The pre-override isoCaps had NeedsConfigBlob=true (sandboxed), so
-	// AgentEnvVars was not populated; now that effective mode is host
-	// (NeedsConfigBlob=false), we must inject them here.
-	if !effCaps.NeedsConfigBlob && isoCaps.NeedsConfigBlob && pf != nil {
+	// The pre-override isoCaps was sandboxed, so AgentEnvVars was not
+	// populated; now that the effective mode is host, we must inject them here.
+	if !effCaps.RequiresProfilesFile && isoCaps.RequiresProfilesFile && pf != nil {
 		opts.AgentEnvVars = pf.AgentEnvVars
 	}
-	return override, effCaps
-}
-
-// writeHarnessConfigBlobFor dispatches the per-mode "write harness config blob
-// to the deterministic per-session temp path" step through the registered
-// Isolator (D3, issue #1133). cmdName is used in the error wrapper so the
-// caller's command name surfaces in user-facing messages.
-//
-// content == "" is treated as a no-op so callers can call this unconditionally
-// after the NeedsConfigBlob gate; the gate / empty-content combination is
-// what each pre-refactor branch checked before calling WriteHarnessConfig.
-func writeHarnessConfigBlobFor(mode config.IsolationMode, sessionName, content, cmdName string) error {
-	if content == "" {
-		return nil
-	}
-	iso, err := container.For(mode, container.ConstructorOpts{Name: sessionName})
-	if err != nil {
-		return fmt.Errorf("%s: %w", cmdName, err)
-	}
-	if err := iso.WriteHarnessConfigBlob(sessionName, content); err != nil {
-		return fmt.Errorf("%s: %w", cmdName, err)
-	}
-	return nil
-}
-
-// injectContainerConfig generates the pi harness-config JSON for the given
-// path and sets opts.ConfigContent. The role is derived from the path
-// (main → coordinator, other → worker) unless opts.Agent overrides it.
-//
-// pf must be non-nil when called; callers are responsible for loading it when
-// the effective isolation mode requires a config blob.
-func injectContainerConfig(path string, pf *config.ProfilesFile, opts *session.Opts, _ string) error {
-	effectiveRole := session.DefaultAgent(path, opts.Agent)
-	// Non-worktree paths (effectiveRole == "") use coordinator.
-	lookupRole := effectiveRole
-	if lookupRole == "" {
-		lookupRole = "coordinator"
-	}
-	resolvedProfile, _, profErr := config.ResolveActiveProfile(pf, "")
-	if profErr != nil {
-		return profErr
-	}
-	content, err := config.BuildConfigContent(pf, resolvedProfile, lookupRole, "", "", "")
-	if err != nil {
-		return err
-	}
-	opts.ConfigContent = content
-	return nil
 }
 
 // ensureAndSwitch creates the session if it doesn't exist (with the appropriate
@@ -348,16 +298,16 @@ var switchCmd = &cobra.Command{
 		// below reads from isoCaps rather than comparing against raw mode constants.
 		isoCaps := container.CapabilitiesFor(isoMode)
 
-		// Load profiles.json for bwrap/sandbox-exec config injection and
-		// agent env var injection (host mode). Always attempt to load; treat missing
-		// file as fatal when sandboxed (bwrap or sandbox-exec), since those
-		// paths require the role config blob.
+		// Load profiles.json for the per-role slot (model / provider / thinking,
+		// resolved at agent-run time) and for agent env var injection (host
+		// mode). Always attempt to load; treat a missing file as fatal when
+		// sandboxed (bwrap or sandbox-exec), since those paths require a slot.
 		var pf *config.ProfilesFile
 		{
 			var pfErr error
 			pf, pfErr = config.LoadProfiles()
 			if pfErr != nil {
-				if isoCaps.NeedsConfigBlob {
+				if isoCaps.RequiresProfilesFile {
 					return pfErr
 				}
 				proglog.Warnf("[prism switch] warning: could not load profiles.json (agent env vars will not be injected): %v\n", pfErr)
@@ -376,17 +326,53 @@ var switchCmd = &cobra.Command{
 				switchHarnessName, strings.Join(harness.Names(), ", "))
 		}
 
+		// Validate the active profile before any session state is created
+		// (#2854).
+		//
+		// Before the harness-config transport was retired, these same two
+		// checks ran per path inside injectContainerConfig, which resolved the
+		// active profile and rejected an unknown name on its way to building
+		// the (now removed) config blob. Both read only the profiles file and
+		// the active-profile state file, so neither depends on the path: they
+		// are hoisted here and run once.
+		//
+		// Without this gate a corrupt active-profile state file — or one
+		// naming a profile that profiles.json no longer defines, e.g. a stale
+		// "ox-alpha" after #2857 dropped it — surfaces inside the agent pane
+		// at `prism agent-run` (populatePIConfig → RequireSlot), after the DB
+		// row, the harness port, the tmux session, and the sidecar all exist.
+		//
+		// Known divergence from the pre-#2854 gate: that one keyed off the
+		// effective capabilities AFTER the per-path isolation override, this
+		// one keys off the command-level mode. The override changes only
+		// whether the check runs, never its result, so the difference is
+		// confined to a path that overrides across the host/sandbox boundary.
+		// Slot presence is deliberately NOT checked here: the old gate did not
+		// check it either (BuildConfigContent left the model empty on a slot
+		// miss rather than erroring), and the role is not known until the path
+		// is resolved.
+		if isoCaps.RequiresProfilesFile && pf != nil {
+			switchProfile, _, switchProfErr := config.ResolveActiveProfile(pf, "")
+			if switchProfErr != nil {
+				return switchProfErr
+			}
+			if switchProfile != "" {
+				if err := config.RequireProfile(pf, switchProfile); err != nil {
+					return err
+				}
+			}
+		}
+
 		// Populate harness-specific env var names from the adapter so that
 		// no harness-specific string literals appear in session.go.
 		// harnessFlag was validated above so the error is unreachable.
 		switchHarness, _ := harness.New(switchHarnessName, "", nil, "", "")
 		opts := session.Opts{
-			Fresh:            fresh,
-			IsolationMode:    string(isoMode),
-			PluginHostPath:   cfg.SidecarPluginPath,
-			ConfigEnvVarName: switchHarness.ConfigEnvVar(),
-			RuntimeEnvVars:   switchHarness.RuntimeEnv(),
-			HarnessName:      switchHarnessName,
+			Fresh:          fresh,
+			IsolationMode:  string(isoMode),
+			PluginHostPath: cfg.SidecarPluginPath,
+			RuntimeEnvVars: switchHarness.RuntimeEnv(),
+			HarnessName:    switchHarnessName,
 			// PIExtensionDir for host-mode pi launches (#2065). The container
 			// path appends --extension via container.PIInvocation, so this is
 			// load-bearing only for isolation=host — buildDirectAgentCmd skips
@@ -396,7 +382,7 @@ var switchCmd = &cobra.Command{
 		// AgentEnvVars only applies to host-mode sessions; sandboxed sessions
 		// receive env vars via their own injection paths (bwrap --setenv,
 		// sandbox-exec profile).
-		if pf != nil && !isoCaps.NeedsConfigBlob {
+		if pf != nil && !isoCaps.RequiresProfilesFile {
 			opts.AgentEnvVars = pf.AgentEnvVars
 		}
 
@@ -414,48 +400,18 @@ var switchCmd = &cobra.Command{
 				}
 				o := opts
 				// Apply per-path isolation override for the first worktree.
-				effIso, effCaps := applyPathIsolationOverride(worktrees[0], cfg, &o, isoMode, isoCaps, pf)
-				if effCaps.NeedsConfigBlob && pf != nil {
-					if err := injectContainerConfig(worktrees[0], pf, &o, "prism switch"); err != nil {
-						return err
-					}
-				}
-				if effCaps.NeedsConfigBlob {
-					if err := writeHarnessConfigBlobFor(effIso, session.NameFor(worktrees[0], p), o.ConfigContent, "switch"); err != nil {
-						return err
-					}
-				}
+				applyPathIsolationOverride(worktrees[0], cfg, &o, isoCaps, pf)
 				return ensureAndSwitch(worktrees[0], p, o)
 			}
 			if bareRoot := git.BareRoot(p); bareRoot != "" {
 				o := opts
 				// Apply per-path isolation override for the worktree path.
-				effIso, effCaps := applyPathIsolationOverride(p, cfg, &o, isoMode, isoCaps, pf)
-				if effCaps.NeedsConfigBlob && pf != nil {
-					if err := injectContainerConfig(p, pf, &o, "prism switch"); err != nil {
-						return err
-					}
-				}
-				if effCaps.NeedsConfigBlob {
-					if err := writeHarnessConfigBlobFor(effIso, session.NameFor(p, bareRoot), o.ConfigContent, "switch"); err != nil {
-						return err
-					}
-				}
+				applyPathIsolationOverride(p, cfg, &o, isoCaps, pf)
 				return ensureAndSwitch(p, bareRoot, o)
 			}
 			o := opts
 			// Apply per-path isolation override for plain directory paths.
-			effIso, effCaps := applyPathIsolationOverride(p, cfg, &o, isoMode, isoCaps, pf)
-			if effCaps.NeedsConfigBlob && pf != nil {
-				if err := injectContainerConfig(p, pf, &o, "prism switch"); err != nil {
-					return err
-				}
-			}
-			if effCaps.NeedsConfigBlob {
-				if err := writeHarnessConfigBlobFor(effIso, session.NameFor(p, ""), o.ConfigContent, "switch"); err != nil {
-					return err
-				}
-			}
+			applyPathIsolationOverride(p, cfg, &o, isoCaps, pf)
 			return ensureAndSwitch(p, "", o)
 		}
 
@@ -499,17 +455,7 @@ var switchCmd = &cobra.Command{
 				o := opts
 				// Apply per-path isolation override for plain directory paths
 				// selected from the picker (e.g. ~/documents/obsidian).
-				effIso, effCaps := applyPathIsolationOverride(p, cfg, &o, isoMode, isoCaps, pf)
-				if effCaps.NeedsConfigBlob && pf != nil {
-					if err := injectContainerConfig(p, pf, &o, "prism switch"); err != nil {
-						return err
-					}
-				}
-				if effCaps.NeedsConfigBlob {
-					if err := writeHarnessConfigBlobFor(effIso, session.NameFor(p, ""), o.ConfigContent, "switch"); err != nil {
-						return err
-					}
-				}
+				applyPathIsolationOverride(p, cfg, &o, isoCaps, pf)
 				return ensureAndSwitch(p, "", o)
 			}
 		}

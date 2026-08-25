@@ -231,7 +231,7 @@ var prCmd = &cobra.Command{
 			var pfErr error
 			pf, pfErr = config.LoadProfiles()
 			if pfErr != nil {
-				if isoCaps.NeedsConfigBlob || profileFlag != "" {
+				if isoCaps.RequiresProfilesFile || profileFlag != "" {
 					return pfErr
 				}
 				proglog.Warnf("[prism pr] warning: could not load profiles.json (agent env vars will not be injected): %v\n", pfErr)
@@ -244,47 +244,37 @@ var prCmd = &cobra.Command{
 			return profErr
 		}
 
-		// Generate the pi harness config for this session's root role.
+		// Validate the resolved profile before any session state is created.
+		//
+		// This replaces the validation that config.BuildConfigContent supplied
+		// as a side effect before #2854 retired it. It is deliberately NOT a
+		// like-for-like restoration — RequireSlot is strictly stronger:
+		//
+		//   - BuildConfigContent rejected a nil profiles file paired with a
+		//     non-empty profile name, and rejected an unknown profile name.
+		//     RequireSlot rejects both, so the guard stays keyed on
+		//     resolvedProfile alone: a state file naming a profile while
+		//     profiles.json failed to load must still fail here, as it did
+		//     before.
+		//   - BuildConfigContent did NOT check slot presence. It looked the
+		//     role up with a comma-ok and silently emitted an empty model on a
+		//     miss. RequireSlot errors instead, so a profile with no slot for
+		//     this session's root role is now rejected where it previously
+		//     proceeded. That is intentional: it matches the gate cmd/spawn.go
+		//     already applies, and a session with no slot for its own role has
+		//     no model to run on.
+		//
+		// The slot's model, provider, and thinking level reach pi over argv —
+		// resolved at agent-run time by populatePIConfig (bwrap /
+		// sandbox-exec) or emitted by buildDirectAgentCmd (host).
 		effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
 		lookupRole := effectiveRole
 		if lookupRole == "" {
 			lookupRole = "coordinator"
 		}
-		// prism pr has no --provider flag (issue #2852 scopes the override to
-		// prism spawn), so the provider override is always empty here and the
-		// profile slot's provider stays in effect.
-		configContent, err := config.BuildConfigContent(pf, resolvedProfile, lookupRole, modelFlag, variantFlag, "")
-		if err != nil {
-			return err
-		}
-
-		// For bwrap sessions, write the harness config file to disk now
-		// so it is present before the agent pane opens. prism agent-run
-		// reconstructs a container.Manager from DB state (which does not carry
-		// ConfigContent), so the file must be written here via the deterministic
-		// temp path. The bwrap.go mount-emission block checks file existence
-		// (os.Stat) rather than cfg.ConfigContent, so it picks this up correctly.
-		//
-		// Host mode does
-		// NOT need this write — it uses the host harness config
-		// directly via xdg.configFile. sandbox-exec mode does NOT yet use this
-		// path — config delivery for sandbox-exec is deferred to #1016 (no
-		// bwrap-equivalent mount mechanism exists yet).
-		//
-		// IMPORTANT: the path key used here must match the one used by Manager
-		// internally. Manager.name = container.NameForSession(tmuxSessionName),
-		// and Manager.harnessConfigFilePath() calls HarnessConfigFilePath(m.name).
-		// Isolator.WriteHarnessConfigBlob translates the prism session name to the
-		// container name internally so this call site stays mode-agnostic (D3,
-		// issue #1133). Mirrors the pattern in spawn.go.
-		if isoCaps.NeedsConfigBlob && configContent != "" {
-			tmuxSessionName := session.NameFor(worktreePath, bareRoot)
-			iso, isoIsoErr := container.For(isoMode, container.ConstructorOpts{Name: tmuxSessionName})
-			if isoIsoErr != nil {
-				return fmt.Errorf("prism pr: %w", isoIsoErr)
-			}
-			if err := iso.WriteHarnessConfigBlob(tmuxSessionName, configContent); err != nil {
-				return fmt.Errorf("prism pr: %w", err)
+		if resolvedProfile != "" {
+			if err := config.RequireSlot(pf, resolvedProfile, lookupRole); err != nil {
+				return err
 			}
 		}
 
@@ -304,15 +294,13 @@ var prCmd = &cobra.Command{
 
 		prHarness, _ := harness.New(effectiveHarness, "", nil, "", "")
 		opts := session.Opts{
-			Prompt:           promptFlag,
-			Agent:            agentFlag,
-			Headless:         !attachFlag,
-			IsolationMode:    string(isoMode),
-			PluginHostPath:   cfg.SidecarPluginPath,
-			ConfigContent:    configContent,
-			ConfigEnvVarName: prHarness.ConfigEnvVar(),
-			RuntimeEnvVars:   prHarness.RuntimeEnv(),
-			ModelsByRole:     modelsByRole,
+			Prompt:         promptFlag,
+			Agent:          agentFlag,
+			Headless:       !attachFlag,
+			IsolationMode:  string(isoMode),
+			PluginHostPath: cfg.SidecarPluginPath,
+			RuntimeEnvVars: prHarness.RuntimeEnv(),
+			ModelsByRole:   modelsByRole,
 			// PIExtensionDir for host-mode pi launches (#2065).
 			PIExtensionDir: cfg.PIExtensionDir,
 			// CLI overrides (issue #2086) flow through to the tmux pane

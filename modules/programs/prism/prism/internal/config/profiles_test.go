@@ -44,365 +44,6 @@ func sampleProfilesFile() *config.ProfilesFile {
 	}
 }
 
-// ── BuildConfigContent tests ──────────────────────────────────────────────────
-
-func TestBuildConfigContent_NoFlags(t *testing.T) {
-	result, err := config.BuildConfigContent(nil, "", "", "", "", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != "" {
-		t.Errorf("expected empty string when no flags set, got %q", result)
-	}
-}
-
-// TestBuildConfigContent_ProfileOnly_Coordinator verifies that --profile
-// resolves the coordinator slot's model when rootRole="coordinator".
-func TestBuildConfigContent_ProfileOnly_Coordinator(t *testing.T) {
-	pf := sampleProfilesFile()
-	result, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == "" {
-		t.Fatal("expected non-empty result for profile=anthropic role=coordinator")
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	// Top-level model should be coordinator's model.
-	if cfg["model"] != "anthropic/claude-opus-4-7" {
-		t.Errorf("top-level model: got %v, want anthropic/claude-opus-4-7", cfg["model"])
-	}
-
-	// Variant: thinking="medium" → variant="medium".
-	if cfg["variant"] != "medium" {
-		t.Errorf("variant: got %v, want medium", cfg["variant"])
-	}
-
-	// No agent sub-map: pi sessions have a single root agent.
-	if _, hasAgent := cfg["agent"]; hasAgent {
-		t.Error("unexpected 'agent' sub-map — pi sessions use root-level model/variant only")
-	}
-}
-
-// TestBuildConfigContent_ProfileOnly_Worker verifies that --profile with
-// rootRole="worker" resolves the worker slot, not coordinator's.
-func TestBuildConfigContent_ProfileOnly_Worker(t *testing.T) {
-	pf := sampleProfilesFile()
-	result, err := config.BuildConfigContent(pf, "anthropic", "worker", "", "", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	// Worker slot in anthropic profile.
-	if cfg["model"] != "anthropic/claude-sonnet-4-6" {
-		t.Errorf("model: got %v, want anthropic/claude-sonnet-4-6 (worker slot)", cfg["model"])
-	}
-	// Variant: thinking="low" → variant="low".
-	if cfg["variant"] != "low" {
-		t.Errorf("variant: got %v, want low", cfg["variant"])
-	}
-}
-
-// TestBuildConfigContent_ProfileOnly_ReviewGoal verifies the review-goal slot.
-func TestBuildConfigContent_ProfileOnly_ReviewGoal(t *testing.T) {
-	pf := sampleProfilesFile()
-	result, err := config.BuildConfigContent(pf, "gemini-hybrid", "review-goal", "", "", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	if cfg["model"] != "google/gemini-3.1-pro-preview-customtools" {
-		t.Errorf("model: got %v, want google/gemini-3.1-pro-preview-customtools", cfg["model"])
-	}
-	if cfg["variant"] != "medium" {
-		t.Errorf("variant: got %v, want medium", cfg["variant"])
-	}
-}
-
-// TestBuildConfigContent_ProfileAndModelOverride verifies that --profile P
-// --model X overrides only the root role's model.
-func TestBuildConfigContent_ProfileAndModelOverride(t *testing.T) {
-	pf := sampleProfilesFile()
-	// --profile anthropic --model custom/model --agent coordinator
-	result, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "custom/model", "", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	// Model must be the override.
-	if cfg["model"] != "custom/model" {
-		t.Errorf("model: got %v, want custom/model", cfg["model"])
-	}
-}
-
-// TestBuildConfigContent_ProfileAndVariantOverride verifies that --profile P
-// --variant V overrides the root role's variant.
-func TestBuildConfigContent_ProfileAndVariantOverride(t *testing.T) {
-	pf := sampleProfilesFile()
-	result, err := config.BuildConfigContent(pf, "gemini-hybrid", "worker", "", "low", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	// Variant must be the override (worker had "medium" from profile).
-	if cfg["variant"] != "low" {
-		t.Errorf("variant: got %v, want low", cfg["variant"])
-	}
-}
-
-// TestBuildConfigContent_ProviderOverrideEmitsDefaultProvider is the issue
-// #2852 AC at the config-content layer: `prism spawn --provider <P>` must put
-// pi's `defaultProvider` settings key into the root/coordinator session's
-// config content, so the root session is not left silently ignoring the flag
-// while its spawned panes honour it.
-func TestBuildConfigContent_ProviderOverrideEmitsDefaultProvider(t *testing.T) {
-	pf := sampleProfilesFile()
-	result, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "", "openrouter")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v (raw %q)", err, result)
-	}
-	if cfg["defaultProvider"] != "openrouter" {
-		t.Errorf("defaultProvider: got %v, want openrouter", cfg["defaultProvider"])
-	}
-	// The profile's own model/variant must survive alongside the override.
-	if cfg["model"] != "anthropic/claude-opus-4-7" {
-		t.Errorf("model: got %v, want the profile slot's model", cfg["model"])
-	}
-}
-
-// TestBuildConfigContent_ProviderOnly verifies that --provider P without
-// --profile, --model, or --variant still produces config content carrying
-// only defaultProvider. Without this the early "nothing set" return would
-// swallow a lone --provider.
-func TestBuildConfigContent_ProviderOnly(t *testing.T) {
-	result, err := config.BuildConfigContent(nil, "", "coordinator", "", "", "openrouter")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v (raw %q)", err, result)
-	}
-	if cfg["defaultProvider"] != "openrouter" {
-		t.Errorf("defaultProvider: got %v, want openrouter", cfg["defaultProvider"])
-	}
-	if _, ok := cfg["model"]; ok {
-		t.Error("unexpected top-level model when only provider is set")
-	}
-	if _, ok := cfg["variant"]; ok {
-		t.Error("unexpected variant when only provider is set")
-	}
-}
-
-// TestBuildConfigContent_EmptyProviderKeepsSlotProvider is the #2852
-// no-regression case: an empty provider override emits no defaultProvider
-// key at all, so the profile slot's provider stays in effect and the output
-// is byte-identical to the pre-#2852 shape.
-func TestBuildConfigContent_EmptyProviderKeepsSlotProvider(t *testing.T) {
-	pf := sampleProfilesFile()
-	result, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v (raw %q)", err, result)
-	}
-	if _, ok := cfg["defaultProvider"]; ok {
-		t.Errorf("defaultProvider must be absent when no override is passed; got %v", cfg["defaultProvider"])
-	}
-}
-
-// TestBuildConfigContent_ModelOnly verifies that --model X without --profile
-// sets only the root role's model (no "agent" map, single top-level model).
-func TestBuildConfigContent_ModelOnly(t *testing.T) {
-	result, err := config.BuildConfigContent(nil, "", "coordinator", "anthropic/claude-haiku-4-5", "", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	if cfg["model"] != "anthropic/claude-haiku-4-5" {
-		t.Errorf("top-level model: got %v", cfg["model"])
-	}
-	if _, hasAgent := cfg["agent"]; hasAgent {
-		t.Error("unexpected 'agent' sub-map — model-only override must not emit an agent map")
-	}
-}
-
-// TestBuildConfigContent_VariantOnly verifies that --variant X without
-// --profile sets only the root role's variant.
-func TestBuildConfigContent_VariantOnly(t *testing.T) {
-	result, err := config.BuildConfigContent(nil, "", "coordinator", "", "high", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	if _, ok := cfg["model"]; ok {
-		t.Error("unexpected top-level model when only variant is set")
-	}
-	if cfg["variant"] != "high" {
-		t.Errorf("variant: got %v, want high", cfg["variant"])
-	}
-}
-
-// TestBuildConfigContent_UnknownProfile verifies that an unknown profile returns an error.
-func TestBuildConfigContent_UnknownProfile(t *testing.T) {
-	pf := sampleProfilesFile()
-	_, err := config.BuildConfigContent(pf, "nonexistent", "coordinator", "", "", "")
-	if err == nil {
-		t.Fatal("expected error for unknown profile, got nil")
-	}
-}
-
-// TestBuildConfigContent_OffThinkingTranslatesToNoneVariant verifies that
-// thinking="off" produces variant="none".
-func TestBuildConfigContent_OffThinkingTranslatesToNoneVariant(t *testing.T) {
-	pf := &config.ProfilesFile{
-		Default: "off-test",
-		Profiles: map[string]config.ProfileEntry{
-			"off-test": {
-				"coordinator": {Provider: "anthropic", Model: "anthropic/claude-opus-4-7", Thinking: "off"},
-				"worker":      {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6", Thinking: "off"},
-			},
-		},
-	}
-	out, err := config.BuildConfigContent(pf, "off-test", "coordinator", "", "", "")
-	if err != nil {
-		t.Fatalf("BuildConfigContent: %v", err)
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("output is not valid JSON: %v", err)
-	}
-	// thinking="off" must produce variant="none", not "off".
-	if v, hasVariant := cfg["variant"]; hasVariant && v == "off" {
-		t.Errorf("variant = 'off' — should have been translated to 'none'")
-	}
-	if v, hasVariant := cfg["variant"]; hasVariant && v != "none" {
-		t.Errorf("variant = %v, want none", v)
-	}
-}
-
-// TestBuildConfigContent_NonZeroThinkingPassesThrough verifies that a
-// non-zero thinking level (e.g. "medium") is passed through unchanged.
-func TestBuildConfigContent_NonZeroThinkingPassesThrough(t *testing.T) {
-	pf := sampleProfilesFile()
-	out, err := config.BuildConfigContent(pf, "gemini-hybrid", "worker", "", "", "")
-	if err != nil {
-		t.Fatalf("BuildConfigContent: %v", err)
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("output is not valid JSON: %v", err)
-	}
-	if cfg["variant"] != "medium" {
-		t.Errorf("variant: got %v, want medium", cfg["variant"])
-	}
-}
-
-// TestBuildConfigContent_AnthropicCoordinatorNotEqualWorker verifies that
-// coordinator and worker resolve different models for the anthropic profile
-// (edge-case AC from #1612).
-func TestBuildConfigContent_AnthropicCoordinatorNotEqualWorker(t *testing.T) {
-	pf := sampleProfilesFile()
-
-	coordResult, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "", "")
-	if err != nil {
-		t.Fatalf("coordinator: %v", err)
-	}
-	workerResult, err := config.BuildConfigContent(pf, "anthropic", "worker", "", "", "")
-	if err != nil {
-		t.Fatalf("worker: %v", err)
-	}
-
-	var coordCfg, workerCfg map[string]any
-	_ = json.Unmarshal([]byte(coordResult), &coordCfg)
-	_ = json.Unmarshal([]byte(workerResult), &workerCfg)
-
-	// Coordinator gets opus, worker gets sonnet.
-	if coordCfg["model"] == workerCfg["model"] {
-		t.Errorf("coordinator and worker resolved the same model %v — expected different slots",
-			coordCfg["model"])
-	}
-	if coordCfg["model"] != "anthropic/claude-opus-4-7" {
-		t.Errorf("coordinator model: got %v, want anthropic/claude-opus-4-7", coordCfg["model"])
-	}
-	if workerCfg["model"] != "anthropic/claude-sonnet-4-6" {
-		t.Errorf("worker model: got %v, want anthropic/claude-sonnet-4-6", workerCfg["model"])
-	}
-}
-
-// TestBuildConfigContent_WorkerModelOverrideDoesNotAffectOtherRoles verifies
-// the edge case: --profile anthropic --agent worker --model haiku overrides
-// only the worker's model and leaves other roles' configs unaffected.
-// (We verify by calling BuildConfigContent with "coordinator" separately.)
-func TestBuildConfigContent_WorkerModelOverrideDoesNotAffectOtherRoles(t *testing.T) {
-	pf := sampleProfilesFile()
-	// Spawn with worker role + model override.
-	workerResult, err := config.BuildConfigContent(pf, "anthropic", "worker", "anthropic/claude-haiku-4-5", "", "")
-	if err != nil {
-		t.Fatalf("worker override: %v", err)
-	}
-	var workerCfg map[string]any
-	_ = json.Unmarshal([]byte(workerResult), &workerCfg)
-	if workerCfg["model"] != "anthropic/claude-haiku-4-5" {
-		t.Errorf("worker model: got %v, want anthropic/claude-haiku-4-5", workerCfg["model"])
-	}
-
-	// Coordinator role (separate call, simulating a different session) must
-	// retain its profile model — the worker override must not bleed over.
-	coordResult, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "", "")
-	if err != nil {
-		t.Fatalf("coordinator: %v", err)
-	}
-	var coordCfg map[string]any
-	_ = json.Unmarshal([]byte(coordResult), &coordCfg)
-	if coordCfg["model"] != "anthropic/claude-opus-4-7" {
-		t.Errorf("coordinator model after worker override: got %v, want anthropic/claude-opus-4-7 (unaffected)",
-			coordCfg["model"])
-	}
-}
-
 // ── SlotForRole tests ─────────────────────────────────────────────────────────
 
 func TestSlotForRole_HitsAndMisses(t *testing.T) {
@@ -498,6 +139,62 @@ func TestRequireSlot_NilProfilesFile(t *testing.T) {
 	err := config.RequireSlot(nil, "anthropic", "coordinator")
 	if err == nil {
 		t.Fatal("expected error for nil pf, got nil")
+	}
+}
+
+// ── RequireProfile tests (#2854) ─────────────────────────────────────────
+//
+// RequireProfile carries the profile-existence half of RequireSlot for call
+// sites that must validate before the session role is known. It replaces the
+// validation config.BuildConfigContent used to supply as a side effect on the
+// `prism switch` path.
+
+func TestRequireProfile_PassesWhenPresent(t *testing.T) {
+	pf := sampleProfilesFile()
+	if err := config.RequireProfile(pf, "anthropic"); err != nil {
+		t.Errorf("RequireProfile(anthropic): unexpected error: %v", err)
+	}
+}
+
+// TestRequireProfile_FailsWhenProfileUnknown is the #2857 regression shape:
+// a state file still naming a profile that profiles.json no longer defines
+// (e.g. "ox-alpha") must be rejected, and the message must list what IS
+// available so the user can recover.
+func TestRequireProfile_FailsWhenProfileUnknown(t *testing.T) {
+	pf := sampleProfilesFile()
+	err := config.RequireProfile(pf, "ox-alpha")
+	if err == nil {
+		t.Fatal("expected error for unknown profile, got nil")
+	}
+	if !contains(err.Error(), "ox-alpha") {
+		t.Errorf("error must name the unknown profile; got %q", err)
+	}
+	if !contains(err.Error(), "anthropic") {
+		t.Errorf("error must list available profiles; got %q", err)
+	}
+}
+
+func TestRequireProfile_NilProfilesFile(t *testing.T) {
+	err := config.RequireProfile(nil, "anthropic")
+	if err == nil {
+		t.Fatal("expected error for nil pf, got nil")
+	}
+	if !contains(err.Error(), "not loaded") {
+		t.Errorf("nil-pf error must say the profiles file was not loaded; got %q", err)
+	}
+}
+
+// TestRequireSlot_DelegatesUnknownProfileToRequireProfile pins the delegation
+// so the two call sites cannot drift into two different error texts.
+func TestRequireSlot_DelegatesUnknownProfileToRequireProfile(t *testing.T) {
+	pf := sampleProfilesFile()
+	slotErr := config.RequireSlot(pf, "ox-alpha", "coordinator")
+	profErr := config.RequireProfile(pf, "ox-alpha")
+	if slotErr == nil || profErr == nil {
+		t.Fatal("both must error for an unknown profile")
+	}
+	if slotErr.Error() != profErr.Error() {
+		t.Errorf("unknown-profile message drifted:\n RequireSlot:    %q\n RequireProfile: %q", slotErr, profErr)
 	}
 }
 

@@ -493,13 +493,6 @@ type StartSidecarOpts struct {
 	// readiness. Passed via --initial-prompt in container mode (#487).
 	// Empty string means no prompt delivery.
 	InitialPrompt string
-	// ConfigContent is the JSON blob for the session's harness config
-	// file.
-	//
-	// In host/bwrap/sandbox-exec mode, the config env var is injected
-	// directly by buildDirectAgentCmd (prepended to the agent shell
-	// command) and does not need to go through the sidecar.
-	ConfigContent string
 	// InstanceID is the UUID instance identifier for this session incarnation.
 	// When non-empty, it is passed to the sidecar via --instance-id so that
 	// the sidecar can use it for container labels and bus message scoping
@@ -597,7 +590,6 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 				AgentRole:      opts.AgentRole,
 				PluginHostPath: opts.PluginHostPath,
 				InitialPrompt:  opts.InitialPrompt,
-				ConfigContent:  opts.ConfigContent,
 			})...)
 		}
 	}

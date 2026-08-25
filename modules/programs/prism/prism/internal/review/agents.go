@@ -9,8 +9,6 @@ package review
 import (
 	"fmt"
 	"strings"
-
-	"github.com/prismatic-koi/prism/internal/config"
 )
 
 // Agent describes a single review agent to run.
@@ -116,31 +114,9 @@ func FormatAgentDisplayName(name string) string {
 	return strings.Join(parts, "-")
 }
 
-// ResolveAgentConfigContent resolves the pi harness-config JSON for a single
-// review agent in sandboxed mode (bwrap or sandbox-exec). It is factored out
-// of Run so that it can be unit-tested independently of the tmux/DB machinery.
-//
-// Returns ("", nil) in host mode (isolationMode == "host" or ""), because no
-// config injection is needed — pi is launched directly on the host.
-//
-// In sandboxed mode (isolationMode == "bwrap" or "sandbox-exec"):
-//   - Returns an error if pf is nil (missing profiles file) and activeProfile is set.
-//   - Returns ("", nil) when pf is nil and activeProfile is empty (no profile
-//     configured — the harness uses its built-in defaults).
-//   - Returns the profile-derived config blob for agentName's slot.
-//
-// Exported so that cmd/review_test.go (and integration tests) can exercise the
-// config-resolution path without needing a live DB or tmux session.
-//
-// activeProfile is the runtime active-profile name resolved by the caller
-// via config.ResolveActiveProfile. Pass "" when no profile is active.
-func ResolveAgentConfigContent(isolationMode string, pf *config.ProfilesFile, agentName, activeProfile string) (string, error) {
-	needsConfig := isolationMode == string(config.IsolationBwrap) || isolationMode == string(config.IsolationSandboxExec)
-	if !needsConfig {
-		return "", nil
-	}
-	if pf == nil && activeProfile != "" {
-		return "", fmt.Errorf("review: %s mode requires a profiles file to resolve per-agent config for %q; got nil ProfilesFile", isolationMode, agentName)
-	}
-	return config.BuildConfigContent(pf, activeProfile, agentName, "", "", "")
-}
+// Note (#2854): ResolveAgentConfigContent used to render each reviewer's
+// profile slot into a harness-config JSON blob for the retired
+// PI_CONFIG_CONTENT / harness-config-file transports. pi read neither. Each
+// reviewer's model, provider, and thinking level now reach pi only over argv,
+// resolved at agent-run time by populatePIConfig from the profile slot that
+// the RequireSlot gate in Run / RunAsync already validates.

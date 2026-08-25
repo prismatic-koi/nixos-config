@@ -79,8 +79,9 @@ func TestBuildDirectAgentCmd_HostModeBothOverrides(t *testing.T) {
 // TestBuildDirectAgentCmd_HostModeNoOverrides_NoFlags is the no-regression
 // guard: when Model and Variant are empty, neither --model nor --thinking
 // appears on the host-mode direct command (matching the pre-#2086 shape,
-// where pi's defaults take over — or, in practice today, the profile slot
-// values are baked into a config blob the pi process ignores).
+// where pi's own defaults take over). Host mode consults no profile slot at
+// all — config.SlotForRole has a single caller, populatePIConfig in
+// cmd/agent_run.go, which runs only on the bwrap / sandbox-exec path.
 func TestBuildDirectAgentCmd_HostModeNoOverrides_NoFlags(t *testing.T) {
 	opts := Opts{
 		Agent:       "worker",

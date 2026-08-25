@@ -102,7 +102,7 @@ func writeStateFile(t *testing.T, profileName string) {
 // makeProfilesWithReviewSlots builds a ProfilesFile whose every named
 // profile defines slots for the canonical review agents (review-goal,
 // review-code, review-security, review-qa, review-context). This lets a
-// downstream BuildConfigContent / RequireSlot call resolve to a real
+// downstream RequireSlot call resolve to a real
 // model without surprising "missing slot" errors.
 func makeProfilesWithReviewSlots(defaultName string, profileNames ...string) *config.ProfilesFile {
 	pf := &config.ProfilesFile{
@@ -145,7 +145,6 @@ func resolvedSpawnInputsForReviewer(t *testing.T, activeProfile, agentName, pare
 		AgentName:          agentName,
 		AgentSession:       parentSession + "~review-1-" + agentName,
 		Prompt:             "unused-in-this-test",
-		AgentConfigContent: "",
 		Repo:               "prism-test",
 		Worktree:           "/tmp/" + parentSession,
 		PromptTemplateHash: "test-template-hash",

@@ -30,13 +30,22 @@ type Capabilities struct {
 	// startup branch will never fire.
 	OwnsContainerLifecycle bool
 
-	// NeedsConfigBlob means the harness config blob must be supplied via
-	// env-var or on-disk file before the process starts. True for bwrap
+	// RequiresProfilesFile means profiles.json must load successfully before
+	// a session can start in this mode: the per-role slot supplies the model,
+	// provider, and thinking level that reach pi over argv. True for bwrap
 	// and sandbox-exec; false for host.
-	// Cites: cmd/spawn.go:339-392, cmd/switch.go:308-348,
-	//        cmd/restore.go:346-393, cmd/pr.go:120-186,
-	//        internal/review/run.go:131-149, :356-374.
-	NeedsConfigBlob bool
+	//
+	// Two distinct uses, both pre-dating the #2854 rename:
+	//   1. "is a profiles.json load failure fatal" — cmd/pr.go, cmd/review.go,
+	//      cmd/spawn.go, cmd/switch.go (the load-and-gate blocks).
+	//   2. "is this mode sandboxed" — cmd/switch.go AgentEnvVars injection,
+	//      which is gated on !RequiresProfilesFile because host mode is the
+	//      only mode that injects agent env vars into the pane command.
+	// Use (2) reads awkwardly against the name. The conflation is older than
+	// the rename and is not resolved here.
+	// Cites: cmd/pr.go:232, cmd/review.go:439, cmd/spawn.go:647,
+	//        cmd/switch.go:61, :310, :354, :385.
+	RequiresProfilesFile bool
 
 	// NeedsHostAPISocket means the sidecar binds the host-API Unix socket for
 	// this mode. True for bwrap and sandbox-exec; false for host.
@@ -154,18 +163,6 @@ type Isolator interface {
 	// Cites: cmd/concurrency.go (per-mode helpers, since unified).
 	Cap(ctx context.Context, dbPath string) CapStatus
 
-	// WriteHarnessConfigBlob writes the harness configuration blob (the
-	// role-specific opencode.json) to the deterministic per-session temp
-	// path so it can be read back by the sandbox at start time. The same
-	// gate that the call site applies (NeedsConfigBlob && content != "")
-	// is encoded here as: empty content is a no-op, host returns nil.
-	// sessionName is the prism session name; the isolator translates it
-	// to the container name internally so the path matches the read site
-	// (Manager.opencodeConfigFilePath).
-	// Cites: cmd/spawn.go:386-392, cmd/pr.go:171-177, cmd/restore.go:385-388,
-	//        cmd/switch.go:316-348 / :400-403, cmd/switch_project.go:161-503.
-	WriteHarnessConfigBlob(sessionName, content string) error
-
 	// AgentPaneCmd returns the shell command string emitted into the tmux
 	// agent pane for this session.
 	//   - bwrap, sandbox-exec:   "<abs-path>/prism agent-run --session <session>"
@@ -253,7 +250,7 @@ type Isolator interface {
 	Reset(ctx context.Context) error
 
 	// Prepare materialises any per-session temp files (SSH config,
-	// gitconfig, harness config, session work dir, SBPL profile) that
+	// gitconfig, session work dir, SBPL profile) that
 	// the sandbox needs at start time and returns the complete argument
 	// list for the sandbox launcher. Bwrap returns the bwrap argv;
 	// sandbox-exec returns the sandbox-exec argv. Host returns nil

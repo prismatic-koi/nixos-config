@@ -535,7 +535,7 @@ func TestWaitHealthy_ReturnsOnContextCancel(t *testing.T) {
 	}
 }
 
-// ── harness config mount tests ──────────────────────────────────────────────
+// ── credential env var tests ────────────────────────────────────────────────
 
 func TestCredentialEnvVars_NoGitIdentityEnvVars(t *testing.T) {
 	// AC-11: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME,
@@ -834,91 +834,6 @@ func TestPrepareVolumeDirs_OptionalCacheDirFailureDoesNotFail(t *testing.T) {
 	// the optional cache dirs are attempted and all will fail — call must succeed.
 	if err := m.prepareVolumeDirs(false); err != nil {
 		t.Errorf("prepareVolumeDirs: optional cache dir failures should not fail the call, got: %v", err)
-	}
-}
-
-// ── auth.json overlay tests (AC-3) ───────────────────────────────────────────
-
-// TestBuildRunArgs_AuthJsonOverlayMountedWhenExists verifies that when
-// ~/.local/share/pi/auth.json exists on the host, a --volume arg is
-// added overlaying it at /root/.local/share/pi/auth.json inside the
-// container so OAuth tokens are shared across per-session state directories.
-func TestHarnessConfigFilePath_Deterministic(t *testing.T) {
-	// The path derivation from session name must be stable across calls.
-	const sessionName = "nixos-config@feat"
-	a := HarnessConfigFilePath(sessionName)
-	b := HarnessConfigFilePath(sessionName)
-	if a != b {
-		t.Errorf("HarnessConfigFilePath is not deterministic: %q != %q", a, b)
-	}
-}
-
-func TestHarnessConfigFilePath_Format(t *testing.T) {
-	// The path must equal filepath.Join(tempDir(), "prism-harness-config-"+sessionName).
-	// tempDir() rather than os.TempDir(): TestMain points the package
-	// temp-path seam at a per-process directory for the whole suite
-	// (issue #2222); outside tests tempDir() is os.TempDir().
-	const sessionName = "my-repo@branch"
-	got := HarnessConfigFilePath(sessionName)
-	want := filepath.Join(tempDir(), "prism-harness-config-"+sessionName)
-	if got != want {
-		t.Errorf("HarnessConfigFilePath(%q) = %q, want %q", sessionName, got, want)
-	}
-}
-
-func TestWriteHarnessConfig_WritesContent(t *testing.T) {
-	// Override TMPDIR so the written file lands in the test's temp dir.
-	tmpDir := t.TempDir()
-	t.Setenv("TMPDIR", tmpDir)
-
-	const sessionName = "test-session@write"
-	const content = `{"model":"claude-sonnet-4-6"}`
-
-	if err := WriteHarnessConfig(sessionName, content); err != nil {
-		t.Fatalf("WriteHarnessConfig returned error: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Remove(HarnessConfigFilePath(sessionName)) })
-
-	data, err := os.ReadFile(HarnessConfigFilePath(sessionName))
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if string(data) != content {
-		t.Errorf("file content = %q, want %q", string(data), content)
-	}
-}
-
-func TestWriteHarnessConfig_Mode644(t *testing.T) {
-	// The written file must have mode 0o644.
-	tmpDir := t.TempDir()
-	t.Setenv("TMPDIR", tmpDir)
-
-	const sessionName = "test-session@mode"
-	if err := WriteHarnessConfig(sessionName, "{}"); err != nil {
-		t.Fatalf("WriteHarnessConfig returned error: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Remove(HarnessConfigFilePath(sessionName)) })
-
-	info, err := os.Stat(HarnessConfigFilePath(sessionName))
-	if err != nil {
-		t.Fatalf("Stat: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0o644 {
-		t.Errorf("file mode = %04o, want 0644", got)
-	}
-}
-
-func TestHarnessConfigFilePath_MatchesManagerMethod(t *testing.T) {
-	// The exported function must return the same path as the manager method.
-	m := New(Config{
-		SessionName:   "nixos-config@feature",
-		AllocatedPort: 14001,
-	})
-	exported := HarnessConfigFilePath(m.name)
-	unexported := m.harnessConfigFilePath()
-	if exported != unexported {
-		t.Errorf("HarnessConfigFilePath(%q) = %q, manager.harnessConfigFilePath() = %q — must be identical",
-			m.name, exported, unexported)
 	}
 }
 

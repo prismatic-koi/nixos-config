@@ -19,7 +19,6 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/config"
-	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
@@ -164,80 +163,6 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			opts.OnProgress(fmt.Sprintf("%s: role definition missing or empty at %s — starting with a degraded system prompt", FormatAgentDisplayName(ag.Name), roleDefinitionPath(ag.Name)))
 		}
 
-		// Resolve the per-agent config blob. Each agent gets its own hardened
-		// opencode.json that declares only that one review agent.
-		//
-		// In sandboxed mode (bwrap or sandbox-exec) a missing or empty blob
-		// means the
-		// sandbox falls back to the host config (wrong agent identity).
-		// ResolveAgentConfigContent surfaces this as an explicit error to
-		// prevent silent wrong-agent spawns. activeProfile (resolved above)
-		// is overlaid on the blob so review agents honour the runtime active
-		// profile (#1207).
-		agentConfigContent, configErr := ResolveAgentConfigContent(opts.IsolationMode, opts.ProfilesFile, ag.Name, activeProfile)
-		if configErr != nil {
-			spawnErr[i] = configErr
-			if opts.OnProgress != nil {
-				opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, configErr)))
-			}
-			continue
-		}
-		// Apply per-role model override (C.2, issue #1122) when a model was
-		// explicitly specified for this agent. This is a no-op for host-mode
-		// sessions (agentConfigContent is empty) — host-mode model selection
-		// happens via the sidecar's --model-override flags instead.
-		if agentConfigContent != "" && len(opts.ModelsByRole) > 0 {
-			if roleModel, ok := opts.ModelsByRole[ag.Name]; ok {
-				// Rebuild the config with the overridden model, preserving the
-				// profile's variant (pass "" variant override to keep profile value).
-				patched, patchErr := config.BuildConfigContent(opts.ProfilesFile, activeProfile, ag.Name, roleModel, "", "")
-				if patchErr != nil {
-					spawnErr[i] = fmt.Errorf("review: apply --model-override for %s: %w", ag.Name, patchErr)
-					if opts.OnProgress != nil {
-						opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
-					}
-					continue
-				}
-				if patched != "" {
-					agentConfigContent = patched
-				}
-			}
-		}
-
-		// For bwrap sessions, write the opencode.json config file to disk now
-		// so it is present before the agent pane opens. The bwrap harness
-		// checks for file existence (os.Stat) rather than reading ConfigContent
-		// from the session state, so it must be written here at spawn time.
-		// This mirrors the pattern in cmd/spawn.go:386-394 for regular bwrap spawns.
-		// Both bwrap and sandbox-exec write the per-agent opencode.json via
-		// Isolator.WriteHarnessConfigBlob so the dispatch goes via the
-		// registered isolator instead of the package-level WriteOpencodeConfig
-		// helper. sandbox-exec config delivery was previously deferred to #1016;
-		// that deferral is now resolved — #1242.
-		//
-		// D3 (issue #1133): the gate routes the write through
-		// Isolator.WriteHarnessConfigBlob so the dispatch goes via the
-		// registered isolator instead of the package-level WriteOpencodeConfig
-		// helper.
-		needsOnDiskWrite := opts.IsolationMode == string(config.IsolationBwrap) || opts.IsolationMode == string(config.IsolationSandboxExec)
-		if needsOnDiskWrite && agentConfigContent != "" {
-			iso, isoErr := container.For(config.IsolationMode(opts.IsolationMode), container.ConstructorOpts{Name: agentSession})
-			if isoErr != nil {
-				spawnErr[i] = fmt.Errorf("review: resolve isolator for agent %s: %w", ag.Name, isoErr)
-				if opts.OnProgress != nil {
-					opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
-				}
-				continue
-			}
-			if writeErr := iso.WriteHarnessConfigBlob(agentSession, agentConfigContent); writeErr != nil {
-				spawnErr[i] = fmt.Errorf("review: write harness config for agent %s: %w", ag.Name, writeErr)
-				if opts.OnProgress != nil {
-					opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
-				}
-				continue
-			}
-		}
-
 		// Spawn the per-agent session via the shared primitive. SpawnSession
 		// handles DB seed (with root_agent_name from AgentRole), port
 		// allocation, tmux session creation, and sidecar startup — keeping
@@ -270,7 +195,6 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			AgentName:          ag.Name,
 			AgentSession:       agentSession,
 			Prompt:             prompt,
-			AgentConfigContent: agentConfigContent,
 			Repo:               repo,
 			Worktree:           worktree,
 			PromptTemplateHash: ReviewPromptTemplateHash(),
@@ -501,59 +425,6 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			opts.OnProgress(fmt.Sprintf("%s: role definition missing or empty at %s — starting with a degraded system prompt", FormatAgentDisplayName(ag.Name), roleDefinitionPath(ag.Name)))
 		}
 
-		agentConfigContent, configErr := ResolveAgentConfigContent(opts.IsolationMode, opts.ProfilesFile, ag.Name, activeProfile)
-		if configErr != nil {
-			spawnErr[i] = configErr
-			if opts.OnProgress != nil {
-				opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, configErr)))
-			}
-			continue
-		}
-		// Apply per-role model override (C.2, issue #1122).
-		if agentConfigContent != "" && len(opts.ModelsByRole) > 0 {
-			if roleModel, ok := opts.ModelsByRole[ag.Name]; ok {
-				patched, patchErr := config.BuildConfigContent(opts.ProfilesFile, activeProfile, ag.Name, roleModel, "", "")
-				if patchErr != nil {
-					spawnErr[i] = fmt.Errorf("review: apply --model-override for %s: %w", ag.Name, patchErr)
-					if opts.OnProgress != nil {
-						opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
-					}
-					continue
-				}
-				if patched != "" {
-					agentConfigContent = patched
-				}
-			}
-		}
-
-		// For bwrap and sandbox-exec sessions, write the opencode.json config
-		// file to disk now so it is present before the agent pane opens.
-		// Mirrors the pattern in cmd/spawn.go:386-394 for regular spawns.
-		// sandbox-exec config delivery was previously deferred to #1016;
-		// that deferral is now resolved — #1242.
-		//
-		// D3 (issue #1133): the gate routes the write through
-		// Isolator.WriteHarnessConfigBlob so the dispatch goes via the
-		// registered isolator.
-		needsOnDiskWrite := opts.IsolationMode == string(config.IsolationBwrap) || opts.IsolationMode == string(config.IsolationSandboxExec)
-		if needsOnDiskWrite && agentConfigContent != "" {
-			iso, isoErr := container.For(config.IsolationMode(opts.IsolationMode), container.ConstructorOpts{Name: agentSession})
-			if isoErr != nil {
-				spawnErr[i] = fmt.Errorf("review: resolve isolator for agent %s: %w", ag.Name, isoErr)
-				if opts.OnProgress != nil {
-					opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
-				}
-				continue
-			}
-			if writeErr := iso.WriteHarnessConfigBlob(agentSession, agentConfigContent); writeErr != nil {
-				spawnErr[i] = fmt.Errorf("review: write harness config for agent %s: %w", ag.Name, writeErr)
-				if opts.OnProgress != nil {
-					opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
-				}
-				continue
-			}
-		}
-
 		// Pi is the sole harness. Use it directly unless --harness was explicitly passed.
 		asyncAgentHarnessName := opts.Harness
 		if !opts.HarnessExplicit {
@@ -575,7 +446,6 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			AgentName:          ag.Name,
 			AgentSession:       agentSession,
 			Prompt:             prompt,
-			AgentConfigContent: agentConfigContent,
 			Repo:               repo,
 			Worktree:           worktree,
 			PromptTemplateHash: ReviewPromptTemplateHash(),

@@ -78,13 +78,6 @@ type Harness interface {
 	// SSE "event:" field directly may return evt.Type unchanged.
 	ExtractEventType(evt HarnessEvent) string
 
-	// ConfigEnvVar returns the environment variable name this harness uses
-	// to receive its serialised config content (e.g. "OPENCODE_CONFIG_CONTENT"
-	// for opencode-compat harnesses — empty for pi). The returned name is used in both host-mode (inline
-	// shell env-var prefix) and container-mode (sandbox env injection) session
-	// creation to inject config overrides into the agent runtime.
-	ConfigEnvVar() string
-
 	// RuntimeEnv returns additional environment variables this harness needs
 	// set in the container / process it runs in. For pi, this includes
 	// experimental flags like the bash-tool timeout. The returned map is

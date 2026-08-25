@@ -123,11 +123,6 @@ type SpawnOpts struct {
 	// the size guard validated against.
 	PromptFilePath string
 
-	// ConfigContent is the JSON blob injected as OPENCODE_CONFIG_CONTENT.
-	// Generated upstream from --profile/--model/--variant or from per-role
-	// container profiles. Empty string means no override.
-	ConfigContent string
-
 	// Layout selects the tmux window layout created for this session.
 	//   - LayoutFull:       3-window layout (edit / agent / term) — spawn path
 	//   - LayoutAgentOnly:  2-window layout (shell / agent)       — review path
@@ -178,11 +173,6 @@ type SpawnOpts struct {
 	// not call Attach; this field is carried through for composition with
 	// higher-level wrappers.
 	Headless bool
-
-	// ConfigEnvVarName is the environment variable name used to inject
-	// serialised config content into the agent runtime. Populated from
-	// harness.Harness.ConfigEnvVar() by callers that have a harness instance.
-	ConfigEnvVarName string
 
 	// RuntimeEnvVars holds harness-specific environment variables to
 	// inject into host-mode sessions. Populated from
@@ -551,7 +541,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		// invocation — same as LayoutFull + host but without the sidecar-
 		// managed 3-window layout. The env-var map carries PRISM_INITIAL_PROMPT_FILE
 		// (post-#1195 path); measure the full contribution so any exotic
-		// ConfigContent or large session name is caught here.
+		// prompt or large session name is caught here.
 		previewEnvs := spawnAgentPaneEnvVars(SpawnOpts{
 			Prompt:         opts.Prompt,
 			PromptFilePath: promptFilePath,
@@ -563,16 +553,15 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		// The host-mode LayoutAgentOnly command is built inside
 		// spawnAgentOnlyLayout; approximate via buildDirectAgentCmd.
 		previewOpts := Opts{
-			Prompt:           opts.Prompt,
-			PromptFilePath:   promptFilePath,
-			Agent:            opts.AgentRole,
-			SessionName:      opts.SessionName,
-			Port:             0,
-			IsolationMode:    mode,
-			ConfigEnvVarName: opts.ConfigEnvVarName,
-			Model:            opts.Model,
-			Variant:          opts.Variant,
-			Provider:         opts.Provider,
+			Prompt:         opts.Prompt,
+			PromptFilePath: promptFilePath,
+			Agent:          opts.AgentRole,
+			SessionName:    opts.SessionName,
+			Port:           0,
+			IsolationMode:  mode,
+			Model:          opts.Model,
+			Variant:        opts.Variant,
+			Provider:       opts.Provider,
 		}
 		agentOnlyCmd, buildErr := BuildAgentCmd(previewOpts)
 		if buildErr != nil {
@@ -600,15 +589,14 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		// modes) plus each `-e KEY=VALUE` env entry. previewOpts is the
 		// minimal shape BuildAgentCmd needs for the sandbox mode.
 		previewOpts := Opts{
-			Prompt:           opts.Prompt,
-			Agent:            opts.AgentRole,
-			SessionName:      opts.SessionName,
-			Port:             0,
-			IsolationMode:    mode,
-			ConfigEnvVarName: opts.ConfigEnvVarName,
-			Model:            opts.Model,
-			Variant:          opts.Variant,
-			Provider:         opts.Provider,
+			Prompt:        opts.Prompt,
+			Agent:         opts.AgentRole,
+			SessionName:   opts.SessionName,
+			Port:          0,
+			IsolationMode: mode,
+			Model:         opts.Model,
+			Variant:       opts.Variant,
+			Provider:      opts.Provider,
 		}
 		previewCmd, buildErr := BuildAgentCmd(previewOpts)
 		if buildErr != nil {
@@ -1024,14 +1012,12 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 		Prompt:              opts.Prompt,
 		PromptFilePath:      promptFilePath,
 		Agent:               opts.AgentRole,
-		ConfigContent:       opts.ConfigContent,
 		SessionName:         opts.SessionName,
 		Port:                port,
 		IsolationMode:       opts.IsolationMode,
 		PluginHostPath:      opts.PluginHostPath,
 		InstanceID:          opts.InstanceID,
 		AgentEnvVars:        opts.AgentEnvVars,
-		ConfigEnvVarName:    opts.ConfigEnvVarName,
 		RuntimeEnvVars:      opts.RuntimeEnvVars,
 		Layout:              LayoutFull,
 		ForceFresh:          opts.ForceFresh,
@@ -1186,9 +1172,12 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	mode := opts.IsolationMode
 	// When IsolationMode is not set, resolve the machine default from config
 	// rather than silently falling back to host. A silent host fallback breaks
-	// bwrap sessions: review agents would run without the sandbox, pick up the
-	// host harness config (which only defines the build agent), and trigger the
-	// recursive review explosion described in issue #1001.
+	// bwrap sessions: review agents would run unsandboxed with the invoking
+	// session's own agent identity and trigger the recursive review explosion
+	// described in issue #1001. (#1001's original mechanism was a per-agent
+	// harness-config blob that pinned each reviewer's identity; #2854 retired
+	// that blob as unread. Reviewer identity now rides on the --agent flag,
+	// but the fallback is still wrong for the sandbox reason alone.)
 	if mode == "" {
 		mode = string(config.Load().DefaultIsolationMode)
 	}
@@ -1203,7 +1192,6 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		Worktree:         opts.Worktree,
 		PluginHostPath:   opts.PluginHostPath,
 		InitialPrompt:    opts.Prompt,
-		ConfigContent:    opts.ConfigContent,
 		InstanceID:       opts.InstanceID,
 		WorktreeReadOnly: opts.WorktreeReadOnly,
 		HarnessName:      opts.HarnessName,
@@ -1221,17 +1209,15 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	// for the resolved isolation mode (prism agent-run for bwrap/sandbox-exec,
 	// direct pi for host).
 	buildOpts := Opts{
-		Prompt:           opts.Prompt,
-		PromptFilePath:   opts.PromptFilePath, // set by SpawnSession (#1195: keeps agentCmd O(1) in prompt size for host mode)
-		Agent:            opts.AgentRole,
-		ConfigContent:    opts.ConfigContent,
-		SessionName:      opts.SessionName,
-		Port:             port,
-		IsolationMode:    mode,
-		PluginHostPath:   opts.PluginHostPath,
-		ConfigEnvVarName: opts.ConfigEnvVarName,
-		RuntimeEnvVars:   opts.RuntimeEnvVars,
-		PIExtensionDir:   opts.PIExtensionDir,
+		Prompt:         opts.Prompt,
+		PromptFilePath: opts.PromptFilePath, // set by SpawnSession (#1195: keeps agentCmd O(1) in prompt size for host mode)
+		Agent:          opts.AgentRole,
+		SessionName:    opts.SessionName,
+		Port:           port,
+		IsolationMode:  mode,
+		PluginHostPath: opts.PluginHostPath,
+		RuntimeEnvVars: opts.RuntimeEnvVars,
+		PIExtensionDir: opts.PIExtensionDir,
 		// CLI overrides (issue #2086) for review-style agent-only layouts.
 		Model:   opts.Model,
 		Variant: opts.Variant,

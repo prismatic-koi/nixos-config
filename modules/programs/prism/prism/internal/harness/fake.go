@@ -16,9 +16,6 @@ import (
 // Function fields (MapEventFn, ExtractMessageFn, ExtractEventTypeFn) allow
 // individual tests to inject custom event-handling logic without subclassing.
 type FakeHarness struct {
-	// ConfigEnvVarValue is the value returned by ConfigEnvVar().
-	ConfigEnvVarValue string
-
 	// RuntimeEnvValue is the map returned by RuntimeEnv().
 	RuntimeEnvValue map[string]string
 
@@ -99,13 +96,6 @@ func (f *FakeHarness) ExtractEventType(evt HarnessEvent) string {
 		return f.ExtractEventTypeFn(evt)
 	}
 	return evt.Type
-}
-
-func (f *FakeHarness) ConfigEnvVar() string {
-	if f.ConfigEnvVarValue != "" {
-		return f.ConfigEnvVarValue
-	}
-	return "FAKE_CONFIG_CONTENT"
 }
 
 func (f *FakeHarness) RuntimeEnv() map[string]string {

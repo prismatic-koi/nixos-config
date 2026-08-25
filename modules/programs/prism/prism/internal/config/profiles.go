@@ -42,8 +42,8 @@ import (
 // Field semantics:
 //   - Provider: routing provider name.
 //   - Model: model identifier for this role's session.
-//   - Thinking: reasoning level. Rendered as pi's `variant` field via
-//     variantFromThinking ("off" → "none").
+//   - Thinking: reasoning level. Passed to pi verbatim on argv as
+//     `--thinking <value>` (see container.PIInvocation).
 //
 // The role system-prompt is no longer carried in the slot: it is injected at
 // runtime by the prism PI extension (before_agent_start) from
@@ -172,6 +172,25 @@ func SlotForRole(pf *ProfilesFile, profileName, role string) (RoleSlot, bool) {
 	return slot, ok
 }
 
+// RequireProfile validates that pf defines the named profile. It returns nil
+// when the profile is present, or a descriptive error listing every profile
+// the file currently defines.
+//
+// RequireSlot runs this same check first and then narrows to a single role.
+// RequireProfile exists for call sites that must validate the profile before
+// the session role is known — `prism switch` resolves the role per path, after
+// this gate has already run (#2854).
+func RequireProfile(pf *ProfilesFile, profileName string) error {
+	if pf == nil {
+		return fmt.Errorf("profiles: profile %q requested but profiles file not loaded", profileName)
+	}
+	if _, ok := pf.Profiles[profileName]; !ok {
+		return fmt.Errorf("profiles: unknown profile %q — available: %s",
+			profileName, strings.Join(AvailableProfileNames(pf), ", "))
+	}
+	return nil
+}
+
 // RequireSlot validates that the named profile defines a slot for the given
 // session role. It returns nil when the slot is present, or a descriptive
 // error listing every role the active profile currently defines.
@@ -180,14 +199,15 @@ func SlotForRole(pf *ProfilesFile, profileName, role string) (RoleSlot, bool) {
 // cannot be resolved against the active profile must fail early with a clear
 // diagnostic.
 func RequireSlot(pf *ProfilesFile, profileName, role string) error {
+	// The nil branch stays here rather than delegating to RequireProfile so
+	// the message names the role the caller asked for.
 	if pf == nil {
 		return fmt.Errorf("profiles: profile %q requires slot %q but profiles file not loaded", profileName, role)
 	}
-	entry, ok := pf.Profiles[profileName]
-	if !ok {
-		return fmt.Errorf("profiles: unknown profile %q — available: %s",
-			profileName, strings.Join(AvailableProfileNames(pf), ", "))
+	if err := RequireProfile(pf, profileName); err != nil {
+		return err
 	}
+	entry := pf.Profiles[profileName]
 	if _, ok := entry[role]; ok {
 		return nil
 	}
@@ -202,118 +222,10 @@ func RequireSlot(pf *ProfilesFile, profileName, role string) error {
 	)
 }
 
-// variantFromThinking maps a slot's `thinking` value to pi's `variant` field.
-// The canonical zero value in profiles is "off" (the PI harness convention),
-// but pi expects "none" as its zero value. This function translates "off" →
-// "none".
-//
-// An empty thinking value is rendered as an empty variant (which
-// marshalConfigContent then omits from the output entirely).
-func variantFromThinking(thinking string) string {
-	if thinking == "off" {
-		return "none"
-	}
-	return thinking
-}
-
-// BuildConfigContent generates the pi harness-config JSON string for the
-// given spawn options.
-//
-// Rules (#1612):
-//   - rootRole is the session's agent role (e.g. "coordinator", "worker",
-//     "review-goal"). It determines which profile slot is consulted.
-//   - If profileName is non-empty, load that profile and apply the root
-//     role's slot as the top-level model.
-//   - If modelOverride is non-empty (without a profile), set the root role's
-//     model to modelOverride.
-//   - If modelOverride is set alongside profileName, it overrides only the
-//     root role's model; other roles are unaffected (pi sessions have a
-//     single root agent per session).
-//   - If variantOverride is non-empty, set "variant" on the root role only.
-//   - If providerOverride is non-empty, set "defaultProvider" (pi's settings
-//     key for the routing provider) on the root role only. Sourced from
-//     `prism spawn --provider` (issue #2852). An empty value emits no key at
-//     all, so the profile slot's provider stays in effect.
-//   - Returns ("", nil) when no flags are set (no injection needed).
-//
-// pf may be nil when no profile flag is used; it is only consulted when
-// profileName is non-empty.
-func BuildConfigContent(pf *ProfilesFile, profileName, rootRole, modelOverride, variantOverride, providerOverride string) (string, error) {
-	if profileName == "" && modelOverride == "" && variantOverride == "" && providerOverride == "" {
-		return "", nil
-	}
-
-	topModel := ""
-	var rootVariant string
-
-	if profileName != "" {
-		if pf == nil {
-			return "", fmt.Errorf("profiles: profile %q requested but profiles file not loaded", profileName)
-		}
-		entry, ok := pf.Profiles[profileName]
-		if !ok {
-			available := AvailableProfileNames(pf)
-			return "", fmt.Errorf("profiles: unknown profile %q — available: %s",
-				profileName, strings.Join(available, ", "))
-		}
-
-		// Look up the root role's slot. Fall back to coordinator when the
-		// root role is empty (shouldn't happen in practice, but be defensive).
-		lookupRole := rootRole
-		if lookupRole == "" {
-			lookupRole = "coordinator"
-		}
-		if slot, ok := entry[lookupRole]; ok {
-			topModel = slot.Model
-			rootVariant = variantFromThinking(slot.Thinking)
-		}
-	}
-
-	// Apply modelOverride to the root role.
-	if modelOverride != "" {
-		topModel = modelOverride
-	}
-
-	// Apply variantOverride to the root role.
-	if variantOverride != "" {
-		rootVariant = variantOverride
-	}
-
-	// Build the minimal JSON structure. Pi sessions have a single root agent;
-	// we only emit the top-level model and variant (no "agent" sub-map needed
-	// for role-level overrides — each session is already the right role).
-	cfg := make(map[string]any)
-	if topModel != "" {
-		cfg["model"] = topModel
-	}
-	if rootVariant != "" {
-		cfg["variant"] = rootVariant
-	}
-	// defaultProvider is emitted ONLY for an explicit CLI override (#2852).
-	// The profile slot's provider is deliberately not mirrored here: the slot
-	// provider already reaches pi through the argv channel (PIInvocation's
-	// --provider), and emitting it here as well would change the no-flag
-	// behaviour of every existing session.
-	//
-	// Known conflict, do not re-derive it (#2854): the whole output of this
-	// function is injected as PI_CONFIG_CONTENT, and pi does not read that
-	// variable — measured as zero references in pi 0.84.2. Issue #2086 found
-	// the same dead letter and chose to retire the transport (its "Recommended
-	// fix — option 2", item 3), but delivered only the argv half. AC #3 of
-	// #2852 asked for this key regardless, so it is emitted here and the
-	// retire-vs-keep decision is tracked in #2854. Nothing depends on it: the
-	// argv channel carries the provider on every isolation mode.
-	if providerOverride != "" {
-		cfg["defaultProvider"] = providerOverride
-	}
-
-	if len(cfg) == 0 {
-		return "", nil
-	}
-
-	out, err := json.Marshal(cfg)
-	if err != nil {
-		return "", fmt.Errorf("profiles: marshal config content: %w", err)
-	}
-	return string(out), nil
-}
+// Note (#2854): prism used to render a profile slot into a JSON harness-config
+// blob here (BuildConfigContent) and ship it to pi as the PI_CONFIG_CONTENT
+// env var, or as a per-session temp file. pi read neither, so both transports
+// were retired. The single live carrier of provider / model / thinking is the
+// argv channel from #2086: buildDirectAgentCmd (host) and
+// appendAgentRunOverrides + populatePIConfig + PIInvocation (bwrap,
+// sandbox-exec).

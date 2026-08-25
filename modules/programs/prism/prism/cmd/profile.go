@@ -86,8 +86,8 @@ var profileCmd = &cobra.Command{
 	Short: "Manage the active model profile (runtime state)",
 	Long: `Manage the active model profile.
 
-The active profile determines which model identifiers are rendered into
-harness config for newly spawned sessions. It is resolved in this order:
+The active profile determines which model identifiers reach the agent on its
+command line for newly spawned sessions. It is resolved in this order:
 
   1. The --profile flag passed to "prism spawn" (highest)
   2. The runtime state file at $XDG_STATE_HOME/prism/active-profile

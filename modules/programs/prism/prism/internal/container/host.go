@@ -36,12 +36,12 @@ func (h *hostIsolator) Name() config.IsolationMode {
 
 // Capabilities returns the host feature flags: all flags are false because
 // host mode runs the agent directly with no sandboxing, no container lifecycle,
-// no config-blob injection, and no special sidecar behaviours.
+// no mandatory profiles.json, and no special sidecar behaviours.
 func (h *hostIsolator) Capabilities() Capabilities {
 	return Capabilities{
 		IsContainer:                false,
 		OwnsContainerLifecycle:     false,
-		NeedsConfigBlob:            false,
+		RequiresProfilesFile:       false,
 		NeedsHostAPISocket:         false,
 		UsesContainerHarness:       false,
 		RestartOnExit:              false,

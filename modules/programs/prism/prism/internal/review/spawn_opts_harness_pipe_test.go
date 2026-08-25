@@ -63,7 +63,6 @@ func newReviewerSpawnInputForTest(t *testing.T, agentSession, isolationMode, har
 		AgentName:          "review-goal",
 		AgentSession:       agentSession,
 		Prompt:             "unused-in-this-test",
-		AgentConfigContent: "",
 		Repo:               "prism-test",
 		Worktree:           "/tmp/" + agentSession,
 		PromptTemplateHash: "test-template-hash",

@@ -178,7 +178,6 @@ type ReviewerSpawnInputForTest struct {
 	AgentName          string
 	AgentSession       string
 	Prompt             string
-	AgentConfigContent string
 	Repo               string
 	Worktree           string
 	PromptTemplateHash string
@@ -206,7 +205,6 @@ func NewReviewerSpawnOptsForTest(in ReviewerSpawnInputForTest) session.SpawnOpts
 		AgentName:          in.AgentName,
 		AgentSession:       in.AgentSession,
 		Prompt:             in.Prompt,
-		AgentConfigContent: in.AgentConfigContent,
 		Repo:               in.Repo,
 		Worktree:           in.Worktree,
 		PromptTemplateHash: in.PromptTemplateHash,

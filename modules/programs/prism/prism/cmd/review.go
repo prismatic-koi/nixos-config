@@ -432,11 +432,11 @@ func runReview(cmd *cobra.Command, args []string) error {
 		ModelsByRole:    modelsByRole,
 	}
 
-	// Load profiles for any sandboxed mode (bwrap or sandbox-exec) so each
-	// agent receives its per-role harness-config JSON via BuildConfigContent.
+	// Load profiles for any sandboxed mode (bwrap or sandbox-exec) so the
+	// round can resolve the active profile and validate each reviewer's slot.
 	// Surface a missing profiles.json as an explicit error rather than silently
 	// spawning agents with the wrong model.
-	if isoCaps.NeedsConfigBlob {
+	if isoCaps.RequiresProfilesFile {
 		pf, pfErr := config.LoadProfiles()
 		if pfErr != nil {
 			return fmt.Errorf("prism review: %s mode requires profiles.json but it could not be loaded: %w\nhint: ensure the system has been rebuilt with the prism NixOS module enabled", isoMode, pfErr)

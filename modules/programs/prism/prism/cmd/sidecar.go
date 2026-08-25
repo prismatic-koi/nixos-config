@@ -79,7 +79,6 @@ func init() {
 	sidecarCmd.Flags().Int("port", 0, "Allocated host port (required in bwrap/sandbox-exec mode)")
 	sidecarCmd.Flags().String("plugin-path", "", "Host path to prism-hooks.ts plugin (unused; retained for back-compat)")
 	sidecarCmd.Flags().String("initial-prompt", "", "Initial prompt to deliver to the agent after readiness")
-	sidecarCmd.Flags().String("config-content", "", "JSON blob for the harness config (unused; retained for back-compat)")
 	sidecarCmd.Flags().String("instance-id", "", "UUID instance identifier for this session incarnation (for bus message scoping)")
 	sidecarCmd.Flags().Bool("worktree-readonly", false, "Mount the worktree read-only inside the container (used for review agents)")
 	sidecarCmd.Flags().String("harness", "pi", "Agent harness to use")
@@ -100,8 +99,6 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	pluginPath, _ := cmd.Flags().GetString("plugin-path")
 	_ = pluginPath // retained for back-compat; no longer consumed
 	initialPrompt, _ := cmd.Flags().GetString("initial-prompt")
-	configContent, _ := cmd.Flags().GetString("config-content")
-	_ = configContent
 	instanceID, _ := cmd.Flags().GetString("instance-id")
 	worktreeReadOnly, _ := cmd.Flags().GetBool("worktree-readonly")
 	_ = worktreeReadOnly
@@ -222,7 +219,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// constructed transiently here for the EffectiveModel call; a fresh
 	// adapter with the resolved model is constructed below for the sidecar.
 	// When modelsByRole contains an entry for agentRole, that takes precedence
-	// over the profile harness-config lookup (C.2 §6.3).
+	// over the profile slot lookup (C.2 §6.3).
 	var agentModel string
 	if m, ok := modelsByRole[agentRole]; ok && m != "" {
 		agentModel = m
