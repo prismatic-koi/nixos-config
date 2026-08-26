@@ -63,7 +63,9 @@
             	pattern = "*",
             	callback = function()
             		for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-            			if vim.api.nvim_buf_get_option(bufnr, "modified") then
+            			if vim.bo[bufnr].modified
+            				and vim.bo[bufnr].buftype == ""
+            				and vim.fn.buflisted(bufnr) == 1 then
             				vim.notify("You have unsaved buffers!", vim.log.levels.WARN, { title = "Fugitive" })
             			end
             		end
