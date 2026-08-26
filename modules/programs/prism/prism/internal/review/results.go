@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/verdict"
 )
 
 // maxProgressMsgBytes is the hard cap on any per-agent error message printed
@@ -150,16 +151,21 @@ func ExtractAssistantText(payload string) string {
 //   - <verdict>FAIL</verdict>  → (false, VerdictFail)
 //   - anything else            → (false, VerdictNone)
 //
+// The marker rule itself lives in internal/verdict, the one place it is
+// defined (#2862). PASS_WITH_DISAGREEMENT maps to (false, VerdictNone) here so
+// this pipeline path keeps its pre-existing behaviour unchanged; the dashboard
+// renders that verdict distinctly through its own mapping of verdict.Kind.
+//
 // Exported so it can be tested directly without needing a live DB.
 func AssessPassed(text string) (bool, VerdictKind) {
-	lower := strings.ToLower(text)
-	if strings.Contains(lower, "<verdict>pass</verdict>") {
+	switch verdict.Parse(text) {
+	case verdict.Pass:
 		return true, VerdictPass
-	}
-	if strings.Contains(lower, "<verdict>fail</verdict>") {
+	case verdict.Fail:
 		return false, VerdictFail
+	default:
+		return false, VerdictNone
 	}
-	return false, VerdictNone
 }
 
 // failureReason returns the user-facing reason string for a spawn / readiness

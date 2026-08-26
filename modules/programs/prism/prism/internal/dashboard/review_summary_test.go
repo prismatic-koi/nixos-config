@@ -28,6 +28,8 @@ func TestParseVerdict(t *testing.T) {
 		{"no marker", "no verdict here", ""},
 		{"malformed", "<verdict>maybe</verdict>", ""},
 		{"pass wins over fail", "<verdict>pass</verdict> and <verdict>fail</verdict>", "pass"},
+		{"pass with disagreement", "<verdict>PASS_WITH_DISAGREEMENT</verdict>", "pass_with_disagreement"},
+		{"pwd not misread as pass", "summary <verdict>pass_with_disagreement</verdict>", "pass_with_disagreement"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -36,6 +38,46 @@ func TestParseVerdict(t *testing.T) {
 				t.Errorf("ParseVerdict(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestPassWithDisagreement_RendersDistinctly covers #2862: a
+// PASS_WITH_DISAGREEMENT verdict must render as a value distinct from both a
+// plain pass and pending, on the collapsed row and in the expanded child row.
+func TestPassWithDisagreement_RendersDistinctly(t *testing.T) {
+	if dashboard.ParseVerdict("<verdict>PASS_WITH_DISAGREEMENT</verdict>") != dashboard.VerdictPassWithDisagreement {
+		t.Fatal("PASS_WITH_DISAGREEMENT did not classify as VerdictPassWithDisagreement")
+	}
+	if dashboard.VerdictPassWithDisagreement == dashboard.VerdictPass ||
+		dashboard.VerdictPassWithDisagreement == dashboard.VerdictPending {
+		t.Fatal("VerdictPassWithDisagreement must be distinct from pass and pending")
+	}
+
+	// The collapsed group row renders a distinct letter for PWD.
+	agents := review.Agents()
+	states := map[string]string{}
+	msgs := map[string]string{}
+	for i, a := range agents {
+		states[a.Name] = "finished"
+		if i == 0 {
+			msgs[a.Name] = "<verdict>PASS_WITH_DISAGREEMENT</verdict>"
+		} else {
+			msgs[a.Name] = "<verdict>PASS</verdict>"
+		}
+	}
+	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, states, msgs))
+	var sawPWD bool
+	for _, s := range summaries {
+		if s.Verdict == dashboard.VerdictPassWithDisagreement {
+			sawPWD = true
+		}
+	}
+	if !sawPWD {
+		t.Fatal("no summary carried VerdictPassWithDisagreement")
+	}
+	rendered, _, _ := dashboard.RenderReviewSummary(summaries, 200)
+	if !strings.Contains(rendered, "D") {
+		t.Errorf("rendered summary %q has no distinct PWD glyph 'D'", rendered)
 	}
 }
 

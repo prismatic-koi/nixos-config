@@ -57,7 +57,7 @@ func FetchSessionsFromDB() tea.Msg {
 
 	// Attach last-assistant messages for per-agent review sessions so the
 	// virtual review-group row can derive per-child verdicts (#1795). We
-	// fetch GroupResults once per unique review group_id — review groups
+	// fetch GroupResultsAll once per unique review group_id — review groups
 	// are bounded in number, so this is a small fixed cost per refresh.
 	attachReviewLastMessages(d, sessions)
 
@@ -66,11 +66,19 @@ func FetchSessionsFromDB() tea.Msg {
 
 // attachReviewLastMessages populates sessions[i].LastMessage for every
 // per-agent review session (i.e. ReviewRoundKey(sessions[i].Name) != "")
-// using db.GroupResults() keyed by group_id. The DB handle is reused; on
+// using db.GroupResultsAll() keyed by group_id. The DB handle is reused; on
 // error the field is left empty (best-effort — the dashboard still renders
 // correctly, just without verdict glyphs / labels until the next refresh).
 //
-// One GroupResults() call per unique review group_id. Review groups are
+// GroupResultsAll, not GroupResults: this is a display read, so it must keep
+// showing an agent's verdict for the whole time the round is on the dashboard,
+// including after its agent_status row is closed (ended_at IS NOT NULL) by the
+// 15-minute release (#2649). The narrow GroupResults read drops closed rows —
+// its escape-hatch semantics exist for the monitor's verdict aggregation, not
+// for the dashboard — so it blanked the glyph to pending once a round aged out
+// (#2862, the third instance of this class after #2584/#2594 and #2649).
+//
+// One GroupResultsAll() call per unique review group_id. Review groups are
 // bounded in number, so this is a small fixed cost per FetchSessionsFromDB
 // invocation.
 func attachReviewLastMessages(d *db.DB, sessions []AgentSession) {
@@ -91,7 +99,7 @@ func attachReviewLastMessages(d *db.DB, sessions []AgentSession) {
 	// Fetch GroupResults for each unique group and stash a per-session map.
 	bySession := map[string]string{}
 	for gid := range groupIDs {
-		members, err := d.GroupResults(gid)
+		members, err := d.GroupResultsAll(gid)
 		if err != nil {
 			continue
 		}

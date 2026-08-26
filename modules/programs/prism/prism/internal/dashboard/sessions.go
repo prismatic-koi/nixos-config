@@ -674,6 +674,12 @@ func RenderSessionRow(
 	}
 
 	title := s.AgentTitle
+	// For an expanded per-agent review child, agent_status.title is the first
+	// heading of the spawn prompt ("## Context for your review"), which carries
+	// no information on the dashboard. Show the agent's verdict instead (#2862).
+	if trailingReviewAgent(s.Name) != "" {
+		title = reviewChildVerdictLabel(classifyVerdict(s.AgentState, s.LastMessage))
+	}
 	if titleW >= 5 && utf8.RuneCountInString(title) > titleW {
 		title = string([]rune(title)[:titleW-1]) + "…"
 	}
