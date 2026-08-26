@@ -5,8 +5,8 @@ package dashboard
 // This file owns:
 //   - the ReviewChildSummary type (one entry per canonical review agent on a
 //     virtual review-group row),
-//   - the verdict-parsing helper (case-insensitive substring match against the
-//     last assistant message, mirroring internal/db/sessions.go::ReviewVerdict),
+//   - the verdict-parsing helper, which maps the shared verdict.Kind (the one
+//     marker rule, in internal/verdict) onto the dashboard's Verdict* values,
 //   - the canonical short-name mapping (derived from review.Agents()), and
 //   - the single rendering helper RenderReviewSummary that produces the
 //     per-agent verdict labels shown on the collapsed review-group row.
@@ -23,6 +23,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/prismatic-koi/prism/internal/review"
+	"github.com/prismatic-koi/prism/internal/verdict"
 )
 
 // Verdict values produced by ParseVerdict and stored in ReviewChildSummary.
@@ -32,6 +33,11 @@ const (
 	VerdictRunning = "running" // active / waiting / compacting / reviewing
 	VerdictPending = "pending" // idle / unknown / not yet started
 	VerdictError   = "error"   // errored / startup failure / missing agent
+	// VerdictPassWithDisagreement is review-goal's PASS_WITH_DISAGREEMENT
+	// marker: the round passes but the reviewer records an unresolved concern
+	// for the coordinator (agents/review-goal.md). Rendered distinctly from a
+	// plain pass and from pending (#2862).
+	VerdictPassWithDisagreement = "pass_with_disagreement"
 )
 
 // ReviewChildSummary holds the per-agent rollup used to render one cell of
@@ -89,20 +95,20 @@ func ShortAgentName(fullName string) string {
 // case-insensitive `<verdict>pass</verdict>` marker, VerdictFail when it
 // contains `<verdict>fail</verdict>`, and "" otherwise.
 //
-// This mirrors the rule used by internal/db/sessions.go::ReviewVerdict
-// rollup — no regex, no XML parsing, just a substring check.
+// The marker rule itself lives in internal/verdict — the single stdlib-only
+// leaf shared with internal/db and internal/review (#2862). This function only
+// maps verdict.Kind onto the dashboard's Verdict* value space.
 func ParseVerdict(lastMessage string) string {
-	if lastMessage == "" {
+	switch verdict.Parse(lastMessage) {
+	case verdict.Pass:
+		return VerdictPass
+	case verdict.Fail:
+		return VerdictFail
+	case verdict.PassWithDisagreement:
+		return VerdictPassWithDisagreement
+	default:
 		return ""
 	}
-	lower := strings.ToLower(lastMessage)
-	if strings.Contains(lower, "<verdict>pass</verdict>") {
-		return VerdictPass
-	}
-	if strings.Contains(lower, "<verdict>fail</verdict>") {
-		return VerdictFail
-	}
-	return ""
 }
 
 // classifyVerdict returns the final Verdict value for a child given its
@@ -259,6 +265,27 @@ func reviewSummaryCompactWidth(summaries []ReviewChildSummary) int {
 	return n + 2*(n-1)
 }
 
+// reviewChildVerdictLabel returns the full-word verdict label shown in the
+// title column of an expanded per-agent review child row (#2862). Unlike the
+// single-letter form on the collapsed group row, this is spelled out because
+// the title column has the width for it and the row has no other verdict cue.
+func reviewChildVerdictLabel(v string) string {
+	switch v {
+	case VerdictPass:
+		return "PASS"
+	case VerdictFail:
+		return "FAIL"
+	case VerdictPassWithDisagreement:
+		return "PASS (disagreement)"
+	case VerdictRunning:
+		return "running"
+	case VerdictError:
+		return "error"
+	default:
+		return "pending"
+	}
+}
+
 // letterForVerdict returns the per-agent label letter for a verdict.
 func letterForVerdict(v string) string {
 	switch v {
@@ -266,6 +293,8 @@ func letterForVerdict(v string) string {
 		return "P"
 	case VerdictFail:
 		return "F"
+	case VerdictPassWithDisagreement:
+		return "D"
 	case VerdictRunning:
 		return "◌"
 	case VerdictError:
@@ -283,6 +312,8 @@ func colorForVerdict(v string) string {
 		return ColorGreen
 	case VerdictFail:
 		return ColorRed
+	case VerdictPassWithDisagreement:
+		return ColorYellow
 	case VerdictRunning:
 		return ColorPrimary
 	case VerdictError:

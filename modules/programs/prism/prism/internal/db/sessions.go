@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/verdict"
 )
 
 // scanSession scans a sessions row from the given scanner into a Session value.
@@ -398,13 +400,17 @@ SELECT group_id FROM session_groups
 		if revErr == nil && len(members) > 0 {
 			var passCount, failCount, noneCount int
 			for _, m := range members {
-				// Import review package would create a cycle; inline the check here.
-				lower := strings.ToLower(m.LastMessage)
-				if strings.Contains(lower, "<verdict>pass</verdict>") {
+				// The verdict-marker rule lives in internal/verdict, the one
+				// stdlib-only leaf both this package and the dashboard share
+				// (#2862). PASS_WITH_DISAGREEMENT keeps its pre-existing
+				// treatment here: it falls to noneCount, exactly as the old
+				// inline check did, so this historical roll-up is unchanged.
+				switch verdict.Parse(m.LastMessage) {
+				case verdict.Pass:
 					passCount++
-				} else if strings.Contains(lower, "<verdict>fail</verdict>") {
+				case verdict.Fail:
 					failCount++
-				} else {
+				default:
 					noneCount++
 				}
 			}

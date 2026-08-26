@@ -579,7 +579,22 @@ ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 		}
 		switch evtType {
 		case "msg_assistant":
-			r.LastMessage = payload
+			// Decode the JSON envelope and store the message text, mirroring
+			// the startup_error / stall_error cases below. The raw payload is
+			// {"messageId":"…","text":"…"}, and encoding/json escapes '<' and
+			// '>' as \u003c / \u003e — so storing it raw hid every <verdict>
+			// marker from the substring rule the dashboard and the
+			// ComputeSpawnOutcome roll-up apply to LastMessage (#2862).
+			if payload != "" {
+				var p struct {
+					Text string `json:"text"`
+				}
+				if jsonErr := json.Unmarshal([]byte(payload), &p); jsonErr == nil && p.Text != "" {
+					r.LastMessage = p.Text
+				} else {
+					r.LastMessage = payload
+				}
+			}
 		case "startup_error":
 			// Extract the "reason" field from the JSON payload. This is
 			// written by writeStartupError in the sidecar when WaitHealthy
