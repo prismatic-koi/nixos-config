@@ -40,6 +40,19 @@ STE findings do not apply to class C conversational output (acknowledgement, rap
 
 ---
 
+## Comment quality
+
+Check comments in the diff against the deletion test: delete the comment,
+and check whether the deletion could cause a wrong decision or let someone
+reintroduce a bug. If not, the comment should not be there. Load the
+`comment-discipline` skill for the full rule set and worked examples.
+
+This is a judgment call, not a nitpick machine. Raise it only when a
+comment genuinely bloats the diff — long, historical, or narrating the
+obvious. Do not block on a comment you would have phrased differently.
+
+---
+
 ## Reading the PR
 
 Use these commands to gather context:

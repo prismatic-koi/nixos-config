@@ -88,6 +88,14 @@ If your spawn prompt references a Jira ticket (e.g. `PLAT-123`), keep its state 
 
 Load the `atlassian` skill for full tool usage. Reading a ticket to gather context or decide whether to action it does not change the ticket state — transition only when you actually start or finish work.
 
+## Comment discipline
+
+When you write a comment, apply the deletion test: delete the comment, and
+check whether the deletion could cause a wrong decision or let someone
+reintroduce a bug. If not, do not write the comment. Load the
+`comment-discipline` skill for the full rule set and worked examples, and
+the `simple-english` skill for STE mechanics.
+
 ## Quality gates
 
 After each meaningful code change, run the quality gates described in the repo's
