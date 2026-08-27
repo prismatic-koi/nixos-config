@@ -69,7 +69,10 @@ const (
 // The returned slice begins with "pi" and includes:
 //
 //	--provider <cfg.PIProvider>           (when non-empty)
-//	--model    <cfg.PIModel>              (when non-empty)
+//	--model    <cfg.AgentModel or cfg.PIModel>
+//	                                      (when non-empty; AgentModel — the
+//	                                       per-role `--model-override` entry —
+//	                                       wins over PIModel, issue #2863)
 //	--thinking <cfg.PIThinking>           (when non-empty)
 //	--extension <extensionPath>           (always; path is derived from cfg)
 //	--agent    <cfg.AgentRole>            (when non-empty; consumed by the
@@ -107,8 +110,18 @@ func PIInvocation(cfg Config) []string {
 	if cfg.PIProvider != "" {
 		args = append(args, "--provider", cfg.PIProvider)
 	}
-	if cfg.PIModel != "" {
-		args = append(args, "--model", cfg.PIModel)
+	// Model axis, highest rung first (issue #2863). cfg.AgentModel carries the
+	// `prism spawn --model-override <role>=<model>` entry for THIS session's
+	// role; cfg.PIModel carries the profile slot value that populatePIConfig
+	// has already replaced with `prism agent-run --model` when that was set.
+	// A per-role entry therefore beats the session-wide flag, which beats the
+	// slot — the chain `prism agent-context` publishes as precedence["model"].
+	model := cfg.PIModel
+	if cfg.AgentModel != "" {
+		model = cfg.AgentModel
+	}
+	if model != "" {
+		args = append(args, "--model", model)
 	}
 	if cfg.PIThinking != "" {
 		args = append(args, "--thinking", cfg.PIThinking)

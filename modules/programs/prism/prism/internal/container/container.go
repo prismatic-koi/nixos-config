@@ -113,10 +113,14 @@ type Config struct {
 	// injected into the container.
 	AgentRole string
 
-	// AgentModel is the model identifier to use when delivering the initial
-	// prompt (e.g. "anthropic/claude-sonnet-4-6"). When empty, the harness
-	// default model for the session is used (which may differ from the host
-	// harness config and cause "model not supported" errors).
+	// AgentModel is the per-role model override for this session's agent
+	// role (e.g. "anthropic/claude-sonnet-4-6"), sourced from
+	// `prism spawn --model-override <role>=<model>` and carried to
+	// `prism agent-run` as --agent-model. populatePIConfig writes it; when
+	// it is non-empty PIInvocation emits it as `--model <AgentModel>` in
+	// place of PIModel, so the per-role entry wins over both the profile
+	// slot and the session-wide `--model` flag. Empty means no per-role
+	// override for this role, and PIModel is used unchanged. Issue #2863.
 	AgentModel string
 
 	// PluginHostPath is retained for compatibility but is no longer used by
