@@ -57,6 +57,7 @@
             	settings = { ["nil"] = {
             		formatting = { command = { "nixfmt" } },
             		nix = {
+            			maxMemoryMB = 8192,
             			flake = {
             				autoArchive = true,
             				autoEvalInputs = true,
