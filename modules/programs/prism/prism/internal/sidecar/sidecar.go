@@ -195,9 +195,15 @@ type Config struct {
 	// This field is a reporting value on the sidecar's own path: the model pi
 	// runs on is selected by the launch path instead — buildDirectAgentCmd on
 	// host, and populatePIConfig → container.Config.AgentModel → PIInvocation
-	// on bwrap and sandbox-exec (issue #2863). Both paths resolve the same
-	// --model-override entry, so the reported value and the running model
-	// agree; do not make this field the source for either one.
+	// on bwrap and sandbox-exec (issue #2863).
+	//
+	// When a --model-override entry exists for this role, both paths resolve
+	// that same entry and the reported value matches the running model. With
+	// no entry the two diverge: cmd/sidecar.go falls back to the harness
+	// adapter's EffectiveModel, which pi answers with an empty string, while
+	// pi still runs on --model or the profile slot. So an empty column does
+	// not mean an unset model. Do not make this field the source for either
+	// the reported value or the running model.
 	AgentModel string
 	// ModelsByRole is the per-role model override map (C.2). When non-nil
 	// it takes precedence over AgentModel for any role present in the map.

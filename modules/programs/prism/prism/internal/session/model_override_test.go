@@ -3,11 +3,9 @@ package session
 // model_override_test.go — issue #2863 regression tests for the per-role
 // model override on the session launch path.
 //
-// `prism spawn --model-override <role>=<model>` lands on
-// Opts.ModelsByRole. Before #2863 that map reached only the sidecar and the
-// agent_status.agent_model reporting column, so the flag selected no model on
-// any isolation mode. It now decides the model pi runs on for the session's
-// own role, above `--model` and above the profile slot.
+// `prism spawn --model-override <role>=<model>` lands on Opts.ModelsByRole.
+// The entry keyed by the session's own role decides the model pi runs on,
+// above `--model` and above the profile slot.
 //
 // Two emit sites carry it, one per launch shape:
 //
@@ -111,9 +109,9 @@ func TestBuildDirectAgentCmd_OverrideForOtherRoleIsNoOp(t *testing.T) {
 	})
 }
 
-// TestBuildDirectAgentCmd_NoOverrideIsUnchanged is the no-regression AC: with
-// an empty ModelsByRole the host command is byte-identical to the pre-#2863
-// output for the same opts.
+// TestBuildDirectAgentCmd_NoOverrideIsUnchanged is the no-regression AC: an
+// empty or nil ModelsByRole must leave the host command byte-identical to the
+// same opts with the field absent.
 func TestBuildDirectAgentCmd_NoOverrideIsUnchanged(t *testing.T) {
 	base := Opts{
 		Agent:       "worker",
@@ -173,8 +171,7 @@ func TestBuildAgentCmd_SandboxedModesCarryAgentModel(t *testing.T) {
 
 // TestBuildAgentCmd_SandboxedModesOmitAgentModelForOtherRole is the
 // sandboxed half of the edge-case AC: an entry for a role this session does
-// not run emits no --agent-model flag, so `prism agent-run` sees the
-// pre-#2863 argv.
+// not run emits no --agent-model flag at all.
 func TestBuildAgentCmd_SandboxedModesOmitAgentModelForOtherRole(t *testing.T) {
 	for _, mode := range []string{"bwrap", "sandbox-exec"} {
 		t.Run(mode, func(t *testing.T) {
@@ -200,10 +197,10 @@ func TestBuildAgentCmd_SandboxedModesOmitAgentModelForOtherRole(t *testing.T) {
 // mapping for the agent-only layout, which carries every review agent — the
 // primary user of --model-override.
 //
-// The mapping had no guard before this test, and it has silently dropped a
-// field twice: AgentEnvVars (#2533) and ModelsByRole (#2863). Its sibling
-// buildOptsForLayout has had per-field forwarding guards since #2086 for
-// exactly this reason; this is the missing half of that convention.
+// Its sibling buildOptsForLayout carries per-field forwarding guards for the
+// same reason; this is the other half of that convention. A field dropped
+// from either mapping is silent — the session still launches, and only the
+// dropped capability goes missing.
 func TestBuildOptsForAgentOnlyLayout_ForwardsFields(t *testing.T) {
 	spawnOpts := SpawnOpts{
 		SessionName:  "myrepo@branch~review-1-review-goal",

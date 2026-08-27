@@ -112,8 +112,8 @@ func TestPopulatePIConfig_AgentModelBeatsSlotWithoutModelFlag(t *testing.T) {
 }
 
 // TestPopulatePIConfig_NoAgentModelIsUnchanged is the no-regression AC for
-// the sandboxed modes: with no per-role entry, AgentModel stays empty and the
-// argv is exactly the pre-#2863 `--model` / slot result.
+// the sandboxed modes: with no per-role entry, AgentModel stays empty and
+// `--model` alone, or the profile slot, decides the argv.
 func TestPopulatePIConfig_NoAgentModelIsUnchanged(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("populatePIConfig depends on POSIX exec semantics")

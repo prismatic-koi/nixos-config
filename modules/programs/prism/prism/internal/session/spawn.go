@@ -1169,10 +1169,8 @@ func agentOnlyAgentEnvVars(opts SpawnOpts) map[string]string {
 // field on, and a mapping inside a function that also starts a sidecar,
 // writes the DB, and creates tmux windows cannot be pinned by a test.
 //
-// The literal has been fixed twice for a dropped field — AgentEnvVars
-// (issue #2533) and ModelsByRole (issue #2863) — so the mapping now lives in
-// a pure function with a forwarding test per field, matching the guards on
-// buildOptsForLayout.
+// Keep the mapping here, not inline in the caller: every field has a
+// forwarding test, and a field dropped from an inline literal is silent.
 //
 // mode is the caller's already-resolved isolation mode, not opts.IsolationMode:
 // spawnAgentOnlyLayout substitutes the machine default for an empty value

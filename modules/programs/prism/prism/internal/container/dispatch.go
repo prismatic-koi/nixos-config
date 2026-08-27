@@ -530,9 +530,7 @@ func (h *hostIsolator) LogPaths() LogPaths {
 //
 // Issue #2863 adds `--agent-model`, which carries the per-role
 // `prism spawn --model-override <role>=<model>` entry for this session's
-// role. Before it existed the map reached only the agent_status.agent_model
-// reporting column, so a flag named `--model-override` selected no model on
-// any isolation mode.
+// role.
 func appendAgentRunOverrides(cmd string, opts AgentPaneOpts) string {
 	if opts.Model != "" {
 		cmd += " --model " + shellQuoteContainer(opts.Model)

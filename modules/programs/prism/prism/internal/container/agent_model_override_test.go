@@ -12,9 +12,6 @@ package container
 //   - PIInvocation ranks Config.AgentModel above Config.PIModel when it emits
 //     pi's single --model argument. That ranking is what makes the top rung of
 //     `prism agent-context`'s precedence["model"] chain true.
-//
-// Before #2863 the field had no writer and no reader; the map stopped at the
-// agent_status.agent_model reporting column.
 
 import (
 	"strings"
@@ -78,8 +75,8 @@ func TestPIInvocation_AgentModelAloneReachesArgv(t *testing.T) {
 }
 
 // TestPIInvocation_EmptyAgentModelFallsThroughToPIModel is the
-// no-regression AC: with no per-role entry the argv is exactly what it was
-// before #2863 — PIModel decides, and no blank `--model ""` is emitted.
+// no-regression AC: with no per-role entry, PIModel alone decides the model,
+// and no empty-string --model argument is emitted.
 func TestPIInvocation_EmptyAgentModelFallsThroughToPIModel(t *testing.T) {
 	t.Run("PIModel set", func(t *testing.T) {
 		cfg := Config{
@@ -141,8 +138,8 @@ func TestAgentPaneCmd_AgentModelFlagAppended(t *testing.T) {
 }
 
 // TestAgentPaneCmd_EmptyAgentModelOmitsFlag is the no-regression guard for
-// the pane command: no per-role entry means the rendered command is the
-// pre-#2863 shape, and no empty-string --agent-model argument is emitted.
+// the pane command: with no per-role entry the --agent-model flag is absent
+// entirely, rather than rendered with an empty string.
 func TestAgentPaneCmd_EmptyAgentModelOmitsFlag(t *testing.T) {
 	isolators := map[string]Isolator{
 		"bwrap":        &bwrapIsolator{},

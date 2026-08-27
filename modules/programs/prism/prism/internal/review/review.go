@@ -314,9 +314,7 @@ type Opts struct {
 	// Each reviewer reads the entry keyed by its own role, and that entry
 	// selects the model the reviewer runs on — above `--model` and above the
 	// profile slot for that role (issue #2863). Entries for the other four
-	// roles in the round are a no-op for this reviewer. Before #2863 the map
-	// terminated at cmd/sidecar.go and only labelled the
-	// agent_status.agent_model reporting column.
+	// roles in the round are a no-op for this reviewer.
 	ModelsByRole map[string]string
 	// ReadinessTimeout is the per-agent deadline for the post-spawn
 	// readiness gate (#1051 Piece A). Zero falls back to

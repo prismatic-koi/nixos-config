@@ -248,11 +248,9 @@ func TestAgentContextPrecedenceKeys(t *testing.T) {
 	// is a false statement to every agent that reads agent-context, so the top
 	// rung is pinned here.
 	//
-	// The rung is pinned to the behaviour, not to the intent (issue #2863).
-	// Until #2863 the map reached only the agent_status.agent_model reporting
-	// column, so this rung named a flag that selected no model on any
-	// isolation mode. The sub-test below re-checks the enforcement point, so
-	// the string and the behaviour cannot drift apart again.
+	// The rung is pinned to the behaviour, not to the intent (issue #2863):
+	// the sub-test below re-checks the enforcement point, so a rung can never
+	// state a precedence that no emit site applies.
 	modelChain := doc.Precedence["model"]
 	if len(modelChain) < 3 {
 		t.Fatalf("precedence[\"model\"] = %v, want at least three rungs", modelChain)

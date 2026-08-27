@@ -175,9 +175,9 @@ var precedenceRules = map[string][]string{
 	// entry keyed by the session's own role; host mode emits it from
 	// buildDirectAgentCmd, and bwrap / sandbox-exec carry it as
 	// `prism agent-run --agent-model` into container.Config.AgentModel, which
-	// PIInvocation ranks above PIModel. Before #2863 the map stopped at the
-	// agent_status.agent_model reporting column, so this rung labelled rather
-	// than selected.
+	// PIInvocation ranks above PIModel. Keep this string in step with those
+	// three sites: agents read it as the contract for the model axis, so a rung
+	// that no emit site enforces is a false statement to every one of them.
 	//
 	// The provider axis has two rungs because --model-override has no
 	// provider-only form. It can still reach the provider axis indirectly: the
