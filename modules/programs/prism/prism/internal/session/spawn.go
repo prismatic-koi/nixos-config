@@ -197,7 +197,8 @@ type SpawnOpts struct {
 
 	// ModelsByRole is the per-role model override map (C.2). When non-empty
 	// it is forwarded to the sidecar via repeated --model-override flags so
-	// the harness adapter applies per-role model overrides.
+	// the harness adapter reports the per-role model, and to Opts.ModelsByRole
+	// so the entry for AgentRole selects the model pi runs on (issue #2863).
 	ModelsByRole map[string]string
 
 	// ReadinessTimeout, when > 0, causes SpawnSession to gate its return on
@@ -1223,6 +1224,11 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		Variant: opts.Variant,
 		// Provider override (issue #2852) on the same seam.
 		Provider: opts.Provider,
+		// ModelsByRole (issue #2863): the review fan-out is the primary user
+		// of `--model-override`, and every reviewer lands on this layout. The
+		// field was absent here, so the entry for a reviewer's own role never
+		// reached BuildAgentCmd and could select no model.
+		ModelsByRole: opts.ModelsByRole,
 		// AgentEnvVars: the role-filtered profile env vars (issue #2533).
 		// This used to be omitted entirely, so a host-mode review session got
 		// no profile env vars while the same session under bwrap or

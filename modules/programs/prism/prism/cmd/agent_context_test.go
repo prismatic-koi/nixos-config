@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/container"
 )
 
 // TestAgentContextCoversAllCommands asserts that every non-hidden top-level
@@ -243,10 +244,15 @@ func TestAgentContextPrecedenceKeys(t *testing.T) {
 	}
 
 	// The model chain has THREE rungs. --model-override names a single role
-	// and beats --model for that role (cmd/spawn.go's flag description; the
-	// agentRole lookup in cmd/sidecar.go). Publishing --model as the highest
-	// rung is a false statement to every agent that reads agent-context, so
-	// the top rung is pinned here.
+	// and beats --model for that role. Publishing --model as the highest rung
+	// is a false statement to every agent that reads agent-context, so the top
+	// rung is pinned here.
+	//
+	// The rung is pinned to the behaviour, not to the intent (issue #2863).
+	// Until #2863 the map reached only the agent_status.agent_model reporting
+	// column, so this rung named a flag that selected no model on any
+	// isolation mode. The sub-test below re-checks the enforcement point, so
+	// the string and the behaviour cannot drift apart again.
 	modelChain := doc.Precedence["model"]
 	if len(modelChain) < 3 {
 		t.Fatalf("precedence[\"model\"] = %v, want at least three rungs", modelChain)
@@ -262,6 +268,28 @@ func TestAgentContextPrecedenceKeys(t *testing.T) {
 		t.Errorf("precedence[\"model\"] lowest rung = %q, want it to name the profile slot",
 			modelChain[len(modelChain)-1])
 	}
+
+	// The published top rung is a behavioural claim. Pin it to the code that
+	// makes it true for bwrap and sandbox-exec: PIInvocation must rank
+	// Config.AgentModel (the per-role --model-override entry, written by
+	// populatePIConfig) above Config.PIModel (the --model / slot value) when
+	// it renders pi's single --model argument. The host-mode half of the same
+	// claim is pinned in internal/session/host_overrides_test.go.
+	t.Run("top rung is enforced on pi's argv", func(t *testing.T) {
+		args := container.PIInvocation(container.Config{
+			PIBinaryPath:          "/nix/store/fake-pi/bin/pi",
+			PIModel:               "anthropic/claude-sonnet-4-6",
+			AgentModel:            "google/gemini-2.5-pro",
+			PIExtensionSandboxDir: "/etc/prism/pi-extensions",
+		})
+		rendered := strings.Join(args, " ")
+		if !strings.Contains(rendered, "--model google/gemini-2.5-pro") {
+			t.Errorf("precedence[\"model\"][0] claims --model-override outranks --model, but PIInvocation did not put the per-role model on pi's argv; got %v", args)
+		}
+		if strings.Contains(rendered, "anthropic/claude-sonnet-4-6") {
+			t.Errorf("the lower rung leaked onto pi's argv alongside the per-role model; got %v", args)
+		}
+	})
 }
 
 // TestAgentContextHiddenExcluded verifies that hidden commands are absent

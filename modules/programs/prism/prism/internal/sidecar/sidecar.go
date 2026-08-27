@@ -191,8 +191,13 @@ type Config struct {
 	// --model-override or the harness adapter's EffectiveModel.
 	// When non-empty it is seeded into root_model_id in the DB so that
 	// buildPromptBody can include the model in the prompt_async body (#557).
-	// This is a reporting value: it does not select the model pi runs on.
-	// See issue #2863.
+	//
+	// This field is a reporting value on the sidecar's own path: the model pi
+	// runs on is selected by the launch path instead — buildDirectAgentCmd on
+	// host, and populatePIConfig → container.Config.AgentModel → PIInvocation
+	// on bwrap and sandbox-exec (issue #2863). Both paths resolve the same
+	// --model-override entry, so the reported value and the running model
+	// agree; do not make this field the source for either one.
 	AgentModel string
 	// ModelsByRole is the per-role model override map (C.2). When non-nil
 	// it takes precedence over AgentModel for any role present in the map.

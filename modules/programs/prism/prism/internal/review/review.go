@@ -311,14 +311,12 @@ type Opts struct {
 	// issue #1122). It is forwarded to session.SpawnOpts.ModelsByRole, which
 	// hands it to the sidecar as repeated --model-override flags.
 	//
-	// Do not read this as "the reviewer runs on this model" (issue #2863).
-	// The map terminates at cmd/sidecar.go, which resolves it to
-	// sidecar.Opts.AgentModel and records that on the agent_status.agent_model
-	// reporting column. It does not reach pi's argv: the model pi runs on is
-	// resolved at agent-run time by populatePIConfig, from the profile slot
-	// plus agent-run's own --model, neither of which consults this map. The
-	// only route that ever aimed this map at pi was the harness-config blob
-	// patch in run.go (#1123), and that blob was never read.
+	// Each reviewer reads the entry keyed by its own role, and that entry
+	// selects the model the reviewer runs on — above `--model` and above the
+	// profile slot for that role (issue #2863). Entries for the other four
+	// roles in the round are a no-op for this reviewer. Before #2863 the map
+	// terminated at cmd/sidecar.go and only labelled the
+	// agent_status.agent_model reporting column.
 	ModelsByRole map[string]string
 	// ReadinessTimeout is the per-agent deadline for the post-spawn
 	// readiness gate (#1051 Piece A). Zero falls back to

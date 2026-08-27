@@ -216,6 +216,15 @@ type AgentPaneOpts struct {
 	// the slot's model is used unchanged.
 	Model string
 
+	// AgentModel, when non-empty, is appended to the bwrap/sandbox-exec tmux
+	// pane command as `--agent-model <X>` so that `prism agent-run` puts it
+	// on container.Config.AgentModel, which PIInvocation renders as pi's
+	// `--model` in place of the slot / `--model` value. Sourced from the
+	// `prism spawn --model-override <role>=<model>` entry for THIS session's
+	// role, which the caller resolves before it gets here (issue #2863).
+	// Empty value omits the flag and Model (or the slot) is used unchanged.
+	AgentModel string
+
 	// Variant, when non-empty, is appended to the bwrap/sandbox-exec tmux
 	// pane command as `--variant <Y>` so that `prism agent-run` overrides
 	// the active profile slot's thinking/variant on the final pi argv.
@@ -500,9 +509,10 @@ func (h *hostIsolator) LogPaths() LogPaths {
 // shared helpers
 // ----------------------------------------------------------------------------
 
-// appendAgentRunOverrides appends `--model <X>`, `--variant <Y>` and/or
-// `--provider <P>` to the `prism agent-run` tmux pane command when those
-// overrides are set on opts. Shared between the bwrap and sandbox-exec
+// appendAgentRunOverrides appends `--model <X>`, `--agent-model <A>`,
+// `--variant <Y>` and/or `--provider <P>` to the `prism agent-run` tmux
+// pane command when those overrides are set on opts. Shared between the
+// bwrap and sandbox-exec
 // isolators because both modes dispatch the agent via `prism agent-run`
 // (which then re-reads the session row, populates a container.Config, and
 // launches pi via PIInvocation).
@@ -517,9 +527,23 @@ func (h *hostIsolator) LogPaths() LogPaths {
 // created, so this gate is defence in depth — provider decides routing and
 // billing, and a non-pi harness must never be handed a flag it would either
 // reject or read with an unrelated meaning.
+//
+// Issue #2863 adds `--agent-model`, which carries the per-role
+// `prism spawn --model-override <role>=<model>` entry for this session's
+// role. Before it existed the map reached only the agent_status.agent_model
+// reporting column, so a flag named `--model-override` selected no model on
+// any isolation mode.
 func appendAgentRunOverrides(cmd string, opts AgentPaneOpts) string {
 	if opts.Model != "" {
 		cmd += " --model " + shellQuoteContainer(opts.Model)
+	}
+	// Issue #2863: the per-role `--model-override` entry rides its own flag
+	// rather than replacing --model here. Keeping the two apart is what lets
+	// container.Config carry both values to PIInvocation, which applies the
+	// published precedence (per-role beats session-wide beats slot) at the
+	// single point that renders pi's argv.
+	if opts.AgentModel != "" {
+		cmd += " --agent-model " + shellQuoteContainer(opts.AgentModel)
 	}
 	if opts.Variant != "" {
 		cmd += " --variant " + shellQuoteContainer(opts.Variant)
