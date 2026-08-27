@@ -274,7 +274,8 @@ func TestAgentContextPrecedenceKeys(t *testing.T) {
 	// Config.AgentModel (the per-role --model-override entry, written by
 	// populatePIConfig) above Config.PIModel (the --model / slot value) when
 	// it renders pi's single --model argument. The host-mode half of the same
-	// claim is pinned in internal/session/host_overrides_test.go.
+	// claim is pinned by TestBuildDirectAgentCmd_PerRoleOverrideWinsOverModel
+	// in internal/session/model_override_test.go.
 	t.Run("top rung is enforced on pi's argv", func(t *testing.T) {
 		args := container.PIInvocation(container.Config{
 			PIBinaryPath:          "/nix/store/fake-pi/bin/pi",

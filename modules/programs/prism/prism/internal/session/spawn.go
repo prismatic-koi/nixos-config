@@ -1162,6 +1162,53 @@ func agentOnlyAgentEnvVars(opts SpawnOpts) map[string]string {
 	return config.AgentEnvVarsForRole(opts.AgentRole)
 }
 
+// buildOptsForAgentOnlyLayout returns the Opts that spawnAgentOnlyLayout
+// hands to BuildAgentCmd. It is the agent-only-layout analogue of
+// buildOptsForLayout, and exists for the same reason that one does: the
+// SpawnOpts → Opts field mapping is the seam a refactor silently drops a
+// field on, and a mapping inside a function that also starts a sidecar,
+// writes the DB, and creates tmux windows cannot be pinned by a test.
+//
+// The literal has been fixed twice for a dropped field — AgentEnvVars
+// (issue #2533) and ModelsByRole (issue #2863) — so the mapping now lives in
+// a pure function with a forwarding test per field, matching the guards on
+// buildOptsForLayout.
+//
+// mode is the caller's already-resolved isolation mode, not opts.IsolationMode:
+// spawnAgentOnlyLayout substitutes the machine default for an empty value
+// before it gets here, and the resolved value is what must reach BuildAgentCmd.
+func buildOptsForAgentOnlyLayout(opts SpawnOpts, port int, mode string) Opts {
+	return Opts{
+		Prompt:         opts.Prompt,
+		PromptFilePath: opts.PromptFilePath, // set by SpawnSession (#1195: keeps agentCmd O(1) in prompt size for host mode)
+		Agent:          opts.AgentRole,
+		SessionName:    opts.SessionName,
+		Port:           port,
+		IsolationMode:  mode,
+		PluginHostPath: opts.PluginHostPath,
+		RuntimeEnvVars: opts.RuntimeEnvVars,
+		PIExtensionDir: opts.PIExtensionDir,
+		// CLI overrides (issue #2086) for review-style agent-only layouts.
+		Model:   opts.Model,
+		Variant: opts.Variant,
+		// Provider override (issue #2852) on the same seam.
+		Provider: opts.Provider,
+		// ModelsByRole (issue #2863): the review fan-out is the primary user
+		// of `--model-override`, and every reviewer lands on this layout. The
+		// field was absent here, so the entry for a reviewer's own role never
+		// reached BuildAgentCmd and could select no model.
+		ModelsByRole: opts.ModelsByRole,
+		// AgentEnvVars: the role-filtered profile env vars (issue #2533).
+		// This used to be omitted entirely, so a host-mode review session got
+		// no profile env vars while the same session under bwrap or
+		// sandbox-exec got the full set. Both paths now resolve the map
+		// through the same role filter, so host mode and sandboxed mode agree.
+		// The field is load-bearing for host mode only — the sandboxed modes
+		// run `prism agent-run`, which resolves the same map itself.
+		AgentEnvVars: agentOnlyAgentEnvVars(opts),
+	}
+}
+
 // spawnAgentOnlyLayout creates a 2-window tmux session for a review-style
 // agent: window 0 is a bare shell, window 1 runs the agent command. The
 // sidecar is started directly (it is owned by the session, not by a tmux
@@ -1209,35 +1256,7 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	// Build the agent command. BuildAgentCmd produces the right shape
 	// for the resolved isolation mode (prism agent-run for bwrap/sandbox-exec,
 	// direct pi for host).
-	buildOpts := Opts{
-		Prompt:         opts.Prompt,
-		PromptFilePath: opts.PromptFilePath, // set by SpawnSession (#1195: keeps agentCmd O(1) in prompt size for host mode)
-		Agent:          opts.AgentRole,
-		SessionName:    opts.SessionName,
-		Port:           port,
-		IsolationMode:  mode,
-		PluginHostPath: opts.PluginHostPath,
-		RuntimeEnvVars: opts.RuntimeEnvVars,
-		PIExtensionDir: opts.PIExtensionDir,
-		// CLI overrides (issue #2086) for review-style agent-only layouts.
-		Model:   opts.Model,
-		Variant: opts.Variant,
-		// Provider override (issue #2852) on the same seam.
-		Provider: opts.Provider,
-		// ModelsByRole (issue #2863): the review fan-out is the primary user
-		// of `--model-override`, and every reviewer lands on this layout. The
-		// field was absent here, so the entry for a reviewer's own role never
-		// reached BuildAgentCmd and could select no model.
-		ModelsByRole: opts.ModelsByRole,
-		// AgentEnvVars: the role-filtered profile env vars (issue #2533).
-		// This used to be omitted entirely, so a host-mode review session got
-		// no profile env vars while the same session under bwrap or
-		// sandbox-exec got the full set. Both paths now resolve the map
-		// through the same role filter, so host mode and sandboxed mode agree.
-		// The field is load-bearing for host mode only — the sandboxed modes
-		// run `prism agent-run`, which resolves the same map itself.
-		AgentEnvVars: agentOnlyAgentEnvVars(opts),
-	}
+	buildOpts := buildOptsForAgentOnlyLayout(opts, port, mode)
 	agentCmd, err := BuildAgentCmd(buildOpts)
 	if err != nil {
 		return fmt.Errorf("spawnAgentOnlyLayout: build agent command for %q: %w", opts.SessionName, err)

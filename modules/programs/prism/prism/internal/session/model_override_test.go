@@ -196,6 +196,92 @@ func TestBuildAgentCmd_SandboxedModesOmitAgentModelForOtherRole(t *testing.T) {
 	}
 }
 
+// TestBuildOptsForAgentOnlyLayout_ForwardsFields pins the SpawnOpts → Opts
+// mapping for the agent-only layout, which carries every review agent — the
+// primary user of --model-override.
+//
+// The mapping had no guard before this test, and it has silently dropped a
+// field twice: AgentEnvVars (#2533) and ModelsByRole (#2863). Its sibling
+// buildOptsForLayout has had per-field forwarding guards since #2086 for
+// exactly this reason; this is the missing half of that convention.
+func TestBuildOptsForAgentOnlyLayout_ForwardsFields(t *testing.T) {
+	spawnOpts := SpawnOpts{
+		SessionName:  "myrepo@branch~review-1-review-goal",
+		Worktree:     "/tmp/wt",
+		AgentRole:    "review-goal",
+		Prompt:       "review the diff",
+		HarnessName:  "pi",
+		Model:        sessionWideModel,
+		Variant:      "high",
+		Provider:     "openrouter",
+		ModelsByRole: map[string]string{"review-goal": perRoleModel},
+		// Non-nil AgentEnvVars takes the filter branch of
+		// agentOnlyAgentEnvVars, so the assertion does not depend on the
+		// host's profiles.json.
+		AgentEnvVars: map[string]string{"PRISM_TEST_ENV": "1"},
+	}
+	got := buildOptsForAgentOnlyLayout(spawnOpts, 14000, "bwrap")
+
+	if got.ModelsByRole["review-goal"] != perRoleModel {
+		t.Errorf("Opts.ModelsByRole[review-goal] = %q, want forwarded value %q",
+			got.ModelsByRole["review-goal"], perRoleModel)
+	}
+	if got.Model != sessionWideModel {
+		t.Errorf("Opts.Model = %q, want forwarded value %q", got.Model, sessionWideModel)
+	}
+	if got.Variant != "high" {
+		t.Errorf("Opts.Variant = %q, want forwarded value", got.Variant)
+	}
+	if got.Provider != "openrouter" {
+		t.Errorf("Opts.Provider = %q, want forwarded value", got.Provider)
+	}
+	if got.AgentEnvVars == nil {
+		t.Error("Opts.AgentEnvVars = nil, want the role-filtered map (#2533)")
+	}
+	// Agent and IsolationMode decide which entry roleModelOverride matches and
+	// which emitter BuildAgentCmd dispatches to, so a drop on either would
+	// disable the override without touching ModelsByRole itself.
+	if got.Agent != "review-goal" {
+		t.Errorf("Opts.Agent = %q, want the spawn AgentRole", got.Agent)
+	}
+	if got.IsolationMode != "bwrap" {
+		t.Errorf("Opts.IsolationMode = %q, want the caller's resolved mode", got.IsolationMode)
+	}
+}
+
+// TestBuildOptsForAgentOnlyLayout_OverrideReachesArgv is the end-to-end half:
+// a reviewer's own --model-override entry must survive the SpawnOpts → Opts
+// mapping and land on the launch command. Deleting the ModelsByRole line in
+// buildOptsForAgentOnlyLayout fails this test.
+func TestBuildOptsForAgentOnlyLayout_OverrideReachesArgv(t *testing.T) {
+	spawnOpts := SpawnOpts{
+		SessionName:  "myrepo@branch~review-1-review-goal",
+		Worktree:     "/tmp/wt",
+		AgentRole:    "review-goal",
+		HarnessName:  "pi",
+		ModelsByRole: map[string]string{"review-goal": perRoleModel},
+		AgentEnvVars: map[string]string{},
+	}
+
+	for _, mode := range []string{"host", "bwrap", "sandbox-exec"} {
+		t.Run(mode, func(t *testing.T) {
+			cmd, err := BuildAgentCmd(buildOptsForAgentOnlyLayout(spawnOpts, 14000, mode))
+			if err != nil {
+				t.Fatalf("BuildAgentCmd(%s): %v", mode, err)
+			}
+			// Host emits pi's --model directly; the sandboxed modes hand the
+			// entry to `prism agent-run` as --agent-model.
+			want := "--agent-model '" + perRoleModel + "'"
+			if mode == "host" {
+				want = "--model '" + perRoleModel + "'"
+			}
+			if !strings.Contains(cmd, want) {
+				t.Errorf("expected %q on the %s launch command; got %q", want, mode, cmd)
+			}
+		})
+	}
+}
+
 // TestRoleModelOverride_Lookup pins the shared resolver both emit sites call,
 // including the degenerate inputs that must not panic or match.
 func TestRoleModelOverride_Lookup(t *testing.T) {
