@@ -154,7 +154,7 @@ func plainSummaryForBudget(summaries []ReviewChildSummary, mode summaryMode) str
 			b.WriteString(sm.AgentShortName)
 			b.WriteString(":")
 		}
-		b.WriteString(letterForVerdict(sm.Verdict))
+		b.WriteString(plainIconCell(sm.Verdict))
 	}
 	return b.String()
 }

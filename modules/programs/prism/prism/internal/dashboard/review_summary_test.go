@@ -11,6 +11,18 @@ import (
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
+// Verdict codicons, mirroring the Required mapping table in issue #2868.
+// Written as Go Unicode escapes per the issue's rule against literal
+// Private Use Area characters.
+const (
+	passIcon    = "\uEBA4" // nf-cod-pass
+	failIcon    = "\uEA87" // nf-cod-error
+	pwdIcon     = "\uEBA7" // nf-cod-record (pass with disagreement)
+	runningIcon = "\uEA77" // nf-cod-sync
+	pendingIcon = "\uEBB5" // nf-cod-circle_large
+	errorIcon   = "\uEA6C" // nf-cod-warning
+)
+
 // ── ParseVerdict ─────────────────────────────────────────────────────────────
 
 func TestParseVerdict(t *testing.T) {
@@ -76,8 +88,8 @@ func TestPassWithDisagreement_RendersDistinctly(t *testing.T) {
 		t.Fatal("no summary carried VerdictPassWithDisagreement")
 	}
 	rendered, _, _ := dashboard.RenderReviewSummary(summaries, 200)
-	if !strings.Contains(rendered, "D") {
-		t.Errorf("rendered summary %q has no distinct PWD glyph 'D'", rendered)
+	if !strings.Contains(rendered, "") {
+		t.Errorf("rendered summary %q has no distinct PWD glyph", rendered)
 	}
 }
 
@@ -392,8 +404,8 @@ func TestRenderReviewSummary_ExactBudgetRendersLabels(t *testing.T) {
 
 // TestRenderReviewSummary_NoClusterGlyphs guards against the cluster being
 // reintroduced: none of the cluster glyphs (●○◐) must ever appear in the
-// rendered output. ✕ is still valid as a letter for VerdictError, and · is a
-// valid letter for VerdictPending — so they are not asserted-absent here.
+// rendered output. The error and pending codicons are still valid — so
+// they are not asserted-absent here.
 func TestRenderReviewSummary_NoClusterGlyphs(t *testing.T) {
 	agents := review.Agents()
 	states := map[string]string{}
@@ -507,10 +519,11 @@ func TestCollapsedRow_AllPass(t *testing.T) {
 		msgs[a.Name] = "<verdict>pass</verdict>"
 	}
 	row := renderCollapsedReviewRow(t, 200, states, msgs)
-	// Per-agent labels: every canonical short name appears followed by :P.
+	// Per-agent labels: every canonical short name appears followed by
+	// ":" and the pass icon.
 	for _, a := range agents {
 		short := dashboard.ShortAgentName(a.Name)
-		want := short + ":P"
+		want := short + ":" + passIcon
 		if !strings.Contains(row, want) {
 			t.Errorf("row missing %q; row=%q", want, row)
 		}
@@ -562,12 +575,12 @@ func TestCollapsedRow_MixedPassFail(t *testing.T) {
 		}
 	}
 	row := renderCollapsedReviewRow(t, 200, states, msgs)
-	// Both :P and :F letters should appear among the labels.
-	if !strings.Contains(row, ":P") {
-		t.Errorf("expected at least one :P label; row=%q", row)
+	// Both pass and fail icons should appear among the labels.
+	if !strings.Contains(row, ":"+passIcon) {
+		t.Errorf("expected at least one pass label; row=%q", row)
 	}
-	if !strings.Contains(row, ":F") {
-		t.Errorf("expected at least one :F label; row=%q", row)
+	if !strings.Contains(row, ":"+failIcon) {
+		t.Errorf("expected at least one fail label; row=%q", row)
 	}
 	// No cluster, no tail.
 	for _, forbidden := range []string{"●", "○", "◐", "5/5 done"} {
@@ -593,13 +606,13 @@ func TestCollapsedRow_TwoRunning(t *testing.T) {
 		}
 	}
 	row := renderCollapsedReviewRow(t, 200, states, msgs)
-	// Running letter is ◌ — two should be present in labels.
-	if strings.Count(row, "◌") != 2 {
-		t.Errorf("expected exactly 2 ◌ letters in labels, got %d; row=%q", strings.Count(row, "◌"), row)
+	// Running icon — two should be present in labels.
+	if strings.Count(row, runningIcon) != 2 {
+		t.Errorf("expected exactly 2 running icons in labels, got %d; row=%q", strings.Count(row, runningIcon), row)
 	}
-	// Three :P letters.
-	if strings.Count(row, ":P") != 3 {
-		t.Errorf("expected exactly 3 :P labels, got %d; row=%q", strings.Count(row, ":P"), row)
+	// Three pass labels.
+	if strings.Count(row, ":"+passIcon) != 3 {
+		t.Errorf("expected exactly 3 pass labels, got %d; row=%q", strings.Count(row, ":"+passIcon), row)
 	}
 	// No tail.
 	if strings.Contains(row, "3/5 done") {
@@ -614,9 +627,9 @@ func TestCollapsedRow_AllPending(t *testing.T) {
 		states[a.Name] = "" // idle
 	}
 	row := renderCollapsedReviewRow(t, 200, states, nil)
-	// Pending letter is · — every label must use it.
-	if strings.Count(row, ":·") != len(agents) {
-		t.Errorf("expected %d :· labels (pending), got %d; row=%q", len(agents), strings.Count(row, ":·"), row)
+	// Pending icon — every label must use it.
+	if strings.Count(row, ":"+pendingIcon) != len(agents) {
+		t.Errorf("expected %d pending labels, got %d; row=%q", len(agents), strings.Count(row, ":"+pendingIcon), row)
 	}
 	// No tail.
 	if strings.Contains(row, "0/5 done") {
@@ -637,14 +650,14 @@ func TestCollapsedRow_StartupErrorChild(t *testing.T) {
 	msgs[agents[0].Name] = ""
 
 	row := renderCollapsedReviewRow(t, 200, states, msgs)
-	// Exactly one ✕ should be present (the error letter for the one error agent).
-	if strings.Count(row, "✕") != 1 {
-		t.Errorf("expected exactly 1 ✕ in row, got %d; row=%q", strings.Count(row, "✕"), row)
+	// Exactly one error icon should be present (for the one error agent).
+	if strings.Count(row, errorIcon) != 1 {
+		t.Errorf("expected exactly 1 error icon in row, got %d; row=%q", strings.Count(row, errorIcon), row)
 	}
-	// And the corresponding error short name + :✕ pair.
+	// And the corresponding error short name + icon pair.
 	errShort := dashboard.ShortAgentName(agents[0].Name)
-	if !strings.Contains(row, errShort+":✕") {
-		t.Errorf("expected %q in row; row=%q", errShort+":✕", row)
+	if !strings.Contains(row, errShort+":"+errorIcon) {
+		t.Errorf("expected %q in row; row=%q", errShort+":"+errorIcon, row)
 	}
 }
 
@@ -657,15 +670,15 @@ func TestCollapsedRow_MissingChildrenOmitted(t *testing.T) {
 		agents[0].Name: "active",
 	}
 	row := renderCollapsedReviewRow(t, 200, states, nil)
-	// No ✕ letters — missing agents are not rendered as VerdictError.
-	if strings.Count(row, "✕") != 0 {
-		t.Errorf("expected no ✕ for missing agents (omitted policy), got %d; row=%q",
-			strings.Count(row, "✕"), row)
+	// No error icons — missing agents are not rendered as VerdictError.
+	if strings.Count(row, errorIcon) != 0 {
+		t.Errorf("expected no error icon for missing agents (omitted policy), got %d; row=%q",
+			strings.Count(row, errorIcon), row)
 	}
-	// The present (first canonical) agent is in state "active" so its label is ◌.
+	// The present (first canonical) agent is in state "active" so its label uses the running icon.
 	present := dashboard.ShortAgentName(agents[0].Name)
-	if !strings.Contains(row, present+":◌") {
-		t.Errorf("expected present agent label %q; row=%q", present+":◌", row)
+	if !strings.Contains(row, present+":"+runningIcon) {
+		t.Errorf("expected present agent label %q; row=%q", present+":"+runningIcon, row)
 	}
 	// The missing agents must not appear in the row at all.
 	for _, a := range agents[1:] {
@@ -679,9 +692,9 @@ func TestCollapsedRow_MissingChildrenOmitted(t *testing.T) {
 // ── Narrow-width truncation ──────────────────────────────────────────────────
 
 func TestCollapsedRow_NarrowDropsLabels(t *testing.T) {
-	// At width=70 the trailing budget is below the labels width
-	// ("code:P  context:P  goal:P  qa:P  sec:P" = 38 runes), so labels are
-	// suppressed entirely. The row renders only session + state.
+	// At width=70 the trailing budget is below the labels width (agent short
+	// name + ":" + two-column verdict icon, for all five agents), so labels
+	// are suppressed entirely. The row renders only session + state.
 	agents := review.Agents()
 	states := map[string]string{}
 	msgs := map[string]string{}
@@ -768,7 +781,7 @@ func TestCollapsedRow_ExpandedStillShowsSummary(t *testing.T) {
 	// Per-agent labels must still appear on the parent row when expanded.
 	for _, a := range agents {
 		short := dashboard.ShortAgentName(a.Name)
-		want := short + ":P"
+		want := short + ":" + passIcon
 		if !strings.Contains(groupLine, want) {
 			t.Errorf("expanded group row missing label %q; line=%q", want, groupLine)
 		}
@@ -947,22 +960,23 @@ func TestRenderReviewSummary_CompactColours(t *testing.T) {
 		t.Fatalf("compact form should contain ANSI escape sequences for colour; got %q", compact)
 	}
 
-	// Each verdict letter's colour escape sequence must appear in both the
+	// Each verdict icon's colour escape sequence must appear in both the
 	// wide and compact renders — matching palettes per AC #1812.
-	letters := []string{"P", "F", "◌", "✕", "·"}
-	for _, ltr := range letters {
-		if !strings.Contains(stripANSI(wide), ltr) {
+	icons := []string{passIcon, failIcon, runningIcon, errorIcon, pendingIcon}
+	for _, ic := range icons {
+		if !strings.Contains(stripANSI(wide), ic) {
 			continue // this verdict isn't present in the sample
 		}
-		if !strings.Contains(stripANSI(compact), ltr) {
-			t.Errorf("compact form missing letter %q present in wide form", ltr)
+		if !strings.Contains(stripANSI(compact), ic) {
+			t.Errorf("compact form missing icon %q present in wide form", ic)
 		}
 	}
 }
 
 // wantCompactPlain returns the canonical plain (ANSI-stripped) compact form
-// for the supplied summaries: one verdict letter per agent in input order,
-// separated by two spaces.
+// for the supplied summaries: one verdict icon per agent in input order,
+// each padded to a two-column cell (icon + one trailing space, since these
+// codicons measure as a single display column), separated by two spaces.
 func wantCompactPlain(summaries []dashboard.ReviewChildSummary) string {
 	var b strings.Builder
 	for i, s := range summaries {
@@ -971,15 +985,15 @@ func wantCompactPlain(summaries []dashboard.ReviewChildSummary) string {
 		}
 		switch s.Verdict {
 		case dashboard.VerdictPass:
-			b.WriteString("P")
+			b.WriteString(passIcon + " ")
 		case dashboard.VerdictFail:
-			b.WriteString("F")
+			b.WriteString(failIcon + " ")
 		case dashboard.VerdictRunning:
-			b.WriteString("◌")
+			b.WriteString(runningIcon + " ")
 		case dashboard.VerdictError:
-			b.WriteString("✕")
+			b.WriteString(errorIcon + " ")
 		default:
-			b.WriteString("·")
+			b.WriteString(pendingIcon + " ")
 		}
 	}
 	return b.String()
@@ -1075,9 +1089,9 @@ func TestCollapsedRow_CompactTier_RendersLettersOnly(t *testing.T) {
 			t.Errorf("compact-tier row at width=%d unexpectedly contains %q; row=%q", compactWidth, short+":", row)
 		}
 	}
-	// Verdict letters must still appear: five P letters (one per agent).
-	if strings.Count(row, "P") < 5 {
-		t.Errorf("compact-tier row at width=%d should contain 5 P letters; row=%q", compactWidth, row)
+	// Verdict icons must still appear: five pass icons (one per agent).
+	if strings.Count(row, passIcon) < 5 {
+		t.Errorf("compact-tier row at width=%d should contain 5 pass icons; row=%q", compactWidth, row)
 	}
 	// And no cluster glyphs are reintroduced.
 	for _, glyph := range []string{"●", "○", "◐"} {
@@ -1090,7 +1104,7 @@ func TestCollapsedRow_CompactTier_RendersLettersOnly(t *testing.T) {
 // TestCollapsedRow_SuppressedTier_OneBelowCompact asserts that removing a
 // single column from the smallest width that still renders compact drops
 // the trailing segment cleanly to suppressed — no partial / truncated
-// letter segment.
+// icon segment.
 func TestCollapsedRow_SuppressedTier_OneBelowCompact(t *testing.T) {
 	agents := review.Agents()
 	states := map[string]string{}
@@ -1101,14 +1115,14 @@ func TestCollapsedRow_SuppressedTier_OneBelowCompact(t *testing.T) {
 	}
 
 	// Find the smallest width at which compact still renders (at least 5
-	// verdict letters present, no wide-form prefixes).
+	// verdict icons present, no wide-form prefixes).
 	var smallestCompact int
 	for w := 30; w <= 200; w++ {
 		row := renderCollapsedReviewRowWithSel(t, w, false, states, msgs)
 		if strings.Contains(row, "code:") {
 			continue // still wide tier or no labels
 		}
-		if strings.Count(row, "P") >= 5 {
+		if strings.Count(row, passIcon) >= 5 {
 			smallestCompact = w
 			break
 		}
@@ -1119,8 +1133,8 @@ func TestCollapsedRow_SuppressedTier_OneBelowCompact(t *testing.T) {
 
 	// One column below the smallest compact width must suppress entirely.
 	row := renderCollapsedReviewRowWithSel(t, smallestCompact-1, false, states, msgs)
-	if strings.Count(row, "P") != 0 {
-		t.Errorf("row at width=%d (one below compact boundary) should have no verdict letters; row=%q", smallestCompact-1, row)
+	if strings.Count(row, passIcon) != 0 {
+		t.Errorf("row at width=%d (one below compact boundary) should have no verdict icons; row=%q", smallestCompact-1, row)
 	}
 	for _, a := range agents {
 		short := dashboard.ShortAgentName(a.Name)
@@ -1138,7 +1152,7 @@ func TestCollapsedRow_SuppressedTier_OneBelowCompact(t *testing.T) {
 // the row is rendered as the selected-row bar (cursorActive=true), the
 // trailing segment uses the same tier (wide / compact / suppressed) as the
 // unselected render at the same width. We sweep widths spanning all three
-// tiers and compare letter-count + presence of "name:" prefixes.
+// tiers and compare icon-count + presence of "name:" prefixes.
 func TestCollapsedRow_SelectedBarMatchesUnselectedFootprint(t *testing.T) {
 	agents := review.Agents()
 	states := map[string]string{}
@@ -1151,13 +1165,13 @@ func TestCollapsedRow_SelectedBarMatchesUnselectedFootprint(t *testing.T) {
 	for w := 40; w <= 200; w += 5 {
 		unselected := renderCollapsedReviewRowWithSel(t, w, false, states, msgs)
 		selected := renderCollapsedReviewRowWithSel(t, w, true, states, msgs)
-		// Same number of verdict letters in both renders.
-		if strings.Count(unselected, "P") != strings.Count(selected, "P") {
-			t.Errorf("width=%d: P-letter count differs unselected=%d selected=%d\nunsel=%q\n  sel=%q",
-				w, strings.Count(unselected, "P"), strings.Count(selected, "P"), unselected, selected)
+		// Same number of verdict icons in both renders.
+		if strings.Count(unselected, passIcon) != strings.Count(selected, passIcon) {
+			t.Errorf("width=%d: pass-icon count differs unselected=%d selected=%d\nunsel=%q\n  sel=%q",
+				w, strings.Count(unselected, passIcon), strings.Count(selected, passIcon), unselected, selected)
 		}
 		// If the unselected render is wide ("code:" present), the selected
-		// render must be wide too. If it's compact (no "code:" but P letters
+		// render must be wide too. If it's compact (no "code:" but pass icons
 		// present), the selected render must also be compact.
 		unselWide := strings.Contains(unselected, "code:")
 		selWide := strings.Contains(selected, "code:")
@@ -1186,6 +1200,40 @@ func TestCollapsedRow_NoSummariesNoTrailingSegment(t *testing.T) {
 	}
 }
 
+// TestPlainSummaryForBudget_WidthMatchesRendered asserts that the plain-text
+// mirror used inside the selected-row bar (view.go's plainSummaryForBudget)
+// reports the same display width as the coloured RenderReviewSummary output,
+// for both the full and compact tiers. See #1812, #2868.
+func TestPlainSummaryForBudget_WidthMatchesRendered(t *testing.T) {
+	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, nil, nil))
+
+	rendered, renderedW, mode := dashboard.RenderReviewSummaryForTest(summaries, 1000)
+	if mode != dashboard.SummaryFullForTest {
+		t.Fatalf("expected full tier at budget=1000, got mode=%d", mode)
+	}
+	plain := dashboard.PlainSummaryForBudgetForTest(summaries, mode)
+	if w := lipgloss.Width(plain); w != renderedW {
+		t.Errorf("full tier: plain mirror width = %d, rendered width = %d (via RenderReviewSummary)", w, renderedW)
+	}
+	if w := lipgloss.Width(stripANSI(rendered)); w != renderedW {
+		t.Errorf("full tier: rendered plain-stripped width = %d, want %d", w, renderedW)
+	}
+
+	// Force the compact tier.
+	labelsW := dashboard.ReviewSummaryLabelsWidthForTest(summaries)
+	renderedCompact, renderedCompactW, compactMode := dashboard.RenderReviewSummaryForTest(summaries, labelsW-1)
+	if compactMode != dashboard.SummaryCompactForTest {
+		t.Fatalf("expected compact tier at budget=%d, got mode=%d", labelsW-1, compactMode)
+	}
+	plainCompact := dashboard.PlainSummaryForBudgetForTest(summaries, compactMode)
+	if w := lipgloss.Width(plainCompact); w != renderedCompactW {
+		t.Errorf("compact tier: plain mirror width = %d, rendered width = %d", w, renderedCompactW)
+	}
+	if w := lipgloss.Width(stripANSI(renderedCompact)); w != renderedCompactW {
+		t.Errorf("compact tier: rendered plain-stripped width = %d, want %d", w, renderedCompactW)
+	}
+}
+
 // ── Non-review group rows visually unchanged ─────────────────────────────
 
 func TestNonReviewRowsUnchanged(t *testing.T) {
@@ -1199,8 +1247,9 @@ func TestNonReviewRowsUnchanged(t *testing.T) {
 	d = dashboard.RefilterShared(d)
 	out := stripANSI(dashboard.DashView(d, "", false))
 
-	// None of the cluster glyphs should appear on these rows.
-	for _, glyph := range []string{"●", "○", "◐", "✕"} {
+	// None of the cluster glyphs, nor the error codicon, should appear on
+	// these rows.
+	for _, glyph := range []string{"●", "○", "◐", errorIcon} {
 		if strings.Contains(out, glyph) {
 			t.Errorf("non-review rows should not contain glyph %q; output=\n%s", glyph, out)
 		}
@@ -1210,5 +1259,119 @@ func TestNonReviewRowsUnchanged(t *testing.T) {
 		if strings.Contains(out, tail) {
 			t.Errorf("non-review rows should not contain tail %q; output=\n%s", tail, out)
 		}
+	}
+}
+
+// ── Codicon mapping (#2868) ──────────────────────────────────────────────────
+
+// TestLetterForVerdict_Codepoints asserts the exact codepoint rendered for
+// each of the six verdict states, per the Required mapping table in issue
+// #2868. The test fails if any codepoint changes.
+func TestLetterForVerdict_Codepoints(t *testing.T) {
+	tests := []struct {
+		verdict string
+		want    string
+	}{
+		{dashboard.VerdictPass, passIcon},
+		{dashboard.VerdictFail, failIcon},
+		{dashboard.VerdictPassWithDisagreement, pwdIcon},
+		{dashboard.VerdictRunning, runningIcon},
+		{dashboard.VerdictError, errorIcon},
+		{"", pendingIcon}, // pending / idle: any unrecognised verdict value
+	}
+	for _, tt := range tests {
+		got := dashboard.LetterForVerdictForTest(tt.verdict)
+		if got != tt.want {
+			t.Errorf("letterForVerdict(%q) = %U, want %U", tt.verdict, []rune(got)[0], []rune(tt.want)[0])
+		}
+	}
+}
+
+// TestColorForVerdict_Running asserts running renders in ColorBlue (#2868):
+// the only hue in the palette not shared with another verdict.
+func TestColorForVerdict_Running(t *testing.T) {
+	if got := dashboard.ColorForVerdictForTest(dashboard.VerdictRunning); got != dashboard.ColorBlue {
+		t.Errorf("colorForVerdict(running) = %q, want ColorBlue (%q)", got, dashboard.ColorBlue)
+	}
+}
+
+// TestColorForVerdict_Error asserts error still renders in ColorRed (#2868).
+func TestColorForVerdict_Error(t *testing.T) {
+	if got := dashboard.ColorForVerdictForTest(dashboard.VerdictError); got != dashboard.ColorRed {
+		t.Errorf("colorForVerdict(error) = %q, want ColorRed (%q)", got, dashboard.ColorRed)
+	}
+}
+
+// TestClassifyVerdict_Interrupted asserts an agent in state "interrupted"
+// classifies as VerdictError (#2868): a fault, not an empty slot.
+func TestClassifyVerdict_Interrupted(t *testing.T) {
+	agents := review.Agents()
+	states := map[string]string{}
+	for _, a := range agents {
+		states[a.Name] = "interrupted"
+	}
+	got := dashboard.BuildReviewChildSummaries(buildChildren(1, states, nil))
+	for _, s := range got {
+		if s.Verdict != dashboard.VerdictError {
+			t.Errorf("agent %q in state interrupted: Verdict = %q, want VerdictError", s.AgentShortName, s.Verdict)
+		}
+	}
+}
+
+// TestCollapsedRow_Interrupted asserts an interrupted agent renders the
+// error icon in ColorRed on the collapsed review row (#2868).
+func TestCollapsedRow_Interrupted(t *testing.T) {
+	agents := review.Agents()
+	states := map[string]string{}
+	msgs := map[string]string{}
+	for _, a := range agents {
+		states[a.Name] = "finished"
+		msgs[a.Name] = "<verdict>pass</verdict>"
+	}
+	states[agents[0].Name] = "interrupted"
+	msgs[agents[0].Name] = ""
+
+	row := renderCollapsedReviewRow(t, 200, states, msgs)
+	if strings.Count(row, errorIcon) != 1 {
+		t.Errorf("expected exactly 1 error icon for the interrupted agent, got %d; row=%q", strings.Count(row, errorIcon), row)
+	}
+	interruptedShort := dashboard.ShortAgentName(agents[0].Name)
+	if !strings.Contains(row, interruptedShort+":"+errorIcon) {
+		t.Errorf("expected %q in row; row=%q", interruptedShort+":"+errorIcon, row)
+	}
+}
+
+// TestVerdictIconCell_TwoColumns asserts that a rendered verdict icon cell
+// measures exactly two display columns via lipgloss.Width, and that the
+// width-budget functions count two columns per icon rather than one rune
+// (#2868).
+func TestVerdictIconCell_TwoColumns(t *testing.T) {
+	if w := lipgloss.Width(dashboard.RenderIconCellForTest(dashboard.VerdictPass)); w != 2 {
+		t.Errorf("rendered icon cell width = %d, want 2", w)
+	}
+
+	// A single review agent's labels segment is "name:" + a two-column icon.
+	// Compare the labels width for one vs. two agents sharing the same short
+	// name length and verdict: the delta must be exactly the icon width (2)
+	// plus the ":" plus the two-space separator plus the second name's width
+	// — i.e. reviewSummaryLabelsWidth must grow by 2, not 1, per extra icon.
+	one := []dashboard.ReviewChildSummary{{AgentShortName: "aa", Verdict: dashboard.VerdictPass}}
+	two := []dashboard.ReviewChildSummary{
+		{AgentShortName: "aa", Verdict: dashboard.VerdictPass},
+		{AgentShortName: "aa", Verdict: dashboard.VerdictPass},
+	}
+	_, oneW, _ := dashboard.RenderReviewSummary(one, 1000)
+	_, twoW, _ := dashboard.RenderReviewSummary(two, 1000)
+	// Second entry adds: 2 (separator) + 2 ("aa") + 1 (":") + 2 (icon) = 7.
+	if delta := twoW - oneW; delta != 7 {
+		t.Errorf("labels width delta per extra two-column-icon agent = %d, want 7 (got oneW=%d twoW=%d)", delta, oneW, twoW)
+	}
+
+	// Same check for the compact (icon-only) form: each extra icon adds
+	// 2 (separator) + 2 (icon) = 4 display columns.
+	compactOneW := dashboard.ReviewSummaryCompactWidthForTest(one)
+	compactTwoW := dashboard.ReviewSummaryCompactWidthForTest(two)
+	if delta := compactTwoW - compactOneW; delta != 4 {
+		t.Errorf("compact width delta per extra two-column icon = %d, want 4 (got oneW=%d twoW=%d)", delta, compactOneW, compactTwoW)
 	}
 }
