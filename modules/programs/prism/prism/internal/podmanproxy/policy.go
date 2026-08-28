@@ -49,25 +49,24 @@ func denyDecision(status int, reason, message string) policyDecision {
 
 // hostConfig is the subset of HostConfig the proxy parses out of
 // containers/create (and the partial-HostConfig shape that
-// containers/{id}/update also accepts). Every field listed in #2317 §4
-// (the threat table) must appear here. Fields not present in this
-// struct are silently ignored by the parser (json.Decoder skips
+// containers/{id}/update also accepts). Every field in the threat
+// table (docs/podman-proxy.md §2) must appear here. Fields not present
+// in this struct are silently ignored by the parser (json.Decoder skips
 // unknown keys by default) and forwarded unmodified.
 //
 // Pointer types are used where the difference between "field absent"
 // and "field explicitly set to zero" matters — Memory, CpuQuota, and
 // NanoCpus in particular. In docker semantics an explicit 0 means
 // "unbounded", so the policy must treat 0 differently from a missing
-// field (review-security PR #2326 round 2: 0 was previously a
-// drive-through bypass of the configured cap).
-// Cycle 5: this struct is the AUDIT SPEC for HostConfig. After this
-// commit the parser runs with json.Decoder.DisallowUnknownFields(),
-// so any HostConfig field not declared here is rejected as
-// unknown-field. Adding a new field requires the same audit as
-// existing ones: classify it as INSPECTED (typed; checkHostConfig
-// runs a policy check) / DENIED (typed; non-empty rejects) /
-// FORWARDED (json.RawMessage; admitted as safe, forwarded
-// unmodified). The single most important reviewer task on a future
+// field.
+//
+// This struct is the AUDIT SPEC for HostConfig. The parser runs with
+// json.Decoder.DisallowUnknownFields(), so any HostConfig field not
+// declared here is rejected as unknown-field. Adding a new field
+// requires the same audit as existing ones: classify it as INSPECTED
+// (typed; checkHostConfig runs a policy check) / DENIED (typed;
+// non-empty rejects) / FORWARDED (json.RawMessage; admitted as safe,
+// forwarded unmodified). The single most important reviewer task on a
 // change to this file is checking the rationale comment on each
 // admission.
 type hostConfig struct {
@@ -154,9 +153,9 @@ type hostConfig struct {
 }
 
 // hostConfigMount mirrors a docker HostConfig.Mounts entry. The
-// VolumeOptions sub-struct is parsed so we can deny the local-driver
-// bind-volume escape (#2326 round 4 review-security CRITICAL #1):
-// Type=volume with VolumeOptions.DriverConfig.Name="local" plus
+// VolumeOptions sub-struct is parsed so the proxy can deny the
+// local-driver bind-volume escape: Type=volume with
+// VolumeOptions.DriverConfig.Name="local" plus
 // DriverConfig.Options.device=/host/path is functionally a bind mount
 // dressed up as a volume.
 type hostConfigMount struct {
@@ -187,7 +186,7 @@ type hostConfigDriverConfig struct {
 	Options map[string]string `json:"Options"`
 }
 
-// hostConfigLogConfig is the cycle-6 typed parse of
+// hostConfigLogConfig is the typed parse of
 // HostConfig.LogConfig. Type is INSPECTED against the
 // logConfigTypeAllowlist; Config is FORWARDED as opaque map (driver-
 // specific options like max-size for json-file).
@@ -248,9 +247,9 @@ type containerCreateBody struct {
 }
 
 // containerExecBody is the explicit allowlist for POST
-// containers/{id}/exec. Privileged is INSPECTED (cycle-2 bypass
-// fix); everything else is admitted as opaque — the exec body
-// describes what to run INSIDE the (already-isolated) container.
+// containers/{id}/exec. Privileged is INSPECTED; everything else is
+// admitted as opaque — the exec body describes what to run INSIDE
+// the (already-isolated) container.
 type containerExecBody struct {
 	// INSPECTED.
 	Privileged bool `json:"Privileged"`
@@ -275,7 +274,7 @@ type containerExecBody struct {
 // ""). When allow is false both rewritten fields are zero and the
 // handler must NOT forward.
 //
-// The two rewrite fields are coupled: the cycle-7 Name auto-injection
+// The two rewrite fields are coupled: the Name auto-injection
 // branch sets BOTH so the upstream sees a consistent name no matter
 // which podman endpoint variant (libpod / docker-compat /
 // future) the request was destined for. See applyContainerNamePolicy
@@ -301,8 +300,8 @@ type createInspectionResult struct {
 // second pass is where the per-field allowlist actually fires.
 //
 // After all policy checks pass, the container-name auto-prefix
-// policy runs when Config.ContainerNamePrefix is non-empty (step 7
-// of #2317). The function returns either a deny decision OR an allow
+// policy runs when Config.ContainerNamePrefix is non-empty. The
+// function returns either a deny decision OR an allow
 // decision paired with the bytes / query the handler MUST forward
 // upstream (see createInspectionResult for the meaning of the
 // rewritten fields).
@@ -340,13 +339,11 @@ func (p *Proxy) inspectCreate(body []byte, query url.Values) createInspectionRes
 	return p.applyContainerNamePolicy(body, &req, query)
 }
 
-// applyContainerNamePolicy implements the cycle-7 value-level Name
-// check on POST /containers/create. The Name field has been admitted
-// at the schema level since cycle-5 (containerCreateBody.Name); this
-// function adds a field-value layer on top in the same six-layer
-// model the rest of the policy code uses (cycle 6 added field-value
-// checks for LogConfig.Type, NetworkMode, etc. — this is the same
-// shape on Name).
+// applyContainerNamePolicy implements the value-level Name check on
+// POST /containers/create. The Name field is admitted at the schema
+// level (containerCreateBody.Name); this function adds the
+// field-value layer on top, the same shape the policy uses for
+// LogConfig.Type, NetworkMode, and the other enumerable fields.
 //
 // # Both `?name=` query and body Name
 //
@@ -372,9 +369,8 @@ func (p *Proxy) inspectCreate(body []byte, query url.Values) createInspectionRes
 //     a consistent prefixed name no matter which channel its
 //     handler reads.
 //
-// The belt-and-braces injection is what closes the docker-compat
-// gap surfaced by review-security / review-context on round 1 of
-// PR #2332: an agent posting `POST /containers/create?name=evil`
+// The belt-and-braces injection closes the docker-compat gap: an
+// agent posting `POST /containers/create?name=evil`
 // with no body Name cannot end up with an unprefixed container; an
 // agent posting `POST /containers/create` with no Name in either
 // channel cannot end up with a random podman-generated name like
@@ -445,7 +441,7 @@ func (p *Proxy) applyContainerNamePolicy(body []byte, req *containerCreateBody, 
 	}
 }
 
-// inspectRename implements the cycle-7 value-level Name check on
+// inspectRename implements the value-level Name check on
 // POST /containers/{id}/rename. The endpoint takes the new name via
 // the `?name=` URL query (the body is empty per docker spec); rename
 // is the only post-creation surface that can change the container's
@@ -488,7 +484,7 @@ func (p *Proxy) inspectRename(query url.Values) policyDecision {
 // per RFC 3986 and Go's net/url + podman's `r.URL.Query().Get("name")`
 // both handle them that way, so a `?Name=evil` should be ignored by
 // podman regardless — but stripping case-variants is defence-in-
-// depth, mirroring injectNameIntoBody's discipline. (Round-2 fix.)
+// depth, mirroring injectNameIntoBody's discipline.
 //
 // The function does not mutate the input url.Values so the caller
 // can keep its own reference unchanged.
@@ -531,13 +527,12 @@ var randomHexSuffix = func(n int) (string, error) {
 // rewritten body via httputil.ReverseProxy in the same Content-Length
 // path as the unchanged body.
 //
-// # Case-variant Name keys (round-2 fix)
+// # Case-variant Name keys
 //
 // All case-variants of the top-level "Name" key ("name", "NAME",
 // "nAme", …) are STRIPPED from the map before the canonical "Name"
-// is added. This closes a third-channel bypass discovered by
-// review-security on PR #2332 round 2: Go's encoding/json struct
-// decoder applies case-INsensitive last-wins matching, and
+// is added. This closes a third-channel bypass: Go's encoding/json
+// struct decoder applies case-INsensitive last-wins matching, and
 // json.Marshal sorts map keys alphabetically with uppercase before
 // lowercase. Without the strip:
 //
@@ -587,8 +582,8 @@ func injectNameIntoBody(body []byte, name string) ([]byte, error) {
 // decodeStrict runs json.Decoder.DisallowUnknownFields against body
 // and returns a uniform policyDecision distinguishing
 // unknown-field (the schema-inversion deny we WANT to surface
-// loudly) from malformed-JSON (the original cycle-2 "400 on bad
-// body" path). The reason and message strings are general-purpose;
+// loudly) from malformed-JSON (the plain "400 on bad body" path).
+// The reason and message strings are general-purpose;
 // callers prefix them with an endpoint-specific tag so the audit
 // log makes the source endpoint clear.
 func decodeStrict(body []byte, dst any) policyDecision {
@@ -627,9 +622,8 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 		}
 	}
 
-	// Host bind sources (newer Mounts slice). Cycle 6 closes the
-	// Type=glob bypass found by review-security: this loop now uses
-	// an explicit allowlist of Type values (case-SENSITIVE), not a
+	// Host bind sources (newer Mounts slice). This loop uses an
+	// explicit allowlist of Type values (case-SENSITIVE), not a
 	// deny-list. Anything outside the allowlist denies, including
 	// case variants ("BIND"), whitespace-padded values (" bind "),
 	// and the podman-specific Type="glob" that calls filepath.Glob
@@ -663,10 +657,9 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 			// In-memory, container-internal. No host-file access
 			// path. Safe; forward.
 		default:
-			// Cycle-6 review-security CRITICAL: Type="glob" calls
-			// filepath.Glob(Source) on the host and creates a bind
-			// mount for every matched path — bypassing the bind
-			// allowlist entirely. "image" / "npipe" / "" / case
+			// Type="glob" calls filepath.Glob(Source) on the host and
+			// creates a bind mount for every matched path — bypassing
+			// the bind allowlist entirely. "image" / "npipe" / "" / case
 			// variants like "BIND" / whitespace-padded values — all
 			// fall here and deny. Allowing a new Type requires an
 			// audit and an explicit case branch above.
@@ -693,11 +686,10 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 		}
 	}
 
-	// Host-namespace mode fields. Cycle 6: switched from deny-list
-	// (only "host" rejected) to allowlist (only known-safe literals
-	// + for NetworkMode a user-defined-name regex). Closes the
-	// container:<id> / ns:<path> / path-injection class of value-
-	// level bypasses that the deny-list pattern left open.
+	// Host-namespace mode fields use an allowlist: known-safe
+	// literals, plus a user-defined-name regex for NetworkMode. This
+	// closes the container:<id> / ns:<path> / path-injection class of
+	// value-level bypasses.
 	if dec := checkNetworkMode(hc.NetworkMode); !dec.allow {
 		return dec
 	}
@@ -717,7 +709,7 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 		return dec
 	}
 
-	// LogConfig.Type allowlist (cycle 6). Local-only drivers admit;
+	// LogConfig.Type allowlist. Local-only drivers admit;
 	// network-shipping drivers (syslog/splunk/fluentd/gelf/awslogs/
 	// etwlogs/logentries) deny because they accept a network address
 	// the agent could point at host services we have not audited.
@@ -736,9 +728,9 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 
 	// DeviceCgroupRules: parallel cgroup-rule mechanism to Devices.
 	// `"a *:* rwm"` grants unrestricted device-cgroup access; combined
-	// with CAP_MKNOD (in the default capset; my CapAdd policy only
+	// with CAP_MKNOD (in the default capset; the CapAdd policy only
 	// blocks ADDs, not what defaults grant) the agent can mknod and
-	// read the host's raw disks. Cycle-4 finding #2 (CRITICAL).
+	// read the host's raw disks.
 	if len(hc.DeviceCgroupRules) > 0 {
 		return denyDecision(http.StatusForbidden,
 			"device_cgroup_rules_nonempty",
@@ -746,7 +738,7 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 	}
 
 	// DeviceRequests: GPU / nvidia-container-runtime style device
-	// passthrough. Cycle-4 finding #5.
+	// passthrough.
 	if len(hc.DeviceRequests) > 0 {
 		return denyDecision(http.StatusForbidden,
 			"device_requests_nonempty",
@@ -756,7 +748,7 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 	// VolumesFrom: inherit mounts from another container. The other
 	// container's mount set is impossible to audit transitively; the
 	// agent could inherit any host bind that any other container the
-	// user has on the host carries. Cycle-4 finding #5.
+	// user has on the host carries.
 	if len(hc.VolumesFrom) > 0 {
 		return denyDecision(http.StatusForbidden,
 			"volumes_from_nonempty",
@@ -766,9 +758,9 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 	// MaskedPaths / ReadonlyPaths: setting these (even as empty
 	// arrays) overrides runc's safe defaults, re-exposing /proc/keys,
 	// /proc/sysrq-trigger, /sys/firmware, etc. inside the container.
-	// No legitimate workflow overrides these for security. Cycle-4
-	// finding #3. (Pointer types distinguish field-absent from
-	// field-present-with-empty-array.)
+	// No legitimate workflow overrides these for security. (Pointer
+	// types distinguish field-absent from field-present-with-empty-
+	// array.)
 	if hc.MaskedPaths != nil {
 		return denyDecision(http.StatusForbidden,
 			"masked_paths_present",
@@ -781,10 +773,9 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 	}
 
 	// Sysctls: kernel parameters set in the container. Some sysctls
-	// are namespaced (safe), some are not. Defence-in-depth (cycle-5
-	// opportunistic sweep): deny any Sysctls entirely; legitimate
-	// workflows can request specific entries through the allowlist
-	// admission process.
+	// are namespaced (safe), some are not. Defence-in-depth: deny any
+	// Sysctls entirely; legitimate workflows can request specific
+	// entries through the allowlist admission process.
 	if len(hc.Sysctls) > 0 {
 		return denyDecision(http.StatusForbidden,
 			"sysctls_nonempty",
@@ -891,10 +882,10 @@ func (p *Proxy) checkOneResourceCap(
 // the cap check runs in update-context mode (absent fields allowed,
 // present fields must be within bounds).
 //
-// Cycle 5: also runs with DisallowUnknownFields, so the same
+// The body also runs with DisallowUnknownFields, so the same
 // hostConfig allowlist constrains which UpdateConfig fields the
-// agent may set. A previously-unknown HostConfig field cannot be
-// smuggled through an update.
+// agent may set. An unknown HostConfig field cannot be smuggled
+// through an update.
 func (p *Proxy) inspectUpdate(body []byte) policyDecision {
 	if len(bytes.TrimSpace(body)) == 0 {
 		// An empty update body is a no-op upstream — forward it.
@@ -910,9 +901,9 @@ func (p *Proxy) inspectUpdate(body []byte) policyDecision {
 }
 
 // volumeCreateBody is the explicit allowlist for POST volumes/create.
-// Driver + DriverOpts are INSPECTED (cycle-4 finding #1 fix); Name
-// and Labels are FORWARDED. ClusterVolumeSpec is admitted opaque for
-// swarm-mode requests we are not policy-relevant for.
+// Driver + DriverOpts are INSPECTED; Name and Labels are FORWARDED.
+// ClusterVolumeSpec is admitted opaque for swarm-mode requests we are
+// not policy-relevant for.
 type volumeCreateBody struct {
 	Name       string            `json:"Name"`       // INSPECTED (audit log only; no policy)
 	Driver     string            `json:"Driver"`     // INSPECTED — deny local + opts
@@ -955,8 +946,8 @@ type networkCreateBody struct {
 }
 
 // inspectVolumeCreate parses body as a volumes/create request and
-// rejects any DriverOpts on the local driver. Cycle 5: also runs
-// with DisallowUnknownFields so unknown volumes/create fields
+// rejects any DriverOpts on the local driver. The body also runs
+// with DisallowUnknownFields, so unknown volumes/create fields
 // reject.
 func (p *Proxy) inspectVolumeCreate(body []byte) policyDecision {
 	if len(bytes.TrimSpace(body)) == 0 {
@@ -1079,12 +1070,12 @@ func bindSource(bind string) string {
 //
 // # Symlink resolution
 //
-// Pre-cycle-4 (#2326 round 3), the check was purely lexical: an
-// agent with write access to its worktree could create a symlink at
-// (allowed-prefix)/key → /etc/passwd, bind it, and the kernel's
-// mount(2) would follow the symlink and expose the host file. The
-// fix is to resolve symlinks on BOTH the source and the allowlist
+// The check resolves symlinks on BOTH the source and the allowlist
 // entries so the prefix comparison is between canonical paths.
+// Without this, an agent with write access to a path inside an
+// allowed prefix could create a symlink at (allowed-prefix)/key →
+// /etc/passwd, bind it, and the kernel's mount(2) would follow the
+// symlink and expose the host file.
 //
 // EvalSymlinks errors on paths that do not exist, on broken symlink
 // chains, and on EACCES. In every case the source is not a usable
@@ -1105,7 +1096,7 @@ func bindSource(bind string) string {
 //
 //   - Closing the TOCTOU window requires either kernel-level fs
 //     freezing primitives (not portable) or filesystem snapshots
-//     (heavyweight, out of scope for a Step-1 library PR).
+//     (heavyweight, out of scope for this proxy library).
 //   - The agent process is otherwise sandboxed; arming the race in
 //     the first place still requires write access to a path inside
 //     an allowed prefix, which the worktree-only bind allowlist
@@ -1114,11 +1105,10 @@ func bindSource(bind string) string {
 //     remains in front — the proxy is one link in a chain, not the
 //     sole boundary.
 //
-// Step 3 and onwards should consider whether the per-session
-// scratch dir (which is the agent's only realistic vector for
-// creating a malicious symlink) should be mounted with `nosymfollow`
-// or similar where the kernel/platform supports it. Out of scope
-// for this PR but worth a comment in #2317 when Step 3 lands.
+// The correct home for a full fix is the surrounding sandbox
+// profile: mount the per-session scratch dir (the agent's only
+// realistic vector for creating a malicious symlink) with
+// `nosymfollow` or similar where the kernel/platform supports it.
 func (p *Proxy) isAllowedBindSource(src string) bool {
 	if src == "" {
 		return false
@@ -1231,8 +1221,8 @@ func (p *Proxy) capIsAllowed(c string) bool {
 // networkModeFixedLiterals is the small allowlist of literal
 // NetworkMode values the proxy admits. Anything not in this set must
 // either match networkNameRegex (for user-defined networks) or deny.
-// "host" is INTENTIONALLY ABSENT — the previous denylist's only
-// rejection; preserved by the absence in this allowlist.
+// "host" is INTENTIONALLY ABSENT, so NetworkMode=host denies. Do not
+// add it.
 var networkModeFixedLiterals = map[string]struct{}{
 	"":            {}, // default
 	"bridge":      {}, // docker / podman default bridge
@@ -1319,7 +1309,7 @@ func denyIfUnsafeModeValue(fieldName, value string) policyDecision {
 	return allowDecision("")
 }
 
-// logConfigTypeAllowlist is the cycle-6 enum admission set for
+// logConfigTypeAllowlist is the enum admission set for
 // HostConfig.LogConfig.Type. The drivers listed here all write
 // container logs to LOCAL destinations (file / stdio / local
 // journald / Kubernetes node-local CRI files). Drivers that ship

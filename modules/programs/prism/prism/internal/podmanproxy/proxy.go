@@ -88,8 +88,8 @@ type Config struct {
 	// Production wires this from the sidecar to "prism-<sessionName>-"
 	// so the cleanup sweep can locate every container belonging to the
 	// session. Out-of-tree callers may leave it empty — the prefix logic
-	// is then a no-op, preserving the cycle-5 schema-inversion behaviour
-	// for any consumer that does not need session-scoped naming.
+	// is then a no-op, so a consumer that does not need session-scoped
+	// naming keeps the default behaviour.
 	ContainerNamePrefix string
 
 	// AllowedSecurityOpts is the set of HostConfig.SecurityOpt entries
@@ -97,9 +97,9 @@ type Config struct {
 	// case-sensitive and matches the full entry string (e.g.
 	// "no-new-privileges=true" or "seccomp=/etc/foo.json"). Empty by
 	// default — any SecurityOpt entry is rejected unless explicitly
-	// allowlisted. The empty-default closes the seccomp=unconfined /
+	// allowlisted. The empty default closes the seccomp=unconfined /
 	// apparmor=unconfined / no-new-privileges=false / label=disable
-	// class of escapes documented in #2317 §4.
+	// class of escapes.
 	AllowedSecurityOpts []string
 
 	// AuditWriter receives exactly one JSON line per accepted or

@@ -17,11 +17,11 @@ import (
 	"time"
 )
 
-// Tests for #2318: every escape vector in the parent threat table
-// (#2317 §4) gets an explicit security test. The tests share a small
-// scaffold that stands up a real podmanproxy in front of a fake
-// upstream so we can assert both the synthesised 4xx (no upstream
-// forward) AND the upstream-forwarded path.
+// Every escape vector in the threat table (docs/podman-proxy.md §2)
+// gets an explicit security test. The tests share a small scaffold
+// that stands up a real podmanproxy in front of a fake upstream so we
+// can assert both the synthesised 4xx (no upstream forward) AND the
+// upstream-forwarded path.
 //
 // The negative-control test (TestSecurity_NegativeControl_RootAllowlistPasses)
 // at the bottom of this file is the load-bearing meta-test that proves
@@ -35,10 +35,8 @@ import (
 // limited to 108 bytes; Darwin caps at 104. t.TempDir() embeds the
 // test name and parallel-subtest counter, which can push the path
 // past the limit when TMPDIR is the Nix sandbox
-// (/dev/shm/prism-go-test.<token>/...) and the subtest name is long
-// — review-context found this exact overflow on CI's
-// nix-build-prism-checked job: a 117-byte path failed bind with
-// EINVAL on TestSecurity_StreamingEndpoints_ForwardWithoutBodyParse/*.
+// (/dev/shm/prism-go-test.<token>/...) and the subtest name is long.
+// A path of about 117 bytes fails bind with EINVAL under that layout.
 //
 // Pattern matches cmd/merge_proxy_test.go's startFakeHostAPIServer —
 // MkdirTemp("/tmp", "p") deterministically yields a short path
@@ -78,8 +76,8 @@ type fakeUpstream struct {
 	lastBody atomic.Value // []byte
 
 	// lastRawQuery captures the URL.RawQuery of the most recent
-	// request. Used by the cycle-7 round-2 tests that assert the
-	// `?name=` channel was rewritten alongside the body Name.
+	// request. Used by the name-prefix tests that assert the `?name=`
+	// channel was rewritten alongside the body Name.
 	lastRawQuery atomic.Value // string
 }
 
@@ -128,9 +126,9 @@ func (fu *fakeUpstream) captured() int64 {
 // bind to in positive-path tests.
 //
 // allowedDir and scratchDir are real, existing directories in the
-// configured AllowedBindSources list. After the cycle-4 symlink-
-// resolution change, isAllowedBindSource calls filepath.EvalSymlinks,
-// which errors on paths that do not exist — so a test that wants to
+// configured AllowedBindSources list. isAllowedBindSource calls
+// filepath.EvalSymlinks, which errors on paths that do not exist — so
+// a test that wants to
 // exercise the positive path of the bind allowlist must use a path
 // that actually exists on disk. Tests can also create subdirectories
 // inside allowedDir / scratchDir for finer-grained scenarios.
@@ -211,9 +209,9 @@ func startProxyWithCaps(t *testing.T, fu *fakeUpstream) *proxyHarness {
 
 // mkRealDir creates a real, existing tempdir under /tmp with the
 // given prefix. Cleanup is registered with t.Cleanup. Used as
-// allowlist entries (the cycle-4 symlink-resolution check requires
-// allowlist entries to actually exist) and as bind sources in
-// positive-path tests.
+// allowlist entries (the symlink-resolution check requires allowlist
+// entries to actually exist) and as bind sources in positive-path
+// tests.
 func mkRealDir(t *testing.T, prefix string) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", prefix)
@@ -534,12 +532,11 @@ func TestSecurity_DevicesNonEmpty_Denied(t *testing.T) {
 
 // ───────────────── resource caps (strict mode) ─────────────────────
 //
-// AC (auxiliary): resource caps enforced server-side; out-of-bounds
-// returns 403. The strict interpretation (review-security PR #2326
-// round 2) is that the cap must actually be enforceable — docker's
-// Memory=0 "unlimited" semantic and an absent Memory field both have
-// to be denied when the cap is configured, otherwise the cap can be
-// trivially bypassed.
+// Resource caps are enforced server-side; out-of-bounds returns 403.
+// The strict interpretation is that the cap must actually be
+// enforceable — docker's Memory=0 "unlimited" semantic and an absent
+// Memory field both have to be denied when the cap is configured,
+// otherwise the cap can be trivially bypassed.
 
 func TestSecurity_MemoryOverCap_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
@@ -1380,18 +1377,16 @@ func TestSecurity_AllowedBinds_ForwardsUnmodified(t *testing.T) {
 
 // ────────────────────────── negative control ──────────────────────────
 
-// ─────────── cycle-4: symlink bypass of bind-source allowlist ────────────
+// ─────────── symlink bypass of bind-source allowlist ────────────
 //
-// Reviewer's exact exploit (PR #2326 round 3, CRITICAL): the agent
-// has write access to a path INSIDE an allowed prefix, so it plants
-// a symlink at <allowed>/key → <forbidden host file>. The proxy's
-// lexical prefix check sees /<allowed>/key starting with /<allowed>/
-// → ALLOW. The proxy forwards to podman, runc's mount(2) follows
-// the symlink at the kernel level, and the container ends up with
-// the forbidden host file bind-mounted in.
-//
-// Fix: filepath.EvalSymlinks on the source before the prefix check.
-// This test pins the fix down to the reviewer's verbatim scenario.
+// The agent has write access to a path INSIDE an allowed prefix, so
+// it plants a symlink at <allowed>/key → <forbidden host file>. A
+// purely lexical prefix check sees /<allowed>/key starting with
+// /<allowed>/ → ALLOW. The proxy forwards to podman, runc's mount(2)
+// follows the symlink at the kernel level, and the container ends up
+// with the forbidden host file bind-mounted in. filepath.EvalSymlinks
+// on the source before the prefix check closes this. The tests below
+// pin the scenario down.
 
 func TestSecurity_BindSymlinkToForbiddenPath_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
@@ -1414,8 +1409,8 @@ func TestSecurity_BindSymlinkToForbiddenPath_Denied(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
-// Same exploit shape via HostConfig.Mounts of Type=bind — the
-// reviewer specifically noted this second call site at policy.go:160.
+// Same exploit shape via HostConfig.Mounts of Type=bind — the second
+// call site.
 func TestSecurity_MountSymlinkToForbiddenPath_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	h := startProxy(t, fu)
@@ -1441,7 +1436,7 @@ func TestSecurity_MountSymlinkToForbiddenPath_Denied(t *testing.T) {
 }
 
 // Same exploit shape via the PUT /containers/{id}/archive path
-// query — the reviewer's third call site at policy.go:378.
+// query — the third call site.
 func TestSecurity_ArchiveSymlinkToForbiddenPath_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	h := startProxy(t, fu)
@@ -1485,8 +1480,8 @@ func TestSecurity_BindSymlinkToAllowedPath_Allowed(t *testing.T) {
 	}
 }
 
-// Non-existent source: EvalSymlinks errors → DENY. The coordinator's
-// directive explicitly said "lean reject" for non-existent paths.
+// Non-existent source: EvalSymlinks errors → DENY. The proxy leans
+// reject for non-existent paths.
 func TestSecurity_BindNonExistentSource_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	h := startProxy(t, fu)
@@ -1605,22 +1600,19 @@ func TestSecurity_BindSymlinkedAllowlistEntry_Matched(t *testing.T) {
 // AC: A negative-control test that mutates Config.AllowedBindSources
 // to include "/" causes a host-bind request to PASS — proving the
 // positive tests are not no-ops because of unrelated policy code paths.
-// ──────────────────────── cycle 5 ───────────────────────────────
+// ──────────────────────── HostConfig denials ───────────────────────────────
 //
-// Coordinator-authorised cycle 5. Closes the 5 round-4 review-
-// security findings (commit 1) and inverts the HostConfig parser to
-// default-deny unknown fields (commit 2). Tests here pair with each
-// closure; the schema-inversion tests live below in the
-// "unknown-field rejection" section.
+// The tests below pair with each HostConfig denial; the
+// schema-inversion tests live below in the "unknown-field rejection"
+// section.
 
-// Cycle-4 finding #1 (CRITICAL): local-volume bind-mount bypass via
-// volumes/create. The agent calls POST volumes/create with Driver=
-// local and DriverOpts that bind a host path through the local
-// driver's option language; then references the volume by name from
-// a containers/create body. bindSource() returns "" for named-volume
-// references (no leading slash) so the host-bind allowlist is
-// skipped. Closure: deny volumes/create with Driver=local + non-empty
-// DriverOpts.
+// local-volume bind-mount bypass via volumes/create. The agent calls
+// POST volumes/create with Driver=local and DriverOpts that bind a
+// host path through the local driver's option language; then
+// references the volume by name from a containers/create body.
+// bindSource() returns "" for named-volume references (no leading
+// slash) so the host-bind allowlist is skipped. Closure: deny
+// volumes/create with Driver=local + non-empty DriverOpts.
 func TestSecurity_VolumeCreate_LocalDriverBindMount_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	h := startProxy(t, fu)
@@ -1680,10 +1672,9 @@ func TestSecurity_VolumeCreate_MalformedJSON_Denied(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
-// Cycle-4 finding #1 (second path): the same exploit via inline
-// Mounts of Type=volume with VolumeOptions.DriverConfig in the
-// containers/create body. Closure: deny any Type=volume Mount with
-// VolumeOptions.DriverConfig set.
+// The same exploit via inline Mounts of Type=volume with
+// VolumeOptions.DriverConfig in the containers/create body. Closure:
+// deny any Type=volume Mount with VolumeOptions.DriverConfig set.
 func TestSecurity_MountVolumeWithDriverConfig_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	h := startProxy(t, fu)
@@ -1736,7 +1727,8 @@ func TestSecurity_MountVolumeWithoutDriverConfig_Allowed(t *testing.T) {
 	}
 }
 
-// Cycle-4 finding #2 (CRITICAL): DeviceCgroupRules unfiltered.
+// DeviceCgroupRules is a parallel cgroup-rule mechanism to Devices;
+// non-empty must deny.
 func TestSecurity_DeviceCgroupRulesNonEmpty_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	h := startProxy(t, fu)
@@ -1751,7 +1743,7 @@ func TestSecurity_DeviceCgroupRulesNonEmpty_Denied(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
-// Cycle-4 finding #5 (MAJOR): DeviceRequests unfiltered.
+// DeviceRequests (GPU / nvidia-container-runtime) non-empty must deny.
 func TestSecurity_DeviceRequestsNonEmpty_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	h := startProxy(t, fu)
@@ -1772,7 +1764,8 @@ func TestSecurity_DeviceRequestsNonEmpty_Denied(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
-// Cycle-4 finding #5 (MAJOR): VolumesFrom unfiltered.
+// VolumesFrom non-empty must deny — the source container's mounts
+// cannot be audited transitively.
 func TestSecurity_VolumesFromNonEmpty_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	h := startProxy(t, fu)
@@ -1787,7 +1780,8 @@ func TestSecurity_VolumesFromNonEmpty_Denied(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
-// Cycle-4 finding #3 (MAJOR): MaskedPaths present.
+// MaskedPaths present (even as an empty array) overrides runc's safe
+// default; must deny.
 func TestSecurity_MaskedPathsPresent_Denied(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -1836,8 +1830,7 @@ func TestSecurity_ReadonlyPathsPresent_Denied(t *testing.T) {
 	}
 }
 
-// Cycle-4 finding #4 (MAJOR): CgroupnsMode: "host" — sibling of the
-// other five host-namespace modes I already blocked.
+// CgroupnsMode=host — sibling of the other five host-namespace modes.
 func TestSecurity_CgroupnsModeHost_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	h := startProxy(t, fu)
@@ -1852,10 +1845,9 @@ func TestSecurity_CgroupnsModeHost_Denied(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
-// Cycle-5 opportunistic sweep: Sysctls. Some sysctls are not
-// namespaced (writable from a container affects the host). Default-
-// deny entirely; legitimate workflows can request specific entries
-// through the field-admission process.
+// Sysctls: some sysctls are not namespaced (writable from a container
+// affects the host). Default-deny entirely; legitimate workflows can
+// request specific entries through the field-admission process.
 func TestSecurity_SysctlsNonEmpty_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	h := startProxy(t, fu)
@@ -1872,17 +1864,14 @@ func TestSecurity_SysctlsNonEmpty_Denied(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
-// ──────────────────────── cycle 6 ───────────────────────────────
+// ──────────────────────── field-value allowlists ───────────────────────────────
 //
-// Coordinator-authorised cycle 6. Closes review-security's CRITICAL
-// Mount.Type=glob bypass + extends the cycle-5 schema-inversion
-// discipline from FIELD names to enumerable VALUES inside admitted
-// fields. Tests below pair with commit 1 (Mount.Type allowlist);
-// the NetworkMode-family + LogConfig.Type tests live with commit 2.
+// The field-value layer: enumerable values inside admitted fields
+// must match a literal allowlist. The tests below cover the
+// Mount.Type allowlist, the NetworkMode family, and LogConfig.Type.
 
-// review-security's exact PoC: Type="glob" with Source set to a
-// host path that filepath.Glob will resolve to the literal path.
-// Deny.
+// Type="glob" with Source set to a host path that filepath.Glob
+// will resolve to the literal path. Deny.
 func TestSecurity_MountTypeGlob_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	h := startProxy(t, fu)
@@ -1947,13 +1936,11 @@ func TestSecurity_MountType_AllowlistEnforced(t *testing.T) {
 	}
 }
 
-// ──────── cycle 6 commit 2: NetworkMode-family value allowlist ───────
+// ──────── NetworkMode-family value allowlist ───────
 //
-// Closes the class "admitted enum-field value with a deny-list".
 // NetworkMode + 5 siblings (PidMode, IpcMode, UTSMode, UsernsMode,
-// CgroupnsMode) previously denied only literal "host"; now allow
-// only an explicit set of literals (plus a user-defined-name regex
-// for NetworkMode).
+// CgroupnsMode) allow only an explicit set of literals (plus a
+// user-defined-name regex for NetworkMode). Anything else denies.
 
 func TestSecurity_NetworkMode_AllowedLiterals(t *testing.T) {
 	cases := []string{"", "bridge", "none", "default", "slirp4netns", "pasta"}
@@ -2071,7 +2058,7 @@ func TestSecurity_SimpleNamespaceModes_DangerousValues_Denied(t *testing.T) {
 	}
 }
 
-// ─────────────── LogConfig.Type allowlist (cycle 6) ─────────────────────
+// ─────────────── LogConfig.Type allowlist ─────────────────────
 func TestSecurity_LogConfigType_LocalDrivers_Allowed(t *testing.T) {
 	cases := []string{"", "json-file", "none", "journald", "k8s-file", "passthrough", "passthrough-tty"}
 	for _, typ := range cases {
@@ -2158,12 +2145,11 @@ func TestSecurity_MountTypeTmpfs_Allowed(t *testing.T) {
 
 // ──────── schema-inversion: unknown-field rejection per endpoint ────────
 //
-// Cycle-5 commit 2: every body-bearing endpoint now parses with
-// DisallowUnknownFields. Any HostConfig (or top-level / exec /
-// update / volume / network) field that is not in the explicit
-// allowlist struct is rejected as an unknown-field error. This
-// closes the "future docker-API field silently bypasses the proxy"
-// class of escape (cycles 2/3/4 all surfaced one or more instances).
+// Every body-bearing endpoint parses with DisallowUnknownFields. Any
+// HostConfig (or top-level / exec / update / volume / network) field
+// that is not in the explicit allowlist struct is rejected as an
+// unknown-field error. This closes the "future docker-API field
+// silently bypasses the proxy" class of escape.
 
 func TestSecurity_SchemaInversion_UnknownHostConfigField_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)

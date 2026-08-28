@@ -33,10 +33,7 @@ the place to start when debugging a rejection in the wild.
 
 The proxy is implemented in `modules/programs/prism/prism/internal/podmanproxy/`
 and is wired into the per-session prism sidecar
-(`modules/programs/prism/prism/internal/sidecar/podman_proxy.go`). The
-combined train is tracked by [#2317](https://github.com/prismatic-koi/nixos-config/issues/2317).
-the eight implementation PRs are #2326, #2327, #2328, #2329, #2330, #2331,
-#2332, and the closing docs/housekeeping PR.
+(`modules/programs/prism/prism/internal/sidecar/podman_proxy.go`).
 
 For the operational story — when to enable, how, prerequisites per platform —
 see the "Podman support for workers" section in the repo root `AGENTS.md`.
@@ -60,12 +57,10 @@ by tests in `internal/sidecar` and the platform-specific
 
 ## 2. Threat model
 
-This table is the shipped model, not the design. It supersedes #2317 §4 —
-which was written before review-security cycles 2–6 surfaced four
-structural classes of permissiveness that were closed in PR #2326. Where a
-threat is covered by a typed struct field, the canonical reference is the
-struct in `internal/podmanproxy/policy.go`. The comments on each admission
-record the rationale.
+This table is the shipped threat model. Where a threat is covered by a
+typed struct field, the canonical reference is the struct in
+`internal/podmanproxy/policy.go`. The comments on each admission record
+the rationale.
 
 | # | Threat | Mitigation | Canonical reference |
 |---|---|---|---|
@@ -102,26 +97,22 @@ they belong in a follow-up issue.
 
 ## 3. Default-deny is enforced at six layers
 
-The proxy enforces default-deny at six independent layers. Each layer was
-added or inverted in response to a class of finding that the prior layers
-did not cover. The shipped model is materially stronger than the original
-design (#2317 §4) — that design described the body-content layer (layer 4)
-and assumed a permissive parser. Cycles 2–6 added the four layers around
-it.
+The proxy enforces default-deny at six independent layers. Each layer
+covers a class of escape that the other layers do not.
 
-| # | Layer | Mechanism | First added |
-|---|---|---|---|
-| 1 | **Endpoint** | Positive allowlist via `classifyRequest` in `internal/podmanproxy/endpoints.go`. The last branch of every method helper is `endpointDeny`. Any unknown path/method pair returns 403 with a friendly JSON envelope that names the rejected endpoint. | PR #2326 cycle 1 |
-| 2 | **Field-name** | `json.Decoder.DisallowUnknownFields()` + typed struct per body-bearing endpoint. The structs (`hostConfig`, `containerCreateBody`, `containerExecBody`, `volumeCreateBody`, `networkCreateBody`) are the canonical security spec. Every admitted field is annotated `INSPECTED` (policy-checked), `DENIED` (rejected when non-empty/non-default), or `FORWARDED` (admitted as opaque `json.RawMessage`, bytes pass to the upstream unmodified). A future docker-API field that introduces an escape vector is rejected by default until it is explicitly admitted. | PR #2326 cycle 5 |
-| 3 | **Field-value** | Per-field literal allowlists (+ `NetworkMode` user-defined-name regex `networkNameRegex`) for enumerable values: `Mount.Type` (inline `switch` in `checkHostConfig` Mounts loop), the six `*Mode` fields (`networkModeFixedLiterals` for `NetworkMode`. `simpleNamespaceLiterals` for `PidMode`/`IpcMode`/`UTSMode`/`UsernsMode`/`CgroupnsMode`), `LogConfig.Type` (`logConfigTypeAllowlist`). Anything outside the allowlist denies. Closes the class where the field is admitted but a dangerous value of that field forwards (cycle-6 CRITICAL: `Mount.Type=glob` was originally forwarded because the parser was deny-list — it only rejected if `Type != "bind" && Type != "volume"`). | PR #2326 cycle 6 |
-| 4 | **Body-content** | `checkHostConfig` walks the parsed HostConfig and rejects dangerous values: `Privileged: true`, host-namespace modes, non-empty `Devices` / `DeviceCgroupRules` / `DeviceRequests` / `VolumesFrom`, present `MaskedPaths` / `ReadonlyPaths`, non-empty `Sysctls`, `Mounts[].VolumeOptions.DriverConfig` non-nil, `CapAdd` outside allowlist, `SecurityOpt` outside allowlist, resource caps in strict mode. | PR #2326 cycles 1 + 2 + 4 |
-| 5 | **Path-resolution** | `filepath.EvalSymlinks` + lexical `filepath.Clean` on both bind sources AND allowlist entries before the prefix comparison. Relative paths, broken symlink chains, and non-existent sources all deny. Closes the cycle-3 CRITICAL where the agent planted a symlink inside an allowed prefix pointing at `/etc/passwd` and the lexical prefix-match passed. See §5 for the residual TOCTOU. | PR #2326 cycle 3 |
-| 6 | **Query** | `PUT /containers/{id}/archive` `path` query parameter is checked against `AllowedBindSources` with the same canonicalised-prefix logic as `Binds`. The other endpoint with a security-relevant query (`POST /containers/create?name=<…>`) is covered by the cycle-7 container-name auto-prefix policy in `applyContainerNamePolicy`. | PR #2326 cycle 1 (archive) + PR #2332 (Name query) |
+| # | Layer | Mechanism |
+|---|---|---|
+| 1 | **Endpoint** | Positive allowlist via `classifyRequest` in `internal/podmanproxy/endpoints.go`. The last branch of every method helper is `endpointDeny`. Any unknown path/method pair returns 403 with a friendly JSON envelope that names the rejected endpoint. |
+| 2 | **Field-name** | `json.Decoder.DisallowUnknownFields()` + typed struct per body-bearing endpoint. The structs (`hostConfig`, `containerCreateBody`, `containerExecBody`, `volumeCreateBody`, `networkCreateBody`) are the canonical security spec. Every admitted field is annotated `INSPECTED` (policy-checked), `DENIED` (rejected when non-empty/non-default), or `FORWARDED` (admitted as opaque `json.RawMessage`, bytes pass to the upstream unmodified). A future docker-API field that introduces an escape vector is rejected by default until it is explicitly admitted. |
+| 3 | **Field-value** | Per-field literal allowlists (+ `NetworkMode` user-defined-name regex `networkNameRegex`) for enumerable values: `Mount.Type` (inline `switch` in `checkHostConfig` Mounts loop), the six `*Mode` fields (`networkModeFixedLiterals` for `NetworkMode`. `simpleNamespaceLiterals` for `PidMode`/`IpcMode`/`UTSMode`/`UsernsMode`/`CgroupnsMode`), `LogConfig.Type` (`logConfigTypeAllowlist`). Anything outside the allowlist denies. This closes the class where a field is admitted but a dangerous value of that field forwards. For example, `Mount.Type=glob` must not forward; a deny-list that rejected only `Type != "bind" && Type != "volume"` would let it through. |
+| 4 | **Body-content** | `checkHostConfig` walks the parsed HostConfig and rejects dangerous values: `Privileged: true`, host-namespace modes, non-empty `Devices` / `DeviceCgroupRules` / `DeviceRequests` / `VolumesFrom`, present `MaskedPaths` / `ReadonlyPaths`, non-empty `Sysctls`, `Mounts[].VolumeOptions.DriverConfig` non-nil, `CapAdd` outside allowlist, `SecurityOpt` outside allowlist, resource caps in strict mode. |
+| 5 | **Path-resolution** | `filepath.EvalSymlinks` + lexical `filepath.Clean` on both bind sources AND allowlist entries before the prefix comparison. Relative paths, broken symlink chains, and non-existent sources all deny. This closes the class where the agent plants a symlink inside an allowed prefix pointing at `/etc/passwd` and a lexical prefix-match would pass. See §5 for the residual TOCTOU. |
+| 6 | **Query** | `PUT /containers/{id}/archive` `path` query parameter is checked against `AllowedBindSources` with the same canonicalised-prefix logic as `Binds`. The other endpoint with a security-relevant query (`POST /containers/create?name=<…>`) is covered by the container-name auto-prefix policy in `applyContainerNamePolicy`. |
 
 ## 4. Field-admission process
 
-The cycle-5 schema inversion means any new docker-/podman-API field
-introduced upstream is rejected by default. Admission requires an audit
+The schema inversion means any new docker-/podman-API field introduced
+upstream is rejected by default. Admission requires an audit
 against the threat table above and an explicit addition to the relevant
 typed struct in `internal/podmanproxy/policy.go`.
 
@@ -153,7 +144,7 @@ this example) that takes an integer share-weight.
 
    ```go
    // FORWARDED — per-container CPU share weighting, equivalent to
-   // CpuShares; no escape vector against #2317 §4 / the threat table.
+   // CpuShares; no escape vector against the threat table in §2.
    // Admitted under the same rationale as CpuShares — podman 6.0
    // renamed the field. Audit ticket: #NNNN.
    CgroupBudget json.RawMessage `json:"CgroupBudget"`
@@ -216,7 +207,7 @@ sandbox profile, not the proxy. Two future directions:
   status: future hardening, not gated on a concrete report.
 
 The `internal/podmanproxy/doc.go` package doc carries the same note.
-both surfaces are intentionally redundant so the residual is hard to
+Both surfaces are intentionally redundant so the residual is hard to
 miss.
 
 ## 6. Verification — the test suite as the spec
@@ -226,8 +217,8 @@ The body of evidence for "this policy is enforced" is the test suite at
 top-level test functions at this writing, many with multiple subtests,
 all green under `-race`. The companion files `proxy_test.go` and
 `proxy_name_prefix_test.go` add a further ~40 top-level tests that
-cover the constructor, lifecycle, and cycle-7 Name-prefix policy. The
-key meta-test is:
+cover the constructor, lifecycle, and Name-prefix policy. The key
+meta-test is:
 
 ```go
 // TestSecurity_NegativeControl_RootAllowlistPasses mutates Config.AllowedBindSources
@@ -239,12 +230,11 @@ key meta-test is:
 
 This is the load-bearing "tests are not vacuous" check. The
 revert-and-watch-fail discipline (revert the fix → re-run the test → see
-it fail → re-apply the fix → see it pass) was applied to every cycle-2-
-through-6 closure in PR #2326. Commit messages in that PR carry the
-per-cycle matrix.
+it fail → re-apply the fix → see it pass) applies to every policy check
+in this package.
 
 Tests for sidecar wiring live at
-`internal/sidecar/podman_proxy_test.go` (Step 3) and assert that:
+`internal/sidecar/podman_proxy_test.go` and assert that:
 
 - `containers_enabled=0` sessions do NOT bind a `podman.sock` listener
   in the per-session run dir, and emit NO audit-log file.
@@ -254,12 +244,12 @@ Tests for sidecar wiring live at
   audit log records the call.
 
 Tests for the bwrap profile additions live at
-`internal/container/bwrap_test.go` (Step 4). Tests for the sandbox-exec
+`internal/container/bwrap_test.go`. Tests for the sandbox-exec
 profile additions live at
 `internal/container/sandbox_exec_podman_proxy_test.go` and
 `internal/container/sandbox_exec_podman_proxy_prepare_test.go`, plus the
 integration test under `internal/integration/` per the
-[sandbox-exec testing convention](sandbox-exec-testing.md) (Step 5).
+[sandbox-exec testing convention](sandbox-exec-testing.md).
 
 ## 7. Troubleshooting — reading the audit log
 
@@ -319,49 +309,19 @@ proxy blocked it. Escalation paths:
   parsing or upstream-handling bug. File an issue with the failing
   request body.
 
-## 8. Cycle history — six rounds of structural hardening
-
-PR #2326 went through six review cycles. Each cycle's review-security
-agent found a different *class* of permissiveness, not just a single
-missing check. Each cycle closed its findings AND inverted one layer of
-the default-deny model so the next layer down became the next surface to
-audit. The canonical security spec is now the typed structs and value
-allowlists in `policy.go`, not the deny-list comments scattered through
-old commit messages.
-
-| Cycle | Class of finding | Layer inverted |
-|---|---|---|
-| 1 | Initial implementation + AC coverage | Endpoint allowlist (positive `classifyRequest` table) |
-| 2 | 5 missing-field denials (`Memory=0` bypass, `NanoCpus` unparsed, `/update` resets caps, exec-`Privileged` bypass, `SecurityOpt` unfiltered) | Body-content policy expanded |
-| 3 | 1 CRITICAL — bind-source check was purely lexical. Symlinks bypassed it | Path resolution: `filepath.EvalSymlinks` on bind sources |
-| 4 | 5 missing-field denials (`DeviceCgroupRules`, `MaskedPaths`/`ReadonlyPaths`, `CgroupnsMode`, `VolumesFrom`/`DeviceRequests`, local-driver volume bind) | Body-content policy hardened further |
-| 5 | Pattern recognised: the body parser was permissive at the FIELD-NAME layer | **Field-name layer:** `json.Decoder.DisallowUnknownFields()` + typed allowlist structs at every body-bearing endpoint |
-| 6 | One level down: admitted fields had VALUE-LEVEL deny-lists (`Mount.Type` forwarded everything that was not `bind`/`volume`, including the podman-specific `glob` Type → CRITICAL) | **Field-value layer:** per-field value allowlists for enumerable fields |
-
-After cycle 6 the body-inspection model is default-deny at both the
-field-name and the field-value layers. A future docker-API field or
-value that introduces an escape vector is rejected by default until it
-is explicitly admitted via the field-admission process (§4).
-
-The cycle-7 work landed in PR #2332 (Step 7) as the container-name
-auto-prefix policy on `POST /containers/create`. The same six-layer
-shape applied to the `Name` field and the `?name=` URL query. As a
-result, the cleanup sweep can deterministically locate every container
-that belongs to a session.
-
-## 9. Configuration knobs
+## 8. Configuration knobs
 
 The proxy's `Config` struct in `internal/podmanproxy/proxy.go` carries
-the per-session knobs that the sidecar wires. The Step 3 wiring lives
+the per-session knobs that the sidecar wires. The sidecar wiring lives
 in `internal/sidecar/podman_proxy.go::runPodmanProxyIfEnabled`, which
 constructs a `podmanproxy.Config` literal inline (no separate builder
-function — the `runPodmanProxyIfEnabled` body itself is the
-spec) and sets:
+function — the `runPodmanProxyIfEnabled` body itself is the spec) and
+sets:
 
 - `AllowedBindSources` — the per-session worktree path, the bare repo
   path, and the per-session scratch directory.
 - `ContainerNamePrefix` — `"prism-" + sessionName + "-"`, which
-  activates the cycle-7 auto-prefix policy and lets the cleanup sweep
+  activates the auto-prefix policy and lets the cleanup sweep
   (`cmd/cleanup_sweep.go::sweepOrphanContainersForSession`, called
   from `cmd/cleanup.go`) find every container belonging to the
   session.
@@ -375,7 +335,7 @@ spec) and sets:
 Out-of-tree callers can construct the `Config` differently. The proxy
 package itself imposes no policy beyond what the `Config` declares.
 
-## 10. Linger decision
+## 9. Linger decision
 
 **No `loginctl enable-linger <user>` for v1.** The proxy is only
 used by interactive prism sessions. When the user has a graphical
@@ -390,10 +350,10 @@ code change, and disabling it later requires no code change. No
 host in this flake currently sets it, and this PR did not change
 that.
 
-## 11. References
+## 10. References
 
 - Parent issue: [#2317](https://github.com/prismatic-koi/nixos-config/issues/2317) — design, threat-table sketch, parent ACs.
-- Step 1 PR: [#2326](https://github.com/prismatic-koi/nixos-config/pull/2326) — the proxy package itself, plus the six-cycle hardening history.
+- Step 1 PR: [#2326](https://github.com/prismatic-koi/nixos-config/pull/2326) — the proxy package itself.
 - Step 2 PR: [#2327](https://github.com/prismatic-koi/nixos-config/pull/2327) — DB migration v36→v37.
 - Step 3 PR: [#2328](https://github.com/prismatic-koi/nixos-config/pull/2328) — sidecar wiring.
 - Step 4 PR: [#2329](https://github.com/prismatic-koi/nixos-config/pull/2329) — bwrap profile.
@@ -401,7 +361,7 @@ that.
 - Step 6 PR: [#2330](https://github.com/prismatic-koi/nixos-config/pull/2330) — `--containers` spawn flag.
 - Step 7 PR: [#2332](https://github.com/prismatic-koi/nixos-config/pull/2332) — orphan-container cleanup sweep + auto-prefix on `Name`.
 - Canonical structs: [`internal/podmanproxy/policy.go`](../internal/podmanproxy/policy.go) (`hostConfig`, `containerCreateBody`, `containerExecBody`, `volumeCreateBody`, `networkCreateBody`).
-- Package doc: [`internal/podmanproxy/doc.go`](../internal/podmanproxy/doc.go) — the in-tree summary of the threat model. References `#2317 §4` directly. The shipped threat table in this document (§2) explicitly supersedes `#2317 §4` after cycles 2–6. Consider `doc.go` the inline summary and this document the canonical reference.
+- Package doc: [`internal/podmanproxy/doc.go`](../internal/podmanproxy/doc.go) — the in-tree summary of the threat model. This document (§2) is the canonical threat table; `doc.go` is the inline summary.
 - Sidecar wiring: [`internal/sidecar/podman_proxy.go`](../internal/sidecar/podman_proxy.go) — `runPodmanProxyIfEnabled`.
 - Cleanup sweep: [`cmd/cleanup_sweep.go`](../cmd/cleanup_sweep.go) — `sweepOrphanContainersForSession` (called from `cmd/cleanup.go`).
 - Sandbox-exec testing convention: [`docs/sandbox-exec-testing.md`](sandbox-exec-testing.md).

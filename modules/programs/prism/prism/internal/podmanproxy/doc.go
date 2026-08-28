@@ -2,30 +2,26 @@
 // docker / podman REST API socket.
 //
 // The proxy is a self-contained library with no prism-specific imports
-// beyond the standard library. It is intended to be embedded by a longer-
-// running owner (for example, the per-session prism sidecar — Step 3 of
-// the train tracked by issue #2317) which wires it up to a per-session
-// Unix socket and the host's real podman socket. This package itself
-// performs no session bookkeeping, no DB writes, and no isolation-mode
-// reasoning — those concerns live in the caller.
+// beyond the standard library. A longer-running owner embeds it (for
+// example, the per-session prism sidecar) and wires it to a per-session
+// Unix socket and the host's real podman socket. This package performs
+// no session bookkeeping, no DB writes, and no isolation-mode
+// reasoning. Those concerns live in the caller.
 //
 // # Threat model
 //
 // The proxy is the security boundary between an untrusted agent that
 // controls one end of the socket and the host's real container API on
-// the other end. The escapes the proxy is designed to block are listed
-// in #2317 §4: host-path bind mounts, --privileged, host network / pid /
-// ipc / uts / userns modes, cap-add SYS_ADMIN / SYS_PTRACE / etc., host
-// device passthrough, podman cp exfiltration, and raw-socket fallback
-// (the only socket exposed to the agent IS the filter).
+// the other end. The proxy blocks these escapes: host-path bind mounts,
+// --privileged, host network / pid / ipc / uts / userns modes, cap-add
+// SYS_ADMIN / SYS_PTRACE and similar, host device passthrough, podman cp
+// exfiltration, and raw-socket fallback (the only socket exposed to the
+// agent is the filter).
 //
 // # Default-deny — endpoint, body, and field layers
 //
 // Every request is denied unless it matches an explicit allow rule.
-// Four classes of allow are enforced (the field-level layer was
-// added in cycle 5 of #2326 after cycles 2/3/4 each surfaced a
-// HostConfig field that the previous permissive parser silently
-// forwarded):
+// Five classes of allow are enforced:
 //
 //   - Endpoint-level: any path/method pair that does not appear in
 //     the allowlist returns 403 with a friendly JSON envelope that
@@ -47,34 +43,32 @@
 //     NetworkMode, PidMode/IpcMode/UTSMode/UsernsMode/CgroupnsMode,
 //     LogConfig.Type), the value MUST match an explicit literal
 //     allowlist; NetworkMode additionally accepts a user-defined
-//     name regex. Anything outside the allowlist denies. This
-//     closes the cycle-6 "deny-list pattern at the value layer"
-//     class, sibling of the cycle-5 field-layer inversion. Value
+//     name regex. Anything outside the allowlist denies. Value
 //     allowlists live in policy.go alongside the inspector
-//     functions (e.g. checkNetworkMode, checkLogConfigType) and
-//     are the canonical security spec for enumerable values.
+//     functions (for example, checkNetworkMode and
+//     checkLogConfigType) and are the canonical security spec for
+//     enumerable values.
 //   - Query-level: PUT containers/{id}/archive requires its `path`
 //     query parameter to fall under the same prefix allowlist as
 //     bind sources.
 //
-// # Field admission process for Step 3+
+// # Field admission process
 //
-// When a workflow in Step 3 or later surfaces a HostConfig (or
-// top-level / exec / update / volume / network) field that the
-// current allowlist does not admit, the request fails with a 403
-// containing "unknown field <Name>" in the message. The process for
-// admitting a new field:
+// When a workflow surfaces a HostConfig (or top-level / exec /
+// update / volume / network) field that the current allowlist does
+// not admit, the request fails with a 403 containing "unknown field
+// <Name>" in the message. The process for admitting a new field:
 //
 //  1. File an issue describing the workflow and the field.
-//  2. Audit the field against the parent issue's threat table
-//     (#2317 §4). Classify as INSPECTED / DENIED / FORWARDED.
+//  2. Audit the field against the threat table in
+//     docs/podman-proxy.md §2. Classify as INSPECTED / DENIED /
+//     FORWARDED.
 //  3. Open a PR that adds the field to the appropriate struct in
 //     policy.go with a rationale comment matching the existing
 //     style. INSPECTED additions need a policy check + a non-vacuous
 //     test pair (positive + revert-and-watch-fail).
-//  4. The struct definition is the canonical spec; reviewers should
-//     audit by reading the struct, not by guessing what the proxy
-//     admits.
+//  4. The struct definition is the canonical spec. Audit a change by
+//     reading the struct, not by guessing what the proxy admits.
 //
 // Streaming endpoints — /containers/{id}/attach, /exec/{id}/start, and
 // the follow=1 variant of /containers/{id}/logs — are forwarded without
@@ -100,16 +94,14 @@
 // bind target inside the container is fixed at create time so a
 // changed symlink cannot retarget the agent's reach, and (c) the
 // sandbox layer (bwrap / sandbox-exec) sits in front of the proxy.
-// Closing the window properly requires either kernel-level fs
-// freezing or filesystem snapshots, both out of scope for a Step-1
-// library PR.
+// A full close of the window needs either kernel-level filesystem
+// freezing or filesystem snapshots. Both are out of scope for this
+// proxy library.
 //
-// Step 3 (sidecar wiring) and later should evaluate mounting the
-// per-session scratch directory with `nosymfollow` (Linux) or the
-// equivalent SBPL restriction (Darwin) where the platform permits.
-// That moves the TOCTOU mitigation from this proxy into the
-// surrounding sandbox profile, which is the correct architectural
-// home for it.
+// The correct architectural home for the mitigation is the
+// surrounding sandbox profile: mount the per-session scratch
+// directory with `nosymfollow` (Linux) or the equivalent SBPL
+// restriction (Darwin) where the platform permits.
 //
 // # JSON error envelope
 //

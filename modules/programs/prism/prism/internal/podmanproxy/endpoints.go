@@ -26,11 +26,10 @@ const (
 	// constant for clarity: the AC explicitly calls out attach / exec /
 	// follow=logs as endpoints that must not parse a body.
 	//
-	// # Streaming-endpoint body audit (cycle 6)
+	// # Streaming-endpoint body audit
 	//
-	// The endpoints in this class are forwarded WITHOUT body
-	// inspection. The cycle-6 audit confirmed each one is safe to
-	// admit without parsing:
+	// The endpoints in this class forward WITHOUT body inspection.
+	// Each one is safe to admit without parsing:
 	//
 	// - POST /containers/{id}/attach
 	//     The body is empty (the endpoint upgrades the connection
@@ -43,10 +42,9 @@ const (
 	//     Tty (bool; allocates a tty). Neither is an escape —
 	//     Tty=true is terminal allocation, Detach=true backgrounds.
 	//     A POST with NO body or an empty object {} is equally
-	//     valid. Per coordinator directive (cycle 6) any future
-	//     additional field surfaced on this body should be audited
-	//     and either admitted with a rationale (move to
-	//     endpointPolicyExec-style strict-parse) or denied via the
+	//     valid. Audit any future field surfaced on this body and
+	//     either admit it with a rationale (move to
+	//     endpointPolicyExec-style strict-parse) or deny it via the
 	//     same allowlist discipline as the other body-bearing
 	//     endpoints. The current Detach/Tty pair has no JSON inversion
 	//     because docker/podman accept many other shapes at this
@@ -105,12 +103,11 @@ const (
 
 	// endpointPolicyRename means "inspect the `?name=` query parameter
 	// against ContainerNamePrefix before forwarding". Used for POST
-	// /containers/{id}/rename. Closes the cycle-7 post-creation
-	// escape from the auto-prefix policy: without this kind, an agent
-	// could create a correctly-prefixed container and then immediately
-	// rename it out of the prefix, leaving an orphan that the cleanup
-	// sweep cannot find. (Spotted by review-security on PR #2332
-	// round 1.)
+	// /containers/{id}/rename. Closes the post-creation escape from the
+	// auto-prefix policy: without this kind, an agent could create a
+	// correctly-prefixed container and then immediately rename it out
+	// of the prefix, leaving an orphan that the cleanup sweep cannot
+	// find.
 	endpointPolicyRename
 )
 
@@ -195,9 +192,9 @@ func matchPath(path, pattern string) bool {
 // rule is an explicit positive match above it.
 //
 // The classification covers the docker / podman REST API surface that
-// an agent legitimately needs for the workflows described in #2317 §1:
-// container lifecycle (run / stop / rm), image pull, exec, build,
-// network / volume create. Endpoints outside this surface are denied
+// an agent legitimately needs: container lifecycle (run / stop / rm),
+// image pull, exec, build, network / volume create. Endpoints outside
+// this surface are denied
 // even if they are technically read-only — the proxy's job is to be
 // narrow, not exhaustive.
 //
@@ -291,8 +288,8 @@ func classifyPOST(normPath string) endpointKind {
 
 	// Rename is its own classification because its `?name=` query
 	// must be validated against ContainerNamePrefix — the agent must
-	// not be able to escape the cycle-7 auto-prefix policy by
-	// post-create rename. See endpointPolicyRename.
+	// not be able to escape the auto-prefix policy by post-create
+	// rename. See endpointPolicyRename.
 	if matchPath(normPath, "containers/+/rename") {
 		return endpointPolicyRename
 	}
@@ -306,9 +303,9 @@ func classifyPOST(normPath string) endpointKind {
 	}
 
 	// Exec create has its own Privileged field that grants extra
-	// capabilities to the exec process — body inspection is required
-	// (review-security PR #2326 round 2). Exec resize is a small
-	// tty-resize op with no security-relevant body.
+	// capabilities to the exec process — body inspection is required.
+	// Exec resize is a small tty-resize op with no security-relevant
+	// body.
 	if matchPath(normPath, "containers/+/exec") {
 		return endpointPolicyExec
 	}
@@ -346,10 +343,10 @@ func classifyPOST(normPath string) endpointKind {
 		return endpointAllow
 	}
 
-	// Container update accepts Memory, CpuQuota, NanoCpus, etc. — an
-	// agent that creates with valid caps could otherwise POST update
-	// with Memory=0 to remove the cap (review-security PR #2326 round 2).
-	// Body inspection is required.
+	// Container update accepts Memory, CpuQuota, NanoCpus, and similar
+	// — an agent that creates with valid caps could otherwise POST
+	// update with Memory=0 to remove the cap. Body inspection is
+	// required.
 	if matchPath(normPath, "containers/+/update") {
 		return endpointPolicyUpdate
 	}
