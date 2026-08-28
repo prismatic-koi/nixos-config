@@ -348,6 +348,54 @@ func TestSpawnSession_HostMode_RejectsOversizedLaunchCmd(t *testing.T) {
 	}
 }
 
+// TestSpawnSession_HostMode_AgentOnly_RejectsOversizedLaunchCmd_ModelsByRole
+// pins ModelsByRole forwarding on the host+LayoutAgentOnly size-guard
+// preview path (issue #2878). Before the fix, that branch built its preview
+// Opts from an inline literal that omitted ModelsByRole, so a huge per-role
+// override entry for this session's own role never reached the measured
+// command and the guard could not see it. Routing the preview through
+// buildOptsForAgentOnlyLayout (the same builder the real launch uses) fixes
+// that; this test fails if ModelsByRole is dropped from the preview again.
+func TestSpawnSession_HostMode_AgentOnly_RejectsOversizedLaunchCmd_ModelsByRole(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+	argsFile := spyTmuxBin(t)
+
+	const sessionName = "myrepo@oversize-models-by-role"
+	bigModel := strings.Repeat("X", HostLaunchCmdSafeBound+1024)
+	opts := SpawnOpts{
+		SessionName:   sessionName,
+		Repo:          "myrepo",
+		Worktree:      tmp,
+		AgentRole:     "worker",
+		Prompt:        "tiny prompt",
+		Layout:        LayoutAgentOnly,
+		IsolationMode: "host",
+		// Keyed by the session's own role, so roleModelOverride matches and
+		// the value reaches buildDirectAgentCmd's --model flag.
+		ModelsByRole:   map[string]string{"worker": bigModel},
+		PIExtensionDir: testPIExtensionDir,
+	}
+
+	err := SpawnSession(d, opts)
+	if err == nil {
+		t.Fatal("SpawnSession: got nil, want HostLaunchCmdTooLargeError")
+	}
+	if !IsHostLaunchCmdTooLarge(err) {
+		t.Fatalf("SpawnSession err type = %T (%v), want *HostLaunchCmdTooLargeError", err, err)
+	}
+
+	// CRITICAL: no tmux state should have been created.
+	args := readSpyArgs(argsFile)
+	for _, a := range args {
+		if a == "new-session" || a == "new-window" {
+			t.Errorf("oversized spawn unexpectedly called tmux %q (full args: %v)", a, args)
+		}
+	}
+}
+
 // TestSpawnSession_HostMode_AcceptsBoundedLaunchCmd verifies the no-regression
 // half of AC-6: a constructed launch command well within the safe bound is
 // not rejected. This is the path most spawns take — small prompts, small
