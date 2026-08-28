@@ -30,7 +30,7 @@
           		min_keyword_length = function(ctx)
           			local ft = vim.bo[ctx.bufnr].filetype
           			if ft == "markdown" or ft == "text" or ft == "gitcommit" then
-          				return 3
+          				return 2
           			end
           			return 0
           		end,
