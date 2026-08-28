@@ -996,6 +996,10 @@ func wantCompactPlain(summaries []dashboard.ReviewChildSummary) string {
 			b.WriteString(pendingIcon + " ")
 		}
 	}
+	// A single trailing blank column after the final icon, matching the
+	// separator room every non-final icon gets from its own trailing space
+	// (#2882).
+	b.WriteString(" ")
 	return b.String()
 }
 
@@ -1231,6 +1235,73 @@ func TestPlainSummaryForBudget_WidthMatchesRendered(t *testing.T) {
 	}
 	if w := lipgloss.Width(stripANSI(renderedCompact)); w != renderedCompactW {
 		t.Errorf("compact tier: rendered plain-stripped width = %d, want %d", w, renderedCompactW)
+	}
+}
+
+// TestRenderReviewSummary_LastIconSameSizeAsOthers asserts the fix for #2882:
+// the final verdict icon on a collapsed review-group row renders at the same
+// size (display width) as the preceding icons, in both the labels form and
+// the compact icon-only form. Every rendered icon cell must measure exactly
+// 2 columns via lipgloss.Width, including the last one.
+func TestRenderReviewSummary_LastIconSameSizeAsOthers(t *testing.T) {
+	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, nil, nil))
+	if len(summaries) < 2 {
+		t.Fatalf("need at least 2 canonical review agents for this test, got %d", len(summaries))
+	}
+
+	for _, s := range summaries {
+		if w := lipgloss.Width(dashboard.RenderIconCellForTest(s.Verdict)); w != 2 {
+			t.Errorf("icon cell for verdict %q width = %d, want 2", s.Verdict, w)
+		}
+	}
+
+	// The reported labels/compact width must exactly equal the rendered
+	// width — this is the mechanism the issue's fix relies on: any drift
+	// between the accounted width and the rendered width means the last
+	// icon's trailing column silently disappears in the budget maths.
+	_, labelsW, _ := dashboard.RenderReviewSummaryForTest(summaries, 1000)
+	rendered, renderedW, _ := dashboard.RenderReviewSummaryForTest(summaries, labelsW)
+	if w := lipgloss.Width(stripANSI(rendered)); w != renderedW || w != labelsW {
+		t.Errorf("labels form: rendered width = %d, reported width = %d, labelsW = %d — all three must match", w, renderedW, labelsW)
+	}
+
+	compactW := dashboard.ReviewSummaryCompactWidthForTest(summaries)
+	renderedCompact, renderedCompactW, mode := dashboard.RenderReviewSummaryForTest(summaries, compactW)
+	if mode != dashboard.SummaryCompactForTest {
+		t.Fatalf("expected compact tier at budget=compactW=%d, got mode=%d", compactW, mode)
+	}
+	if w := lipgloss.Width(stripANSI(renderedCompact)); w != renderedCompactW || w != compactW {
+		t.Errorf("compact form: rendered width = %d, reported width = %d, compactW = %d — all three must match", w, renderedCompactW, compactW)
+	}
+}
+
+// TestRenderReviewSummary_SingleAgentFullSize asserts AC #2882: a
+// single-agent review group renders its one icon at full size and its
+// reported width matches the rendered width, in both tiers.
+func TestRenderReviewSummary_SingleAgentFullSize(t *testing.T) {
+	summaries := []dashboard.ReviewChildSummary{
+		{AgentShortName: "goal", Verdict: dashboard.VerdictPass},
+	}
+
+	if w := lipgloss.Width(dashboard.RenderIconCellForTest(summaries[0].Verdict)); w != 2 {
+		t.Fatalf("single agent's icon cell width = %d, want 2", w)
+	}
+
+	rendered, renderedW, mode := dashboard.RenderReviewSummaryForTest(summaries, 1000)
+	if mode != dashboard.SummaryFullForTest {
+		t.Fatalf("expected full tier at budget=1000, got mode=%d", mode)
+	}
+	if w := lipgloss.Width(stripANSI(rendered)); w != renderedW {
+		t.Errorf("single-agent labels form: rendered width = %d, reported width = %d", w, renderedW)
+	}
+
+	compactW := dashboard.ReviewSummaryCompactWidthForTest(summaries)
+	renderedCompact, renderedCompactW, compactMode := dashboard.RenderReviewSummaryForTest(summaries, compactW)
+	if compactMode != dashboard.SummaryCompactForTest {
+		t.Fatalf("expected compact tier at budget=compactW=%d, got mode=%d", compactW, compactMode)
+	}
+	if w := lipgloss.Width(stripANSI(renderedCompact)); w != renderedCompactW {
+		t.Errorf("single-agent compact form: rendered width = %d, reported width = %d", w, renderedCompactW)
 	}
 }
 
