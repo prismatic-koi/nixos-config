@@ -141,7 +141,8 @@ actionable text per request until the upstream comes up:
 **No linger for v1.** `loginctl enable-linger <user>` is NOT set on any
 host in this flake. The proxy is only used by interactive prism
 sessions; users running long-lived background agents that need podman
-across SSH-out can re-evaluate later. See `docs/podman-proxy.md` §10.
+across SSH-out can re-evaluate later. See `docs/podman-proxy.md`,
+"Linger decision".
 
 **Darwin.** `nix-darwin` ships no first-class podman-machine module. The
 machine is user-managed:
