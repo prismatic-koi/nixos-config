@@ -552,18 +552,11 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			size += len(k) + len(v) + 4
 		}
 		// The host-mode LayoutAgentOnly command is built inside
-		// spawnAgentOnlyLayout; approximate via buildDirectAgentCmd.
-		previewOpts := Opts{
-			Prompt:         opts.Prompt,
-			PromptFilePath: promptFilePath,
-			Agent:          opts.AgentRole,
-			SessionName:    opts.SessionName,
-			Port:           0,
-			IsolationMode:  mode,
-			Model:          opts.Model,
-			Variant:        opts.Variant,
-			Provider:       opts.Provider,
-		}
+		// spawnAgentOnlyLayout; route through the same builder so this
+		// preview carries every field the real launch does (#2878).
+		previewSpawnOpts := opts
+		previewSpawnOpts.PromptFilePath = promptFilePath
+		previewOpts := buildOptsForAgentOnlyLayout(previewSpawnOpts, 0, mode)
 		agentOnlyCmd, buildErr := BuildAgentCmd(previewOpts)
 		if buildErr != nil {
 			removeInitialPrompt(opts.SessionName)
