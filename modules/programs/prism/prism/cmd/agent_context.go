@@ -168,20 +168,16 @@ var precedenceRules = map[string][]string{
 	// agreement (issue #2852).
 	//
 	// The model axis has three rungs, not two: --model-override names a single
-	// role and beats --model for that role only (see the flag description in
-	// cmd/spawn.go and the agentRole lookup in cmd/sidecar.go).
+	// role and beats --model for that role only.
 	//
-	// DISPUTED — see issue #2863. Do not "fix" this string on its own.
-	// A trace during #2854 review round 1 found --model-override terminating
-	// at sidecar.Opts.AgentModel, which cmd/sidecar.go writes to the
-	// agent_status.agent_model reporting column and passes to harness.New. The
-	// pi adapter stores that value and returns it only from EffectiveModel; it
-	// reaches neither pi's argv nor a prompt payload, and populatePIConfig
-	// resolves pi's model from the profile slot plus agent-run's own --model
-	// without consulting any per-role map. If that trace holds, this rung
-	// labels rather than selects, and the fix is a behaviour change to
-	// --model-override — not an edit to this string. #2863 carries the full
-	// trace and the decision; resolve the annotation there, not here.
+	// The top rung is enforced at the point each isolation mode renders pi's
+	// --model argument (issue #2863). session.roleModelOverride picks the
+	// entry keyed by the session's own role; host mode emits it from
+	// buildDirectAgentCmd, and bwrap / sandbox-exec carry it as
+	// `prism agent-run --agent-model` into container.Config.AgentModel, which
+	// PIInvocation ranks above PIModel. Keep this string in step with those
+	// three sites: agents read it as the contract for the model axis, so a rung
+	// that no emit site enforces is a false statement to every one of them.
 	//
 	// The provider axis has two rungs because --model-override has no
 	// provider-only form. It can still reach the provider axis indirectly: the

@@ -160,6 +160,14 @@ type Opts struct {
 	// ModelsByRole is the per-role model override map (C.2). When non-empty
 	// it is forwarded to the sidecar via repeated --model-override flags.
 	// Nil means no per-role overrides.
+	//
+	// The entry for THIS session's role (Agent) also selects the model pi
+	// runs on, and outranks Model below: in host mode buildDirectAgentCmd
+	// emits it as pi's `--model`; in bwrap and sandbox-exec BuildAgentCmd
+	// puts it on AgentPaneOpts.AgentModel, which reaches pi's argv via
+	// `prism agent-run --agent-model` → populatePIConfig →
+	// container.Config.AgentModel → PIInvocation. Entries for other roles are
+	// a no-op for this session. Issue #2863.
 	ModelsByRole map[string]string
 	// HarnessSessionID is the persisted harness-specific session UUID to
 	// resume when launching the harness (e.g. pi's session UUID). Populated
@@ -212,6 +220,9 @@ type Opts struct {
 	// `prism agent-run` tmux pane command carries it forward to the
 	// populatePIConfig override path. Empty value omits the flag and the
 	// profile slot's model is used unchanged. Issue #2086.
+	//
+	// A ModelsByRole entry for this session's role outranks this field on
+	// every isolation mode (issue #2863).
 	Model string
 
 	// Variant, when non-empty, is the CLI-supplied variant override (`prism
@@ -404,6 +415,12 @@ func BuildAgentCmd(opts Opts) (string, error) {
 		// already carries the flags via buildDirectAgentCmd above.
 		Model:   opts.Model,
 		Variant: opts.Variant,
+		// AgentModel is the per-role `--model-override` entry for THIS
+		// session's role (issue #2863), forwarded as its own
+		// `prism agent-run --agent-model` flag so PIInvocation can apply the
+		// published precedence at the point it renders pi's argv. An entry
+		// naming any other role does not match here and is a no-op.
+		AgentModel: roleModelOverride(opts),
 		// Provider (issue #2852) rides the same seam. HarnessName is
 		// forwarded alongside it because appendAgentRunOverrides gates the
 		// provider clause on a pi harness name.
@@ -421,6 +438,24 @@ func harnessBinary(harnessName string) string {
 	default:
 		return harnessName
 	}
+}
+
+// roleModelOverride returns the `prism spawn --model-override <role>=<model>`
+// entry that applies to this session, or "" when none does (issue #2863).
+//
+// A session runs exactly one role, so at most one entry of the map can apply:
+// the one keyed by opts.Agent. Entries naming any other role belong to other
+// sessions of the same fan-out and are a no-op here. An empty opts.Agent
+// cannot match, because parseModelOverrides rejects an empty role key.
+//
+// The single lookup lives in one helper so the host emitter
+// (buildDirectAgentCmd) and the sandboxed emitter (BuildAgentCmd →
+// AgentPaneOpts) cannot disagree about which entry applies.
+func roleModelOverride(opts Opts) string {
+	if len(opts.ModelsByRole) == 0 || opts.Agent == "" {
+		return ""
+	}
+	return opts.ModelsByRole[opts.Agent]
 }
 
 // buildDirectAgentCmd returns the direct-launch command for the session
@@ -480,8 +515,18 @@ func buildDirectAgentCmd(opts Opts) string {
 		if opts.Provider != "" {
 			cmd += " --provider " + shellQuote(opts.Provider)
 		}
-		if opts.Model != "" {
-			cmd += " --model " + shellQuote(opts.Model)
+		// Model axis, highest rung first (issue #2863): the per-role
+		// `--model-override` entry for this session's role beats the
+		// session-wide `--model`, which beats the profile slot (resolved by
+		// pi itself in host mode). Host mode emits ONE `--model` flag, so the
+		// precedence is applied here rather than by PIInvocation, which is
+		// the equivalent single argv-rendering point for the sandboxed modes.
+		model := opts.Model
+		if roleModel := roleModelOverride(opts); roleModel != "" {
+			model = roleModel
+		}
+		if model != "" {
+			cmd += " --model " + shellQuote(model)
 		}
 		if opts.Variant != "" {
 			cmd += " --thinking " + shellQuote(opts.Variant)

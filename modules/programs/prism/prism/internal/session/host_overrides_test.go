@@ -231,6 +231,27 @@ func TestBuildOptsForLayout_ForwardsModelAndVariant(t *testing.T) {
 	}
 }
 
+// TestBuildOptsForLayout_ForwardsModelsByRole pins the per-role override map
+// on the full-layout mapping, alongside its Provider and Model/Variant
+// siblings above. The full layout has always forwarded the field, so this is
+// a guard rather than a fix — but the agent-only layout dropped the same
+// field (issue #2863), so both mappings now carry a forwarding test.
+func TestBuildOptsForLayout_ForwardsModelsByRole(t *testing.T) {
+	spawnOpts := SpawnOpts{
+		SessionName:  "myrepo@branch",
+		Worktree:     "/tmp/wt",
+		AgentRole:    "worker",
+		Prompt:       "do the thing",
+		HarnessName:  "pi",
+		ModelsByRole: map[string]string{"worker": "google/gemini-2.5-pro"},
+	}
+	got := buildOptsForLayout(spawnOpts, 14000, "")
+	if got.ModelsByRole["worker"] != "google/gemini-2.5-pro" {
+		t.Errorf("Opts.ModelsByRole[worker] = %q, want forwarded value %q",
+			got.ModelsByRole["worker"], "google/gemini-2.5-pro")
+	}
+}
+
 // TestBuildDirectAgentCmd_OverrideFlagsBeforePrompt verifies the flag pair
 // appears before any positional prompt — pi treats a positional argument as
 // the user message and would parse `--model X` as message bytes if it came

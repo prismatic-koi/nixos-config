@@ -106,6 +106,11 @@ func init() {
 	// values fall back to the slot, matching the pre-#2086 behaviour.
 	agentRunCmd.Flags().String("model", "", "Model identifier override (overrides profile slot's model; sourced from prism spawn --model)")
 	agentRunCmd.Flags().String("variant", "", "Variant/thinking-level override (overrides profile slot's thinking; sourced from prism spawn --variant)")
+	// --agent-model: the per-role model override for THIS session's role
+	// (issue #2863), sourced from `prism spawn --model-override <role>=<model>`.
+	// It outranks --model above. Empty value falls back to --model, then the
+	// slot.
+	agentRunCmd.Flags().String("agent-model", "", "Per-role model override for this session's role (outranks --model; sourced from prism spawn --model-override <role>=<model>)")
 	// --provider: pi-only routing override forwarded from `prism spawn`
 	// (issue #2852). Empty value falls back to the slot's provider.
 	agentRunCmd.Flags().String("provider", "", "Routing-provider override (overrides profile slot's provider; sourced from prism spawn --provider)")
@@ -140,6 +145,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 
 	sessionName, _ := cmd.Flags().GetString("session")
 	modelOverride, _ := cmd.Flags().GetString("model")
+	agentModelOverride, _ := cmd.Flags().GetString("agent-model")
 	variantOverride, _ := cmd.Flags().GetString("variant")
 	providerOverride, _ := cmd.Flags().GetString("provider")
 
@@ -209,9 +215,10 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	// Empty fields mean "no override" — the active profile slot's value
 	// is used unchanged (issue #2086).
 	storeAgentRunOverrides(sessionName, piOverrides{
-		Model:    modelOverride,
-		Variant:  variantOverride,
-		Provider: providerOverride,
+		Model:      modelOverride,
+		AgentModel: agentModelOverride,
+		Variant:    variantOverride,
+		Provider:   providerOverride,
 	})
 
 	return iso.AgentRun(cmd.Context(), container.AgentRunOpts{
@@ -766,10 +773,18 @@ func logAgentRunWarning(logFile *os.File, format string, args ...any) {
 // via --model and --thinking on its argv in PIInvocation). A non-empty
 // Provider wins over slot.Provider (pi consumes it via --provider on the same
 // argv; issue #2852).
+//
+// AgentModel is the per-role model override for this session's role, from
+// `prism spawn --model-override <role>=<model>` (issue #2863). It is kept
+// apart from Model rather than folded into it because the two are different
+// rungs of the same axis: populatePIConfig copies AgentModel to
+// container.Config.AgentModel and Model to container.Config.PIModel, and
+// PIInvocation resolves the pair into pi's single --model argument.
 type piOverrides struct {
-	Model    string
-	Variant  string
-	Provider string
+	Model      string
+	AgentModel string
+	Variant    string
+	Provider   string
 }
 
 // populatePIConfig fills the PI-specific fields on ctrCfg for harness=pi sessions.
@@ -806,6 +821,10 @@ type piOverrides struct {
 //     wins over slot.Provider on the same terms (issue #2852). This whole
 //     function runs only for harness=pi sessions — both call sites gate on
 //     that — so the provider override cannot reach a non-pi launch.
+//  7. Copies the `prism agent-run --agent-model` value to AgentModel (issue
+//     #2863). That is the per-role `prism spawn --model-override` entry for
+//     this session's role; PIInvocation ranks it above PIModel when it
+//     renders pi's --model argument.
 func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, cfg config.Config, overrides piOverrides) error {
 	// Load profiles.json.
 	pf, pfErr := config.LoadProfiles()
@@ -896,6 +915,11 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	if overrides.Provider != "" {
 		ctrCfg.PIProvider = overrides.Provider
 	}
+	// Issue #2863: the per-role `--model-override` entry travels on its own
+	// field so PIInvocation can rank it above PIModel when it renders pi's
+	// --model argument. An empty value leaves AgentModel empty and PIModel
+	// (slot, or agent-run's own --model) decides the model unchanged.
+	ctrCfg.AgentModel = overrides.AgentModel
 
 	// Resolve the pi binary path. This must be the absolute store
 	// path (or profile path) so that bwrap can bind-mount it into the sandbox.

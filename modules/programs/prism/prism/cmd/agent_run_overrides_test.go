@@ -301,8 +301,12 @@ func TestPopulatePIConfig_PartialOverride_ModelOnly(t *testing.T) {
 // beyond help text: the bwrap / sandbox-exec pane command passes these flags
 // on the argv, so an unregistered flag makes `prism agent-run` fail to parse
 // its own launch command.
+//
+// --agent-model joined the set with issue #2863. The name is asserted at both
+// ends of the hop: here for the parser, and in
+// internal/container/agent_model_override_test.go for the emitter.
 func TestAgentRunCmd_FlagsRegistered(t *testing.T) {
-	for _, name := range []string{"session", "model", "variant", "provider"} {
+	for _, name := range []string{"session", "model", "agent-model", "variant", "provider"} {
 		if f := agentRunCmd.Flags().Lookup(name); f == nil {
 			t.Errorf("expected agentRunCmd to define flag --%s", name)
 		}
