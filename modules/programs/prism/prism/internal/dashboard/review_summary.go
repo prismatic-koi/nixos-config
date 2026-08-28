@@ -236,6 +236,18 @@ const (
 	summaryFull
 )
 
+// reviewSummaryTrailingPad is the single extra blank column appended after
+// the final verdict icon on a collapsed review-group row. A terminal that
+// draws these Nerd Font codicons wider than one cell needs a free following
+// cell to render the glyph at full size; every icon except the last already
+// gets that room from the two-space separator that follows it, but the last
+// icon sits at end of line with nothing after it (#2882). This is the only
+// place the trailing column count is written -- reviewSummaryLabelsWidth,
+// reviewSummaryCompactWidth, renderLabels, renderCompact, and
+// plainSummaryForBudget (view.go) all reference this constant rather than a
+// literal.
+const reviewSummaryTrailingPad = " "
+
 // reviewSummaryLabelsWidth returns the display-column width of the per-agent
 // verdict labels segment for the given summaries (e.g.
 // "code:  context:  goal:  qa:  sec:"). Used by
@@ -256,6 +268,7 @@ func reviewSummaryLabelsWidth(summaries []ReviewChildSummary) int {
 		}
 		w += lipgloss.Width(s.AgentShortName) + 1 + lipgloss.Width(renderIconCell(s.Verdict)) // "name" + ":" + icon
 	}
+	w += lipgloss.Width(reviewSummaryTrailingPad)
 	return w
 }
 
@@ -276,6 +289,7 @@ func reviewSummaryCompactWidth(summaries []ReviewChildSummary) int {
 		}
 		w += lipgloss.Width(renderIconCell(s.Verdict))
 	}
+	w += lipgloss.Width(reviewSummaryTrailingPad)
 	return w
 }
 
@@ -404,6 +418,7 @@ func renderLabels(summaries []ReviewChildSummary) string {
 		b.WriteString(styleDim.Render(s.AgentShortName + ":"))
 		b.WriteString(renderIconCell(s.Verdict))
 	}
+	b.WriteString(reviewSummaryTrailingPad)
 	return b.String()
 }
 
@@ -420,5 +435,6 @@ func renderCompact(summaries []ReviewChildSummary) string {
 		}
 		b.WriteString(renderIconCell(s.Verdict))
 	}
+	b.WriteString(reviewSummaryTrailingPad)
 	return b.String()
 }
