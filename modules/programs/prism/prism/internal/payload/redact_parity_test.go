@@ -1,7 +1,6 @@
 package payload_test
 
-// Parity guard between the Go redactor and the pi extension's redactor
-// (issue #2589).
+// Parity guard between the Go redactor and the pi extension's redactor.
 //
 // The two implementations are the two halves of one control: the extension
 // redacts before the frame reaches the socket, the Go layer redacts before

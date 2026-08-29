@@ -1,6 +1,6 @@
 package pi
 
-// archive.go — PI implementation of harness/archive.ArchiveAdapter (B6.PI).
+// archive.go — PI implementation of harness/archive.ArchiveAdapter.
 //
 // PI stores session data as JSONL files on disk.
 // Unlike some harnesses, PI has no SQLite database — it is a pure flat-file store.
@@ -44,19 +44,14 @@ package pi
 // host root: the dispatcher injects PI_CODING_AGENT_DIR=<host ~/.pi/agent>
 // into the sandbox env and sandbox-exec shares the host filesystem
 // (cmd/agent_run_sandbox_exec_darwin.go), so pi writes its transcripts to the
-// host root. Since Step 5 of #2132 the in-sandbox $HOME is the real host
-// home and there is no per-session staging HOME at all; the worktree path
-// that pi sees as its CWD is the same as the host worktree path (nothing is
-// remapped), so the encoded-cwd is derived from p.Worktree the same way in
-// every mode. A pre-#2210 sandbox-exec branch resolved a staging-HOME
-// formula here; it had been stale since #1286 and meant archives were
-// transcript-less (issue #2210).
+// host root. The in-sandbox $HOME is the real host home and there is no
+// per-session staging HOME at all; the worktree path that pi sees as its
+// CWD is the same as the host worktree path (nothing is remapped), so the
+// encoded-cwd is derived from p.Worktree the same way in every mode.
 //
 // Archive copies the matched JSONL file directly into archiveDir/session.jsonl
-// (single file, no `raw/` indirection). The opencode raw-archive → pi-mono v3
-// translation step that motivated the previous two-stage Export flow has been
-// removed along with opencode itself; PI's on-disk JSONL is already pi-mono v3
-// shaped, so the byte-copy IS the archive.
+// (single file, no `raw/` indirection). PI's on-disk JSONL is already
+// pi-mono v3 shaped, so the byte-copy IS the archive.
 
 import (
 	"context"
@@ -98,8 +93,8 @@ func NewArchiveAdapter() harnessarchive.ArchiveAdapter {
 //
 // For sandbox-exec sessions (IsolationMode == "sandbox-exec"), PI writes under
 // the same host root as host mode: the dispatcher injects PI_CODING_AGENT_DIR
-// into the sandbox env and sandbox-exec shares the host filesystem (issue
-// #2210). The worktree path pi uses as its CWD is the same host path in all
+// into the sandbox env and sandbox-exec shares the host filesystem. The
+// worktree path pi uses as its CWD is the same host path in all
 // modes (sandbox-exec mounts the worktree at its native path), so the
 // encoded-cwd is derived from p.Worktree in all cases.
 //
@@ -108,11 +103,8 @@ func NewArchiveAdapter() harnessarchive.ArchiveAdapter {
 // is unset) the same way as host mode. The sandbox overlays that host
 // directory onto $PI_CODING_AGENT_DIR/sessions/ inside the namespace (see
 // container.appendPIBwrapMounts), so writes pass through to
-// <piSessionsRoot>/<encoded-cwd>/<ts>_<uuid>.jsonl on the host. This is the
-// #1985 fix that restored the global per-cwd history users expect; before
-// that fix bwrap pointed at
-// <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions/ which was
-// torn down with the prism session (see bugs #1538 / #1814 for context).
+// <piSessionsRoot>/<encoded-cwd>/<ts>_<uuid>.jsonl on the host, giving the
+// global per-cwd history users expect.
 //
 // See pi 0.79 dist/core/session-manager.js (getDefaultSessionDirPath line 220,
 // SessionManager.newSession line 559) for the authoritative path formula.
@@ -171,23 +163,15 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 // Sandbox-exec follows the host root because the dispatcher injects
 // PI_CODING_AGENT_DIR=<host ~/.pi/agent> into the sandbox env and
 // sandbox-exec shares the host filesystem (cmd/agent_run_sandbox_exec_darwin.go).
-// A pre-#2210 branch here resolved sandbox-exec to a sessions dir under the
-// per-session staging HOME (a mechanism deleted in Step 5 of #2132); that
-// formula had been stale since #1286 (pi has honoured the injected env var
-// ever since) and meant archives for sandbox-exec sessions never contained
-// the transcript (issue #2210).
 //
-// Before #1985 bwrap pointed at
-// <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions/, but that
-// directory was torn down with the prism session, taking the per-cwd history
-// with it. The bwrap launch now overlay-mounts the host's PI sessions root
-// onto $PI_CODING_AGENT_DIR/sessions/ inside the sandbox (see
+// The bwrap launch overlay-mounts the host's PI sessions root onto
+// $PI_CODING_AGENT_DIR/sessions/ inside the sandbox (see
 // container.appendPIBwrapMounts), so the host-side root is the same as host
 // mode and the bwrap branch collapses into the default.
 //
 // The SourceParams parameter is retained for signature stability with callers
 // and the resume-side mirror (internal/container.piResumeSessionsRoot);
-// resolution no longer depends on any field.
+// resolution does not depend on any field.
 func piSessionsRoot(_ harnessarchive.SourceParams) (string, error) {
 	return hostPISessionsRoot()
 }
@@ -224,20 +208,17 @@ func hostPISessionsRoot() (string, error) {
 //
 // archiveDir is the per-session archive directory itself (e.g.
 // .../<repo>/<startedAtISO>_<instanceID>/) — Archive writes
-// `<archiveDir>/session.jsonl` directly, with no `raw/` subdirectory. The
-// pre-fix two-stage layout (raw/session.jsonl copied here, then a separate
-// Export step that byte-copied it to <archiveDir>/session.jsonl) collapsed
-// into a single step when opencode was removed from the codebase, because pi
-// is the only remaining harness and pi's on-disk JSONL is already pi-mono v3
-// shaped — no normalisation pass remains.
+// `<archiveDir>/session.jsonl` directly, with no `raw/` subdirectory: pi is
+// the only harness and its on-disk JSONL is already pi-mono v3 shaped, so no
+// normalisation pass is needed.
 //
-// Return value (issue #2336): (true, nil) when session.jsonl was written into
+// Return value: (true, nil) when session.jsonl was written into
 // archiveDir from a real srcPath; (false, nil) when srcPath does not exist or
 // is a directory (the two "nothing to copy" cases). Callers rely on this bool
 // to gate the HARD-cleanup sever step — in hard mode severPiResumeLinkage
 // deletes the same file this method reads, so severing on a not-copied
 // outcome would destroy the transcript without preserving a copy. Soft
-// closes never delete the file (issue #2371), so the gate is bypassed there.
+// closes never delete the file, so the gate is bypassed there.
 func (a *piArchiveAdapter) Archive(_ context.Context, srcPath, archiveDir string) (copied bool, err error) {
 	fi, err := os.Stat(srcPath)
 	if os.IsNotExist(err) {

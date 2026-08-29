@@ -1,6 +1,6 @@
 // Package config — active_profile.go
 //
-// Runtime active-profile state file (#1207).
+// Runtime active-profile state file.
 //
 // State file format
 // -----------------
@@ -23,9 +23,8 @@
 // the user's state directory.
 //
 // The file is created (and its parent directory ensured) on first
-// `prism profile use`. There is no migration step from the pre-#1207 world
-// because the absence-means-default contract preserves the previous
-// behaviour exactly.
+// `prism profile use`. No migration step is needed: absence of the file
+// already means the nix default.
 //
 // Validation
 // ----------

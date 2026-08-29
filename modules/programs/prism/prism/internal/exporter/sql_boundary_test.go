@@ -1,6 +1,6 @@
 package exporter_test
 
-// The security boundary of #2699 section 5, enforced mechanically.
+// The security boundary of the exporter's SQL surface, enforced mechanically.
 //
 // There is an exact in-tree precedent: internal/sidecar/host_api.go splits
 // /stats ("aggregate counts", all roles) from /db/query ("row-level
@@ -27,7 +27,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/exporter"
 )
 
-// forbiddenColumns is the #2699 section 5 table. Reading any of these is a
+// forbiddenColumns is the SQL boundary's forbidden-column table. Reading any of these is a
 // data leak: they hold prompt bodies, conversation frames, inter-session
 // message text, or operator-derived free-form strings.
 var forbiddenColumns = []string{
@@ -51,7 +51,7 @@ var writeKeywords = []string{
 }
 
 // payloadNumericJSONPaths is the closed allowlist of agent_events.payload
-// JSON fields the exporter may read. #2699 section 5 records payload as
+// JSON fields the exporter may read. The SQL boundary records payload as
 // "aggregate numbers out, never emit the string": the message body must never
 // leave this surface, but these per-turn scalar fields — the model id and the
 // numbers the cost/token counters need — are the "aggregate numbers" it
@@ -62,7 +62,7 @@ var writeKeywords = []string{
 // The exporter reads payload ONLY through JSON_EXTRACT of one of these paths
 // (see CostEventsTailSQL). A bare `payload` read, or a JSON_EXTRACT of any
 // other path, still fails the forbidden-column scan below — the carve-out is
-// scoped to exactly this list. This mirrors the #2720 narrowing of the
+// scoped to exactly this list. This mirrors the narrowing of the
 // spawn_inputs whole-table ban to a column-level ban.
 var payloadNumericJSONPaths = []string{
 	"model",
@@ -109,8 +109,8 @@ func TestExporterSQL_ReadsNoRawTextBodyColumn(t *testing.T) {
 		t.Fatal("exporter.AllSQL is empty; the boundary test would pass vacuously")
 	}
 	for _, stmt := range exporter.AllSQL {
-		// Strip the sanctioned numeric/model payload extracts first: #2699
-		// section 5 permits "aggregate numbers out" of agent_events.payload
+		// Strip the sanctioned numeric/model payload extracts first: the SQL
+		// boundary permits "aggregate numbers out" of agent_events.payload
 		// (see payloadNumericJSONPaths). Any other read of payload — a bare
 		// column, or a non-allowlisted JSON path — survives the strip and is
 		// caught below.
@@ -126,10 +126,10 @@ func TestExporterSQL_ReadsNoRawTextBodyColumn(t *testing.T) {
 }
 
 // TestExporterSQL_PayloadIsReadOnlyViaAllowlistedNumericExtract pins the
-// #2704 narrowing: agent_events.payload may be read, but ONLY through
+// payload narrowing: agent_events.payload may be read, but ONLY through
 // JSON_EXTRACT of an allowlisted numeric/model field. A bare payload read or
 // a JSON path outside the allowlist must still fail. This is the payload
-// analogue of TestExporterSource_WholeTableBanIsLimitedToSpawnInputs (#2720).
+// analogue of TestExporterSource_WholeTableBanIsLimitedToSpawnInputs.
 func TestExporterSQL_PayloadIsReadOnlyViaAllowlistedNumericExtract(t *testing.T) {
 	// 1. The allowlist itself must contain no free-text body field. $.text is
 	//    the message body; if it ever appears here the carve-out has been
@@ -202,8 +202,8 @@ func TestExporterSQL_TailProjectionIsCursorAndTypeOnly(t *testing.T) {
 	}
 }
 
-// #2699 section 3: a counter computed as a full-table aggregate decreases at
-// the prune horizon and Prometheus reads that as a counter reset.
+// A counter computed as a full-table aggregate decreases at the prune
+// horizon and Prometheus reads that as a counter reset.
 //
 // COUNT and SUM are therefore banned outright. MAX is allowed in exactly one
 // statement, and only because its result initialises and clamps a CURSOR —
@@ -249,23 +249,23 @@ func TestExporterSource_ContainsNoWriteStatementAndNoForbiddenColumnLiteral(t *t
 	// are ordinary English words that appear in log messages, so they are
 	// checked inside SQL statements only (see the tests above).
 	//
-	// spawn_inputs and bus_messages are deliberately NOT in this list (issues
-	// #2720 and #2702). The remaining two whole-table entries —
-	// harness_frames and pending_replay_deliveries — exist to hold free-text
-	// bodies, so every column in them is sensitive and a blanket table-name
-	// ban is correct. spawn_inputs is mostly closed-set operator config
-	// (profile_name, isolation_flag, model_flag, agent_flag, ...) with
-	// exactly two free-text columns among them — prompt_text and extras — and
-	// both are already caught by the forbiddenColumns identifier scan above.
-	// bus_messages is similar: repo, urgency, sent_at, delivered_at are all
-	// closed-set or numeric, and the one free-text column — text, the
-	// message body #2699 section 5 bans — is likewise already caught there.
-	// Banning either bare table name added nothing for the real hazard and
-	// instead made profile_name (spawn_inputs) and the #2702 bus-backlog
-	// gauge (bus_messages.repo) unreachable from this package. Do NOT
-	// restore either name to this list as a "security fix" without
-	// re-reading #2699 section 5, #2720, and #2702 first — the column-level
-	// ban below is the correct granularity for both tables.
+	// spawn_inputs and bus_messages are deliberately NOT in this list. The
+	// remaining two whole-table entries — harness_frames and
+	// pending_replay_deliveries — exist to hold free-text bodies, so every
+	// column in them is sensitive and a blanket table-name ban is correct.
+	// spawn_inputs is mostly closed-set operator config (profile_name,
+	// isolation_flag, model_flag, agent_flag, ...) with exactly two free-text
+	// columns among them — prompt_text and extras — and both are already
+	// caught by the forbiddenColumns identifier scan above. bus_messages is
+	// similar: repo, urgency, sent_at, delivered_at are all closed-set or
+	// numeric, and the one free-text column — text, the message body the SQL
+	// boundary bans — is likewise already caught there. Banning either bare
+	// table name added nothing for the real hazard and instead made
+	// profile_name (spawn_inputs) and the bus-backlog gauge
+	// (bus_messages.repo) unreachable from this package. Do NOT restore
+	// either name to this list as a "security fix" without re-reading the SQL
+	// boundary first — the column-level ban below is the correct granularity
+	// for both tables.
 	unambiguous := []string{"prompt_text", "rubric_breakdown", "issue_ref", "harness_frames", "pending_replay_deliveries"}
 
 	for _, lit := range packageStringLiterals(t) {
@@ -286,7 +286,7 @@ func TestExporterSource_ContainsNoWriteStatementAndNoForbiddenColumnLiteral(t *t
 	}
 }
 
-// TestExporterSource_WholeTableBanIsLimitedToSpawnInputs is the #2720
+// TestExporterSource_WholeTableBanIsLimitedToSpawnInputs is the
 // security AC: harness_frames and pending_replay_deliveries remain banned as
 // whole tables (they hold nothing but free-text bodies), while spawn_inputs
 // — narrowed to a column-level ban — is reachable by name. This pins the
@@ -303,7 +303,7 @@ func TestExporterSource_WholeTableBanIsLimitedToSpawnInputs(t *testing.T) {
 		}
 	}
 
-	// spawn_inputs itself must be reachable — the whole point of #2720 — but
+	// spawn_inputs itself must be reachable — the whole point of the narrowing — but
 	// its two sensitive columns must still be unreadable, enforced by the
 	// forbiddenColumns scan in TestExporterSQL_ReadsNoRawTextBodyColumn.
 	foundSpawnInputs := false
@@ -326,10 +326,10 @@ func TestExporterSource_WholeTableBanIsLimitedToSpawnInputs(t *testing.T) {
 	}
 }
 
-// TestExporterSource_BusMessagesWholeTableBanIsColumnLevel is the #2702
-// analogue of the #2720 test above: bus_messages must be reachable by name
-// (the #2702 bus-backlog gauge needs it), but its one free-text column —
-// text, the inter-session message body #2699 section 5 bans — must still be
+// TestExporterSource_BusMessagesWholeTableBanIsColumnLevel is the
+// analogue of the spawn_inputs test above: bus_messages must be reachable by
+// name (the bus-backlog gauge needs it), but its one free-text column —
+// text, the inter-session message body the SQL boundary bans — must still be
 // unreadable, enforced by the forbiddenColumns scan in
 // TestExporterSQL_ReadsNoRawTextBodyColumn.
 func TestExporterSource_BusMessagesWholeTableBanIsColumnLevel(t *testing.T) {

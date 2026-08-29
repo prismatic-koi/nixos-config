@@ -1,10 +1,9 @@
-// Active refresh of a missing or stale usage snapshot (issue #2541,
-// parent #2537).
+// Active refresh of a missing or stale usage snapshot.
 //
 // Why this exists
 // ---------------
 //
-// Passive capture (#2538) only records a snapshot when a session actually
+// Passive capture only records a snapshot when a session actually
 // talks to Anthropic. An account nobody has used recently therefore has no
 // snapshot at all, and `prism account usage` shows nothing. This file makes
 // ONE live `/v1/messages` request to fill that gap.
@@ -16,7 +15,7 @@
 // that omits any required element is rejected, and the rejection carries NO
 // rate-limit headers. The rejection status is 429, which reads exactly like
 // quota exhaustion and is not. If you see a 429 from this code, suspect the
-// request shape first (#2537).
+// request shape first.
 //
 // Three elements are easy to miss, and all three are load-bearing:
 //
@@ -195,7 +194,7 @@ var (
 // ── Wire payload ─────────────────────────────────────────────────────────────
 
 // SnapshotPayload is the request body of POST /usage/snapshot, the sidecar
-// endpoint #2538 defines. It is byte-for-byte the shape the pi extension
+// endpoint. It is byte-for-byte the shape the pi extension
 // sends (ratelimit.ts::RateLimitSnapshot) and the shape the sidecar accepts
 // (internal/sidecar/host_api.go::usageSnapshotRequest).
 //
@@ -255,9 +254,9 @@ func (p *SnapshotPayload) ToSnapshot(account string, capturedAt time.Time) Snaps
 //     yields nil, not an empty payload. An information-free payload must
 //     never overwrite a good snapshot.
 //
-// The header names read here are exactly the allowlist confirmed in #2537,
-// plus `anthropic-organization-id` and `anthropic-workspace-id` confirmed in
-// #2713. There is no bulk sweep of http.Header anywhere in this file — that
+// The header names read here are exactly the allowlist, plus
+// `anthropic-organization-id` and `anthropic-workspace-id`. There is no bulk
+// sweep of http.Header anywhere in this file — that
 // shape would collect `authorization` along with everything else.
 func ParseRateLimitHeaders(h http.Header) *SnapshotPayload {
 	p := &SnapshotPayload{
@@ -288,8 +287,8 @@ func ParseRateLimitHeaders(h http.Header) *SnapshotPayload {
 		return nil
 	}
 
-	// anthropic-organization-id and anthropic-workspace-id (issue #2713,
-	// parent #2699) ride the same response as the rate-limit headers above
+	// anthropic-organization-id and anthropic-workspace-id ride the same
+	// response as the rate-limit headers above
 	// but are not THEMSELVES rate-limit information, so they are read only
 	// once the payload is known to carry real data — an org/workspace pair
 	// with no usage data attached would be as meaningless as an empty
@@ -314,7 +313,7 @@ func (p *SnapshotPayload) isEmpty() bool {
 // parseWindowHeaders parses one window's headers. prefix is "5h" or "7d".
 //
 // Only the 5-hour window has a `surpassed-threshold` header in the confirmed
-// set (#2537), so it is read for that prefix alone — mirroring
+// set, so it is read for that prefix alone — mirroring
 // ratelimit.ts::parseWindow. Reading it speculatively for 7d would put a
 // header outside the allowlist into the snapshot.
 func parseWindowHeaders(h http.Header, prefix string) *Window {
@@ -532,7 +531,7 @@ func (r *Refresher) modelID() string {
 // system block and carries `cache_control: {type: ephemeral}`. Omitting it, or
 // demoting it below another block, returns HTTP 429 with no retry-after and
 // no rate-limit headers — the failure that reads as quota exhaustion and is
-// not (#2537).
+// not.
 //
 // `stream: true` mirrors pi: streamSimple is always SSE, so a non-streaming
 // body would be a shape the OAuth path never otherwise sends. The body is
@@ -680,7 +679,7 @@ func filterOut(items, drop []string) []string {
 // The three elements of the WAF-critical request shape are described at the
 // top of this file. They are needed by every caller that talks to
 // `/v1/messages` on the Claude Code OAuth path, not only by the usage
-// refresh — internal/titlegen is the second such caller (#2683).
+// refresh — internal/titlegen is the second such caller.
 //
 // The seam is deliberately THIN: three symbols that expose the shape, and
 // nothing that exposes a token, a body, or a response. The mirror discipline

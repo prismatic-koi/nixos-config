@@ -1,7 +1,7 @@
 package payload_test
 
 // redact_gitlab_test.go — the GitLab credential must be redacted on the
-// capture path exactly as the GitHub one is (issue #2668).
+// capture path exactly as the GitHub one is.
 //
 // prism now forwards GITLAB_TOKEN into every agent sandbox, so the value can
 // reach a captured frame the same ways a GitHub token can: an `env` dump, a

@@ -1,19 +1,17 @@
 // Package profile centralises the spawn-time profile lookup that connects
-// the #2090 audit row (`spawn_inputs.profile_name`) to the #2092 runtime
-// resolution chain.
+// the audit row (`spawn_inputs.profile_name`) to the runtime resolution
+// chain.
 //
 // The helper here is the canonical "what profile did the user spawn this
 // session with" reader. It is shared by:
 //
-//   - cmd/agent_run.go::populatePIConfig (runtime resolution, #2092)
-//   - internal/review.Run / RunAsync     (review fan-out, #2097)
-//   - cmd/investigate.go                 (investigate fan-out, #2097)
+//   - cmd/agent_run.go::populatePIConfig (runtime resolution)
+//   - internal/review.Run / RunAsync     (review fan-out)
+//   - cmd/investigate.go                 (investigate fan-out)
 //
-// Originally lived as `spawnTimeProfileForSession` in
-// `cmd/agent_run_profile.go` (#2092). Promoted to internal/ in #2097
-// so the two child-spawn front doors (review, investigate) can read the
-// same audit column without taking an `internal/cmd` dependency (no such
-// thing) or duplicating the SQL.
+// It lives in internal/ so the two child-spawn front doors (review,
+// investigate) can read the same audit column without taking an
+// `internal/cmd` dependency (no such thing) or duplicating the SQL.
 package profile
 
 import (
@@ -24,7 +22,7 @@ import (
 // `spawn_inputs` row for the named session, or "" when the row is
 // missing, has a NULL `profile_name`, or any lookup error occurs.
 //
-// This is the canonical post-#2090 source of "what profile did the user
+// This is the canonical source of "what profile did the user
 // invoke `prism spawn --profile` with" — callers feed the value as the
 // `flagValue` argument to `config.ResolveActiveProfile` (treated by
 // that function as the highest-precedence source, beating the
@@ -34,12 +32,12 @@ import (
 // any DB. sessionName may be empty for the same short-circuit.
 //
 // Errors are intentionally swallowed (returned as ""). A transient DB
-// problem, a missing sessions row (legacy / pre-#2090), a missing
-// spawn_inputs row, or a NULL `profile_name` all collapse to "". The
-// caller is expected to fall through to `config.ResolveActiveProfile`'s
-// existing state-file > nix-default chain, which is the pre-#2092
-// behaviour and the right safety net for legacy sessions and host-mode
-// paths that never wrote a `spawn_inputs` row in the first place.
+// problem, a missing sessions row (legacy), a missing spawn_inputs row,
+// or a NULL `profile_name` all collapse to "". The caller is expected to
+// fall through to `config.ResolveActiveProfile`'s existing
+// state-file > nix-default chain, which is the right safety net for
+// legacy sessions and host-mode paths that never wrote a `spawn_inputs`
+// row in the first place.
 func SpawnTimeForSession(d *db.DB, sessionName string) string {
 	if d == nil || sessionName == "" {
 		return ""

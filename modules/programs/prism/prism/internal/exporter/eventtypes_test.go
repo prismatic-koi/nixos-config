@@ -1,6 +1,6 @@
 package exporter_test
 
-// The cardinality boundary of #2699 section 6.
+// The cardinality boundary.
 //
 // agent_events.type is writable from inside a worker sandbox — the sidecar
 // persists an unrecognised wire frame verbatim, and the harness pipe socket
@@ -61,8 +61,8 @@ func TestMaxAgentEventsSeries_IsTheAllowlistPlusOther(t *testing.T) {
 	}
 }
 
-// The finding from review round 1: a sandboxed agent writes arbitrary frame
-// types through the harness pipe, and each one becomes a permanent series in
+// A sandboxed agent writes arbitrary frame types through the harness pipe,
+// and each one becomes a permanent series in
 // a fleet-wide Prometheus. The series count must stay bounded no matter what
 // the table holds.
 func TestExporter_SeriesCountIsBoundedAgainstHostileEventTypes(t *testing.T) {
@@ -166,10 +166,9 @@ func TestExporter_HostileEventTypeCannotCorruptTheExposition(t *testing.T) {
 	if _, ok := exp.Families["prism_injected_total"]; ok {
 		t.Fatal("a hostile event type injected a whole new metric family into the exposition")
 	}
-	// 2 from #2700 (build_info, agent_events_total) + 6 from #2703's
-	// lifecycle and outcome counters + 4 from #2704 (three cost/token
-	// counters and prism_account_info) + 4 from #2702's state gauges + 2
-	// from #2708's sidecar-liveness gauges.
+	// 2 base metrics (build_info, agent_events_total) + 6 lifecycle and
+	// outcome counters + 4 cost metrics (three cost/token counters and
+	// prism_account_info) + 4 state gauges + 2 sidecar-liveness gauges.
 	if got := len(exp.FamilyNames()); got != 18 {
 		t.Fatalf("exposition has %d families, want 18: %v", got, exp.FamilyNames())
 	}
@@ -177,8 +176,8 @@ func TestExporter_HostileEventTypeCannotCorruptTheExposition(t *testing.T) {
 
 // The allowlist must not drift from what prism actually writes.
 //
-// Round 2 of review found this test passing while two real event types were
-// missing: session.EventSpawnIntent and session.EventSpawnFailed reach
+// Two real event types can slip past a writer-site scan:
+// session.EventSpawnIntent and session.EventSpawnFailed reach
 // db.Event.Type through the writeSpawnEvent HELPER, so the field value is a
 // parameter and a writer-site scan can never resolve it. The convention pass
 // below closes that hole — it looks at the constant declarations themselves,
@@ -232,7 +231,7 @@ func TestKnownEventTypes_CoversEveryStaticallyWrittenType(t *testing.T) {
 
 // The convention pass is the half that catches a constant reaching
 // db.Event.Type through a helper parameter. Prove it is not vacuous: it must
-// actually find the two constants whose absence round 2 caught.
+// actually find the two helper-forwarded constants.
 func TestEventTypeConstantScan_FindsTheHelperForwardedConstants(t *testing.T) {
 	_, constants := scanEventTypes(t)
 	for _, want := range []string{session.EventSpawnIntent, session.EventSpawnFailed, db.SessionReapEventType} {

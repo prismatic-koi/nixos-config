@@ -201,7 +201,7 @@ func (a *Adapter) RuntimeEnv() map[string]string {
 }
 
 // ValidateAgentRole reports whether the given role is supported by PI.
-// PI has no native agent/persona system (RFC #606), so all roles are accepted —
+// PI has no native agent/persona system, so all roles are accepted —
 // prism sets the role externally and PI runs without awareness of it.
 func (a *Adapter) ValidateAgentRole(_ string) error {
 	return nil
@@ -233,7 +233,7 @@ type piFrame struct {
 //     available from the event alone; written as 0 (not available).
 //   - cost: PI may not report cost for all providers; written as 0 (not
 //     available). The stats pipeline's local pricing table fallback engages.
-//   - agent: PI has no built-in persona system (RFC #606); written as "".
+//   - agent: PI has no built-in persona system; written as "".
 type piMessageCompleteFrame struct {
 	Type    string `json:"type"`
 	ID      string `json:"id"`
@@ -326,7 +326,7 @@ func extractText(content []struct {
 }
 
 // marshalArgs returns the raw tool-call args JSON value, truncated to
-// the 500-byte pi-budget. Post-#1783 the returned value is a
+// the 500-byte pi-budget. The returned value is a
 // json.RawMessage so it can be assigned directly to
 // payload.ToolCall.Args. Truncation that would produce invalid JSON
 // is avoided by re-wrapping over-budget input in a string — the
@@ -401,7 +401,7 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 		p := payload.MsgAssistant{
 			MessageID:        f.ID,
 			Text:             extractText(f.Content),
-			Agent:            "", // PI has no persona system (RFC #606)
+			Agent:            "", // PI has no persona system
 			Model:            model,
 			InputTokens:      f.Usage.InputTokens,
 			OutputTokens:     f.Usage.OutputTokens,
@@ -434,20 +434,17 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 			log.Printf("pi: NormaliseFrame: parse tool_call: %v", err)
 			return "", nil, false
 		}
-		// Post-#1783: payload.ToolCall renamed Tool→Name,
-		// MessageID→ID, Args:string→Args:json.RawMessage. The
-		// stdio adapter's input shape (snake_case JSONL) is
-		// unchanged — the adapter just translates into the new
-		// canonical struct names.
+		// The adapter translates the stdio input shape (snake_case
+		// JSONL) into the canonical payload.ToolCall struct: Tool→Name,
+		// MessageID→ID, Input→Args (a json.RawMessage).
 		//
-		// Post-#1787: the stdio adapter's piToolCallFrame.MessageID
-		// is PI's parent-assistant message id (the same field that
-		// `msg_assistant` carries as `$.messageId`). It maps to the
-		// new ParentMessageID field so the checkin secondary-query
-		// pushdown can join this row back to its assistant turn.
-		// We also keep it in ID for backward compatibility with any
-		// stdio-path consumer that pairs on ID (the stdio frame
-		// shape never had a distinct tool-call id).
+		// piToolCallFrame.MessageID is PI's parent-assistant message id
+		// (the same field that `msg_assistant` carries as
+		// `$.messageId`). It maps to ParentMessageID so the checkin
+		// secondary-query pushdown can join this row back to its
+		// assistant turn. It is also kept in ID for any stdio-path
+		// consumer that pairs on ID — the stdio frame shape has no
+		// distinct tool-call id.
 		p := payload.ToolCall{
 			Name:            f.Tool,
 			Args:            marshalArgs(f.Input),
@@ -474,8 +471,8 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 		// need to detect failures fall back to per-tool result
 		// summarisation heuristics (narrative.ToolResultSummary).
 		//
-		// ParentMessageID mirrors the ToolCall mapping above
-		// (#1787): the stdio frame's `message_id` is the parent
+		// ParentMessageID mirrors the ToolCall mapping above:
+		// the stdio frame's `message_id` is the parent
 		// assistant turn id, which is what the secondary-query
 		// pushdown joins on.
 		p := payload.ToolResult{

@@ -193,10 +193,9 @@ func TestExporter_ServesParseablePrometheusText(t *testing.T) {
 	}
 }
 
-// #2700 shipped exactly two metrics; #2703 adds the six lifecycle and
-// outcome counters; #2704 adds the three cost/token counters and the
-// prism_account_info gauge; #2702 adds the four state gauges; #2708 adds
-// the two sidecar-liveness gauges. #2706 owns the rest.
+// Two base metrics (build_info, agent_events_total); six lifecycle and
+// outcome counters; three cost/token counters and the prism_account_info
+// gauge; four state gauges; two sidecar-liveness gauges.
 func TestExporter_ShipsExactlyTheSixteenSpecifiedMetrics(t *testing.T) {
 	h := newHarness(t)
 	h.start(h.exp)
@@ -514,7 +513,7 @@ func TestExporter_UnreadableStateFileDoesNotCrash(t *testing.T) {
 	h.scrape(h.exp) // must not panic or 500
 }
 
-// ── Cardinality (#2699 section 6) ─────────────────────────────────────────
+// ── Cardinality ────────────────────────────────────────────────────
 
 func TestExporter_ExposesNoUnboundedLabel(t *testing.T) {
 	h := newHarness(t)
@@ -544,9 +543,9 @@ func TestExporter_ExposesNoUnboundedLabel(t *testing.T) {
 	bounds := map[string]int{
 		exporter.MetricAgentEventsTotal: exporter.MaxAgentEventsSeries,
 		exporter.MetricBuildInfo:        1,
-		// The six #2703 counters have no closed-set enforcement of their own
-		// today: repo, agent_role, isolation_mode, end_state, profile, and
-		// verdict are all pre-sanctioned safe labels under #2699 section 6, so there is
+		// The six lifecycle counters have no closed-set enforcement of their
+		// own: repo, agent_role, isolation_mode, end_state, profile, and
+		// verdict are all pre-sanctioned safe labels, so there is
 		// no fold to bound them against a hostile value the way
 		// agent_events.type needs one. A large-but-finite bound here still
 		// catches an accidental unbounded label creeping in later.
@@ -556,8 +555,8 @@ func TestExporter_ExposesNoUnboundedLabel(t *testing.T) {
 		exporter.MetricEscalationsTotal:      1000,
 		exporter.MetricDoomLoopsTotal:        1000,
 		exporter.MetricPermissionDeniedTotal: 1000,
-		// The #2704 metrics. account_org_id, provider, model_id, kind, and
-		// profile are all bounded at low tens (#2699 section 6); account and
+		// The cost metrics. account_org_id, provider, model_id, kind, and
+		// profile are all bounded at low tens; account and
 		// workspace_id on prism_account_info are operator-controlled and
 		// equally bounded. A large-but-finite bound still catches an
 		// accidental unbounded label creeping in later.
@@ -565,8 +564,8 @@ func TestExporter_ExposesNoUnboundedLabel(t *testing.T) {
 		exporter.MetricModelTokensTotal:       4000,
 		exporter.MetricSpendByProfileUSDTotal: 1000,
 		exporter.MetricAccountInfo:            1000,
-		// The four #2702 state gauges. repo, agent_role, and status are all
-		// bounded at low tens under #2699 section 6; state is folded through
+		// The four state gauges. repo, agent_role, and status are all
+		// bounded at low tens; state is folded through
 		// stateLabel to the pinned agent.AgentState set (see gauges.go), so it
 		// cannot grow beyond that set plus the "other" bucket regardless of
 		// what agent_status.state actually holds.
@@ -574,9 +573,8 @@ func TestExporter_ExposesNoUnboundedLabel(t *testing.T) {
 		exporter.MetricMergeQueueDepth:    1000,
 		exporter.MetricMergesByStatus:     1000,
 		exporter.MetricBusMessagesPending: 1000,
-		// The two #2708 sidecar-liveness gauges: repo is the only label,
-		// bounded at low tens under #2699 section 6, same as the #2702 gauges
-		// above.
+		// The two sidecar-liveness gauges: repo is the only label, bounded at
+		// low tens, same as the state gauges above.
 		exporter.MetricSidecarsLive:  1000,
 		exporter.MetricSidecarsStale: 1000,
 	}
@@ -787,7 +785,7 @@ func TestDefaultStatePath_SitsBesideTheDatabase(t *testing.T) {
 	}
 }
 
-// The default port and path are what #2701 wires its Alloy scrape to. A
+// The default port and path are what the Alloy scrape config points at. A
 // change here needs a matching change there.
 func TestExporter_DefaultsAreTheOnesTheAlloyScrapeWillPointAt(t *testing.T) {
 	if exporter.DefaultPort != 19891 {

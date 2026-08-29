@@ -52,9 +52,8 @@ const (
 	// layout changes in a backward-incompatible way.
 	ArchiveVersion = 1
 
-	// PiMonoVersion is the pi-mono JSONL trace format version targeted by the
-	// next child PR (#995 child 3). Written here even though this PR does not
-	// produce JSONL — the manifest format must be consistent across PRs.
+	// PiMonoVersion is the pi-mono JSONL trace format version. The manifest
+	// records it so the format stays consistent across archives.
 	PiMonoVersion = 3
 
 	archiveDirMode  = 0o700
@@ -194,10 +193,9 @@ func Run(p Params) (archivePath string, err error) {
 	}()
 
 	// Delegate session file population to the caller-provided Copier. It
-	// writes directly into the per-session archive directory — the pre-fix
-	// `raw/` subdirectory has been removed (the opencode-era normalisation
-	// flow no longer applies; pi's on-disk JSONL is already the final
-	// format).
+	// writes directly into the per-session archive directory. Pi's on-disk
+	// JSONL is already the final format, so there is no `raw/` normalisation
+	// subdirectory.
 	if copyErr := p.Copier(context.Background(), tmpDir); copyErr != nil {
 		return "", copyErr
 	}

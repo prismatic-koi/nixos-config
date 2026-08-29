@@ -1,13 +1,13 @@
 package exporter_test
 
-// Tests for the #2704 cost and token counters and the account dimension.
+// Tests for the cost and token counters and the account dimension.
 //
 // These reuse the harness from exporter_test.go. They control the two things
 // the counters key on that the other tailers do not: the msg_assistant
 // PAYLOAD (model, tokens, cost) and the account_name COLUMN. Both are set by
 // inserting agent_events rows through a raw connection, so a test can write a
-// SQL NULL account_name (a pre-#2714 row) that WriteEvent — which always
-// stamps a name — cannot produce.
+// SQL NULL account_name (which predates the column) that WriteEvent — which
+// always stamps a name — cannot produce.
 
 import (
 	"database/sql"
@@ -24,8 +24,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/usage"
 )
 
-// The two accounts used across these tests, with the distinct org IDs #2713
-// verified live. account_org_id is the identity; the name is display only.
+// The two accounts used across these tests, with distinct org IDs.
+// account_org_id is the identity; the name is display only.
 const (
 	orgWork     = "org-work-1111"
 	orgPersonal = "org-personal-2222"
@@ -55,13 +55,13 @@ func (h *harness) raw() *sql.DB {
 
 // assistantOpts describes one msg_assistant row for insertAssistant.
 type assistantOpts struct {
-	// account is the account_name column. A nil pointer writes SQL NULL (a
-	// pre-#2714 row); a non-nil pointer writes that exact string.
+	// account is the account_name column. A nil pointer writes SQL NULL; a
+	// non-nil pointer writes that exact string.
 	account    *string
 	instanceID string // "" leaves instance_id NULL
-	// profile is the agent_events.profile_name column, stamped at write time
-	// by #2768. "" writes SQL NULL (a pre-#2768 row, which folds to
-	// "unknown"); a non-empty value writes that exact tier.
+	// profile is the agent_events.profile_name column, stamped at write time.
+	// "" writes SQL NULL (which folds to "unknown"); a non-empty value writes
+	// that exact tier.
 	profile    string
 	model      string
 	input      int64
@@ -326,12 +326,12 @@ func TestExporter_AccountWithNoSnapshotIsUnknownNotDropped(t *testing.T) {
 	}
 }
 
-// ── AC (edge): a SQL NULL account_name (pre-#2714 row) is "unknown" ────────
+// ── AC (edge): a SQL NULL account_name is "unknown" ────────
 
 func TestExporter_NullAccountNameIsUnknownAndDoesNotPanic(t *testing.T) {
 	h := newHarness(t)
 	h.start(h.exp)
-	// account == nil -> SQL NULL account_name, the pre-#2714 shape.
+	// account == nil -> SQL NULL account_name.
 	h.insertAssistant(assistantOpts{account: nil, model: knownModel, input: 1_000_000})
 
 	labels := modelLabels("unknown", "anthropic", "claude-sonnet-4-6")
@@ -363,7 +363,7 @@ func TestExporter_UnknownModelFallsBackToEventCost(t *testing.T) {
 
 // ── AC (functional): spend split by profile, read from agent_events ────────
 //
-// #2768: profile_name is stamped on each agent_events row at write time and
+// profile_name is stamped on each agent_events row at write time and
 // read directly, NOT joined from spawn_inputs. So a row's tier is whatever
 // was stamped on it, regardless of whether a spawn_inputs row exists.
 
@@ -411,14 +411,14 @@ func TestExporter_CoordinatorSpendAttributedToRealTierNotDefault(t *testing.T) {
 	}
 }
 
-// ── AC (edge): a pre-#2768 row (NULL profile_name) folds to "unknown" ──────
+// ── AC (edge): a NULL profile_name folds to "unknown" ──────
 
 func TestExporter_NullProfileNameFoldsToUnknownNotEmpty(t *testing.T) {
 	h := newHarness(t)
 	h.start(h.exp)
 	h.writeSnapshot("work", orgWork, wsWork, time.Now())
 
-	// profile == "" -> SQL NULL profile_name, the pre-#2768 shape.
+	// profile == "" -> SQL NULL profile_name.
 	h.insertAssistant(assistantOpts{account: strptr("work"), model: knownModel, input: 1_000_000})
 
 	if got := h.costValue(exporter.MetricSpendByProfileUSDTotal, map[string]string{"account_org_id": orgWork, "profile": "unknown"}); got != 3 {

@@ -1,5 +1,5 @@
 // Package titlegen produces the dashboard title and the issue/ticket
-// reference for a prism session (issue #2683).
+// reference for a prism session.
 //
 // Two values, two mechanisms
 // --------------------------
@@ -11,7 +11,7 @@
 //     missing title costs a little display quality and nothing else, so the
 //     path is best-effort: on any failure the caller falls back to Sanitise
 //     over the source text, which is the same deterministic derivation
-//     internal/session's deriveFallbackTitle uses (#2641).
+//     internal/session's deriveFallbackTitle uses.
 //
 //   - The ISSUE REFERENCE is an identifier. A regex produces it
 //     (ExtractIssueRef). NO model output is used for this field, ever. A
@@ -100,7 +100,7 @@ func Eligible(rootAgentName string) bool {
 // mid-sentence ("I need to fix the login flow") is never rejected.
 //
 // The list is intentionally short and pinned by table-driven tests
-// (issue #2693) rather than grown into a classifier: it exists to catch the
+// rather than grown into a classifier: it exists to catch the
 // observed failure mode, not to detect every possible refusal.
 var refusalStems = []string{
 	"i need",
@@ -122,7 +122,7 @@ var refusalStems = []string{
 }
 
 // IsRejected reports whether reply is NOT title-shaped and must be
-// discarded in favour of the deterministic fallback (issue #2693).
+// discarded in favour of the deterministic fallback.
 //
 // reply is the RAW model output, before Sanitise runs. IsRejected must see
 // it before truncation: Sanitise cuts an over-length reply down to

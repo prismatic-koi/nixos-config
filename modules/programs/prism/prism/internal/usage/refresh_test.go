@@ -1,6 +1,6 @@
 package usage
 
-// Tests for the active refresh request (issue #2541, parent #2537).
+// Tests for the active refresh request.
 //
 // The most valuable assertions here are the three request-shape ones. An
 // incorrectly shaped OAuth request is rejected by Anthropic's WAF with a 429
@@ -22,7 +22,7 @@ import (
 )
 
 // fullRateLimitHeaders is the header set confirmed against a live 200
-// response in issue #2537.
+// response.
 func fullRateLimitHeaders() http.Header {
 	h := http.Header{}
 	h.Set("anthropic-ratelimit-unified-status", "allowed_warning")
@@ -102,7 +102,7 @@ func refreshAgainst(t *testing.T, srv *httptest.Server) (*SnapshotPayload, error
 // ── Request shape: the three WAF-critical elements ───────────────────────────
 
 // TestRefresh_SendsBetaQueryParameter covers element 1 of the request shape.
-// Without `?beta=true` the OAuth path is rejected (#2537).
+// Without `?beta=true` the OAuth path is rejected.
 func TestRefresh_SendsBetaQueryParameter(t *testing.T) {
 	clearRefreshEnv(t)
 	srv, got := newFakeAnthropic(t, http.StatusOK, fullRateLimitHeaders(), "")
@@ -283,7 +283,7 @@ func TestRefresh_OKWithoutRateLimitHeadersIsReported(t *testing.T) {
 	}
 }
 
-// TestRefresh_TooManyRequestsWithHeadersIsUsable proves the fix for #2571:
+// TestRefresh_TooManyRequestsWithHeadersIsUsable:
 // a 429 carrying the full unified rate-limit header set is quota exhaustion,
 // not a WAF rejection, and must be returned as a usable payload rather than
 // discarded as a status error. Header presence discriminates the two cases,
@@ -302,7 +302,7 @@ func TestRefresh_TooManyRequestsWithHeadersIsUsable(t *testing.T) {
 }
 
 // TestRefresh_TooManyRequestsWithoutHeadersIsStatusError is the other
-// direction of the #2571 fix: a 429 with NO unified rate-limit headers is
+// direction: a 429 with NO unified rate-limit headers is
 // still a status error, not a usable payload. This is what catches an
 // over-broad fix that stops discriminating on header presence at all.
 func TestRefresh_TooManyRequestsWithoutHeadersIsStatusError(t *testing.T) {
@@ -424,7 +424,7 @@ func TestParseRateLimitHeaders_FullSet(t *testing.T) {
 }
 
 // TestParseRateLimitHeaders_OrgAndWorkspaceOmittedWhenAbsent covers the
-// edge case AC for issue #2713: a response carrying neither header must
+// edge case AC: a response carrying neither header must
 // produce a payload with both fields absent, not present-and-empty.
 func TestParseRateLimitHeaders_OrgAndWorkspaceOmittedWhenAbsent(t *testing.T) {
 	h := http.Header{}
@@ -681,8 +681,7 @@ func TestUserAgent_EnvOverride(t *testing.T) {
 // An environment-controlled destination would let a `.envrc` or a stray
 // export send that credential to a host of its choosing, in cleartext if it
 // chose `http://`. The mirrored pi extension hardcodes the host and honours no
-// such variable; so does this. Round 1 of the #2569 review caught an earlier
-// version of this file that did honour $ANTHROPIC_BASE_URL.
+// such variable; so does this.
 func TestBaseURL_IsNotEnvironmentControlled(t *testing.T) {
 	clearRefreshEnv(t)
 	t.Setenv("ANTHROPIC_BASE_URL", "http://attacker.example")

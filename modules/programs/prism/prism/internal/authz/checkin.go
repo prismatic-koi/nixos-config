@@ -12,14 +12,12 @@
 // parameter rather than reading it off a receiver, so neither route owns it.
 package authz
 
-// checkin.go — the three-tier permission model for `prism checkin`
-// (issue #2587; extracted to this package by issue #2619).
+// checkin.go — the three-tier permission model for `prism checkin`.
 //
-// Before #2587 the endpoint had one rule: requireCoordinator. That rule
-// refused every worker, including a worker reading the review agents it had
-// just spawned for its own PR — the exact read that `agents/worker.md` and the
-// `prism` skill tell a worker to perform. #2587 replaced the single rule with
-// three tiers.
+// The model exists so a worker can read the review agents it spawned for its
+// own PR — the exact read that `agents/worker.md` and the `prism` skill tell a
+// worker to perform — while a single requireCoordinator rule would refuse
+// every worker. It has three tiers.
 //
 //	Tier 1 — worker.
 //	  A non-coordinator caller may read ONLY the review agents of its own
@@ -28,8 +26,8 @@ package authz
 //	  coordinator, not any session in another repo.
 //
 //	Tier 2 — coordinator.
-//	  Unchanged: own-repo sessions, plus a cross-repo target only when that
-//	  target is itself a coordinator.
+//	  Own-repo sessions, plus a cross-repo target only when that target is
+//	  itself a coordinator.
 //
 //	Tier 3 — coordinator of a privileged repo.
 //	  A coordinator whose repo is named in CheckinRequest.PrivilegedRepos may
@@ -40,7 +38,7 @@ package authz
 //
 // # What this predicate is, and is not
 //
-// It is not a security boundary, and #2619 must not be read as one. A
+// It is not a security boundary and must not be read as one. A
 // `host`-mode session runs with no sandbox and can read the same history with
 // `sqlite3` straight out of prism.db, without using the verb at all. The
 // justification for gating both routes is narrower and holds anyway: audit
@@ -52,13 +50,12 @@ package authz
 // # Trust basis on each route
 //
 // Host-API route: caller identity rests on socket isolation. The sidecar knows
-// its own Config.SessionName, and each session has its own socket directory
-// (#960), so a worker cannot reach another session's sidecar to impersonate
-// it.
+// its own Config.SessionName, and each session has its own socket directory,
+// so a worker cannot reach another session's sidecar to impersonate it.
 //
 // Direct CLI route: caller identity comes from PRISM_SESSION_NAME, else the
-// current tmux session — the same resolution `requireMergesCoordinator` uses
-// (#2608). That is a cooperative signal, not an enforced one, which is why
+// current tmux session — the same resolution `requireMergesCoordinator` uses.
+// That is a cooperative signal, not an enforced one, which is why
 // this route is justified on audit completeness rather than on containment.
 //
 // On both routes the target is never trusted — it is resolved against the DB.
@@ -122,7 +119,7 @@ type CheckinRequest struct {
 	DB *db.DB
 
 	// PrivilegedRepos is the tier-3 repo list. An empty or nil list grants the
-	// privilege to nobody, which is the pre-#2587 behaviour.
+	// privilege to nobody.
 	PrivilegedRepos []string
 
 	// Logger receives the fail-closed diagnostics. Nil is replaced with
@@ -171,8 +168,7 @@ func AuthorizeCheckin(req CheckinRequest) CheckinDecision {
 
 // AuthorizeCheckinReviewAggregate decides whether req.Caller may read the
 // summary of review agents belonging to req.Target, where req.Target is the
-// PARENT session of a review group, not an individual review agent (issue
-// #2628).
+// PARENT session of a review group, not an individual review agent.
 //
 // This answers a different question from AuthorizeCheckin: "may the caller
 // read the review agents OF parent X", rather than "may the caller read
@@ -273,8 +269,8 @@ func (req CheckinRequest) authorizeWorker() CheckinDecision {
 
 // authorizeCoordinator implements tiers 2 and 3.
 //
-// Tier 2 is byte-for-byte the pre-#2587 rule: own-repo targets pass, and a
-// cross-repo target passes only when it is itself a coordinator. Tier 3 is
+// Tier 2: own-repo targets pass, and a cross-repo target passes only when it
+// is itself a coordinator. Tier 3 is
 // consulted at exactly one point — where tier 2 refuses a cross-repo
 // non-coordinator target. Placing it there has two effects worth keeping:
 // an unresolvable target still yields 404 rather than an empty 200 for a
@@ -290,7 +286,7 @@ func (req CheckinRequest) authorizeCoordinator() CheckinDecision {
 	if targetRepoErr != nil {
 		// Both the DB lookup and the name-parse fallback failed — the target
 		// session is unknown. Return 404 so the CLI can surface a clear
-		// "session not found" rather than a parse error (issue #2112).
+		// "session not found" rather than a parse error.
 		return denyCheckin(http.StatusNotFound, "target %s", targetRepoErr.Error())
 	}
 
@@ -312,12 +308,11 @@ func (req CheckinRequest) authorizeCoordinator() CheckinDecision {
 // Two conditions must both hold:
 //
 //  1. The caller's repo appears in PrivilegedRepos. An empty or absent list
-//     therefore grants the privilege to nobody, which is the pre-#2587
-//     behaviour.
+//     therefore grants the privilege to nobody.
 //  2. The caller's agent_status row exists and carries
 //     root_agent_name = 'coordinator'.
 //
-// Condition 2 is the answer to the caution recorded on #2587.
+// Condition 2 must not rest on the name heuristic.
 // IsCoordinatorSession returns dbBased || nameBased, where nameBased is the
 // "@main" suffix and wins on disagreement — a session named <repo>@main is
 // admitted there on the name alone, with no DB evidence. A privilege that

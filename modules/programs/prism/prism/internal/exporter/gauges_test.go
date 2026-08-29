@@ -1,8 +1,8 @@
 package exporter_test
 
-// Tests for the four #2702 state gauges. These reuse the harness from
+// Tests for the four state gauges. These reuse the harness from
 // exporter_test.go; none of them touches the tail cursor, since a gauge is
-// recomputed on every scrape (#2699 section 4).
+// recomputed on every scrape.
 
 import (
 	"testing"
@@ -222,7 +222,7 @@ func countOccurrences(haystack, needle string) int {
 	return n
 }
 
-// ── #2708: prism_sidecars_live / prism_sidecars_stale ──────────────────────
+// ── prism_sidecars_live / prism_sidecars_stale ──────────────────────
 
 // setLastSeen backdates a session's agent_status.last_seen by age, so the
 // test can put it on either side of exporter.SidecarStaleThreshold without
@@ -467,7 +467,7 @@ func TestSidecarStaleThreshold_MatchesReviewWatchdog(t *testing.T) {
 	}
 }
 
-// ── #2764 AC (functional): empty or whitespace-only repo is folded to
+// ── AC (functional): empty or whitespace-only repo is folded to
 // "unknown" placeholder. The session is not dropped — it still appears
 // in the gauge.
 
@@ -535,7 +535,7 @@ func TestExporter_EmptyRepoLabelFoldsToUnknown(t *testing.T) {
 	}
 }
 
-// ── #2764 AC (functional): empty or whitespace-only repo is folded to
+// ── AC (functional): empty or whitespace-only repo is folded to
 // "unknown" on all five repo-labelled gauges.
 
 func TestExporter_EmptyRepoFoldsOnAllGauges(t *testing.T) {

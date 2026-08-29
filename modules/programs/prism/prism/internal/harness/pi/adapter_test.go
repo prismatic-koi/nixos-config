@@ -139,7 +139,7 @@ func TestNormaliseFrame_MsgUser(t *testing.T) {
 
 // TestNormaliseFrame_ToolCall covers the older stdio adapter
 // (Translate strategy) path. Input is the legacy snake_case PI
-// JSONL shape; output is the post-#1783 payload.ToolCall (`Name`,
+// JSONL shape; output is the payload.ToolCall (`Name`,
 // `Args`, `ID`).
 func TestNormaliseFrame_ToolCall(t *testing.T) {
 	a := pi.New("", "", "")
@@ -173,7 +173,7 @@ func TestNormaliseFrame_ToolCall(t *testing.T) {
 }
 
 // TestNormaliseFrame_ToolResult mirrors the tool_call test for the
-// older stdio adapter path. Output uses the post-#1783 payload
+// older stdio adapter path. Output uses the payload
 // fields (`ID`, `Success`, `Output`).
 func TestNormaliseFrame_ToolResult(t *testing.T) {
 	a := pi.New("", "", "")

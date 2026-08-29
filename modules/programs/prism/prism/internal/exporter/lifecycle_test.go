@@ -1,6 +1,6 @@
 package exporter_test
 
-// Tests for the six #2703 lifecycle and outcome counters. These reuse the
+// Tests for the six lifecycle and outcome counters. These reuse the
 // harness from exporter_test.go and add a fixture helper that wires up the
 // sessions / agent_status rows the label-enrichment join in
 // LifecycleEventsTailSQL needs.
@@ -21,7 +21,7 @@ import (
 // (isolation_mode), and a spawn_inputs row (profile_name) sharing one
 // instance_id, then writes a session.spawn_intent event referencing it —
 // the shape LifecycleEventsTailSQL's join expects. Pass "" for profileName
-// to leave spawn_inputs.profile_name NULL (issue #2720's default-fold AC).
+// to leave spawn_inputs.profile_name NULL (the default-fold AC).
 func (h *harness) spawnFixture(repo, agentRole, isolationMode, profileName string) (instanceID, sessionName string) {
 	h.t.Helper()
 	instanceID = uuid.New().String()

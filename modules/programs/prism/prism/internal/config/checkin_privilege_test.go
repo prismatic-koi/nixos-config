@@ -1,6 +1,6 @@
 package config_test
 
-// checkin_privilege_test.go — issue #2587.
+// checkin_privilege_test.go
 //
 // LoadCheckinPrivilegedRepos backs the tier-3 `/checkin` troubleshooting
 // privilege. The security-relevant property is the fail-closed direction:

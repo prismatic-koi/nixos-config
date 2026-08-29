@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestExtractIssueRef covers the deterministic extraction contract (#2683):
+// TestExtractIssueRef covers the deterministic extraction contract:
 // the two accepted forms, GitHub-before-Jira precedence, first-match-wins
 // within a form, and — the edge case that matters most — "" for text that
 // names no issue at all.

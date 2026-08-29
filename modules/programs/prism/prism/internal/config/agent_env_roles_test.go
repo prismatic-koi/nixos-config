@@ -1,7 +1,6 @@
 package config_test
 
-// agent_env_roles_test.go — coverage for the role-aware AgentEnvVars filter
-// (issue #2533).
+// agent_env_roles_test.go — coverage for the role-aware AgentEnvVars filter.
 //
 // The filter is the capability boundary that keeps the pi grafana MCP surface
 // (65 tools, about 26400 cached tokens) out of review agents, which never call

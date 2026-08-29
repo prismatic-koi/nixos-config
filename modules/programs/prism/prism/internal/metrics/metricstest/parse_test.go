@@ -66,7 +66,7 @@ func TestParse_AcceptsWellFormedExposition(t *testing.T) {
 	}
 }
 
-// The histogram seam of #2706: the parser must already attribute suffixed
+// The histogram seam: the parser must already attribute suffixed
 // samples to their declared family, so a later change to the registry is not
 // gated on a parser change too.
 func TestParse_AttributesHistogramSuffixesToTheirFamily(t *testing.T) {

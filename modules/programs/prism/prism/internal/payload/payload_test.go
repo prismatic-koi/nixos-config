@@ -86,11 +86,8 @@ func TestMsgAssistant_Roundtrip(t *testing.T) {
 	}
 }
 
-// TestToolCall_Roundtrip covers the post-#1783 wire shape: `name`,
-// `args` (json.RawMessage / JSON object), `id`. The previous test
-// used the old `tool`/`messageId`/string-args trio which had drifted
-// silently from pi 0.75.3's emitted payload — see issue #1783 for
-// the full root cause analysis.
+// TestToolCall_Roundtrip covers the wire shape: `name`, `args`
+// (json.RawMessage / JSON object), `id` — the shape pi 0.75.3 emits.
 func TestToolCall_Roundtrip(t *testing.T) {
 	in := payload.ToolCall{
 		Name: "bash",
@@ -109,10 +106,8 @@ func TestToolCall_Roundtrip(t *testing.T) {
 	}
 }
 
-// TestToolResult_Roundtrip covers the post-#1783 wire shape: `id`,
-// `success`, `output`. Pre-#1783 the struct declared `tool`,
-// `result`, `messageId` — silently broken because the pi extension
-// never emitted that shape.
+// TestToolResult_Roundtrip covers the wire shape: `id`, `success`,
+// `output` — the shape the pi extension emits.
 func TestToolResult_Roundtrip(t *testing.T) {
 	in := payload.ToolResult{
 		ID:      "call-1",
@@ -131,11 +126,10 @@ func TestToolResult_Roundtrip(t *testing.T) {
 	}
 }
 
-// TestToolCall_PiExtensionWireShape is the regression test required
-// by issue #1783's acceptance criteria: pins the pi 0.75.3
-// prism-extension wire format so an upstream rename surfaces here as
-// a deliberate test failure rather than a silent (parse error)
-// regression in downstream consumers.
+// TestToolCall_PiExtensionWireShape pins the pi 0.75.3 prism-extension
+// wire format so an upstream rename surfaces here as a deliberate test
+// failure rather than a silent (parse error) regression in downstream
+// consumers.
 //
 // The fixture JSON below is byte-for-byte representative of what
 // `pi/extensions/prism.ts:2429-2444` writes to the harness socket
@@ -358,10 +352,9 @@ func TestJSONFieldNames(t *testing.T) {
 		t.Errorf("MsgUser.Model: got %q, want \"gh/claude\" (check json:\"model\" tag)", mu.Model)
 	}
 
-	// Post-#1783: ToolCall wire shape is `{name, id, args}` (args is
-	// a JSON value, not an escaped string). The previous fixture's
-	// `{tool, args, messageId}` shape no longer matches the struct
-	// tags and would silently zero-value the fields.
+	// ToolCall wire shape is `{name, id, args}` (args is a JSON value,
+	// not an escaped string). A `{tool, args, messageId}` shape does not
+	// match the struct tags and silently zero-values the fields.
 	rawTC := `{"type":"tool_call","name":"bash","id":"call-abc","args":{"command":"go build"}}`
 	var tc payload.ToolCall
 	if err := json.Unmarshal([]byte(rawTC), &tc); err != nil {

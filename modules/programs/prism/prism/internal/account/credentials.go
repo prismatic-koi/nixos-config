@@ -1,5 +1,4 @@
-// Read-only access to a stored account's OAuth credentials (issue #2541,
-// parent #2537).
+// Read-only access to a stored account's OAuth credentials.
 //
 // Background
 // ----------
@@ -30,7 +29,7 @@
 // A refresh path that reads the stored copy therefore works once and then
 // reports "expired" forever, while pi holds a perfectly good token.
 //
-// Issue #2537 states the token "lives in the accounts directory". That premise
+// A naive design reads the token from the accounts directory. That premise
 // is wrong for the ACTIVE account and this file does not follow it: prefer the
 // live blob, and fall back to the stored copy.
 //
@@ -123,7 +122,7 @@ func (c Credentials) Expired(now time.Time) bool {
 // The blob belongs to whichever account is active, because `prism account use`
 // writes accounts/<name>.json into auth.json and updates accounts/current in
 // the same operation. That also makes it the right token for a usage refresh:
-// the passive capture path (#2538) records whatever token pi used and files
+// the passive capture path records whatever token pi used and files
 // the result under accounts/current, so reading the live blob here attributes
 // the refreshed numbers exactly as the passive path does.
 //

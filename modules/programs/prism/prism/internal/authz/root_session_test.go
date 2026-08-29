@@ -1,20 +1,20 @@
 package authz
 
-// root_session_test.go — issue #2658.
+// root_session_test.go
 //
 // A non-worktree session such as `obsidian` has a bare name: no "@", so no
-// branch, so no "@main" suffix to test. That made it unreachable by
-// `prism prompt` and invisible in `prism sessions list`, and a single wrong
-// root_agent_name value in the DB made the state permanent.
+// branch, so no "@main" suffix to test. Without IsRootSession it is
+// unreachable by `prism prompt` and invisible in `prism sessions list`, and a
+// single wrong root_agent_name value in the DB makes that state permanent.
 //
-// This file pins the repair and, more importantly, its limits. IsRootSession
+// This file pins the predicate and, more importantly, its limits. IsRootSession
 // is a NARROWER grant than IsCoordinatorSession: it admits a bare name for
 // prompt routing and for list visibility, and it grants nothing else. The
 // tests below are written so that widening it — for example by returning
 // IsCoordinatorSession(name) || !HasBranch(name) with no descendant guard —
 // fails.
 //
-// Fixture naming follows the discipline of #2112: every name is prefixed
+// Fixture naming follows a strict discipline: every name is prefixed
 // `prism-test`, so no fixture can collide with a live session on a
 // developer's host.
 
@@ -53,7 +53,7 @@ type rootFixture struct {
 	why string
 }
 
-// rootFixtures covers every name shape named in the #2658 acceptance
+// rootFixtures covers every name shape named in the acceptance
 // criteria: a bare name, <repo>@main, <repo>@branch, <bare>~investigate-<slug>
 // and <repo>@branch~review-<n>-<role>, plus the meta-sessions and the
 // corrupted-DB shapes that motivated the issue.
@@ -63,7 +63,7 @@ func rootFixtures() []rootFixture {
 		{
 			session: "prism-test-bare", repo: "prism-test-bare",
 			// The `obsidian` row carried root_agent_name='review-goal'. The
-			// value is wrong, and before #2658 nothing could override it,
+			// value is wrong, and without this predicate nothing could override it,
 			// because a bare name cannot satisfy the "@main" heuristic.
 			rootAgent: "review-goal",
 			wantRoot:  true, wantCoordinator: false,
@@ -98,7 +98,7 @@ func rootFixtures() []rootFixture {
 			why: "review agent of a worktree branch",
 		},
 
-		// ── Worktree sessions are unchanged by #2658 ───────────────────────
+		// ── Worktree sessions ──────────────────────────────────────
 		{
 			session: "prism-test-wt@main", repo: "prism-test-wt",
 			rootAgent: "coordinator",
@@ -230,8 +230,8 @@ func TestIsRootSession(t *testing.T) {
 	}
 }
 
-// TestIsRootSession_IsNarrowerThanCoordinator states the design decision of
-// #2658 as an assertion rather than as prose: the two predicates differ on
+// TestIsRootSession_IsNarrowerThanCoordinator states the design decision
+// as an assertion rather than as prose: the two predicates differ on
 // exactly one shape — the bare name — and the root predicate never refuses a
 // session the coordinator predicate admits.
 //
@@ -302,7 +302,7 @@ func TestIsRootSession_NilDB(t *testing.T) {
 // because /prompt resolves the target through RepoFromSession first, and
 // RepoFromSession refuses a name with no "@" and no agent_status row. If this
 // test ever fails, `prism prompt <typo>` stops returning 404 and starts
-// returning an opaque delivery failure instead — the confusion #2658 reports.
+// returning an opaque delivery failure instead — the confusion this predicate prevents.
 func TestRepoFromSession_BareNameStillNeedsARow(t *testing.T) {
 	d := openRootSessionTestDB(t)
 	if err := d.UpsertStatusSeedRootAgentName(
@@ -410,7 +410,7 @@ func TestRootSessionParity_GoAndSQL(t *testing.T) {
 // TestRootSessionParity_OwnRepoIsAlwaysVisible pins the other half of the
 // listing contract: the root-session filter applies to OTHER repos only. A
 // worker, a review agent and an investigator in the viewer's own repo are all
-// still listed, exactly as before #2658.
+// still listed.
 func TestRootSessionParity_OwnRepoIsAlwaysVisible(t *testing.T) {
 	const ownRepo = "prism-test-own"
 

@@ -3,15 +3,15 @@ package metrics
 // GaugeFunc is a gauge whose value is produced by a function on every
 // scrape.
 //
-// Gauges are the free half of the #2699 architecture: they are
+// Gauges are the free half of the exporter architecture: they are
 // point-in-time by definition, carry no monotonicity contract, and so the
 // 90-day prune cannot hurt them. Recompute them at scrape time — including
 // with a plain SQL aggregate, which a counter must never do.
 //
 // GaugeFunc carries a fixed label set. That is enough for a build-info
-// style metric and for the single-series gauges #2702 adds. A labelled,
-// multi-series gauge (GaugeVec) is not built here because nothing in this
-// issue needs one; it slots in as another Collector when it does.
+// style metric and for the single-series gauges the exporter adds. A
+// labelled, multi-series gauge (GaugeVec) is not built here because nothing
+// needs one yet; it slots in as another Collector when it does.
 type GaugeFunc struct {
 	name        string
 	help        string
@@ -21,8 +21,7 @@ type GaugeFunc struct {
 }
 
 // NewGaugeFunc returns a gauge that calls fn on every Collect. labels is
-// applied in the given order; it must be a closed, bounded set (#2699
-// section 6).
+// applied in the given order; it must be a closed, bounded set.
 func NewGaugeFunc(name, help string, labelNames, labelValues []string, fn func() float64) *GaugeFunc {
 	names := make([]string, len(labelNames))
 	copy(names, labelNames)

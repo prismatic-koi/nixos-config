@@ -1,5 +1,5 @@
 // Package metrics is a small, dependency-free Prometheus metric registry and
-// text-exposition writer (issue #2700, parent #2699).
+// text-exposition writer.
 //
 // # Why not github.com/prometheus/client_golang
 //
@@ -15,11 +15,12 @@
 // A Prometheus counter must never decrease while the process lives.
 // CounterVec enforces that mechanically: Add rejects a negative delta, and
 // there is no Set. Producers of counter values must therefore accumulate
-// forward — see internal/tailcursor for the mechanism prism uses, and
-// #2699 section 3 for why a full-table SQL aggregate is not allowed to
-// produce one.
+// forward — see internal/tailcursor for the mechanism prism uses. A
+// full-table SQL aggregate must never produce a counter value: it
+// decreases at the prune horizon, and Prometheus misreads that as a
+// restart.
 //
-// # The histogram seam (#2706)
+// # The histogram seam
 //
 // Gather does not switch on concrete collector types. It asks each
 // Collector for its Kind and its Samples, and a Sample carries a name
@@ -50,7 +51,7 @@ type Kind string
 const (
 	KindGauge   Kind = "gauge"
 	KindCounter Kind = "counter"
-	// KindHistogram is reserved for #2706. Nothing implements it yet; it
+	// KindHistogram is reserved for a future histogram type. Nothing implements it yet; it
 	// exists so the exposition writer already has a name for it.
 	KindHistogram Kind = "histogram"
 )
@@ -83,7 +84,7 @@ type Collector interface {
 	Kind() Kind
 	// Collect returns the current samples. It is called on every scrape,
 	// so a gauge collector is free to recompute here — gauges carry no
-	// monotonicity contract (see #2699 section 4).
+	// monotonicity contract.
 	Collect() []Sample
 }
 

@@ -3,22 +3,21 @@ package authz
 // session.go — the session-identity helpers the permission predicates in this
 // package rest on.
 //
-// Both function bodies were moved here verbatim from
-// internal/sidecar/helpers.go by issue #2619. They had to move with the
-// predicate: `cmd/` cannot reach an unexported helper in `internal/sidecar`,
-// and a second copy in `cmd/` would let the two routes of one verb disagree
-// about who a caller is, which is the exact defect #2619 exists to close.
+// These helpers live in this package because the permission predicates rest
+// on them and `cmd/` cannot reach an unexported helper in `internal/sidecar`.
+// A second copy in `cmd/` would let the two routes of one verb disagree about
+// who a caller is, which is the exact defect this shared home closes.
 //
 // internal/sidecar keeps `repoFromSession` and `isCoordinatorSession` as thin
 // wrappers over these two functions, so the fifteen-odd host-API handlers that
-// scope on repo or role are untouched by the move and keep one implementation.
+// scope on repo or role share one implementation.
 //
 // A near-duplicate of IsCoordinatorSession already lives at
 // internal/session.IsCoordinatorSession, which `cmd/merges.go` uses. It takes
 // no logger and writes its diagnostics through the global `log` package. The
 // two are NOT merged here: the sidecar variant must write to the sidecar's own
-// logger, and rerouting fifteen call sites' diagnostics is a behaviour change
-// #2619 does not authorise. Merging them is a separate change.
+// logger, and rerouting fifteen call sites' diagnostics is a behaviour change.
+// Merging them is a separate change.
 
 import (
 	"fmt"
@@ -34,7 +33,7 @@ import (
 // non-empty repo column, that value is returned. This is the authoritative
 // path and resolves both `<repo>@<branch>` sessions and @-less host-mode
 // sessions (e.g. "obsidian" against ~/Documents/obsidian via
-// ProjectIsolationOverrides — issue #2112). Without the DB lookup, host-mode
+// ProjectIsolationOverrides). Without the DB lookup, host-mode
 // non-git sessions whose names lack an `@<branch>` suffix could not be
 // resolved and every host-API permission check that called this helper
 // rejected them with a "contains no '@' — cannot derive repo" parse error.
@@ -56,13 +55,13 @@ func RepoFromSession(sessionName string, d *db.DB) (string, error) {
 			return status.Repo, nil
 		}
 	}
-	// The name-parse fallback applies to @-bearing names only, and issue #2658
-	// deliberately did not widen it. A name with no "@" and no DB row is an
+	// The name-parse fallback applies to @-bearing names only, and is
+	// deliberately not widened. A name with no "@" and no DB row is an
 	// unknown session, and the caller must see "not found" (404) rather than a
 	// repo invented from the name. If this fallback answered for every name,
 	// `prism prompt <typo>` would resolve to a repo of its own, pass the
 	// cross-repo gate as a bare-name root session, and fail later with an
-	// opaque delivery error — the exact confusion #2658 reports.
+	// opaque delivery error — the exact confusion this fallback guards against.
 	if sessionname.HasBranch(sessionName) {
 		return sessionname.Repo(sessionName), nil
 	}
@@ -93,7 +92,7 @@ func RepoFromSessionName(sessionName string) string {
 // the sidecar wrapper passes the sidecar's own logger.
 func IsCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool {
 	// A descendant session — a review agent or an investigator — is never a
-	// coordinator, whatever its root_agent_name column says (issue #2658).
+	// coordinator, whatever its root_agent_name column says.
 	// The guard is on the name, so a wrong DB value cannot promote it. The
 	// same guard is applied by session.IsCoordinatorSession, by
 	// db.retroIsCoordinator, and by IsRootSession below; all four read the
@@ -126,7 +125,7 @@ func IsCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool
 
 // IsRootSession reports whether sessionName is the root session of its own
 // project — the session an operator addresses when they mean "the top-level
-// session over there" (issue #2658).
+// session over there".
 //
 // A session is a root session when ALL of the following hold:
 //
@@ -138,11 +137,11 @@ func IsCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool
 //
 // # Why this is not IsCoordinatorSession
 //
-// The bug in #2658 is that a non-worktree session such as `obsidian` can never
-// satisfy the "@main" heuristic — it has no worktree, so it has no branch —
-// and so a single wrong root_agent_name value made it permanently unreachable
-// and invisible. The obvious repair is to call such a session a coordinator.
-// That repair is too broad. Coordinator status also grants the merge queue
+// A non-worktree session such as `obsidian` can never satisfy the "@main"
+// heuristic — it has no worktree, so it has no branch. If reachability rested
+// on IsCoordinatorSession, a single wrong root_agent_name value leaves such a
+// session permanently unreachable and invisible. Calling it a coordinator
+// instead is too broad. Coordinator status also grants the merge queue
 // (cmd/merge.go, cmd/merges.go), `prism investigate` (cmd/investigate.go),
 // `prism review` on another session's PR (cmd/review.go), the profile
 // override (cmd/profile.go), the permission audit (cmd/audit_permission.go),
@@ -177,7 +176,7 @@ func IsRootSession(sessionName string, d *db.DB, logger *log.Logger) bool {
 	}
 	if sessionname.HasBranch(sessionName) {
 		// Worktree session: the root of the repo is its coordinator, and the
-		// coordinator rule is unchanged by #2658.
+		// coordinator rule applies.
 		return IsCoordinatorSession(sessionName, d, logger)
 	}
 	// No branch means no worktree, so there is no "@main" sibling that could

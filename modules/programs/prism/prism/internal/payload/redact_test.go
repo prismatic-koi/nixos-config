@@ -1,6 +1,6 @@
 package payload_test
 
-// Tests for the capture-path redactor (issue #2589).
+// Tests for the capture-path redactor.
 //
 // SECURITY: every credential value in this file is synthetic. None is a real
 // token, and none is read from the environment of the test process. The
@@ -560,8 +560,7 @@ func FuzzRedactShapePrefilter(f *testing.F) {
 // ---------------------------------------------------------------------------
 // RedactJSON — the flat pass must never span a JSON delimiter.
 //
-// Regression tests for the round-1 review finding on PR #2606. The
-// private-key-block shape has a `[\s\S]*?` body, so on a serialised JSON
+// The private-key-block shape has a `[\s\S]*?` body, so on a serialised JSON
 // document a BEGIN in one field and an END in a later field make one match
 // consume the structure between them. Two failure modes, both silent and both
 // permanent once the row is written: invalid JSON, and silent field loss.
@@ -570,7 +569,7 @@ func FuzzRedactShapePrefilter(f *testing.F) {
 func TestRedactJSON_DoesNotProduceInvalidJSON(t *testing.T) {
 	r := payload.NewShapeOnlyRedactor()
 
-	// Verbatim reproducer from the review. The flat pass turns this into
+	// A reproducer. The flat pass turns this into
 	// `{"a":"[redacted:private-key-block]"]}` — a dangling bracket.
 	in := `{"a":"-----BEGIN A PRIVATE KEY-----","b":[1,"-----END A PRIVATE KEY-----"]}`
 

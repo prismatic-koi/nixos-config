@@ -1,18 +1,18 @@
 // Package account implements the on-disk account store and atomic
-// switching logic behind `prism account` (#2283).
+// switching logic behind `prism account`.
 //
 // Background
 // ----------
 //
 // Pi treats ~/.pi/agent/auth.json as a singleton — there's exactly one
-// Anthropic OAuth blob at a time. Switching between Claude OAuth
-// subscriptions used to require quitting prism, running `pi /login
+// Anthropic OAuth blob at a time. Without this package, switching between
+// Claude OAuth subscriptions requires quitting prism, running `pi /login
 // anthropic` to overwrite the file, then `prism restart`. This package
 // stores each subscription's "anthropic" blob as a named file under
 // ~/.config/prism/accounts/<name>.json and atomically merges the chosen
 // blob into the live auth.json on switch. Pi's existing credential cache
-// (with the mtime-invalidation tweak in #2283) then picks up the new
-// tokens on its next request.
+// (invalidated on the file's mtime change) then picks up the new tokens
+// on its next request.
 //
 // On-disk layout
 // --------------

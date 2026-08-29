@@ -98,7 +98,7 @@ type Config struct {
 	// Darwin). Threaded into container.Config so credentialEnvVars can read the
 	// token directly when the inherited GITHUB_TOKEN env var is empty — the
 	// Darwin sops launchd decrypt race freezes an empty value into the tmux
-	// server env (#2029). When empty, the file fallback is skipped.
+	// server env. When empty, the file fallback is skipped.
 	GitHubTokenPath string `json:"github_token_path"`
 
 	// GitHubTokenPaths maps <ACCOUNT>_<ROLE> keys (e.g. PRISMATIC_KOI_WORKER,
@@ -107,10 +107,10 @@ type Config struct {
 	// container.Config so credentialEnvVars can resolve the correct token by
 	// reading the file at spawn time — independent of any shell expansion of
 	// the PRISM_GITHUB_TOKEN_* env vars. This is the primary source of truth
-	// for token resolution as of issue #2348 (boot-restore path launched tmux
-	// from a systemd unit and every session's GITHUB_TOKEN was frozen to the
-	// literal string $(cat /run/secrets/…), because the env vars were rendered
-	// as shell command substitutions that only expand under a login shell).
+	// for token resolution: the boot-restore path launches tmux from a systemd
+	// unit, where the env vars are rendered as shell command substitutions that
+	// only expand under a login shell, so a session's GITHUB_TOKEN can
+	// otherwise freeze to the literal string $(cat /run/secrets/…).
 	// Empty map means no per-role file paths configured — credentialEnvVars
 	// then falls back to the env-var path with a $(-literal guard.
 	GitHubTokenPaths map[string]string `json:"github_token_paths,omitempty"`
@@ -120,11 +120,11 @@ type Config struct {
 	// Darwin). Threaded into container.Config so credentialEnvVars can read
 	// the token at spawn time and inject GITLAB_TOKEN into the sandbox as a
 	// VALUE — the same file-first shape GitHubTokenPaths uses, and for the
-	// same reason (#2348: the host env var is rendered as "$(cat <path>)" by
+	// same reason (the host env var is rendered as "$(cat <path>)" by
 	// home-manager and only expands under a login shell). Empty means the
 	// host has no GitLab token configured (nx.programs.gitlab-cli.enable is
 	// false); the resolver then falls back to the inherited GITLAB_TOKEN env
-	// var behind the $(-literal guard. See issue #2668.
+	// var behind the $(-literal guard.
 	GitLabTokenPath string `json:"gitlab_token_path,omitempty"`
 
 	// Restore behaviour.
@@ -151,7 +151,7 @@ type Config struct {
 
 	// AgentMaxOpenFilesSoft / AgentMaxOpenFilesHard are the RLIMIT_NOFILE
 	// (soft, hard) caps applied to agent processes spawned via the bwrap and
-	// sandbox-exec exec paths (Layer 1 FD isolation, issue #2190). The hard
+	// sandbox-exec exec paths (Layer 1 FD isolation). The hard
 	// cap is kernel-enforced: the agent cannot raise it from inside the
 	// sandbox. Zero or negative values fall back to the compiled-in defaults
 	// (DefaultAgentMaxOpenFilesSoft / DefaultAgentMaxOpenFilesHard). Clamping
@@ -252,9 +252,8 @@ const IgnoreConcurrencyCapHelp = "Bypass the soft per-isolation-mode concurrency
 
 // DefaultAgentMaxOpenFilesSoft / DefaultAgentMaxOpenFilesHard are the
 // compiled-in default RLIMIT_NOFILE (soft, hard) caps for agent processes
-// spawned via the bwrap and sandbox-exec exec paths (Layer 1 FD isolation,
-// issue #2190). The values are the #2181 starting estimates: high enough for
-// legitimate agent workloads (agent-initiated nix builds run via the root
+// spawned via the bwrap and sandbox-exec exec paths (Layer 1 FD isolation).
+// The values are high enough for legitimate agent workloads (agent-initiated nix builds run via the root
 // nix-daemon, so the agent process itself does not hold build FDs), low
 // enough that a runaway agent hits its own cap long before the host-wide
 // pool (kern.maxfiles on Darwin) is at risk. Tunable per-machine via the

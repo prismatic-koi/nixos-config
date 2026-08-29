@@ -2,7 +2,7 @@ package harness
 
 // config_hook.go — wires the harness registry into the config package's
 // HarnessValidator hook so that profiles.json's `default_harness` field
-// (#1491) is validated at LoadProfiles time without `internal/config`
+// is validated at LoadProfiles time without `internal/config`
 // importing this package (which would create a cycle: harness/<name>
 // already imports config).
 //

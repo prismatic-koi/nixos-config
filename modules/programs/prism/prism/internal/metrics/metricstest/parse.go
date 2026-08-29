@@ -1,6 +1,6 @@
 // Package metricstest parses the Prometheus text exposition format so tests
 // can assert that an exporter's output is well formed, rather than assert on
-// substrings of it (issue #2700).
+// substrings of it.
 //
 // It is a test-support package, in the shape of internal/sidecar/sidecartest.
 // Nothing in the production build imports it.

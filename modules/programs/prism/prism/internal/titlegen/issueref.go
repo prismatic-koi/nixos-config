@@ -2,7 +2,7 @@ package titlegen
 
 import "regexp"
 
-// Issue/ticket reference extraction (issue #2683).
+// Issue/ticket reference extraction.
 //
 // THE MODEL IS NEVER ASKED FOR THIS VALUE.
 //
@@ -45,7 +45,7 @@ var (
 	// real substrings of the source text, not invented values, so the
 	// misattribution risk the model ban exists to prevent does not apply —
 	// and narrowing the pattern with a denylist of standards names would
-	// invent policy this issue did not ask for. The GitHub form is tried
+	// invent policy nobody asked for. The GitHub form is tried
 	// first (see ExtractIssueRef), which is what keeps the collision off
 	// this GitHub-hosted repo's own sessions in practice.
 	jiraRef = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-\d+\b`)

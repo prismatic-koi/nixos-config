@@ -16,9 +16,8 @@ const DefaultBatchSize = 1000
 // advances over and the projected value the accumulator consumes.
 //
 // The value is deliberately a type parameter, not a row struct: a tailer
-// must read only the columns its metric needs. See #2699 section 5 — the
-// exporter is a "/stats"-class surface and must never read a raw TEXT body
-// column.
+// must read only the columns its metric needs. The exporter is a
+// "/stats"-class surface and must never read a raw TEXT body column.
 type Record[T any] struct {
 	ID    int64
 	Value T
@@ -37,8 +36,7 @@ type Source[T any] interface {
 }
 
 // Advancer is the non-generic view of a Tailer. A daemon that runs several
-// tailers over different row types holds them in one []Advancer — which is
-// what #2703 and #2704 need.
+// tailers over different row types holds them in one []Advancer.
 type Advancer interface {
 	Name() string
 	Cursor() int64

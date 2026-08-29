@@ -191,7 +191,7 @@ func TestSshBinAbsentKeepsEmpty(t *testing.T) {
 }
 
 // TestAgentMaxOpenFilesDefaults verifies that the compiled-in defaults for
-// the #2190 Layer-1 FD caps apply when no config file is present, and that
+// the Layer-1 FD caps apply when no config file is present, and that
 // they equal the named constants.
 func TestAgentMaxOpenFilesDefaults(t *testing.T) {
 	t.Setenv("PRISM_CONFIG_FILE", "/nonexistent/path/config.json")
@@ -204,7 +204,7 @@ func TestAgentMaxOpenFilesDefaults(t *testing.T) {
 	if cfg.AgentMaxOpenFilesHard != config.DefaultAgentMaxOpenFilesHard {
 		t.Errorf("AgentMaxOpenFilesHard: got %d, want default %d", cfg.AgentMaxOpenFilesHard, config.DefaultAgentMaxOpenFilesHard)
 	}
-	// The #2190 AC pins the default values themselves: at least
+	// The AC pins the default values themselves: at least
 	// (soft 8192, hard 16384) when nothing overrides them.
 	if config.DefaultAgentMaxOpenFilesSoft != 8192 {
 		t.Errorf("DefaultAgentMaxOpenFilesSoft: got %d, want 8192", config.DefaultAgentMaxOpenFilesSoft)
@@ -259,11 +259,11 @@ func TestAgentMaxOpenFilesAbsentKeepsDefaults(t *testing.T) {
 	}
 }
 
-// TestSidecarCircuitBreakerThresholdSilentlyIgnored verifies the AC
-// [edge-case] from #2315: an existing config.json on a user's machine that
-// still carries a `sidecar_circuit_breaker_threshold` field (from a previous
-// prism version) continues to load without error after the field was removed
-// from parsedConfig. Go's JSON decoder silently drops keys that are not
+// TestSidecarCircuitBreakerThresholdSilentlyIgnored verifies the
+// [edge-case] AC: an existing config.json on a user's machine that still
+// carries a `sidecar_circuit_breaker_threshold` field (from an older prism
+// version) loads without error, because parsedConfig has no such field.
+// Go's JSON decoder silently drops keys that are not
 // present in the destination struct, so the file loads successfully and the
 // remaining keys are honoured normally.
 func TestSidecarCircuitBreakerThresholdSilentlyIgnored(t *testing.T) {

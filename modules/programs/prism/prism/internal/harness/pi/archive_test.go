@@ -95,7 +95,7 @@ func TestArchiveAdapter_SourcePath_HostMode(t *testing.T) {
 // TestArchiveAdapter_SourcePath_HostMode_PICodingAgentDir verifies that when
 // PI_CODING_AGENT_DIR is set on the host, SourcePath resolves the sessions
 // root to <dir>/sessions/ (matches pi's own ENV_AGENT_DIR honouring) instead
-// of <home>/.pi/agent/sessions/. This is the issue #2185 fix.
+// of <home>/.pi/agent/sessions/.
 func TestArchiveAdapter_SourcePath_HostMode_PICodingAgentDir(t *testing.T) {
 	// Set up a PI data root distinct from HOME.
 	fakeHome := t.TempDir()
@@ -347,7 +347,7 @@ func TestArchiveAdapter_Archive_Directory_NoOp(t *testing.T) {
 
 // TestArchiveAdapter_Archive_CopiesFileAsSessionJSONL verifies that Archive
 // copies the single source file into archiveDir/session.jsonl directly
-// (no `raw/` subdirectory — issue #2185).
+// (no `raw/` subdirectory).
 func TestArchiveAdapter_Archive_CopiesFileAsSessionJSONL(t *testing.T) {
 	// Create a fake pi session file (pi layout: <ts>_<uuid>.jsonl).
 	tmpSrc := t.TempDir()
@@ -402,8 +402,8 @@ func TestArchiveAdapter_Archive_MissingSrcPath_NoError(t *testing.T) {
 
 // TestArchiveAdapter_SourcePath_SandboxExec verifies that when IsolationMode
 // is "sandbox-exec", SourcePath resolves the sessions root to the same
-// PI_CODING_AGENT_DIR-honouring host root as host/bwrap mode. This is the
-// issue #2210 fix: pi inside a sandbox-exec session writes its transcripts
+// PI_CODING_AGENT_DIR-honouring host root as host/bwrap mode: pi inside a
+// sandbox-exec session writes its transcripts
 // to the host root (the dispatcher injects PI_CODING_AGENT_DIR=<host
 // ~/.pi/agent> into the sandbox env), NOT the per-session staging HOME the
 // pre-fix branch resolved.
@@ -451,8 +451,8 @@ func TestArchiveAdapter_SourcePath_SandboxExec(t *testing.T) {
 		t.Errorf("SourcePath (sandbox-exec): got %q, want %q", got, filePath)
 	}
 
-	// Must NOT point into the per-session staging HOME — the pre-#2210
-	// resolver looked there and archives came out transcript-less.
+	// Must NOT point into the per-session staging HOME — resolving there
+	// produces transcript-less archives.
 	stagingHome := filepath.Join(fakeHome, ".local", "state", "prism", "sessions", instanceID, "home")
 	if strings.HasPrefix(got, stagingHome) {
 		t.Errorf("SourcePath (sandbox-exec) resolved under the staging HOME %q; got %q (#2210)",
@@ -460,7 +460,7 @@ func TestArchiveAdapter_SourcePath_SandboxExec(t *testing.T) {
 	}
 }
 
-// TestArchiveAdapter_EndToEnd_SandboxExec is the #2210 regression fixture for
+// TestArchiveAdapter_EndToEnd_SandboxExec is the regression fixture for
 // the archive path: a sandbox-exec session whose pi transcript lives at the
 // host root must produce an archive containing session.jsonl with that
 // transcript's content. Pre-fix this produced a manifest-only archive because
@@ -513,8 +513,8 @@ func TestArchiveAdapter_EndToEnd_SandboxExec(t *testing.T) {
 		t.Error("Archive reported copied == false after a real file copy; want true (issue #2336)")
 	}
 
-	// The archive must contain the transcript — the pre-#2210 symptom was a
-	// manifest-only archive with no session.jsonl at all.
+	// The archive must contain the transcript, not a manifest-only archive
+	// with no session.jsonl at all.
 	finalJSONL := filepath.Join(archiveDir, "session.jsonl")
 	got, err := os.ReadFile(finalJSONL)
 	if err != nil {
@@ -527,8 +527,8 @@ func TestArchiveAdapter_EndToEnd_SandboxExec(t *testing.T) {
 
 // TestArchiveAdapter_SourcePath_SandboxExec_EmptyInstanceID verifies that when
 // IsolationMode is "sandbox-exec" but InstanceID is empty, SourcePath resolves
-// to the host root like every other mode (post-#2210, InstanceID plays no part
-// in resolution at all) rather than returning an error.
+// to the host root like every other mode (InstanceID plays no part in
+// resolution at all) rather than returning an error.
 func TestArchiveAdapter_SourcePath_SandboxExec_EmptyInstanceID(t *testing.T) {
 	clearPICodingAgentDir(t)
 	// Redirect $HOME so the test does not touch the real home or fail under
@@ -707,7 +707,7 @@ func TestArchiveAdapter_EndToEnd_HostMode(t *testing.T) {
 }
 
 // TestArchiveAdapter_EndToEnd_HostMode_PICodingAgentDir is the regression
-// fixture for issue #2185 itself: with PI_CODING_AGENT_DIR set, a session
+// fixture for the host-mode PI_CODING_AGENT_DIR path: with it set, a session
 // that wrote conversation data must produce an archive whose session.jsonl
 // contains that data. Pre-fix this test would produce an empty archive
 // because the adapter looked in <home>/.pi/agent/sessions/ instead of
@@ -769,16 +769,12 @@ func TestArchiveAdapter_EndToEnd_HostMode_PICodingAgentDir(t *testing.T) {
 	}
 }
 
-// stageBwrapSession writes a fake pi JSONL file at the post-#1985 bwrap
-// layout path — the host's PI sessions root, same as host mode — and returns
+// stageBwrapSession writes a fake pi JSONL file at the bwrap layout path —
+// the host's PI sessions root, same as host mode — and returns
 // (filePath, content). It assumes $HOME has already been redirected by the
 // caller (t.Setenv("HOME", t.TempDir())) AND PI_CODING_AGENT_DIR is unset (or
-// the caller has set it appropriately).
-//
-// Pre-#1985 this helper planted files under
-// <XDG_STATE_HOME>/prism/run/<dirHash>/pi-agent/sessions/. That staging-dir
-// layout was torn down with the prism session, taking the per-cwd history
-// with it. The host-side path is now identical to host mode.
+// the caller has set it appropriately). The host-side path is identical to
+// host mode.
 func stageBwrapSession(t *testing.T, _ /*stateHome*/, _ /*sessionName*/, worktree, harnessSessionID string) (string, string) {
 	t.Helper()
 	home, err := os.UserHomeDir()
@@ -802,8 +798,8 @@ func stageBwrapSession(t *testing.T, _ /*stateHome*/, _ /*sessionName*/, worktre
 // TestArchiveAdapter_SourcePath_Bwrap_FindsMatchingFile verifies that under
 // bwrap mode, SourcePath locates the JSONL inside
 // <home>/.pi/agent/sessions/<encoded-cwd>/ and returns the matching file
-// path. Post-#1985 the bwrap branch resolves to the same host-global path as
-// host mode (the sandbox overlays it onto $PI_CODING_AGENT_DIR/sessions/).
+// path. The bwrap branch resolves to the same host-global path as host mode
+// (the sandbox overlays it onto $PI_CODING_AGENT_DIR/sessions/).
 func TestArchiveAdapter_SourcePath_Bwrap_FindsMatchingFile(t *testing.T) {
 	clearPICodingAgentDir(t)
 	// Redirect both $HOME and $XDG_STATE_HOME so no real-host paths are
@@ -852,7 +848,7 @@ func TestArchiveAdapter_SourcePath_Bwrap_FindsMatchingFile(t *testing.T) {
 
 // TestArchiveAdapter_Archive_Bwrap_EndToEnd verifies that for a staged bwrap
 // session, composing SourcePath then Archive produces archiveDir/session.jsonl
-// byte-identical to the source file (AC #8). Post-fix layout writes directly
+// byte-identical to the source file (AC #8). The layout writes directly
 // to archiveDir/session.jsonl — no raw/ subdir.
 func TestArchiveAdapter_Archive_Bwrap_EndToEnd(t *testing.T) {
 	clearPICodingAgentDir(t)
@@ -901,7 +897,7 @@ func TestArchiveAdapter_Archive_Bwrap_EndToEnd(t *testing.T) {
 
 // TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName verifies that when
 // IsolationMode is "bwrap" but SessionName is empty, SourcePath still
-// resolves (post-#1985 the bwrap branch no longer needs the SessionName —
+// resolves (the bwrap branch does not need the SessionName —
 // it resolves to the host PI sessions root like host mode). Archive on the
 // resulting sentinel must still be a no-op when no matching transcript
 // exists, matching the contract for the other modes.
@@ -913,7 +909,7 @@ func TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName(t *testing.T) {
 
 	a := pi.NewArchiveAdapter()
 	p := harnessarchive.SourceParams{
-		SessionName:      "", // empty — post-#1985 bwrap no longer needs dirHash
+		SessionName:      "", // empty — bwrap does not need dirHash
 		IsolationMode:    "bwrap",
 		HarnessSessionID: "ses_01HQXY",
 		Worktree:         "/tmp/test-no-session-name",
@@ -953,7 +949,7 @@ func TestArchiveAdapter_SourcePath_Bwrap_NoMatchingFile(t *testing.T) {
 	const worktree = "/tmp/test-bwrap-nomatch-worktree"
 	const harnessSessionID = "ses_NOTPRESENT"
 
-	// Post-#1985: bwrap pi sessions write to the host's ~/.pi/agent/sessions/
+	// bwrap pi sessions write to the host's ~/.pi/agent/sessions/
 	// tree. Create the encoded-cwd dir there, with a non-matching transcript.
 	encodedCWD := encodePiCWDForTest(worktree)
 	sessDir := filepath.Join(fakeHome, ".pi", "agent", "sessions", encodedCWD)
@@ -1003,15 +999,13 @@ func TestArchiveAdapter_SourcePath_Bwrap_NoMatchingFile(t *testing.T) {
 // TestArchiveAdapter_SourcePath_CrossMode_NoContamination verifies that
 // SourcePath resolves every isolation mode to the SAME host PI sessions root:
 //
-//   - host and bwrap collapse to the host root (post-#1985, bwrap overlays
-//     this dir onto the sandbox path so the host-side resolution is
-//     identical).
-//   - sandbox-exec also collapses to the host root (post-#2210, pi inside
-//     the sandbox honours the injected PI_CODING_AGENT_DIR which points at
-//     the host root) and must NOT resolve under the per-session staging
-//     HOME.
+//   - host and bwrap collapse to the host root (bwrap overlays this dir
+//     onto the sandbox path so the host-side resolution is identical).
+//   - sandbox-exec also collapses to the host root (pi inside the sandbox
+//     honours the injected PI_CODING_AGENT_DIR which points at the host
+//     root) and must NOT resolve under the per-session staging HOME.
 //
-// This doubles as the #2210 regression test on the archive side: the
+// This doubles as the cross-mode regression test on the archive side: the
 // sandbox-exec root must equal the root of an otherwise-identical host
 // config.
 func TestArchiveAdapter_SourcePath_CrossMode_NoContamination(t *testing.T) {
@@ -1055,8 +1049,8 @@ func TestArchiveAdapter_SourcePath_CrossMode_NoContamination(t *testing.T) {
 		t.Fatalf("SourcePath (sandbox-exec): %v", err)
 	}
 
-	// host and bwrap collapse to the same root (#1985); sandbox-exec
-	// collapses to it too (#2210).
+	// host and bwrap collapse to the same root; sandbox-exec collapses to it
+	// too.
 	if hostPath != bwrapPath {
 		t.Errorf("host and bwrap should collapse to the same root post-#1985; host=%q bwrap=%q",
 			hostPath, bwrapPath)
@@ -1080,14 +1074,14 @@ func TestArchiveAdapter_SourcePath_CrossMode_NoContamination(t *testing.T) {
 			sandboxPath, hostPrefix)
 	}
 
-	// bwrap MUST NOT point under the pre-#1985 per-prism-session staging dir.
+	// bwrap MUST NOT point under the per-prism-session staging dir.
 	oldBwrapPrefix := filepath.Join(stateHome, "prism", "run")
 	if strings.HasPrefix(bwrapPath, oldBwrapPrefix) {
 		t.Errorf("bwrap path %q must not point under pre-#1985 staging dir %q",
 			bwrapPath, oldBwrapPrefix)
 	}
-	// sandbox-exec MUST NOT point under the pre-#2210 per-instance staging
-	// HOME — pi never wrote there.
+	// sandbox-exec MUST NOT point under the per-instance staging HOME —
+	// pi never wrote there.
 	oldSandboxPrefix := filepath.Join(
 		fakeHome, ".local", "state", "prism", "sessions", instanceID, "home",
 	)

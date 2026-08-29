@@ -1,6 +1,6 @@
 // Package config — agent_tool_roles.go
 //
-// Role-aware restriction of the pi builtin tool surface (issue #2531).
+// Role-aware restriction of the pi builtin tool surface.
 //
 // pi registers four builtin tools by default: read, bash, edit, write (grep,
 // find, and ls are off by default and are never enabled by prism). Every
@@ -11,8 +11,8 @@
 // contains a legitimate write or edit call. Excluding both tools from the
 // review roles' schema removes dead schema weight and turns an
 // instruction-level convention into an enforced restriction (a reviewer that
-// tries to write now gets pi's "Unknown tool" error instead of silently
-// having the capability).
+// tries to write gets pi's "Unknown tool" error instead of silently having
+// the capability).
 //
 // This mirrors the shape of agent_env_roles.go: a literal map keyed by the
 // five canonical review role names (internal/review Agents()), applied
@@ -29,7 +29,7 @@ var reviewToolExclusions = []string{"write", "edit"}
 // role must not receive.
 //
 // `investigate` is deliberately absent, matching the reviewRoleEnvExclusions
-// precedent (issue #2533): it is read-only in intent but not in the same way
+// precedent: it is read-only in intent but not in the same way
 // review agents are — an investigator has no PR-review-specific instruction
 // against write/edit, so it keeps the full builtin set like `coordinator`
 // and `worker`.

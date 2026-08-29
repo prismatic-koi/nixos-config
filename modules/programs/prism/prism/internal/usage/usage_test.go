@@ -1,7 +1,6 @@
 package usage
 
-// Tests for the per-account rate-limit snapshot store (issue #2538,
-// parent #2537).
+// Tests for the per-account rate-limit snapshot store.
 //
 // Isolation: every test that writes uses a t.TempDir() Store, and every test
 // that resolves a path overrides $XDG_STATE_HOME / $XDG_CONFIG_HOME with
@@ -21,7 +20,7 @@ import (
 func f64(v float64) *float64 { return &v }
 func i64(v int64) *int64     { return &v }
 
-// fullSnapshot mirrors the worked example in issue #2537 verbatim so a change
+// fullSnapshot mirrors the worked example verbatim so a change
 // to the persisted shape fails loudly here.
 func fullSnapshot() Snapshot {
 	return Snapshot{
@@ -99,8 +98,8 @@ func TestWrite_FormatMatchesIssue2537(t *testing.T) {
 	}
 }
 
-// TestWrite_OrganizationAndWorkspaceIDRoundTrip covers the functional ACs of
-// issue #2713: both fields persist to disk and round-trip back through
+// TestWrite_OrganizationAndWorkspaceIDRoundTrip covers the functional ACs:
+// both fields persist to disk and round-trip back through
 // ReadAll, and a snapshot that carries neither omits both from the JSON
 // rather than writing them as empty strings.
 func TestWrite_OrganizationAndWorkspaceIDRoundTrip(t *testing.T) {
@@ -155,7 +154,7 @@ func TestWrite_OrganizationAndWorkspaceIDOmittedWhenAbsent(t *testing.T) {
 // must load without error and report both fields as absent, not error out.
 func TestReadAll_PreExistingFileWithNoOrgFieldsLoadsCleanly(t *testing.T) {
 	dir := t.TempDir()
-	// Deliberately hand-written, mirroring a pre-#2713 on-disk file: no
+	// Deliberately hand-written, mirroring an on-disk file with no
 	// organization_id / workspace_id keys at all.
 	preExisting := `{
 		"captured_at": "2026-08-02T23:43:28Z",
@@ -185,7 +184,7 @@ func TestReadAll_PreExistingFileWithNoOrgFieldsLoadsCleanly(t *testing.T) {
 }
 
 // TestWrite_UtilizationStaysRawFraction guards the "do NOT multiply by 100"
-// rule: the display legs (#2540) scale, the store does not.
+// rule: the display legs scale, the store does not.
 func TestWrite_UtilizationStaysRawFraction(t *testing.T) {
 	dir := t.TempDir()
 	snap := fullSnapshot()
@@ -495,7 +494,7 @@ func TestDefaultDir_FallsBackToHome(t *testing.T) {
 }
 
 // TestDirForHome_PrefersXDGStateHome pins the resolution ORDER of the helper
-// the sandbox mount builders share with DefaultDir (issue #2572): when
+// the sandbox mount builders share with DefaultDir: when
 // $XDG_STATE_HOME is set it wins outright and the home argument is ignored.
 // A regression here would make the sandbox bind a different directory from
 // the one the writer and pi/extensions/prism.ts resolve.

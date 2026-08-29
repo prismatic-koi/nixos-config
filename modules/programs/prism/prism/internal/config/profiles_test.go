@@ -10,7 +10,7 @@ import (
 )
 
 // sampleProfilesFile returns a minimal ProfilesFile for testing under the
-// flat per-role profile schema (#1612). Each profile is a direct map from
+// flat per-role profile schema. Each profile is a direct map from
 // role name to slot — no tier indirection.
 func sampleProfilesFile() *config.ProfilesFile {
 	return &config.ProfilesFile{
@@ -142,12 +142,10 @@ func TestRequireSlot_NilProfilesFile(t *testing.T) {
 	}
 }
 
-// ── RequireProfile tests (#2854) ─────────────────────────────────────────
+// ── RequireProfile tests ─────────────────────────────────────────────────
 //
 // RequireProfile carries the profile-existence half of RequireSlot for call
-// sites that must validate before the session role is known. It replaces the
-// validation config.BuildConfigContent used to supply as a side effect on the
-// `prism switch` path.
+// sites that must validate before the session role is known.
 
 func TestRequireProfile_PassesWhenPresent(t *testing.T) {
 	pf := sampleProfilesFile()
@@ -156,8 +154,8 @@ func TestRequireProfile_PassesWhenPresent(t *testing.T) {
 	}
 }
 
-// TestRequireProfile_FailsWhenProfileUnknown is the #2857 regression shape:
-// a state file still naming a profile that profiles.json no longer defines
+// TestRequireProfile_FailsWhenProfileUnknown is the regression shape:
+// a state file naming a profile that profiles.json does not define
 // (e.g. "ox-alpha") must be rejected, and the message must list what IS
 // available so the user can recover.
 func TestRequireProfile_FailsWhenProfileUnknown(t *testing.T) {

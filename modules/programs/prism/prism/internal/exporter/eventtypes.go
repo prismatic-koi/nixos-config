@@ -2,7 +2,7 @@ package exporter
 
 import "sort"
 
-// The closed label set behind prism_agent_events_total{type} (#2699 section 6).
+// The closed label set behind prism_agent_events_total{type}.
 //
 // # Why an allowlist and not the raw column
 //
@@ -88,7 +88,7 @@ var knownEventTypes = map[string]struct{}{
 	"provider_error":     {},
 	"session.escalated":  {},
 	// review.verdict_pass / review.verdict_fail are written by
-	// internal/review/monitor.go persistReviewOutcome (#2703): one durable
+	// internal/review/monitor.go persistReviewOutcome: one durable
 	// event per verdict-producing review round, feeding
 	// prism_review_verdicts_total.
 	"review.verdict_pass": {},
