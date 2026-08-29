@@ -1,12 +1,12 @@
 package sidecar
 
-// Host-API endpoint for the `prism audit` read surface (issue #2618).
+// Host-API endpoint for the `prism audit` read surface.
 //
 // `$XDG_STATE_HOME/prism` holds prism.db and is deliberately never bound into
 // a sandbox (see internal/container/mounts.go), so a sandboxed caller cannot
-// open the database directly. Every other read verb solves this with a
-// host-API proxy branch; `prism audit` had none, so the audit trail was
-// unreadable by the seat that writes it — a sandboxed coordinator.
+// open the database directly. Every read verb needs a host-API proxy branch.
+// This endpoint is that branch for `prism audit`, so a sandboxed coordinator
+// can read the audit trail it writes.
 //
 // Endpoint:
 //

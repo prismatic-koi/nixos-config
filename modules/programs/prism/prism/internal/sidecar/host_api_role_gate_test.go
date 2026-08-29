@@ -1,6 +1,7 @@
 package sidecar
 
-// host_api_role_gate_test.go — issue #2588.
+// host_api_role_gate_test.go — the worker restriction on coordinator-only
+// verbs.
 //
 // The worker restriction on coordinator-only verbs (`prism merge`,
 // `prism investigate`, …) is enforced at the host API by requireCoordinator.
@@ -8,15 +9,15 @@ package sidecar
 // regression guard for the boundary itself:
 //
 //   - /investigate refuses a worker with 403 and serves a coordinator
-//     unchanged (the defect fixed in #2588: the handler decoded the body and
-//     spawned an investigator for any caller).
+//     unchanged. Without the gate, the handler would decode the body and
+//     spawn an investigator for any caller.
 //   - Every endpoint documented "coordinator only" in the hostAPIHandler
 //     route list refuses a worker with 403.
 //   - A caller whose role cannot be determined — no agent_status row, a
 //     pre-migration row with NULL root_agent_name, or no DB handle at all —
 //     is treated as a worker and refused.
 //
-// # Isolation contract (#1608)
+// # Isolation contract
 //
 // Every sidecar here is built on sidecartest.NewIsolated(t, ""), so
 // $XDG_STATE_HOME points at a t.TempDir(), PRISM_TEST_MODE_RESTRICT_HOSTAPI
@@ -94,11 +95,11 @@ func newRoleGateSidecarWithDB(t *testing.T, sessionName, repo, agentRole, stubBo
 
 // ── /investigate ─────────────────────────────────────────────────────────────
 
-// TestHostAPI_Investigate_DeniesWorker is the headline security assertion of
-// #2588: a worker calling /investigate gets 403 and no child is executed.
-// Before the fix the handler ran requirePost, decoded the body, and shelled
+// TestHostAPI_Investigate_DeniesWorker is the headline security assertion:
+// a worker calling /investigate gets 403 and no child is executed. Without
+// the gate, the handler would run requirePost, decode the body, and shell
 // out to `prism investigate` for any caller, so the restriction documented in
-// coordinator.md and the prism skill had no enforcement point.
+// coordinator.md and the prism skill would have no enforcement point.
 func TestHostAPI_Investigate_DeniesWorker(t *testing.T) {
 	sc := newRoleGateSidecar(t,
 		"prism-test-rolegate@investigate-worker", "prism-test-rolegate",
@@ -205,10 +206,9 @@ func TestHostAPI_Investigate_DeniesUndeterminableRole(t *testing.T) {
 // that way must refuse a worker with 403. An endpoint added to the list
 // without a requireCoordinator call fails here.
 //
-// /checkin is deliberately absent. Issue #2587 replaced its single
-// coordinator-only rule with a three-tier model, so it is documented
-// "role-scoped" rather than "coordinator only" and does not belong in this
-// list. Its gate is pinned in checkin_permission_test.go.
+// /checkin is deliberately absent. Its single coordinator-only rule is
+// replaced by a three-tier model, so it is documented "role-scoped" rather
+// than "coordinator only" and does not belong in this list. Its gate is pinned in checkin_permission_test.go.
 func TestHostAPI_CoordinatorOnly_DeniesWorker(t *testing.T) {
 	cases := []struct {
 		method string

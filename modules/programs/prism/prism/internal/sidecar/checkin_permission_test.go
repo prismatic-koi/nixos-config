@@ -1,19 +1,19 @@
 package sidecar
 
-// checkin_permission_test.go — issue #2587.
+// checkin_permission_test.go — the three-tier permission model for GET
+// /checkin.
 //
-// The three-tier permission model for GET /checkin. Before #2587 the endpoint
-// had one rule (requireCoordinator) and every worker got 403, including a
-// worker reading the review agents it had just spawned for its own PR. These
-// tests pin the replacement rule from the outside — through the HTTP handler,
-// not through the predicate alone — so a regression in the wiring fails here
-// as well as a regression in the logic.
+// These tests pin the rule from the outside — through the HTTP handler, not
+// through the predicate alone — so a regression in the wiring fails here as
+// well as a regression in the logic. A single requireCoordinator rule would
+// give every worker a 403, including a worker reading the review agents it
+// just spawned for its own PR.
 //
 // Tier 1 (worker):     the review agents of its own session, and nothing else.
-// Tier 2 (coordinator): own repo plus cross-repo coordinators. Unchanged.
+// Tier 2 (coordinator): own repo plus cross-repo coordinators.
 // Tier 3 (privileged):  any session in any repo, audited.
 //
-// # Isolation contract (#1608)
+// # Isolation contract
 //
 // Every sidecar here is built on sidecartest.NewIsolated(t, ""), so
 // $XDG_STATE_HOME points at a t.TempDir(), PRISM_TEST_MODE_RESTRICT_HOSTAPI is
@@ -151,7 +151,7 @@ const (
 
 // ── tier 1: worker ───────────────────────────────────────────────────────────
 
-// TestCheckin_Worker_AllowsOwnReviewAgent is the motivating case of #2587: a
+// TestCheckin_Worker_AllowsOwnReviewAgent is the motivating case: a
 // worker reads the review agent it spawned for its own PR and receives the
 // conversation history. The worker already receives that agent's verdict and
 // blocking findings through the review-complete prompt; only the non-blocking
@@ -242,9 +242,9 @@ func TestCheckin_Worker_DeniesEverythingElse(t *testing.T) {
 }
 
 // TestCheckin_Worker_DeniesSelfWithActionableMessage covers the settled scope
-// decision on #2587: `prism checkin <self>` is NOT granted. The refusal must
-// say what the grant does cover, because worker.md previously told the worker
-// this call worked.
+// decision: `prism checkin <self>` is NOT granted. The refusal must say what
+// the grant does cover, because a worker can reasonably expect this call to
+// work.
 func TestCheckin_Worker_DeniesSelfWithActionableMessage(t *testing.T) {
 	f := newCheckinFixture(t)
 	f.seedSession(ckWorker, ckRepo, "worker")
@@ -538,7 +538,7 @@ func TestCheckin_PrivilegedRepo_RequiresDBBackedRootAgentName(t *testing.T) {
 			sc := f.sidecarFor(ckCoordinator, ckRepo, "coordinator", []string{ckRepo})
 
 			// Tier 2 still admits the caller for an own-repo target — the
-			// name heuristic carries it that far, exactly as before #2587.
+			// name heuristic carries it that far.
 			if code, body := checkin(t, sc, ckCoordinator); code != http.StatusOK {
 				t.Fatalf("own-session checkin: status = %d, body = %q, want 200", code, truncateForLog(body, 200))
 			}
@@ -595,8 +595,9 @@ func TestCheckin_PrivilegedRepo_UnknownRepoChangesNothing(t *testing.T) {
 	}
 }
 
-// TestCheckin_PrivilegedRepo_UnknownTargetStill404 keeps the #2112 behaviour
-// for the privileged coordinator: an unresolvable target name is a 404 "not
+// TestCheckin_PrivilegedRepo_UnknownTargetStill404 keeps the @-less
+// resolution behaviour for the privileged coordinator: an unresolvable target
+// name is a 404 "not
 // found", not an empty 200. The privilege widens WHO may be read, not whether
 // a missing session is reported.
 func TestCheckin_PrivilegedRepo_UnknownTargetStill404(t *testing.T) {
@@ -677,22 +678,22 @@ func TestCheckin_MissingSessionParamIsBadRequest(t *testing.T) {
 // ── the audit write is concurrent with the SSE loop ──────────────────────────
 
 // TestCheckin_PrivilegedAudit_ConcurrentWithSSESessionUpdate is the regression
-// guard for the round-3 review-code finding on PR #2617.
+// guard for the concurrent-audit race.
 //
 // writeCheckinPrivilegeAudit runs on a host-API handler goroutine, which is
 // concurrent with the SSE loop. It reaches writeEvent, which reads
 // s.harnessSessionID and takes its ADDRESS; that pointer is dereferenced later
 // inside DB.WriteEvent. The field lives inside the s.mu block and is written by
 // handleSessionUpdated under the lock HandleEvent holds for the whole dispatch.
-// The first version of the audit write did not take s.mu, so the read raced the
-// write on a two-word string header — a torn read yields a mismatched pointer
-// and length, and the later dereference can crash the sidecar.
+// Without s.mu, the read would race the write on a two-word string header — a
+// torn read yields a mismatched pointer and length, and the later dereference
+// can crash the sidecar.
 //
 // Every other checkin test drives the handler on the test goroutine alone, so
-// none of them can observe this. That is precisely why review-code passed the
-// defect in rounds 1 and 2 and `go test -race` stayed green: no test drove SSE
-// events concurrently with a /checkin request. This test drives that exact
-// interleaving, so the lock cannot be removed again without a failure.
+// none of them can observe this. That is why `go test -race` can stay green
+// without this test: no other test drives SSE events concurrently with a
+// /checkin request. This test drives that exact interleaving, so the lock
+// cannot be removed again without a failure.
 //
 // Run under -race for the assertion that matters. Without -race the test still
 // checks that every concurrent request is served and every audit row lands.
@@ -704,7 +705,7 @@ func TestCheckin_PrivilegedAudit_ConcurrentWithSSESessionUpdate(t *testing.T) {
 	// Built inline rather than through f.sidecarFor so the dashboard sink can be
 	// the noop: handleSessionUpdated reaches writeStateChange, and the
 	// production sink would dispatch fire-and-forget socket goroutines that
-	// outlive the test body (#1851).
+	// outlive the test body.
 	sc := New(Config{
 		SessionName:            ckCoordinator,
 		Repo:                   ckRepo,

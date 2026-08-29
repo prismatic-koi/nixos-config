@@ -1,12 +1,12 @@
 package sidecar
 
-// Host-API endpoints for the `prism db` read-only surface (issue #1467).
+// Host-API endpoints for the `prism db` read-only surface.
 //
 // These endpoints proxy `prism db query`, `prism db schema`, and
 // `prism db tables` from inside a sandbox out to the host. Each opens its
 // own SQLite read-only handle (`?mode=ro`) per request rather than sharing
-// the sidecar's writable handle — keeping the safety boundary obvious in
-// the code, exactly as the implementer notes call out.
+// the sidecar's writable handle, so the safety boundary stays obvious in
+// the code.
 //
 // Endpoints:
 //
@@ -15,8 +15,8 @@ package sidecar
 //	GET /db/tables               — returns user table names sorted.
 //
 // Rendering stays on the CLI side. These endpoints return structured JSON;
-// the CLI renders to aligned tables or JSON depending on --json. This
-// mirrors #1463's "rendering stays in one place" principle.
+// the CLI renders to aligned tables or JSON depending on --json. Rendering
+// stays in one place, as the other read endpoints do.
 
 import (
 	"context"

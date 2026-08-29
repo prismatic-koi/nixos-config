@@ -1,17 +1,17 @@
 package sidecar
 
-// Tests for the set_model provider-prefix normalisation fix (issue #2252).
+// Tests for the set_model provider-prefix normalisation.
 //
-// Symptom: profiles.json stores slot.Model in the prefixed form
+// profiles.json stores slot.Model in the prefixed form
 // "anthropic/claude-fable-5" (the same form that becomes the spawn-time
 // `--model <provider/model>` CLI flag). The live-swap fan-out
-// (/apply-profile, /set-model, forwardSetModel) used to pass that string
-// verbatim into the set_model wire frame; the extension's
-// modelRegistryFind expects a bare model ID and the lookup failed with
-// the doubled-prefix message `model anthropic/anthropic/claude-fable-5
-// not found in registry`. Live-swap silently no-op'd.
+// (/apply-profile, /set-model, forwardSetModel) must not pass that string
+// verbatim into the set_model wire frame: the extension's modelRegistryFind
+// expects a bare model ID, and a prefixed ID fails the lookup with the
+// doubled-prefix message `model anthropic/anthropic/claude-fable-5 not found
+// in registry`, so the live-swap silently no-ops.
 //
-// Fix: stripProviderPrefix(provider, model) removes a single leading
+// stripProviderPrefix(provider, model) removes a single leading
 // "<provider>/" segment from model when it equals provider — applied at
 // both the local enqueue (liveModelSwapForSession) and the peer forward
 // (forwardSetModel) layers.
@@ -31,7 +31,7 @@ import (
 
 // ── unit tests for stripProviderPrefix ────────────────────────────────────────
 
-// TestStripProviderPrefix verifies the normalisation contract from issue #2252:
+// TestStripProviderPrefix verifies the normalisation contract:
 //   - strip at most ONE leading "<provider>/" segment;
 //   - strip only when that segment exactly equals the supplied provider;
 //   - preserve all remaining slashes (nested / openrouter-style IDs);
@@ -195,8 +195,8 @@ func TestHostAPI_SetModel_StripsProviderPrefix_OwnSession(t *testing.T) {
 // TestHostAPI_ApplyProfile_StripsProviderPrefix_SessionScope verifies the
 // /apply-profile fan-out path also strips the provider prefix from slot.Model
 // before the set_model frame reaches the extension. This is the primary
-// real-world trigger from issue #2252 (every Nix-generated profile slot
-// stores the prefixed form).
+// real-world trigger (every Nix-generated profile slot stores the prefixed
+// form).
 func TestHostAPI_ApplyProfile_StripsProviderPrefix_SessionScope(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
@@ -213,7 +213,7 @@ func TestHostAPI_ApplyProfile_StripsProviderPrefix_SessionScope(t *testing.T) {
 	rd := bufio.NewReader(conn)
 
 	// Install a profile loader whose worker slot uses the prefixed form
-	// `anthropic/claude-fable-5` — the shape that triggered #2252 in
+	// `anthropic/claude-fable-5` — the doubled-prefix shape in
 	// production profiles.json.
 	origLoader := hostAPILoadProfiles
 	hostAPILoadProfiles = func() (*config.ProfilesFile, error) {

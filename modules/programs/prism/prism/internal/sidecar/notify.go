@@ -133,7 +133,8 @@ func (s *Sidecar) notifyInvestigatorCompletion(state agent.AgentState, finalText
 }
 
 // notifyParentWorkerOnStartupFailure sends a notification to the parent worker
-// when a review-agent container fails to start. It is called asynchronously via
+// when a review-agent container fails to start. It is called asynchronously
+// via go.
 //
 // If the parent worker session cannot be found or has ended, the failure is
 // logged and the sidecar exits cleanly (the notification failure is not fatal).
@@ -150,12 +151,12 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 // the failure description beginning with the failure-class verb — e.g.
 // "failed to start: …" (startup failures, watchdog fire with no frames
 // received) or "stalled mid-run after …" (watchdog fire after one or more
-// inbound frames, #2239). The delivered text is
+// inbound frames). The delivered text is
 // "review agent <session> <failureText>".
 //
-// Same contract as notifyParentWorkerOnStartupFailure historically had: only
-// applies to review-agent session names (silent no-op otherwise), and
-// delivery failures are logged, never fatal.
+// Same contract as notifyParentWorkerOnStartupFailure: only applies to
+// review-agent session names (silent no-op otherwise), and delivery failures
+// are logged, never fatal.
 func (s *Sidecar) notifyParentWorkerOnReviewFailure(failureText string) {
 	// Only apply to review-agent sessions.
 	parentSession, isReview := reviewAgentParentSession(s.cfg.SessionName)
@@ -189,7 +190,7 @@ func (s *Sidecar) notifyParentWorkerOnReviewFailure(failureText string) {
 }
 
 // followUpsByteCap bounds the follow-ups body appended to a worker's
-// coordinator notification (issue #2528). The section is opt-in and
+// coordinator notification. The section is opt-in and
 // worker-authored, but the cap is a defensive backstop so a worker cannot
 // deliver an unbounded body regardless of what it writes between the
 // markers. When the extracted section exceeds the cap it is truncated and
@@ -197,7 +198,7 @@ func (s *Sidecar) notifyParentWorkerOnReviewFailure(failureText string) {
 // untruncated turn.
 const followUpsByteCap = 4096
 
-// followUpsOpenTag delimits the worker follow-ups section (issue #2528). A
+// followUpsOpenTag delimits the worker follow-ups section. A
 // worker opts in to a body-bearing coordinator notification by wrapping
 // findings in this tag pair during its handoff turn:
 //
@@ -219,8 +220,7 @@ const followUpsOpenTag = "follow_ups"
 // pair exists. This is a sidecar-local copy of the same primitive
 // internal/review/results.go uses for <summary>/<blocking_issues> extraction
 // — kept local rather than exported across packages to avoid coupling the
-// worker follow-ups convention (issue #2528) to the review package's
-// internals.
+// worker follow-ups convention to the review package's internals.
 func extractTag(s, tag string) (string, bool) {
 	open := "<" + tag + ">"
 	close := "</" + tag + ">"
@@ -244,9 +244,9 @@ func extractTag(s, tag string) (string, bool) {
 // finalText, if present. It returns the trimmed section content, whether it
 // was truncated to followUpsByteCap, and whether a well-formed section was
 // found at all. A missing or unterminated tag, or a section that is empty or
-// whitespace-only once trimmed, reports found=false — callers must treat
-// that identically to "no section" (issue #2528 AC: empty/whitespace-only
-// sections are treated the same as absent ones).
+// whitespace-only once trimmed, reports found=false. Callers must treat
+// that identically to "no section": an empty or whitespace-only section is
+// the same as an absent one.
 func extractFollowUps(finalText string) (content string, truncated bool, found bool) {
 	raw, ok := extractTag(finalText, followUpsOpenTag)
 	if !ok {
@@ -265,8 +265,8 @@ func extractFollowUps(finalText string) (content string, truncated bool, found b
 // truncateUTF8Safe truncates s to at most maxLen bytes without splitting a
 // multi-byte UTF-8 rune. Plain byte truncation (as done by the sidecar's
 // truncateBytes, used elsewhere for raw diagnostic log lines) is unsafe here
-// because this is the first caller to apply a byte cap to worker-authored
-// free text: a multi-byte character straddling the cap boundary would
+// because it applies a byte cap to worker-authored free text: a multi-byte
+// character straddling the cap boundary would
 // otherwise leave an invalid UTF-8 tail in the coordinator notification
 // body. Backtracks byte-by-byte (at most 3 bytes, the longest possible
 // partial UTF-8 sequence) until the result is valid.
@@ -287,8 +287,8 @@ func truncateUTF8Safe(s string, maxLen int) string {
 // the text of the worker's last completed turn, from which an opt-in
 // follow-ups section is extracted (see extractFollowUps).
 //
-// When no follow-ups section is present, baseText is returned unchanged — no
-// behaviour change from before this issue. When a section is present, the
+// When no follow-ups section is present, baseText is returned unchanged. When
+// a section is present, the
 // notification carries: baseText, the follow-ups content (truncated and
 // flagged if it exceeded followUpsByteCap), the source session name (so a
 // coordinator with several workers in flight can route it), and a
@@ -317,9 +317,8 @@ func buildWorkerNotifyText(baseText, sessionName, finalText string) string {
 // events.go captures into finalText := s.lastInvestigatorText immediately
 // before calling this method). When finalText contains a well-formed
 // <follow_ups> section, its content is appended to the notification body via
-// buildWorkerNotifyText (issue #2528). When finalText is empty or carries no
-// such section, the notification is the unchanged generic "has finished"
-// string — no behaviour change from before this issue.
+// buildWorkerNotifyText. When finalText is empty or carries no such section,
+// the notification is the generic "has finished" string.
 //
 // The coordinator is discovered by looking up "<repo>@main" in the DB.
 // Notification is delivered via the coordinator's host-API Unix socket
@@ -347,11 +346,11 @@ func (s *Sidecar) notifyCoordinator(finalText string) {
 // session for this repo. The wording is the verbatim error-terminal-state
 // counterpart of notifyCoordinator's "has finished" wording (skill table:
 // Worker terminal-state notifications). Like notifyCoordinator, finalText's
-// optional <follow_ups> section (issue #2528) is appended via
-// buildWorkerNotifyText when present.
+// optional <follow_ups> section is appended via buildWorkerNotifyText when
+// present.
 //
 // Called asynchronously (via goNotify) after writing StateError on the
-// zero-output-exit path (issue #2081). All suppression guards (self,
+// zero-output-exit path. All suppression guards (self,
 // review-agent, investigate-agent, escalated, muted) and the audit-row
 // behaviour are shared with notifyCoordinator via notifyCoordinatorWithText.
 func (s *Sidecar) notifyCoordinatorError(finalText string) {
@@ -472,7 +471,7 @@ func (s *Sidecar) notifyCoordinatorWithText(notifyText string) {
 	// Use "followUp" so the coordinator receives the notification after its
 	// current turn completes. Finish notifications are post-turn signals.
 	//
-	// notifyCoordinatorDeliverFn is the narrow test seam (issue #1856) that
+	// notifyCoordinatorDeliverFn is the narrow test seam that
 	// lets tests force a delivery failure so the WriteBusMessageFailed audit
 	// path can be asserted on. In production the field is nil and the real
 	// promptdelivery.DeliverToSession is used. See the seam field's
@@ -503,9 +502,9 @@ func (s *Sidecar) notifyCoordinatorWithText(notifyText string) {
 // This re-asserts the correct agent on notification delivery, preventing
 // the agent from defaulting to its last-active (wrong) agent in host mode.
 //
-// Background: issue #848 showed that setting "agent" let an incoming
-// notification switch a subagent's context to the notifier's agent. That
-// concern does not apply here: the status passed in is the *receiving*
+// Background: setting "agent" can let an incoming notification switch a
+// subagent's context to the notifier's agent. That concern does not apply
+// here: the status passed in is the *receiving*
 // session's own status, not the sender's. Re-asserting root_agent_name on
 // delivery is safe and correct — it keeps the coordinator pinned to the right
 // agent persona regardless of what the agent last processed.
@@ -547,16 +546,10 @@ func buildNotifyPromptBody(text string, status *db.Status) map[string]any {
 }
 
 // goNotify launches fn on a new goroutine while tracking it in s.notifyWG.
-// All call sites that previously used `go s.notify*` should use this helper
-// instead so that tests can drain in-flight notify goroutines via
-// WaitNotifies before reading test-observable state (logs, DB rows). The
-// fire-and-forget production semantics are preserved — callers do not
-// observe completion.
-//
-// This is the canonical site of the fix for the test-race class that
-// includes #1713 (testTimer.Fire vs state-machine write) and #1716
-// (captureLog strings.Builder Write/Read race). See those issues for the
-// race-class context.
+// All call sites that launch a notify goroutine use this helper so that
+// tests can drain in-flight notify goroutines via WaitNotifies before
+// reading test-observable state (logs, DB rows). The production semantics
+// are fire-and-forget: callers do not observe completion.
 func (s *Sidecar) goNotify(fn func()) {
 	s.notifyWG.Add(1)
 	go func() {

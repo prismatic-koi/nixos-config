@@ -1,13 +1,13 @@
 package sidecar
 
-// host_api_investigate_stderr_test.go — issue #2362 B1 / parent #2356.
+// host_api_investigate_stderr_test.go — regression tests for the
+// /investigate handler's stream capture.
 //
-// Regression tests for the /investigate handler's stream capture. Before
-// this fix the handler used `cmd.Output()`, which discards child stderr on
+// The handler must not use `cmd.Output()`, which discards child stderr on
 // the success path and, on error, formats only the exit-status string —
 // swallowing the actionable message from the child (e.g. `invoker session
-// %q has no agent_status row`). The fix mirrors /escalate's shape (separate
-// stdout/stderr buffers) so:
+// %q has no agent_status row`). The handler mirrors /escalate's shape
+// (separate stdout/stderr buffers) so:
 //
 //   - On the error path, the JSON error body includes both the child's
 //     stderr and stdout tails alongside the error string.
@@ -16,7 +16,7 @@ package sidecar
 //   - The stdout-parse for the returned session name is unchanged (streams
 //     stay separate — CombinedOutput would corrupt the parse).
 //
-// # Isolation contract (#1608)
+// # Isolation contract
 //
 // Every test in this file constructs its Sidecar via
 // sidecartest.NewIsolated(t, ""), so:
@@ -46,8 +46,8 @@ import (
 // "prism-test-investigate-stderr-<sanitisedTestName>@main" so each subtest has
 // its own row in the isolated DB and cannot collide with sibling tests.
 //
-// The session is a coordinator: /investigate is gated on requireCoordinator
-// (issue #2588), so a worker session would be refused with 403 before the
+// The session is a coordinator: /investigate is gated on requireCoordinator,
+// so a worker session would be refused with 403 before the
 // handler reached the stream-capture code these tests cover. The row is
 // seeded with root_agent_name='coordinator' so the gate resolves from the DB
 // rather than from the name heuristic alone.
@@ -94,7 +94,7 @@ func newInvestigateStubSidecar(t *testing.T, stubBody string) (*Sidecar, *bytes.
 	return New(cfg), logBuf, sessionName
 }
 
-// TestHostAPI_Investigate_FailureIncludesStderr covers AC #1: on a non-zero
+// TestHostAPI_Investigate_FailureIncludesStderr verifies that on a non-zero
 // exit from the host-side child, the /investigate JSON error body must
 // include the child's stderr so the caller can surface the actionable
 // message instead of a bare "exit status 1".
@@ -129,7 +129,7 @@ func TestHostAPI_Investigate_FailureIncludesStderr(t *testing.T) {
 	}
 }
 
-// TestHostAPI_Investigate_SuccessLogsStderrToSidecarLog covers AC #2:
+// TestHostAPI_Investigate_SuccessLogsStderrToSidecarLog verifies that
 // on a successful (exit 0) child invocation, any stderr warnings emitted
 // by the child are written to the sidecar log rather than discarded.
 // The session-name parse on stdout must remain unaffected.
@@ -137,7 +137,7 @@ func TestHostAPI_Investigate_SuccessLogsStderrToSidecarLog(t *testing.T) {
 	const wantSessionName = "myrepo@main~investigate-abc123"
 	const stderrWarning = "prism investigate: warning: dedup window rounded up to 1m\n"
 	// Stub writes the session name to stdout AND a warning to stderr, then
-	// exits 0 — the exact "success with warnings" shape #2360 cares about.
+	// exits 0 — the exact "success with warnings" shape.
 	stubBody := "#!/bin/sh\n" +
 		"printf '%s' " + shellSingleQuote(wantSessionName+"\n") + "\n" +
 		"printf '%s' " + shellSingleQuote(stderrWarning) + " 1>&2\n" +
@@ -152,12 +152,12 @@ func TestHostAPI_Investigate_SuccessLogsStderrToSidecarLog(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v (body=%q)", err, rr.Body.String())
 	}
-	// AC #3: session-name parse on stdout is unaffected by the stderr
+	// The session-name parse on stdout is unaffected by the stderr
 	// warning (streams stayed separate).
 	if resp["session_name"] != wantSessionName {
 		t.Errorf("response session_name = %q, want %q", resp["session_name"], wantSessionName)
 	}
-	// AC #2: the stderr warning was written to the sidecar log.
+	// The stderr warning was written to the sidecar log.
 	// TrimSpace: the stub's trailing newline may or may not be present in the
 	// logger output depending on Printf formatting, so match on substring.
 	logOut := logBuf.String()
@@ -171,7 +171,7 @@ func TestHostAPI_Investigate_SuccessLogsStderrToSidecarLog(t *testing.T) {
 }
 
 // TestHostAPI_Investigate_SuccessSilentDoesNotLogStderrLine covers the
-// no-op case for AC #2: when the child exits 0 with no stderr output,
+// no-op case: when the child exits 0 with no stderr output,
 // the sidecar log must NOT contain a spurious "child stderr" line.
 // This guards against a naive fix that logs unconditionally.
 func TestHostAPI_Investigate_SuccessSilentDoesNotLogStderrLine(t *testing.T) {

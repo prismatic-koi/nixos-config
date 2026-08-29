@@ -1,11 +1,10 @@
 package sidecar
 
-// Tests for the host-API /spawn handler accepting the "containers" field
-// (#2317 / #2323). The handler is the bridge between the proxy CLI and the
-// host-side `prism spawn` invocation; the regression we want to prevent is
-// the same as #1059 for --isolation: silently dropping the field on the
-// host-API boundary so a sandboxed `prism spawn --containers` lands as a
-// containerless session on the host.
+// Tests for the host-API /spawn handler accepting the "containers" field.
+// The handler is the bridge between the proxy CLI and the host-side
+// `prism spawn` invocation; the regression we want to prevent is a silent
+// drop of the field on the host-API boundary, so a sandboxed
+// `prism spawn --containers` lands as a containerless session on the host.
 
 import (
 	"net/http"

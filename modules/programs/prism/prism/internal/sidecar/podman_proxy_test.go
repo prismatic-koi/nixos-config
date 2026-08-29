@@ -1,9 +1,9 @@
 package sidecar
 
-// Tests for the per-session podman-proxy wiring (Step 3 of #2317 / #2320).
+// Tests for the per-session podman-proxy wiring.
 //
 // These tests use sidecartest.NewIsolated per AGENTS.md
-// "Test-suite isolation (#1608)" so they never touch a real podman socket on
+// "Test-suite isolation" so they never touch a real podman socket on
 // the host. The PodmanUpstreamPath override is the seam that lets us point
 // the proxy at:
 //
@@ -42,7 +42,7 @@ import (
 //
 // The supplied upstream path may be empty (no override; production
 // discovery applies on the host) or a path to a stub / non-existent file
-// (test seam for #2320 ACs).
+// (test seam).
 //
 // Returns the constructed Sidecar plus the resolved proxy listener path so
 // tests can probe / assert on the listener directly.
@@ -168,12 +168,12 @@ func setContainersEnabled(t *testing.T, bus *sidecartest.Bus, session string, en
 	}
 }
 
-// ── AC: "no proxy listener when containers_enabled=0" ─────────────────────
+// ── "no proxy listener when containers_enabled=0" ─────────────────────
 
 // TestPodmanProxy_DefaultOff_NoListener verifies that when
 // containers_enabled is false (the default for every existing session), the
 // sidecar does NOT create a podman.sock listener file in the per-session run
-// directory. This is the greppable AC from #2320.
+// directory.
 func TestPodmanProxy_DefaultOff_NoListener(t *testing.T) {
 	session := "prism-test@" + t.Name()
 	bus := sidecartest.NewIsolated(t, session)
@@ -289,11 +289,11 @@ func TestPodmanProxy_ContainersEnabled_ProxyListensAndReturns503(t *testing.T) {
 	<-done
 }
 
-// ── AC: "ctx cancellation drains the proxy and unlinks the socket" ─────────
+// ── "ctx cancellation drains the proxy and unlinks the socket" ─────────
 
 // TestPodmanProxy_CtxCancellationUnlinksSocket verifies that cancelling the
-// sidecar's run context exits the proxy goroutine within 5 seconds (per
-// #2320 AC) and unlinks the listener socket file as a side effect of the
+// sidecar's run context exits the proxy goroutine within 5 seconds and
+// unlinks the listener socket file as a side effect of the
 // proxy's Serve loop's deferred cleanup.
 func TestPodmanProxy_CtxCancellationUnlinksSocket(t *testing.T) {
 	session := "prism-test@" + t.Name()
@@ -322,14 +322,13 @@ func TestPodmanProxy_CtxCancellationUnlinksSocket(t *testing.T) {
 	}
 }
 
-// ── AC: "real upstream socket path not in sidecar log" ─────────────────────
+// ── "real upstream socket path not in sidecar log" ─────────────────────
 
 // TestPodmanProxy_UpstreamDiscovery_OverridePrecedence verifies the
-// override-precedence rule (test seam for #1608): when
-// Config.PodmanUpstreamPath is non-empty, platform-specific discovery is
-// short-circuited and the override value is returned verbatim. This is the
-// seam that lets tests run without a real podman socket and that Step 6
-// will reuse for a future --podman-upstream spawn flag.
+// override-precedence rule: when Config.PodmanUpstreamPath is non-empty,
+// platform-specific discovery is short-circuited and the override value is
+// returned verbatim. This is the seam that lets tests run without a real
+// podman socket.
 func TestPodmanProxy_UpstreamDiscovery_OverridePrecedence(t *testing.T) {
 	sc := New(Config{
 		SessionName:        "prism-test@override",
@@ -343,7 +342,7 @@ func TestPodmanProxy_UpstreamDiscovery_OverridePrecedence(t *testing.T) {
 }
 
 // TestPodmanProxy_UpstreamDiscovery_Linux_XDGRuntimeDir asserts the NixOS
-// happy path from #2317 sec.3e: when $XDG_RUNTIME_DIR is set, the upstream
+// happy path: when $XDG_RUNTIME_DIR is set, the upstream
 // socket is $XDG_RUNTIME_DIR/podman/podman.sock. The shape of the path is
 // stable across distros that use the systemd user-podman socket.
 func TestPodmanProxy_UpstreamDiscovery_Linux_XDGRuntimeDir(t *testing.T) {
@@ -377,7 +376,7 @@ func TestPodmanProxy_UpstreamDiscovery_Linux_Fallback(t *testing.T) {
 }
 
 // TestPodmanProxy_UpstreamDiscovery_Darwin_MissingPodmanReturnsPlaceholder
-// asserts the Darwin failure-mode AC from #2317 sec.3e: when `podman` is not
+// asserts the Darwin failure mode: when `podman` is not
 // on PATH (or `podman machine inspect` exits non-zero) the discovery returns
 // a stable placeholder string so the proxy's friendly 503 envelope fires
 // instead of the sidecar refusing to start. We engineer the "podman not
@@ -393,7 +392,7 @@ func TestPodmanProxy_UpstreamDiscovery_Darwin_MissingPodmanReturnsPlaceholder(t 
 	})
 	got := sc.resolvePodmanUpstreamDarwin()
 	// We do NOT assert the literal placeholder string here; the
-	// guarantee that matters for #2320 is "discovery never returns a
+	// guarantee that matters is "discovery never returns a
 	// path that points at the real host podman socket when discovery
 	// fails". An absolute, non-existent path satisfies that contract,
 	// and the proxy package's friendly 503 then fires.
@@ -406,7 +405,7 @@ func TestPodmanProxy_UpstreamDiscovery_Darwin_MissingPodmanReturnsPlaceholder(t 
 }
 
 // TestPodmanProxy_ContainerNamePrefix_WiredFromSession verifies the
-// #2324 Step-7 wiring: when the sidecar starts the proxy, the
+// container-name-prefix wiring: when the sidecar starts the proxy, the
 // proxy's Config.ContainerNamePrefix is set to
 // "prism-<sessionName>-" so the cleanup sweep can locate every
 // container belonging to this session. We probe the live behaviour
@@ -485,8 +484,8 @@ func TestPodmanProxy_UpstreamPathNotInSidecarLog(t *testing.T) {
 	sc, listenerPath := newPodmanProxyTestSidecar(t, bus, session, upstream)
 	// captureLog rewrites sc.cfg.Logger to a buffer-backed log.Logger and
 	// returns a snapshot accessor that drains notifyWG before reading; this
-	// is the canonical race-safe log capture in this package (issues #1713 /
-	// #1716). Call it BEFORE Run so the proxy goroutine writes through the
+	// is the canonical race-safe log capture in this package. Call it BEFORE
+	// Run so the proxy goroutine writes through the
 	// captured logger from the start.
 	getLogs := captureLog(sc)
 	setContainersEnabled(t, bus, session, true)

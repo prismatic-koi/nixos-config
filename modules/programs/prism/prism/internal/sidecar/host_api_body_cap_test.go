@@ -1,20 +1,19 @@
 package sidecar
 
-// Tests for the host-API request-body size cap (issue #1848).
+// Tests for the host-API request-body size cap.
 //
-// Every POST handler in host_api.go now wraps r.Body in
-// http.MaxBytesReader via the package-local decodeRequestJSON helper. The
-// default cap is 1 MiB; /prompt is bumped to 16 MiB because worker spawn
-// prompts may legitimately carry file attachments and large context.
+// Every POST handler in host_api.go wraps r.Body in http.MaxBytesReader via
+// the package-local decodeRequestJSON helper. The default cap is 1 MiB;
+// /prompt uses 16 MiB because worker spawn prompts may legitimately carry
+// file attachments and large context.
 //
-// AC #3 picks the more informative status code: when the cap is exceeded the
-// handler returns 413 Request Entity Too Large. (We can distinguish a cap
-// overflow from any other decode error because the runtime wraps the
-// overflow in *http.MaxBytesError before the json.Decoder ever sees it.)
+// When the cap is exceeded the handler returns 413 Request Entity Too Large.
+// (We can distinguish a cap overflow from any other decode error because the
+// runtime wraps the overflow in *http.MaxBytesError before the json.Decoder
+// ever sees it.)
 //
-// AC #5 requires that the test post a >cap body to each affected endpoint
-// and assert the documented status. We exercise every route covered by the
-// helper change.
+// Each test posts a >cap body to each affected endpoint and asserts the
+// documented status. We exercise every route covered by the helper.
 
 import (
 	"net/http"
@@ -143,7 +142,7 @@ func TestHostAPI_BodyCap_Prompt(t *testing.T) {
 }
 
 // TestHostAPI_BodyCap_DisallowUnknownFields verifies that every POST handler
-// has DisallowUnknownFields enabled (AC #4). A small valid-shape body with one
+// has DisallowUnknownFields enabled. A small valid-shape body with one
 // stray field must return 400 across the board.
 func TestHostAPI_BodyCap_DisallowUnknownFields(t *testing.T) {
 	d := openTestDB(t)

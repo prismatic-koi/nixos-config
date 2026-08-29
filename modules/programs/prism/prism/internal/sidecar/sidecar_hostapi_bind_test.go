@@ -1,18 +1,18 @@
 package sidecar
 
-// Tests for the host-API socket bind path (#1050) and lifetime decoupling from
-// the harness-pipe handshake (#1486).
+// Tests for the host-API socket bind path and lifetime decoupling from
+// the harness-pipe handshake.
 //
 // Concerns covered:
 //
-//   - AC-3 (#1050): worst-case session name must not produce EINVAL.
-//   - AC-4 (#1050): bind failure must surface as a fatal Run() error.
-//   - AC-1 (#1486): host-API keeps serving after harness-pipe failure.
-//   - AC-2 (#1486): harness-pipe failure logs error, does NOT call Shutdown().
-//   - AC-3 (#1486): Shutdown removes socket; subsequent connect returns ENOENT.
-//   - AC-4 (#1486): stale socket tombstone → ECONNREFUSED → clearer diagnostic.
-//   - AC-8 (#1486): no goroutine leak after harness-pipe failure + Shutdown.
-//   - AC-9 (#1486): socket permissions unchanged (0o700 on parent dir).
+//   - worst-case session name must not produce EINVAL.
+//   - bind failure must surface as a fatal Run() error.
+//   - host-API keeps serving after harness-pipe failure.
+//   - harness-pipe failure logs error, does NOT call Shutdown().
+//   - Shutdown removes socket; subsequent connect returns ENOENT.
+//   - stale socket tombstone → ECONNREFUSED → clearer diagnostic.
+//   - no goroutine leak after harness-pipe failure + Shutdown.
+//   - socket permissions unchanged (0o700 on parent dir).
 
 import (
 	"context"
@@ -33,10 +33,10 @@ import (
 	prismsession "github.com/prismatic-koi/prism/internal/session"
 )
 
-// ── helpers (AC-1 / #1486) ───────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────
 
 // newPI1486Sidecar creates a Sidecar with both a host-API socket and a
-// harness-pipe socket, suitable for #1486 lifetime-decoupling tests.
+// harness-pipe socket, suitable for lifetime-decoupling tests.
 // StartupConnectTimeout is set short so tests that simulate a handshake failure
 // do not wait the full 5 m.
 func newPI1486Sidecar(t *testing.T, hostAPISockPath, pipeSockPath string) *Sidecar {
@@ -125,9 +125,9 @@ func waitForHostAPIReady(t *testing.T, sockPath string) {
 	}
 }
 
-// TestHostAPIBind_WorstCaseSessionName_DoesNotEINVAL is the AC-3 regression
+// TestHostAPIBind_WorstCaseSessionName_DoesNotEINVAL is the regression
 // test. It exercises the actual net.Listen("unix", ...) call against a path
-// derived from the worst-case session name from the issue body (an 80-char
+// derived from the worst-case session name (an 80-char
 // branch + ~review-99-review-context suffix) and asserts that the bind
 // succeeds — i.e. the new short-hash directory scheme produces a bindable
 // path even for pathological inputs. The path-length budget itself is
@@ -137,16 +137,16 @@ func waitForHostAPIReady(t *testing.T, sockPath string) {
 // The bind is performed under a freshly-created temp directory rooted at /tmp
 // (kept deliberately short so the per-test path itself stays inside the
 // kernel limit on every CI runner). This means the test exercises the
-// SessionDirName-derived suffix shape, which is the part this fix changes —
-// the long input session name no longer pollutes the on-disk path.
+// SessionDirName-derived suffix shape: the long input session name does not
+// pollute the on-disk path.
 func TestHostAPIBind_WorstCaseSessionName_DoesNotEINVAL(t *testing.T) {
-	// Mirror the worst-case shape called out by AC-1 / AC-3.
+	// Mirror the worst-case shape.
 	worstCase := "nixos-config@" + strings.Repeat("x", 80) + "~review-99-review-context"
 
 	// Build the path under a short, controlled XDG_STATE_HOME so the test
 	// does not depend on the runner's TMPDIR length. The point of this
-	// regression test is the SUFFIX of the path (which used to embed the
-	// full session name); the prefix is owned by the deployment.
+	// regression test is the SUFFIX of the path; the prefix is owned by
+	// the deployment.
 	stateHome, err := shortStateHome(t)
 	if err != nil {
 		t.Fatalf("shortStateHome: %v", err)
@@ -164,7 +164,7 @@ func TestHostAPIBind_WorstCaseSessionName_DoesNotEINVAL(t *testing.T) {
 
 	ln, listenErr := net.Listen("unix", sockPath)
 	if listenErr != nil {
-		// If we got EINVAL, that is the exact bug #1050 fixed; surface it
+		// If we got EINVAL, that is a sun_path overflow regression; surface it
 		// loudly so the regression is unmistakable.
 		if errors.Is(listenErr, syscall.EINVAL) {
 			t.Fatalf("net.Listen returned EINVAL — sun_path overflow regression (#1050): %v (path=%q, len=%d)",
@@ -188,13 +188,14 @@ func shortStateHome(t *testing.T) (string, error) {
 	return dir, nil
 }
 
-// TestSidecarRun_BindFailureReturnsError is the AC-4 regression test. It
+// TestSidecarRun_BindFailureReturnsError is the regression test. It
 // injects a bind failure by pointing HostAPISockPath at a path that cannot be
 // created (a directory whose parent is a regular file) and asserts that Run()
 // returns within a bounded time with a non-nil error mentioning "bind failed".
 //
-// Before the #1050 fix this would log-and-continue with hostAPIListener nil,
-// leaving the agent partially functional and effectively undetectable.
+// A bind failure must be fatal. If Run() logged and continued with
+// hostAPIListener nil, the agent would be partially functional and
+// effectively undetectable.
 func TestSidecarRun_BindFailureReturnsError(t *testing.T) {
 	// Construct an HostAPISockPath whose parent directory cannot be created
 	// because some component along the path is a regular file — that makes
@@ -224,7 +225,7 @@ func TestSidecarRun_BindFailureReturnsError(t *testing.T) {
 	}
 	s := New(cfg)
 
-	// Run with a bounded timeout. AC-4 says "within a bounded time".
+	// Run with a bounded timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -253,10 +254,10 @@ func TestSidecarRun_BindFailureReturnsError(t *testing.T) {
 	}
 }
 
-// ── #1486 tests ──────────────────────────────────────────────────────────────
+// ── lifetime-decoupling tests ──────────────────────────────────────────────────────────────
 
 // TestHostAPI_SurvivesHarnessPipeHandshakeFailure_NeverConnects is the
-// primary regression test for #1486 (AC-1).
+// primary regression test for lifetime decoupling.
 //
 // It creates a PI sidecar with both a host-API socket and a harness-pipe
 // socket, then never connects to the harness pipe (triggering a startup
@@ -295,9 +296,8 @@ func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_NeverConnects(t *testing.T)
 	// timeout path). The state write happens after the 200ms startup timeout
 	// fires; under contended scheduling (race detector + Nix sandbox CI) the
 	// scheduling latency between timer fire and DB commit can run into the
-	// hundreds of ms, so a 5s ceiling is used instead of the original 2s
-	// (#1760). The poll exits as soon as the state lands, so a generous
-	// ceiling is essentially free on healthy runs.
+	// hundreds of ms, so a 5s ceiling is used. The poll exits as soon as the
+	// state lands, so a generous ceiling is essentially free on healthy runs.
 	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 5*time.Second); st != "error" {
 		t.Errorf("DB state after harness-pipe timeout = %q, want error", st)
 	}
@@ -326,7 +326,7 @@ func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_NeverConnects(t *testing.T)
 }
 
 // TestHostAPI_SurvivesHarnessPipeHandshakeFailure_MalformedHello is a
-// second variant of AC-1: the extension connects but sends a malformed hello.
+// second variant: the extension connects but sends a malformed hello.
 func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_MalformedHello(t *testing.T) {
 	pipeSockPath := shortSockPath(t)
 	dir := filepath.Dir(pipeSockPath)
@@ -372,9 +372,9 @@ func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_MalformedHello(t *testing.T
 
 	// Poll until the DB shows error state — the error write from
 	// runStartupSocketPipe can land any time after the malformed hello is
-	// rejected, so polling avoids a sleep-then-assert race (issue #1595).
+	// rejected, so polling avoids a sleep-then-assert race.
 	// 5s ceiling chosen to absorb scheduler contention on race-detector
-	// CI runs (#1760).
+	// CI runs.
 	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 5*time.Second); st != "error" {
 		t.Errorf("DB state after malformed hello = %q, want error", st)
 	}
@@ -393,7 +393,7 @@ func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_MalformedHello(t *testing.T
 	}
 }
 
-// TestHostAPI_HarnessPipeFailureRecordsErrorState verifies AC-2 (#1486):
+// TestHostAPI_HarnessPipeFailureRecordsErrorState verifies that
 // when the harness-pipe handshake fails, the sidecar records an error state in
 // the DB and does NOT call Shutdown() prematurely — shuttingDown remains false
 // until an external trigger.
@@ -414,8 +414,7 @@ func TestHostAPI_HarnessPipeFailureRecordsErrorState(t *testing.T) {
 	// Wait for harness-pipe socket, then poll until the DB shows error state.
 	// A fixed sleep-then-assert races the timeout handler's DB write under
 	// contended scheduling (e.g. the Nix sandbox runner); a poll-loop with a
-	// 5s ceiling is robust without materially slowing healthy runs
-	// (issues #1595, #1760).
+	// 5s ceiling is robust without materially slowing healthy runs.
 	waitForHostAPISock(t, hostAPISockPath)
 	if s := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 5*time.Second); s != "error" {
 		t.Errorf("DB state after harness-pipe timeout = %q, want error", s)
@@ -434,7 +433,7 @@ func TestHostAPI_HarnessPipeFailureRecordsErrorState(t *testing.T) {
 	cancel()
 }
 
-// TestHostAPI_ShutdownRemovesSocket verifies AC-3 (#1486): when the sidecar
+// TestHostAPI_ShutdownRemovesSocket verifies that when the sidecar
 // receives a real Shutdown trigger (SIGTERM / sc.Shutdown()), the host-API
 // Unix socket file is removed from disk and a subsequent connect() returns
 // ENOENT, not ECONNREFUSED.
@@ -490,7 +489,7 @@ func TestHostAPI_ShutdownRemovesSocket(t *testing.T) {
 	}
 }
 
-// TestHostAPI_StaleTombstoneSocket verifies AC-4 (edge case, #1486): when
+// TestHostAPI_StaleTombstoneSocket verifies that when
 // the sidecar exits abnormally and a stale socket file remains on disk, a dial
 // to that socket returns ECONNREFUSED rather than ENOENT. The
 // isStaleTombstoneSocket helper (used in cmd/hostapi.go and
@@ -563,9 +562,9 @@ func TestHostAPI_StaleTombstoneSocket(t *testing.T) {
 	}
 }
 
-// TestHostAPI_SocketDirPermissions verifies AC-9 (#1486 security invariant):
-// the host-API socket directory continues to be created with mode 0o700.
-// This is the regression guard that the lifetime change (PR #1486) does not
+// TestHostAPI_SocketDirPermissions verifies the security invariant that
+// the host-API socket directory is created with mode 0o700.
+// This is the regression guard that the lifetime change does not
 // widen the on-disk permissions.
 func TestHostAPI_SocketDirPermissions(t *testing.T) {
 	pipeSockPath := shortSockPath(t)
@@ -606,7 +605,7 @@ func TestHostAPI_SocketDirPermissions(t *testing.T) {
 	}
 }
 
-// TestHostAPI_NoGoroutineLeak verifies AC-8 (#1486): when the session is shut
+// TestHostAPI_NoGoroutineLeak verifies that when the session is shut
 // down after a harness-pipe failure, Shutdown() cleanly stops every goroutine
 // it started — the host-API serve goroutine, the harness-pipe writer goroutine,
 // and the Run() goroutine itself.
@@ -642,7 +641,7 @@ func TestHostAPI_NoGoroutineLeak(t *testing.T) {
 	// has fired and its handler has committed the state write. Only then do we
 	// check that the host-API is still serving. Using a poll-loop instead of a
 	// fixed sleep avoids a sleep-then-assert race under contended scheduling
-	// (e.g. the Nix sandbox runner) (issues #1595, #1760).
+	// (e.g. the Nix sandbox runner).
 	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 5*time.Second); st != "error" {
 		t.Errorf("DB state after harness-pipe timeout = %q, want error", st)
 	}
@@ -680,7 +679,7 @@ func TestHostAPI_NoGoroutineLeak(t *testing.T) {
 		finalGoroutines, baselineGoroutines, finalGoroutines-baselineGoroutines)
 }
 
-// TestHostAPI_FullHandshake_BothSurfacesWork verifies AC-6 (#1486): on a fresh
+// TestHostAPI_FullHandshake_BothSurfacesWork verifies that on a fresh
 // PI session where the harness-pipe handshake succeeds, both surfaces work:
 // the harness pipe completes its handshake AND a host-API GET /list-sessions
 // succeeds after the handshake.
@@ -737,7 +736,7 @@ func TestHostAPI_FullHandshake_BothSurfacesWork(t *testing.T) {
 	}
 }
 
-// ── helper functions for #1486 tests ────────────────────────────────────────
+// ── helper functions for lifetime-decoupling tests ────────────────────────────────────────
 
 // goroutineCount returns the current number of goroutines.
 func goroutineCount() int {

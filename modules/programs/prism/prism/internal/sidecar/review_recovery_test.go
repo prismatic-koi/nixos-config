@@ -1,7 +1,7 @@
 package sidecar
 
 // review_recovery_test.go — integration coverage for the worker-sidecar
-// review-completion recovery watcher (#1709 reopen).
+// review-completion recovery watcher.
 //
 // The watcher rescues review groups orphaned by a dead `prism
 // monitor-review` subprocess. The reproducer below exercises this exact
@@ -154,10 +154,10 @@ func newWorkerSidecarForRecovery(t *testing.T, fix *stuckReviewGroupFixture) *Si
 	return s
 }
 
-// TestReviewRecoveryWatcher_DispatchesAfterGrace is the spec test for
-// AC #4 of #1709: an integration test reproduces the stall by withholding
-// the monitor's delivery (no subprocess started) and asserts the daemon
-// eventually recovers rather than leaving the group in-progress indefinitely.
+// TestReviewRecoveryWatcher_DispatchesAfterGrace reproduces the stall by
+// withholding the monitor's delivery (no subprocess started) and asserts the
+// daemon eventually recovers rather than leaving the group in-progress
+// indefinitely.
 func TestReviewRecoveryWatcher_DispatchesAfterGrace(t *testing.T) {
 	fix := setupStuckReviewGroup(t, "dispatch-after-grace")
 	s := newWorkerSidecarForRecovery(t, fix)
@@ -347,7 +347,7 @@ func (q *busyThenSucceedQuerier) GroupCompleted(groupID string) (bool, error) {
 // watcher recovers correctly when LatestGroupForParent returns SQLITE_BUSY
 // for the first N calls but succeeds on the (N+1)th — within the 3-attempt
 // retry budget. The grace window must remain anchored at the first-seen
-// timestamp; it must NOT be pushed out by the BUSY ticks. (#1854)
+// timestamp; it must NOT be pushed out by the BUSY ticks.
 func TestReviewRecoveryWatcher_BusyRetry_SuccessAfterNRetries(t *testing.T) {
 	fix := setupStuckReviewGroup(t, "busy-retry-lgfp")
 	s := newWorkerSidecarForRecovery(t, fix)
@@ -387,7 +387,7 @@ func TestReviewRecoveryWatcher_BusyRetry_SuccessAfterNRetries(t *testing.T) {
 // complete — NOT re-anchored on ticks where BUSY retries were needed.
 // Concretely: if tick-1 observes BUSY (then succeeds), records first-seen T,
 // then tick-2 at T+grace-1 also hits BUSY (then succeeds), the grace window
-// must still expire relative to T, not to the tick-2 timestamp. (#1854)
+// must still expire relative to T, not to the tick-2 timestamp.
 func TestReviewRecoveryWatcher_BusyRetry_FirstSeenNotReset(t *testing.T) {
 	fix := setupStuckReviewGroup(t, "busy-first-seen")
 	s := newWorkerSidecarForRecovery(t, fix)
@@ -435,7 +435,7 @@ func TestReviewRecoveryWatcher_BusyRetry_FirstSeenNotReset(t *testing.T) {
 // TestReviewRecoveryWatcher_BusyRetry_GenuineErrorTerminates verifies that a
 // genuine (non-BUSY) error from LatestGroupForParent is not retried and
 // causes the tick to return without recording a first-seen entry (preserving
-// today's log-and-continue behaviour). (#1854 regression guard)
+// today's log-and-continue behaviour).
 func TestReviewRecoveryWatcher_BusyRetry_GenuineErrorTerminates(t *testing.T) {
 	fix := setupStuckReviewGroup(t, "genuine-error")
 	s := newWorkerSidecarForRecovery(t, fix)

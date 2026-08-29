@@ -6,8 +6,7 @@ package sidecar
 // /set-model in the same file. A regression here would let a non-coordinator
 // mutate `agent_status.state`, emit a `session.escalated` bus event
 // attributed to a victim, and pin that victim in `escalated` so legitimate
-// `has finished` notifications are suppressed (review-security finding,
-// PR #1524 round 1).
+// `has finished` notifications are suppressed.
 
 import (
 	"encoding/json"
@@ -218,8 +217,7 @@ func itoa(n int) string {
 // successful host-side `prism escalate` invocation, the /escalate handler
 // returns the captured stdout AND stderr in the response body, with the
 // streams kept separate (NOT combined). The container-side proxy depends
-// on this to re-emit each stream locally. See PR #2019 review-context
-// blocker / issue #2018.
+// on this to re-emit each stream locally.
 func TestHostAPI_Escalate_SuccessReturnsStdoutAndStderr(t *testing.T) {
 	d := openTestDB(t)
 	const wantStdout = "prism escalate: OK delivered to myrepo@main (delivery_id=abc-123)\n"

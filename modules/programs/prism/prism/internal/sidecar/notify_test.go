@@ -1,6 +1,6 @@
 // Tests in this file exercise notifyCoordinator's audit-row behaviour:
 //   - On delivery failure, WriteBusMessageFailed must be called with a fully
-//     populated db.BusMessage (issue #1856).
+//     populated db.BusMessage.
 //   - On delivery success, WriteBusMessageFailed must NOT be called.
 //
 // # Isolation contract
@@ -82,7 +82,7 @@ LIMIT 1`)
 }
 
 // TestNotifyCoordinator_WriteBusMessageFailed_OnDeliveryError verifies the
-// failure-audit path (issue #1856 AC #1): when promptdelivery returns an
+// failure-audit path: when promptdelivery returns an
 // error (mimicking a SIGTERMed coordinator vanishing between
 // CoordinatorForRepo and DeliverToSession), the sidecar must write a
 // bus_messages row via WriteBusMessageFailed with the full BusMessage shape.
@@ -179,7 +179,7 @@ func TestNotifyCoordinator_WriteBusMessageFailed_OnDeliveryError(t *testing.T) {
 }
 
 // TestNotifyCoordinator_NoFailedAudit_OnDeliverySuccess verifies the
-// complementary happy-path assertion (issue #1856 AC #2): when delivery
+// complementary happy-path assertion: when delivery
 // succeeds, no bus_messages row with failed_at IS NOT NULL is written.
 //
 // This test installs the same seam but returns nil; the delivered-audit row

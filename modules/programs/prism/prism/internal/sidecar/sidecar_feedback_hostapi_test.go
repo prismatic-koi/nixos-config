@@ -1,6 +1,6 @@
 package sidecar
 
-// Tests for the host-API /feedback endpoint (issue #1644).
+// Tests for the host-API /feedback endpoint.
 //
 // The endpoint accepts a feedback.Entry JSON body, appends it to the host
 // feedback.jsonl, and returns the resolved path. These tests exercise the

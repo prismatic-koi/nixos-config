@@ -1,7 +1,7 @@
 // Tests for the /cleanup host-API endpoint's stdout/stderr forwarding
-// behaviour (issue #1527). Without this, the container path was silent on
-// success because the previous handler captured CombinedOutput and discarded
-// the captured bytes before returning {}.
+// behaviour. Without this forwarding, the container path is silent on
+// success: a handler that captures CombinedOutput and discards the bytes
+// before returning {} tells the caller nothing.
 //
 // These tests use a stub binary that writes deterministic content to stdout
 // and/or stderr and either exits 0 (success) or non-zero (failure) so we can
@@ -44,9 +44,9 @@ func newSidecarWithCleanupStub(t *testing.T, sessionName, repo, role, scriptBody
 
 // TestHostAPI_Cleanup_ForwardsStdoutAndStderr_Success verifies that the
 // /cleanup handler captures stdout and stderr from the spawned subprocess
-// separately and surfaces both in the JSON response. Issue #1527 AC #1.
+// separately and surfaces both in the JSON response.
 func TestHostAPI_Cleanup_ForwardsStdoutAndStderr_Success(t *testing.T) {
-	// Stub writes the AC-required progress lines to stdout and a warning to
+	// Stub writes the progress lines to stdout and a warning to
 	// stderr, then exits 0. The handler must put the stdout content into the
 	// response's "stdout" field and the stderr content into "stderr".
 	script := `printf 'removing worktree /tmp/wt...\n'
@@ -84,7 +84,7 @@ exit 0`
 // TestHostAPI_Cleanup_ForwardsStdoutAndStderr_Failure verifies that even on
 // non-zero exit the captured stdout and stderr are forwarded alongside the
 // error string. This addresses the "error message names the wrong layer"
-// observation in the comment on issue #1527: the agent must see the underlying
+// problem: the agent must see the underlying
 // cause (e.g. "archive directory already exists") rather than just the outer
 // transport's "exit status 1".
 func TestHostAPI_Cleanup_ForwardsStdoutAndStderr_Failure(t *testing.T) {
