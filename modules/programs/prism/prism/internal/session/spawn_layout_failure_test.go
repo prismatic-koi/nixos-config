@@ -1,19 +1,15 @@
 package session
 
-// Tests for F5 (#1880): when spawnFullLayout or spawnAgentOnlyLayout returns
-// an error, SpawnSession must run the same cleanup primitives as the
-// readiness-timeout path rather than returning a hint string and leaving
-// residue in the DB.
+// Tests for the layout-failure cleanup path: when spawnFullLayout or
+// spawnAgentOnlyLayout returns an error, SpawnSession must run the same
+// cleanup primitives as the readiness-timeout path rather than returning a
+// hint string and leaving residue in the DB.
 //
-// Before the fix the layout-failure path returned:
-//   fmt.Errorf("%w — to remove side effects run: prism cleanup ...", layoutErr)
-// without calling KillSidecar / cleanupHalfAliveSession / tmux.KillSession /
-// removeInitialPrompt. The readiness-timeout path (which can fire for the same
-// partially-spawned session) DID auto-clean. The asymmetry left DB residue
-// (active agent_status row, allocated port) on every layout failure.
-//
-// The fix calls the same four cleanup primitives before returning the error,
-// leaving the DB in the same clean state as a readiness-timeout failure.
+// The layout-failure path must call KillSidecar, cleanupHalfAliveSession,
+// tmux.KillSession, and removeInitialPrompt before returning the error, so the
+// DB is left in the same clean state as a readiness-timeout failure. Skipping
+// them leaves DB residue (active agent_status row, allocated port) on every
+// layout failure.
 
 import (
 	"strings"

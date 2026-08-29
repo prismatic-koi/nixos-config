@@ -14,7 +14,7 @@ import (
 // sqlite DB: it sits beneath a regular file (not a directory), so the
 // os.MkdirAll() inside db.Open() fails with ENOTDIR. Using a path under a
 // regular file is portable and does not depend on /nonexistent staying
-// absent across test runs (#1859).
+// absent across test runs.
 func unopenableDBPath(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -205,7 +205,8 @@ func TestPersistentUpdate_SessionSyncTickMsg_RetainsSessionsOnDBError(t *testing
 // through every signal the FetchSessionsFromDB → ApplySessionsMsg wire
 // carries, asserting the resulting PersistentModel.Sessions state. This is the
 // PersistentModel-level companion to TestApplySessionsMsg_ThreeStates in
-// poll_test.go and the central regression test for #1859.
+// poll_test.go and the central regression test for the empty-vs-error
+// distinction.
 //
 //   - (a) non-empty success: Sessions is a non-empty slice → list updates.
 //   - (b) empty success:     Sessions is an empty non-nil slice → list clears
@@ -250,7 +251,7 @@ func TestPersistentUpdate_SessionsMsg_AllThreeSignals(t *testing.T) {
 	t.Run("b: empty success clears list (no ghost rows)", func(t *testing.T) {
 		pm := seed(t)
 		// An empty-but-non-nil slice models a successful fetch that returned
-		// zero non-meta sessions — the #1859 scenario.
+		// zero non-meta sessions.
 		m2, _ := pm.Update(dashboard.SessionsMsg{Sessions: []dashboard.AgentSession{}})
 		pm2, ok := m2.(dashboard.PersistentModel)
 		if !ok {

@@ -9,7 +9,7 @@ import (
 // TestFilterAgentSessions_AlwaysNonNil locks down the nil-vs-empty wire
 // contract documented on Shared.ApplySessionsMsg: FilterAgentSessions must
 // return a non-nil slice on every successful call, including the case where
-// every input session is a meta session and the result is empty. See #1859.
+// every input session is a meta session and the result is empty.
 func TestFilterAgentSessions_AlwaysNonNil(t *testing.T) {
 	t.Run("nil input returns empty non-nil", func(t *testing.T) {
 		out := dashboard.FilterAgentSessions(nil)
@@ -32,11 +32,9 @@ func TestFilterAgentSessions_AlwaysNonNil(t *testing.T) {
 	})
 
 	t.Run("only meta sessions returns empty non-nil", func(t *testing.T) {
-		// This is the regression case from #1859: every prism session was
-		// cleaned up, only scratchpad and prism-dashboard remain. Before the
-		// fix, FilterAgentSessions returned a nil slice here, which
-		// ApplySessionsMsg then conflated with the DB-error signal and
-		// preserved stale rows.
+		// Regression case: every prism session was cleaned up, only scratchpad
+		// and prism-dashboard remain. A nil slice here would be conflated by
+		// ApplySessionsMsg with the DB-error signal and preserve stale rows.
 		in := []dashboard.AgentSession{
 			{Name: "scratchpad"},
 			{Name: "prism-dashboard"},
@@ -77,10 +75,10 @@ func TestFilterAgentSessions_AlwaysNonNil(t *testing.T) {
 //   - (b) empty success:     Sessions is an empty non-nil slice → list clears.
 //   - (c) DB error:          Sessions is nil                  → list preserved.
 //
-// This is the central regression test for #1859. Before the fix, state (b)
-// and state (c) were indistinguishable because FilterAgentSessions returned a
-// nil slice when zero non-meta sessions survived filtering — meaning empty
-// success was treated as a DB error and the dashboard never updated to "no
+// This is the central regression test. States (b) and (c) must stay
+// distinguishable: if FilterAgentSessions returned a nil slice when zero
+// non-meta sessions survived filtering, empty success would be treated as a DB
+// error and the dashboard would never update to "no
 // active sessions" after the last prism session was cleaned up.
 func TestApplySessionsMsg_ThreeStates(t *testing.T) {
 	seed := func() dashboard.Shared {

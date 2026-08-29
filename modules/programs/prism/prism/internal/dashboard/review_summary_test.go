@@ -11,9 +11,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
-// Verdict codicons, mirroring the Required mapping table in issue #2868.
-// Written as Go Unicode escapes per the issue's rule against literal
-// Private Use Area characters.
+// Verdict codicons. Written as Go Unicode escapes, never literal Private Use
+// Area characters, which do not survive a copy through most tools.
 const (
 	passIcon    = "\uEBA4" // nf-cod-pass
 	failIcon    = "\uEA87" // nf-cod-error
@@ -53,7 +52,7 @@ func TestParseVerdict(t *testing.T) {
 	}
 }
 
-// TestPassWithDisagreement_RendersDistinctly covers #2862: a
+// TestPassWithDisagreement_RendersDistinctly: a
 // PASS_WITH_DISAGREEMENT verdict must render as a value distinct from both a
 // plain pass and pending, on the collapsed row and in the expanded child row.
 func TestPassWithDisagreement_RendersDistinctly(t *testing.T) {
@@ -121,7 +120,7 @@ func TestShortAgentName(t *testing.T) {
 // ── BuildReviewChildSummaries ────────────────────────────────────────────────
 
 // alphabeticalShortNames returns the canonical review-agent short labels in
-// alphabetical order — the new display order asserted by #1802. It is
+// alphabetical order — the display order the row renders. It is
 // derived from review.Agents() so the test will break (intentionally) if the
 // canonical list changes without updating ShortAgentName.
 func alphabeticalShortNames() []string {
@@ -358,7 +357,7 @@ func TestRenderReviewSummary_FullBudgetRendersLabels(t *testing.T) {
 
 func TestRenderReviewSummary_NarrowSuppressesLabels(t *testing.T) {
 	// Budget smaller than the compact width must suppress the trailing
-	// segment entirely (#1812: below the compact tier we render nothing).
+	// segment entirely (below the compact tier we render nothing).
 	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, nil, nil))
 	labels, plain, _ := dashboard.RenderReviewSummary(summaries, 5)
 	if labels != "" {
@@ -372,7 +371,7 @@ func TestRenderReviewSummary_NarrowSuppressesLabels(t *testing.T) {
 func TestRenderReviewSummary_ExactBudgetRendersLabels(t *testing.T) {
 	// At exactly the labels width, the labels should still render at full
 	// (wide) tier; one below drops to compact (still letters visible) — not
-	// to suppressed. See #1812.
+	// to suppressed.
 	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, nil, nil))
 	_, plain, _ := dashboard.RenderReviewSummary(summaries, 200)
 	if plain == 0 {
@@ -710,7 +709,7 @@ func TestCollapsedRow_NarrowDropsLabels(t *testing.T) {
 			t.Errorf("expected per-agent labels to be dropped at narrow width; saw %q in row=%q", short+":", row)
 		}
 	}
-	// No cluster glyphs (the cluster is gone in #1802).
+	// No cluster glyphs.
 	for _, glyph := range []string{"●", "○", "◐"} {
 		if strings.Contains(row, glyph) {
 			t.Errorf("narrow row should not contain cluster glyph %q; row=%q", glyph, row)
@@ -806,8 +805,8 @@ func TestCollapsedRow_ExpandedStillShowsSummary(t *testing.T) {
 
 // ── Three-tier width budget (full / compact / suppressed) ─────────────────────────
 
-// TestRenderReviewSummary_ThreeTierBoundaries exercises the new compact tier
-// added by #1812. The renderer must dispatch among three modes:
+// TestRenderReviewSummary_ThreeTierBoundaries exercises the compact tier.
+// The renderer must dispatch among three modes:
 //
 //	budget >= labelsW              → full alphabetical labels
 //	labelsW > budget >= compactW   → letter-only compact form
@@ -961,7 +960,7 @@ func TestRenderReviewSummary_CompactColours(t *testing.T) {
 	}
 
 	// Each verdict icon's colour escape sequence must appear in both the
-	// wide and compact renders — matching palettes per AC #1812.
+	// wide and compact renders — matching palettes.
 	icons := []string{passIcon, failIcon, runningIcon, errorIcon, pendingIcon}
 	for _, ic := range icons {
 		if !strings.Contains(stripANSI(wide), ic) {
@@ -997,15 +996,14 @@ func wantCompactPlain(summaries []dashboard.ReviewChildSummary) string {
 		}
 	}
 	// A single trailing blank column after the final icon, matching the
-	// separator room every non-final icon gets from its own trailing space
-	// (#2882).
+	// separator room every non-final icon gets from its own trailing space.
 	b.WriteString(" ")
 	return b.String()
 }
 
 // TestRenderReviewSummary_EmptySummariesAllBudgets asserts that with an
 // empty summaries slice the renderer returns the suppressed tier (no
-// trailing segment) regardless of budget — covering AC #1812's edge case.
+// trailing segment) regardless of budget — the empty-summaries edge case.
 func TestRenderReviewSummary_EmptySummariesAllBudgets(t *testing.T) {
 	for _, b := range []int{0, 5, 13, 38, 200} {
 		labels, plain, _ := dashboard.RenderReviewSummary(nil, b)
@@ -1185,7 +1183,7 @@ func TestCollapsedRow_SelectedBarMatchesUnselectedFootprint(t *testing.T) {
 	}
 }
 
-// TestCollapsedRow_NoSummariesNoTrailingSegment covers AC #1812's empty-
+// TestCollapsedRow_NoSummariesNoTrailingSegment covers the empty-
 // children edge case at the row level: a review-group row whose children
 // list is empty must render as session + state only at any width, in any
 // mode.
@@ -1207,7 +1205,7 @@ func TestCollapsedRow_NoSummariesNoTrailingSegment(t *testing.T) {
 // TestPlainSummaryForBudget_WidthMatchesRendered asserts that the plain-text
 // mirror used inside the selected-row bar (view.go's plainSummaryForBudget)
 // reports the same display width as the coloured RenderReviewSummary output,
-// for both the full and compact tiers. See #1812, #2868.
+// for both the full and compact tiers.
 func TestPlainSummaryForBudget_WidthMatchesRendered(t *testing.T) {
 	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, nil, nil))
 
@@ -1238,7 +1236,7 @@ func TestPlainSummaryForBudget_WidthMatchesRendered(t *testing.T) {
 	}
 }
 
-// TestRenderReviewSummary_LastIconSameSizeAsOthers asserts the fix for #2882:
+// TestRenderReviewSummary_LastIconSameSizeAsOthers asserts that
 // the final verdict icon on a collapsed review-group row renders at the same
 // size (display width) as the preceding icons, in both the labels form and
 // the compact icon-only form. Every rendered icon cell must measure exactly
@@ -1275,7 +1273,7 @@ func TestRenderReviewSummary_LastIconSameSizeAsOthers(t *testing.T) {
 	}
 }
 
-// TestRenderReviewSummary_SingleAgentFullSize asserts AC #2882: a
+// TestRenderReviewSummary_SingleAgentFullSize asserts that a
 // single-agent review group renders its one icon at full size and its
 // reported width matches the rendered width, in both tiers.
 func TestRenderReviewSummary_SingleAgentFullSize(t *testing.T) {
@@ -1333,11 +1331,10 @@ func TestNonReviewRowsUnchanged(t *testing.T) {
 	}
 }
 
-// ── Codicon mapping (#2868) ──────────────────────────────────────────────────
+// ── Codicon mapping ──────────────────────────────────────────────────
 
 // TestLetterForVerdict_Codepoints asserts the exact codepoint rendered for
-// each of the six verdict states, per the Required mapping table in issue
-// #2868. The test fails if any codepoint changes.
+// each of the six verdict states. The test fails if any codepoint changes.
 func TestLetterForVerdict_Codepoints(t *testing.T) {
 	tests := []struct {
 		verdict string
@@ -1358,7 +1355,7 @@ func TestLetterForVerdict_Codepoints(t *testing.T) {
 	}
 }
 
-// TestColorForVerdict_Running asserts running renders in ColorBlue (#2868):
+// TestColorForVerdict_Running asserts running renders in ColorBlue:
 // the only hue in the palette not shared with another verdict.
 func TestColorForVerdict_Running(t *testing.T) {
 	if got := dashboard.ColorForVerdictForTest(dashboard.VerdictRunning); got != dashboard.ColorBlue {
@@ -1366,7 +1363,7 @@ func TestColorForVerdict_Running(t *testing.T) {
 	}
 }
 
-// TestColorForVerdict_Error asserts error still renders in ColorRed (#2868).
+// TestColorForVerdict_Error asserts error renders in ColorRed.
 func TestColorForVerdict_Error(t *testing.T) {
 	if got := dashboard.ColorForVerdictForTest(dashboard.VerdictError); got != dashboard.ColorRed {
 		t.Errorf("colorForVerdict(error) = %q, want ColorRed (%q)", got, dashboard.ColorRed)
@@ -1374,7 +1371,7 @@ func TestColorForVerdict_Error(t *testing.T) {
 }
 
 // TestClassifyVerdict_Interrupted asserts an agent in state "interrupted"
-// classifies as VerdictError (#2868): a fault, not an empty slot.
+// classifies as VerdictError: a fault, not an empty slot.
 func TestClassifyVerdict_Interrupted(t *testing.T) {
 	agents := review.Agents()
 	states := map[string]string{}
@@ -1390,7 +1387,7 @@ func TestClassifyVerdict_Interrupted(t *testing.T) {
 }
 
 // TestCollapsedRow_Interrupted asserts an interrupted agent renders the
-// error icon in ColorRed on the collapsed review row (#2868).
+// error icon in ColorRed on the collapsed review row.
 func TestCollapsedRow_Interrupted(t *testing.T) {
 	agents := review.Agents()
 	states := map[string]string{}
@@ -1414,8 +1411,7 @@ func TestCollapsedRow_Interrupted(t *testing.T) {
 
 // TestVerdictIconCell_TwoColumns asserts that a rendered verdict icon cell
 // measures exactly two display columns via lipgloss.Width, and that the
-// width-budget functions count two columns per icon rather than one rune
-// (#2868).
+// width-budget functions count two columns per icon rather than one rune.
 func TestVerdictIconCell_TwoColumns(t *testing.T) {
 	if w := lipgloss.Width(dashboard.RenderIconCellForTest(dashboard.VerdictPass)); w != 2 {
 		t.Errorf("rendered icon cell width = %d, want 2", w)

@@ -1,13 +1,13 @@
 package session
 
-// config_env_retired_test.go — issue #2854 regression guard.
+// config_env_retired_test.go — retired-config-env regression guard.
 //
-// prism used to prefix a harness config env var onto the agent pane command:
+// prism must never prefix a harness config env var onto the agent pane
+// command:
 //
 //	PI_CONFIG_CONTENT='{"model":…}' pi --agent worker …
 //
-// pi never read that variable. Issue #2086 found the dead letter and chose to
-// retire the transport; #2854 completed the retirement. The single live
+// pi does not read that variable — it is a dead letter. The single live
 // carrier of provider / model / thinking is the argv channel:
 // buildDirectAgentCmd on host, and appendAgentRunOverrides →
 // populatePIConfig → PIInvocation on bwrap and sandbox-exec.
@@ -31,9 +31,9 @@ import (
 )
 
 // retiredConfigEnvNames are env-var names that must never appear on a
-// prism-built agent pane command. PI_CONFIG_CONTENT was the pi-adapter name;
-// OPENCODE_CONFIG_CONTENT was the opencode-compat name the interface method
-// documented.
+// prism-built agent pane command. PI_CONFIG_CONTENT is the pi-adapter name;
+// OPENCODE_CONFIG_CONTENT is the opencode-compat name; CONFIG_CONTENT is the
+// bare fallback.
 var retiredConfigEnvNames = []string{
 	"PI_CONFIG_CONTENT",
 	"OPENCODE_CONFIG_CONTENT",

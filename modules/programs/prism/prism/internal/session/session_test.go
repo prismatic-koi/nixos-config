@@ -12,7 +12,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
-// TestDefaultAgent covers the three cases described in issue #952:
+// TestDefaultAgent covers the three cases:
 //  1. main worktree (parent has .bare, basename == "main") → "coordinator"
 //  2. non-main worktree (parent has .bare, basename ≠ "main") → "worker"
 //  3. non-worktree path (parent does NOT have .bare) → ""
@@ -50,8 +50,8 @@ func TestDefaultAgent(t *testing.T) {
 
 	// Nested worktree: a branch name containing "/" (e.g. "feat/my-thing")
 	// produces a worktree two levels below the bare root, not one. See
-	// issue #2510 - DefaultAgent must walk upward to find the bare root
-	// rather than only checking the immediate parent.
+	// DefaultAgent must walk upward to find the bare root rather than only
+	// checking the immediate parent.
 	nestedWorktree := filepath.Join(bareRoot, "feat", "my-thing")
 	if err := os.MkdirAll(nestedWorktree, 0o755); err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestBuildDirectAgentCmd_AgentEnvVarsNil(t *testing.T) {
 // ── Isolation mode command construction ─────────────────────────────────────
 
 // TestBuildAgentCmd_BwrapMode verifies that IsolationMode="bwrap" produces
-// "<abs-path>/prism agent-run --session '<session-name>'". Post-#2260 the
+// "<abs-path>/prism agent-run --session '<session-name>'". The
 // command begins with a shell-quoted absolute path (os.Executable resolves
 // to the running go-test binary under `go test`, hence we only assert the
 // shape rather than a specific path).
@@ -211,8 +211,8 @@ func TestBuildAgentCmd_BwrapMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildAgentCmd: %v", err)
 	}
-	// The bwrap shape carries an absolute path to the running binary
-	// (issue #2260), shell-quoted, followed by ` agent-run --session`.
+	// The bwrap shape carries an absolute path to the running binary,
+	// shell-quoted, followed by ` agent-run --session`.
 	if !strings.HasPrefix(cmd, "'/") {
 		t.Errorf("bwrap mode: cmd must start with a shell-quoted absolute path; got %q", cmd)
 	}
@@ -264,10 +264,9 @@ func TestBuildAgentCmd_EmptyIsolationMode(t *testing.T) {
 
 // TestBuildDirectAgentCmd_PIExtensionFlag verifies that host-mode pi launch
 // appends --extension <PIExtensionDir>/prism.ts when the harness is pi (or
-// empty, which defaults to pi). This is the #2065 fix bundled into the
-// #2064 PR: without it, host-mode sessions launch pi with no --extension,
-// and the prism PI extension never loads — silently disabling role-prompt
-// injection, the sidecar bridge, and the status bar.
+// empty, which defaults to pi). Without it, host-mode sessions launch pi with
+// no --extension, and the prism PI extension never loads — silently disabling
+// role-prompt injection, the sidecar bridge, and the status bar.
 func TestBuildDirectAgentCmd_PIExtensionFlag(t *testing.T) {
 	t.Run("pi harness emits --extension when PIExtensionDir is set", func(t *testing.T) {
 		opts := Opts{
@@ -344,7 +343,7 @@ func TestBuildDirectAgentCmd_AgentFlag(t *testing.T) {
 }
 
 // TestBuildDirectAgentCmd_ExcludeToolsForReviewRoles is the host-mode mirror
-// of container.TestPIInvocation_ExcludeToolsForReviewRoles (issue #2531):
+// of container.TestPIInvocation_ExcludeToolsForReviewRoles:
 // review roles get --exclude-tools write,edit; non-review roles get no such
 // flag.
 func TestBuildDirectAgentCmd_ExcludeToolsForReviewRoles(t *testing.T) {
@@ -391,7 +390,7 @@ func TestPIExtensionHostPath(t *testing.T) {
 	})
 }
 
-// TestValidatePILaunchOpts covers the #2065 fail-fast edge-case AC: host-mode
+// TestValidatePILaunchOpts covers the fail-fast behaviour: host-mode
 // pi launches must refuse to spawn when cfg.PIExtensionDir is empty, with
 // a clear error message mirroring the container-path guard at
 // cmd/agent_run.go:730. The check is the policy chokepoint for the
@@ -521,10 +520,10 @@ func TestCreate_LayoutFull_FailsFastOnEmptyPIExtensionDir(t *testing.T) {
 		//     environments — so either branch catches the regression.
 		//
 		// "Usable" is decided by a functional probe, not exec.LookPath:
-		// since the suite-wide $TMUX_TMPDIR redirect (#2230) this subtest
+		// with the suite-wide $TMUX_TMPDIR redirect this subtest
 		// starts a fresh private tmux server instead of reusing the live
-		// host server (the old form created its session on the developer's
-		// LIVE server — exactly the leak class #2230 eliminates). Inside a
+		// host server (without the redirect the session lands on the
+		// developer's LIVE server — the leak class the redirect eliminates). Inside a
 		// prism worker sandbox the tmux binary is on $PATH but a fresh
 		// server cannot fork window processes ("fork failed: Operation not
 		// permitted"), so LookPath alone would put a sandboxed run in the
@@ -573,7 +572,7 @@ func TestBuildDirectAgentCmd_AgentEnvVars_ValuesQuoted(t *testing.T) {
 	}
 }
 
-// ── isolation mode DB persistence (issue #894 fix) ───────────────────────────
+// ── isolation mode DB persistence ───────────────────────────
 //
 // These tests verify that the DB writes performed by setupFullLayout BEFORE
 // tmux.NewWindow opens window 1 produce the correct agent_status values.
@@ -614,8 +613,9 @@ func openIsolationTestDB(t *testing.T, sessionName string) *db.DB {
 // performed by setupFullLayout (before tmux.NewWindow), the agent_status row
 // has isolation_mode = "bwrap".
 //
-// This is the primary regression test for issue #894: prism agent-run reads
-// isolation_mode immediately on start; it must be "bwrap" before window 1 opens.
+// This is the primary regression test for the isolation-mode write ordering:
+// prism agent-run reads isolation_mode immediately on start; it must be
+// "bwrap" before window 1 opens.
 func TestIsolationMode_BwrapWrittenBeforeWindow(t *testing.T) {
 	const sessionName = "testrepo@bwrap-test"
 	d := openIsolationTestDB(t, sessionName)
@@ -679,8 +679,7 @@ func TestIsolationMode_HostWrittenBeforeWindow(t *testing.T) {
 // containing PRISM_INITIAL_PROMPT when opts.Prompt is non-empty AND the
 // isolation mode consumes the env var (bwrap / sandbox-exec). Host mode is
 // covered by TestAgentPaneEnvVars_HostMode_Skipped — the env var is omitted
-// there because the host launch path reads the prompt from a file directly
-// (#1064).
+// there because the host launch path reads the prompt from a file directly.
 func TestAgentPaneEnvVars_WithPrompt(t *testing.T) {
 	opts := Opts{Prompt: "hello", IsolationMode: "bwrap"}
 	got := agentPaneEnvVars(opts)
@@ -718,10 +717,10 @@ func TestAgentPaneEnvVars_SpecialChars(t *testing.T) {
 }
 
 // TestAgentPaneEnvVars_HostMode_Skipped verifies that agentPaneEnvVars returns
-// nil for host mode regardless of prompt content (#1064). The host launch
+// nil for host mode regardless of prompt content. The host launch
 // path uses $(cat <prompt-file>) for delivery, so emitting a large
 // PRISM_INITIAL_PROMPT here would re-introduce the same tmux arg-size limit
-// the file-based plumbing was added to avoid.
+// the file-based plumbing avoids.
 func TestAgentPaneEnvVars_HostMode_Skipped(t *testing.T) {
 	opts := Opts{Prompt: "hello", IsolationMode: "host"}
 	got := agentPaneEnvVars(opts)
@@ -730,8 +729,8 @@ func TestAgentPaneEnvVars_HostMode_Skipped(t *testing.T) {
 	}
 }
 
-// TestAgentPaneEnvVars_PromptFile_PreferredOverInline verifies the post-#1092
-// behaviour: when both opts.Prompt and opts.PromptFilePath are set in bwrap
+// TestAgentPaneEnvVars_PromptFile_PreferredOverInline verifies the file-path
+// preference: when both opts.Prompt and opts.PromptFilePath are set in bwrap
 // or sandbox-exec mode, agentPaneEnvVars emits PRISM_INITIAL_PROMPT_FILE
 // (carrying the path) and NOT the inline PRISM_INITIAL_PROMPT (which would
 // re-introduce the launch-cmd size failure).
@@ -940,7 +939,7 @@ func TestDefaultAgentForSession_NoRow(t *testing.T) {
 }
 
 // TestHarnessBinary asserts that harnessBinary returns the correct binary name
-// for each harness value (issue #1290).
+// for each harness value.
 func TestHarnessBinary(t *testing.T) {
 	tests := []struct {
 		harness string
@@ -959,7 +958,7 @@ func TestHarnessBinary(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Tests for sanitiseBranchComponent / worktreeBranchComponent (#1479)
+// Tests for sanitiseBranchComponent / worktreeBranchComponent
 // ---------------------------------------------------------------------------
 
 // TestSanitiseBranchComponent covers the sanitisation rules: "." → "_",
@@ -1068,7 +1067,7 @@ func TestWorktreeBranchComponent_FilepathFallback_SanitisesDot(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: tmux new-session failure propagation (#1479 AC #5, AC #6)
+// Test: tmux new-session failure propagation
 // ---------------------------------------------------------------------------
 
 // failTmuxBin installs a fake tmux binary that always exits non-zero, returning
@@ -1105,8 +1104,7 @@ func TestCreate_TmuxNewSessionFailure(t *testing.T) {
 // presence of both "new-window" and "agent" in argv). Used by
 // TestSetupFullLayout_AgentWindowFailure_Propagates to exercise the
 // discarded-error surface at internal/session/session.go:setupFullLayout —
-// the fix for issue #2510 makes that failure surface up to the caller
-// instead of being swallowed.
+// that failure must surface up to the caller instead of being swallowed.
 func failTmuxBinOnAgentWindow(t *testing.T) {
 	t.Helper()
 	wrapperPath := t.TempDir() + "/tmux"
@@ -1140,19 +1138,19 @@ exit 0
 // TestSetupFullLayout_AgentWindowFailure_Propagates verifies that when the
 // agent window (tmux window index 1, the load-bearing pane that runs `prism
 // agent-run` or a direct pi invocation) fails to be created, Create() returns
-// a non-nil error naming the session. Pre-fix this call site discarded its
-// error via `_ = tmux.NewWindow(...)` and setupFullLayout returned nil, so
-// the caller (SpawnSession) proceeded to the readiness gate and eventually
-// surfaced only a bare "not ready within 30s" timeout — the misdirection
-// that made issue #2510 hard to triage.
+// a non-nil error naming the session. If this call site discarded its error
+// via `_ = tmux.NewWindow(...)` and setupFullLayout returned nil, the caller
+// (SpawnSession) would proceed to the readiness gate and surface only a bare
+// "not ready within 30s" timeout — a misdirection that makes such failures
+// hard to triage.
 //
 // Revert-and-watch-fail: with the `_ = tmux.NewWindow(name, 1, "agent", ...)`
 // line restored (error discarded), this test passes vacuously because
 // setupFullLayout carries on past the failure and returns nil once the
 // tmux-session-start seed subprocess exits (PRISM_TEST_SUBPROCESS=1 makes
-// the re-execed test binary exit 0 as a stub). With the fix in place
-// (checked error) the wrap returns a non-nil error immediately and the
-// assertions below trip only on regressions.
+// the re-execed test binary exit 0 as a stub). With the error checked, the
+// wrap returns a non-nil error immediately and the assertions below trip only
+// on regressions.
 func TestSetupFullLayout_AgentWindowFailure_Propagates(t *testing.T) {
 	_, _ = openSpawnTestDB(t)
 	failTmuxBinOnAgentWindow(t)

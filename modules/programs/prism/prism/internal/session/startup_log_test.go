@@ -1,6 +1,6 @@
 package session
 
-// Tests for the per-agent startup log helper (#1051 Piece B). These verify
+// Tests for the per-agent startup log helper. These verify
 // the path resolution, the existence helper used by `prism logs`, and the
 // best-effort tolerance to a nil receiver / unwritable directory.
 
@@ -22,7 +22,7 @@ func TestAgentStartupLogPath_DefaultsToXDGState(t *testing.T) {
 	}
 	// The per-session subdirectory uses the SessionDirName-derived 12-hex
 	// SHA-256 prefix so the startup log is co-located with hostapi.sock and
-	// agent-run.log (see #1066).
+	// agent-run.log.
 	want := filepath.Join(tmp, "prism", "run", SessionDirName(sessionName), "agent-startup.log")
 	if got != want {
 		t.Errorf("AgentStartupLogPath = %q, want %q", got, want)
@@ -32,8 +32,8 @@ func TestAgentStartupLogPath_DefaultsToXDGState(t *testing.T) {
 // TestAgentStartupLogPath_LivesNextToAgentRunLog verifies that the startup
 // log and agent-run log share the same parent directory. This co-location
 // matters for forensic discovery: an operator who finds one file should see
-// the other in the same `ls`. See #1066 for the alignment fix that brought
-// AgentStartupLogPath onto SessionDirName.
+// the other in the same `ls`. AgentStartupLogPath uses SessionDirName so the
+// two files always align.
 func TestAgentStartupLogPath_LivesNextToAgentRunLog(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	startupPath, err := AgentStartupLogPath("myrepo@feat")

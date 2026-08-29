@@ -1,14 +1,14 @@
 package session
 
 // spawn_reap_cause_2613_test.go — cleanupHalfAliveSession must record why it
-// closed the row (issue #2613).
+// closed the row.
 //
 // This helper is on the review-agent lifecycle: internal/review's spawn loop
 // calls SpawnSession, so a review agent that fails its layout step or
 // SpawnSession's own inline readiness gate is closed here, in state "error".
-// A closed row in that state with no recorded cause is exactly the shape the
-// round report could not explain — it read as "force-terminated, or its
-// readiness gate failed".
+// A closed row in that state with no recorded cause reads as
+// "force-terminated, or its readiness gate failed", which the round report
+// cannot explain.
 
 import (
 	"path/filepath"

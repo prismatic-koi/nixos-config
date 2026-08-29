@@ -1,7 +1,7 @@
 package session
 
-// model_override_test.go — issue #2863 regression tests for the per-role
-// model override on the session launch path.
+// model_override_test.go — regression tests for the per-role model override
+// on the session launch path.
 //
 // `prism spawn --model-override <role>=<model>` lands on Opts.ModelsByRole.
 // The entry keyed by the session's own role decides the model pi runs on,
@@ -109,7 +109,7 @@ func TestBuildDirectAgentCmd_OverrideForOtherRoleIsNoOp(t *testing.T) {
 	})
 }
 
-// TestBuildDirectAgentCmd_NoOverrideIsUnchanged is the no-regression AC: an
+// TestBuildDirectAgentCmd_NoOverrideIsUnchanged is the no-regression guard: an
 // empty or nil ModelsByRole must leave the host command byte-identical to the
 // same opts with the field absent.
 func TestBuildDirectAgentCmd_NoOverrideIsUnchanged(t *testing.T) {

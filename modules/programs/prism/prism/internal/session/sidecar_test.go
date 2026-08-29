@@ -29,7 +29,7 @@ import (
 // sleeps for 60 seconds, interruptible by SIGTERM. This is used by tests that
 // exercise the KillSidecarAndWait wait path.
 //
-// The argv check is defence in depth for the #2230 recursion class: this
+// The argv check is defence in depth for the recursion class: this
 // package's production code re-execs os.Executable() — in tests, THIS
 // binary — as `<self> sidecar …` (StartSidecarWithOpts) and `<self> event
 // tmux-session-start …` (setupFullLayout's status seed). A test that
@@ -39,7 +39,7 @@ import (
 // review.test processes after one suite run) because its tests relied on a
 // TestMain it did not have.
 //
-// Suite-wide tmux isolation (#2230): clears $TMUX and redirects
+// Suite-wide tmux isolation: clears $TMUX and redirects
 // $TMUX_TMPDIR to an empty directory before m.Run() so no code under test
 // can reach the live host tmux server via the default-socket fallback. See
 // tmux_isolation_test.go for the full rationale and the regression guard.
@@ -57,8 +57,8 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	if len(os.Args) > 1 && (os.Args[1] == "sidecar" || os.Args[1] == "event") {
-		// Re-invoked as a prism subcommand without a stub env var (#2230
-		// recursion defence — see the doc comment above). Exit instead of
+		// Re-invoked as a prism subcommand without a stub env var (recursion
+		// defence — see the doc comment above). Exit instead of
 		// recursively running the suite.
 		os.Exit(0)
 	}
@@ -277,7 +277,7 @@ func TestBuildReadinessWaitCmd_ExitsOneOnTimeout(t *testing.T) {
 
 // TestBuildReadinessWaitCmd_NoSidHandoff verifies that the readiness wait
 // script does not contain any .sid file read or -s flag injection — the
-// wrapped command connects to the agent PTY directly (RFC #691, Phase 1a).
+// wrapped command connects to the agent PTY directly.
 func TestBuildReadinessWaitCmd_NoSidHandoff(t *testing.T) {
 	cmd := buildReadinessWaitCmd("/tmp/test.ready", "agent-launcher --attach prism-repo-main")
 	if strings.Contains(cmd, ".sid") {
@@ -338,7 +338,7 @@ func TestAgentRunLogPath_DefaultXDG(t *testing.T) {
 		t.Fatalf("AgentRunLogPath: %v", err)
 	}
 
-	// Per-session subdirectory format (#1050): run/<12-hex-of-sha256(session)>/agent-run.log
+	// Per-session subdirectory format: run/<12-hex-of-sha256(session)>/agent-run.log
 	want := filepath.Join(home, ".local", "state", "prism", "run", SessionDirName(sess), "agent-run.log")
 	if got != want {
 		t.Errorf("AgentRunLogPath = %q, want %q", got, want)
@@ -355,7 +355,7 @@ func TestAgentRunLogPath_CustomXDG(t *testing.T) {
 		t.Fatalf("AgentRunLogPath: %v", err)
 	}
 
-	// Per-session subdirectory format (#1050): run/<12-hex-of-sha256(session)>/agent-run.log
+	// Per-session subdirectory format: run/<12-hex-of-sha256(session)>/agent-run.log
 	want := filepath.Join(tmp, "prism", "run", SessionDirName(sess), "agent-run.log")
 	if got != want {
 		t.Errorf("AgentRunLogPath = %q, want %q", got, want)
@@ -401,7 +401,7 @@ func TestSidecarHostAPIPath_DefaultXDG(t *testing.T) {
 		t.Fatalf("SidecarHostAPIPath: %v", err)
 	}
 
-	// Per-session subdirectory format (security fix #960, hashed for #1050):
+	// Per-session subdirectory format (socket isolation, hashed for path length):
 	// run/<12-hex-of-sha256(session)>/hostapi.sock
 	want := filepath.Join(home, ".local", "state", "prism", "run", SessionDirName(sess), "hostapi.sock")
 	if got != want {
@@ -419,7 +419,7 @@ func TestSidecarHostAPIPath_CustomXDG(t *testing.T) {
 		t.Fatalf("SidecarHostAPIPath: %v", err)
 	}
 
-	// Per-session subdirectory format (security fix #960, hashed for #1050):
+	// Per-session subdirectory format (socket isolation, hashed for path length):
 	// run/<12-hex-of-sha256(session)>/hostapi.sock
 	want := filepath.Join(tmp, "prism", "run", SessionDirName(sess), "hostapi.sock")
 	if got != want {
@@ -427,7 +427,7 @@ func TestSidecarHostAPIPath_CustomXDG(t *testing.T) {
 	}
 }
 
-// ── Path-length invariant tests (#1050) ──────────────────────────────────────
+// ── Path-length invariant tests ──────────────────────────────────────────────
 //
 // The host-API socket path is bound by the kernel's sun_path limit:
 //   - Linux:  108 bytes (sizeof(((struct sockaddr_un *)0)->sun_path))
@@ -435,9 +435,9 @@ func TestSidecarHostAPIPath_CustomXDG(t *testing.T) {
 // We assert ≤ 104 bytes on every platform so the same code path works on both.
 //
 // These tests use a deliberately-pessimistic synthetic $HOME that matches the
-// real-world layout under which #1050 was first observed
+// real-world layout under which the sun_path overflow appears
 // (/home/<user>/.local/state/prism/run/...). Test-time temp dirs are too short
-// to surface the bug, so we substitute the realistic prefix manually.
+// to surface the overflow, so we substitute the realistic prefix manually.
 
 const sunPathBudget = 104
 
@@ -449,8 +449,8 @@ func realisticHostAPIPath(home, sessionName string) string {
 }
 
 // TestSidecarHostAPIPath_LengthInvariant_WorstCaseSession exercises the
-// worst-case session name from the issue (#1050 AC-1) and asserts the
-// resulting path fits the cross-platform budget.
+// worst-case session name and asserts the resulting path fits the
+// cross-platform budget.
 func TestSidecarHostAPIPath_LengthInvariant_WorstCaseSession(t *testing.T) {
 	const home = "/home/prismatic-koi"
 	worstCase := "nixos-config@" + strings.Repeat("x", 80) + "~review-99-review-context"
@@ -463,9 +463,8 @@ func TestSidecarHostAPIPath_LengthInvariant_WorstCaseSession(t *testing.T) {
 }
 
 // TestSidecarHostAPIPath_LengthInvariant_PlausibleShapes asserts the
-// path-length invariant for the three plausible session shapes called out by
-// AC-2: a short coordinator name, a long branch name, and a long branch +
-// review suffix.
+// path-length invariant for the three plausible session shapes: a short
+// coordinator name, a long branch name, and a long branch + review suffix.
 func TestSidecarHostAPIPath_LengthInvariant_PlausibleShapes(t *testing.T) {
 	const home = "/home/prismatic-koi"
 	cases := []struct {
@@ -642,7 +641,7 @@ func TestSidecarHarnessPipePath_CoLocatesWithHostAPI(t *testing.T) {
 	}
 }
 
-// ── SidecarPodmanProxyPath tests (#2317 / #2320) ────────────────────────
+// ── SidecarPodmanProxyPath tests ────────────────────────
 
 func TestSidecarPodmanProxyPath_DefaultXDG(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "")
@@ -707,8 +706,7 @@ func TestSidecarPodmanProxyPath_LengthInvariant_WorstCaseSession(t *testing.T) {
 // socket lives in the same directory as the host-API and harness-pipe
 // sockets, so the existing bind-mount (bwrap) and SBPL subpath (sandbox-exec)
 // already cover this socket too — no additional bind or allow rule required.
-// This is the central design assumption of #2317 sec.3b ("piggyback on the
-// existing run dir").
+// This is the central design assumption: piggyback on the existing run dir.
 func TestSidecarPodmanProxyPath_CoLocatesWithHostAPI(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", tmp)

@@ -1,7 +1,7 @@
 package dashboard_test
 
 // profile_column_test.go — tests for the profile-tier column between state
-// and title (issue #2640).
+// and title.
 
 import (
 	"strings"

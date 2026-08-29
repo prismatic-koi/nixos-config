@@ -7,11 +7,11 @@ import (
 	"github.com/prismatic-koi/prism/internal/dashboard"
 )
 
-// TestFetchGitHubStats_GitLabRemoteSkipsWithoutFalseZero verifies the #2669
+// TestFetchGitHubStats_GitLabRemoteSkipsWithoutFalseZero verifies the GitLab
 // dashboard degrade path. On a gitlab.com origin remote, FetchGitHubStats
 // must not shell out to gh (which would fail or misbehave against a repo it
-// cannot resolve), and — per review-goal's round-1 finding — must not
-// silently reset the previously-displayed open-PR count to a false 0. It
+// cannot resolve), and must not silently reset the prior open-PR count to a
+// false 0. It
 // signals "skip, keep the prior value" via the existing Err:true contract
 // (see GithubStatsMsg), which both dashboard.Model variants already honour
 // by leaving GhOpenPRs untouched.
