@@ -17,8 +17,8 @@ import (
 	"time"
 )
 
-// Every escape vector in the threat table (docs/podman-proxy.md §2)
-// gets an explicit security test. The tests share a small scaffold
+// Every escape vector in the threat table (docs/podman-proxy.md,
+// "Threat model") gets an explicit security test. The tests share a small scaffold
 // that stands up a real podmanproxy in front of a fake upstream so we
 // can assert both the synthesised 4xx (no upstream forward) AND the
 // upstream-forwarded path.

@@ -50,8 +50,9 @@ func denyDecision(status int, reason, message string) policyDecision {
 // hostConfig is the subset of HostConfig the proxy parses out of
 // containers/create (and the partial-HostConfig shape that
 // containers/{id}/update also accepts). Every field in the threat
-// table (docs/podman-proxy.md §2) must appear here. Fields not present
-// in this struct are silently ignored by the parser (json.Decoder skips
+// table (docs/podman-proxy.md, "Threat model") must appear here. Fields
+// not present in this struct are silently ignored by the parser
+// (json.Decoder skips
 // unknown keys by default) and forwarded unmodified.
 //
 // Pointer types are used where the difference between "field absent"

@@ -61,8 +61,8 @@
 //
 //  1. File an issue describing the workflow and the field.
 //  2. Audit the field against the threat table in
-//     docs/podman-proxy.md §2. Classify as INSPECTED / DENIED /
-//     FORWARDED.
+//     docs/podman-proxy.md, "Threat model". Classify as INSPECTED /
+//     DENIED / FORWARDED.
 //  3. Open a PR that adds the field to the appropriate struct in
 //     policy.go with a rationale comment matching the existing
 //     style. INSPECTED additions need a policy check + a non-vacuous
