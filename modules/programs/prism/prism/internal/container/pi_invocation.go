@@ -8,9 +8,7 @@ package container
 //     PI_CODING_AGENT_DIR to that path. The single shared mount carries
 //     settings.json, themes/, AGENTS.md, skills/, auth.json, and
 //     atlassian-mcp-oauth.json — all identical across sessions.
-//     Per-session staging dirs were eliminated in design #2031 PR3 (#2034)
-//     once APPEND_SYSTEM.md was no longer needed (PR2 #2038). The role
-//     system-prompt is injected at runtime by the prism PI extension
+//     The role system-prompt is injected at runtime by the prism PI extension
 //     (pi/extensions/prism.ts, before_agent_start), which reads
 //     ~/.config/prism/agents/<role>.md.
 //
@@ -24,12 +22,9 @@ package container
 //     sandbox.
 //  3. Invoke PI with the appropriate flags as the sandbox terminator.
 //
-// `nh switch` mid-session behaviour: because ~/.pi/agent is now a live
-// shared mount (rather than a per-session COPY of settings.json/themes/AGENTS.md),
-// changes to those files on the host become visible to a running PI session
-// without requiring a respawn. This is the design call locked in #2034 —
-// the content is the user's own config and changing rarely mid-session, and
-// the simplification payoff is significant.
+// `nh switch` mid-session behaviour: because ~/.pi/agent is a live shared
+// mount, changes to settings.json / themes / AGENTS.md on the host become
+// visible to a running PI session without a respawn.
 //
 // This file provides PIInvocation (analogous to HarnessInvocation) and
 // EnsurePIAgentConfigDir which prepares the shared host directory.
@@ -72,26 +67,26 @@ const (
 //	--model    <cfg.AgentModel or cfg.PIModel>
 //	                                      (when non-empty; AgentModel — the
 //	                                       per-role `--model-override` entry —
-//	                                       wins over PIModel, issue #2863)
+//	                                       wins over PIModel)
 //	--thinking <cfg.PIThinking>           (when non-empty)
 //	--extension <extensionPath>           (always; path is derived from cfg)
 //	--agent    <cfg.AgentRole>            (when non-empty; consumed by the
 //	                                       prism PI extension via
 //	                                       pi.registerFlag("agent") to source
 //	                                       the role system prompt at
-//	                                       before_agent_start — issue #2064)
+//	                                       before_agent_start)
 //	--session  <cfg.HarnessSessionID>     (when non-empty AND on-disk session
 //	                                       file exists — see piResolveResumeSession)
 //	<cfg.InitialPrompt>                   (bare positional arg, when non-empty)
 //
-// The role system prompt is NOT delivered via this staging directory. It is
+// The role system prompt is NOT delivered via this config directory. It is
 // injected at runtime by the prism PI extension (pi/extensions/prism.ts,
 // before_agent_start), which reads ~/.config/prism/agents/<role>.md and
-// appends it to PI's default system prompt. The staging directory referenced
+// appends it to PI's default system prompt. The config directory referenced
 // by PI_CODING_AGENT_DIR only carries settings.json / themes / AGENTS.md /
 // skills / auth.json.
 //
-// Conversation resume (issue #1838): when cfg.HarnessSessionID is non-empty,
+// Conversation resume: when cfg.HarnessSessionID is non-empty,
 // PIInvocation looks up the on-disk session JSONL via
 // piResolveResumeSession. If found, --session <id> is appended immediately
 // before any positional InitialPrompt arg so pi reopens the prior turns.
@@ -110,7 +105,7 @@ func PIInvocation(cfg Config) []string {
 	if cfg.PIProvider != "" {
 		args = append(args, "--provider", cfg.PIProvider)
 	}
-	// Model axis, highest rung first (issue #2863). cfg.AgentModel carries the
+	// Model axis, highest rung first. cfg.AgentModel carries the
 	// `prism spawn --model-override <role>=<model>` entry for THIS session's
 	// role; cfg.PIModel carries the profile slot value that populatePIConfig
 	// has already replaced with `prism agent-run --model` when that was set.
@@ -135,8 +130,8 @@ func PIInvocation(cfg Config) []string {
 	extensionSandboxPath := filepath.Join(extensionSandboxDir, piExtensionFilename)
 	args = append(args, "--extension", extensionSandboxPath)
 
-	// --agent <role> for the prism PI extension's role-prompt injection
-	// (issue #2064). pi has no native concept of agents — the extension
+	// --agent <role> for the prism PI extension's role-prompt injection.
+	// pi has no native concept of agents — the extension
 	// registers --agent via pi.registerFlag at factory entry and reads the
 	// bound value synchronously in its before_agent_start handler. Skipping
 	// this flag when AgentRole is empty matches the edge-case AC: a session
@@ -145,8 +140,8 @@ func PIInvocation(cfg Config) []string {
 		args = append(args, "--agent", cfg.AgentRole)
 	}
 
-	// --exclude-tools <names> for role-scoped builtin tool restriction
-	// (issue #2531). Review roles never legitimately call write/edit; see
+	// --exclude-tools <names> for role-scoped builtin tool restriction.
+	// Review roles never legitimately call write/edit; see
 	// internal/config/agent_tool_roles.go for the rationale and the role
 	// list. A role with no exclusions (including "", worker, coordinator)
 	// emits no flag and keeps pi's default builtin tool set.
@@ -154,7 +149,7 @@ func PIInvocation(cfg Config) []string {
 		args = append(args, "--exclude-tools", strings.Join(excluded, ","))
 	}
 
-	// --session <id> for conversation resume (#1838). Skipped silently when
+	// --session <id> for conversation resume. Skipped silently when
 	// HarnessSessionID is empty (fresh session); on missing-file the helper
 	// logs a warning and returns ok=false so pi starts a new conversation.
 	if cfg.HarnessSessionID != "" {
@@ -238,23 +233,19 @@ func piResolveResumeSession(cfg Config) bool {
 //	host         → pi runs against the host environment directly.
 //	bwrap        → the host's PI sessions root is overlay-mounted into the
 //	               sandbox at $PI_CODING_AGENT_DIR/sessions (see
-//	               appendPIBwrapMounts and #1985).
+//	               appendPIBwrapMounts).
 //	sandbox-exec → the dispatcher injects PI_CODING_AGENT_DIR=<host
 //	               ~/.pi/agent> into the sandbox env and sandbox-exec shares
 //	               the host filesystem (cmd/agent_run_sandbox_exec_darwin.go),
-//	               so pi writes to the host root there too. A pre-#2210
-//	               branch here resolved sandbox-exec to the per-session
-//	               staging-HOME sessions dir (deleted in Step 5 of #2132);
-//	               that formula had been stale since #1286 and meant resume
-//	               never found the transcript (issue #2210).
+//	               so pi writes to the host root there too.
 //
 // PI_CODING_AGENT_DIR mirrors pi's own ENV_AGENT_DIR honouring (pi 0.79
 // dist/core/session-manager.js getDefaultAgentDir / getDefaultSessionDirPath
 // — see internal/harness/pi/archive.go for the full citation). The prism
 // developer host sets it system-wide to /run/prism/pi-agent.
 //
-// The Config parameter is retained for signature stability with callers and
-// the archive-side mirror; resolution no longer depends on any cfg field.
+// The Config parameter is kept for signature stability with callers and
+// the archive-side mirror; resolution does not depend on any cfg field.
 //
 // Returns ok=false only when host resolution fails (no home dir, and
 // PI_CODING_AGENT_DIR is unset).
@@ -287,11 +278,11 @@ func piResumeHostSessionsRoot() (string, bool) {
 //
 // This is the FS-side companion to db.ClearHarnessSessionID: together they
 // sever the pi resume linkage so that re-spawning a NEW session on the SAME
-// branch name does not resume the cleaned session's pi conversation
-// (issue #2035). DB-side severance alone is sufficient for the bug —
+// branch name does not resume the cleaned session's pi conversation.
+// DB-side severance alone is sufficient for the bug —
 // PIInvocation only appends `--session <id>` when HarnessSessionID is
 // non-empty AND ResolvePIResumeSession finds a matching JSONL. That is
-// confirmed empirically by pi's transcript rollover (issue #2371 forensics):
+// confirmed empirically by pi's transcript rollover:
 // pi rolls to a new UUID/file mid-session, this removal only ever matches
 // the DB's latest id, and the earlier rollover files that survive every
 // close have never caused a dud auto-resume. Removing the on-disk
@@ -299,7 +290,7 @@ func piResumeHostSessionsRoot() (string, bool) {
 // conversations across reused branch names — and because the transcript is
 // also what pi's interactive /resume reads, cleanup invokes this ONLY on
 // hard-cleanup paths (severModeHard in cmd/cleanup.go); soft closes
-// preserve the transcript and rely on the DB clear alone (issue #2371).
+// preserve the transcript and rely on the DB clear alone.
 //
 // Resolution mirrors piResumeSessionsRoot: every isolation mode (host,
 // bwrap, sandbox-exec) resolves to the host sessions root —
@@ -307,7 +298,7 @@ func piResumeHostSessionsRoot() (string, bool) {
 // For sandbox-exec this removal is load-bearing, not redundant: pi writes
 // its transcripts to the host root (the dispatcher injects
 // PI_CODING_AGENT_DIR into the sandbox env), so the per-session work-dir
-// wipe in RemoveSessionWorkDir never touches them (issue #2210).
+// wipe in RemoveSessionWorkDir never touches them.
 //
 // Best-effort and non-fatal:
 //
@@ -323,7 +314,7 @@ func piResumeHostSessionsRoot() (string, bool) {
 //
 // The function deliberately scopes by `_<HarnessSessionID>.jsonl` suffix
 // rather than wiping the whole encoded-cwd dir: other sibling sessions on
-// the same worktree path (e.g. the legitimate-resume case in #1838 where a
+// the same worktree path (e.g. the legitimate-resume case where a
 // still-active session is being restarted) must not be touched.
 func RemovePiResumeJSONL(cfg Config) error {
 	_, err := RemovePiResumeJSONLCount(cfg)
@@ -337,7 +328,7 @@ func RemovePiResumeJSONL(cfg Config) error {
 // reference.
 //
 // The count exists for callers that aggregate removals across many sessions
-// and want honest summary output: `prism reset` (issue #2220) snapshots every
+// and want honest summary output: `prism reset` snapshots every
 // (worktree, harness_session_id) pair being reset and removes exactly those
 // transcripts from the shared host sessions root, reporting the total. The
 // per-session cleanup paths keep using the error-only wrapper.
@@ -435,12 +426,10 @@ func piAgentRunLogPath(sessionName string) (string, error) {
 // (piAgentConfigSandboxDefault). It creates the host directory if it does not
 // yet exist so bwrap has a valid bind source on a fresh install.
 //
-// Design #2031, PR3 (#2034): the per-session staging directory previously
-// built by StagePIAgentConfigDir has been collapsed into a single shared
-// read-WRITE mount of ~/.pi/agent at /run/prism/pi-agent. Every session of
-// every role mounts the same host directory — settings.json, themes/,
-// AGENTS.md, skills/, and auth.json are all shared/identical, so there is
-// nothing per-session left to stage.
+// The shared PI agent config is a single read-WRITE mount of ~/.pi/agent at
+// /run/prism/pi-agent. Every session of every role mounts the same host
+// directory — settings.json, themes/, AGENTS.md, skills/, and auth.json are
+// all shared/identical, so there is nothing per-session to stage.
 //
 // The parent mount is RW (not RO) because pi-coding-agent's OAuth token
 // refresh uses proper-lockfile with realpath:true, which mkdir's
@@ -453,7 +442,7 @@ func piAgentRunLogPath(sessionName string) (string, error) {
 //
 // The role system-prompt is injected at runtime by the prism PI extension
 // (pi/extensions/prism.ts, before_agent_start) from
-// ~/.config/prism/agents/<role>.md (design #2031, PR1 #2037 + PR2 #2038).
+// ~/.config/prism/agents/<role>.md.
 // A role with no <role>.md file simply starts with PI's default prompt — the
 // extension returns no override, no error (edge-case AC).
 func EnsurePIAgentConfigDir() (hostDir, sandboxDir string, err error) {
@@ -463,8 +452,7 @@ func EnsurePIAgentConfigDir() (hostDir, sandboxDir string, err error) {
 	}
 	hostDir = filepath.Join(home, ".pi", "agent")
 	// Create the host dir if absent so bwrap has a valid bind source on a
-	// fresh install. Mode 0o700 mirrors what StagePIAgentConfigDir formerly
-	// did for the per-session staging dir.
+	// fresh install. Mode 0o700 keeps the shared config dir owner-only.
 	if mkErr := os.MkdirAll(hostDir, 0o700); mkErr != nil {
 		return "", "", fmt.Errorf("pi: create shared agent dir %s: %w", hostDir, mkErr)
 	}
@@ -491,8 +479,8 @@ func ValidatePIExtensionDir(hostDir string) error {
 // piHarnessPipePath returns the per-session pipe socket path
 // (~/.local/state/prism/run/<sessionDirName>/pipe.sock).
 //
-// This is the path the PI extension connects to for the sidecar wire protocol
-// (P2.SIDECAR). It is inlined here (mirroring sessionRunDir) to avoid a
+// This is the path the PI extension connects to for the sidecar wire
+// protocol. It is inlined here (mirroring sessionRunDir) to avoid a
 // circular import with internal/session.
 func piHarnessPipePath(sessionName string) string {
 	stateHome := os.Getenv("XDG_STATE_HOME")
@@ -546,12 +534,11 @@ func PIExtensionSandboxPath(sandboxDirOverride string) string {
 // empty so the host-mode launch path can fall back to a no-flag invocation
 // rather than emit a stray --extension argument with no value.
 //
-// Used by the host-mode pi launch in internal/session/session.go to close
-// the gap fixed by #2065 — host-mode previously emitted `pi --agent worker`
-// with no --extension, so the prism extension never loaded and role-prompt
-// injection (plus the sidecar bridge, status bar, doom-loop guard, etc.)
-// silently no-op'd. The container path already appends --extension via
-// PIInvocation above.
+// Used by the host-mode pi launch in internal/session/session.go so host
+// mode emits --extension. Without it the prism extension never loads and
+// role-prompt injection (plus the sidecar bridge, status bar, doom-loop
+// guard, etc.) silently no-ops. The container path already appends
+// --extension via PIInvocation above.
 func PIExtensionHostPath(hostDir string) string {
 	if hostDir == "" {
 		return ""
@@ -606,9 +593,8 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 	//     gain in making it RO from the sandbox; the agent already has full
 	//     RW access to the worktree.
 	//
-	// Design #2031 PR3 (#2034) collapsed the former per-session staging dir
-	// into this single shared mount. See pi_invocation.go top-of-file doc
-	// comment for the `nh switch` mid-session implication.
+	// See pi_invocation.go top-of-file doc comment for the `nh switch`
+	// mid-session implication.
 	agentConfigHostDir := cfg.PIAgentConfigHostDir
 	agentConfigSandboxDir := cfg.PIAgentConfigSandboxDir
 	if agentConfigSandboxDir == "" {
@@ -623,14 +609,12 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 		args = append(args, "--bind", agentConfigHostDir, agentConfigSandboxDir)
 		args = append(args, "--setenv", "PI_CODING_AGENT_DIR", agentConfigSandboxDir)
 
-		// ── PI sessions overlay (read-write, global, #1985) ─────────────────
+		// ── PI sessions overlay (read-write, global) ─────────────────
 		// Ensure the host's ~/.pi/agent/sessions/ exists so pi can write its
-		// per-cwd JSONL transcripts there. Pre-#2034 this needed a dedicated
-		// --bind overlay because the parent mount was a per-session staging
-		// dir that did not contain a sessions/ subdir. Post-#2034 the parent
-		// mount IS ~/.pi/agent (RW), so writes to $PI_CODING_AGENT_DIR/
-		// sessions/ already land on the host via the same bind — we just need
-		// to make sure the subdirectory exists on the host before pi starts.
+		// per-cwd JSONL transcripts there. The parent mount IS ~/.pi/agent
+		// (RW), so writes to $PI_CODING_AGENT_DIR/sessions/ land on the host
+		// via the same bind — we just need to make sure the subdirectory
+		// exists on the host before pi starts.
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
 			hostSessionsDir := filepath.Join(home, ".pi", "agent", "sessions")
 			_ = os.MkdirAll(hostSessionsDir, 0o700)

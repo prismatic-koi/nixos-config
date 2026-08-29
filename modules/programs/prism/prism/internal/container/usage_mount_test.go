@@ -1,11 +1,11 @@
 package container
 
 // usage_mount_test.go — unit coverage for the read-only sandbox bind of the
-// prism usage snapshot directory (issue #2572).
+// prism usage snapshot directory.
 //
 // Background. The bottom-bar usage segment reads
 // $XDG_STATE_HOME/prism/usage/current.json
-// (pi/extensions/prism.ts::readUsageSnapshot, issue #2540). That directory
+// (pi/extensions/prism.ts::readUsageSnapshot). That directory
 // was never bound into the sandbox, and the reader degrades silently on a
 // missing file, so the feature rendered nothing in every sandboxed session.
 //
@@ -166,7 +166,7 @@ func hasBindSrcDstForTest(args []string, src, dst string) bool {
 //
 // The dangerous shape is a bind of a PARENT. $XDG_STATE_HOME/prism holds
 // prism.db (the whole session database) and run/ (every session's host-API
-// socket dir, isolated per session by security fix #960); $XDG_STATE_HOME
+// socket dir, isolated per session); $XDG_STATE_HOME
 // itself holds unrelated application state. This test walks every emitted
 // bind triple and fails if any source or destination is an ancestor of the
 // usage directory.
@@ -176,8 +176,7 @@ func TestBwrapBuildArgs_UsageStateDirNoAncestorExposed(t *testing.T) {
 		// through the /tmp -> /private/tmp symlink in a way that does not
 		// match the bwrapFixture temp layout on this platform, producing a
 		// false failure unrelated to the exposure rule under test. The rule
-		// itself is still asserted, at the same strength, on Linux — see
-		// issue #2620.
+		// itself is still asserted, at the same strength, on Linux.
 		t.Skip("bwrap is Linux-only; skipping ancestor-exposure check on non-Linux — see issue #2620")
 	}
 	stateHome, err := filepath.EvalSymlinks(t.TempDir())
@@ -280,8 +279,8 @@ func TestStandardSandboxMounts_UsageStateDirSkippedWithoutHome(t *testing.T) {
 	}
 }
 
-// TestPrepareVolumeDirs_CreatesUsageDir pins the host-side pre-creation
-// (issue #2572). Without it a session spawned before the first snapshot
+// TestPrepareVolumeDirs_CreatesUsageDir pins the host-side pre-creation.
+// Without it a session spawned before the first snapshot
 // capture gets no mount at all (OptionalIfMissing), and the bottom bar stays
 // blank for the whole life of that session even after the host writes a
 // snapshot.

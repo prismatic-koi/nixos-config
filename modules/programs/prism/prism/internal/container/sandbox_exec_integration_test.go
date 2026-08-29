@@ -7,11 +7,9 @@ package container
 // the generated profile and verify that positive cases succeed and negative
 // cases remain denied. Build tag: darwin (skipped on Linux).
 //
-// These tests are the seed pattern for the broader integration-test convention
-// tracked in #1192. The wider withMutatedProfile helper and paired negative
-// tests for every rule will be codified in that follow-up.
-//
-// Requirements: #1200 (AC block — integration tests section).
+// These tests are the seed pattern for the broader integration-test
+// convention. The wider withMutatedProfile helper and paired negative tests
+// for every rule are a follow-up.
 
 import (
 	"os"
@@ -84,8 +82,8 @@ func newIntegrationManager(t *testing.T) *Manager {
 
 // baseEnv returns a minimal environment for sandbox-exec test invocations.
 // We pass PATH (required for binary lookup), HOME pointing at the REAL host
-// home (the production env shape since Step 5 of #2132 deleted the staging
-// HOME), and DEVELOPER_DIR set to the CommandLineTools location so that
+// home (the production env shape), and DEVELOPER_DIR set to the
+// CommandLineTools location so that
 // /usr/bin/git does not fail due to an absent /var/select/developer_dir
 // symlink.
 //
@@ -409,7 +407,7 @@ func TestSandboxExecIntegration_DocumentsDenied(t *testing.T) {
 	}
 	// Create a sentinel file in a temp dir that we treat as the Documents test.
 	// We don't need the file to really be in ~/Documents — any host-home path
-	// that isn't the staging home or worktree should be denied.
+	// that isn't the worktree should be denied.
 	// Use ~/Documents if it exists; otherwise create a temp file in the real home.
 	docsDir := filepath.Join(realHome, "Documents")
 	var testFilePath string

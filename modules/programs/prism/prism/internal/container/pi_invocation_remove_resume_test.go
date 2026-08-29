@@ -1,6 +1,6 @@
 package container
 
-// pi_invocation_remove_resume_test.go — issue #2035.
+// pi_invocation_remove_resume_test.go — RemovePiResumeJSONL coverage.
 //
 // Verifies RemovePiResumeJSONL: the FS-side companion to
 // db.ClearHarnessSessionID called from `prism cleanup` so that a re-spawn on
@@ -10,7 +10,7 @@ package container
 // All tests use t.TempDir() + t.Setenv("HOME", ...) so they never touch the
 // host's real ~/.pi/agent/sessions/.
 //
-// Post-#2185 piResumeSessionsRoot honours PI_CODING_AGENT_DIR; these tests
+// piResumeSessionsRoot honours PI_CODING_AGENT_DIR; these tests
 // clear that env var so they exercise the home-fallback branch
 // deterministically (the developer host sets it system-wide).
 
@@ -48,13 +48,13 @@ func TestRemovePiResumeJSONL_RemovesMatchingFile(t *testing.T) {
 	}
 }
 
-// TestRemovePiResumeJSONL_SandboxExec_RemovesFromHostRoot is the #2210
+// TestRemovePiResumeJSONL_SandboxExec_RemovesFromHostRoot is the
 // regression guard for cleanup: for a sandbox-exec-shaped config, the
 // transcript JSONL lives at the HOST sessions root (pi writes there because
 // the dispatcher injects PI_CODING_AGENT_DIR into the sandbox env), and
-// RemovePiResumeJSONL must remove it from there. Pre-#2210 the resolver
-// pointed at the per-session staging HOME, making the removal a silent no-op
-// that left dead transcripts accumulating under the host root.
+// RemovePiResumeJSONL must remove it from there. A resolver that pointed at
+// a per-session HOME would make the removal a silent no-op that left dead
+// transcripts accumulating under the host root.
 func TestRemovePiResumeJSONL_SandboxExec_RemovesFromHostRoot(t *testing.T) {
 	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
@@ -88,7 +88,7 @@ func TestRemovePiResumeJSONL_SandboxExec_RemovesFromHostRoot(t *testing.T) {
 // suffix match: a JSONL belonging to a DIFFERENT harness_session_id under the
 // same encoded-cwd directory must not be touched.
 //
-// This protects the legitimate-resume case (issue #1838) and any other
+// This protects the legitimate-resume case and any other
 // session that happens to share a worktree path: cleanup must only delete
 // the specific transcript bound to the cleaned session's harness_session_id.
 func TestRemovePiResumeJSONL_LeavesSiblingTranscriptsAlone(t *testing.T) {

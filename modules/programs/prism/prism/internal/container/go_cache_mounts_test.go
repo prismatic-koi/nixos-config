@@ -1,7 +1,7 @@
 package container
 
 // go_cache_mounts_test.go — unit coverage for the Linux bwrap Go cache
-// mounts (issue #2731) and for the shared, platform-aware path list they
+// mounts and for the shared, platform-aware path list they
 // derive from (go_cache.go).
 //
 // These are argv-and-spec assertions. The paired behavioural proof — a real
@@ -17,7 +17,7 @@ import (
 // goCacheLinuxLeaves returns the two Linux leaf cache paths for home, spelled
 // out as LITERALS rather than derived from goCacheDirsForGOOS. A test that
 // derives its expectation from the code under test cannot catch a change to
-// that code; #2621's Darwin test makes the same choice for the same reason.
+// that code; the Darwin test makes the same choice for the same reason.
 func goCacheLinuxLeaves(home string) (modCache, buildCache string) {
 	return filepath.Join(home, "go", "pkg", "mod"), filepath.Join(home, ".cache", "go-build")
 }
@@ -97,7 +97,7 @@ func TestGoCacheDirsForGOOS_FailsClosed(t *testing.T) {
 }
 
 // TestGoCacheDirs_DarwinDelegatesToSharedList is the single-source-of-truth
-// link (issue #2731 AC): the Darwin SBPL generator's goCacheDirs must be the
+// link: the Darwin SBPL generator's goCacheDirs must be the
 // same list the shared function returns for darwin, not a second copy. The
 // companion assertion that Darwin's PATHS and execDenied FLAGS are unchanged
 // is TestGoCacheDirs_DarwinDefaults in sandbox_exec_test.go, which asserts
@@ -147,7 +147,7 @@ func TestStandardSandboxMounts_GoCacheDirsRW(t *testing.T) {
 
 // TestStandardSandboxMounts_GoCacheDerivedFromSharedList asserts the mount
 // entries are generated from goCacheDirsForGOOS rather than from a second
-// hand-written list (issue #2731 AC: no duplication). Changing the shared
+// hand-written list (no duplication). Changing the shared
 // list must move the mounts with it.
 func TestStandardSandboxMounts_GoCacheDerivedFromSharedList(t *testing.T) {
 	const home = "/home/example"
@@ -164,7 +164,7 @@ func TestStandardSandboxMounts_GoCacheDerivedFromSharedList(t *testing.T) {
 // AC. The grant must be the two LEAF cache directories and nothing above
 // them: ~/go also holds ~/go/bin, where `go install` drops binaries that are
 // typically on the host PATH, and ~/.cache is the user's whole cache tree.
-// #2621 rejected (subpath ~/Library/Caches) on Darwin for exactly this
+// (subpath ~/Library/Caches) is rejected on Darwin for exactly this
 // reason; the Linux grant is held to the same line.
 //
 // The assertion sweeps EVERY spec in the walk, not just the Go entries, so it
@@ -195,7 +195,7 @@ func TestStandardSandboxMounts_GoCacheNoParentGrantedWholesale(t *testing.T) {
 // degenerate call shape: with no in-sandbox HOME there is nowhere to mount
 // the caches, so no entry may be emitted. Without the guard the entries
 // would land at "/go/pkg/mod" and "/.cache/go-build" — a host cache exposed
-// at the sandbox root. Mirrors the usage-dir guard (#2572).
+// at the sandbox root. Mirrors the usage-dir guard.
 func TestStandardSandboxMounts_GoCacheSkippedWithoutSandboxHome(t *testing.T) {
 	hostHome := t.TempDir()
 	for _, spec := range StandardSandboxMounts(Config{}, "", hostHome, isolationBwrap) {
@@ -211,7 +211,7 @@ func TestStandardSandboxMounts_GoCacheSkippedWithoutSandboxHome(t *testing.T) {
 // TestBwrapBuildArgs_GoCacheDirsBound is the argv-level functional AC: with
 // both caches present on the host, BuildArgs emits an RW bind for each at
 // Dst==Src. This is the mount that makes `go build ./...` reuse the host
-// cache instead of rebuilding cold in the sandbox interior (#2731).
+// cache instead of rebuilding cold in the sandbox interior.
 func TestBwrapBuildArgs_GoCacheDirsBound(t *testing.T) {
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
@@ -242,8 +242,8 @@ func TestBwrapBuildArgs_GoCacheDirsBound(t *testing.T) {
 	}
 }
 
-// TestBwrapBuildArgs_GoCacheDirsAbsentNoBind is the [edge-case] AC and the
-// #2243 lesson: bwrap ABORTS at startup on a missing --bind source, so a host
+// TestBwrapBuildArgs_GoCacheDirsAbsentNoBind is the [edge-case] AC: bwrap
+// ABORTS at startup on a missing --bind source, so a host
 // that has never run Go must produce no Go cache bind at all. Without the
 // OptionalIfMissing guard this change would break EVERY sandbox on such a
 // machine, not just Go builds.
@@ -303,8 +303,7 @@ func TestPrepareVolumeDirs_CreatesGoCacheDirs(t *testing.T) {
 // TestPrepareVolumeDirs_GoCacheCreationFailureIsNotFatal keeps the caches in
 // the "build convenience" class rather than the "session cannot start" class.
 // The nix build sandbox runs with HOME=/homeless-shelter (unwritable), and a
-// session must still start there — without the mounts, exactly as before
-// #2731.
+// session must still start there — without the mounts.
 func TestPrepareVolumeDirs_GoCacheCreationFailureIsNotFatal(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("running as root: cannot make an unwritable directory")

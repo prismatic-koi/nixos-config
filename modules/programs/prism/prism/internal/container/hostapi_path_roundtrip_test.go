@@ -1,6 +1,6 @@
 package container
 
-// AC-6 round-trip test for #1050: confirm that bwrap.BuildArgs references the
+// Round-trip test: confirm that bwrap.BuildArgs references the
 // same per-session host-API socket directory derived from a sidecar-style path.
 //
 // This test cannot import internal/session directly (session imports
@@ -9,7 +9,7 @@ package container
 // uses (12-hex-char SHA-256 prefix). If this drifts from the production
 // formula, the test will fail loudly — which is the desired behaviour: a
 // drift would mean the sidecar binds in dir A but the sandbox mounts dir B,
-// producing the exact silent-failure mode #1050 set out to prevent.
+// producing the exact silent-failure mode this guards against.
 
 import (
 	"crypto/sha256"

@@ -1,7 +1,7 @@
 package container
 
 // session_work_dir.go — per-session work directory for generated git/ssh
-// configs (issue #2213, Step 2 of the #2132 staging-HOME elimination train).
+// configs.
 //
 // The session work dir lives at
 //
@@ -22,8 +22,7 @@ package container
 //	<sessionDir>/allowed_signers   — for git verify-commit (when signing
 //	                                 is configured)
 //
-// On Darwin it additionally holds the chromium Library skeleton (issue
-// #2247, Step 4 of #2132):
+// On Darwin it additionally holds the chromium Library skeleton:
 //
 //	<sessionDir>/Library/Application Support/Google/
 //	<sessionDir>/Library/Caches/Google/
@@ -43,8 +42,7 @@ package container
 // (~/.ssh/<SshAccessKeyName>, ~/.ssh/<SshSigningKeyName>.pub) — never
 // filepath.EvalSymlinks-resolved secrets.d/<N> paths (sops rotates
 // secrets.d/<N> on every darwin-rebuild switch, which would leave the
-// embedded path dangling mid-session — issues #1410/#1573) and never
-// staging-HOME paths (the staging HOME is deleted in Step 5 of #2132).
+// embedded path dangling mid-session).
 // The in-sandbox read of the resolved key content rides on the existing
 // (subpath "/private/var/folders") allow in the SBPL profile, which
 // survives rotation.
@@ -65,19 +63,19 @@ import (
 // honouring $XDG_STATE_HOME first per the XDG Base Directory Specification,
 // and falling back to $HOME/.local/state when XDG_STATE_HOME is unset. This
 // mirrors xdgStateBase() in dispatch.go and the same pattern used by
-// internal/sidecar tests (see AGENTS.md "Test-suite isolation (#1608)").
+// internal/sidecar tests (see AGENTS.md "Test-suite isolation").
 //
 // In production on Darwin, agent_run_sandbox_exec_darwin.go's
 // buildSandboxExecHomeEnv explicitly sets XDG_STATE_HOME=$HOME/.local/state
 // before exec'ing into the sandbox, so the production path is unchanged.
 // On a normal `nh switch` Darwin shell that does NOT export XDG_STATE_HOME
-// the fallback also resolves to $HOME/.local/state — same path as before.
+// the fallback also resolves to $HOME/.local/state.
 //
 // The XDG_STATE_HOME branch is what makes the homeless-shelter nix-build
 // sandbox tractable: in that environment $HOME=/homeless-shelter (read-only)
 // and any path derived from it fails on os.MkdirAll. Tests that need a
 // writable session work dir set XDG_STATE_HOME to a t.TempDir() so this
-// function returns a writable path regardless of $HOME (issue #2263).
+// function returns a writable path regardless of $HOME.
 //
 // Callers that have an instance_id but no Manager (e.g. cmd/cleanup.go)
 // use this directly.
@@ -137,7 +135,7 @@ func SessionWorkDirAllowedSignersPath(sessionDir string) string {
 }
 
 // SessionWorkDirContainerScratchPath returns the per-session container-scratch
-// directory inside the given session work dir (issue #2317 §3b / #2322).
+// directory inside the given session work dir.
 //
 //	<sessionDir>/container-scratch
 //
@@ -147,10 +145,10 @@ func SessionWorkDirAllowedSignersPath(sessionDir string) string {
 // internal/sidecar/podman_proxy.go::allowedPodmanBindSources).
 //
 // Sandbox shape:
-//   - bwrap (Step 4 / #2321) binds the path Dst==Src into the sandbox so
+//   - bwrap binds the path Dst==Src into the sandbox so
 //     a worker can `podman run -v <sessionDir>/container-scratch:/x ...`
 //     without granting the wider worktree to the spawned container.
-//   - sandbox-exec (Step 5 / #2322) rides on the section-6
+//   - sandbox-exec rides on the section-6
 //     (subpath <sessionDir>) RW grant in the SBPL profile — no new SBPL
 //     clause is needed for the scratch dir itself.
 //
@@ -167,7 +165,7 @@ func SessionWorkDirContainerScratchPath(sessionDir string) string {
 }
 
 // SessionWorkDirKubeCacheDirPath returns the kubectl cache directory inside
-// the given session work dir (issue #2235, Step 3b of #2132):
+// the given session work dir:
 //
 //	<sessionDir>/kube-cache
 //
@@ -190,8 +188,8 @@ func SessionWorkDirKubeCacheDirPath(sessionDir string) string {
 //
 // Injected by the sandbox-exec dispatcher
 // (cmd/agent_run_sandbox_exec_darwin.go) alongside SessionWorkDirGitEnv.
-// The kube config itself is delivered via KUBECONFIG from agent.envVars
-// (issue #2235); only the cache redirect is session-derived and therefore
+// The kube config itself is delivered via KUBECONFIG from agent.envVars;
+// only the cache redirect is session-derived and therefore
 // injected here. The bwrap equivalent lives in bwrap.go BuildArgs
 // (KUBECACHEDIR=/tmp/kube-cache — the per-session tmpfs).
 func SessionWorkDirKubeEnv(sessionDir string) []string {
@@ -201,7 +199,7 @@ func SessionWorkDirKubeEnv(sessionDir string) []string {
 }
 
 // SessionWorkDirGlabConfigDirPath returns the glab (GitLab CLI) config
-// directory inside the given session work dir (issue #2668):
+// directory inside the given session work dir:
 //
 //	<sessionDir>/glab-cli
 //
@@ -241,8 +239,7 @@ func SessionWorkDirGlabEnv(sessionDir string) []string {
 }
 
 // SessionWorkDirChromiumDirs returns the chromium Library skeleton
-// directories inside the given session work dir (issue #2247, Step 4 of
-// #2132):
+// directories inside the given session work dir:
 //
 //	<sessionDir>/Library/Application Support/Google
 //	<sessionDir>/Library/Caches/Google
@@ -275,7 +272,7 @@ func SessionWorkDirChromiumDirs(sessionDir string) []string {
 // sshBin should be cfg.SshBin (the Nix-built openssh binary); when empty,
 // "ssh" (PATH resolution) is used as the fallback.
 //
-// Known gap, accepted in #2132 Step 2: libgit2/go-git-class tools ignore
+// Known gap, accepted: libgit2/go-git-class tools ignore
 // GIT_CONFIG_GLOBAL and fall back to $HOME/XDG-derived git config inside
 // the sandbox. Those readers do not need the generated identity/signing
 // config — reads work without any global gitconfig — so the fallback is
@@ -297,7 +294,7 @@ func SessionWorkDirGitEnv(sessionDir, sshBin string) []string {
 // All failures are hard errors: the work-dir configs are the only route to
 // git identity and ssh auth inside a sandbox-exec session, so a session must
 // not start without them. In particular, a missing git identity surfaces the
-// writeGitconfigArtefacts hard error from issue #1960 (refuse to start a
+// writeGitconfigArtefacts hard error (refuse to start a
 // session without [user] in the gitconfig).
 //
 // Calling PrepareSessionWorkDir a second time is idempotent: the directory
@@ -311,7 +308,7 @@ func (m *Manager) PrepareSessionWorkDir() (string, error) {
 		return "", fmt.Errorf("container: session work dir: create %s: %w", sessionDir, err)
 	}
 
-	// ── Chromium Library skeleton (issue #2247, Step 4 of #2132) ────────────
+	// ── Chromium Library skeleton ────────────
 	// Darwin-only: CFFIXED_USER_HOME is a CoreFoundation mechanism, so the
 	// skeleton is meaningless on other platforms. Failures are logged but do
 	// not fail session prep — chromium/playwright-cli is an optional
@@ -338,13 +335,13 @@ func (m *Manager) PrepareSessionWorkDir() (string, error) {
 // writeSshConfigToDir writes the generated ssh config to
 // <sessionDir>/ssh-config. Its body comes from sandboxSshConfig — the same
 // generator the bwrap path uses (container.go writeSshConfig) — so the
-// github.com and gitlab.com stanzas cannot drift between isolation modes
-// (#2668). Only the embedded IdentityFile differs between the two callers.
+// github.com and gitlab.com stanzas cannot drift between isolation modes.
+// Only the embedded IdentityFile differs between the two callers.
 //
 // The IdentityFile is the STABLE sops symlink path
 // ~/.ssh/<SshAccessKeyName> — deliberately not resolved via
 // filepath.EvalSymlinks, so the embedded path survives sops secrets.d/<N>
-// rotation (issues #1410/#1573):
+// rotation:
 //
 //	~/.ssh/<accessKeyName>                              (stable sops symlink)
 //	  → /private/var/folders/.../secrets.d/<current>/…  (sops re-targets this)
@@ -390,14 +387,11 @@ func (m *Manager) writeSshConfigToDir(sessionDir string) error {
 //
 //   - user.signingKey embedding the STABLE sops symlink path
 //     ~/.ssh/<SshSigningKeyName>.pub (never the EvalSymlinks-resolved
-//     secrets.d/<N> path, which rotates — #1410/#1573 — and never a
-//     staging-HOME path).
+//     secrets.d/<N> path, which rotates).
 //   - gpg.ssh.allowedSignersFile embedding <sessionDir>/allowed_signers.
 //
-// Note (#2132): this deliberately breaks the former "uniform generic
-// key-path layout across isolation modes" property — sandbox-exec sessions
-// now see the real host key names rather than the generic signing-key.pub
-// alias. bwrap keeps its existing generic-name bind-mount layout.
+// Note: sandbox-exec sessions embed the real host key names, while bwrap
+// uses a generic-name bind-mount layout.
 func (m *Manager) writeGitconfigToDir(sessionDir string) error {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -423,8 +417,7 @@ func (m *Manager) writeGitconfigToDir(sessionDir string) error {
 // not exist is a no-op.
 //
 // Called from cmd/cleanup.go so the generated work-dir configs do not
-// accumulate after sessions end. Any legacy staging-HOME remnant from a
-// pre-Step-5-of-#2132 session (nested at <sessionDir>/home/) is swept too.
+// accumulate after sessions end.
 func RemoveSessionWorkDir(instanceID string) {
 	sessionDir, err := SessionWorkDirPath(instanceID)
 	if err != nil {

@@ -1,11 +1,12 @@
 package container
 
 // env_role_test.go — isolator-side coverage for the role-filtered AgentEnvVars
-// map (issue #2533).
+// map.
 //
 // The filter itself lives upstream, in internal/config. The isolator stays
-// role-agnostic: it emits every key present in the map it receives (the #2235
-// invariant pinned by env_test.go, which these tests do not touch). What these
+// role-agnostic: it emits every key present in the map it receives (the
+// no-suppression invariant pinned by env_test.go, which these tests do not
+// touch). What these
 // tests pin is the consequence at the boundary — hand bwrap the map a review
 // role now gets, and neither grafana gate key reaches the sandbox, and the
 // grafana secret bind is not emitted either.

@@ -1,15 +1,13 @@
 // Package container manages sandbox lifecycle and mount preparation for
 // prism agent sessions.
 // This file defines the shared gracefulShutdown helper used by the bwrap and
-// sandbox-exec Isolator.Shutdown implementations (issue #1149 A2.GR; design
-// proposal A2 §3.7).
+// sandbox-exec Isolator.Shutdown implementations.
 //
 // Both bwrap and sandbox-exec sessions are supervised children rather than
 // long-lived container resources. When Manager.Shutdown is invoked on a bwrap
 // or sandbox-exec
 // session, the polite teardown shape is the same: SIGTERM → grace period →
-// SIGKILL. Pre-A2.GR this body lived inline inside bwrapIsolator.Shutdown;
-// sandboxExecIsolator.Shutdown was a no-op.
+// SIGKILL.
 package container
 
 import (
@@ -19,8 +17,8 @@ import (
 )
 
 // defaultGracefulShutdownGrace is the SIGTERM-to-SIGKILL grace period used
-// by bwrap and sandbox-exec when no caller-supplied value is provided. The
-// value mirrors the original bwrap.Shutdown timeout (30 seconds).
+// by bwrap and sandbox-exec when no caller-supplied value is provided
+// (30 seconds).
 const defaultGracefulShutdownGrace = 30 * time.Second
 
 // gracefulShutdown sends SIGTERM to cmd's process, waits up to gracePeriod
@@ -40,7 +38,7 @@ const defaultGracefulShutdownGrace = 30 * time.Second
 // gracePeriod ≤ 0 falls back to defaultGracefulShutdownGrace.
 //
 // cmd may be nil or have a nil Process — the helper is a no-op in those
-// cases (matching the pre-A2.GR bwrapIsolator.Shutdown behaviour).
+// cases.
 func gracefulShutdown(cmd *exec.Cmd, gracePeriod time.Duration) {
 	if cmd == nil || cmd.Process == nil {
 		return

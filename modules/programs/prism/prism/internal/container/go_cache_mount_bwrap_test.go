@@ -3,7 +3,7 @@
 package container
 
 // go_cache_mount_bwrap_test.go — Linux-only behavioural coverage for the Go
-// module and build cache binds (issue #2731).
+// module and build cache binds.
 //
 // The sibling unit tests in go_cache_mounts_test.go assert the emitted argv
 // and the mount specs. Argv assertions are necessary but not sufficient: the
@@ -19,7 +19,7 @@ package container
 //     rebuilding cold;
 //   - without the binds neither holds — the no-op proof that the positive
 //     tests are not green by accident;
-//   - a host with no Go caches yet still starts a sandbox (#2243: bwrap
+//   - a host with no Go caches yet still starts a sandbox (bwrap
 //     ABORTS on a missing bind source), while a hand-written unconditional
 //     bind of the same missing path does abort — so the OptionalIfMissing
 //     guard is load-bearing, not decorative.
@@ -29,7 +29,7 @@ package container
 // positive test can only be the rule under test.
 //
 // Skips (never fails) when bwrap is absent or cannot create user namespaces
-// — GitHub Actions ubuntu runners (#1510) and the nix build sandbox both
+// — GitHub Actions ubuntu runners and the nix build sandbox both
 // land there. The bwrap probe, the coreutils resolver and the shell quoter
 // are shared with usage_mount_bwrap_test.go rather than duplicated; they are
 // generic bwrap helpers despite their usage-test names.
@@ -124,7 +124,7 @@ func runInBwrapWithPath(t *testing.T, bwrapBin, hostHome string, pathDirs []stri
 // TestBwrapGoCacheDirs_WritableInsideSandbox is the functional AC: both Go
 // caches are available read-write at the same paths the host uses. The write
 // must also PERSIST to the host — a cache that dies with the sandbox
-// interior is exactly the cold-cache state #2731 exists to end.
+// interior is exactly the cold-cache state these binds exist to end.
 func TestBwrapGoCacheDirs_WritableInsideSandbox(t *testing.T) {
 	bwrapBin := requireUsableBwrapForUsageTest(t)
 	hostHome, modCache, buildCache := goCacheHome(t)
@@ -190,7 +190,7 @@ func TestBwrapGoCacheDirs_UnreachableWithoutBind(t *testing.T) {
 }
 
 // TestBwrapGoCacheDirs_MissingSourceStartsAndBindsAborts is the [edge-case]
-// AC (#2243). Two halves, and both are needed:
+// AC. Two halves, and both are needed:
 //
 //  1. On a host where neither cache exists, the production emitter produces
 //     NO Go cache bind and the sandbox starts normally. This is the case

@@ -17,7 +17,7 @@ import (
 //
 // Default git identity is auto-populated when the caller leaves
 // GitUserName / GitUserEmail empty so the per-mode `writeGitconfig` hard
-// error from issue #1960 (refuse to start without [user]) does not
+// error (refuse to start without [user]) does not
 // retroactively break every pre-existing sandbox-exec test that does not
 // itself care about git identity. Tests that exercise the empty-identity
 // path explicitly set these fields back to "".
@@ -48,7 +48,7 @@ func newSandboxExecManagerWithInstance(cfg Config) *Manager {
 
 // TestGenerateProfile_VersionAndDenyDefault verifies that the profile begins
 // with the SBPL header that locks deny-by-default semantics: (version 3)
-// followed by (deny default). This is non-negotiable per #1012 and #1200 —
+// followed by (deny default). This is non-negotiable —
 // every other clause is interpreted relative to deny-by-default.
 func TestGenerateProfile_VersionAndDenyDefault(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
@@ -68,12 +68,12 @@ func TestGenerateProfile_VersionAndDenyDefault(t *testing.T) {
 // TestGenerateProfile_ReadOnlySystemRoots verifies that every read-only
 // system root listed in the AC appears as a (subpath ...) inside an
 // (allow file-read* file-test-existence file-map-executable file-read-metadata ...)
-// clause, as required by the v3 migration (#1200 / F.1 §2 rule 2).
+// clause, as required by the v3 migration (F.1 §2 rule 2).
 //
 // Both /etc and /private/etc must be present: on macOS /etc is a symlink to
 // /private/etc but sandbox-exec does not follow it transparently, so both
 // shapes are required for execvp to succeed on /etc/profiles/per-user/...
-// paths. See issue #1187.
+// paths.
 //
 // /bin, /sbin and the /var/... alias forms are also required for the v3 profile.
 func TestGenerateProfile_ReadOnlySystemRoots(t *testing.T) {
@@ -117,7 +117,7 @@ func TestGenerateProfile_ReadOnlySystemRoots(t *testing.T) {
 // clause. Both the /etc/... and /private/etc/... forms must be denied:
 // the same symlink non-transparency that required (subpath "/etc") in the
 // allow list also means that denying only the /private/etc/... form leaves
-// the /etc/... path form accessible. See issue #1187.
+// the /etc/... path form accessible.
 func TestGenerateProfile_SensitiveSubtreeDenies(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
@@ -140,16 +140,15 @@ func TestGenerateProfile_SensitiveSubtreeDenies(t *testing.T) {
 
 // TestGenerateProfile_ProcessAndIPCAllows verifies that the profile contains
 // the process/IPC/syscall primitives required for node, pi, dyld, and
-// AMFI to run under the v3 profile. See #1200 / F.1 §2.
+// AMFI to run under the v3 profile. See F.1 §2.
 //
 // v3 changes vs v1:
 //   - process-info* added (AMFI cert chain validation)
 //   - iokit-open re-introduced as enumerated user-client classes for chromium
-//     framework init (issue #2021). The unqualified (allow iokit-open) form
+//     framework init. The unqualified (allow iokit-open) form
 //     remains forbidden — only specific user-client classes are granted.
 //   - signal split into its own clause with (target self) (target children)
-//     so playwright-cli's node-side launcher can kill its chromium grandchild
-//     (issue #2021).
+//     so playwright-cli's node-side launcher can kill its chromium grandchild.
 //   - ipc-posix-shm REMOVED (unbound variable in v3 — replaced by split forms)
 //   - ipc-posix-shm-read* and ipc-posix-shm-write* added
 //   - syscall-unix syscall-mach added
@@ -179,7 +178,7 @@ func TestGenerateProfile_ProcessAndIPCAllows(t *testing.T) {
 	}
 
 	// The unqualified (allow iokit-open) form MUST NOT be present — the
-	// chromium fix (issue #2021) deliberately enumerates user-client classes
+	// The chromium fix deliberately enumerates user-client classes
 	// rather than opening the entire IOKit surface. Also assert the
 	// iokit-open-user-client form is not unqualified.
 	if strings.Contains(profile, "(allow iokit-open)") {
@@ -194,7 +193,7 @@ func TestGenerateProfile_ProcessAndIPCAllows(t *testing.T) {
 
 	// The signal widening MUST NOT include (target others) — that would
 	// permit signalling arbitrary host PIDs. Only (target self) and
-	// (target children) are allowed (issue #2021).
+	// (target children) are allowed.
 	if strings.Contains(profile, "(target others)") {
 		t.Errorf("profile must not contain (target others) for signal; only (target self) and (target children) are permitted (issue #2021); full profile:\n%s", profile)
 	}
@@ -211,8 +210,7 @@ func TestGenerateProfile_ProcessAndIPCAllows(t *testing.T) {
 // TestGenerateProfile_MachLookupCoversWindowServer verifies that the
 // mach-lookup allow rule is unqualified (no (global-name ...) filter),
 // which subsumes the WindowServer bootstrap port chromium connects to in
-// headed mode (com.apple.windowserver.active) called out in issue #2021
-// §4.
+// headed mode (com.apple.windowserver.active).
 //
 // If a future PR tightens mach-lookup to an enumerated (global-name ...)
 // set, this test catches the regression — either the WindowServer name
@@ -243,7 +241,7 @@ func TestGenerateProfile_MachLookupCoversWindowServer(t *testing.T) {
 
 // TestGenerateProfile_IOKitChromiumClasses verifies the enumerated IOKit
 // user-client class allow set required for chromium framework init under
-// playwright-cli (issue #2021). Without these classes chromium SIGSEGVs in
+// playwright-cli. Without these classes chromium SIGSEGVs in
 // IONotificationPortGetRunLoopSource at ChromeMain+~50ms.
 //
 // The five classes correspond to: Metal/IOSurface framebuffer (IOSurfaceRoot),
@@ -270,8 +268,8 @@ func TestGenerateProfile_IOKitChromiumClasses(t *testing.T) {
 }
 
 // TestGenerateProfile_IOKitOpenServiceIOPMrootDomain verifies the
-// iokit-open-service allow for the IOPMrootDomain registry entry
-// (issue #2249). Current Chrome for Testing acquires its power-management
+// iokit-open-service allow for the IOPMrootDomain registry entry.
+// Current Chrome for Testing acquires its power-management
 // port via iokit-open-service on IOPMrootDomain — a different operation
 // class from the iokit-open-user-client RootDomainUserClient allow — and
 // SIGSEGVs during early init when it is denied.
@@ -307,7 +305,7 @@ func TestGenerateProfile_IOKitOpenServiceIOPMrootDomain(t *testing.T) {
 }
 
 // TestGenerateProfile_NetworkAllow verifies the (allow network*) clause is
-// present. This is locked in #1012 — match bwrap's permissive network
+// present. This matches bwrap's permissive network
 // policy. Restriction is a future symmetric concern.
 func TestGenerateProfile_NetworkAllow(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
@@ -319,7 +317,7 @@ func TestGenerateProfile_NetworkAllow(t *testing.T) {
 }
 
 // TestGenerateProfile_V3CryptexAndTmpRules verifies the v3-specific additions
-// required for the dyld shared cache and transient files. See #1200 / F.1 §2.
+// required for the dyld shared cache and transient files. See F.1 §2.
 func TestGenerateProfile_V3CryptexAndTmpRules(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
@@ -355,8 +353,8 @@ func TestGenerateProfile_V3CryptexAndTmpRules(t *testing.T) {
 // worktree, and bare repo as (allow file-read* file-write* (subpath ...))
 // clauses when the Manager has InstanceID, Worktree, and BareRoot set.
 func TestGenerateProfile_SessionWorkDirAndWorktreeRules(t *testing.T) {
-	// Drive the work-dir base via $XDG_STATE_HOME (issue #2295). Since
-	// PR #2277, sessionWorkDirPath honours XDG_STATE_HOME first and falls
+	// Drive the work-dir base via $XDG_STATE_HOME. sessionWorkDirPath
+	// honours XDG_STATE_HOME first and falls
 	// back to $HOME/.local/state only when XDG_STATE_HOME is unset; setting
 	// HOME alone does not control where the work dir lands on a developer
 	// machine whose shell exports XDG_STATE_HOME. We also point HOME at a
@@ -389,19 +387,19 @@ func TestGenerateProfile_SessionWorkDirAndWorktreeRules(t *testing.T) {
 		t.Errorf("profile missing bare repo path /tmp/fake-bare; full profile:\n%s", profile)
 	}
 	// The per-session work dir subpath must be present (namespaced by
-	// InstanceID). Resolved from $XDG_STATE_HOME per PR #2277.
+	// InstanceID). Resolved from $XDG_STATE_HOME.
 	sessionDir := filepath.Join(fakeStateHome, "prism", "sessions", "test-instance-id")
 	if !strings.Contains(profile, "(subpath "+quoteSBPL(sessionDir)+")") {
 		t.Errorf("profile missing the session work dir subpath %q; full profile:\n%s", sessionDir, profile)
 	}
 }
 
-// TestGenerateProfile_NoStagingHomeGrant is the Step 5 of #2132 (issue
-// #2250) profile-shape AC: the generated profile contains NO staging-home
-// (subpath <sessionDir>/home) grant — the per-session writable scope is
-// exactly the work-dir (subpath <sessionDir>) rule from PR #2221.
+// TestGenerateProfile_NoStagingHomeGrant is the profile-shape AC: the
+// generated profile contains NO staging-home (subpath <sessionDir>/home)
+// grant — the per-session writable scope is exactly the work-dir
+// (subpath <sessionDir>) rule.
 func TestGenerateProfile_NoStagingHomeGrant(t *testing.T) {
-	// Drive the work-dir base via $XDG_STATE_HOME (issue #2295). See
+	// Drive the work-dir base via $XDG_STATE_HOME. See
 	// TestGenerateProfile_SessionWorkDirAndWorktreeRules for the rationale.
 	fakeStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", fakeStateHome)
@@ -430,7 +428,7 @@ func TestGenerateProfile_NoStagingHomeGrant(t *testing.T) {
 // TestGenerateProfile_AWSHomePathDenied verifies that the profile contains a
 // (deny file-read* file-write* (subpath "$HOME/.aws")) clause to prevent the
 // sandbox from accessing the host's raw ~/.aws directory. Only the sso/cli
-// carve-outs are accessible (issue #1380/#1558).
+// carve-outs are accessible.
 func TestGenerateProfile_AWSHomePathDenied(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
@@ -448,7 +446,7 @@ func TestGenerateProfile_AWSHomePathDenied(t *testing.T) {
 // (allow file-read* file-write* (subpath ".../.aws/cli")) rules after the
 // broad ~/.aws deny. These more-specific allow rules let AWS SSO tokens and
 // kubectl credential files be read and written at the real host paths
-// (issue #1380, #1558) — since #2245 (Step 3e of #2132) the carve-outs are
+// The carve-outs are
 // the SOLE in-sandbox capability for the two dirs (no staging symlinks).
 func TestGenerateProfile_AWSSSOAndCLICarveouts(t *testing.T) {
 	fakeHome := newFakeHome(t)
@@ -494,7 +492,7 @@ func TestGenerateProfile_AWSSSOAndCLICarveouts(t *testing.T) {
 	if ssoAllowStart < 0 || ssoDenyStart > ssoAllowStart {
 		t.Errorf("~/.aws/sso path is not inside an (allow ...) block; full profile:\n%s", profile)
 	}
-	// Verify the allow block for ~/.aws/sso includes file-write* (issue #1558).
+	// Verify the allow block for ~/.aws/sso includes file-write*.
 	// The block header is on the line preceding the first subpath entry.
 	ssoAllowHeader := profile[ssoAllowStart:ssoIdx]
 	if !strings.Contains(ssoAllowHeader, "file-write*") {
@@ -515,7 +513,7 @@ func TestGenerateProfile_AWSSSOAndCLICarveouts(t *testing.T) {
 	if cliAllowStart < 0 || cliDenyStart > cliAllowStart {
 		t.Errorf("~/.aws/cli path is not inside an (allow ...) block; full profile:\n%s", profile)
 	}
-	// Verify the allow block for ~/.aws/cli includes file-write* (issue #1558).
+	// Verify the allow block for ~/.aws/cli includes file-write*.
 	cliAllowHeader := profile[cliAllowStart:cliIdx]
 	if !strings.Contains(cliAllowHeader, "file-write*") {
 		t.Errorf("~/.aws/cli carve-out allow block must include file-write* (needed for aws CLI STS token cache writes, issue #1558); allow header: %q; full profile:\n%s",
@@ -525,7 +523,7 @@ func TestGenerateProfile_AWSSSOAndCLICarveouts(t *testing.T) {
 
 // TestGenerateProfile_NixTrustedSettingsReadAllow verifies that the profile
 // contains a read-only, single-file (literal) allow for
-// ~/.local/share/nix/trusted-settings.json (issue #2201). Flake-CLI nix
+// ~/.local/share/nix/trusted-settings.json. Flake-CLI nix
 // commands consult this file whenever the target flake declares a nixConfig
 // block; without the allow the read fails EPERM under deny-default and nix
 // aborts the entire eval.
@@ -572,7 +570,7 @@ func TestGenerateProfile_NixTrustedSettingsReadAllow(t *testing.T) {
 
 // TestGenerateProfile_PrismProfilesJSONReadAllow verifies that the profile
 // contains a read-only, single-file (literal) allow for
-// ~/.config/prism/profiles.json (issue #2286). The CLI's `prism profile
+// ~/.config/prism/profiles.json. The CLI's `prism profile
 // list` / `prism profile show` and the `available_profiles` section of
 // `prism agent-context` open this file directly via
 // internal/config/profiles.go::LoadProfiles; without the allow the read
@@ -582,8 +580,8 @@ func TestGenerateProfile_NixTrustedSettingsReadAllow(t *testing.T) {
 //
 // The rule must be:
 //   - a (literal ...), not a (subpath ...) — single-file scope only, so
-//     the rest of ~/.config/prism/ (e.g. accounts/, runtime-mutable state
-//     from #2283) stays out of the sandbox by default;
+//     the rest of ~/.config/prism/ (e.g. accounts/, runtime-mutable state)
+//     stays out of the sandbox by default;
 //   - read-only — no file-write* anywhere near it (nothing in-sandbox
 //     may mutate the host's declarative profile config).
 //
@@ -644,10 +642,10 @@ func TestGenerateProfile_PrismProfilesJSONReadAllow(t *testing.T) {
 
 // TestGenerateProfile_UsageStateDirReadAllow verifies that the profile
 // contains a read-only (subpath ...) allow for the prism usage snapshot
-// directory (issue #2572).
+// directory.
 //
 // The bottom-bar usage segment reads current.json out of that directory
-// (pi/extensions/prism.ts::readUsageSnapshot, issue #2540). Under
+// (pi/extensions/prism.ts::readUsageSnapshot). Under
 // deny-default the open failed and the reader — which degrades silently by
 // design — rendered nothing, so the feature was invisible in every
 // sandboxed session.
@@ -657,10 +655,9 @@ func TestGenerateProfile_PrismProfilesJSONReadAllow(t *testing.T) {
 //     current.json by atomic rename and `prism account usage` also reads
 //     the sibling <account>.json files;
 //   - never a grant on a PARENT: $XDG_STATE_HOME/prism holds prism.db and
-//     run/ (every session's host-API socket dir, isolated per session by
-//     security fix #960);
+//     run/ (every session's host-API socket dir, isolated per session);
 //   - read-only — no file-write* anywhere near it. Every writer goes
-//     through the sidecar endpoint POST /usage/snapshot (issue #2538).
+//     through the sidecar endpoint POST /usage/snapshot.
 //
 // This substring assertion is necessary but not sufficient — the paired
 // Darwin integration tests in
@@ -762,14 +759,14 @@ func TestGenerateProfile_UsageStateDirHonoursXDGStateHome(t *testing.T) {
 func TestPrepareSandboxExec_WritesProfileAndReturnsArgs(t *testing.T) {
 	// PrepareSandboxExec derives the session work dir from os.UserHomeDir();
 	// in the nix build sandbox $HOME is /homeless-shelter (unwritable), so we
-	// redirect HOME to a tempdir. This is the AGENTS.md § "the
+	// redirect HOME to a tempdir. This is the AGENTS.md, "the
 	// homeless-shelter failure class" pattern — the gate this test exercises
-	// (issue #2168) exists to catch the inverse of this missing guard.
+	// exists to catch the inverse of this missing guard.
 	t.Setenv("HOME", t.TempDir())
 	// Clear XDG_STATE_HOME so the HOME-derived fallback in SessionWorkDirPath
 	// is what's exercised here (the test asserts the work-dir path against
 	// HOME). A developer env that exports XDG_STATE_HOME would otherwise
-	// route the work dir off the tempdir HOME (issue #2263).
+	// route the work dir off the tempdir HOME.
 	t.Setenv("XDG_STATE_HOME", "")
 	m := newSandboxExecManager(Config{
 		SessionName:   "repo@feat",
@@ -852,7 +849,7 @@ func TestPrepareSandboxExec_ProfilePathIsSessionScoped(t *testing.T) {
 // a pre-existing regular file), sandboxExecIsolator.Prepare returns a
 // non-nil error whose message mentions the work-dir failure. The session
 // must NOT launch: no profile file is written and no sandbox-exec
-// subprocess is started (issue #1879 hard-fail posture).
+// subprocess is started (hard-fail posture).
 func TestSandboxExecPrepare_WorkDirFailurePropagated(t *testing.T) {
 	// Redirect HOME for the work-dir path derivation. See
 	// TestPrepareSandboxExec_WritesProfileAndReturnsArgs for the rationale.
@@ -913,7 +910,7 @@ func TestSandboxExecPrepare_WorkDirFailurePropagated(t *testing.T) {
 // TestSandboxExecPrepare_WorkDirFailurePropagated_NilArgs verifies that
 // the Prepare error is a hard fail and the returned args slice is nil,
 // confirming no sandbox-exec argument list was produced for the caller to
-// use (regression guard for issue #1879).
+// use (regression guard).
 func TestSandboxExecPrepare_WorkDirFailurePropagated_NilArgs(t *testing.T) {
 	// Redirect HOME for the work-dir path derivation. See
 	// TestPrepareSandboxExec_WritesProfileAndReturnsArgs for the rationale.
@@ -969,7 +966,7 @@ func TestSandboxExecBuildArgs_HarnessImmediatelyAfterProfile(t *testing.T) {
 	}
 }
 
-// ── per-session prep (work dir; no staging HOME — Step 5 of #2132) ───────────────────────────────────────────────────
+// ── per-session prep (work dir; no staging HOME) ───────────────────────────────────────────────────
 
 // newFakeHome creates a temp directory tree that mimics the credential and
 // config paths that generateProfile and the work-dir writers read from
@@ -987,9 +984,8 @@ func newFakeHome(t *testing.T) string {
 		".config/kube",
 		".cache/bun",
 		".cache/nix",
-		// .claude is the OLD (pre-#2243) canonical claude dir; the XDG path
-		// claude-code reaches via CLAUDE_CONFIG_DIR is .config/claude
-		// (issue #2243).
+		// .claude is the canonical claude dir; the XDG path
+		// claude-code reaches via CLAUDE_CONFIG_DIR is .config/claude.
 		".claude",
 		".config/claude",
 		".mcp-auth",
@@ -1015,7 +1011,7 @@ func newFakeHome(t *testing.T) string {
 	}
 
 	// AWS readonly-config and credentials (in XDG location, delivered via
-	// AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars — issue #2234).
+	// AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars).
 	if err := os.WriteFile(filepath.Join(fakeHome, ".config", "aws", "readonly-config"), []byte("dummy-aws-cfg"), 0o644); err != nil {
 		t.Fatalf("write aws config: %v", err)
 	}
@@ -1030,18 +1026,17 @@ func newFakeHome(t *testing.T) string {
 	// Override HOME for the duration of the test.
 	t.Setenv("HOME", fakeHome)
 	// Clear XDG_STATE_HOME so the session work dir resolves under fakeHome
-	// (the HOME-derived fallback in SessionWorkDirPath — issue #2263). Tests
+	// (the HOME-derived fallback in SessionWorkDirPath). Tests
 	// that exercise the XDG_STATE_HOME branch set it explicitly.
 	t.Setenv("XDG_STATE_HOME", "")
 
 	return fakeHome
 }
 
-// TestPrepareSandboxExec_CreatesNoStagingHomeDir is the Step 5 of #2132
-// (issue #2250) filesystem-shape AC at unit level: full session prep
-// creates the per-session work dir but NO
-// ~/.local/state/prism/sessions/<id>/home/ directory — the staging-HOME
-// mechanism is deleted.
+// TestPrepareSandboxExec_CreatesNoStagingHomeDir is the filesystem-shape AC
+// at unit level: full session prep creates the per-session work dir but NO
+// ~/.local/state/prism/sessions/<id>/home/ directory — there is no
+// staging-HOME mechanism.
 func TestPrepareSandboxExec_CreatesNoStagingHomeDir(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
@@ -1065,8 +1060,7 @@ func TestPrepareSandboxExec_CreatesNoStagingHomeDir(t *testing.T) {
 		t.Fatalf("session work dir not created: %v", err)
 	}
 
-	// The staging HOME does NOT exist — nothing creates <sessionDir>/home/
-	// any more (issue #2250 functional AC).
+	// The staging HOME does NOT exist — nothing creates <sessionDir>/home/.
 	if _, err := os.Lstat(filepath.Join(sessionDir, "home")); err == nil {
 		t.Errorf("staging HOME dir %s/home was created — the mechanism was deleted in Step 5 of #2132", sessionDir)
 	}
@@ -1074,7 +1068,7 @@ func TestPrepareSandboxExec_CreatesNoStagingHomeDir(t *testing.T) {
 
 // TestSandboxExecCleanup_RemovesSessionWorkDir verifies that EnsureRemoved
 // removes the per-session work dir created by PrepareSessionWorkDir, leaving
-// no orphaned per-session directory (issue #2250 edge-case AC at unit
+// no orphaned per-session directory (edge case at unit
 // level).
 func TestSandboxExecCleanup_RemovesSessionWorkDir(t *testing.T) {
 	newFakeHome(t)
@@ -1194,12 +1188,11 @@ func TestGenerateProfile_PiAuthJSONAbsentForNonPiSession(t *testing.T) {
 }
 
 // TestGenerateProfile_AWSDenyPresent_NoXDGTargetAllows verifies the
-// post-#2234 AWS shape of the profile:
+// AWS shape of the profile:
 // (a) the profile denies the host ~/.aws subtree, and
 // (b) the profile carries no allow referencing the resolved aws XDG targets
-// (the read capability rides the env-var route + #2211 allowlist instead —
-// a literal grant on the XDG symlink path would be inert per the #2132 §2
-// mechanism note).
+// (the read capability rides the env-var route + secrets.d allowlist
+// instead — a literal grant on the XDG symlink path would be inert).
 func TestGenerateProfile_AWSDenyPresent_NoXDGTargetAllows(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
@@ -1241,10 +1234,10 @@ func TestGenerateProfile_AWSDenyPresent_NoXDGTargetAllows(t *testing.T) {
 }
 
 // TestGenerateProfile_ClaudeConfigDirRWSubpathRule verifies that
-// generateProfile emits an RW (subpath ~/.config/claude) rule (issue #2243,
-// Step 3c of #2132). claude-code resolves its config dir (and .claude.json)
+// generateProfile emits an RW (subpath ~/.config/claude) rule.
+// claude-code resolves its config dir (and .claude.json)
 // via CLAUDE_CONFIG_DIR at the host XDG path; the dir is a plain host
-// directory (not sops-backed), so this explicit grant — not the #2211
+// directory (not sops-backed), so this explicit grant — not the
 // secrets.d allowlist — is the sole in-sandbox capability for the path.
 //
 // The rule must be emitted even when the dir does not yet exist —
@@ -1287,9 +1280,8 @@ func TestGenerateProfile_ClaudeConfigDirRWSubpathRule(t *testing.T) {
 
 // TestGenerateProfile_RWRealPathGrants3e verifies that generateProfile emits
 // the section-5e RW grant block on the real host paths for ~/.cache/nix,
-// ~/.cache/bun, ~/.npm, and ~/.mcp-auth (issue #2245, Step 3e of #2132).
-// The block replaces the dropped RW staging symlinks; none of the paths is
-// sops-backed, so this grant — not the #2211 allowlist — is the sole
+// ~/.cache/bun, ~/.npm, and ~/.mcp-auth. None of the paths is
+// sops-backed, so this grant — not the secrets.d allowlist — is the sole
 // in-sandbox capability.
 //
 // The block must be emitted even when none of the dirs exists on the host —
@@ -1315,8 +1307,7 @@ func TestGenerateProfile_RWRealPathGrants3e(t *testing.T) {
 
 // TestGenerateProfile_RORealPathGrants3f verifies that generateProfile emits
 // the section-5f RO grant block on the real host paths for
-// ~/.cache/prism/clipboard and ~/.config/prism/agents (issue #2245, Step 3f
-// of #2132). The block replaces the dropped RO staging symlinks. It must be
+// ~/.cache/prism/clipboard and ~/.config/prism/agents. It must be
 // read-only — RO must not silently become RW — and emitted even when the
 // dirs do not exist on the host.
 func TestGenerateProfile_RORealPathGrants3f(t *testing.T) {
@@ -1358,7 +1349,7 @@ func TestGenerateProfile_RORealPathGrants3f(t *testing.T) {
 }
 
 // TestGenerateProfile_NixProfileROGrant verifies the section-5g grant for
-// ~/.nix-profile (issue #2245, Step 3f of #2132). ~/.nix-profile is a
+// ~/.nix-profile. ~/.nix-profile is a
 // symlink on the host, and SBPL filters evaluate the resolved target for
 // open-class operations, so the grant must carry BOTH a literal allow on the
 // symlink node (readlink/lstat) and an RO rule on the EvalSymlinks-resolved
@@ -1431,7 +1422,7 @@ func TestGenerateProfile_NixProfileAbsent_LiteralStillEmitted(t *testing.T) {
 }
 
 // TestPrepareSandboxExec_MinimalHomeNoOptionalDirs is the absent-host-dirs
-// edge-case AC for issue #2245: on a host with NONE of the 3d/3e/3f source
+// edge case: on a host with NONE of the 3d/3e/3f source
 // dirs (fresh machine — no ~/.mcp-auth, ~/.npm, caches, ~/.nix-profile,
 // ~/.pi, prism config), full session prep (work dir + profile write) must
 // succeed and the generated profile must still carry the 3e/3f grant
@@ -1548,12 +1539,11 @@ func TestMinimalIsolatedExecEnv_AllowsExpectedKeys(t *testing.T) {
 
 // ── SandboxExecShellEnv ──────────────────────────────────────────────────────
 
-// TestSandboxExecShellEnv_PinsShellToBinSh asserts the SHELL=/bin/sh pin
-// (issue #2674), mirroring bwrap's standardSandboxEnvArgs SHELL pin. This
+// TestSandboxExecShellEnv_PinsShellToBinSh asserts the SHELL=/bin/sh pin,
+// mirroring bwrap's standardSandboxEnvArgs SHELL pin. This
 // test runs on Linux (this file carries no darwin build tag) so it gives
 // deterministic coverage of the pin's shape independent of the Darwin-only
-// integration tests, which cannot run in CI or in a nested sandbox
-// (issue #2749).
+// integration tests, which cannot run in CI or in a nested sandbox.
 func TestSandboxExecShellEnv_PinsShellToBinSh(t *testing.T) {
 	got := SandboxExecShellEnv()
 	if len(got) != 1 || got[0] != "SHELL=/bin/sh" {
@@ -1634,7 +1624,7 @@ func containerPortString() string {
 	return fmt.Sprintf("%d", ContainerPort)
 }
 
-// ── sops secrets.d deny + named re-allow exceptions (issue #2211) ────────────
+// ── sops secrets.d deny + named re-allow exceptions ────────────
 
 // secretsDDenyReadHeader is the verbatim opening of the secrets.d read-deny
 // rule as emitted by generateProfile. Kept as a constant so the assertions
@@ -1654,7 +1644,7 @@ const secretsDDenyWriteRule = "(deny file-write*\n" +
 // contains the secrets.d write-deny and read-deny rules covering both the
 // /var and /private/var symlink forms, and that the read-deny appears AFTER
 // the broad /private/var/folders allow it narrows (the deny-after-broader-
-// allow precedence shape, issue #2211).
+// allow precedence shape).
 func TestGenerateProfile_SecretsDDenyBlocksPresent(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
@@ -1709,7 +1699,7 @@ func fakeSopsChain(t *testing.T, fakeHome, secretsBase, counter string, entries 
 // that, when the stable host sources resolve into a sops secrets.d tree,
 // generateProfile emits a require-not exception for exactly each derived
 // secret name — counter-independent ([0-9]+) and $-anchored — and nothing
-// else (no wildcard matching future secrets, issue #2211 AC).
+// else (no wildcard matching future secrets).
 func TestGenerateProfile_SecretsDAllowlistDerivedFromStableSources(t *testing.T) {
 	fakeHome := newFakeHome(t)
 	secretsBase := filepath.Join(t.TempDir(), "secrets.d")
@@ -1753,7 +1743,7 @@ func TestGenerateProfile_SecretsDAllowlistDerivedFromStableSources(t *testing.T)
 			len(expected), got, profile)
 	}
 	// The concrete counter must never be baked into an exception — that
-	// would break the #1410/#1573 rotation property.
+	// would break the rotation property.
 	if strings.Contains(profile, `/secrets\.d/389/`) {
 		t.Errorf("profile bakes the concrete secrets.d counter into a regex (must use [0-9]+); full profile:\n%s", profile)
 	}
@@ -1840,12 +1830,12 @@ func TestRegexQuotePath(t *testing.T) {
 	}
 }
 
-// ── section 5k: Go module cache + build cache (issue #2621) ─────────────────
+// ── section 5k: Go module cache + build cache ─────────────────
 
 // TestGenerateProfile_GoCacheRWGrant verifies that generateProfile emits the
 // section-5k read-write grant for the two Go cache directories, so the repo
 // AGENTS.md quality gate (`go build ./...`, `go test ./...`) runs inside a
-// Darwin worker with no extra environment setup (issue #2621).
+// Darwin worker with no extra environment setup.
 //
 // The paths are asserted as LITERALS here, not derived from goCacheDirs, so
 // that a change to either the helper or the emitted block has to be a
@@ -1887,7 +1877,7 @@ func TestGenerateProfile_GoCacheRWGrant(t *testing.T) {
 
 // TestGenerateProfile_GoCacheModuleCacheExecDeny pins the section-22 deny
 // that stops a sandboxed process executing anything out of the Go module
-// cache (issue #2621).
+// cache.
 //
 // The module cache holds dependency SOURCE. Section 5k grants it read-write
 // so the toolchain can populate it, so without an explicit deny a sandboxed
@@ -1895,8 +1885,8 @@ func TestGenerateProfile_GoCacheRWGrant(t *testing.T) {
 //
 // The deny is required because section 9 allows process-exec* with NO path
 // filter. Expressing this as the mere ABSENCE of file-map-executable on the
-// section-5k clause does not work, and the host run of #2621 proved it: a
-// planted binary executed from the module cache under the production
+// section-5k clause does not work: a
+// planted binary executes from the module cache under the production
 // profile, and from the build cache even with all of section 5k stripped.
 //
 // GOCACHE must NOT be denied — cmd/go can serve a linked test binary out of
@@ -1943,7 +1933,7 @@ func TestGenerateProfile_GoCacheModuleCacheExecDeny(t *testing.T) {
 }
 
 // TestGenerateProfile_GoCacheExecDenyFollowsProcessExecAllow is the ordering
-// guard for the section-22 deny (issue #2621).
+// guard for the section-22 deny.
 //
 // SBPL resolves a conflict in favour of the LATER rule. Section 9 emits
 // (allow process-exec* ...) with no path filter, so the module-cache deny is
@@ -1983,8 +1973,8 @@ func TestGenerateProfile_GoCacheExecDenyFollowsProcessExecAllow(t *testing.T) {
 	}
 }
 
-// TestGenerateProfile_GoCacheGrantsNothingOutsideTheCaches is the security AC
-// of issue #2621: the widening covers the two Go cache leaves and nothing
+// TestGenerateProfile_GoCacheGrantsNothingOutsideTheCaches is the security AC:
+// the widening covers the two Go cache leaves and nothing
 // else.
 //
 // Each ancestor is checked in both (subpath ...) and (literal ...) form:
@@ -2042,7 +2032,7 @@ func TestGenerateProfile_GoCacheGrantsNothingOutsideTheCaches(t *testing.T) {
 }
 
 // TestGoCacheDirs_AreTheGoDarwinDefaults pins the resolved paths to the Go
-// toolchain's Darwin defaults (issue #2621).
+// toolchain's Darwin defaults.
 //
 // The values are exact, not approximate: the sandbox env forwards no GO*
 // variable and go's env file under ~/Library/Application Support is not
@@ -2077,7 +2067,7 @@ func TestGoCacheDirs_AreTheGoDarwinDefaults(t *testing.T) {
 
 // TestGenerateProfile_GoCacheGrantAbsentWithoutHome verifies that an
 // unresolvable home emits no Go cache clause at all — never an (allow ...)
-// with no path filter, which SBPL would read as "everything" (issue #2621).
+// with no path filter, which SBPL would read as "everything".
 func TestGenerateProfile_GoCacheGrantAbsentWithoutHome(t *testing.T) {
 	t.Setenv("HOME", "")
 
@@ -2093,8 +2083,7 @@ func TestGenerateProfile_GoCacheGrantAbsentWithoutHome(t *testing.T) {
 }
 
 // TestEnsureGoCacheDirs_CreatesBothDirs verifies that the Prepare-time
-// helper materialises the two directories the section-5k grant covers
-// (issue #2621).
+// helper materialises the two directories the section-5k grant covers.
 //
 // This is load-bearing, not cosmetic: a (subpath ...) grant on a path that
 // does not exist is a silent no-op, and the sandboxed process cannot create
@@ -2121,7 +2110,7 @@ func TestEnsureGoCacheDirs_CreatesBothDirs(t *testing.T) {
 }
 
 // TestEnsureGoCacheDirs_UnwritableHomeIsNotFatal verifies the best-effort
-// posture (issue #2621): the Go caches are a build convenience, unlike the
+// posture: the Go caches are a build convenience, unlike the
 // work-dir git/ssh configs whose absence hard-fails Prepare, so a home that
 // cannot be written to must not stop a session from starting. This is the
 // homeless-shelter shape ($HOME unwritable inside the nix build sandbox).
@@ -2143,7 +2132,7 @@ func TestEnsureGoCacheDirs_UnwritableHomeIsNotFatal(t *testing.T) {
 	}
 }
 
-// ── GOTOOLCHAIN pin (issue #2621, round-4 escalation decision) ──────────────
+// ── GOTOOLCHAIN pin ──────────────
 
 // TestGoToolchainEnv_PinsLocal asserts the sandbox env carries
 // GOTOOLCHAIN=local.
@@ -2172,7 +2161,7 @@ func TestGoToolchainEnv_PinsLocal(t *testing.T) {
 }
 
 // TestGoToolchainPin_IsCoupledToModuleCacheExecDeny documents and pins the
-// coupling between the two halves of the #2621 toolchain mechanism.
+// coupling between the two halves of the toolchain mechanism.
 //
 // The section-22 deny makes the module cache non-executable. That is only safe
 // for the build because GOTOOLCHAIN=local stops cmd/go downloading a toolchain
@@ -2181,7 +2170,7 @@ func TestGoToolchainEnv_PinsLocal(t *testing.T) {
 // defect:
 //
 //   - deny without the pin — `go build` breaks on any repo whose go.mod
-//     outgrows the nix-pinned toolchain, with the #2621 error shape;
+//     outgrows the nix-pinned toolchain, with the same error shape;
 //   - pin without the deny — the module cache stays executable, which is the
 //     security hole the deny closes.
 //

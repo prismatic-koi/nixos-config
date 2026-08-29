@@ -5,13 +5,11 @@
 // in bwrap.go: BuildRunArgs() is a no-op stub, BuildArgs(m *Manager) is the
 // concrete argument builder that has access to the Manager's config and state.
 //
-// This file implements the sandbox-exec design (issue #1012) as revised by
-// the staging-HOME elimination design (issue #2132): explicit SBPL grants on
+// This file implements the sandbox-exec design: explicit SBPL grants on
 // real host paths, env-var injection at host XDG paths, and a small
 // per-session work dir (session_work_dir.go). $HOME inside the sandbox is
-// the REAL host home — the per-session staging HOME was deleted in Step 5
-// of #2132. New top-level allow/deny clauses introduced beyond what is
-// listed in the issue bodies require a comment pointing back at the issue.
+// the REAL host home. New top-level allow/deny clauses require an
+// explanatory comment in the generator.
 package container
 
 import (
@@ -46,7 +44,7 @@ type sandboxExecIsolator struct {
 	// owns its own Wait loop), so the cmd field is populated only when
 	// the Isolator's Run path is exercised — currently used by tests that
 	// want to verify Shutdown delivers SIGTERM/SIGKILL via the shared
-	// gracefulShutdown helper (shutdown.go, A2.GR).
+	// gracefulShutdown helper (shutdown.go).
 	mu       sync.Mutex
 	cmd      *exec.Cmd
 	exited   bool
@@ -92,7 +90,7 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 }
 
 // goCacheDirs returns the Go cache directories the sandbox-exec profile
-// grants read-write (section 5k of generateProfile, issue #2621), derived
+// grants read-write (section 5k of generateProfile), derived
 // from the given home directory. It returns nil when home is empty.
 //
 // The two entries are the Go toolchain's Darwin DEFAULTS:
@@ -107,7 +105,7 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 //
 // The path list itself lives in go_cache.go (goCacheDirsForGOOS), which is
 // the single platform-aware source of truth shared with the Linux bwrap
-// mounts added in issue #2731. Within Darwin this function remains the one
+// mounts. Within Darwin this function remains the one
 // source for the pair: generateProfile grants these paths, the section-22
 // deny narrows execution on the one with execDenied set, and
 // ensureGoCacheDirs creates them — so the grant and the directory cannot
@@ -125,8 +123,7 @@ const GoToolchainEnvVar = "GOTOOLCHAIN"
 const GoToolchainLocal = "local"
 
 // GoToolchainEnv returns the env var pair that makes nix authoritative for the
-// Go toolchain inside a sandbox (issue #2621, owner decision on the round-4
-// escalation).
+// Go toolchain inside a sandbox.
 //
 // # Policy
 //
@@ -150,7 +147,7 @@ const GoToolchainLocal = "local"
 //
 // That exec lands inside the directory the section-22 deny covers, so without
 // this pin the deny would break the very gate section 5k exists to enable —
-// failing as "go: exec go1.X.Y: operation not permitted", the #2621 symptom.
+// failing as "go: exec go1.X.Y: operation not permitted".
 // The alternative (carving golang.org/toolchain@* out of the deny) was
 // rejected: section 5k grants the module cache read-write, so a predictable
 // and agent-writable carve-out path is a bypass that masquerades as
@@ -165,18 +162,18 @@ func GoToolchainEnv() []string {
 }
 
 // ensureGoCacheDirs creates the section-5k Go cache directories on the host
-// before the sandbox starts (issue #2621).
+// before the sandbox starts.
 //
 // It is required because a (subpath ...) grant on a path that does not exist
 // is a silent no-op, and the sandboxed process cannot create the path itself:
 // MkdirAll would first have to mkdir the UNGRANTED parents (~/go, ~/go/pkg,
 // ~/Library/Caches) and gets EPERM there. Without this, the documented
-// quality gate would still fail with the exact #2621 error on any host that
+// quality gate would still fail on any host that
 // has never run go outside a sandbox.
 //
 // Creation is best-effort and the mode is 0o755 — see createGoCacheDirs in
 // go_cache.go, which both isolators share (the Linux half pre-creates the
-// same way from prepareVolumeDirs, issue #2731).
+// same way from prepareVolumeDirs).
 func ensureGoCacheDirs() {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -187,8 +184,7 @@ func ensureGoCacheDirs() {
 
 // generateProfile returns the SBPL profile content for this session.
 //
-// This is a (version 3) SBPL profile — see the migration that actioned this
-// in PR #1201 (issue #1200).
+// This is a (version 3) SBPL profile.
 //
 // The profile shape includes:
 //   - Cryptex graft points (dyld shared cache, macOS 15+)
@@ -199,41 +195,37 @@ func ensureGoCacheDirs() {
 //   - Deny of sensitive /private/etc subtrees (wireguard, wpa_supplicant, ssh),
 //     both /etc/... and /private/etc/... forms (symlink non-transparency)
 //   - sops secrets.d deny (read + write) with named re-allow exceptions for
-//     exactly the inventoried agent-needed secret names (issue #2211)
+//     exactly the inventoried agent-needed secret names
 //   - Host ~/.aws deny with sso/cli carve-outs (config/credentials are
-//     delivered via env vars at the host XDG paths — issue #2234; the
-//     carve-outs are the sole capability for sso/cli since #2245)
+//     delivered via env vars at the host XDG paths; the carve-outs are the
+//     sole capability for sso/cli)
 //   - Literal RO grant for the real ~/.ssh/known_hosts — never (subpath ~/.ssh)
-//     (issue #2213)
 //   - RW subpath grant for ~/.config/claude — claude-code's config dir,
-//     reached via the CLAUDE_CONFIG_DIR env var (issue #2243)
+//     reached via the CLAUDE_CONFIG_DIR env var
 //   - RW subpath grants for ~/.cache/nix, ~/.cache/bun, ~/.npm, ~/.mcp-auth
-//     (Step 3e of #2132, issue #2245)
 //   - RO subpath grants for ~/.cache/prism/clipboard and
 //     ~/.config/prism/agents, plus an RO grant for the ~/.nix-profile
-//     symlink and its resolved target (Step 3f of #2132, issue #2245)
+//     symlink and its resolved target
 //   - RO subpath grant for the prism usage snapshot dir
 //     ($XDG_STATE_HOME/prism/usage) — the bottom-bar usage reader
-//     (issue #2572)
 //   - RW subpath grants for the two Go cache dirs — ~/go/pkg/mod and
 //     ~/Library/Caches/go-build — so the repo AGENTS.md quality gate
-//     (`go build ./...` / `go test ./...`) runs as documented (issue #2621)
+//     (`go build ./...` / `go test ./...`) runs as documented
 //   - Session work dir / worktree / bare repo / host-API socket dir (RW) —
 //     the work dir (subpath <sessionDir>) is the ONLY per-session writable
-//     grant (issue #2213 / PR #2221; Step 5 of #2132 deleted the staging
-//     HOME and its per-symlink target allows)
+//     grant
 //   - Process and IPC primitives required by dyld, AMFI, and the agent
 //   - (allow network*)
 //
-// New top-level allow/deny clauses introduced beyond what is sketched in
-// #1012 require a comment in the generator pointing at the issue.
+// New top-level allow/deny clauses require an explanatory comment in the
+// generator.
 func generateProfile(m *Manager) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.Getenv("HOME")
 	}
 
-	// Derive the per-session work dir (issue #2213). When it cannot be
+	// Derive the per-session work dir. When it cannot be
 	// determined (e.g. no home dir) the derived rules are simply omitted.
 	sessionDir, sessionDirErr := m.sessionWorkDirPath()
 
@@ -241,7 +233,7 @@ func generateProfile(m *Manager) string {
 	// ── Version 3 header and deny-default ────────────────────────────────
 	// (version 3) unlocks syscall-unix, syscall-mach, system-mac-syscall,
 	// system-fcntl, and the split ipc-posix-shm-read*/write* operations —
-	// all required for Apple-signed binaries (dyld, AMFI). See #1200 / F.1.
+	// all required for Apple-signed binaries (dyld, AMFI). See F.1.
 	sb.WriteString("(version 3)\n")
 	sb.WriteString("(deny default)\n")
 	sb.WriteString("\n")
@@ -261,12 +253,12 @@ func generateProfile(m *Manager) string {
 	// /nix            — Nix store. All Nix-built binaries live here.
 	//   This also covers the PI extension directory (cfg.PIExtensionHostDir),
 	//   which is a Nix store path resolved from piExtensionDir in config.json
-	//   (issue #1213). No separate SBPL rule is needed for the PI extension.
+	//   No separate SBPL rule is needed for the PI extension.
 	// /usr, /bin, /sbin — standard Apple-signed utility directories.
 	// /System, /Library — OS frameworks, dylibs, and shared data.
 	// /Applications/Xcode.app — xcrun (called by /usr/bin/git shim).
 	// /etc, /private/etc — both forms: sandbox-exec does NOT transparently
-	//   follow the /etc → /private/etc symlink (PR #1193 / issue #1187).
+	//   follow the /etc → /private/etc symlink.
 	// /private/var/db/dyld, /var/db/dyld — dyld shared-cache DB;
 	//   /var is a symlink to /private/var; both forms needed. See F.1 §2.
 	// /private/var/db/timezone, /var/db/timezone — timezone data.
@@ -348,7 +340,7 @@ func generateProfile(m *Manager) string {
 	// /var/folders/... symlink form or the /private/var/folders/... canonical
 	// form depending on OS version. sandbox-exec does not follow the
 	// /var → /private/var symlink transparently, so both forms must be listed
-	// (same pattern as /etc → /private/etc, PR #1193). We emit whichever form
+	// (same pattern as /etc → /private/etc). We emit whichever form
 	// os.TempDir() returns plus its counterpart.
 	tmpDir := os.TempDir()
 	if tmpDir != "" {
@@ -369,7 +361,7 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 3c. sops secrets.d deny + named re-allow exceptions (issue #2211) ─
+	// ── 3c. sops secrets.d deny + named re-allow exceptions ─
 	// The broad /private/var/folders allows above (sections 2 and 3b) expose
 	// the entire home-manager sops-nix secrets tree
 	// (~/.config/sops-nix/secrets → /var/folders/<…>/T/secrets.d/<N>/) to the
@@ -377,11 +369,11 @@ func generateProfile(m *Manager) string {
 	// configs, hass/notion/syncthing keys, the non-prism SSH keys, and
 	// the secrets.d/age-keys.txt copy. Almost none of those are read
 	// in-sandbox — GITHUB_TOKEN, OPENROUTER_API_KEY, etc. are resolved
-	// host-side by agent-run (credentialEnvVars, including the #2029
+	// host-side by agent-run (credentialEnvVars, including the
 	// GitHubTokenPath file fallback) and injected into the sandbox env as
 	// VALUES before sandbox-exec starts. The exceptions are the few secrets
-	// that ARE read in-sandbox — gitlab_token (issue #2668) and the pi
-	// grafana MCP config bundle (issue #2746) — see
+	// that ARE read in-sandbox — gitlab_token and the pi
+	// grafana MCP config bundle — see
 	// collectSecretsDAllowlistNames.
 	//
 	// Shape:
@@ -406,7 +398,7 @@ func generateProfile(m *Manager) string {
 	// proven shape as the /private/etc/ssh denies in section 4 (integration
 	// tested by sandbox_exec_denies_darwin_test.go).
 	//
-	// Rotation safety (#1410/#1573): sops rotates secrets.d/<N> → <N+1> on
+	// Rotation safety: sops rotates secrets.d/<N> → <N+1> on
 	// every activation, but secret NAMES are stable. The exception regexes
 	// match any counter ([0-9]+), so allowlisted reads survive a rotation
 	// mid-session and denied reads stay denied — by construction. The deny
@@ -441,7 +433,7 @@ func generateProfile(m *Manager) string {
 	// These deny rules must follow the broad /etc and /private/etc allows
 	// above. In SBPL, more-specific rules override broader ones. Both
 	// /etc/... and /private/etc/... forms needed due to symlink
-	// non-transparency (same pattern as PR #1193 for v1). See F.1 §2 rule 4.
+	// non-transparency (same pattern for v1). See F.1 §2 rule 4.
 	sb.WriteString("(deny file-read* file-write*\n")
 	sb.WriteString("  (subpath \"/etc/wireguard\")\n")
 	sb.WriteString("  (subpath \"/etc/wpa_supplicant\")\n")
@@ -453,17 +445,17 @@ func generateProfile(m *Manager) string {
 
 	// ── 5. Host ~/.aws deny with sso/ and cli/ carve-outs ────────────────
 	// The aws config/credentials are delivered via env vars at the host XDG
-	// paths (issue #2234) — nothing agent-needed lives at the raw ~/.aws
+	// paths — nothing agent-needed lives at the raw ~/.aws
 	// canonical paths. The host raw ~/.aws subtree must remain read-denied
 	// so that path traversal cannot reach host credentials there.
 	//
 	// Exception: ~/.aws/sso and ~/.aws/cli must remain accessible so that
 	// AWS SSO auth and tools that read SSO tokens (e.g. kubectl) work inside
 	// the sandbox. The carve-out allows below are the SOLE in-sandbox
-	// capability for them, at the real host paths (#2245, Step 3e of #2132).
+	// capability for them, at the real host paths.
 	// The more-specific allow rules below override the broad deny for
 	// exactly these two subdirs (SBPL evaluates more-specific rules as
-	// overrides of broader ones). See issue #1380.
+	// overrides of broader ones).
 	if home != "" {
 		awsPath := filepath.Join(home, ".aws")
 		sb.WriteString("(deny file-read* file-write*\n")
@@ -476,7 +468,7 @@ func generateProfile(m *Manager) string {
 		// write access the CLI fails with EPERM (no STS token cache), and kubectl
 		// against EKS also breaks because its exec-credential plugin shells out
 		// to aws and gets EPERM. Mirrors bwrap's --bind (RW) treatment — see the
-		// comment above awsSSOReadOnly/awsCLIReadOnly in mounts.go. (issue #1558).
+		// comment above awsSSOReadOnly/awsCLIReadOnly in mounts.go.
 		awsSSOPath := filepath.Join(home, ".aws", "sso")
 		awsCLIPath := filepath.Join(home, ".aws", "cli")
 		sb.WriteString("(allow file-read* file-write*\n")
@@ -485,7 +477,7 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 5b. Nix flake trusted-settings read (issue #2201) ────────────────
+	// ── 5b. Nix flake trusted-settings read ────────────────
 	// Flake-CLI nix commands consult $XDG_DATA_HOME/nix/trusted-settings.json
 	// whenever the target flake declares a nixConfig block (e.g. this repo's
 	// extra-substituters / extra-trusted-public-keys). XDG_DATA_HOME inside
@@ -511,13 +503,12 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 5c. Real ~/.ssh/known_hosts read-only literal (issue #2213) ──────
+	// ── 5c. Real ~/.ssh/known_hosts read-only literal ──────
 	// The generated <sessionDir>/ssh-config is passed to ssh via -F
 	// (GIT_SSH_COMMAND), and openssh resolves its default UserKnownHostsFile
 	// against the real home (getpwuid → pw_dir, not $HOME) — so ssh inside
 	// the sandbox reads the real ~/.ssh/known_hosts. This explicit grant is
-	// the sole capability for that read (the staging-HOME per-symlink allows
-	// that once duplicated it were deleted in Step 5 of #2132).
+	// the sole capability for that read.
 	//
 	// The grant is read-only and single-file. NEVER widen this to
 	// (subpath ~/.ssh): the real ~/.ssh may hold non-sops private keys (e.g.
@@ -531,13 +522,12 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 5d. Claude config dir read-write (issue #2243) ───────────────────
+	// ── 5d. Claude config dir read-write ───────────────────
 	// claude-code resolves its config dir (and .claude.json) via the
 	// CLAUDE_CONFIG_DIR env var at the host XDG path ~/.config/claude
-	// (declared in agent.envVars by the nix module — Step 3c of #2132; the
-	// .claude write-through staging symlink is gone). Unlike the aws/kube
+	// (declared in agent.envVars by the nix module). Unlike the aws/kube
 	// XDG configs, ~/.config/claude is a plain host directory — NOT a sops
-	// symlink — so the #2211 secrets.d allowlist plays no part here: this
+	// symlink — so the secrets.d allowlist plays no part here: this
 	// explicit RW subpath grant is the sole capability for the path.
 	// Read-write because claude-code writes config, history, and OAuth
 	// token refreshes under it; mirrors bwrap's --bind (RW) treatment of
@@ -553,13 +543,12 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 5e. RW cache/auth dir grants at the real host paths (issue #2245) ─
-	// Step 3e of #2132: explicit RW subpath grants on the real host paths
+	// ── 5e. RW cache/auth dir grants at the real host paths ─
+	// Explicit RW subpath grants on the real host paths
 	// for ~/.cache/nix, ~/.cache/bun, ~/.npm, and ~/.mcp-auth. The consumers
-	// derive the paths from $HOME / XDG_CACHE_HOME (§2 of the #2132 design —
-	// "just work with real HOME"), which point at the real host paths since
-	// Step 5 (issue #2250) — these grants are load-bearing. None of these
-	// paths is sops-backed — the #2211 allowlist plays no part; these grants
+	// derive the paths from $HOME / XDG_CACHE_HOME, which point at the real
+	// host paths, so these grants are load-bearing. None of these
+	// paths is sops-backed — the allowlist plays no part; these grants
 	// are the sole capability.
 	//
 	// Mirrors bwrap's --bind (RW) treatment of the same dirs in mounts.go
@@ -576,13 +565,12 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 5f. RO grants at the real host paths (issue #2245) ─────────────
-	// Step 3f of #2132: the RO staging symlinks for ~/.cache/prism/clipboard
+	// ── 5f. RO grants at the real host paths ─────────────
+	// RO subpath grants on the real host paths for ~/.cache/prism/clipboard
 	// (images staged by `prism clipboard paste-image`; the agent reads them at
 	// the absolute host path) and ~/.config/prism/agents (role prompt markdown
-	// read by the prism PI extension at before_agent_start — issue #2032) are
-	// gone. These explicit RO subpath grants on the real host paths are the
-	// replacement capability. Read-only — agents never write their own role
+	// read by the prism PI extension at before_agent_start).
+	// Read-only — agents never write their own role
 	// prompt and only read staged clipboard images; RO must not silently
 	// become RW. Emitted even when a dir does not exist on the host (see 5e).
 	if home != "" {
@@ -593,12 +581,10 @@ func generateProfile(m *Manager) string {
 	}
 
 	// ── 5g. ~/.nix-profile RO grant — symlink node + resolved target ─────
-	// Step 3f of #2132 (issue #2245): the RO staging symlink for
-	// ~/.nix-profile is gone. ~/.nix-profile is itself a SYMLINK on the host
+	// ~/.nix-profile is itself a SYMLINK on the host
 	// (→ ~/.local/state/nix/profiles/profile → … → /nix/store/…), and SBPL
-	// path filters evaluate the RESOLVED target for open(2)-class operations
-	// (the #2132 §2 mechanism note) — so the grant must work through
-	// resolution:
+	// path filters evaluate the RESOLVED target for open(2)-class operations,
+	// so the grant must work through resolution:
 	//
 	//   - The (literal ~/.nix-profile) allow covers operations on the symlink
 	//     NODE itself — readlink(2)/lstat(2) — which are evaluated against
@@ -629,7 +615,7 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 5h. prism profiles.json single-file RO read (issue #2286) ────────
+	// ── 5h. prism profiles.json single-file RO read ────────
 	// The CLI's `prism profile list`, `prism profile show`, and the
 	// available_profiles section of `prism agent-context` open
 	// ~/.config/prism/profiles.json directly via
@@ -643,7 +629,7 @@ func generateProfile(m *Manager) string {
 	// its contents are not secret — same trust level as the sibling
 	// agents/ markdown that 5f already grants. The allow is read-only and
 	// single-file (literal, not subpath): the rest of ~/.config/prism/
-	// (e.g. ~/.config/prism/accounts/, runtime-mutable state from #2283)
+	// (e.g. ~/.config/prism/accounts/, runtime-mutable state)
 	// stays out of the sandbox by default. RO must not silently become
 	// RW — nothing in-sandbox may mutate the host's profile config.
 	// file-test-existence is included so LoadProfiles' missing-file branch
@@ -660,40 +646,30 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 5i. ~/Library/Keychains/login.keychain-db RO grant (issue #2293) ──
+	// ── 5i. ~/Library/Keychains/login.keychain-db RO grant ──
 	// Keychain-using CLIs that ship as third-party tools (the Datadog `pup`
-	// CLI is the canonical example as of #2267; other Rust binaries built on
+	// CLI is the canonical example; other Rust binaries built on
 	// the `keyring` crate share the code path) reach the user's legacy login
 	// keychain through the Security Framework — SecKeychainFindGenericPassword /
-	// SecItemCopyMatching, dispatched via Mach IPC to securityd. Per PR #1488:
+	// SecItemCopyMatching, dispatched via Mach IPC to securityd.
 	// securityd requires the calling process to have file-read* on
 	// ~/Library/Keychains/login.keychain-db to service Keychain lookups even
 	// when the lookup goes over Mach IPC. Without this grant securityd hides
 	// the user's keychain entries from the sandboxed caller, and the lookup
 	// surfaces to the application as "credential not found" — exactly the
-	// symptom that motivated #2293 (pup OAuth token unreachable in-sandbox).
+	// symptom of pup OAuth token unreachable in-sandbox.
 	//
-	// Shape mirrors the original #1488 grant: single-file (literal ...), NOT
+	// Shape: single-file (literal ...), NOT
 	// (subpath ~/Library/Keychains). The narrowing is load-bearing: the modern
 	// UUID-keyed databases (keychain-2.db, user.kb) and the TrustedPeersHelper
 	// sibling files in the same directory MUST remain unreadable from inside
 	// the sandbox. Read-only — nothing in-sandbox writes to the user keychain.
 	//
-	// History: PR #1488 added the original grant for opencode-claude-auth's
-	// in-sandbox `security dump-keychain` use. PR #2130 (#2126) removed it
-	// when that consumer was retired and the verification at the time showed
-	// no remaining in-tree readers. PR #2267 then introduced `pup` as a new
-	// in-sandbox Keychain consumer — eight days later, outside the #2126
-	// verification window. This grant restores the capability under that new
-	// consumer-justification (third-party Keychain-using CLIs).
-	//
-	// We deliberately do NOT also re-add the per-session staging-HOME symlink
-	// that #1488 paired with this grant. That symlink was specifically for
-	// /usr/bin/security dump-keychain, which uses $HOME to find the keychain
-	// search list. pup and other keyring-crate consumers go through the
-	// Security Framework directly via securityd, which keys the search list
-	// off the calling UID — $HOME is never consulted. The staging-HOME
-	// elimination from #2132 (Step 5) must not be reverted.
+	// A per-session staging-HOME symlink is deliberately NOT paired with this
+	// grant. pup and other keyring-crate consumers go through the Security
+	// Framework directly via securityd, which keys the search list off the
+	// calling UID — $HOME is never consulted. Only /usr/bin/security
+	// dump-keychain would need $HOME, and nothing in-sandbox uses it.
 	//
 	// Rule is emitted unconditionally (no os.Stat guard): sandbox-exec
 	// silently ignores (literal ...) rules for non-existent paths (same
@@ -706,9 +682,9 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 5j. prism usage snapshot dir RO subpath read (issue #2572) ───────
+	// ── 5j. prism usage snapshot dir RO subpath read ───────
 	// The bottom-bar usage segment reads current.json out of this directory
-	// (pi/extensions/prism.ts::readUsageSnapshot, issue #2540). Under
+	// (pi/extensions/prism.ts::readUsageSnapshot). Under
 	// deny-default the open fails and the reader — which degrades silently
 	// by design — renders nothing, so the whole feature was invisible in
 	// every sandboxed session. `prism account usage` from inside a session
@@ -724,14 +700,14 @@ func generateProfile(m *Manager) string {
 	//
 	// Shape: (subpath <usageDir>) — the LEAF directory only, never a
 	// parent. The parent $XDG_STATE_HOME/prism holds prism.db and run/
-	// (every session's host-API socket dir, isolated per session by
-	// security fix #960); $XDG_STATE_HOME itself holds unrelated
+	// (every session's host-API socket dir, isolated per session);
+	// $XDG_STATE_HOME itself holds unrelated
 	// application state. Subpath rather than (literal <dir>/current.json)
 	// because the writer replaces the file by atomic rename and
 	// `prism account usage` also reads the sibling <account>.json files.
 	//
 	// READ-ONLY — no file-write*. The display only reads, and every writer
-	// goes through the sidecar endpoint POST /usage/snapshot (issue #2538),
+	// goes through the sidecar endpoint POST /usage/snapshot,
 	// so nothing in-sandbox needs write access. RO also stops a compromised
 	// session forging usage figures on the host. RO must not silently
 	// become RW. Mirrors bwrap's --ro-bind of the same directory in
@@ -747,7 +723,7 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 5k. Go module cache + build cache RW (issue #2621) ───────────────
+	// ── 5k. Go module cache + build cache RW ───────────────
 	// The repo AGENTS.md names `go build ./...` and `go test ./...` (run from
 	// modules/programs/prism/prism/) as "the first check for any prism code
 	// change". Under deny-default both commands fail in a Darwin worker:
@@ -798,8 +774,7 @@ func generateProfile(m *Manager) string {
 	// an already-extracted tree — that is what `go mod verify` is for). This
 	// is the same trust class as the §5e ~/.npm grant (npx executes cached
 	// JS) and ~/.cache/nix. The alternative — redirecting GOMODCACHE/GOCACHE
-	// into the session work dir — trades that for a cold cache per session;
-	// see the PR for #2621 for the full comparison and the measurements.
+	// into the session work dir — trades that for a cold cache per session.
 	//
 	// Concurrency is safe by design: the Go caches are built for concurrent
 	// multi-process access (a lock file under GOMODCACHE, content-addressed
@@ -823,15 +798,15 @@ func generateProfile(m *Manager) string {
 	}
 
 	// ── 6. Session work dir + worktree + bare repo + host-API socket (RW) ─
-	// Session-specific read-write paths. Locked in #1012 and #1017.
+	// Session-specific read-write paths.
 	// file-test-existence and file-read-metadata added alongside file-read*
 	// and file-write* for dyld/AMFI compatibility in the v3 profile.
 	//
-	// The first entry is the per-session work dir (issue #2213) — the ONLY
+	// The first entry is the per-session work dir — the ONLY
 	// per-session writable grant. It covers the generated ssh-config /
 	// gitconfig / allowed_signers, kubectl's KUBECACHEDIR cache, glab's
-	// GLAB_CONFIG_DIR config dir (issue #2668), AND the chromium Library
-	// skeleton (issue #2247 — CFFIXED_USER_HOME points chromium's
+	// GLAB_CONFIG_DIR config dir, AND the chromium Library
+	// skeleton (CFFIXED_USER_HOME points chromium's
 	// NSHomeDirectory() at <sessionDir>, so its writes land under
 	// <sessionDir>/Library/... with NO dedicated rule and NO host-Library
 	// grant).
@@ -849,8 +824,7 @@ func generateProfile(m *Manager) string {
 			sb.WriteString("  (subpath " + quoteSBPL(m.cfg.BareRoot) + ")\n")
 		}
 		// Host-API socket directory — the sidecar's per-session socket dir.
-		// (Post #2034: the per-session pi-agent/ staging subdirectory is gone;
-		// PI now reads from ~/.pi/agent directly via the shared mount. The
+		// (PI reads from ~/.pi/agent directly via the shared mount. The
 		// run-dir (subpath ...) rule below still covers agent-run.log,
 		// hostapi.sock, and pipe.sock.)
 		if m.cfg.HostAPISockPath != "" {
@@ -956,7 +930,7 @@ func generateProfile(m *Manager) string {
 		}
 	}
 
-	// ── 6c. Podman proxy socket literal RW (issue #2317 §3c / #2322) ────
+	// ── 6c. Podman proxy socket literal RW ────
 	// When ContainersEnabled is set on the session (agent_status.containers_enabled
 	// = 1) the sidecar binds a per-session filtering podman API socket at
 	// PodmanProxySockPath (resolved by the caller via
@@ -979,8 +953,8 @@ func generateProfile(m *Manager) string {
 	// The UPSTREAM podman socket path — the value returned by
 	// `podman machine inspect` on Darwin or $XDG_RUNTIME_DIR/podman/podman.sock
 	// on Linux — must NEVER appear here. The proxy is load-bearing only if
-	// the agent has no path to bypass it. The greppable security AC from
-	// #2322 asserts the upstream path's absence; see
+	// the agent has no path to bypass it. The greppable security check
+	// asserts the upstream path's absence; see
 	// TestGenerateProfile_PodmanProxy_UpstreamPathNeverAppears.
 	//
 	// Defence in depth: we never emit an allow when PodmanProxySockPath is
@@ -996,11 +970,9 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// Note (Step 5 of #2132, issue #2250): the per-symlink staging-HOME
-	// target allows are gone with the staging HOME itself. The sops-backed
-	// key/config reads ride the broad /private/var/folders allow narrowed by
-	// the #2211 secrets.d allowlist (section 3c); every other capability has
-	// an explicit real-path grant above.
+	// The sops-backed key/config reads ride the broad /private/var/folders
+	// allow narrowed by the secrets.d allowlist (section 3c); every other
+	// capability has an explicit real-path grant above.
 
 	// ── 8. /dev/null and /dev/dtracehelper write access ──────────────────
 	// Apple-signed binaries (git, ssh) open /dev/null for writing during
@@ -1045,25 +1017,25 @@ func generateProfile(m *Manager) string {
 	// mach-lookup    — bootstrap service lookups (logd, opendirectoryd, etc.).
 	//   The rule is intentionally UNQUALIFIED (no (global-name ...) filter), which
 	//   subsumes the WindowServer bootstrap port chromium connects to in headed
-	//   mode (com.apple.windowserver.active) called out as a separate clause in
-	//   issue #2021 §4. Tightening mach-lookup to an enumerated global-name set
+	//   mode (com.apple.windowserver.active) called out as a separate clause.
+	//   Tightening mach-lookup to an enumerated global-name set
 	//   is a defensible follow-up but requires empirically enumerating every name
 	//   dyld + AMFI + securityd + CFNetwork + libsystem_kernel + node + chromium
 	//   probe at startup — a much larger surface than the v1/v2 rule shape was
-	//   ever scoped to. The headed-mode WindowServer requirement from #2021 §4 is
+	//   ever scoped to. The headed-mode WindowServer requirement is
 	//   already satisfied by the unqualified form.
 	// mach-register  — per-pid Mach name registration (pi IPC).
 	// sysctl-read    — system library init queries (kern.*, hw.*, machdep.*).
 	// NOTE: signal is emitted as its own clause below so the (target ...)
 	//   qualifiers can be expressed cleanly — see §9a.
 	// NOTE: iokit-open is emitted as its own enumerated-class clause below —
-	//   see §9b (issue #2021).
+	//   see §9b.
 	// NOTE: ipc-posix-shm is REMOVED (unbound variable in v3 — replaced below).
 	sb.WriteString("(allow process-exec* process-fork process-info* mach-lookup mach-register\n")
 	sb.WriteString("       sysctl-read)\n")
 	sb.WriteString("\n")
 
-	// ── 9a. signal — self + children (issue #2021) ───────────────────────
+	// ── 9a. signal — self + children ───────────────────────
 	// Self-signaling is required for normal exit and tcsetpgrp-style TTY
 	// management. Children-signaling is required for playwright-cli's
 	// node-side launcher to clean up its chromium grandchild (the launcher
@@ -1076,7 +1048,7 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("(allow signal (target self) (target children))\n")
 	sb.WriteString("\n")
 
-	// ── 9b. iokit-open-user-client — Chromium user-client classes (#2021) ─
+	// ── 9b. iokit-open-user-client — Chromium user-client classes ─
 	// Chromium / firefox / webkit require iokit access on a small set of
 	// IOKit user-client classes during framework init. Without this,
 	// chromium SIGSEGVs in IONotificationPortGetRunLoopSource at
@@ -1111,13 +1083,13 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("  (iokit-user-client-class \"RootDomainUserClient\"))\n")
 	sb.WriteString("\n")
 
-	// ── 9c. iokit-open-service — IOPMrootDomain (#2249) ──────────────────
+	// ── 9c. iokit-open-service — IOPMrootDomain ──────────────────
 	// Current Chrome for Testing acquires its power-management port via
 	// iokit-open-service on the IOPMrootDomain registry entry — a different
 	// operation class from the iokit-open-user-client RootDomainUserClient
 	// allow above (§9b). Without this rule the open is denied and chromium
 	// SIGSEGVs (SEGV_ACCERR) during early init — the same observable
-	// fingerprint as the #2021 user-client denial. Deny-log smoking gun:
+	// fingerprint as the user-client denial. Deny-log smoking gun:
 	//
 	//   Sandbox: Google Chrome for Testing(NNN) deny(1) iokit-open-service IOPMrootDomain
 	//
@@ -1170,7 +1142,7 @@ func generateProfile(m *Manager) string {
 
 	// ── 17. Network ───────────────────────────────────────────────────────
 	// Unchanged from v1. Matches the bwrap baseline. Restriction to
-	// specific hosts/ports is a future concern per #1012.
+	// specific hosts/ports is a future concern.
 	//
 	// Note: GIT_SSH_COMMAND is set to the Nix-built openssh binary (cfg.SshBin,
 	// baked into config.json by prism-tui.nix). Nix openssh links against its
@@ -1178,7 +1150,7 @@ func generateProfile(m *Manager) string {
 	// than Apple's libnetwork.dylib. This means the system-network macro rules
 	// (dafsaData.bin, com.apple.netsrc, AF_SYSTEM/AF_ROUTE sockets) are NOT
 	// needed for SSH git operations — they would only be needed if /usr/bin/ssh
-	// were used. See issue #1012 and the GIT_SSH_COMMAND block in
+	// were used. See the GIT_SSH_COMMAND block in
 	// cmd/agent_run_sandbox_exec_darwin.go for the full rationale.
 	sb.WriteString("(allow network*)\n")
 	sb.WriteString("\n")
@@ -1220,7 +1192,7 @@ func generateProfile(m *Manager) string {
 	// emits log warnings but continues; allowing it silences the denials.
 	sb.WriteString("(allow user-preference-read)\n")
 
-	// ── 22. FINAL DENIES — Go module cache is not executable (issue #2621) ─
+	// ── 22. FINAL DENIES — Go module cache is not executable ─
 	// The module cache holds downloaded dependency SOURCE. Section 5k grants
 	// it read-write because the toolchain must populate it. Without this deny,
 	// a sandboxed process could plant a binary among the dependency sources
@@ -1231,7 +1203,7 @@ func generateProfile(m *Manager) string {
 	// holds ONLY because prism injects GOTOOLCHAIN=local. Under Go's default
 	// GOTOOLCHAIN=auto, cmd/go downloads a newer toolchain into the module
 	// cache and execs <dir>/bin/go from it, which this deny blocks — breaking
-	// the gate with the #2621 error shape. See the GoToolchainEnv godoc for
+	// the gate with the same error shape. See the GoToolchainEnv godoc for
 	// the upstream call path and for why a golang.org/toolchain@* carve-out
 	// was rejected.
 	//
@@ -1252,13 +1224,12 @@ func generateProfile(m *Manager) string {
 	// TestGenerateProfile_GoCacheExecDenyFollowsProcessExecAllow pins the
 	// ordering so a future section inserted below cannot quietly break it.
 	//
-	// History: issue #2621 originally tried to express this as the ABSENCE of
-	// file-map-executable on the module cache's allow clause. The host run
-	// disproved that: a planted binary executed from the module cache under
-	// the production profile, and executed from the build cache even with the
-	// whole section-5k block stripped. Withholding a flag from one allow
-	// clause cannot narrow a capability that a later unqualified allow hands
-	// out. Only an explicit deny does.
+	// Expressing this as the ABSENCE of file-map-executable on the module
+	// cache's allow clause does NOT work: a planted binary executes from the
+	// module cache under the production profile, and from the build cache
+	// even with the whole section-5k block stripped. Withholding a flag from
+	// one allow clause cannot narrow a capability that a later unqualified
+	// allow hands out. Only an explicit deny does.
 	//
 	// GOCACHE is deliberately NOT denied: cmd/go can serve a linked test
 	// binary straight out of the build cache on a warm build, so execution
@@ -1286,20 +1257,19 @@ func generateProfile(m *Manager) string {
 
 // collectSecretsDAllowlistNames returns the secrets.d-relative names of the
 // agent-needed secrets, derived from the stable host source paths the
-// sandbox legitimately reads through (issue #2211):
+// sandbox legitimately reads through:
 //
 //	~/.ssh/<SshAccessKeyName>            — ssh auth (generated ssh-config IdentityFile)
 //	~/.ssh/<SshAccessKeyName>.pub        — openssh public-half probe
 //	~/.ssh/<SshSigningKeyName>           — commit signing (ssh-keygen -Y sign)
 //	~/.ssh/<SshSigningKeyName>.pub       — gitconfig user.signingKey
-//	~/.config/aws/readonly-config        — read via AWS_CONFIG_FILE env (#2234)
-//	~/.config/aws/credentials            — read via AWS_SHARED_CREDENTIALS_FILE env (#2234)
-//	~/.config/kube/agents-config         — read via KUBECONFIG env (#2235)
-//	cfg.GitLabTokenPath                  — the gitlab_token sops secret (#2668)
-//	cfg.GrafanaConfigPath                — the pi grafana MCP config bundle (#2746)
+//	~/.config/aws/readonly-config        — read via AWS_CONFIG_FILE env
+//	~/.config/aws/credentials            — read via AWS_SHARED_CREDENTIALS_FILE env
+//	~/.config/kube/agents-config         — read via KUBECONFIG env
+//	cfg.GitLabTokenPath                  — the gitlab_token sops secret
+//	cfg.GrafanaConfigPath                — the pi grafana MCP config bundle
 //
-// The last two entries are the only additions since #2211, and both meet the
-// rule below: an in-sandbox consumer reads them.
+// The last two entries meet the rule below: an in-sandbox consumer reads them.
 //
 // GitLab: any zsh the agent starts sources the home-manager session vars,
 // which re-derive GITLAB_TOKEN by running `cat <this path>`. With the read
@@ -1314,11 +1284,11 @@ func generateProfile(m *Manager) string {
 // readFileSync(process.env.GRAFANA_MCP_CONFIG_PATH) from inside the sandbox
 // to get the Grafana URL and API key for the mcp-grafana child process, so
 // unlike the GitLab case there is no host-side read and no injected VALUE —
-// the in-sandbox read IS the delivery mechanism, and denying it is what kept
-// grafana off Darwin sandbox-exec hosts until #2746. cfg.GrafanaConfigPath
+// the in-sandbox read IS the delivery mechanism, and denying it kept
+// grafana off Darwin sandbox-exec hosts. cfg.GrafanaConfigPath
 // carries the same path prism injects as GRAFANA_MCP_CONFIG_PATH, sourced
 // from the role-filtered agent env, so a review role — which has that var
-// stripped (#2533) — gets no exception either. Again one file, by name.
+// stripped — gets no exception either. Again one file, by name.
 //
 // Each source is resolved via filepath.EvalSymlinks; when the resolved
 // target is a sops secrets.d path (…/secrets.d/<N>/<name>), <name> is
@@ -1327,13 +1297,13 @@ func generateProfile(m *Manager) string {
 // them. The returned names are deduplicated and keep source order so the
 // emitted profile is deterministic.
 //
-// This list is the enforcement half of the inventory in issue #2211: every
+// This list is the enforcement half of the inventory: every
 // other name under secrets.d/<N>/ (github_token, the role PATs, aws-config,
 // workkube, …) stays denied. Do NOT add a source here merely because a
 // secret exists — only because an in-sandbox consumer reads it. gitlab_token
-// moved from the denied list to the sources above when #2668 gave it such a
-// consumer, and the grafana config bundle when #2746 did; both are still
-// denied on any host (or role) that does not configure them.
+// and the grafana config bundle are in the sources above because an
+// in-sandbox consumer reads each; both stay denied on any host (or role)
+// that does not configure them.
 func collectSecretsDAllowlistNames(m *Manager, home string) []string {
 	if home == "" {
 		return nil
@@ -1358,7 +1328,7 @@ func collectSecretsDAllowlistNames(m *Manager, home string) []string {
 	// The GitLab token source is config-driven, not a fixed path: it is the
 	// same gitlab_token_path prism reads host-side to inject GITLAB_TOKEN.
 	// A host without nx.programs.gitlab-cli.enable leaves it empty, so no
-	// exception is emitted and gitlab_token stays denied (issue #2668).
+	// exception is emitted and gitlab_token stays denied.
 	if m.cfg.GitLabTokenPath != "" {
 		sources = append(sources, m.cfg.GitLabTokenPath)
 	}
@@ -1367,7 +1337,7 @@ func collectSecretsDAllowlistNames(m *Manager, home string) []string {
 	// path copies onto the Manager config. A host without
 	// nx.programs.prism.pi.grafana.enable leaves it empty, and so does every
 	// review role (agent_env_roles.go strips the var), so no exception is
-	// emitted and the bundle stays denied (issue #2746).
+	// emitted and the bundle stays denied.
 	if m.cfg.GrafanaConfigPath != "" {
 		sources = append(sources, m.cfg.GrafanaConfigPath)
 	}
@@ -1477,7 +1447,7 @@ func writeProfile(m *Manager) (string, error) {
 // path comes the harness binary (pi) and its arguments — the inner
 // command sandbox-exec executes inside the SBPL sandbox.
 //
-// The harness invocation mirrors bwrap.go:BuildArgs (see lines 608–636) so
+// The harness invocation mirrors bwrap.go:BuildArgs so
 // that the sandbox interior behaves identically across isolation modes:
 //
 //   - --port: cfg.AllocatedPort, falling back to ContainerPort when 0.
@@ -1489,7 +1459,7 @@ func writeProfile(m *Manager) (string, error) {
 // HOME and the rest of the sandbox env are not wired through the profile
 // generator — the dispatcher (cmd/agent_run_sandbox_exec_darwin.go) builds
 // the env, starting from the MinimalIsolatedExecEnv allow-list. $HOME is
-// the real host home (Step 5 of #2132).
+// the real host home.
 func (s *sandboxExecIsolator) BuildArgs(m *Manager) []string {
 	cfg := m.cfg
 
@@ -1533,13 +1503,13 @@ func (s *sandboxExecIsolator) Run(ctx context.Context, args []string) error {
 // Shutdown sends SIGTERM to the sandbox-exec child if it is still running,
 // waits up to 30 seconds, and sends SIGKILL if the process has not exited.
 // The SIGTERM-then-grace-then-SIGKILL body is shared with bwrap via the
-// gracefulShutdown helper (shutdown.go, A2.GR).
+// gracefulShutdown helper (shutdown.go).
 //
 // In the production agent-run flow the sandbox-exec child is owned by
 // cmd/agent_run_sandbox_exec_darwin.go (which manages its own supervised
 // Wait loop with kqueue parent-death watching). The Isolator's Shutdown is
 // therefore a no-op when no Run-managed child has been registered (s.cmd
-// is nil) — preserving the pre-A2.GR behaviour. When a future test or
+// is nil). When a future test or
 // caller invokes Run on this isolator, Shutdown will deliver the same
 // SIGTERM-then-SIGKILL sequence as bwrap.
 func (s *sandboxExecIsolator) Shutdown() {
@@ -1575,13 +1545,13 @@ func init() {
 // /bin/sh for the sandbox-exec interior env, mirroring bwrap's
 // standardSandboxEnvArgs pin (bwrap.go) for the same reason.
 //
-// # Root cause (issue #2674)
+// # Root cause
 //
 // Inside a Darwin sandbox-exec session, any zsh invocation clobbers an
 // injected sops-backed credential env var (e.g. GITHUB_TOKEN, GITLAB_TOKEN)
 // to an empty string. zsh sources the home-manager session variables, which
 // re-derive each sops-backed var with a literal `cat <sops-path>` command
-// substitution. Inside the sandbox, the secrets.d deny (issue #2211, section
+// substitution. Inside the sandbox, the secrets.d deny (section
 // 3c of generateProfile) makes that cat fail, so the re-derivation yields an
 // empty string and OVERWRITES the value agent-run injected via credEnv
 // (m.CredentialEnvVars, cmd/agent_run_sandbox_exec_darwin.go). /bin/sh
@@ -1623,8 +1593,7 @@ func SandboxExecShellEnv() []string {
 // NOT the sandbox interior env. In bwrap mode the sandbox interior is
 // rebuilt via --setenv pairs in BuildArgs after --clearenv. In sandbox-exec
 // mode the sandbox shares the harness env, so this filter is the only line
-// of defence against host-shell secrets reaching the sandbox interior in
-// this PR.
+// of defence against host-shell secrets reaching the sandbox interior.
 //
 // See cmd/agent_run.go for the corresponding filter at the syscall.Exec
 // call site. Both filters use the same allow-list; keep them in sync.

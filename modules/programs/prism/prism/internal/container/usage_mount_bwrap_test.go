@@ -3,7 +3,7 @@
 package container
 
 // usage_mount_bwrap_test.go — Linux-only integration coverage for the
-// read-only bind of the prism usage snapshot directory (issue #2572).
+// read-only bind of the prism usage snapshot directory.
 //
 // The sibling unit tests in usage_mount_test.go assert the emitted argv.
 // Argv assertions are necessary but not sufficient — the same lesson the
@@ -26,7 +26,7 @@ package container
 // can only be the rule under test.
 //
 // Skips (never fails) when bwrap is absent or cannot create user namespaces
-// — GitHub Actions ubuntu runners (#1510) and the nix build sandbox both
+// — GitHub Actions ubuntu runners and the nix build sandbox both
 // land there.
 
 import (
@@ -197,8 +197,8 @@ func TestBwrapUsageStateDir_UnreadableWithoutBind(t *testing.T) {
 // TestBwrapUsageStateDir_WriteDeniedInsideSandbox is the functional AC that
 // the mount is read-only, and the security consequence: a compromised
 // session must not be able to forge usage figures on the host. Every
-// legitimate writer goes through the sidecar endpoint POST /usage/snapshot
-// (issue #2538), so nothing in-sandbox needs write access.
+// legitimate writer goes through the sidecar endpoint POST /usage/snapshot,
+// so nothing in-sandbox needs write access.
 func TestBwrapUsageStateDir_WriteDeniedInsideSandbox(t *testing.T) {
 	bwrapBin := requireUsableBwrapForUsageTest(t)
 	hostHome, usageDir, snapshotPath := usageFixture(t)

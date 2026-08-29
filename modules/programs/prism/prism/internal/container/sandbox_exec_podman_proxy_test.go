@@ -2,7 +2,7 @@ package container
 
 // sandbox_exec_podman_proxy_test.go — unit tests for the conditional SBPL
 // allow that exposes the per-session filtering podman API socket inside the
-// sandbox-exec sandbox (issue #2317 §3c / #2322, Step 5).
+// sandbox-exec sandbox.
 //
 // The integration coverage (positive + paired negative-mutation per the
 // AGENTS.md sandbox-exec testing convention) lives in
@@ -17,7 +17,7 @@ package container
 //     mentions the proxy socket path.
 //   - SECURITY: the upstream podman socket path never appears in the SBPL
 //     for ANY value of ContainersEnabled. This is the greppable security
-//     AC from #2322 — the proxy is load-bearing only if the agent has no
+//     check — the proxy is load-bearing only if the agent has no
 //     path to bypass it.
 //   - Defence in depth: an empty PodmanProxySockPath with ContainersEnabled=true
 //     emits no allow rule, so a misconfigured caller cannot accidentally
@@ -41,8 +41,8 @@ const sentinelUpstreamPodmanSocketPath = "/private/tmp/sentinel-upstream-podman-
 // TestGenerateProfile_PodmanProxy_LiteralAllowWhenEnabled verifies that
 // when ContainersEnabled=true and PodmanProxySockPath is set, the profile
 // emits a literal RW allow for the proxy path — and only the literal
-// form. This is the §3c clause from #2317 (file-read* file-write* with
-// literal, not subpath, scope) and the canonical positive AC from #2322.
+// form. This is the §3c clause (file-read* file-write* with
+// literal, not subpath, scope) and the canonical positive AC.
 func TestGenerateProfile_PodmanProxy_LiteralAllowWhenEnabled(t *testing.T) {
 	const proxyPath = "/private/tmp/prism-sbx-proxy-test/podman.sock"
 	m := newSandboxExecManager(Config{
@@ -69,7 +69,7 @@ func TestGenerateProfile_PodmanProxy_LiteralAllowWhenEnabled(t *testing.T) {
 // TestGenerateProfile_PodmanProxy_NoMentionWhenDisabled verifies that with
 // ContainersEnabled=false (the default), NO clause in the profile mentions
 // the proxy socket path — even when the caller redundantly populates
-// PodmanProxySockPath. This is the default-off AC from #2322 and protects
+// PodmanProxySockPath. This is the default-off AC and protects
 // against accidental widening on sessions that did not opt in.
 func TestGenerateProfile_PodmanProxy_NoMentionWhenDisabled(t *testing.T) {
 	const proxyPath = "/private/tmp/prism-sbx-proxy-disabled/podman.sock"
@@ -133,7 +133,7 @@ func TestGenerateProfile_PodmanProxy_EmptyPathEmitsNoAllow(t *testing.T) {
 }
 
 // TestGenerateProfile_PodmanProxy_UpstreamPathNeverAppears is the
-// greppable security AC from #2322: the real upstream podman socket path
+// greppable security check: the real upstream podman socket path
 // (the value returned by `podman machine inspect`) must never appear in
 // the rendered SBPL for ANY value of ContainersEnabled. The proxy is
 // load-bearing only if the agent has no path to bypass it — if the

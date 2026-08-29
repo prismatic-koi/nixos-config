@@ -98,7 +98,7 @@ func bwrapFixture(t *testing.T, cfg Config) (m *Manager, fakeHome string, cleanu
 
 	// Pre-create directories that BuildArgs expects unconditionally.
 	// ~/.config/claude is conditional (OptionalIfMissing) but pre-created
-	// here so the fixture exercises the bound path (issue #2243).
+	// here so the fixture exercises the bound path.
 	dirs := []string{
 		filepath.Join(fakeHome, ".config", "claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
@@ -186,7 +186,8 @@ func TestBwrapBuildArgs_BaselineFlags(t *testing.T) {
 	// --clearenv wipes the inherited environment so host-shell secrets (e.g.
 	// PRISM_GITHUB_TOKEN_*) do not leak into the sandbox interior; every var
 	// the sandbox needs is added back via explicit --setenv pairs.
-	// Note: --unshare-ipc is intentionally absent — see issue #906.
+	// Note: --unshare-ipc is intentionally absent — it would break
+	// SQLite WAL mmap coherency between concurrent sessions.
 	want := []string{
 		"--clearenv",
 		"--unshare-pid",
@@ -380,7 +381,7 @@ func TestBwrapBuildArgs_WorktreeBound(t *testing.T) {
 
 // TestBwrapBuildArgs_ClaudeConfigXDGDirBound verifies the claude config dir
 // is RW-bound Dst==Src at the host XDG path (~/.config/claude) and that the
-// former canonical ~/.claude bind is gone (issue #2243, Step 3c of #2132).
+// The canonical ~/.claude bind is absent (env-var route).
 // claude-code reaches the dir via the CLAUDE_CONFIG_DIR env var; the bwrap
 // namespace is additive from an empty root, so the Dst==Src bind delivers
 // the host directory at the path the env var carries.
@@ -401,7 +402,7 @@ func TestBwrapBuildArgs_ClaudeConfigXDGDirBound(t *testing.T) {
 	}
 
 	// The canonical ~/.claude path must not appear anywhere in the args —
-	// neither as a bind source nor as a destination (env-var route, #2243).
+	// neither as a bind source nor as a destination (env-var route).
 	canonical := filepath.Join(fakeHome, ".claude")
 	if hasArg(args, canonical) {
 		t.Errorf("canonical ~/.claude %q must not appear in args (XDG relocation, #2243): %v", canonical, redactedArgs(args))
@@ -411,7 +412,7 @@ func TestBwrapBuildArgs_ClaudeConfigXDGDirBound(t *testing.T) {
 // TestBwrapBuildArgs_ClaudeConfigDirAbsentNoBind verifies the claude XDG
 // mount is OptionalIfMissing: a host without ~/.config/claude produces no
 // bind args for it (bwrap aborts on missing --bind sources), and no
-// canonical ~/.claude bind reappears (issue #2243).
+// canonical ~/.claude bind reappears.
 func TestBwrapBuildArgs_ClaudeConfigDirAbsentNoBind(t *testing.T) {
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
@@ -459,7 +460,7 @@ func TestBwrapBuildArgs_PiXDGDirNotBound(t *testing.T) {
 	// that XDG path (it lives at ~/.pi/agent/); the old unconditional --bind
 	// was a dead mount from the opencode→pi rename that broke fresh installs
 	// where the source directory did not exist (bwrap aborts on missing
-	// --bind sources). Removed in #1622.
+	// --bind sources).
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -510,11 +511,11 @@ func TestBwrapBuildArgs_NixCacheDirBound(t *testing.T) {
 }
 
 // TestBwrapBuildArgs_NixCacheDirAbsentNoBind pins the OptionalIfMissing
-// semantics added in #2245 (Step 3e of #2132): when ~/.cache/nix does not
-// exist on the host (fresh machine), no bind triple is emitted for it. The
-// entry used to be unconditional, which emits a --bind with a missing
-// source — and bwrap ABORTS on missing bind sources (the #2243 lesson), so
-// the absent dir would have broken every session on a fresh host.
+// semantics: when ~/.cache/nix does not
+// exist on the host (fresh machine), no bind triple is emitted for it. An
+// unconditional entry would emit a --bind with a missing
+// source — and bwrap ABORTS on missing bind sources, so
+// the absent dir would break every session on a fresh host.
 func TestBwrapBuildArgs_NixCacheDirAbsentNoBind(t *testing.T) {
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
@@ -540,7 +541,7 @@ func TestBwrapBuildArgs_NixCacheDirAbsentNoBind(t *testing.T) {
 
 // TestBwrapBuildArgs_BunCacheDirBound pins the ~/.cache/bun RW bind after
 // its convergence from the inline bwrap.go block into the
-// StandardSandboxMounts walk (#2245, Step 3e of #2132). Behaviour must be
+// StandardSandboxMounts walk. Behaviour must be
 // identical to the former inline block: RW, Dst==Src, present when the host
 // dir exists.
 func TestBwrapBuildArgs_BunCacheDirBound(t *testing.T) {
@@ -570,7 +571,7 @@ func TestBwrapBuildArgs_BunCacheDirBound(t *testing.T) {
 }
 
 // TestBwrapBuildArgs_BunCacheDirAbsentNoBind pins the conditional half of
-// the bun-cache convergence (#2245): when ~/.cache/bun does not exist on
+// the bun-cache handling: when ~/.cache/bun does not exist on
 // the host, no bind triple is emitted (OptionalIfMissing — bwrap aborts on
 // missing bind sources).
 func TestBwrapBuildArgs_BunCacheDirAbsentNoBind(t *testing.T) {
@@ -598,7 +599,7 @@ func TestBwrapBuildArgs_BunCacheDirAbsentNoBind(t *testing.T) {
 }
 
 // TestBwrapBuildArgs_PrismProfilesJSONROBound pins the
-// ~/.config/prism/profiles.json single-file RO mount (issue #2286). The CLI's
+// ~/.config/prism/profiles.json single-file RO mount. The CLI's
 // `prism profile list` / `prism profile show` and the available_profiles
 // section of `prism agent-context` open this file directly via
 // internal/config/profiles.go::LoadProfiles; without this mount those
@@ -638,7 +639,7 @@ func TestBwrapBuildArgs_PrismProfilesJSONROBound(t *testing.T) {
 }
 
 // TestBwrapBuildArgs_PrismProfilesJSONAbsentNoBind covers the fresh-install
-// edge case from issue #2286: when profiles.json does not exist on the host
+// edge case: when profiles.json does not exist on the host
 // (before the first `nh switch`), no bind triple is emitted —
 // OptionalIfMissing skips the mount, and bwrap (which aborts on missing
 // bind sources) is never asked to bind a non-existent file. LoadProfiles
@@ -713,7 +714,7 @@ func TestBwrapBuildArgs_BareRepoBoundAtHostPath(t *testing.T) {
 }
 
 func TestBwrapBuildArgs_MissingWorktreeGitDirStashesError(t *testing.T) {
-	// Issue #2518: a missing WorktreeGitDir must be a real, surfaced error
+	// A missing WorktreeGitDir must be a real, surfaced error
 	// (via m.worktreeGitDirErr, checked by Prepare) rather than a silent skip.
 	// Now that WorktreeGitDir is resolved from the worktree's own
 	// authoritative .git pointer, a missing directory means something is
@@ -777,9 +778,8 @@ func TestBwrapBuildArgs_MissingBareRootOmitted(t *testing.T) {
 // ── Read-only binds ──────────────────────────────────────────────────────────
 
 func TestBwrapBuildArgs_AWSConfigCanonicalBindsGone(t *testing.T) {
-	// Issue #2234 (Step 3a of #2132, design decision §5.1): the aws
-	// config/credentials canonical-path ($HOME/.aws/*) bind-mounts were
-	// dropped from StandardSandboxMounts. The aws CLI reaches both files via
+	// The aws config/credentials canonical-path ($HOME/.aws/*) bind-mounts
+	// are absent from StandardSandboxMounts. The aws CLI reaches both files via
 	// the AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars at the host
 	// XDG paths. Because the bwrap namespace is additive from an empty root,
 	// the XDG paths themselves are bound Dst==Src (see
@@ -818,7 +818,7 @@ func TestBwrapBuildArgs_AWSConfigCanonicalBindsGone(t *testing.T) {
 }
 
 func TestBwrapBuildArgs_AWSXDGPathROBound(t *testing.T) {
-	// Issue #2234: the env-var route needs the aws config content delivered
+	// The env-var route needs the aws config content delivered
 	// INTO the bwrap namespace — bwrap builds its filesystem additively from
 	// an empty root, so an env var pointing at an unbound path would resolve
 	// to nothing in-sandbox. The XDG host paths are bound Dst==Src so
@@ -854,12 +854,12 @@ func TestBwrapBuildArgs_AWSXDGPathROBound(t *testing.T) {
 }
 
 func TestBwrapBuildArgs_KubeAgentsConfigXDGPathROBound(t *testing.T) {
-	// Issue #2235: the env-var route needs the kube config content delivered
+	// The env-var route needs the kube config content delivered
 	// INTO the bwrap namespace — bwrap builds its filesystem additively from
 	// an empty root, so KUBECONFIG pointing at an unbound path would resolve
 	// to nothing in-sandbox. The XDG host path is bound Dst==Src so
 	// KUBECONFIG (which carries exactly this path) resolves to a readable
-	// file. The former canonical-path ($HOME/.kube/config) remap is gone.
+	// file. There is no canonical-path ($HOME/.kube/config) remap.
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -878,8 +878,7 @@ func TestBwrapBuildArgs_KubeAgentsConfigXDGPathROBound(t *testing.T) {
 			kubeSrc, kubeSrc, redactedArgs(args))
 	}
 
-	// The canonical-path remap must be gone (issue #2235, bwrap convergence
-	// per #2132 design decision §5.1).
+	// The canonical-path remap must be absent (env-var route).
 	kubeCanonicalDst := filepath.Join(fakeHome, ".kube", "config")
 	for i, arg := range args {
 		if arg != "--ro-bind" && arg != "--bind" {
@@ -896,7 +895,7 @@ func TestBwrapBuildArgs_KubeAgentsConfigXDGPathROBound(t *testing.T) {
 }
 
 // TestBwrapBuildArgs_KubeCacheDirEnvInjected verifies the bwrap equivalent
-// of the sandbox-exec KUBECACHEDIR redirect (issue #2235): kubectl's cache
+// of the sandbox-exec KUBECACHEDIR redirect: kubectl's cache
 // is pointed at /tmp/kube-cache on the per-session tmpfs (--tmpfs /tmp), so
 // cache writes are ephemeral and never reach the host. The injection is
 // unconditional — it must not depend on the kube config existing on the
@@ -1093,7 +1092,7 @@ func TestBwrapBuildArgs_GeneratedGitconfigROBound(t *testing.T) {
 
 // ── Env vars (--setenv K V) ──────────────────────────────────────────────────
 
-// ── pi grafana MCP secret bundle (issue #2452 edge-case AC) ──────────────────
+// ── pi grafana MCP secret bundle (edge-case AC) ──────────────────
 // The pi grafana extension reads a sops-decrypted config bundle from the
 // path delivered via GRAFANA_MCP_CONFIG_PATH (typically the sops-nix
 // symlink /run/secrets/<name>). bwrap must bind the resolved concrete file
@@ -1157,7 +1156,7 @@ func TestBwrapBuildArgs_GrafanaSecretBind_PositivePath(t *testing.T) {
 }
 
 // Negative test: when GRAFANA_MCP_CONFIG_PATH is unset (grafana disabled, or
-// a review role whose copy of the var is stripped by #2533) no grafana bind
+// a review role whose copy of the var is stripped) no grafana bind
 // is emitted. This is the default configuration.
 func TestBwrapBuildArgs_GrafanaSecretBind_UnsetIsNoBind(t *testing.T) {
 	tmp := t.TempDir()
@@ -1561,10 +1560,10 @@ func TestBwrapBuildArgs_ColortermOmittedWhenUnset(t *testing.T) {
 
 // TestBwrapBuildArgs_AgentEnvVarsInjected verifies that every entry in
 // Config.AgentEnvVars is emitted as --setenv K V in the bwrap arg list.
-// KUBECONFIG flows through since issue #2235 (Step 3b of #2132) — the
-// canonical-path ($HOME/.kube/config) kube bind was dropped and kubectl
+// KUBECONFIG flows through — there is no
+// canonical-path ($HOME/.kube/config) kube bind and kubectl
 // resolves the config via KUBECONFIG at the host XDG path. AWS_CONFIG_FILE
-// and AWS_SHARED_CREDENTIALS_FILE flow through since issue #2234 (Step 3a)
+// and AWS_SHARED_CREDENTIALS_FILE flow through
 // on the same pattern.
 func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 	m, _, cleanup := bwrapFixture(t, Config{
@@ -1590,7 +1589,7 @@ func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 	}
 
 	// AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE MUST be injected
-	// (issue #2234) — the canonical-path bind-mounts are gone and the aws
+	// The canonical-path bind-mounts are absent and the aws
 	// CLI resolves the files via these env vars at the host XDG paths.
 	if !hasSetenv(args, "AWS_CONFIG_FILE", "/home/ben/.config/aws/readonly-config") {
 		t.Errorf("--setenv AWS_CONFIG_FILE not found in args (must flow since #2234): %v", redactedArgs(args))
@@ -1599,15 +1598,15 @@ func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 		t.Errorf("--setenv AWS_SHARED_CREDENTIALS_FILE not found in args (must flow since #2234): %v", redactedArgs(args))
 	}
 
-	// KUBECONFIG MUST be injected (issue #2235) — the canonical-path kube
-	// bind is gone and kubectl resolves the config via this env var at the
+	// KUBECONFIG MUST be injected — the canonical-path kube
+	// bind is absent and kubectl resolves the config via this env var at the
 	// host XDG path.
 	if !hasSetenv(args, "KUBECONFIG", "/home/ben/.config/kube/agents-config") {
 		t.Errorf("--setenv KUBECONFIG not found in args (must flow since #2235): %v", redactedArgs(args))
 	}
 
-	// CLAUDE_CONFIG_DIR MUST be injected (issue #2243) — the canonical-path
-	// ~/.claude bind is gone and claude-code resolves its config dir via
+	// CLAUDE_CONFIG_DIR MUST be injected — the canonical-path
+	// ~/.claude bind is absent and claude-code resolves its config dir via
 	// this env var at the host XDG path.
 	if !hasSetenv(args, "CLAUDE_CONFIG_DIR", "/home/ben/.config/claude") {
 		t.Errorf("--setenv CLAUDE_CONFIG_DIR not found in args (must flow since #2243): %v", redactedArgs(args))
@@ -1618,9 +1617,8 @@ func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 // KUBECONFIG is injected even when ~/.config/kube/agents-config does not
 // exist on the host, and that the absent file produces no bind args (the
 // XDG Dst==Src mount is EvalSymlinks-conditional). The env layer is a plain
-// value pass-through (issue #2235); kubectl tolerates a missing config file,
-// so injection must not depend on file existence — mirrors the AWS shape
-// from #2234.
+// value pass-through; kubectl tolerates a missing config file,
+// so injection must not depend on file existence — mirrors the AWS shape.
 func TestBwrapBuildArgs_KubeconfigInjectedEvenWhenFileAbsent(t *testing.T) {
 	fakeHome := t.TempDir()
 	// Do NOT create kube dir — file absent.
@@ -1687,7 +1685,7 @@ func TestBwrapBuildArgs_KubeconfigInjectedEvenWhenFileAbsent(t *testing.T) {
 // ~/.config/aws/readonly-config and ~/.config/aws/credentials do not exist
 // on the host, and that the absent files produce no bind args (the XDG
 // Dst==Src mounts are EvalSymlinks-conditional). The env layer is a plain
-// value pass-through (issue #2234); the aws CLI tolerates a missing
+// value pass-through; the aws CLI tolerates a missing
 // credentials file (config-only operation — the credentials file is
 // deliberately absent on the current host) and a missing config file, so
 // injection must not depend on file existence.
@@ -1871,10 +1869,9 @@ func TestBwrapBuildArgs_ChdirIsNotSlashWorkspace(t *testing.T) {
 func TestBwrapBuildArgs_MissingMountOmitted(t *testing.T) {
 	// Create a fixture with all the standard paths present, then remove the
 	// kube agents-config to verify it is omitted from the arg list.
-	// (The vehicle was the AWS readonly-config until #2234 dropped its
-	// canonical mount — kube exercises the same EvalSymlinks silent-skip
-	// semantics in StandardSandboxMounts, now on the Dst==Src XDG bind
-	// from #2235.)
+	// (The AWS readonly-config uses the env-var route; kube exercises the
+	// same EvalSymlinks silent-skip semantics in StandardSandboxMounts, on
+	// the Dst==Src XDG bind.)
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -1891,7 +1888,7 @@ func TestBwrapBuildArgs_MissingMountOmitted(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// Neither the Dst==Src XDG form (#2235) nor the old canonical remap
+	// Neither the Dst==Src XDG form nor the old canonical remap
 	// should appear.
 	if hasROBindSrcDst(args, kubeSrc, kubeSrc) {
 		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeSrc, redactedArgs(args))
@@ -1928,7 +1925,7 @@ func TestBwrapBuildArgs_MissingMcpAuthOmitted(t *testing.T) {
 // tools) caches downloaded packages under ~/.npm/_npx/; without this mount
 // the sandbox cache-misses and re-downloads, which then fails under the
 // sandbox's network policy. Parity with sandbox-exec's §5e RW (subpath ~/.npm)
-// grant in generateProfile (sandbox_exec.go). See issue #2127.
+// grant in generateProfile (sandbox_exec.go).
 func TestBwrapBuildArgs_NpmCacheBound(t *testing.T) {
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
@@ -1953,7 +1950,7 @@ func TestBwrapBuildArgs_NpmCacheBound(t *testing.T) {
 // TestBwrapBuildArgs_MissingNpmCacheOmitted pins the conditional-on-existence
 // semantics: when ~/.npm does not exist on the host, the mount is omitted
 // silently and the sandbox starts cleanly. Mirrors
-// TestBwrapBuildArgs_MissingMcpAuthOmitted. See issue #2127.
+// TestBwrapBuildArgs_MissingMcpAuthOmitted.
 func TestBwrapBuildArgs_MissingNpmCacheOmitted(t *testing.T) {
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
@@ -1994,7 +1991,7 @@ func TestBwrapBuildArgs_MissingKubeConfigOmitted(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// Neither the Dst==Src XDG form (#2235) nor the old canonical remap
+	// Neither the Dst==Src XDG form nor the old canonical remap
 	// should appear.
 	if hasROBindSrcDst(args, kubeSrc, kubeSrc) {
 		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeSrc, redactedArgs(args))
@@ -2009,8 +2006,8 @@ func TestBwrapBuildArgs_MissingKubeConfigOmitted(t *testing.T) {
 
 // TestBwrapBuildArgs_AWSCredentialsNotRemapped verifies that the AWS
 // credentials file is NOT mounted at the canonical $HOME/.aws/credentials
-// path even when the XDG source exists — the canonical-path remap was
-// dropped in issue #2234; the aws CLI reads the file via
+// path even when the XDG source exists — there is no canonical-path
+// remap; the aws CLI reads the file via
 // AWS_SHARED_CREDENTIALS_FILE at the host XDG path, which is bound Dst==Src
 // (see TestBwrapBuildArgs_AWSXDGPathROBound).
 func TestBwrapBuildArgs_AWSCredentialsNotRemapped(t *testing.T) {
@@ -2053,7 +2050,7 @@ func TestBwrapBuildArgs_AllRemapsHaveCorrectDestinations(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// Note (#2234/#2235): the AWS readonly-config, AWS credentials, and kube
+	// Note: the AWS readonly-config, AWS credentials, and kube
 	// agents-config remaps are gone — the CLIs read those files via env vars
 	// at the host XDG paths (bound Dst==Src). See
 	// TestBwrapBuildArgs_AWSConfigCanonicalBindsGone and
@@ -2119,11 +2116,10 @@ func TestNewBwrapIsolator_ReturnsIsolator(t *testing.T) {
 	var _ Isolator = newBwrapIsolator("test")
 }
 
-// ── PrepareBwrap uses bwrapIsolator via container.go (wired in #877) ─────────
-// The old guard test (TestBwrapIsolator_NotUsedInContainerGo) is removed: the
-// wiring PR (#877) intentionally references bwrapIsolator from container.go
-// via Manager.PrepareBwrap(). The structural guarantee from #876 is now met
-// by the AC that bwrap is NOT wired into Manager.Create() (the sidecar path).
+// ── PrepareBwrap uses bwrapIsolator via container.go ─────────
+// bwrapIsolator is referenced from container.go via Manager.PrepareBwrap().
+// The structural guarantee is that bwrap is NOT wired into Manager.Create()
+// (the sidecar path).
 
 func TestPrepareBwrap_WritesSSHConfigAndGitconfig(t *testing.T) {
 	// PrepareBwrap must write the SSH config and gitconfig temp files and
@@ -2194,8 +2190,8 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 
 	t.Logf("full bwrap args (%d): %v", len(args), redactedArgs(args))
 
-	// Baseline flags present. Note: --unshare-ipc is intentionally absent (see
-	// issue #906 — it breaks SQLite WAL mmap coherency between concurrent sessions).
+	// Baseline flags present. Note: --unshare-ipc is intentionally absent
+	// (it breaks SQLite WAL mmap coherency between concurrent sessions).
 	for _, flag := range []string{"--clearenv", "--unshare-pid", "--unshare-uts", "--die-with-parent"} {
 		if !hasArg(args, flag) {
 			t.Errorf("baseline flag %q missing from args", flag)
@@ -2257,7 +2253,7 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 
 	// Tail: pi --extension <extensionPath> --agent <role> <prompt>
 	// PIInvocation emits the prompt as a bare positional arg, not --prompt.
-	// Issue #2064 added --agent <role> between --extension and the prompt
+	// --agent <role> sits between --extension and the prompt
 	// so the prism PI extension's pi.getFlag("agent") path resolves
 	// synchronously — see TestPIInvocation_AgentFlag in this package.
 	n := len(args)
@@ -2271,9 +2267,9 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 		t.Errorf("expected --extension flag near end (before --agent), got %q at [n-5]", args[n-5])
 	}
 
-	// The canonical-path remaps are gone: AWS readonly-config since #2234,
-	// kube agents-config since #2235 (env-var route) — assert both stay
-	// gone, and that the kube XDG Dst==Src bind is present instead.
+	// The canonical-path remaps are absent: AWS readonly-config and
+	// kube agents-config use the env-var route — assert both stay
+	// absent, and that the kube XDG Dst==Src bind is present instead.
 	if hasROBindSrcDst(args,
 		filepath.Join(fakeHome, ".config", "aws", "readonly-config"),
 		filepath.Join(fakeHome, ".aws", "config"),
@@ -2291,7 +2287,7 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 		t.Errorf("kube agents-config: want --ro-bind %q %q (Dst==Src XDG delivery, #2235)", kubeXDG, kubeXDG)
 	}
 
-	// Claude config dir: the canonical ~/.claude bind is gone since #2243
+	// Claude config dir: the canonical ~/.claude bind is absent
 	// (env-var route via CLAUDE_CONFIG_DIR); the XDG path is RW-bound
 	// Dst==Src instead.
 	if hasArg(args, filepath.Join(fakeHome, ".claude")) {
@@ -2302,8 +2298,7 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 		t.Errorf("claude config dir: want --bind %q %q (Dst==Src XDG delivery, #2243)", claudeXDG, claudeXDG)
 	}
 
-	// KUBECACHEDIR redirects kubectl's cache to the per-session /tmp tmpfs
-	// (issue #2235).
+	// KUBECACHEDIR redirects kubectl's cache to the per-session /tmp tmpfs.
 	if !hasSetenv(args, "KUBECACHEDIR", bwrapKubeCacheDir) {
 		t.Errorf("--setenv KUBECACHEDIR %s not found in args", bwrapKubeCacheDir)
 	}
@@ -2651,11 +2646,11 @@ func TestStandardSandboxEnvArgs_FallbackPathWithUser(t *testing.T) {
 	}
 }
 
-// ── Host-API socket isolation (security fix #960) ────────────────────────────
+// ── Host-API socket isolation ────────────────────────────
 
 // TestBwrapBuildArgs_HostAPISockPerSessionDirBindNotSharedDir verifies that when
 // HostAPISockPath is set, BuildArgs binds only the session's per-session socket
-// DIRECTORY (not the shared run/ directory). Security fix #960: each session's
+// DIRECTORY (not the shared run/ directory). Each session's
 // socket is placed in run/<session>/hostapi.sock so binding only that directory
 // prevents the sandbox from seeing other sessions' sockets. A directory bind
 // (not file bind) is used so the socket file appears inside the sandbox after
@@ -2695,7 +2690,7 @@ func TestBwrapBuildArgs_HostAPISockPerSessionDirBindNotSharedDir(t *testing.T) {
 		}
 	}
 
-	// The shared run/ directory must NOT be bind-mounted (security fix #960).
+	// The shared run/ directory must NOT be bind-mounted.
 	if hasBind(args, sharedRunDir) {
 		t.Errorf("shared run/ DIRECTORY %q must not be mounted (security fix #960); found as --bind in args: %v", sharedRunDir, redactedArgs(args))
 	}
@@ -2816,7 +2811,7 @@ func TestHelpers_HasSetenv(t *testing.T) {
 	}
 }
 
-// ── PI session persistence: global per-cwd history overlay (#1985) ───────────
+// ── PI session persistence: global per-cwd history overlay ───────────
 //
 // The host's ~/.pi/agent/sessions/ directory is overlay-mounted onto
 // $PI_CODING_AGENT_DIR/sessions/ inside the sandbox by appendPIBwrapMounts
@@ -2826,17 +2821,15 @@ func TestHelpers_HasSetenv(t *testing.T) {
 // AFTER the staging-dir bind (so bwrap applies it as an overlay on top), and
 // must appear before the "--" terminator.
 //
-// Pre-#1985 these tests verified a separate --bind of
-// ~/.pi/agent/sessions onto its own host path, motivated by an OAuth-tokens
-// comment. That mount was dead code in the bwrap path (pi inside the sandbox
-// only writes to PI_CODING_AGENT_DIR, never to the host home path), so it was
-// removed during the #1985 consolidation.
+// bwrap pi sessions do not use a separate --bind of ~/.pi/agent/sessions
+// onto its own host path: pi inside the sandbox only writes to
+// PI_CODING_AGENT_DIR, never to the host home path, so no such mount exists.
 
 // bwrapPIFixture extends bwrapFixture with the minimum PI-specific config
 // needed to exercise the pi harness code path in BuildArgs. It creates a
 // fake PI binary, extension directory, AND the shared host ~/.pi/agent
 // directory at <fakeHome>/.pi/agent (mirroring what production
-// EnsurePIAgentConfigDir returns post-#2034), then returns a Config with
+// EnsurePIAgentConfigDir returns), then returns a Config with
 // Harness="pi" + PIAgentConfigHostDir pointing at that shared dir so the
 // pi-mount block in appendPIBwrapMounts is exercised end-to-end.
 func bwrapPIFixture(t *testing.T) (m *Manager, fakeHome string, cleanup func()) {
@@ -2866,7 +2859,7 @@ func bwrapPIFixture(t *testing.T) (m *Manager, fakeHome string, cleanup func()) 
 
 	// Now that fakeHome is known, point PIAgentConfigHostDir at the canonical
 	// shared mount source <fakeHome>/.pi/agent (matching production behaviour
-	// after #2034). Create it on disk so bwrap has a valid bind source.
+	// (matching production). Create it on disk so bwrap has a valid bind source.
 	agentCfgDir := filepath.Join(fakeHome, ".pi", "agent")
 	if err := os.MkdirAll(agentCfgDir, 0o700); err != nil {
 		t.Fatalf("bwrapPIFixture: create ~/.pi/agent: %v", err)
@@ -2886,8 +2879,8 @@ func findBindPairs(args []string) [][2]string {
 	return pairs
 }
 
-// TestBwrapBuildArgs_PISessions_ReachableViaSharedMount verifies the #1985
-// AC under the post-#2034 design: the host's ~/.pi/agent/sessions/ directory
+// TestBwrapBuildArgs_PISessions_ReachableViaSharedMount verifies that
+// the host's ~/.pi/agent/sessions/ directory
 // is reachable at $PI_CODING_AGENT_DIR/sessions/ inside the sandbox via the
 // shared ~/.pi/agent RW bind — no dedicated sessions-overlay bind is
 // emitted because the parent mount itself IS the host ~/.pi/agent.
@@ -2925,8 +2918,8 @@ func TestBwrapBuildArgs_PISessions_ReachableViaSharedMount(t *testing.T) {
 	}
 
 	// There must NOT be a redundant standalone --bind of the sessions dir
-	// onto $PI_CODING_AGENT_DIR/sessions/ — post-#2034 that overlay is gone
-	// because the parent mount covers it.
+	// onto $PI_CODING_AGENT_DIR/sessions/ — the parent mount covers it,
+	// so no dedicated overlay is needed.
 	sandboxSessionsDir := sandboxAgentDir + "/sessions"
 	for _, p := range findBindPairs(args) {
 		if p[0] == hostSessionsDir && p[1] == sandboxSessionsDir {
@@ -2967,7 +2960,7 @@ func TestBwrapBuildArgs_PISessionsOverlay_CreatesHostDirIfMissing(t *testing.T) 
 // TestBwrapBuildArgs_PISharedMount_BeforeTerminator verifies that the
 // shared ~/.pi/agent --bind appears before the "--" terminator. bwrap
 // requires all namespace flags to precede the separator. (Replaces the
-// pre-#2034 sessions-overlay-specific check; the parent bind subsumes it.)
+// sessions-overlay-specific check; the parent bind subsumes it.)
 func TestBwrapBuildArgs_PISharedMount_BeforeTerminator(t *testing.T) {
 	m, fakeHome, cleanup := bwrapPIFixture(t)
 	defer cleanup()
@@ -3032,9 +3025,9 @@ func TestBwrapBuildArgs_PISharedMount_OmittedForNonPI(t *testing.T) {
 	}
 }
 
-// ── ContainersEnabled (#2317 / #2321) ───────────────────────────────
+// ── ContainersEnabled ───────────────────────────────
 //
-// These tests cover Step 4 of #2317. They assert the bwrap surface for the
+// These tests assert the bwrap surface for the
 // per-session filtering podman API socket proxy:
 //
 //   - When ContainersEnabled is true, the rendered argv contains the
@@ -3046,7 +3039,7 @@ func TestBwrapBuildArgs_PISharedMount_OmittedForNonPI(t *testing.T) {
 //   - The real upstream podman socket path ($XDG_RUNTIME_DIR/podman/podman.sock
 //     or any value the sidecar resolves) NEVER appears in the rendered argv,
 //     regardless of ContainersEnabled. This is the greppable security AC
-//     from #2321: if anyone ever adds `--bind $XDG_RUNTIME_DIR/podman ...`
+//     if anyone ever adds `--bind $XDG_RUNTIME_DIR/podman ...`
 //     to bwrap.go BuildArgs, this test fails.
 //   - PrepareBwrap returns an error when ContainersEnabled=true but the
 //     run-directory the proxy socket lives in does not exist (defence
@@ -3093,7 +3086,7 @@ func containersBwrapFixture(t *testing.T, opts containersFixtureOpts) (m *Manage
 		ContainersEnabled:   opts.containersEnabled,
 		PodmanProxySockPath: proxySockPath,
 		// Required by PrepareSessionWorkDir's writeGitconfigArtefacts hard
-		// check on missing identity (#1960). Tests that route through
+		// check on missing identity. Tests that route through
 		// PrepareBwrap need these set.
 		GitUserName:  "Test User",
 		GitUserEmail: "test@example.com",
@@ -3122,7 +3115,7 @@ type containersFixtureOpts struct {
 }
 
 // TestBwrapBuildArgs_ContainersEnabled_EmitsAllThreeSubstrings asserts the
-// three positive ACs from #2321 in one test: with ContainersEnabled=true the
+// three positive ACs in one test: with ContainersEnabled=true the
 // rendered argv contains --setenv CONTAINER_HOST unix://<proxy>,
 // --setenv DOCKER_HOST unix://<proxy>, and
 // --bind <sessionDir>/container-scratch <sessionDir>/container-scratch.
@@ -3153,7 +3146,7 @@ func TestBwrapBuildArgs_ContainersEnabled_EmitsAllThreeSubstrings(t *testing.T) 
 // TestBwrapBuildArgs_ContainersDisabled_NoContainerSurface asserts that with
 // ContainersEnabled=false (the default) NONE of CONTAINER_HOST, DOCKER_HOST,
 // or the container-scratch bind appear. This is the "no behavioural change
-// when the flag is unset" AC from #2321.
+// when the flag is unset" AC.
 func TestBwrapBuildArgs_ContainersDisabled_NoContainerSurface(t *testing.T) {
 	m, _, scratchDir, _, _, cleanup := containersBwrapFixture(t, containersFixtureOpts{
 		containersEnabled: false,
@@ -3240,7 +3233,7 @@ func TestPrepareBwrap_ContainersEnabled_MissingRunDirIsError(t *testing.T) {
 }
 
 // TestBwrapBuildArgs_NoUpstreamPodmanSocketLeak is the greppable security
-// AC from #2321: the REAL upstream podman socket path
+// AC: the REAL upstream podman socket path
 // ($XDG_RUNTIME_DIR/podman/podman.sock or whatever the sidecar resolves)
 // must NOT appear anywhere in the rendered bwrap argv for ANY value of
 // ContainersEnabled. If someone ever adds `--bind $XDG_RUNTIME_DIR/podman ...`

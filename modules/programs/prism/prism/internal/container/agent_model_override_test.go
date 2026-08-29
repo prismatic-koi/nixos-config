@@ -1,6 +1,6 @@
 package container
 
-// agent_model_override_test.go — issue #2863 regression tests for
+// agent_model_override_test.go — regression tests for
 // Config.AgentModel, the per-role model override carried by
 // `prism spawn --model-override <role>=<model>`.
 //

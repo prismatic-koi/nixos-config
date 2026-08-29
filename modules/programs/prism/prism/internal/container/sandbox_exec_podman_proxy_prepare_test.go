@@ -1,10 +1,9 @@
 package container
 
 // sandbox_exec_podman_proxy_prepare_test.go — unit tests for the
-// containers-enabled prep block in sandboxExecIsolator.Prepare (issue
-// #2317 §3c / #2322, Step 5). This block is symmetric to the bwrap-side
-// containers-enabled prep block added in Step 4 (#2321) and exercises the
-// same validation order + scratch-dir mkdir against the sandbox-exec
+// containers-enabled prep block in sandboxExecIsolator.Prepare. This block
+// is symmetric to the bwrap-side containers-enabled prep block and exercises
+// the same validation order + scratch-dir mkdir against the sandbox-exec
 // isolator.
 //
 // What's covered here:
@@ -45,9 +44,8 @@ import (
 // this path; the create-time bind validation expects it to exist.
 //
 // The mkdir lives in sandboxExecIsolator.Prepare (not PrepareSessionWorkDir
-// itself) so it is symmetric with the bwrap-side block added in Step 4
-// (#2321) and so non-containers sessions sharing PrepareSessionWorkDir see
-// zero behaviour change.
+// itself) so it is symmetric with the bwrap-side block and so non-containers
+// sessions sharing PrepareSessionWorkDir see zero behaviour change.
 func TestSandboxExecPrepare_CreatesContainerScratchWhenEnabled(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
@@ -215,8 +213,8 @@ func TestSandboxExecPrepare_ErrorsWhenSockPathEmpty(t *testing.T) {
 	}
 }
 
-// TestSandboxExecPrepare_ErrorsWhenRunDirMissing verifies the edge-case AC
-// from #2322: when ContainersEnabled=true but the per-session run dir
+// TestSandboxExecPrepare_ErrorsWhenRunDirMissing verifies the edge case:
+// when ContainersEnabled=true but the per-session run dir
 // (parent of PodmanProxySockPath) does not exist on disk, Prepare returns
 // an error rather than rendering an SBPL with an allow for a literal that
 // doesn't exist. The integration tests live in

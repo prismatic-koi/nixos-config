@@ -62,9 +62,8 @@ const (
 // user, so canonical paths are
 // $HOME/.ssh/{access-key,signing-key,signing-key.pub,allowed_signers}
 // where $HOME is the host user's home directory. sandbox-exec generates its
-// configs into the per-session work dir instead (session_work_dir.go,
-// issue #2213) with stable host key paths — the former isolationSandboxExec
-// mode value was deleted with the staging HOME in Step 5 of #2132.
+// configs into the per-session work dir instead (session_work_dir.go) with
+// stable host key paths.
 type isolationMode int
 
 const (
@@ -120,12 +119,10 @@ type Config struct {
 	// it is non-empty PIInvocation emits it as `--model <AgentModel>` in
 	// place of PIModel, so the per-role entry wins over both the profile
 	// slot and the session-wide `--model` flag. Empty means no per-role
-	// override for this role, and PIModel is used unchanged. Issue #2863.
+	// override for this role, and PIModel is used unchanged.
 	AgentModel string
 
-	// PluginHostPath is retained for compatibility but is no longer used by
-	// the container — the entire plugins/ directory is now mounted read-only
-	// via the config allowlist in buildRunArgs.
+	// PluginHostPath is unused. Kept for struct compatibility.
 	PluginHostPath string
 
 	// BareRoot is the absolute path to the bare git repo root on the host
@@ -150,7 +147,7 @@ type Config struct {
 	// to unix:///var/run/prism-host/<sockfilename>. The socket path uses a per-session
 	// subdirectory (run/<sessionName>/hostapi.sock) so that each container sees only
 	// its own session's socket directory — not the shared run/ directory containing all
-	// sessions' sockets (security fix #960). On Darwin this field is still set but
+	// sessions' sockets. On Darwin this field is still set but
 	// HostAPITCPPort takes precedence over the Unix socket.
 	HostAPISockPath string
 
@@ -182,7 +179,7 @@ type Config struct {
 	// (run/<sessionDirName>/agent-run.log). When non-empty it is exposed to
 	// the sandboxed agent as PRISM_AGENT_RUN_LOG so the PI prism extension
 	// can append a durable diagnostic line when it exhausts its first-connect
-	// retries and gives up (issue #2357) — pane scrollback dies with the
+	// retries and gives up — pane scrollback dies with the
 	// pane, the log file survives. The log lives in the same per-session run
 	// directory as the host-API socket, so the existing bwrap bind-mount and
 	// sandbox-exec SBPL subpath grant for that directory cover it — no new
@@ -190,15 +187,15 @@ type Config struct {
 	AgentRunLogPath string
 
 	// ContainersEnabled is the per-session runtime gate for the filtering
-	// podman API socket proxy (#2317 / #2321 / #2322). When true, the
+	// podman API socket proxy. When true, the
 	// per-isolator BuildArgs / SBPL generator emits:
 	//
-	// bwrap (Step 4 / #2321):
+	// bwrap:
 	//   --setenv CONTAINER_HOST unix://<PodmanProxySockPath>
 	//   --setenv DOCKER_HOST    unix://<PodmanProxySockPath>
 	//   --bind   <sessionDir>/container-scratch <sessionDir>/container-scratch
 	//
-	// sandbox-exec (Step 5 / #2322):
+	// sandbox-exec:
 	//   (allow file-read* file-write* (literal "<PodmanProxySockPath>"))
 	//   CONTAINER_HOST=unix://<PodmanProxySockPath>   (env injection)
 	//   DOCKER_HOST=unix://<PodmanProxySockPath>      (env injection)
@@ -215,12 +212,12 @@ type Config struct {
 	// Critically, the upstream podman socket path is NEVER passed into the
 	// sandbox — only the filtered PodmanProxySockPath the sidecar's proxy
 	// goroutine listens on. The proxy is the agent's only container API
-	// surface. See #2317 §4 for the threat model.
+	// surface. See the podman-proxy security spec for the threat model.
 	ContainersEnabled bool
 
 	// PodmanProxySockPath is the absolute host path of the per-session
 	// filtering podman API socket created by the sidecar's podman-proxy
-	// goroutine (#2317 §3b / #2320). The socket sits in the same per-session
+	// goroutine. The socket sits in the same per-session
 	// run directory as HostAPISockPath, so on bwrap the directory bind that
 	// already exposes the host-API socket also exposes this socket — no
 	// additional bind-mount is required. On sandbox-exec the SBPL
@@ -274,13 +271,13 @@ type Config struct {
 	// the role-specific PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE> var nor the inherited
 	// GITHUB_TOKEN yields a non-empty value — this rescues agents from a Darwin
 	// sops launchd decrypt race that freezes an empty GITHUB_TOKEN into the tmux
-	// server env (#2029). When empty, the file fallback is skipped.
+	// server env. When empty, the file fallback is skipped.
 	GitHubTokenPath string
 
 	// GitHubTokenPaths maps <ACCOUNT>_<ROLE> keys (e.g. PRISMATIC_KOI_WORKER,
 	// THANKYOU_PAYROLL_COORDINATOR) to the absolute host path of the
 	// corresponding sops-decrypted GitHub token file. This is the primary
-	// source of truth for GitHub token resolution as of issue #2348:
+	// source of truth for GitHub token resolution:
 	// credentialEnvVars reads the file at spawn time so the token value never
 	// depends on shell expansion having happened for the PRISM_GITHUB_TOKEN_*
 	// env vars — which is what broke every session under the boot-restore
@@ -297,11 +294,11 @@ type Config struct {
 	// Darwin). credentialEnvVars reads the file at spawn time and injects the
 	// contents as GITLAB_TOKEN, so the value never depends on a shell having
 	// expanded the host's "$(cat <path>)" session variable — the same
-	// file-first shape GitHubTokenPaths uses (#2348). The path is also the
+	// file-first shape GitHubTokenPaths uses. The path is also the
 	// source that admits `gitlab_token` to the sandbox-exec secrets.d
 	// allowlist (collectSecretsDAllowlistNames). Empty means no GitLab token
 	// is configured on this host: no env var is injected and no secrets.d
-	// exception is emitted. See issue #2668.
+	// exception is emitted.
 	GitLabTokenPath string
 
 	// GrafanaConfigPath is the absolute host path to the sops-decrypted pi
@@ -320,20 +317,17 @@ type Config struct {
 	// Empty means no exception is emitted and the bundle stays denied. That
 	// covers a host with nx.programs.prism.pi.grafana.enable = false AND every
 	// review role, whose GRAFANA_MCP_CONFIG_PATH is stripped by
-	// internal/config/agent_env_roles.go (#2533) — so the file allowlist
+	// internal/config/agent_env_roles.go — so the file allowlist
 	// tracks the capability gate with no second list to maintain.
 	//
 	// The bwrap isolator does NOT read this field: it derives the same path
-	// inline from AgentEnvVars to emit its --ro-bind (#2452), and is unchanged
-	// by #2746.
+	// inline from AgentEnvVars to emit its --ro-bind.
 	GrafanaConfigPath string
 
 	// InitialPrompt is the initial prompt to deliver to the agent at startup.
 	// When non-empty, it is appended to the agent command as
 	// --agent <AgentRole> --prompt <text> so that the agent starts the session
 	// with the prompt already in flight, visible in the TUI from the start.
-	// This replaces the previous POST /session + prompt_async HTTP delivery
-	// which created a second session invisible to the TUI (RFC #691 Phase 1a).
 	InitialPrompt string
 
 	// RuntimeEnv holds harness-specific environment variables to inject
@@ -357,19 +351,17 @@ type Config struct {
 	Harness string
 
 	// PIAgentConfigHostDir is the absolute host path to the shared PI agent
-	// config directory (~/.pi/agent). Since design #2031 PR3 (#2034) the
-	// per-session staging dir has been collapsed into a single shared mount of
-	// the user's ~/.pi/agent. When non-empty and Harness == "pi", BuildArgs
+	// config directory (~/.pi/agent) — a single shared mount of the user's
+	// ~/.pi/agent. When non-empty and Harness == "pi", BuildArgs
 	// (bwrap) bind-mounts this directory read-WRITE into the sandbox at
 	// PIAgentConfigSandboxDir and sets PI_CODING_AGENT_DIR to the in-sandbox
 	// path so PI discovers settings.json / themes / AGENTS.md / skills /
 	// auth.json. Writes to auth.json, atlassian-mcp-oauth.json, and sessions/
-	// reach the host via the same parent bind — there is no separate overlay
-	// (the pre-#2034 "RO parent + RW file overlays" design was rejected
-	// because proper-lockfile's auth.json.lock mkdir on the parent dir needs
-	// write access; see pi_invocation.go top-of-file for the full rationale).
-	// The role system-prompt is injected at runtime by the prism PI extension,
-	// not via this directory (design #2031).
+	// reach the host via the same parent bind — there is no separate overlay.
+	// The mount is read-WRITE because proper-lockfile's auth.json.lock mkdir on
+	// the parent dir needs write access; see pi_invocation.go top-of-file for
+	// the full rationale. The role system-prompt is injected at runtime by the
+	// prism PI extension, not via this directory.
 	PIAgentConfigHostDir string
 
 	// PIAgentConfigSandboxDir is the in-sandbox path at which the PI agent
@@ -466,7 +458,7 @@ type Manager struct {
 	piBwrapErr error
 
 	// credentialsErr holds any error produced by credentialEnvVars during
-	// BuildArgs.  As of issue #2348 credentialEnvVars can fail when a
+	// BuildArgs.  credentialEnvVars can fail when a
 	// configured GitHub token file path is unreadable, and the spawn must
 	// fail with a diagnostic naming the path (never the value) rather than
 	// silently proceeding with no token.  BuildArgs cannot return an error,
@@ -475,12 +467,9 @@ type Manager struct {
 	credentialsErr error
 
 	// worktreeGitDirErr holds any error produced when WorktreeGitDir does not
-	// exist on disk at BuildArgs time. Previously this case was silently
-	// skipped (an os.Stat failure just meant the --bind was never emitted),
-	// which combined with a derived-and-possibly-wrong WorktreeGitDir path to
-	// make the failure invisible (issue #2518). Now that WorktreeGitDir is
-	// resolved from the worktree's authoritative .git pointer, a missing
-	// directory is a real error and must be reported, not skipped. BuildArgs
+	// exist on disk at BuildArgs time. WorktreeGitDir is resolved from the
+	// worktree's authoritative .git pointer, so a missing directory is a real
+	// error and must be reported, not silently skipped. BuildArgs
 	// cannot return an error, so it stashes the error here and Prepare
 	// surfaces it — same pattern as piBwrapErr.
 	worktreeGitDirErr error
@@ -517,7 +506,7 @@ func (m *Manager) Name() string { return m.name }
 // directory — fixture session names (e.g. "repo@feat") repeat across the
 // suite, so without per-process namespacing two concurrent `go test`
 // processes in different worktrees on the same host would read/write the
-// same /tmp/prism-gitconfig-prism-repo-feat file (issue #2222).
+// same /tmp/prism-gitconfig-prism-repo-feat file.
 var tempDir = os.TempDir
 
 // sessionTempPath is the package-level building block for per-session temp
@@ -586,7 +575,7 @@ func (m *Manager) allowedSignersFilePath() string {
 // carries a stanza for, in emission order. Both map to the SAME mounted
 // access key: modules/programs/git.nix points github.com and gitlab.com at
 // ~/.ssh/prismatic-koi-ed25519 on the host, so gitlab.com needs no new key
-// material inside the sandbox — only a host stanza (issue #2668).
+// material inside the sandbox — only a host stanza.
 //
 // No other SSH host is expected inside an agent sandbox. Adding one here
 // grants the sandbox git-over-SSH reach to that host with the access key,
@@ -600,7 +589,7 @@ var SandboxSshHosts = []string{"github.com", "gitlab.com"}
 // (bwrap, sandbox-$HOME-relative generic key path) and writeSshConfigToDir
 // (sandbox-exec, stable host key path). The two differ ONLY in the
 // identityFile they pass; keeping the body here is what stops the two
-// copies drifting, which they previously did by duplicating the string.
+// copies drifting.
 func sandboxSshConfig(identityFile string) string {
 	var b strings.Builder
 	for i, host := range SandboxSshHosts {
@@ -624,11 +613,11 @@ func sandboxSshConfig(identityFile string) string {
 // IdentityFile path is $HOME/.ssh/access-key using the sandbox-specific
 // $HOME prefix, which matches the generic name used by the bwrap bind-mount
 // (<hostHome>/.ssh/access-key). Both stanzas share that one key — the host
-// maps github.com and gitlab.com to the same access key (#2668).
+// maps github.com and gitlab.com to the same access key.
 //
 // Only the bwrap Prepare path calls this; sandbox-exec generates its ssh
 // config into the per-session work dir instead (writeSshConfigToDir in
-// session_work_dir.go, issue #2213) with the stable host key path.
+// session_work_dir.go) with the stable host key path.
 func (m *Manager) writeSshConfig(mode isolationMode) error {
 	identityFile := filepath.Join(sandboxHome(m, mode), ".ssh", "access-key")
 	sshConfig := sandboxSshConfig(identityFile)
@@ -650,13 +639,12 @@ func (m *Manager) writeSshConfig(mode isolationMode) error {
 //   - [push] — autoSetupRemote = true (always).
 //   - [init] — defaultBranch = main (always).
 //
-// Missing identity → return error, refuse to write the gitconfig (issue
-// #1960). The previous behaviour of "warn and skip [user]" caused git inside
-// the sandbox to fall back to OS-level identity guessing
-// (`<sandbox-user>@<sandbox-host>`), which GitHub then aggregated into noisy
+// Missing identity → return error, refuse to write the gitconfig. Without a
+// configured [user] section, git falls back to OS-level identity guessing
+// (`<sandbox-user>@<sandbox-host>`), which GitHub then aggregates into noisy
 // `Co-authored-by:` trailers on squash merge.
 //
-// Missing signing keys → signing sections omitted, warning logged (AC-13).
+// Missing signing keys → signing sections omitted, warning logged.
 //
 // The mode argument controls the paths embedded in the generated file:
 //
@@ -666,7 +654,7 @@ func (m *Manager) writeSshConfig(mode isolationMode) error {
 //
 // Note: the sandbox-exec path does not consume this writer —
 // writeGitconfigToDir (session_work_dir.go) generates the work-dir gitconfig
-// with stable host key paths instead (issue #2213, Step 2 of #2132).
+// with stable host key paths instead.
 func (m *Manager) writeGitconfig(mode isolationMode) error {
 	// Canonical in-sandbox paths for the signing artefacts. Both paths live
 	// at $HOME/.ssh/<generic-name> where $HOME depends on the isolation mode
@@ -685,7 +673,7 @@ func (m *Manager) writeGitconfig(mode isolationMode) error {
 // writeGitconfigArtefacts is the canonical gitconfig generator shared by the
 // per-mode writeGitconfig (bwrap layout, temp-file destinations) and the
 // session-work-dir writer writeGitconfigToDir (stable host key paths,
-// work-dir destinations — issue #2213, used by sandbox-exec).
+// work-dir destinations, used by sandbox-exec).
 //
 // Parameters:
 //
@@ -733,8 +721,8 @@ func (m *Manager) writeGitconfigArtefacts(embedSigningKeyPub, embedAllowedSigner
 
 	var sb strings.Builder
 
-	// [user] section — required. Missing identity is a hard error (issue
-	// #1960): without a configured [user] section, git falls back to
+	// [user] section — required. Missing identity is a hard error:
+	// without a configured [user] section, git falls back to
 	// OS-level identity guessing inside the sandbox (e.g. `worker@prism`,
 	// `bot@local`), and any commit produced by the session is authored as
 	// that synthetic identity. GitHub then aggregates the synthetic
@@ -825,9 +813,9 @@ func (m *Manager) WorktreeGitdirFilePath() string { return m.worktreeGitdirFileP
 // Call this from "prism agent-run" in the tmux pane for bwrap mode. The
 // returned args slice is suitable for passing directly to exec.Exec("bwrap").
 //
-// Post A1.L4 (issue #1140): the body of this method moved into
-// bwrapIsolator.Prepare; this method is now a thin dispatcher that resolves
-// the bwrap isolator from the registry and forwards to its Prepare method.
+// The body lives in bwrapIsolator.Prepare; this method is a thin dispatcher
+// that resolves the bwrap isolator from the registry and forwards to its
+// Prepare method.
 func (m *Manager) PrepareBwrap() ([]string, error) {
 	iso, err := For(config.IsolationBwrap, ConstructorOpts{Name: m.name})
 	if err != nil {
@@ -843,11 +831,11 @@ func (m *Manager) PrepareBwrap() ([]string, error) {
 // syscall.Exec("/usr/bin/sandbox-exec", args, env). The first element of
 // args is "sandbox-exec" itself (argv[0] under syscall.Exec).
 //
-// $HOME inside the sandbox is the real host home (Step 5 of #2132);
+// $HOME inside the sandbox is the real host home;
 // cmd/agent_run_sandbox_exec_darwin.go constructs the env after this call.
 //
-// Post A1.L4 (issue #1140): the body of this method moved into
-// sandboxExecIsolator.Prepare; this method is now a thin dispatcher.
+// The body lives in sandboxExecIsolator.Prepare; this method is a thin
+// dispatcher.
 func (m *Manager) PrepareSandboxExec() ([]string, error) {
 	iso, err := For(config.IsolationSandboxExec, ConstructorOpts{Name: m.name})
 	if err != nil {
@@ -873,10 +861,8 @@ func (m *Manager) PrepareSandboxExec() ([]string, error) {
 //     without that mount.
 //
 // perSessionState controls whether the per-session pi state directory
-// (~/.local/share/pi/prism-sessions/<name>/) is created. The removed legacy
-// container path required it (Darwin virtiofs WAL-mode locking workaround);
-// the bwrap path shares the host pi data dir directly and does not need a
-// per-session dir.
+// (~/.local/share/pi/prism-sessions/<name>/) is created. The bwrap path
+// shares the host pi data dir directly and does not need a per-session dir.
 func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -888,7 +874,7 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 	// MkdirAll failure here is fatal — return immediately so the caller
 	// sees the real cause rather than a confusing runtime abort.
 
-	// Per-session pi state directory (legacy container path only).
+	// Per-session pi state directory (created only when perSessionState is set).
 	if perSessionState {
 		piSessionDir := filepath.Join(home, ".local", "share", "pi", "prism-sessions", m.name)
 		if err := os.MkdirAll(piSessionDir, 0o755); err != nil {
@@ -896,7 +882,7 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 		}
 	}
 
-	// Per-session host-API socket directory (security fix #960).
+	// Per-session host-API socket directory.
 	// Each session places its socket in its own subdirectory
 	// (~/.local/state/prism/run/<sessionName>/hostapi.sock) instead of the
 	// shared run/ directory. The directory must be pre-created here so it
@@ -939,7 +925,7 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 		log.Printf("container: failed to create clipboard staging dir %q (optional): %v", clipboardCacheDir, err)
 	}
 
-	// prism usage snapshot directory (issue #2572): pre-create so the RO
+	// prism usage snapshot directory: pre-create so the RO
 	// bind-mount emitted by StandardSandboxMounts is always active, even on a
 	// host that has never captured a snapshot. Without this, a session
 	// spawned before the first capture gets no mount (the entry is
@@ -963,8 +949,8 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 		}
 	}
 
-	// Go module cache (~/go/pkg/mod) and build cache (~/.cache/go-build),
-	// issue #2731: pre-create so the RW binds emitted by
+	// Go module cache (~/go/pkg/mod) and build cache (~/.cache/go-build):
+	// pre-create so the RW binds emitted by
 	// StandardSandboxMounts are always active, including on a machine that
 	// has never run go outside a sandbox. Without this the entries are
 	// skipped (they are OptionalIfMissing because bwrap aborts on a missing
@@ -974,7 +960,7 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 	// dirs above.
 	//
 	// This is the Linux half of the pair; the Darwin half is
-	// ensureGoCacheDirs, called from sandboxExecIsolator.Prepare (#2621).
+	// ensureGoCacheDirs, called from sandboxExecIsolator.Prepare.
 	// Both walk the shared list in go_cache.go and both create through
 	// createGoCacheDirs, which logs and continues — a failure here (the
 	// unwritable HOME of the nix build sandbox) must not stop a session

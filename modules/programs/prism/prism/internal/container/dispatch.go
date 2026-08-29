@@ -1,19 +1,17 @@
 // Package container manages sandbox lifecycle and mount preparation for
 // prism agent sessions.
-// This file extends the Isolator interface with the dispatch methods migrated
-// from the per-mode switch/if blocks scattered across cmd/ and internal/. Each
-// method body produces the same output as the previous per-mode branch — this
-// file is mechanically equivalent to the call-site switches it replaces (issue
-// #1133, A1.D1-D7).
+// This file extends the Isolator interface with the dispatch methods that
+// produce the per-mode output for calls that would otherwise branch on the
+// isolation mode.
 //
 // Methods added by this file:
 //
-//   - Available()                 — D1: replaces checkBwrapPlatform / checkSandboxExecPlatform / CheckAvailability
-//   - Cap()                       — D2: replaces checkConcurrencyCap / checkBwrapConcurrencyCap / checkSandboxExecConcurrencyCap dispatch
-//   - AgentPaneCmd()              — D4: replaces the BuildOpencodeCmd switch in internal/session/session.go
-//   - SidecarFlags()              — D5: replaces the per-mode argv builder in internal/session/sidecar.go
-//   - ArchivePaths()              — D6: replaces the per-mode resolveStorageRoot switch in internal/archive/archive.go (stopgap pending #1142)
-//   - LogPaths()                  — D7: per-mode log file set; today no caller dispatches per-mode but the shape is in place
+//   - Available()     — reports whether the mode can run on this host.
+//   - Cap()           — the per-mode concurrency-cap probe.
+//   - AgentPaneCmd()  — the tmux agent-pane command for the mode.
+//   - SidecarFlags()  — the per-mode `prism sidecar` argv extensions.
+//   - ArchivePaths()  — the per-mode storage root and extra-file set.
+//   - LogPaths()      — the per-mode log-file set.
 //
 // The methods are declared on the interface in isolator.go and implemented per
 // isolator (bwrap, sandbox-exec, host) below.
@@ -37,8 +35,7 @@ import (
 // CapStatus is the outcome of an Isolator.Cap probe. It generalises
 // container.CheckResult over all isolation modes.
 //
-// Replaces the previous CapInputs/CapStatus pair that embedded IgnoreCap and
-// CallerName in the inputs — those concerns are now handled by Check().
+// IgnoreCap and CallerName concerns are handled by Check(), not embedded here.
 type CapStatus struct {
 	// Mode is the isolation mode that produced this status. Used by
 	// RenderError / RenderWarning for the noun in messages.
@@ -82,9 +79,6 @@ func modeNoun(mode config.IsolationMode) string {
 
 // RenderError returns the error string shown when Exceeded is true and
 // --ignore-concurrency-cap was NOT passed.
-//
-// Replaces container.FormatExceededError (internal/container/concurrency.go)
-// and the inline strings.Builder block at cmd/concurrency.go for bwrap/sandbox-exec.
 func (s CapStatus) RenderError() string {
 	noun := modeNoun(s.Mode)
 	var sb strings.Builder
@@ -104,9 +98,6 @@ func (s CapStatus) RenderError() string {
 
 // RenderWarning returns the warning string shown when Exceeded is true and
 // --ignore-concurrency-cap WAS passed.
-//
-// Replaces container.FormatExceededWarning and the inline strings.Builder
-// blocks in cmd/concurrency.go for bwrap/sandbox-exec.
 func (s CapStatus) RenderWarning() string {
 	noun := modeNoun(s.Mode)
 	var sb strings.Builder
@@ -131,8 +122,7 @@ func (s CapStatus) RenderWarning() string {
 // If Exceeded is true and ignoreCap is true, writes the RenderWarning message
 // to stderr and returns nil.
 //
-// This is the unified entry point that replaces the per-mode cap-check
-// helpers in cmd/concurrency.go. Call sites become:
+// This is the unified entry point for the cap check. Call sites become:
 //
 //	if err := iso.Cap(ctx, dbPath()).Check(ignoreCap); err != nil { return err }
 func (s CapStatus) Check(ignoreCap bool) error {
@@ -181,8 +171,8 @@ func dbSessionsForMode(dbPath string, mode config.IsolationMode) (count int, ses
 }
 
 // SidecarFlagOpts carries the per-spawn inputs that SidecarFlags consumes.
-// Mirrors the fields read by the pre-refactor argv builder in
-// internal/session/sidecar.go:311-340.
+// Mirrors the fields read by the argv builder in
+// internal/session/sidecar.go.
 //
 // Mode-independent flags (e.g. --instance-id, --worktree-readonly,
 // --harness) live outside SidecarFlags — they are appended unconditionally
@@ -195,8 +185,8 @@ type SidecarFlagOpts struct {
 }
 
 // AgentPaneOpts carries the inputs that AgentPaneCmd consumes. Mirrors the
-// fields read by the pre-refactor switch in BuildOpencodeCmd
-// (internal/session/session.go:265-298). DirectCmd is the host-mode fallback
+// fields read by BuildOpencodeCmd
+// (internal/session/session.go). DirectCmd is the host-mode fallback
 // command produced by the caller (buildDirectOpencodeCmd) — passed in rather
 // than constructed here so this dispatch stays a thin shim and host-mode
 // behaviour remains in the session package.
@@ -212,7 +202,7 @@ type AgentPaneOpts struct {
 	// Model, when non-empty, is appended to the bwrap/sandbox-exec tmux
 	// pane command as `--model <X>` so that `prism agent-run` overrides the
 	// active profile slot's model on the final pi argv. Sourced from
-	// `prism spawn --model` (issue #2086). Empty value omits the flag and
+	// `prism spawn --model`. Empty value omits the flag and
 	// the slot's model is used unchanged.
 	Model string
 
@@ -221,21 +211,21 @@ type AgentPaneOpts struct {
 	// on container.Config.AgentModel, which PIInvocation renders as pi's
 	// `--model` in place of the slot / `--model` value. Sourced from the
 	// `prism spawn --model-override <role>=<model>` entry for THIS session's
-	// role, which the caller resolves before it gets here (issue #2863).
+	// role, which the caller resolves before it gets here.
 	// Empty value omits the flag and Model (or the slot) is used unchanged.
 	AgentModel string
 
 	// Variant, when non-empty, is appended to the bwrap/sandbox-exec tmux
 	// pane command as `--variant <Y>` so that `prism agent-run` overrides
 	// the active profile slot's thinking/variant on the final pi argv.
-	// Sourced from `prism spawn --variant` (issue #2086). Empty value omits
+	// Sourced from `prism spawn --variant`. Empty value omits
 	// the flag and the slot's thinking is used unchanged.
 	Variant string
 
 	// Provider, when non-empty, is appended to the bwrap/sandbox-exec tmux
 	// pane command as `--provider <P>` so that `prism agent-run` overrides
 	// the active profile slot's provider on the final pi argv. Sourced from
-	// `prism spawn --provider` (issue #2852). Empty value omits the flag and
+	// `prism spawn --provider`. Empty value omits the flag and
 	// the slot's provider is used unchanged.
 	//
 	// Emission is gated on HarnessName below: a non-pi harness never receives
@@ -244,7 +234,7 @@ type AgentPaneOpts struct {
 
 	// HarnessName is the session's harness ("pi", or empty which defaults to
 	// pi). It gates the pi-only `--provider` clause in
-	// appendAgentRunOverrides (issue #2852). Callers that do not set it get
+	// appendAgentRunOverrides. Callers that do not set it get
 	// the pi default, matching the rest of the launch path.
 	HarnessName string
 }
@@ -254,9 +244,9 @@ type AgentPaneOpts struct {
 // addition to the harness storage subtree (today: agent-run.log for bwrap +
 // sandbox-exec; empty for host).
 //
-// This is a stopgap pending #1142 (B6.IF — ArchiveAdapter interface): once
-// that lands, archive will consume the ArchiveAdapter interface and the
-// per-mode paths will move there. Until then, ArchivePaths keeps the per-mode
+// This is a stopgap: once an ArchiveAdapter interface lands, archive will
+// consume it and the per-mode paths will move there. Until then, ArchivePaths
+// keeps the per-mode
 // dispatch on the Isolator so internal/archive does not need to import
 // internal/container (which would create a circular dependency).
 type ArchivePaths struct {
@@ -293,7 +283,7 @@ type LogPaths struct {
 
 // Available reports whether bwrap mode can run on this host. Today the only
 // requirement is Linux (the bwrap binary check is done lazily at run time by
-// the bwrap.go arg builder). Mirrors checkBwrapPlatform (cmd/spawn.go:190).
+// the bwrap.go arg builder). Mirrors checkBwrapPlatform (cmd/spawn.go).
 func (b *bwrapIsolator) Available() error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("isolation mode %q requires Linux; current platform is %s", config.IsolationBwrap, runtime.GOOS)
@@ -327,13 +317,13 @@ func (b *bwrapIsolator) Cap(ctx context.Context, dbPath string) CapStatus {
 // "<abs-path>/prism agent-run --session <name>". The bwrap sandbox is owned
 // by the tmux pane (not the sidecar), so the agent-run dispatch reads the
 // session's isolation mode from the DB and invokes the bwrap arg builder
-// there. Mirrors the pre-refactor branch in BuildOpencodeCmd
-// (internal/session/session.go:286-294).
+// there. Mirrors the branch in BuildOpencodeCmd
+// (internal/session/session.go).
 //
 // The prism binary's absolute path is resolved via prismBinaryPathFn (os.Executable
 // in production) and shell-quoted into the rendered command so the agent-run
 // pane exec'd from the tmux shell is the same binary the operator is running
-// today — not whatever a PATH lookup happens to land on. Issue #2260.
+// today — not whatever a PATH lookup happens to land on.
 func (b *bwrapIsolator) AgentPaneCmd(opts AgentPaneOpts) (string, error) {
 	if opts.SessionName == "" {
 		return opts.DirectCmd, nil
@@ -348,8 +338,8 @@ func (b *bwrapIsolator) AgentPaneCmd(opts AgentPaneOpts) (string, error) {
 
 // SidecarFlags returns the sidecar argv extensions for bwrap: --port and the
 // common AgentRole / PluginHostPath / InitialPrompt flags.
-// Mirrors the pre-refactor branch in StartSidecarWithOpts
-// (internal/session/sidecar.go:336-352).
+// Mirrors the branch in StartSidecarWithOpts
+// (internal/session/sidecar.go).
 func (b *bwrapIsolator) SidecarFlags(opts SidecarFlagOpts) []string {
 	return commonHostAPISidecarFlags(opts)
 }
@@ -366,7 +356,7 @@ func (b *bwrapIsolator) ArchivePaths(home, sessionName string) ArchivePaths {
 
 // LogPaths returns the per-mode log file set for bwrap. The agent-run log
 // is populated for bwrap because prism agent-run tees the agent's stdout/
-// stderr there (cmd/agent_run.go:563).
+// stderr there (cmd/agent_run.go).
 func (b *bwrapIsolator) LogPaths() LogPaths {
 	return LogPaths{}
 }
@@ -377,7 +367,7 @@ func (b *bwrapIsolator) LogPaths() LogPaths {
 
 // Available reports whether sandbox-exec mode can run on this host. Today the
 // only requirement is Darwin. Mirrors checkSandboxExecPlatform
-// (cmd/spawn.go:199).
+// (cmd/spawn.go).
 func (s *sandboxExecIsolator) Available() error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("isolation mode %q requires macOS (Darwin); current platform is %s", config.IsolationSandboxExec, runtime.GOOS)
@@ -409,13 +399,13 @@ func (s *sandboxExecIsolator) Cap(ctx context.Context, dbPath string) CapStatus 
 
 // AgentPaneCmd returns the tmux pane command for sandbox-exec — same shape
 // as bwrap because both modes are pane-owned:
-// "<abs-path>/prism agent-run --session <name>". Mirrors the pre-refactor
-// branch in BuildOpencodeCmd (internal/session/session.go:286-294).
+// "<abs-path>/prism agent-run --session <name>". Mirrors the branch in
+// BuildOpencodeCmd (internal/session/session.go).
 //
 // The prism binary's absolute path is resolved via prismBinaryPathFn (os.Executable
 // in production) and shell-quoted into the rendered command so the agent-run
 // pane exec'd from the tmux shell is the same binary the operator is running
-// today — not whatever a PATH lookup happens to land on. Issue #2260.
+// today — not whatever a PATH lookup happens to land on.
 func (s *sandboxExecIsolator) AgentPaneCmd(opts AgentPaneOpts) (string, error) {
 	if opts.SessionName == "" {
 		return opts.DirectCmd, nil
@@ -430,8 +420,8 @@ func (s *sandboxExecIsolator) AgentPaneCmd(opts AgentPaneOpts) (string, error) {
 
 // SidecarFlags returns the sidecar argv extensions for sandbox-exec — same
 // shape as bwrap (the sidecar binds a host-API socket but does not own a
-// container lifecycle). Mirrors the pre-refactor branch in
-// StartSidecarWithOpts (internal/session/sidecar.go:336-352).
+// container lifecycle). Mirrors the branch in
+// StartSidecarWithOpts (internal/session/sidecar.go).
 func (s *sandboxExecIsolator) SidecarFlags(opts SidecarFlagOpts) []string {
 	return commonHostAPISidecarFlags(opts)
 }
@@ -517,25 +507,24 @@ func (h *hostIsolator) LogPaths() LogPaths {
 // (which then re-reads the session row, populates a container.Config, and
 // launches pi via PIInvocation).
 //
-// Issue #2086: without these flags the `--model` / `--variant` values passed
+// Without these flags the `--model` / `--variant` values passed
 // to `prism spawn` are silently dropped — `populatePIConfig` only consults
 // the active profile slot, so the CLI override never reaches pi's argv.
 //
-// Issue #2852 adds `--provider` on the same seam, with one difference: the
-// provider clause is gated on a pi harness name. `prism spawn` already
+// The `--provider` clause is gated on a pi harness name. `prism spawn` already
 // rejects `--provider` alongside a non-pi `--harness` before any session is
 // created, so this gate is defence in depth — provider decides routing and
 // billing, and a non-pi harness must never be handed a flag it would either
 // reject or read with an unrelated meaning.
 //
-// Issue #2863 adds `--agent-model`, which carries the per-role
+// `--agent-model` carries the per-role
 // `prism spawn --model-override <role>=<model>` entry for this session's
 // role.
 func appendAgentRunOverrides(cmd string, opts AgentPaneOpts) string {
 	if opts.Model != "" {
 		cmd += " --model " + shellQuoteContainer(opts.Model)
 	}
-	// Issue #2863: the per-role `--model-override` entry rides its own flag
+	// The per-role `--model-override` entry rides its own flag
 	// rather than replacing --model here. Keeping the two apart is what lets
 	// container.Config carry both values to PIInvocation, which applies the
 	// published precedence (per-role beats session-wide beats slot) at the
@@ -555,15 +544,14 @@ func appendAgentRunOverrides(cmd string, opts AgentPaneOpts) string {
 // IsPIHarness reports whether name selects the pi harness. An empty name is
 // pi, matching harnessBinary in internal/session and the pi-scoped clauses in
 // buildDirectAgentCmd. It is the single predicate every pi-only emit site
-// consults so the gates cannot drift apart (issue #2852).
+// consults so the gates cannot drift apart.
 func IsPIHarness(name string) bool {
 	return name == "pi" || name == ""
 }
 
 // shellQuoteContainer wraps s in single quotes for shell-safe embedding. It is
 // a local copy of internal/session.shellQuote — duplicated here to avoid a
-// circular dependency (internal/session imports internal/container). When the
-// helpers are unified during a future refactor the two should converge.
+// circular dependency (internal/session imports internal/container).
 func shellQuoteContainer(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
@@ -571,15 +559,15 @@ func shellQuoteContainer(s string) string {
 // prismBinaryPathFn returns the absolute path of the currently-running prism
 // binary. Production uses os.Executable; tests override this hook to inject
 // deterministic values (and to exercise the os.Executable-returns-error
-// branch in AgentPaneCmd). Issue #2260 — emitting bare "prism" into the
+// branch in AgentPaneCmd). Emitting bare "prism" into the
 // agent-run pane command lets a PATH shadow silently run the wrong binary,
 // so the rendered command must carry the absolute path of THIS binary.
 var prismBinaryPathFn = os.Executable
 
 // commonHostAPISidecarFlags returns the SidecarFlags shared by bwrap,
 // sandbox-exec, and host. All three modes set up a host-API socket and
-// harness. Mirrors the pre-refactor branch in StartSidecarWithOpts
-// (internal/session/sidecar.go:336-352).
+// harness. Mirrors the branch in StartSidecarWithOpts
+// (internal/session/sidecar.go).
 func commonHostAPISidecarFlags(opts SidecarFlagOpts) []string {
 	out := []string{"--port", fmt.Sprintf("%d", opts.Port)}
 	if opts.AgentRole != "" {
