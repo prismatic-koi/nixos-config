@@ -544,7 +544,7 @@ func buildDirectAgentCmd(opts Opts) string {
 	//     resume happens in agent-run.
 	//  2. HarnessName ∈ {"pi", ""} — ResolvePIResumeSession's encoded-cwd /
 	//     sessions-root layout is pi-specific.
-	//  3. HarnessSessionID != "" — empty IDs are a silent no-op (AC5).
+	//  3. HarnessSessionID != "" — empty IDs are a silent no-op.
 	//
 	// Inserted before --prompt so the flag pair stays adjacent to the binary
 	// and the positional prompt (if any) remains the last token.

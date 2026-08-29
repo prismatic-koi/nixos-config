@@ -701,8 +701,8 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	}
 	startup.log("spawn-session: agent_status seeded (state=idle, isolation_mode=%q, title=%v)", mode, seedTitle != nil)
 
-	// Step 2: Write group_id when set (hook for Issue E — single-session
-	// spawns leave GroupID empty and this is a no-op).
+	// Step 2: Write group_id when set. Single-session spawns leave GroupID
+	// empty and this is a no-op.
 	if opts.GroupID != "" {
 		if err := d.SetGroupID(opts.SessionName, opts.GroupID); err != nil {
 			return fmt.Errorf("spawn session: set group_id: %w", err)

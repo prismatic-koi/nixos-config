@@ -12,11 +12,11 @@ package session
 //
 //   1. The constructed launch command stays small regardless of prompt
 //      size — the prompt body is reachable on disk, not on the command
-//      line. (AC-1, AC-3, AC-4, AC-10)
+//      line.
 //   2. The pre-spawn size check rejects pathological host-mode launch
-//      commands before any tmux state is created. (AC-6, AC-11)
+//      commands before any tmux state is created.
 //   3. The readiness-timeout error gets enriched with a prompt-size hint
-//      when the launch command was unusual but not pathological. (AC-7)
+//      when the launch command was unusual but not pathological.
 
 import (
 	"crypto/sha256"
@@ -71,7 +71,7 @@ func TestInitialPromptPath_CoLocatedWithAgentLogs(t *testing.T) {
 
 // TestWriteInitialPrompt_RoundtripBytes verifies that a 32 KB prompt with
 // every "interesting" byte class round-trips through the prompt file
-// byte-for-byte. This is the core AC-4 assertion: the file path is the
+// byte-for-byte. This is the core assertion: the file path is the
 // transport, so the content must arrive intact regardless of size.
 func TestWriteInitialPrompt_RoundtripBytes(t *testing.T) {
 	tmp := t.TempDir()
@@ -101,7 +101,7 @@ func TestWriteInitialPrompt_RoundtripBytes(t *testing.T) {
 
 // TestWriteInitialPrompt_128KB verifies the same roundtrip at 128 KB so the
 // fix is visibly an architectural removal of the limit, not a slightly
-// larger threshold (AC-3).
+// larger threshold.
 func TestWriteInitialPrompt_128KB(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", tmp)
@@ -153,7 +153,7 @@ func TestWriteInitialPrompt_OverwritesStaleFile(t *testing.T) {
 // TestBuildAgentCmd_HostMode_PromptFile verifies that BuildAgentCmd in
 // host mode with PromptFilePath set emits `--prompt "$(cat <quoted path>)"`
 // and does NOT inline the prompt body. This is the core change: the launch
-// command size becomes O(1) in prompt size. (AC-1, AC-10)
+// command size becomes O(1) in prompt size.
 func TestBuildAgentCmd_HostMode_PromptFile(t *testing.T) {
 	prompt := buildLargePrompt(32 * 1024)
 	opts := Opts{
@@ -266,7 +266,8 @@ func TestBuildAgentCmd_HostMode_PromptFile_IgnoredWhenPromptEmpty(t *testing.T) 
 
 // ── pre-spawn size guard ────────────────────────────────────────────────────
 
-// TestSpawnSession_HostMode_RejectsOversizedLaunchCmd verifies AC-6 / AC-11:
+// TestSpawnSession_HostMode_RejectsOversizedLaunchCmd verifies the pre-spawn
+// size guard:
 // a constructed host-mode launch command exceeding HostLaunchCmdSafeBound
 // produces a HostLaunchCmdTooLargeError before any tmux state is created.
 //
@@ -397,7 +398,8 @@ func TestSpawnSession_HostMode_AgentOnly_RejectsOversizedLaunchCmd_ModelsByRole(
 }
 
 // TestSpawnSession_HostMode_AcceptsBoundedLaunchCmd verifies the no-regression
-// half of AC-6: a constructed launch command well within the safe bound is
+// half of the size guard: a constructed launch command well within the safe
+// bound is
 // not rejected. This is the path most spawns take — small prompts, small
 // env-var prefixes — and must continue to work.
 //
@@ -432,7 +434,7 @@ func TestSpawnSession_HostMode_AcceptsBoundedLaunchCmd(t *testing.T) {
 
 // TestReadinessTimeoutError_WithHint verifies that the Hint field, when set,
 // surfaces in the error message after the standard "not ready within X"
-// prefix — exactly the form the operator sees for AC-7.
+// prefix — exactly the form the operator sees.
 func TestReadinessTimeoutError_WithHint(t *testing.T) {
 	rte := &ReadinessTimeoutError{
 		SessionName: "myrepo@big",

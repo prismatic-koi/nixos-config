@@ -314,7 +314,7 @@ func TestSpawnSession_LostPromptRace_StrictGateFiresAndCleansUp(t *testing.T) {
 		t.Errorf("SpawnSession returned in %v, expected at least 600ms (the readiness window)", elapsed)
 	}
 
-	// Cleanup verification (AC-5): the half-alive session must be torn
+	// Cleanup verification: the half-alive session must be torn
 	// down so a re-spawn does not see stale state.
 	st, _ := d.CurrentStatus(sessionName)
 	if st != nil && st.EndedAt == nil {

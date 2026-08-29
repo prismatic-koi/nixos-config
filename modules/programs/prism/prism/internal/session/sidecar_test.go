@@ -463,9 +463,8 @@ func TestSidecarHostAPIPath_LengthInvariant_WorstCaseSession(t *testing.T) {
 }
 
 // TestSidecarHostAPIPath_LengthInvariant_PlausibleShapes asserts the
-// path-length invariant for the three plausible session shapes called out by
-// AC-2: a short coordinator name, a long branch name, and a long branch +
-// review suffix.
+// path-length invariant for the three plausible session shapes: a short
+// coordinator name, a long branch name, and a long branch + review suffix.
 func TestSidecarHostAPIPath_LengthInvariant_PlausibleShapes(t *testing.T) {
 	const home = "/home/prismatic-koi"
 	cases := []struct {

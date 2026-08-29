@@ -7,9 +7,9 @@ import (
 )
 
 // seedPersistent builds a PersistentModel in its default passive-watch state
-// (CursorActive=false) with a single live session row displayed. This is the
-// exact state that reproduces defect 1: the cursor is inactive, so before the
-// fix the first Enter only re-activated it instead of switching.
+// (CursorActive=false) with a single live session row displayed. In this
+// state the cursor is inactive, which is where the first Enter must switch
+// immediately rather than only re-activating the cursor.
 func seedPersistent(t *testing.T, sessionName string) PersistentModel {
 	t.Helper()
 	m := NewPersistentModel("", "")

@@ -109,9 +109,9 @@ func TestBuildDirectAgentCmd_HostMode_OmitsSessionWhenFileMissing(t *testing.T) 
 	}
 }
 
-// TestBuildDirectAgentCmd_HostMode_EmptyHarnessSessionIDIsSilent verifies
-// AC5 at the host-mode layer: empty HarnessSessionID → no --session, no
-// resolver call (no state needed).
+// TestBuildDirectAgentCmd_HostMode_EmptyHarnessSessionIDIsSilent verifies the
+// host-mode layer: empty HarnessSessionID → no --session, no resolver call (no
+// state needed).
 func TestBuildDirectAgentCmd_HostMode_EmptyHarnessSessionIDIsSilent(t *testing.T) {
 	opts := Opts{
 		IsolationMode: "host",
@@ -199,7 +199,7 @@ func TestBuildDirectAgentCmd_SandboxExecMode_DoesNotInvokeResolver(t *testing.T)
 	}
 }
 
-// TestBuildDirectAgentCmd_HostMode_NonPiHarnessSkipsResume verifies AC7:
+// TestBuildDirectAgentCmd_HostMode_NonPiHarnessSkipsResume verifies that
 // non-pi harnesses never go through the resume path even if HarnessSessionID
 // somehow gets set (defence-in-depth — restoreProjectSession only sets it
 // from a pi-emitted DB column, but the harness check is the load-bearing

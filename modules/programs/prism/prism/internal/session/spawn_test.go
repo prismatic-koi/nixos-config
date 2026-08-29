@@ -5,7 +5,7 @@ package session
 //
 // SpawnSession's responsibilities, in order:
 //   1. Seed agent_status with root_agent_name (via UpsertStatusSeedRootAgentName).
-//   2. Write group_id when opts.GroupID is non-empty (hook for Issue E).
+//   2. Write group_id when opts.GroupID is non-empty.
 //   3. Allocate a port from the DB range.
 //   4. Create the tmux session and (for LayoutAgentOnly) start the sidecar.
 //
@@ -873,7 +873,7 @@ func TestSpawnSession_AgentOnly_PromptFile_WriteFails_ReturnsError(t *testing.T)
 }
 
 // TestSpawnSession_AgentOnly_PromptFile_CleanedUpOnReadinessTimeout verifies
-// AC6 (edge-case): the initial-prompt file is cleaned up when SpawnSession's
+// that the initial-prompt file is cleaned up when SpawnSession's
 // readiness gate trips on timeout. This ensures a second spawn attempt with the
 // same session name starts fresh rather than inheriting a stale prompt file.
 //
@@ -904,7 +904,7 @@ func TestSpawnSession_AgentOnly_PromptFile_CleanedUpOnReadinessTimeout(t *testin
 		t.Fatal("SpawnSession with short ReadinessTimeout: got nil, want *ReadinessTimeoutError")
 	}
 
-	// AC6: the initial-prompt file must be removed after the readiness-gate
+	// The initial-prompt file must be removed after the readiness-gate
 	// timeout cleanup path runs removeInitialPrompt.
 	filePath, pathErr := InitialPromptPath(sessionName)
 	if pathErr != nil {
@@ -922,7 +922,7 @@ func TestSpawnSession_AgentOnly_PromptFile_CleanedUpOnReadinessTimeout(t *testin
 // dashboards and legitimately have no prompt. The guard must reject the
 // former and accept the latter.
 
-// TestSpawnSession_EmptyPrompt_LayoutFull_Rejected verifies AC6(d): an empty
+// TestSpawnSession_EmptyPrompt_LayoutFull_Rejected verifies that an empty
 // Prompt with LayoutFull is rejected before any side-effects (no tmux session,
 // no DB row, no port allocation).
 func TestSpawnSession_EmptyPrompt_LayoutFull_Rejected(t *testing.T) {

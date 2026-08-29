@@ -28,7 +28,7 @@ import (
 	"time"
 )
 
-// TestSpawnSession_ReadinessTimeout_FiresAndCleansUp verifies AC-14:
+// TestSpawnSession_ReadinessTimeout_FiresAndCleansUp verifies that
 // SpawnSession runs the readiness gate when ReadinessTimeout > 0. Since no
 // sidecar is actually writing state_change events in this test, the gate
 // should trip on timeout, return *ReadinessTimeoutError, and clean up the
@@ -113,7 +113,7 @@ func TestSpawnSession_ReadinessTimeoutZero_SkipsGate(t *testing.T) {
 	}
 }
 
-// TestSpawnSession_WritesStartupLog verifies AC-3: a per-session
+// TestSpawnSession_WritesStartupLog verifies that a per-session
 // agent-startup.log is created during spawn, with at least one line
 // containing the spawn-session breadcrumbs.
 func TestSpawnSession_WritesStartupLog(t *testing.T) {
@@ -137,7 +137,7 @@ func TestSpawnSession_WritesStartupLog(t *testing.T) {
 		t.Fatalf("SpawnSession: %v", err)
 	}
 
-	// AC-3: the log file must exist after spawn.
+	// The log file must exist after spawn.
 	if !AgentStartupLogExists(sessionName) {
 		t.Fatal("AgentStartupLogExists returned false after SpawnSession")
 	}

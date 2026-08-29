@@ -163,9 +163,9 @@ func TestSpawnSession_FullLayout_HonoursPreSetInstanceID(t *testing.T) {
 // synchronously, so all N spawns can write events keyed on their respective
 // instance_id without FK failures.
 //
-// AC-1 ("≥5 concurrent spawns produce no FK errors") is exercised here at
-// the SpawnSession layer rather than at the host-API layer; the race the
-// issue describes lives in SpawnSession's sequencing, so reproducing it at
+// The ≥5-concurrent-spawns-produce-no-FK-errors case is exercised here at
+// the SpawnSession layer rather than at the host-API layer; the race lives in
+// SpawnSession's sequencing, so reproducing it at
 // this level is sufficient and avoids the need to spin up a real host-API
 // server in unit tests.
 func TestSpawnSession_FullLayout_ConcurrentSpawnsAllPreSeeded(t *testing.T) {
