@@ -1,15 +1,15 @@
 package container
 
-// agent_pane_overrides_test.go — issue #2086 regression test for the tmux
+// agent_pane_overrides_test.go — regression test for the tmux
 // pane command that bwrap and sandbox-exec emit when `prism spawn --model`
 // and/or `--variant` are supplied.
 //
 // The shape under test is the output of `iso.AgentPaneCmd(...)` for the
-// pane-owned modes. The pre-#2086 shape was:
+// pane-owned modes. Without overrides the shape is:
 //
 //	prism agent-run --session '<X>'
 //
-// The post-#2086 shape, when AgentPaneOpts.Model and/or .Variant are set,
+// With AgentPaneOpts.Model and/or .Variant set, the shape
 // appends the override flags:
 //
 //	prism agent-run --session '<X>' --model '<M>' --variant '<V>'
@@ -76,7 +76,7 @@ func TestBwrapAgentPaneCmd_OverrideFlagsAppended(t *testing.T) {
 
 // TestBwrapAgentPaneCmd_NoOverrideFlagsByDefault is the no-regression case:
 // when AgentPaneOpts carries no override fields the pane command is exactly
-// the pre-#2086 shape so existing tests, restore semantics, and operator
+// the no-override shape so existing tests, restore semantics, and operator
 // expectations are preserved.
 func TestBwrapAgentPaneCmd_NoOverrideFlagsByDefault(t *testing.T) {
 	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
@@ -181,7 +181,7 @@ func TestBwrapAgentPaneCmd_ShellQuoting_SingleQuotedValues(t *testing.T) {
 	}
 }
 
-// ── issue #2852: the --provider clause ────────────────────────────────────────
+// ── The --provider clause ────────────────────────────────────────
 
 // TestBwrapAgentPaneCmd_ProviderFlagAppended asserts that AgentPaneOpts.Provider
 // lands on the tmux pane command as `--provider <P>` for a pi harness, so
@@ -238,8 +238,8 @@ func TestBwrapAgentPaneCmd_ProviderDefaultsToPiHarness(t *testing.T) {
 	}
 }
 
-// TestBwrapAgentPaneCmd_ProviderSuppressedForNonPiHarness is the #2852
-// edge-case AC: no --provider emit site fires for a non-pi harness. `prism
+// TestBwrapAgentPaneCmd_ProviderSuppressedForNonPiHarness is the
+// edge case: no --provider emit site fires for a non-pi harness. `prism
 // spawn` already rejects that combination up front, so reaching this branch
 // means an internal caller built a mismatched AgentPaneOpts — the flag must
 // still be withheld rather than handed to a harness that would read it with
@@ -260,7 +260,7 @@ func TestBwrapAgentPaneCmd_ProviderSuppressedForNonPiHarness(t *testing.T) {
 	}
 }
 
-// TestBwrapAgentPaneCmd_EmptyProviderEmitsNoFlag is the #2852 no-regression
+// TestBwrapAgentPaneCmd_EmptyProviderEmitsNoFlag is the no-regression
 // case: an empty override must never render a blank --provider argument with
 // an empty value, which pi would read as an explicit (and invalid) provider
 // name.
@@ -313,7 +313,7 @@ func TestIsPIHarness(t *testing.T) {
 
 // TestBwrapAgentPaneCmd_EmptySessionName_FallsBackToDirect verifies the
 // defensive fallback: when SessionName is empty the pane command is the
-// host-mode DirectCmd unchanged. Pre-#2086 behaviour; the override fields
+// host-mode DirectCmd unchanged; the override fields
 // must not be appended onto the DirectCmd fallback (those flags are owned
 // by `prism agent-run`, not by the direct pi launch).
 func TestBwrapAgentPaneCmd_EmptySessionName_FallsBackToDirect(t *testing.T) {

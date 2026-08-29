@@ -19,18 +19,17 @@ import (
 // that the container belongs to a different session instance. Removal still
 // proceeds regardless — the new session needs the container name.
 //
-// Post A1.L1 (issue #1140): the per-mode logic moved into the registered
-// Isolator's EnsureRemoved method. Manager.EnsureRemoved is a thin
-// dispatcher that also unlinks the per-session temp files unconditionally
-// (the legacy "defensive cleanup" behaviour, mode-agnostic) so that a stale
-// session's mode-mismatched temp files do not survive the cleanup pass.
+// The per-mode logic lives on the registered Isolator's EnsureRemoved
+// method. Manager.EnsureRemoved is a thin dispatcher that also unlinks the
+// per-session temp files unconditionally (mode-agnostic defensive cleanup)
+// so that a stale session's mode-mismatched temp files do not survive the
+// cleanup pass.
 func (m *Manager) EnsureRemoved(ctx context.Context) {
 	// Mode-agnostic temp-file cleanup: always remove every per-session
 	// artefact regardless of which isolator the Manager was constructed
-	// for. This preserves the pre-refactor "defensive cleanup" behaviour
-	// where Manager.EnsureRemoved unlinked all temp files, including those
-	// belonging to other modes (so a session that switched modes between
-	// runs leaves no orphan files on disk).
+	// for. Unlink all temp files, including those belonging to other modes,
+	// so a session that switched modes between runs leaves no orphan files
+	// on disk.
 	_ = os.Remove(m.gitdirFilePath())
 	_ = os.Remove(m.worktreeGitdirFilePath())
 	_ = os.Remove(m.sshConfigFilePath())
@@ -38,22 +37,20 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
 	// Remove the per-session work dir (generated ssh-config / gitconfig /
-	// allowed_signers, kube-cache, chromium skeleton — issue #2213). This
-	// also covers any staging-HOME remnants from pre-Step-5 sessions (the
-	// staging HOME was nested under it at <sessionDir>/home/).
+	// allowed_signers, kube-cache, chromium skeleton).
 	if sessionDir, err := m.sessionWorkDirPath(); err == nil {
 		_ = os.RemoveAll(sessionDir)
 	}
 
 	// Per-mode lifecycle cleanup lives on the registered Isolator. See
-	// lifecycle_dispatch.go (issue #1140 A1.L1).
+	// lifecycle_dispatch.go.
 	m.isolator.EnsureRemoved(ctx, m)
 }
 
 // Create dispatches session creation to the registered Isolator.
 //
-// Post A1.L5 (issue #1140): the per-mode session-start logic moved into the
-// registered Isolator's Create method. Manager.Create is a thin dispatcher.
+// The per-mode session-start logic lives on the registered Isolator's Create
+// method. Manager.Create is a thin dispatcher.
 func (m *Manager) Create(ctx context.Context) error {
 	return m.isolator.Create(ctx, m)
 }
@@ -147,7 +144,7 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
-	// Remove the per-session work dir (issue #2213).
+	// Remove the per-session work dir.
 	if sessionDir, err := m.sessionWorkDirPath(); err == nil {
 		_ = os.RemoveAll(sessionDir)
 	}

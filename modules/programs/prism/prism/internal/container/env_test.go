@@ -1,15 +1,13 @@
 package container
 
 // env_test.go — unit coverage for the AgentEnvVars emission in
-// AppendStandardEnv and AppendSandboxEnvVarsKV. The former
-// sandboxMountedByDefault suppression maps are gone (issue #2235, Step 3b of
-// #2132): KUBECONFIG — their last entry — now flows into both isolators'
-// env alongside the AWS pair (un-suppressed in #2234, Step 3a). kubectl
-// resolves the kube config via KUBECONFIG at the host XDG path; the
-// canonical-path ($HOME/.kube/config) delivery was dropped from both
-// isolators. CLAUDE_CONFIG_DIR (issue #2243, Step 3c) flows the same way:
-// claude-code resolves its config dir at the host XDG path ~/.config/claude.
-// PLAYWRIGHT_MCP_SANDBOX (issue #2261) is delivered identically by both
+// AppendStandardEnv and AppendSandboxEnvVarsKV. Every AgentEnvVars key flows
+// into both isolators' env — there is no suppression map. KUBECONFIG and the
+// AWS pair are delivered at the host XDG paths; kubectl resolves the kube
+// config via KUBECONFIG and the canonical-path ($HOME/.kube/config) delivery
+// is not used. CLAUDE_CONFIG_DIR flows the same way: claude-code resolves its
+// config dir at the host XDG path ~/.config/claude.
+// PLAYWRIGHT_MCP_SANDBOX is delivered identically by both
 // isolators; it suppresses chromium's nested seatbelt sandbox so the outer
 // SBPL profile (and bwrap mount table on Linux) remains the sole boundary.
 
@@ -18,8 +16,8 @@ import (
 )
 
 // envSuppressionFixtureVars returns an AgentEnvVars map carrying the
-// historically-suppressed keys, the claude XDG relocation key (#2243), the
-// playwright nested-sandbox suppression key (#2261), and a plain key —
+// KUBECONFIG and AWS keys, the claude XDG relocation key, the
+// playwright nested-sandbox suppression key, and a plain key —
 // mirroring the production agent.envVars set declared by the nix module.
 func envSuppressionFixtureVars() map[string]string {
 	return map[string]string{
@@ -33,9 +31,8 @@ func envSuppressionFixtureVars() map[string]string {
 }
 
 // envFixtureWantPairs is the full K=V emission expected from the fixture —
-// every AgentEnvVars key flows through, including the historically
-// suppressed KUBECONFIG (#2235), the AWS pair (#2234), the claude config
-// dir (#2243), and the playwright nested-sandbox suppression (#2261).
+// every AgentEnvVars key flows through, including KUBECONFIG, the AWS pair,
+// the claude config dir, and the playwright nested-sandbox suppression.
 var envFixtureWantPairs = []string{
 	"AWS_CONFIG_FILE=/home/ben/.config/aws/readonly-config",
 	"AWS_SHARED_CREDENTIALS_FILE=/home/ben/.config/aws/credentials",
@@ -46,7 +43,7 @@ var envFixtureWantPairs = []string{
 }
 
 // TestAppendStandardEnv_AllAgentEnvVarsFlow verifies the bwrap arg builder
-// emits every AgentEnvVars key — no suppression map remains (issue #2235).
+// emits every AgentEnvVars key — no suppression map remains.
 func TestAppendStandardEnv_AllAgentEnvVarsFlow(t *testing.T) {
 	cfg := Config{AgentEnvVars: envSuppressionFixtureVars()}
 

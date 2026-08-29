@@ -1,17 +1,15 @@
 // Package container manages sandbox lifecycle and mount preparation for
 // prism agent sessions.
-// This file extends the Isolator interface with the lifecycle dispatch methods
-// migrated from the per-mode branches in container.go, lifecycle.go, cmd/cleanup.go,
-// cmd/reset.go, and cmd/agent_run.go (issue #1140, A1.L1-L6).
+// This file extends the Isolator interface with the lifecycle dispatch methods.
 //
 // Methods added by this file:
 //
-//   - EnsureRemoved()   — L1: replaces Manager.EnsureRemoved + cleanup.go's open-coded teardown.
-//   - WriteGitconfig()  — L2: replaces (*Manager).writeGitconfig(mode) per-mode switch.
-//   - Reset()           — L3: replaces the old container sweep in cmd/reset.go.
-//   - Prepare()         — L4: replaces Manager.PrepareBwrap / Manager.PrepareSandboxExec.
-//   - Create()          — L5: replaces Manager.Create body.
-//   - AgentRun()        — L6: replaces cmd/agent_run.go's per-mode dispatch switch.
+//   - EnsureRemoved()   — tears down per-session state for the mode.
+//   - WriteGitconfig()  — writes the per-mode gitconfig.
+//   - Reset()           — the `prism reset` per-mode sweep.
+//   - Prepare()         — materialises temp files and returns the launcher argv.
+//   - Create()          — starts a new isolated session.
+//   - AgentRun()        — runs the agent binary inside the mode.
 //
 // The methods are declared on the interface in isolator.go and implemented per
 // isolator (bwrap, sandbox-exec, host) below.
@@ -59,8 +57,8 @@ type AgentRunOpts struct {
 
 // AgentRunHandler is the function signature that cmd/agent_run.go registers
 // with the container package at init() time, one entry per per-mode dispatch
-// path. The handler is responsible for the body that previously lived in the
-// per-mode branch of runAgentRun.
+// path. The handler owns the body of the per-mode AgentRun path in
+// runAgentRun.
 type AgentRunHandler func(ctx context.Context, opts AgentRunOpts) error
 
 var (
@@ -97,7 +95,7 @@ func lookupAgentRunHandler(mode config.IsolationMode) AgentRunHandler {
 // EnsureRemoved cleans up the per-session temp files written by PrepareBwrap.
 // Bwrap sessions do not own a container lifecycle — there is nothing to stop
 // or rm — so this method is a temp-file unlink only. Mirrors the per-session
-// list in cmd/cleanup.go:1055-1059 (the legacy 5-file cleanup).
+// list in cmd/cleanup.go (the 5-file cleanup).
 func (b *bwrapIsolator) EnsureRemoved(ctx context.Context, m *Manager) {
 	cleanupLegacyTempFiles(b.name)
 }
@@ -111,20 +109,16 @@ func (b *bwrapIsolator) WriteGitconfig(m *Manager) error {
 }
 
 // Reset is a no-op for bwrap today. Orphan-agent-run reaping (the bwrap
-// equivalent of "wipe every prism-* container") is a future implementation
-// — A1 §7 names the shape, the cleanup work lands later.
+// equivalent of "wipe every prism-* container") is a future implementation.
 func (b *bwrapIsolator) Reset(ctx context.Context) error {
 	return nil
 }
 
 // Prepare writes the per-session temp files (SSH config, gitconfig) that
 // bwrap needs at start time and returns the complete bwrap argument list.
-// Mirrors the pre-refactor body of Manager.PrepareBwrap
-// (internal/container/container.go:581).
 //
-// Like the previous implementation, this also pre-creates bind-mount source
-// directories so bwrap (which silently fails on missing sources) can find
-// them.
+// This also pre-creates bind-mount source directories so bwrap (which
+// silently fails on missing sources) can find them.
 func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, error) {
 	// Write a minimal SSH config for bwrap.
 	if err := m.writeSshConfig(isolationBwrap); err != nil {
@@ -143,13 +137,13 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 		return nil, fmt.Errorf("container: bwrap: %w", err)
 	}
 
-	// ── Containers-enabled prep (#2317 / #2321) ──────────────────────
+	// ── Containers-enabled prep ──────────────────────
 	// When the session's agent_status.containers_enabled gate is set, the
 	// bwrap profile binds <sessionDir>/container-scratch read-write so the
 	// agent can use it as a `podman run -v ...` source. The directory must
 	// exist before bwrap is execed — bwrap aborts with a confusing error if a
-	// bind source is missing. Per #2321 we converge on the same
-	// per-session-work-dir story sandbox-exec uses (option (a)) rather than
+	// bind source is missing. We converge on the same
+	// per-session-work-dir story sandbox-exec uses rather than
 	// inlining a one-off mkdir here, so the lifecycle (PrepareSessionWorkDir
 	// + RemoveSessionWorkDir) is shared between the two isolation modes.
 	//
@@ -187,7 +181,7 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 	// appendPIBwrapMounts error in m.piBwrapErr because BuildArgs cannot return
 	// an error. Check and surface it here where we CAN return an error.
 	// credentialsErr uses the same error-stashing pattern for the
-	// configured-but-unreadable GitHub token file case (issue #2348) — fail
+	// configured-but-unreadable GitHub token file case — fail
 	// the spawn loudly rather than silently proceeding with no token.
 	args := b.BuildArgs(m)
 	if m.piBwrapErr != nil {
@@ -196,10 +190,9 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 	if m.credentialsErr != nil {
 		return nil, fmt.Errorf("container: bwrap: %w", m.credentialsErr)
 	}
-	// worktreeGitDirErr uses the same error-stashing pattern: a missing
-	// WorktreeGitDir used to be a silent skip (issue #2518) — now that the
-	// path is authoritative (resolved from the worktree's .git pointer), a
-	// missing directory is a real error and must fail the spawn.
+	// worktreeGitDirErr uses the same error-stashing pattern: the
+	// WorktreeGitDir path is authoritative (resolved from the worktree's .git
+	// pointer), so a missing directory is a real error and must fail the spawn.
 	if m.worktreeGitDirErr != nil {
 		return nil, fmt.Errorf("container: bwrap: %w", m.worktreeGitDirErr)
 	}
@@ -237,12 +230,11 @@ func (s *sandboxExecIsolator) EnsureRemoved(ctx context.Context, m *Manager) {
 	cleanupLegacyTempFiles(s.name)
 }
 
-// WriteGitconfig generates the gitconfig for the sandbox-exec sandbox. Post
-// issue #2213 (Step 2 of #2132) the generated gitconfig lives in the
-// per-session work dir (<sessionDir>/gitconfig) and embeds the stable sops
-// symlink key paths (~/.ssh/<keyname>) rather than staging-HOME paths; the
-// dispatcher wires it in via GIT_CONFIG_GLOBAL. This delegates to the same
-// work-dir writer that PrepareSessionWorkDir uses.
+// WriteGitconfig generates the gitconfig for the sandbox-exec sandbox. The
+// generated gitconfig lives in the per-session work dir
+// (<sessionDir>/gitconfig) and embeds the stable sops symlink key paths
+// (~/.ssh/<keyname>); the dispatcher wires it in via GIT_CONFIG_GLOBAL. This
+// delegates to the same work-dir writer that PrepareSessionWorkDir uses.
 func (s *sandboxExecIsolator) WriteGitconfig(m *Manager) error {
 	sessionDir, err := m.sessionWorkDirPath()
 	if err != nil {
@@ -260,24 +252,24 @@ func (s *sandboxExecIsolator) Reset(ctx context.Context) error {
 }
 
 // Prepare prepares the per-session work dir, writes the SBPL profile, and
-// returns the complete sandbox-exec argument list. Mirrors the pre-refactor
-// body of Manager.PrepareSandboxExec (internal/container/container.go:637).
+// returns the complete sandbox-exec argument list. Mirrors the
+// body of Manager.PrepareSandboxExec.
 //
 // If PrepareSessionWorkDir fails, Prepare returns an error immediately and
-// does not write the profile or launch the session (issue #1879 hard-fail
-// posture): a session without the work-dir configs would have no git
-// identity and no ssh auth route, and the #1960 missing-git-identity hard
-// error must surface at Prepare time.
+// does not write the profile or launch the session (hard-fail posture): a
+// session without the work-dir configs would have no git identity and no ssh
+// auth route, and the missing-git-identity hard error must surface at
+// Prepare time.
 func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string, error) {
-	// Prepare the per-session work dir (issue #2213, Step 2 of #2132): the
+	// Prepare the per-session work dir: the
 	// generated ssh-config / gitconfig / allowed_signers the dispatcher wires
 	// in via GIT_SSH_COMMAND / GIT_CONFIG_GLOBAL, plus the chromium Library
-	// skeleton (issue #2247).
+	// skeleton.
 	if _, err := m.PrepareSessionWorkDir(); err != nil {
 		return nil, fmt.Errorf("container: sandbox-exec: cannot prepare session work dir: %w", err)
 	}
 
-	// ── Go cache dirs (issue #2621) ────────────────────────────────
+	// ── Go cache dirs ────────────────────────────────
 	// Materialise the two directories the section-5k SBPL grant covers
 	// (~/go/pkg/mod, ~/Library/Caches/go-build) so the repo AGENTS.md
 	// quality gate — `go build ./...` and `go test ./...` — runs inside the
@@ -288,8 +280,8 @@ func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string
 	// continues, so a host with an unwritable $HOME still starts a session.
 	ensureGoCacheDirs()
 
-	// ── Containers-enabled prep (#2317 / #2322) ─────────────────
-	// Symmetric to the bwrap-side block in bwrapIsolator.Prepare (#2321).
+	// ── Containers-enabled prep ─────────────────
+	// Symmetric to the bwrap-side block in bwrapIsolator.Prepare.
 	// When the session's agent_status.containers_enabled gate is set, the
 	// SBPL profile emits a literal RW allow on PodmanProxySockPath and the
 	// agent reaches the per-session filtering podman proxy via
@@ -297,7 +289,7 @@ func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string
 	// expects <sessionDir>/container-scratch to exist on disk before any
 	// containers/create request is validated.
 	//
-	// Validation order (matches bwrap's #2321 block):
+	// Validation order (matches bwrap's block):
 	//   1. PodmanProxySockPath must be set (config error if absent).
 	//   2. <runDir> = filepath.Dir(PodmanProxySockPath) must exist on disk
 	//      — the sidecar mkdir's it when it binds hostapi.sock, so a missing
@@ -382,8 +374,7 @@ func (h *hostIsolator) Prepare(ctx context.Context, m *Manager) ([]string, error
 func (h *hostIsolator) Create(ctx context.Context, m *Manager) error { return nil }
 
 // AgentRun is not the entry point for host mode. Returns an error so the
-// dispatch in cmd/agent_run.go surfaces the misuse loudly. This replaces
-// the manual `else` arm in the per-mode switch (issue #1140 AC).
+// dispatch in cmd/agent_run.go surfaces the misuse loudly.
 func (h *hostIsolator) AgentRun(ctx context.Context, opts AgentRunOpts) error {
 	return fmt.Errorf("agent-run: session %q has isolation mode %q; this command is only for bwrap and sandbox-exec sessions",
 		opts.SessionName, config.IsolationHost)
@@ -393,9 +384,8 @@ func (h *hostIsolator) AgentRun(ctx context.Context, opts AgentRunOpts) error {
 // shared helpers
 // ----------------------------------------------------------------------------
 
-// cleanupLegacyTempFiles removes the legacy set of per-session temp files
-// previously inlined in cmd/cleanup.go's removeContainerIfExists (the
-// 5-file list: gitdir, wt-gitdir, ssh-config, gitconfig, allowed-signers).
+// cleanupLegacyTempFiles removes the per-session temp files (gitdir,
+// wt-gitdir, ssh-config, gitconfig, allowed-signers).
 // The removals are best-effort — missing files are silently ignored.
 //
 // The SBPL-profile and session-work-dir files are deliberately NOT cleaned

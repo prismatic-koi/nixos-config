@@ -6,7 +6,7 @@ import "testing"
 // test, restoring the prior value on teardown via t.Setenv.
 //
 // Required for any test that exercises piResumeSessionsRoot's host-fallback
-// branch (or piResumeHostSessionsRoot directly): post-#2185 the helper
+// branch (or piResumeHostSessionsRoot directly): the helper
 // honours PI_CODING_AGENT_DIR, and the developer host sets that env var
 // system-wide (PI_CODING_AGENT_DIR=/run/prism/pi-agent). Without clearing
 // it, tests that set up a temp HOME would silently fall through to the

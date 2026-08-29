@@ -20,7 +20,7 @@ import (
 // the suite, so two concurrent `go test` processes in different worktrees on
 // the same host would otherwise collide on shared /tmp filenames — observed
 // as TestWriteGitconfig_AllModes_EmptyIdentityRefused flaking on a file
-// written by a sibling worker's test process (issue #2222). The directory is
+// written by a sibling worker's test process. The directory is
 // removed after the run, so the suite also stops accumulating stale
 // prism-* files under the host temp dir.
 func TestMain(m *testing.M) {
@@ -436,8 +436,8 @@ func TestCredentialEnvVars_FallbackToGitHubToken(t *testing.T) {
 }
 
 func TestCredentialEnvVars_NoGitDirEnvVars(t *testing.T) {
-	// GIT_DIR and GIT_COMMON_DIR must not be injected — the corrected .git
-	// pointer file (bind-mounted by Create) makes them unnecessary (#492).
+	// GIT_DIR and GIT_COMMON_DIR must not be injected — the sandbox mounts
+	// the worktree git state at its host path, so they are unnecessary.
 	for _, tc := range []struct {
 		name string
 		cfg  Config
@@ -837,14 +837,13 @@ func TestPrepareVolumeDirs_OptionalCacheDirFailureDoesNotFail(t *testing.T) {
 	}
 }
 
-// ── issue #1960: git identity must be hard-required ─────────────────────────
+// ── git identity must be hard-required ─────────────────────────
 //
 // writeGitconfig must refuse to write a gitconfig without [user] in every
-// isolation mode. The previous behaviour (warn and skip [user]) caused git
-// inside the sandbox to fall back to `<sandbox-user>@<sandbox-host>` (e.g.
-// `worker <bot@local>`); GitHub then aggregated that synthetic identity into
-// a `Co-authored-by:` trailer on squash merge. See issue #1960 for the full
-// inventory of historical noisy trailers.
+// isolation mode. Without a [user] section, git inside the sandbox falls
+// back to `<sandbox-user>@<sandbox-host>` (e.g. `worker <bot@local>`); GitHub
+// then aggregates that synthetic identity into a `Co-authored-by:` trailer
+// on squash merge.
 
 // gitconfigIdentityModes is the per-mode matrix exercised by the regression
 // tests below. Each entry names the mode constant used by writeGitconfig and
@@ -942,8 +941,7 @@ func TestWriteGitconfig_AllModes_EmptyIdentityRefused(t *testing.T) {
 				// stale file at the path (e.g. left by a crashed earlier
 				// run) must be cleared before the call under test. The
 				// TestMain seam already namespaces the path per-process;
-				// this guards the within-process stale-file case on top
-				// (issue #2222).
+				// this guards the within-process stale-file case on top.
 				_ = os.Remove(m.gitconfigFilePath())
 
 				err := m.writeGitconfig(mode.mode)
@@ -978,14 +976,13 @@ func TestWriteGitconfig_AllModes_EmptyIdentityRefused(t *testing.T) {
 
 // TestSandboxExecPrepare_EmptyIdentityAborts asserts that the failure from
 // the gitconfig generator propagates up through sandboxExecIsolator.Prepare
-// (the sandbox-exec session entry point) so the session does not start. The
-// pre-#1960 behaviour logged the error and continued, which is what allowed
-// the bug to surface only post-merge.
+// (the sandbox-exec session entry point) so the session does not start.
+// Logging the error and continuing would let the bug surface only
+// post-merge.
 //
-// Post issue #2213 (Step 2 of #2132) the generated gitconfig lives in the
-// per-session work dir, so the hard error surfaces from
-// PrepareSessionWorkDir — both stations are asserted here to pin the #1960
-// "hard-fails at Prepare" guarantee.
+// The generated gitconfig lives in the per-session work dir, so the hard
+// error surfaces from PrepareSessionWorkDir — both stations are asserted
+// here to pin the "hard-fails at Prepare" guarantee.
 func TestSandboxExecPrepare_EmptyIdentityAborts(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)

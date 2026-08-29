@@ -1,8 +1,7 @@
 // Package container manages sandbox lifecycle and mount preparation for
 // prism agent sessions.
 // This file defines the shared MountSpec shape and StandardSandboxMounts walk
-// used by the sandbox mount-emission paths (issue #1149 A2.M1; design
-// proposal A2 §3.1, §3.S6).
+// used by the sandbox mount-emission paths.
 //
 // The common decision tree — "which host artefact lives at which canonical
 // in-sandbox path, with which read/write/optional/symlink-resolve flags" — is
@@ -14,7 +13,7 @@
 // Today only the bwrap appender is wired through the slice; sandbox-exec
 // has no bind-mount mechanism — it delivers the same capabilities via
 // explicit SBPL grants on the real host paths emitted by generateProfile
-// (sandbox_exec.go) plus env-var injection at host XDG paths (#2132).
+// (sandbox_exec.go) plus env-var injection at host XDG paths.
 package container
 
 import (
@@ -63,9 +62,8 @@ type MountSpec struct {
 	// failure already implies "missing").
 	OptionalIfMissing bool
 
-	// SELinuxRelabel marked the mount for an SELinux ":Z" relabel in the
-	// removed container path. Ignored by bwrap and sandbox-exec — neither
-	// participates in SELinux labelling. Retained for shape compatibility.
+	// SELinuxRelabel is ignored by bwrap and sandbox-exec — neither
+	// participates in SELinux labelling. Kept for shape compatibility.
 	SELinuxRelabel bool
 }
 
@@ -105,8 +103,8 @@ func resolveMountHostPath(spec MountSpec) (string, bool) {
 // per-mode syntax via its own appender.
 //
 // sandboxHomeDir is the in-sandbox $HOME path (the host user's home
-// directory — both bwrap and sandbox-exec run with the real host $HOME
-// since Step 5 of #2132). It is used as the prefix for every HOME-relative
+// directory — both bwrap and sandbox-exec run with the real host $HOME).
+// It is used as the prefix for every HOME-relative
 // SandboxPath in the returned slice.
 //
 // hostHome is the absolute host home directory (the source of HOME-relative
@@ -141,7 +139,7 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	// bwrap uses --bind (RW) for both dirs. sandbox-exec mirrors this by
 	// emitting (allow file-read* file-write* (subpath ~/.aws/sso)) and
 	// (allow file-read* file-write* (subpath ~/.aws/cli)) in generateProfile
-	// (issue #1558).
+	// (generateProfile section 5e).
 	//
 	// Note: this slice is only walked by bwrap (AppendBwrapBind). The mode
 	// parameter is retained for potential future per-mode divergences.
@@ -157,7 +155,7 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	// pi/extensions/prism.ts (the reader). Resolving it here rather than
 	// hardcoding ~/.local/state is load-bearing: on a host that exports a
 	// non-default $XDG_STATE_HOME the snapshots live somewhere else entirely
-	// and a hardcoded source would bind an empty directory (issue #2572 AC).
+	// and a hardcoded source would bind an empty directory.
 	//
 	// Destination (in-sandbox). Deliberately NOT the source path: it is
 	// $HOME-relative, because that is where the in-sandbox reader looks.
@@ -181,15 +179,13 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		// ── ~/.config/claude (RW, conditional, Dst==Src at XDG path) ─────
 		// claude-code's config dir (settings, history, .claude.json, OAuth
 		// token refreshes), resolved via the CLAUDE_CONFIG_DIR env var at
-		// the host XDG path — declared in agent.envVars by the nix module
-		// (issue #2243, Step 3c of #2132; bwrap convergence per design
-		// decision §5.1). The former canonical ~/.claude RW bind is gone.
+		// the host XDG path — declared in agent.envVars by the nix module.
 		//
 		// The bwrap mount namespace is additive from an empty root, so the
 		// env-var route still needs the directory delivered INTO the
 		// namespace: bind it Dst==Src so CLAUDE_CONFIG_DIR resolves to a
 		// real read-write directory in-namespace, with writes flowing
-		// through to the host (same semantics as the bind it replaces).
+		// through to the host.
 		// Unlike the aws/kube XDG entries this is a plain host directory,
 		// not a sops symlink — no EvalSymlinks. Mounted only when present
 		// (bwrap aborts on missing --bind sources); on a host without the
@@ -228,7 +224,7 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		// inside the sandbox matches the host path.
 		//
 		// Parity with sandbox-exec's §5e RW grant on the real ~/.npm
-		// (generateProfile in sandbox_exec.go). See issue #2127.
+		// (generateProfile in sandbox_exec.go).
 		{
 			HostPath:          filepath.Join(hostHome, ".npm"),
 			SandboxPath:       filepath.Join(sandboxHomeDir, ".npm"),
@@ -239,10 +235,8 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		// Pre-populated nix flake input cache. Read-write because nix
 		// writes to its SQLite databases during evaluation.
 		//
-		// OptionalIfMissing since #2245 (Step 3e of #2132): the entry used to
-		// be unconditional, which emits a --bind for a missing source on a
-		// fresh host — and bwrap ABORTS on missing bind sources (the #2243
-		// lesson; the old unconditional shape predated that finding). When
+		// OptionalIfMissing: bwrap ABORTS on a missing bind source, so a
+		// missing ~/.cache/nix must be skipped rather than bound. When
 		// absent, nix simply creates an ephemeral in-namespace dir.
 		{
 			HostPath:          filepath.Join(hostHome, ".cache", "nix"),
@@ -253,9 +247,7 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 
 		// ── ~/.cache/bun (RW, conditional) ──────────────────────────────
 		// bun transpiler cache — bun writes transpile outputs and lockfile
-		// updates here on plugin load. Converged into the shared walk from
-		// the former inline bwrap.go block in #2245 (Step 3e of #2132);
-		// behaviour-identical (RW, Dst==Src, skipped when absent).
+		// updates here on plugin load. RW, Dst==Src, skipped when absent.
 		//
 		// sandbox-exec does not walk this slice (see the package comment):
 		// there generateProfile emits an explicit RW (subpath ~/.cache/bun)
@@ -271,23 +263,19 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		// the AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars at the
 		// host XDG paths (~/.config/aws/readonly-config and
 		// ~/.config/aws/credentials, declared in agent.envVars by the nix
-		// module). The former RO bind-mounts at the canonical
-		// $HOME/.aws/{config,credentials} paths were dropped in issue #2234
-		// (Step 3a of #2132, bwrap convergence per design decision §5.1) —
-		// see env.go for the matching un-suppression.
+		// module).
 		//
 		// The bwrap mount namespace is additive from an empty root, so the
 		// env-var route still needs the file content delivered INTO the
 		// namespace: bind the XDG paths Dst==Src so the env vars resolve to
 		// a readable file in-sandbox. EvalSymlinks pins the sops-resolved
-		// target inode (same rotation semantics as the previous canonical
-		// binds); resolution failure (file absent — credentials is absent on
+		// target inode; resolution failure (file absent — credentials is absent on
 		// the current host) silently skips the mount while the env var still
 		// flows, which the aws CLI tolerates (config-only operation).
 		//
 		// sandbox-exec does not walk this slice (see the package comment):
 		// there the real host paths are visible modulo SBPL and the read
-		// rides the #2211 secrets.d allowlist.
+		// rides the secrets.d allowlist.
 		{
 			HostPath:     filepath.Join(hostHome, ".config", "aws", "readonly-config"),
 			SandboxPath:  filepath.Join(sandboxHomeDir, ".config", "aws", "readonly-config"),
@@ -325,26 +313,22 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		// ── Kube agents config (RO, EvalSymlinks, Dst==Src at XDG path) ─
 		// kubectl resolves its config via the KUBECONFIG env var at the host
 		// XDG path (~/.config/kube/agents-config, declared in agent.envVars
-		// by the nix module). The former RO bind-mount at the canonical
-		// $HOME/.kube/config path was dropped in issue #2235 (Step 3b of
-		// #2132, bwrap convergence per design decision §5.1) — see env.go for
-		// the matching un-suppression.
+		// by the nix module).
 		//
-		// Same shape as the AWS XDG binds above (#2234): the bwrap mount
+		// Same shape as the AWS XDG binds above: the bwrap mount
 		// namespace is additive from an empty root, so the env-var route
 		// still needs the file content delivered INTO the namespace — bind
 		// the XDG path Dst==Src so KUBECONFIG resolves to a readable file
-		// in-sandbox. EvalSymlinks pins the sops-resolved target inode (same
-		// rotation semantics as the previous canonical bind); resolution
-		// failure (file absent on host) silently skips the mount while the
-		// env var still flows.
+		// in-sandbox. EvalSymlinks pins the sops-resolved target inode;
+		// resolution failure (file absent on host) silently skips the mount
+		// while the env var still flows.
 		//
 		// kubectl's cache is redirected via KUBECACHEDIR (see BuildArgs in
 		// bwrap.go) so no writable kube path is needed in-namespace.
 		//
 		// sandbox-exec does not walk this slice (see the package comment):
 		// there the real host paths are visible modulo SBPL and the read
-		// rides the #2211 secrets.d allowlist.
+		// rides the secrets.d allowlist.
 		{
 			HostPath:     filepath.Join(hostHome, ".config", "kube", "agents-config"),
 			SandboxPath:  filepath.Join(sandboxHomeDir, ".config", "kube", "agents-config"),
@@ -367,12 +351,12 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		// xdg.configFile."prism/agents".source = ./agents). One markdown file
 		// per role (coordinator.md, worker.md, review-*.md). The prism PI
 		// extension reads <role>.md at before_agent_start and injects it as the
-		// role system prompt (issue #2032).
+		// role system prompt.
 		//
 		// Mounted UNCONDITIONALLY for every role, including review-*. The dir
 		// is pure markdown with no secrets, so there is no isolation value in
-		// hiding sibling role prompts from a review agent (locked decision on
-		// design #2031). Read-only — agents never write their own prompt.
+		// hiding sibling role prompts from a review agent. Read-only — agents
+		// never write their own prompt.
 		//
 		// SandboxPath == HostPath: under bwrap sandboxHomeDir == hostHome, so
 		// the extension's XDG_CONFIG_HOME-else-$HOME/.config resolution lands
@@ -394,21 +378,21 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		// instead and does not need an in-sandbox file, but the read surface
 		// does — without this mount the same commands fail from inside the
 		// sandbox with the (misleading) "not found — run the system rebuild"
-		// error (issue #2286).
+		// error.
 		//
 		// Read-only — the file is owned by the host nix module; nothing
 		// in-sandbox may mutate it. Single-file scope (no surrounding
 		// directory widening): we already mount the sibling agents/ subdir;
 		// adding profiles.json on its own keeps the rest of
 		// ~/.config/prism/ (e.g. ~/.config/prism/accounts/, runtime-mutable
-		// state from #2283) out of the sandbox by default.
+		// state) out of the sandbox by default.
 		//
 		// OptionalIfMissing covers fresh installs before first `nh switch`,
 		// where the file does not exist yet. In that case LoadProfiles
 		// still returns its existing "profiles: <path> not found — run the
 		// system rebuild to generate it" error (it ReadFile's the same
 		// path), so the host-side missing-file message is preserved
-		// verbatim — see the issue #2286 edge-case AC.
+		// verbatim.
 		//
 		// SandboxPath == HostPath under bwrap (sandboxHomeDir == hostHome),
 		// matching profilesFilePath()'s XDG_CONFIG_HOME-else-$HOME/.config
@@ -428,12 +412,12 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		// Host: $XDG_STATE_HOME/prism/usage (see the resolution block
 		// above). Holds <account>.json per account plus current.json, a
 		// copy of the active account's snapshot written by the sidecar
-		// endpoint POST /usage/snapshot (issue #2538).
+		// endpoint POST /usage/snapshot.
 		//
 		// Without this mount the bottom-bar usage segment
 		// (pi/extensions/prism.ts::readUsageSnapshot) finds no file and
 		// renders nothing in EVERY sandboxed session — which is most
-		// sessions (issue #2572). The reader already degrades silently on
+		// sessions. The reader already degrades silently on
 		// a missing file, so the failure was invisible.
 		//
 		// READ-ONLY. The display only reads, and every write goes through
@@ -446,8 +430,7 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		// database) and run/ (every session's host-API socket dir), and
 		// $XDG_STATE_HOME itself holds unrelated application state. Widening
 		// this entry to a parent would be a far larger grant than the
-		// display needs and would defeat the per-session socket isolation
-		// from security fix #960.
+		// display needs and would defeat the per-session socket isolation.
 		//
 		// DIRECTORY, not the current.json file. A file-level bind pins the
 		// original inode, and the writer replaces the file by atomic
@@ -457,8 +440,8 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		// a restart (same reasoning as the host-API socket dir bind in
 		// bwrap.go).
 		//
-		// OptionalIfMissing because bwrap ABORTS on a missing bind source
-		// (the #2243 lesson). prepareVolumeDirs pre-creates the directory
+		// OptionalIfMissing because bwrap ABORTS on a missing bind source.
+		// prepareVolumeDirs pre-creates the directory
 		// host-side so the bind is normally always active — this guard
 		// covers the case where that creation failed (it is non-fatal by
 		// design, e.g. an unwritable HOME in the nix build sandbox). The
@@ -477,12 +460,10 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	}
 
 	// ── Go module cache + build cache (RW, conditional, Dst==Src) ────────
-	// ~/go/pkg/mod (GOMODCACHE) and ~/.cache/go-build (GOCACHE), issue
-	// #2731. This mirrors the Darwin sandbox-exec grant from issue #2621
-	// (generateProfile section 5k): Darwin granted both caches, Linux granted
-	// neither, and the asymmetry was accidental. bwrap does not FAIL without
-	// them — it rebuilds cold into the sandbox interior on every session, so
-	// the cost was silent. Every worker and all five review agents paid it.
+	// ~/go/pkg/mod (GOMODCACHE) and ~/.cache/go-build (GOCACHE). This mirrors
+	// the Darwin sandbox-exec grant (generateProfile section 5k). bwrap does
+	// not FAIL without them — it rebuilds cold into the sandbox interior on
+	// every session, so both caches are shared to keep builds warm.
 	//
 	// PATHS come from goCacheDirsForGOOS (go_cache.go), the same platform-
 	// aware list generateProfile walks on Darwin. One list, so the two
@@ -499,19 +480,17 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	// read-only bind does not make `go build ./...` work. Concurrency is safe
 	// by design — the module cache uses a lock file and the build cache is
 	// content-addressed, both built for concurrent multi-process access,
-	// which is exactly what parallel workers plus the host shell do. #2621
-	// accepted that reasoning for Darwin and it is unchanged here.
+	// which is exactly what parallel workers plus the host shell do.
 	//
-	// LEAF DIRECTORIES ONLY, never a parent — the same scope #2621 fixed on
-	// Darwin, where (subpath ~/Library/Caches) was explicitly rejected as too
-	// broad:
+	// LEAF DIRECTORIES ONLY, never a parent — (subpath ~/Library/Caches) is
+	// too broad:
 	//   - NOT ~/go: that would expose ~/go/bin, where `go install` drops
 	//     binaries that are typically on the host's PATH. A sandboxed agent
 	//     must not be able to plant an executable the user later runs.
 	//   - NOT ~/.cache: the user's whole cache tree. The sandbox binds the
 	//     leaves it needs (nix, bun, prism/clipboard) and nothing else.
 	//
-	// EXEC ASYMMETRY WITH DARWIN, accepted (issue #2731). goCacheDir carries
+	// EXEC ASYMMETRY WITH DARWIN, accepted. goCacheDir carries
 	// execDenied, true for the module cache: on Darwin the profile emits
 	// (deny process-exec* file-map-executable) for ~/go/pkg/mod, so the agent
 	// can write module source there but cannot run anything it plants among
@@ -526,8 +505,8 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	//      worktree, /tmp, ~/.npm (npx runs cached JS), ~/.cache/bun. An
 	//      agent that wants to run a binary it wrote does not need the
 	//      module cache to do it.
-	//   2. The host-side risk is identical on both platforms, and is the
-	//      risk #2621 already accepted and stated: both grants are WRITE, so
+	//   2. The host-side risk is identical on both platforms: both grants are
+	//      WRITE, so
 	//      on either platform a compromised agent can mutate an extracted
 	//      module that a later HOST build compiles (go verifies module zips
 	//      against go.sum on download, but does not re-verify an already-
@@ -541,16 +520,15 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	//      always has, except that a downloaded toolchain now persists in the
 	//      shared cache instead of being discarded with the session interior.
 	//
-	// OptionalIfMissing because bwrap ABORTS on a missing bind source (the
-	// #2243 lesson recorded on the ~/.cache/nix entry above). prepareVolumeDirs
+	// OptionalIfMissing because bwrap ABORTS on a missing bind source, as on
+	// the ~/.cache/nix entry above. prepareVolumeDirs
 	// pre-creates BOTH directories host-side so the binds are normally always
 	// active — that is what makes the cache warm on a machine that has never
 	// run go, where a skipped mount would instead leave every session cold
 	// forever. This guard covers the case where that creation failed (it is
 	// non-fatal by design, e.g. the unwritable HOME of the nix build sandbox):
 	// the session then starts normally, just without the mount, and go falls
-	// back to building into the ephemeral sandbox interior exactly as it did
-	// before this change.
+	// back to building into the ephemeral sandbox interior.
 	//
 	// HOST PERSISTENCE is the other half of "warm" on these machines. Both
 	// Linux hosts wipe the root btrfs subvolume on every boot, so a cache

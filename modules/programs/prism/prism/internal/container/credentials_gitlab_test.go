@@ -1,13 +1,12 @@
 package container_test
 
-// credentials_gitlab_test.go — GITLAB_TOKEN resolution and injection
-// (issue #2668).
+// credentials_gitlab_test.go — GITLAB_TOKEN resolution and injection.
 //
 // The GitLab token follows the same shape as the GitHub one: the
 // sops-decrypted FILE named by config.json is the primary source, and the
 // inherited env var is the fallback, guarded against the unexpanded
-// `$(cat …)` literal that home-manager renders into the host environment
-// (#2348). The one deliberate difference is failure handling — see
+// `$(cat …)` literal that home-manager renders into the host environment.
+// The one deliberate difference is failure handling — see
 // TestResolveGitLabToken_BrokenPathIsNotFatal.
 //
 // SECURITY: every token value here is synthetic.
@@ -74,7 +73,7 @@ func TestResolveGitLabToken_EnvFallback(t *testing.T) {
 	}
 }
 
-// TestResolveGitLabToken_RejectsShellLiteral is the #2348 guard: when the
+// TestResolveGitLabToken_RejectsShellLiteral is the shell-literal guard: when the
 // tmux server was started from a non-shell context, the host GITLAB_TOKEN is
 // the literal string `$(cat /path/to/secret)`. Injecting that would make
 // every glab call fail with a confusing 401 instead of a clean

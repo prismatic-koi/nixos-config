@@ -1,9 +1,8 @@
 // Package container manages sandbox lifecycle and mount preparation for
 // prism agent sessions.
+//
 // This file defines bwrapIsolator, a bubblewrap-based implementation of the
-// Isolator interface. It is a pure addition — nothing constructs bwrapIsolator
-// at runtime yet. The wiring (CLI flag / config field) is intentionally deferred
-// to a follow-up PR (#877).
+// Isolator interface.
 package container
 
 import (
@@ -23,11 +22,8 @@ import (
 // interface through Run, Shutdown, HasExited, and DumpLogs. BuildRunArgs()
 // returns nil (a no-op stub) because the real argument construction is
 // performed by BuildArgs(m *Manager), which has access to the Manager's config
-// and state.
-//
-// Design decision (option 2 from issue #876): the interface is not widened yet.
-// BuildRunArgs() is a stub; BuildArgs is a concrete method. The widening is
-// deferred to the wiring PR so this PR stays a pure addition.
+// and state. The Isolator interface is deliberately not widened to carry the
+// Manager, so bwrap callers use BuildArgs directly.
 type bwrapIsolator struct {
 	// name is the stable session identifier (same as the container name, used
 	// for log messages and process identification).
@@ -78,7 +74,7 @@ func (b *bwrapIsolator) BuildRunArgs() []string {
 
 // bwrapKubeCacheDir is the in-sandbox KUBECACHEDIR value for bwrap sessions:
 // kubectl's cache lands on the per-session /tmp tmpfs (ephemeral, never
-// host-visible). See the KUBECACHEDIR comment in BuildArgs (issue #2235).
+// host-visible). See the KUBECACHEDIR comment in BuildArgs.
 const bwrapKubeCacheDir = "/tmp/kube-cache"
 
 // bwrapGlabConfigDir is the in-sandbox glab (GitLab CLI) config directory
@@ -87,7 +83,7 @@ const bwrapKubeCacheDir = "/tmp/kube-cache"
 // path exists inside the bwrap namespace. GLAB_CONFIG_DIR points glab at the
 // per-session /tmp tmpfs instead, so its config stays ephemeral and is never
 // written through to the host — the bwrap equivalent of sandbox-exec's
-// <sessionDir>/glab-cli redirect (issue #2668).
+// <sessionDir>/glab-cli redirect.
 const bwrapGlabConfigDir = "/tmp/glab-cli"
 
 // fallbackPATH returns the PATH value used when os.Getenv("PATH") is empty.
@@ -178,10 +174,9 @@ func standardSandboxEnvArgs() []string {
 // The returned slice begins with the baseline namespace flags and ends with
 // -- followed by the agent invocation.
 //
-// # Mounts not included (deferred or out of scope)
+// # Mounts not included
 //
-//   - WorktreeReadOnly handling (review agents under bwrap — deferred to a
-//     future PR; bwrap review support is tracked separately).
+//   - WorktreeReadOnly handling for review agents under bwrap.
 //   - Darwin Keychain credentials (darwin-only, not applicable on Linux).
 func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	cfg := m.cfg
@@ -209,7 +204,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// shared memory file that relies on mmap() coherency across processes.
 	// --unshare-ipc creates a private IPC namespace which breaks that
 	// coherency between concurrent bwrap sessions, causing subsequent
-	// sessions to hang after DB migration completes (see issue #906).
+	// sessions to hang after DB migration completes.
 	args := []string{
 		"--clearenv",
 		"--unshare-pid",
@@ -341,8 +336,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 			args = append(args, "--bind", bareDir, bareDir)
 		}
 		// Worktree private git state (HEAD, index, logs, etc.) — read-write.
-		// A missing directory here is a real error, not a silent skip: as of
-		// issue #2518 WorktreeGitDir is resolved from the worktree's own
+		// A missing directory here is a real error, not a silent skip:
+		// WorktreeGitDir is resolved from the worktree's own
 		// authoritative .git gitdir pointer, so if it does not exist on disk
 		// something is genuinely wrong (e.g. corrupted worktree bookkeeping)
 		// and the sandbox must not silently start without the agent's git
@@ -356,34 +351,24 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	}
 
 	// ── Standard sandbox mounts via the shared spec walk ─────────────────
-	// StandardSandboxMounts (mounts.go, A2.M1) returns the mode-agnostic
+	// StandardSandboxMounts (mounts.go) returns the mode-agnostic
 	// mount set for ~/.config/claude, ~/.mcp-auth, ~/.cache/nix, AWS config, AWS
 	// credentials, AWS SSO/CLI cache, kube config, the clipboard
-	// staging dir, prism profiles.json, the prism usage snapshot dir
-	// (issue #2572), and the Go module and build caches (issue #2731). The
+	// staging dir, prism profiles.json, the prism usage snapshot dir,
+	// and the Go module and build caches. The
 	// bwrap appendBind appender (mounts.go) translates each MountSpec into
 	// the correct --bind / --ro-bind triple.
 	//
-	// Note on ordering: StandardSandboxMounts emits ~/.config/claude, ~/.mcp-auth,
-	// ~/.cache/nix, ~/.cache/bun, AWS config, AWS credentials, AWS SSO, AWS CLI,
-	// kube config, clipboard-staging. The pre-A2.M1 bwrap order interleaved the
-	// AWS group with the SSH/known_hosts/SSH-config group; the new order
-	// keeps the AWS entries adjacent and emits all of them before the SSH
-	// keys. Bwrap argument order does not affect the runtime mount layout
-	// (bwrap evaluates arguments left-to-right but each --bind is
-	// independent), so this is a behaviour-preserving reordering.
+	// Bwrap argument order does not affect the runtime mount layout: bwrap
+	// evaluates arguments left-to-right, but each --bind is independent.
 	for _, spec := range StandardSandboxMounts(cfg, home, home, isolationBwrap) {
 		args = AppendBwrapBind(args, spec)
 	}
 
-	// NOTE: An unconditional --bind of ~/.local/share/pi used to live here as
-	// part of the opencode→pi rename in #1609. PI does NOT use that XDG path —
-	// it lives at ~/.pi/agent/ (see internal/harness/pi/archive.go). The mount
-	// was dead and broke fresh installs where the source directory did not
-	// exist (bwrap aborts on missing --bind sources). Removed locally to
-	// unblock `nh switch`; proper cleanup of the sandbox_exec.go SBPL rules,
-	// container.go per-session subdir, and dispatch.go archiveSharedStorageRoot
-	// to follow in a PR.
+	// Do NOT bind ~/.local/share/pi here. PI does not use that XDG path — its
+	// state lives at ~/.pi/agent/ (see internal/harness/pi/archive.go). The
+	// path may not exist on fresh installs, and bwrap aborts on a missing
+	// --bind source.
 
 	// ── Nix daemon socket dir (read-write) ──────────────────────────────────
 	// Mount the parent directory, not the socket file directly
@@ -415,7 +400,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	if signingKeyName == "" {
 		signingKeyName = "prismatic-koi-ed25519-signingkey"
 	}
-	// Note on sops rotation and Linux bind-mount inode semantics (issue #1412):
+	// Note on sops rotation and Linux bind-mount inode semantics:
 	//
 	// On NixOS, the signing key is managed by sops-nix. The symlink chain is:
 	//   ~/.ssh/prismatic-koi-ed25519-signingkey
@@ -423,11 +408,9 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	//     → /run/secrets.d/<N>/ssh/prismatic-koi-ed25519-signingkey  (concrete sops file)
 	//
 	// sops-nix's pruneGenerations removes old secrets.d/<N>/ directories on
-	// nixos-rebuild switch (keepGenerations = 1 by default). This raised the
-	// question of whether EvalSymlinks here is fragile — mirroring the Darwin
-	// sandbox-exec fix in PR #1411.
-	//
-	// On Linux, bwrap bind-mounts are inode-based, not path-based:
+	// nixos-rebuild switch (keepGenerations = 1 by default). EvalSymlinks here
+	// is nonetheless safe, because on Linux bwrap bind-mounts are inode-based,
+	// not path-based:
 	//   1. filepath.EvalSymlinks resolves to /run/secrets.d/<N>/ssh/signingkey.
 	//   2. The kernel bind-mount (MS_BIND) increments the inode's reference count.
 	//   3. When pruneGenerations removes secrets.d/<N>/, it unlinks the directory
@@ -446,9 +429,6 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// bwrap bind mounts are inode-based, so they survive the rotation cleanly.
 	//
 	// EvalSymlinks is therefore the correct approach here — no fix is needed.
-	// The historical sandbox-exec symlink-staging fix (symlinkIfExists vs
-	// symlinkIfResolvable, #1410/#1573) did not apply to bwrap for this reason;
-	// the staging mechanism itself was deleted in Step 5 of #2132.
 	signingKeyResolved, errPriv := filepath.EvalSymlinks(filepath.Join(sshDir, signingKeyName))
 	signingKeyPubResolved, errPub := filepath.EvalSymlinks(filepath.Join(sshDir, signingKeyName+".pub"))
 	if errPriv == nil && errPub == nil {
@@ -498,7 +478,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// the mount point and its parent directory. Same shape as the AWS /
 	// kube XDG binds in mounts.go: Src is the sops-resolved concrete file;
 	// Dst is the stable path the env var references. Binding Dst==Src
-	// (as an earlier iteration of this block did) leaves the extension's
+	// leaves the extension's
 	// env-var path unreachable inside the sandbox — readFileSync ENOENTs
 	// and no tools ever register.
 	//
@@ -508,8 +488,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// same rotation-safety argument as the SSH signing key bind above.
 	//
 	// Absent / unresolvable path silently skips the bind; the extension
-	// fails-gracefully with a ctx.ui.notify on the pi side (per issue
-	// #2452 edge-case AC).
+	// fails-gracefully with a ctx.ui.notify on the pi side.
 	if grafanaPath := cfg.AgentEnvVars["GRAFANA_MCP_CONFIG_PATH"]; grafanaPath != "" {
 		if resolved, err := filepath.EvalSymlinks(grafanaPath); err == nil {
 			args = append(args, "--ro-bind", resolved, grafanaPath)
@@ -517,19 +496,15 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	}
 
 	// AWS SSO cache, AWS CLI cache, kube config, the bun transpiler cache,
-	// and the clipboard staging dir are all emitted earlier in this function
-	// via the StandardSandboxMounts walk (A2.M1) — the inline blocks that
-	// previously duplicated those mounts here have been removed (the bun
-	// cache block was converged in #2245, Step 3e of #2132). The aws
-	// config/credentials canonical-path ($HOME/.aws/*) binds were dropped in
-	// #2234; the files are now bound Dst==Src at the host XDG paths and
-	// reached via the AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars
-	// pointing there.
+	// and the clipboard staging dir are emitted earlier in this function via
+	// the StandardSandboxMounts walk. AWS config and credentials are bound
+	// Dst==Src at the host XDG paths and reached via the AWS_CONFIG_FILE /
+	// AWS_SHARED_CREDENTIALS_FILE env vars pointing there.
 
 	// ── Environment variables ────────────────────────────────────────────────
 	// Inject the per-session env vars as --setenv K V pairs.
 	// credentialEnvVars returns an error only when a configured GitHub token
-	// file path is unreadable — that is a hard failure per issue #2348 (the
+	// file path is unreadable — that is a hard failure (the
 	// spawn must NOT silently proceed with a broken/missing token).  BuildArgs
 	// cannot return an error, so we stash it on the Manager and surface it in
 	// Prepare, following the same pattern as m.piBwrapErr.
@@ -555,7 +530,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	args = append(args, "--setenv", "NIX_CONFIG", "store = daemon")
 
 	// KUBECACHEDIR: redirect kubectl's discovery/http cache to the sandbox's
-	// private /tmp tmpfs (issue #2235, Step 3b of #2132). With the canonical
+	// private /tmp tmpfs. With the canonical
 	// $HOME/.kube/config bind gone, no kube path exists in-namespace and
 	// kubectl's default $HOME/.kube/cache would land wherever the root tmpfs
 	// happens to permit. /tmp is an explicit per-session tmpfs (--tmpfs /tmp
@@ -568,7 +543,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	args = append(args, "--setenv", "KUBECACHEDIR", bwrapKubeCacheDir)
 
 	// GLAB_CONFIG_DIR: redirect glab's config dir to the sandbox's private
-	// /tmp tmpfs (issue #2668). glab reads its config on EVERY invocation and
+	// /tmp tmpfs. glab reads its config on EVERY invocation and
 	// exits non-zero when the read fails, so without this redirect glab is
 	// unusable inside the sandbox. The GitLab credential itself arrives as
 	// the GITLAB_TOKEN value injected by credentialEnvVars — never from a
@@ -615,7 +590,6 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// Dst==Src mounts mean the bare dir is visible at its host path inside
 	// the sandbox. Set PRISM_BARE_ROOT to cfg.BareRoot so that
 	// resolveBareRoot finds it at the correct path.
-	// TODO(#877): confirm the correct value when wiring bwrap end-to-end.
 	if cfg.BareRoot != "" {
 		args = append(args, "--setenv", "PRISM_BARE_ROOT", cfg.BareRoot)
 	} else {
@@ -631,8 +605,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		)
 	} else if cfg.HostAPISockPath != "" {
 		// Bind the session's own per-session socket DIRECTORY (not the individual
-		// socket file and not the shared run/ directory). Security fix #960:
-		// SidecarHostAPIPath now places each session's socket in its own
+		// socket file and not the shared run/ directory).
+		// SidecarHostAPIPath places each session's socket in its own
 		// subdirectory (run/<session>/hostapi.sock), so binding only that
 		// directory means the sandbox cannot see other sessions' sockets.
 		//
@@ -645,7 +619,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		// a directory mount). The per-session directory is pre-created by
 		// prepareVolumeDirs before this code runs.
 		//
-		// P2.SIDECAR: the harness pipe socket (pipe.sock) co-locates with the
+		// The harness pipe socket (pipe.sock) co-locates with the
 		// host-API socket in the same per-session directory. This single bind-mount
 		// covers both sockets — no additional bind-mount is needed.
 		sockDir := filepath.Dir(cfg.HostAPISockPath)
@@ -653,7 +627,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--setenv", "PRISM_HOST_API", "unix://"+cfg.HostAPISockPath)
 	}
 
-	// Harness pipe env var (P2.SIDECAR #1209).
+	// Harness pipe env var.
 	// On Linux the pipe socket lives in the same per-session directory as the
 	// host-API socket, so the bind-mount above already exposes it. No extra
 	// bind is needed. On Darwin (HarnessPipeTCPPort != 0), TCP is used instead.
@@ -666,7 +640,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--setenv", "PRISM_HARNESS_PIPE", "unix://"+cfg.HarnessPipeSockPath)
 	}
 
-	// Durable give-up diagnostics (#2357): expose the host-side agent-run log
+	// Durable give-up diagnostics: expose the host-side agent-run log
 	// path so the PI prism extension can append a diagnostic line if it
 	// exhausts its first-connect retries. The log lives in the per-session
 	// run directory that the PRISM_HOST_API block above bind-mounts at its
@@ -675,7 +649,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--setenv", "PRISM_AGENT_RUN_LOG", cfg.AgentRunLogPath)
 	}
 
-	// ── Containers-enabled surface (#2317 / #2321) ───────────────────
+	// ── Containers-enabled surface ───────────────────
 	// Wires the per-session FILTERED podman socket and the writable
 	// container-scratch dir into the sandbox. Three argv emissions are
 	// gated on cfg.ContainersEnabled:
@@ -684,7 +658,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	//   --setenv DOCKER_HOST    unix://<PodmanProxySockPath>   (docker-CLI compat)
 	//   --bind   <sessionDir>/container-scratch <sessionDir>/container-scratch
 	//
-	// Critical security invariant (#2321 greppable AC): the REAL upstream
+	// Critical security invariant: the REAL upstream
 	// podman socket path ($XDG_RUNTIME_DIR/podman/podman.sock or whatever
 	// the sidecar resolved) must NEVER appear in the rendered argv — only
 	// the filtered PodmanProxySockPath the sidecar's proxy goroutine
@@ -720,12 +694,10 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	}
 
 	// ── PI-specific bind mounts (harness=pi only) ────────────────────────
-	// Note: the host's ~/.pi/agent/sessions/ directory is now overlaid onto
+	// Note: the host's ~/.pi/agent/sessions/ directory is overlaid onto
 	// $PI_CODING_AGENT_DIR/sessions/ inside the sandbox by
-	// appendPIBwrapMounts (called below), so a dedicated --bind of
-	// ~/.pi/agent/sessions onto its own host path is no longer needed — pi
-	// inside the sandbox reaches the host directory via PI_CODING_AGENT_DIR,
-	// not via the host home path. See #1985.
+	// appendPIBwrapMounts (called below), so pi inside the sandbox reaches
+	// the host directory via PI_CODING_AGENT_DIR, not via the host home path.
 	//
 	// These must be appended before the "--" terminator so bwrap processes
 	// them as namespace arguments rather than as parts of the inner command.
@@ -826,7 +798,7 @@ func minimalBwrapExecEnv(hostEnv []string) []string {
 // Shutdown sends SIGTERM to the bwrap process if it is still running, waits
 // up to 30 seconds, and sends SIGKILL if the process has not exited. The
 // SIGTERM-then-grace-then-SIGKILL body is shared with sandbox-exec via the
-// gracefulShutdown helper (shutdown.go, A2.GR).
+// gracefulShutdown helper (shutdown.go).
 func (b *bwrapIsolator) Shutdown() {
 	b.mu.Lock()
 	cmd := b.cmd

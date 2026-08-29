@@ -1,7 +1,7 @@
 package container
 
 // argv_redact_test.go — the package-wide, test-only redaction for argv and
-// env dumps, plus its own coverage (issue #2581).
+// env dumps, plus its own coverage.
 //
 // Why this exists. bwrapIsolator.BuildArgs embeds the output of
 // credentialEnvVars in the bwrap argv, so a built argv carries live host
@@ -14,7 +14,7 @@ package container
 // A test that formats the raw argv with %v therefore writes those values to
 // the developer's terminal and to the CI log every time it fails — the two
 // worst places for a secret to land. The exposure is real: it was observed
-// live on the worker for #2572.
+// live on the worker.
 //
 // The rule for this package: no test formats a whole argv or env slice
 // directly. Every such dump goes through redactedArgs first. External test

@@ -4,10 +4,6 @@
 // init() time by each isolator file — and the Resolve helper that centralises
 // the back-compat resolution logic that is currently scattered across multiple
 // call sites.
-//
-// Phase 1 of A.1 §7: the registry exists and is consultable, but no existing
-// caller has been migrated to read from it yet. That migration is the work of
-// A.1 Phases 2–4.
 package container
 
 import (
@@ -159,9 +155,7 @@ func joinModeNames(r *IsolationRegistry) string {
 }
 
 // ResolveInput carries all the inputs that the back-compat resolution logic
-// needs. Fields marked "deprecated" correspond to the legacy surfaces that
-// A.4 will remove; they are preserved verbatim here so that Resolve mirrors
-// today's behaviour exactly and A.4 has a single file to edit.
+// needs.
 type ResolveInput struct {
 	// IsolationFlag is the value of the --isolation CLI flag, empty when the
 	// flag was not set (use IsolationFlagChanged to distinguish).

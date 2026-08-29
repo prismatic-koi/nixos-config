@@ -1,7 +1,7 @@
 package container
 
 // grafana_sandbox_test.go — unit coverage for the pi grafana MCP config
-// bundle carve-out in the sandbox-exec secrets.d allowlist (issue #2746):
+// bundle carve-out in the sandbox-exec secrets.d allowlist:
 //
 //   - the allowlist admits the bundle's secret name when — and ONLY when — a
 //     Grafana config path is configured on the Manager;
@@ -9,12 +9,12 @@ package container
 //   - a non-sops path produces no exception at all;
 //   - the bwrap argv is untouched by the new Config field, which is
 //     sandbox-exec-only (bwrap keeps deriving its --ro-bind from
-//     AgentEnvVars, issue #2452).
+//     AgentEnvVars).
 //
 // The Darwin host-run coverage (a real /usr/bin/sandbox-exec read of the
 // bundle) lives in
 // internal/integration/sandbox_exec_grafana_config_darwin_test.go, per the
-// sandbox-exec testing convention (docs/sandbox-exec-testing.md, #1192).
+// sandbox-exec testing convention (docs/sandbox-exec-testing.md).
 
 import (
 	"os"
@@ -50,7 +50,7 @@ func fakeGrafanaSopsPath(t *testing.T, fakeHome, secretsBase, counter string) st
 
 // TestGenerateProfile_SecretsDAllowlistAdmitsGrafanaConfig verifies that a
 // configured, sops-backed GrafanaConfigPath produces exactly one extra
-// require-not exception — for the grafana bundle and nothing else (#2746).
+// require-not exception — for the grafana bundle and nothing else.
 func TestGenerateProfile_SecretsDAllowlistAdmitsGrafanaConfig(t *testing.T) {
 	fakeHome := newFakeHome(t)
 	secretsBase := filepath.Join(t.TempDir(), "secrets.d")
@@ -73,12 +73,12 @@ func TestGenerateProfile_SecretsDAllowlistAdmitsGrafanaConfig(t *testing.T) {
 		t.Errorf("profile missing the grafana allowlist exception:\n%s\nfull profile:\n%s",
 			grafanaExceptionRule, profile)
 	}
-	// The counter must not be baked in — the #1410/#1573 rotation property.
+	// The counter must not be baked in — the rotation property.
 	if strings.Contains(profile, `/secrets\.d/42/`) {
 		t.Errorf("profile bakes the concrete secrets.d counter into a regex; full profile:\n%s", profile)
 	}
 	// Exactly two exceptions: the ssh access key and grafana. The grafana
-	// carve-out adds ONE name and no more (issue #2211 inventory rule).
+	// carve-out adds ONE name and no more (inventory rule).
 	if got := strings.Count(profile, "(require-not "); got != 2 {
 		t.Errorf("expected exactly 2 require-not exceptions (ssh access key + grafana), got %d; full profile:\n%s",
 			got, profile)
@@ -96,8 +96,8 @@ func TestGenerateProfile_SecretsDAllowlistAdmitsGrafanaConfig(t *testing.T) {
 // TestGenerateProfile_SecretsDAllowlistOmitsGrafanaConfigWhenUnconfigured is
 // the paired negative: a host with no Grafana config path (the default —
 // nx.programs.prism.pi.grafana.enable is false, or the session is a review
-// role whose GRAFANA_MCP_CONFIG_PATH is stripped by #2533) emits no grafana
-// exception, so the bundle stays denied exactly as it was before #2746.
+// role whose GRAFANA_MCP_CONFIG_PATH is stripped) emits no grafana
+// exception, so the bundle stays denied.
 func TestGenerateProfile_SecretsDAllowlistOmitsGrafanaConfigWhenUnconfigured(t *testing.T) {
 	fakeHome := newFakeHome(t)
 	secretsBase := filepath.Join(t.TempDir(), "secrets.d")
@@ -141,11 +141,11 @@ func TestGenerateProfile_SecretsDAllowlistIgnoresNonSopsGrafanaPath(t *testing.T
 	}
 }
 
-// TestBwrapBuildArgs_IgnoresGrafanaConfigPath pins the #2746 scope boundary:
-// GrafanaConfigPath is a sandbox-exec-only field. The bwrap isolator keeps
-// deriving its grafana --ro-bind from AgentEnvVars (issue #2452), so setting
-// the new field with no matching AgentEnvVars entry must leave the bwrap
-// argv exactly as it was before this change.
+// TestBwrapBuildArgs_IgnoresGrafanaConfigPath pins the scope boundary:
+// GrafanaConfigPath is a sandbox-exec-only field. The bwrap isolator derives
+// its grafana --ro-bind from AgentEnvVars, so setting
+// GrafanaConfigPath with no matching AgentEnvVars entry must leave the bwrap
+// argv unchanged.
 func TestBwrapBuildArgs_IgnoresGrafanaConfigPath(t *testing.T) {
 	tmp := t.TempDir()
 	concrete := filepath.Join(tmp, "concrete-grafana-config")

@@ -14,14 +14,10 @@ type EnvAppender func(args []string, k, v string) []string
 // slice. It handles two sources:
 //
 //  1. cfg.AgentEnvVars — profile-level vars (e.g. GIT_EDITOR=true) emitted
-//     in sorted key order for determinism. Every key flows through: the
-//     former sandboxMountedByDefault suppression map is gone (issue #2235,
-//     Step 3b of #2132 — its last entry, KUBECONFIG, was un-suppressed when
-//     the canonical-path ($HOME/.kube/config) kube delivery was dropped
-//     from both isolators; the AWS pair was un-suppressed in #2234). kubectl
-//     resolves the kube config via KUBECONFIG at the host XDG path (bwrap
-//     binds that path Dst==Src — see StandardSandboxMounts; sandbox-exec
-//     reads ride the #2211 secrets.d allowlist).
+//     in sorted key order for determinism. Every key flows through — there
+//     is no suppression map. kubectl resolves the kube config via KUBECONFIG
+//     at the host XDG path (bwrap binds that path Dst==Src — see
+//     StandardSandboxMounts; sandbox-exec reads ride the secrets.d allowlist).
 //
 //  2. cfg.RuntimeEnv — harness-specific runtime vars (e.g. the bash-tool
 //     timeout) emitted as-is.
@@ -50,10 +46,8 @@ func AppendStandardEnv(args []string, cfg Config, appender EnvAppender) []string
 
 // AppendSandboxEnvVarsKV appends K=V pairs from cfg.AgentEnvVars and
 // cfg.RuntimeEnv to env (a []string slice for use as a syscall.Exec env).
-// Like AppendStandardEnv, every AgentEnvVars key flows through — the former
-// sandboxMountedByDefault suppression map is gone (KUBECONFIG was its last
-// entry, un-suppressed in issue #2235 when the staging .kube/config symlink
-// was dropped; the kube config is read via KUBECONFIG at the host XDG path).
+// Like AppendStandardEnv, every AgentEnvVars key flows through — there is no
+// suppression map. The kube config is read via KUBECONFIG at the host XDG path.
 //
 // This is used by the sandbox-exec dispatch path in cmd/agent_run.go where
 // the env is a plain K=V slice (not a bwrap-style argument list).

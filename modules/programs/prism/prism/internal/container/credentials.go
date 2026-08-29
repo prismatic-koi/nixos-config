@@ -16,8 +16,8 @@ import (
 )
 
 // gitBareRootTimeout is the per-call timeout for git subprocess invocations
-// inside githubAccountFromBareRoot. Matches the convention introduced for
-// internal/review/context.go (#1888). A bare git dir on a network FS or a
+// inside githubAccountFromBareRoot. Matches the convention used in
+// internal/review/context.go. A bare git dir on a network FS or a
 // credential helper waiting on a missing TTY should not block indefinitely.
 const gitBareRootTimeout = 5 * time.Second
 
@@ -33,9 +33,9 @@ var githubAccountCache sync.Map // map[string]string
 //
 //   - the injection path below;
 //   - the test-only argv redaction that keeps their VALUES out of a test
-//     failure message (redactedArgs in argv_redact_test.go, issue #2581);
+//     failure message (redactedArgs in argv_redact_test.go);
 //   - the capture-path redactor that keeps their VALUES out of prism.db
-//     (payload.Redactor, issue #2589).
+//     (payload.Redactor).
 //
 // A credential added to payload.ForwardedCredentialEnvNames is injected and
 // redacted by both consumers without a second edit.
@@ -48,8 +48,8 @@ const (
 	// PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE>.
 	prismGitHubTokenEnvPrefix = payload.PrismGitHubTokenEnvPrefix
 
-	// gitlabTokenEnvKey is the GitLab API token credentialEnvVars injects
-	// (issue #2668). See ResolveGitLabToken for the resolution order.
+	// gitlabTokenEnvKey is the GitLab API token credentialEnvVars injects.
+	// See ResolveGitLabToken for the resolution order.
 	gitlabTokenEnvKey = payload.GitLabTokenEnvName
 )
 
@@ -142,7 +142,7 @@ func githubAccountFromURL(remoteURL string) string {
 
 // GitHubAccountFromBareRoot is the exported wrapper around
 // githubAccountFromBareRoot. Used by cmd/sidecar.go to resolve the sidecar's
-// own GitHub account for env-sanitisation at startup (issue #2348).
+// own GitHub account for env-sanitisation at startup.
 func GitHubAccountFromBareRoot(bareRoot string) string {
 	return githubAccountFromBareRoot(bareRoot)
 }
@@ -168,8 +168,8 @@ func GitHubTokenKey(account, role string) string {
 
 // IsShellExpansionLiteral reports whether s appears to be an unexpanded shell
 // command-substitution literal (starts with "$(", after trimming ASCII
-// whitespace). This is the defence-in-depth guard against the #2348 root cause:
-// if the tmux server is started from a non-shell context, PRISM_GITHUB_TOKEN_*
+// whitespace). This is the defence-in-depth guard against the following root
+// cause: if the tmux server is started from a non-shell context, PRISM_GITHUB_TOKEN_*
 // env vars rendered as "$(cat /run/secrets/…)" propagate through the process
 // tree verbatim rather than being expanded. Any such value must NEVER be
 // injected as GITHUB_TOKEN — gh would send it to GitHub, get a 401, and
@@ -220,7 +220,7 @@ func readTokenFile(path string) (string, error) {
 //     have not yet migrated to the file-paths config.  Rejects values that
 //     look like unexpanded shell substitutions (see IsShellExpansionLiteral).
 //  3. env var GITHUB_TOKEN — final fallback, same $(-literal guard.
-//  4. cfg.GitHubTokenPath (single-token file) — the #2029 Darwin sops-decrypt
+//  4. cfg.GitHubTokenPath (single-token file) — the Darwin sops-decrypt
 //     rescue path.
 //
 // Returns ("", nil) when NO source is available (no key in map, no env var
@@ -257,7 +257,7 @@ func ResolveGitHubToken(cfg Config) (string, error) {
 		return tok, nil
 	}
 
-	// 4. Legacy single-token file (#2029 Darwin sops-decrypt rescue).
+	// 4. Legacy single-token file (Darwin sops-decrypt rescue).
 	if cfg.GitHubTokenPath != "" {
 		if tok, err := readTokenFile(cfg.GitHubTokenPath); err == nil {
 			return tok, nil
@@ -277,8 +277,8 @@ func ResolveGitHubToken(cfg Config) (string, error) {
 //     PRIMARY, and the reason the value never depends on shell expansion:
 //     modules/programs/gitlab-cli.nix renders the host's GITLAB_TOKEN as the
 //     string "$(cat <path>)", which only expands when a login shell sources
-//     the home-manager session vars. That is exactly the #2348 failure mode
-//     the GitHub token paths were introduced to remove.
+//     the home-manager session vars. That is exactly the failure mode the
+//     GitHub token paths remove.
 //  2. env var GITLAB_TOKEN — fallback for a host with no gitlab_token_path
 //     in config.json, behind the same $(-literal guard
 //     (IsShellExpansionLiteral) the GitHub chain applies.
@@ -317,7 +317,7 @@ func (m *Manager) CredentialEnvVars() ([]string, error) {
 // the container based on the agent role and current host environment.
 // Only vars that are set on the host are forwarded — unset vars are skipped.
 //
-// GitHub token selection (issue #2348, 4-PAT architecture):
+// GitHub token selection (4-PAT architecture):
 // The correct token is chosen based on the GitHub account (derived from the
 // repo's origin remote URL) and the agent role. The four supported keys are:
 //
@@ -332,12 +332,12 @@ func (m *Manager) CredentialEnvVars() ([]string, error) {
 //     time.  PRIMARY.  A configured-but-unreadable file is a hard error.
 //  2. env var PRISM_GITHUB_TOKEN_<KEY> — legacy path, $(-literal guarded.
 //  3. env var GITHUB_TOKEN — final fallback, $(-literal guarded.
-//  4. cfg.GitHubTokenPath (single-token file) — #2029 Darwin rescue.
+//  4. cfg.GitHubTokenPath (single-token file) — Darwin rescue.
 //
-// GitLab token selection (issue #2668): cfg.GitLabTokenPath first, then the
+// GitLab token selection: cfg.GitLabTokenPath first, then the
 // inherited GITLAB_TOKEN env var — see ResolveGitLabToken.
 //
-// The $(-literal guard is defence in depth against the #2348 root cause: the
+// The $(-literal guard is defence in depth against the root cause: the
 // tmux server started from a non-shell context propagates `$(cat …)` env-var
 // values verbatim (never expanded), so if we see one we treat it as unset
 // rather than sending a literal `$(cat …)` string to gh.
@@ -373,27 +373,24 @@ func (m *Manager) credentialEnvVars() ([]string, error) {
 	}
 
 	// GitLab token — sops file first, inherited env var second, both behind
-	// the same $(-literal guard as the GitHub chain (issue #2668). Injected
+	// the same $(-literal guard as the GitHub chain. Injected
 	// only when a source yields a value, so a host without
-	// nx.programs.gitlab-cli.enable gets no GITLAB_TOKEN in the sandbox and
-	// behaves exactly as it did before. A broken path is logged, not fatal —
-	// see ResolveGitLabToken.
+	// nx.programs.gitlab-cli.enable gets no GITLAB_TOKEN in the sandbox.
+	// A broken path is logged, not fatal — see ResolveGitLabToken.
 	if gitlabTok := ResolveGitLabToken(m.cfg); gitlabTok != "" {
 		vars = append(vars, gitlabTokenEnvKey+"="+gitlabTok)
 	}
 
 	// Note: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and
-	// GIT_COMMITTER_EMAIL are intentionally NOT injected. The container now
-	// has a generated .gitconfig with a [user] section (sourced from prism
-	// config). Env vars override gitconfig and would mask a broken gitconfig.
+	// GIT_COMMITTER_EMAIL are intentionally NOT injected. The sandbox has a
+	// generated .gitconfig with a [user] section (sourced from prism config).
+	// Env vars override gitconfig and would mask a broken gitconfig.
 
-	// Note: GIT_DIR and GIT_COMMON_DIR are intentionally NOT injected.
-	// Instead, Create() writes a corrected .git pointer file and bind-mounts it
-	// over /workspace/.git so all tools — including the agent's internal git
-	// library which reads .git directly rather than honouring GIT_DIR — resolve
-	// the correct container-internal path (#492).
-	// GIT_COMMON_DIR breaks ref lookup in the git version used in the container
-	// image and is therefore also omitted.
+	// Note: GIT_DIR and GIT_COMMON_DIR are intentionally NOT injected. The
+	// sandbox mounts the worktree and its git state at their host paths, so
+	// tools resolve the correct git directory without an env override.
+	// GIT_COMMON_DIR in particular breaks ref lookup for some git versions,
+	// so it is omitted.
 
 	return vars, nil
 }
@@ -402,7 +399,7 @@ func (m *Manager) credentialEnvVars() ([]string, error) {
 // downstream subprocesses inherit valid GitHub token values regardless of how
 // this process was launched.
 //
-// This is the fix for the sidecar half of issue #2348.  The sidecar (and any
+// This is the fix for the sidecar half of the shell-literal token bug.  The sidecar (and any
 // prism subcommand that shells out to gh) inherits its env from whatever
 // launched it.  Under the boot-restore path the tmux server was launched from
 // a systemd user unit — a non-shell context — so `$(cat /run/secrets/…)`

@@ -4,8 +4,8 @@
 // interface for IsolationHost ("host") mode, where the agent runs directly in
 // the tmux pane with no sandbox layer.
 //
-// Option A from A.1 §4.4: hostIsolator is a registered no-op so that every
-// caller goes through registry.For(mode) uniformly — no special-case for host.
+// hostIsolator is a registered no-op so that every caller goes through
+// registry.For(mode) uniformly — no special-case for host.
 package container
 
 import (

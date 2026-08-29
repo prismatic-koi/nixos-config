@@ -6,17 +6,16 @@
 // their paths from goCacheDirsForGOOS here, through mechanisms that are
 // structurally different (see the mounts.go package comment):
 //
-//   - sandbox-exec (Darwin, issue #2621) — SBPL "(subpath ...)" grants
+//   - sandbox-exec (Darwin) — SBPL "(subpath ...)" grants
 //     emitted by generateProfile section 5k, plus host-side creation in
 //     sandboxExecIsolator.Prepare via ensureGoCacheDirs.
-//   - bwrap (Linux, issue #2731) — MountSpec entries returned by
+//   - bwrap (Linux) — MountSpec entries returned by
 //     StandardSandboxMounts and translated to "--bind SRC DST" by
 //     AppendBwrapBind, plus host-side creation in prepareVolumeDirs.
 //
 // One list, four consumers. The grant and the directory creation cannot
-// drift apart, and neither can the two platforms — which is the property the
-// "single source of truth" comment on the Darwin side has guarded since
-// #2621 and the reason #2731 did not add a second list for Linux.
+// drift apart, and neither can the two platforms. Keep this the single
+// source of truth: do not add a second list for either platform.
 package container
 
 import (
@@ -39,7 +38,7 @@ const (
 
 // goCacheDir describes one Go cache directory the sandbox grants read-write,
 // together with whether the sandboxed process must also be able to map code
-// out of it (issue #2621).
+// out of it.
 type goCacheDir struct {
 	// path is the absolute host path of the cache directory.
 	path string
@@ -52,7 +51,7 @@ type goCacheDir struct {
 	// "--bind-noexec" and no noexec remount flag in its argument grammar —
 	// so the Linux mount path in StandardSandboxMounts reads this field for
 	// documentation value only and cannot enforce it. See the Go-cache block
-	// in mounts.go for why that asymmetry is accepted (issue #2731).
+	// in mounts.go for why that asymmetry is accepted.
 	//
 	// True for GOMODCACHE. The module cache holds module SOURCE, and with the
 	// GOTOOLCHAIN pin below nothing in the documented gate execs out of it, so
@@ -71,7 +70,7 @@ type goCacheDir struct {
 	// file-map-executable grant does NOT achieve the same thing. Section 9
 	// emits (allow process-exec* ...) with NO path filter, so execution is
 	// permitted profile-wide and no section-5k grant governs it either way.
-	// The host run of #2621 proved this empirically: a planted binary ran
+	// Testing on a host proved this empirically: a planted binary ran
 	// from BOTH cache dirs, and it ran from GOCACHE even with the whole
 	// section-5k block stripped. Withholding a flag from an allow clause
 	// cannot narrow a capability that a later unqualified allow hands out.

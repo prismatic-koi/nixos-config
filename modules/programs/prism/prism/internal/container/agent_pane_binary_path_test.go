@@ -1,9 +1,9 @@
 package container
 
-// agent_pane_binary_path_test.go — issue #2260 regression test for the
+// agent_pane_binary_path_test.go — regression test for the
 // absolute-path-of-prism that the agent-run pane command must carry.
 //
-// Pre-#2260, AgentPaneCmd emitted a bare `prism agent-run ...` token; the
+// Without the fix, AgentPaneCmd emits a bare `prism agent-run ...` token; the
 // tmux pane shell then PATH-resolved that to whatever lived first on $PATH
 // at exec time. On a worker host this is almost always the deployed binary,
 // even when the operator's shell has `result/bin` ahead on PATH for a branch
@@ -193,7 +193,7 @@ func TestHostAgentPaneCmd_DoesNotResolvePrismBinary(t *testing.T) {
 // TestBwrapAgentPaneCmd_EmptySessionName_BypassesBinaryResolution verifies
 // that the defensive fallback (empty SessionName → return DirectCmd) does
 // NOT call prismBinaryPathFn either. This is a pre-existing fast-path that
-// the #2260 change must preserve — an unrelated os.Executable failure should
+// the fix must preserve — an unrelated os.Executable failure should
 // not affect callers that pass an empty SessionName.
 func TestBwrapAgentPaneCmd_EmptySessionName_BypassesBinaryResolution(t *testing.T) {
 	withErrorPrismBinary(t, errors.New("must not be called"))

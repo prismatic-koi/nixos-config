@@ -1,6 +1,7 @@
 package container
 
-// checkin_privileged_repos_test.go — issue #2587.
+// checkin_privileged_repos_test.go — sandbox boundary for the tier-3
+// `/checkin` troubleshooting privilege.
 //
 // The tier-3 `/checkin` troubleshooting privilege is configured by
 // ~/.config/prism/checkin-privileged-repos.json, rendered by the prism NixOS

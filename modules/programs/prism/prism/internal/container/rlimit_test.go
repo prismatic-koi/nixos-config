@@ -1,6 +1,6 @@
 package container
 
-// rlimit_test.go — unit tests for the #2190 RLIMIT_NOFILE clamping rules and
+// rlimit_test.go — unit tests for the RLIMIT_NOFILE clamping rules and
 // the apply/restore round-trip. The clamping rules are tested as a pure
 // function (ResolveAgentRlimitNofile) so they run on any platform without
 // touching process state; the apply test mutates the test process's own
@@ -226,8 +226,8 @@ func TestApplyAgentRlimitNofile_ChildInherits(t *testing.T) {
 	}
 }
 
-// TestApplyAgentRlimitNofile_WarnsOnHostHardClamp verifies the #2190
-// edge-case AC: a configured hard limit above the host hard limit is clamped
+// TestApplyAgentRlimitNofile_WarnsOnHostHardClamp verifies the
+// edge case: a configured hard limit above the host hard limit is clamped
 // and produces a warning naming both values.
 func TestApplyAgentRlimitNofile_WarnsOnHostHardClamp(t *testing.T) {
 	var orig syscall.Rlimit

@@ -1,7 +1,7 @@
 package container_test
 
 // credentials_paths_map_test.go — tests for the file-paths-map credential
-// resolution introduced in issue #2348.
+// resolution.
 //
 // The primary source of truth for GitHub token resolution is now
 // cfg.GitHubTokenPaths[<ACCOUNT>_<ROLE>] — an absolute path to a sops-decrypted
@@ -127,8 +127,7 @@ func TestCredentialEnvVars_PathsMap_RoleSelection(t *testing.T) {
 // AC assertion: when the KEY IS PRESENT in GitHubTokenPaths but the file at
 // that path is missing / unreadable, credentialEnvVars must return an error
 // (not silently fall through to an env-var fallback), and the error must name
-// the path (never the value). This is the "spawn fails loudly" contract from
-// issue #2348.
+// the path (never the value). This is the "spawn fails loudly" contract.
 func TestCredentialEnvVars_PathsMap_MissingFileIsHardError(t *testing.T) {
 	clearTokenEnv(t)
 	// Populate the env-var fallbacks so we can prove they are NOT consulted
@@ -213,8 +212,8 @@ func TestCredentialEnvVars_PathsMap_MissingKeyFallsThrough(t *testing.T) {
 }
 
 // TestCredentialEnvVars_ShellLiteralRejected_RoleSpecific asserts the
-// $(-literal guard on the role-specific env var. This is the DEFENCE IN DEPTH
-// against #2348: even if some future path leaves a broken `$(cat …)` string
+// $(-literal guard on the role-specific env var. This is the DEFENCE IN DEPTH:
+// even if some future path leaves a broken `$(cat …)` string
 // in PRISM_GITHUB_TOKEN_*, it must never be forwarded to gh.
 func TestCredentialEnvVars_ShellLiteralRejected_RoleSpecific(t *testing.T) {
 	clearTokenEnv(t)
@@ -317,12 +316,12 @@ func TestGitHubTokenKey(t *testing.T) {
 }
 
 // TestSanitizeGitHubTokenEnv_PopulatesFromFiles is the load-bearing test for
-// the sidecar half of the fix (issue #2348): SanitizeGitHubTokenEnv reads each
+// the sidecar half of the fix: SanitizeGitHubTokenEnv reads each
 // configured file and writes the token value into the corresponding
 // PRISM_GITHUB_TOKEN_* env var, so that subprocesses spawned via os.Environ()
 // see valid values regardless of what was inherited.
 func TestSanitizeGitHubTokenEnv_PopulatesFromFiles(t *testing.T) {
-	// Start from the broken shape observed on the live host during #2348.
+	// Start from the broken shape observed on the live host.
 	t.Setenv("PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER",
 		"$(cat /run/secrets/github_token_prismatic_koi_worker)")
 	t.Setenv("PRISM_GITHUB_TOKEN_PRISMATIC_KOI_COORDINATOR",

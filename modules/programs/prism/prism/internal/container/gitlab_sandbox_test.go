@@ -1,7 +1,6 @@
 package container
 
-// gitlab_sandbox_test.go — unit coverage for the gitlab.com sandbox reach
-// (issue #2668):
+// gitlab_sandbox_test.go — unit coverage for the gitlab.com sandbox reach:
 //
 //   - the generated ssh config carries a `Host gitlab.com` stanza in BOTH
 //     isolation modes, pointing at the SAME mounted access key as github.com;
@@ -115,7 +114,7 @@ func TestWriteSshConfig_BwrapMode_GitHubAndGitLabStanzas(t *testing.T) {
 // TestWriteSshConfigToDir_GitHubAndGitLabStanzas pins AC #1 for the
 // sandbox-exec generator: both forge stanzas are present and both point at
 // the STABLE sops symlink path (never a resolved secrets.d/<N> path, which
-// rotates — #1410/#1573).
+// rotates).
 func TestWriteSshConfigToDir_GitHubAndGitLabStanzas(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
@@ -142,10 +141,10 @@ func TestWriteSshConfigToDir_GitHubAndGitLabStanzas(t *testing.T) {
 	}
 }
 
-// TestSandboxSshConfig_GeneratorsDoNotDrift is the drift guard for the defect
-// the issue calls out: the two generators previously duplicated the stanza
-// string, so a host added to one was silently missing from the other. They
-// now share sandboxSshConfig, and this test fails if that is undone — the
+// TestSandboxSshConfig_GeneratorsDoNotDrift is the drift guard: the two
+// generators must not duplicate the stanza string, or a host added to one
+// would be silently missing from the other. They share sandboxSshConfig,
+// and this test fails if that is undone — the
 // host set and the directive shape must match for the same identity file.
 func TestSandboxSshConfig_GeneratorsDoNotDrift(t *testing.T) {
 	const identity = "/home/agent/.ssh/some-key"
@@ -197,7 +196,7 @@ func containsLine(lines []string, want string) bool {
 }
 
 // TestSessionWorkDirGlabEnv pins the glab config-dir redirect the
-// sandbox-exec dispatcher injects (issue #2668). glab aborts on an
+// sandbox-exec dispatcher injects. glab aborts on an
 // unreadable config dir, so without this every in-sandbox glab call fails.
 func TestSessionWorkDirGlabEnv(t *testing.T) {
 	dir := "/home/u/.local/state/prism/sessions/abc123"
@@ -245,7 +244,7 @@ const gitlabTokenExceptionRule = `    (require-not (regex #"/secrets\.d/[0-9]+/g
 
 // TestGenerateProfile_SecretsDAllowlistAdmitsGitLabToken verifies that a
 // configured, sops-backed GitLabTokenPath produces exactly one extra
-// require-not exception — for `gitlab_token` and nothing else (issue #2668).
+// require-not exception — for `gitlab_token` and nothing else.
 func TestGenerateProfile_SecretsDAllowlistAdmitsGitLabToken(t *testing.T) {
 	fakeHome := newFakeHome(t)
 	secretsBase := filepath.Join(t.TempDir(), "secrets.d")
@@ -273,7 +272,7 @@ func TestGenerateProfile_SecretsDAllowlistAdmitsGitLabToken(t *testing.T) {
 		t.Errorf("profile missing the gitlab_token allowlist exception:\n%s\nfull profile:\n%s",
 			gitlabTokenExceptionRule, profile)
 	}
-	// The counter must not be baked in — the #1410/#1573 rotation property.
+	// The counter must not be baked in — the rotation property.
 	if strings.Contains(profile, `/secrets\.d/42/`) {
 		t.Errorf("profile bakes the concrete secrets.d counter into a regex; full profile:\n%s", profile)
 	}
@@ -290,7 +289,7 @@ func TestGenerateProfile_SecretsDAllowlistAdmitsGitLabToken(t *testing.T) {
 // TestGenerateProfile_SecretsDAllowlistOmitsGitLabTokenWhenUnconfigured is
 // the paired negative: a host with no GitLab token configured (the default —
 // nx.programs.gitlab-cli.enable is false) emits no gitlab exception, so the
-// secret stays denied exactly as it was before issue #2668.
+// secret stays denied.
 func TestGenerateProfile_SecretsDAllowlistOmitsGitLabTokenWhenUnconfigured(t *testing.T) {
 	fakeHome := newFakeHome(t)
 	secretsBase := filepath.Join(t.TempDir(), "secrets.d")

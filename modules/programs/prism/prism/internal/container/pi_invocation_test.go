@@ -40,7 +40,7 @@ func TestPIInvocation_BasicFlags(t *testing.T) {
 	}
 	// --append-system-prompt must NOT appear — the role system prompt is
 	// injected at runtime by the prism PI extension (before_agent_start), not
-	// via a CLI flag or a staged file (design #2031).
+	// via a CLI flag or a staged file.
 	if hasArg(args, "--append-system-prompt") {
 		t.Errorf("--append-system-prompt must not appear in PIInvocation args; got %v", redactedArgs(args))
 	}
@@ -60,8 +60,8 @@ func TestPIInvocation_NoOptionalFlags(t *testing.T) {
 	}
 }
 
-// TestPIInvocation_EmptyProviderOmitsFlagWhenOthersSet is the issue #2852
-// edge-case AC at the final argv layer: an empty provider override falls
+// TestPIInvocation_EmptyProviderOmitsFlagWhenOthersSet is the
+// edge case at the final argv layer: an empty provider override falls
 // through to the slot value, and when that is empty too no blank
 // `--provider ""` argument is emitted. TestPIInvocation_NoOptionalFlags
 // covers the all-empty config; this covers the realistic fall-through shape
@@ -83,7 +83,7 @@ func TestPIInvocation_EmptyProviderOmitsFlagWhenOthersSet(t *testing.T) {
 }
 
 // TestPIInvocation_OffThinkingPassedThrough verifies that thinking="off"
-// (the zero value in profiles after #1299) is passed as --thinking off to
+// (the zero value in profiles) is passed as --thinking off to
 // PI — not translated or dropped.
 func TestPIInvocation_OffThinkingPassedThrough(t *testing.T) {
 	cfg := Config{
@@ -140,10 +140,10 @@ func TestPIInvocation_NoInitialPrompt(t *testing.T) {
 
 // TestPIInvocation_AgentFlag verifies that --agent <role> is emitted when
 // cfg.AgentRole is non-empty. This is the load-bearing flag for the
-// #2064 fix: the prism PI extension reads it via pi.getFlag("agent") in
-// its before_agent_start handler to select the role system-prompt file.
-// Without this flag, the extension cannot identify the role synchronously
-// and the first-turn role prompt is lost (the regression #2064 captured).
+// role-prompt injection: the prism PI extension reads it via
+// pi.getFlag("agent") in its before_agent_start handler to select the role
+// system-prompt file. Without this flag, the extension cannot identify the
+// role synchronously and the first-turn role prompt is lost.
 func TestPIInvocation_AgentFlag(t *testing.T) {
 	cases := []struct {
 		name string
@@ -171,7 +171,7 @@ func TestPIInvocation_AgentFlag(t *testing.T) {
 
 // TestPIInvocation_NoAgentFlagWhenEmpty verifies that --agent is omitted
 // when AgentRole is empty. The extension handles a missing flag as a
-// graceful no-op (issue #2064 edge-case AC: "empty / unknown role starts
+// graceful no-op (edge case: "empty / unknown role starts
 // without error and pi receives only its default system prompt").
 func TestPIInvocation_NoAgentFlagWhenEmpty(t *testing.T) {
 	cfg := Config{}
@@ -207,7 +207,7 @@ func TestPIInvocation_AgentFlagOrder(t *testing.T) {
 	}
 }
 
-// TestPIInvocation_ExcludeToolsForReviewRoles is the issue #2531 coverage:
+// TestPIInvocation_ExcludeToolsForReviewRoles is the review-role coverage:
 // review roles get --exclude-tools write,edit; non-review roles get no
 // --exclude-tools flag at all. See internal/config/agent_tool_roles.go for
 // the role list and rationale.
@@ -241,7 +241,7 @@ func TestPIInvocation_ExcludeToolsForReviewRoles(t *testing.T) {
 	}
 }
 
-// TestPIInvocation_CLIOverrideWinsOverSlot is the issue #2086 regression
+// TestPIInvocation_CLIOverrideWinsOverSlot is the CLI-override regression
 // guard. The end-to-end picture: `prism spawn --model X` is translated by
 // `populatePIConfig` into a PIModel/PIThinking override that wins over the
 // active profile slot's Model/Thinking before `PIInvocation` reads the
@@ -249,10 +249,10 @@ func TestPIInvocation_ExcludeToolsForReviewRoles(t *testing.T) {
 // value ends up in cfg.PIModel / cfg.PIThinking is what appears on the
 // final pi argv.
 //
-// The test is written as a pair: the "slot only" case stands in for the
-// pre-#2086 baseline (slot.Model goes straight onto argv); the "override
-// wins" case stands in for the post-#2086 fix (populatePIConfig replaced
-// the slot value with the CLI override before constructing this Config).
+// The test is written as a pair: the "slot only" case exercises the slot
+// value going straight onto argv; the "override wins" case exercises
+// populatePIConfig replacing the slot value with the CLI override before
+// constructing this Config.
 // Both cases assert against the same argv positions so a future regression
 // that re-introduces the slot value (e.g. by reading the profile inside
 // PIInvocation itself) trips this guard.
@@ -324,10 +324,10 @@ func hasTriple(args []string, flag, val1, val2 string) bool {
 	return false
 }
 
-// ── EnsurePIAgentConfigDir (post #2034 shared-mount layout) ─────────────────
+// ── EnsurePIAgentConfigDir (shared-mount layout) ─────────────────
 
 func TestEnsurePIAgentConfigDir_ReturnsSharedHostAndCanonicalSandboxPath(t *testing.T) {
-	// Design #2031 PR3 (#2034): the host dir is the user's ~/.pi/agent (shared
+	// The host dir is the user's ~/.pi/agent (shared
 	// across all sessions), and the sandbox dir is the canonical default
 	// /run/prism/pi-agent. EnsurePIAgentConfigDir must return exactly that.
 	fakeHome := t.TempDir()
@@ -541,7 +541,7 @@ func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
 		t.Errorf("expected --setenv PI_CODING_AGENT_DIR %q in args; got %v", customSandboxDir, redactedArgs(args))
 	}
 
-	// Post #2034: the agent config dir must be RW-bind-mounted (--bind, not
+	// The agent config dir must be RW-bind-mounted (--bind, not
 	// --ro-bind) at the sandbox path so OAuth proper-lockfile mkdir of
 	// auth.json.lock on the parent dir succeeds. See pi_invocation.go
 	// top-of-file doc for the full rationale.
@@ -772,7 +772,7 @@ func TestAppendPIBwrapMounts_CreatesAndBindsAtlassianOAuthWhenAbsent(t *testing.
 }
 
 func TestAppendPIBwrapMounts_SharedPiAgentRwBindAtSandboxPath(t *testing.T) {
-	// Design #2031 PR3 (#2034): the shared host ~/.pi/agent directory must be
+	// The shared host ~/.pi/agent directory must be
 	// bind-mounted READ-WRITE into the sandbox at the canonical path
 	// /run/prism/pi-agent (or the configured PIAgentConfigSandboxDir). RW is
 	// required because pi-coding-agent's proper-lockfile auth.json refresh
@@ -826,7 +826,7 @@ func TestAppendPIBwrapMounts_SharedPiAgentRwBindAtSandboxPath(t *testing.T) {
 }
 
 func TestAppendPIBwrapMounts_AuthJSONReachableRwViaSharedMount(t *testing.T) {
-	// Post #2034: the parent mount of ~/.pi/agent is RW, so auth.json is
+	// The parent mount of ~/.pi/agent is RW, so auth.json is
 	// automatically writable at $PI_CODING_AGENT_DIR/auth.json without a
 	// dedicated overlay bind — the host file IS the file backing that
 	// in-sandbox path. The host-path RW bind is retained so $HOME-relative

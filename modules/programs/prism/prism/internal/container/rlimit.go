@@ -1,8 +1,8 @@
 package container
 
-// rlimit.go — per-process RLIMIT_NOFILE caps for agent exec paths (issue #2190).
+// rlimit.go — per-process RLIMIT_NOFILE caps for agent exec paths.
 //
-// Layer 1 of the FD-isolation work (#2181): every agent process spawned under
+// FD isolation: every agent process spawned under
 // bwrap or sandbox-exec is launched with a bounded RLIMIT_NOFILE so a single
 // misbehaving agent cannot exhaust the host's FD pool no matter what commands
 // it runs. The hard cap is kernel-enforced — an unprivileged agent cannot
@@ -19,8 +19,8 @@ package container
 // bookkeeping (PTY, stderr pipe, log file) is a handful of descriptors — and
 // is arguably extra defence-in-depth.
 //
-// The host-mode agent path is deliberately NOT capped (out of scope per
-// #2181's reassessment): host-mode agents inherit the host's RLIMIT_NOFILE.
+// The host-mode agent path is deliberately NOT capped: host-mode agents
+// inherit the host's RLIMIT_NOFILE.
 
 import (
 	"syscall"
@@ -29,7 +29,7 @@ import (
 )
 
 // AgentRlimitNofile is the resolved RLIMIT_NOFILE pair for an agent exec,
-// after the #2190 clamping rules have been applied by
+// after the clamping rules have been applied by
 // ResolveAgentRlimitNofile.
 type AgentRlimitNofile struct {
 	// Soft and Hard are the resolved limits to apply.
@@ -37,14 +37,14 @@ type AgentRlimitNofile struct {
 	Hard uint64
 	// HardClamped reports that the configured hard limit exceeded the host's
 	// hard limit and was clamped down to it. Callers must surface a warning
-	// to the agent's log file when set (#2190 edge-case AC).
+	// to the agent's log file when set.
 	HardClamped bool
 	// HostHard is the host hard limit observed at resolve time; used for the
 	// HardClamped warning message.
 	HostHard uint64
 }
 
-// ResolveAgentRlimitNofile applies the #2190 clamping rules to the configured
+// ResolveAgentRlimitNofile applies the clamping rules to the configured
 // (soft, hard) pair against the host's hard limit:
 //
 //  1. Non-positive configured values fall back to the compiled-in defaults
@@ -55,7 +55,7 @@ type AgentRlimitNofile struct {
 //  2. Configured hard > host hard → clamp hard to the host hard limit and
 //     set HardClamped (the caller warns to the agent log).
 //  3. Configured soft > resolved hard → clamp soft down to hard (silent
-//     normalisation per the #2190 edge-case AC).
+//     normalisation).
 //
 // Pure function — separated from ApplyAgentRlimitNofile so the clamping
 // rules are unit-testable on any platform without touching process state.
@@ -90,7 +90,7 @@ func ResolveAgentRlimitNofile(cfgSoft, cfgHard int, hostHard uint64) AgentRlimit
 // warnf is called (printf-style) for every non-fatal anomaly: clamping the
 // configured hard limit to the host hard limit, and Getrlimit/Setrlimit
 // failures. Failures never abort the agent spawn — the worst case is the
-// child inheriting the host's limits, which is the pre-#2190 status quo.
+// child inheriting the host's limits.
 //
 // Calling syscall.Setrlimit here also disables the Go runtime's
 // restore-original-RLIMIT_NOFILE-on-exec behaviour (Go ≥ 1.19 raises the

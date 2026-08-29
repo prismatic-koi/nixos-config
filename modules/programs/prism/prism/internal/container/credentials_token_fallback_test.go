@@ -1,12 +1,12 @@
 package container_test
 
 // credentials_token_fallback_test.go — unit tests for the GITHUB_TOKEN file
-// fallback added in #2029.
+// fallback.
 //
 // On Darwin a darwin-rebuild switch tears down and re-bootstraps the sops-nix
 // launchd agent, which re-decrypts the GitHub token asynchronously. A shell
 // that sources hm-session-vars.sh during that window freezes GITHUB_TOKEN=""
-// (empty, not unset) into the sticky tmux server env. credentialEnvVars now
+// (empty, not unset) into the sticky tmux server env. credentialEnvVars
 // reads the sops secret file directly (cfg.GitHubTokenPath) as a last-resort
 // fallback so agents get a working token regardless of the inherited env state.
 //
@@ -15,7 +15,7 @@ package container_test
 //
 // These are pure unit tests: they set env vars with t.Setenv, point the config
 // at a temp file with t.TempDir(), and assert the returned env slice. No
-// sidecar harness is constructed (per AGENTS.md #1608, the sidecar isolation
+// sidecar harness is constructed (per AGENTS.md, the sidecar isolation
 // helper is only needed for tests that build a sidecar.Sidecar).
 
 import (
@@ -37,7 +37,7 @@ func clearTokenEnv(t *testing.T) {
 		// GITLAB_TOKEN is cleared for the same reason as GITHUB_TOKEN: the
 		// developer running the suite has a real one in their environment,
 		// and an ambient value would make the "no source configured" cases
-		// pass or fail for the wrong reason (issue #2668).
+		// pass or fail for the wrong reason.
 		"GITLAB_TOKEN",
 		"PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER",
 		"PRISM_GITHUB_TOKEN_PRISMATIC_KOI_COORDINATOR",
@@ -82,7 +82,7 @@ func writeTokenFile(t *testing.T, contents string) string {
 	return path
 }
 
-// TestCredentialEnvVars_FileFallback_EmptyEnv covers the primary #2029 case:
+// TestCredentialEnvVars_FileFallback_EmptyEnv covers the primary case:
 // GITHUB_TOKEN is empty in the process env but the sops secret file exists and
 // is non-empty, so the file contents (trimmed) are injected.
 func TestCredentialEnvVars_FileFallback_EmptyEnv(t *testing.T) {
@@ -198,8 +198,8 @@ func TestCredentialEnvVars_EmptyFile_NoInjection(t *testing.T) {
 }
 
 // TestCredentialEnvVars_NoPath_NoInjection asserts that when no path is
-// configured and the env is empty, no GITHUB_TOKEN= is produced (matches the
-// pre-#2029 behaviour for non-Darwin / unconfigured hosts).
+// configured and the env is empty, no GITHUB_TOKEN= is produced (the
+// behaviour for non-Darwin / unconfigured hosts).
 func TestCredentialEnvVars_NoPath_NoInjection(t *testing.T) {
 	clearTokenEnv(t)
 

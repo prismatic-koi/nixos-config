@@ -16,18 +16,17 @@ import (
 // iso.Capabilities() call is cheaper and more readable than a long parade of
 // yes/no methods on the interface.
 //
-// Each flag is cited with the call sites that would collapse to a capability
-// query after the per-phase migrations in A.1's §7.
+// Each flag is cited with the call sites that branch on the literal isolation
+// mode value.
 type Capabilities struct {
-	// IsContainer is always false now that container isolation is removed
-	// (no current mode runs the agent in a separate container).
-	// Retained for call-site compatibility; callers checking IsContainer
-	// will consistently receive false.
+	// IsContainer is always false: no current mode runs the agent in a
+	// separate container. Kept for call-site compatibility; callers checking
+	// IsContainer consistently receive false.
 	IsContainer bool
 
-	// OwnsContainerLifecycle is always false now that container isolation is
-	// removed. Retained for call-site compatibility; the sidecar's container
-	// startup branch will never fire.
+	// OwnsContainerLifecycle is always false: no current mode owns a container
+	// lifecycle. Kept for call-site compatibility; the sidecar's container
+	// startup branch never fires.
 	OwnsContainerLifecycle bool
 
 	// RequiresProfilesFile means profiles.json must load successfully before
@@ -35,14 +34,13 @@ type Capabilities struct {
 	// provider, and thinking level that reach pi over argv. True for bwrap
 	// and sandbox-exec; false for host.
 	//
-	// Two distinct uses, both pre-dating the #2854 rename:
+	// Two distinct uses:
 	//   1. "is a profiles.json load failure fatal" — cmd/pr.go, cmd/review.go,
 	//      cmd/spawn.go, cmd/switch.go (the load-and-gate blocks).
 	//   2. "is this mode sandboxed" — cmd/switch.go AgentEnvVars injection,
 	//      which is gated on !RequiresProfilesFile because host mode is the
 	//      only mode that injects agent env vars into the pane command.
-	// Use (2) reads awkwardly against the name. The conflation is older than
-	// the rename and is not resolved here.
+	// Use (2) reads awkwardly against the name.
 	// Cites: cmd/pr.go:232, cmd/review.go:439, cmd/spawn.go:647,
 	//        cmd/switch.go:61, :310, :354, :385.
 	RequiresProfilesFile bool
@@ -68,14 +66,13 @@ type Capabilities struct {
 	NeedsStartupConnectTimeout bool
 
 	// NeedsReadinessWait means the agent-pane command should be prefixed by
-	// the readiness-wait shell command. Always false now that container
-	// isolation is removed. Retained for call-site compatibility.
+	// the readiness-wait shell command. Always false: no current mode needs
+	// it. Kept for call-site compatibility.
 	NeedsReadinessWait bool
 
 	// EmitsTmuxStatusColumns means the tmux event hooks should seed
 	// isolation-specific status columns for sessions in this mode. Always
-	// false now that container isolation is removed.
-	// Retained for call-site compatibility.
+	// false: no current mode emits them. Kept for call-site compatibility.
 	EmitsTmuxStatusColumns bool
 }
 
@@ -128,7 +125,7 @@ type Isolator interface {
 	// so startup failures are visible without racing the cleanup path.
 	DumpLogs()
 
-	// ----- A1.D1-D7 dispatch methods -----------------------------------------
+	// ----- dispatch methods ---------------------------------------------------
 	//
 	// Implementations live in dispatch.go. Each method's body is mechanically
 	// equivalent to the per-mode switch/if branch it replaces — see the
@@ -142,8 +139,8 @@ type Isolator interface {
 	Available() error
 
 	// Cap returns the soft concurrency-cap descriptor for this isolator.
-	// It is the unified replacement for the old per-mode concurrency-cap
-	// helpers that used to live in cmd/concurrency.go.
+	// It is the unified replacement for the per-mode concurrency-cap
+	// helpers in cmd/concurrency.go.
 	//
 	// dbPath is the path to prism.db; the implementation uses it to count
 	// active sessions of this isolation mode, or may ignore it entirely
@@ -154,13 +151,12 @@ type Isolator interface {
 	// any per-mode probe-failure context. The caller uses CapStatus.Check(...)
 	// to apply the --ignore-concurrency-cap policy.
 	//
-	// Reads Status.IsolationMode directly (NOT Status.EffectiveIsolationMode())
-	// for forward-compatibility with A4.PE's removal.
+	// Reads Status.IsolationMode directly, NOT Status.EffectiveIsolationMode().
 	//
 	// Implementations must NOT have side effects: Cap is called speculatively
 	// before any worktree, DB row, or tmux session is created.
 	//
-	// Cites: cmd/concurrency.go (per-mode helpers, since unified).
+	// Cites: cmd/concurrency.go (per-mode helpers).
 	Cap(ctx context.Context, dbPath string) CapStatus
 
 	// AgentPaneCmd returns the shell command string emitted into the tmux
@@ -174,7 +170,7 @@ type Isolator interface {
 	// the operator is currently running. A bare "prism" would be PATH-
 	// resolved at exec time and could silently land on an earlier-in-PATH
 	// shadow (e.g. /usr/local/bin/prism), running the wrong code in the
-	// agent-run pane with no signal to the operator (issue #2260).
+	// agent-run pane with no signal to the operator.
 	//
 	// Returns a non-nil error when the implementation cannot resolve its
 	// own binary path. Callers must propagate the error rather than fall
@@ -197,9 +193,8 @@ type Isolator interface {
 	// directory under test. sessionName is the prism session name (used
 	// to derive the agent-run log path on bwrap / sandbox-exec).
 	//
-	// Stopgap pending #1142 (B6.IF — ArchiveAdapter interface): once that
-	// lands, the archive-side dispatch moves to ArchiveAdapter and this
-	// method may be removed.
+	// Stopgap: once an ArchiveAdapter interface lands, the archive-side
+	// dispatch moves there and this method may be removed.
 	// Cites: internal/archive/archive.go:260-275 (resolveStorageRoot switch).
 	ArchivePaths(home, sessionName string) ArchivePaths
 
@@ -208,10 +203,9 @@ type Isolator interface {
 	// log-path resolution. The method exists so future call sites can
 	// route through registry.For(mode).LogPaths() without re-touching the
 	// interface.
-	// Cites: A1 §3 (LogPaths future shape).
 	LogPaths() LogPaths
 
-	// ----- A1.L1-L6 lifecycle methods ----------------------------------------
+	// ----- lifecycle methods --------------------------------------------------
 	//
 	// Implementations live in lifecycle_dispatch.go. Each method's body is
 	// mechanically equivalent to the per-mode branch it replaces — see the
@@ -233,7 +227,7 @@ type Isolator interface {
 	// WriteGitconfig generates a minimal .gitconfig for this isolator's
 	// sandbox layout. bwrap writes it to the per-session temp path with the
 	// host user's $HOME prefix; sandbox-exec writes it into the per-session
-	// work dir (writeGitconfigToDir — issue #2213) with stable host key
+	// work dir (writeGitconfigToDir) with stable host key
 	// paths. Returns nil on success or a wrapped error.
 	// host: no-op (the agent reads the host gitconfig directly).
 	// Cites: internal/container/container.go:451 (writeGitconfig with mode);

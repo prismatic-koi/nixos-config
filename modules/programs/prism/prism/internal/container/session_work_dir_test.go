@@ -1,9 +1,8 @@
 package container
 
-// session_work_dir_test.go — unit tests for the per-session work dir
-// (issue #2213, Step 2 of #2132): path layout, generated-config content,
-// stable sops symlink-path embedding (the #1410/#1573 rotation property),
-// env-var wiring, and SBPL profile rules.
+// session_work_dir_test.go — unit tests for the per-session work dir:
+// path layout, generated-config content, stable sops symlink-path embedding
+// (the rotation property), env-var wiring, and SBPL profile rules.
 //
 // Darwin-only integration coverage (real /usr/bin/sandbox-exec, positive +
 // profile-mutation negative pairs) lives in
@@ -20,14 +19,13 @@ import (
 
 // TestSessionWorkDirPath_Layout verifies the work dir path shape
 // (~/.local/state/prism/sessions/<instance_id>/ — no home/ suffix, no
-// symlinks) and the invariant that the sandbox-exec staging HOME is nested
-// directly under it at <sessionDir>/home.
+// symlinks).
 func TestSessionWorkDirPath_Layout(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	// Clear XDG_STATE_HOME so the path falls through to the HOME-derived
-	// branch this test pins. SessionWorkDirPath honours XDG_STATE_HOME first
-	// (#2263); a developer env that exports it would otherwise shift the
+	// branch this test pins. SessionWorkDirPath honours XDG_STATE_HOME first;
+	// a developer env that exports it would otherwise shift the
 	// expected path off the fake home and break this assertion.
 	t.Setenv("XDG_STATE_HOME", "")
 
@@ -75,13 +73,14 @@ func TestSessionWorkDirPath_EmptyInstanceIDFallsBackToName(t *testing.T) {
 	}
 }
 
-// TestSessionWorkDirPath_XDGStateHomeHonoured pins the XDG_STATE_HOME branch
-// added for issue #2263: when XDG_STATE_HOME is set, the work dir is rooted
+// TestSessionWorkDirPath_XDGStateHomeHonoured pins the XDG_STATE_HOME branch:
+// when XDG_STATE_HOME is set, the work dir is rooted
 // at it (not at $HOME/.local/state). This is the load-bearing behaviour for
 // the homeless-shelter nix-build sandbox, where $HOME=/homeless-shelter is
 // read-only and any HOME-derived path fails on os.MkdirAll; the test
 // helpers in internal/integration/ set XDG_STATE_HOME to a t.TempDir() so
-// the work dir lives in a writable location.
+// the work dir lives in a writable location. See AGENTS.md for the
+// homeless-shelter background.
 func TestSessionWorkDirPath_XDGStateHomeHonoured(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
@@ -108,7 +107,7 @@ func TestSessionWorkDirPath_XDGStateHomeHonoured(t *testing.T) {
 // fallback half of the same branch: when XDG_STATE_HOME is empty/unset, the
 // path falls back to $HOME/.local/state. This is the production code path
 // on a normal `nh switch` Darwin host where the user shell does not export
-// XDG_STATE_HOME (issue #2263).
+// XDG_STATE_HOME.
 func TestSessionWorkDirPath_HomeFallbackWhenXDGStateHomeUnset(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "")
 	homeDir := t.TempDir()
@@ -145,8 +144,8 @@ func TestSessionWorkDirPath_EmptyInstanceIDErrors(t *testing.T) {
 // TestPrepareSessionWorkDir_WritesConfigsWithStablePaths is the core content
 // assertion for the AC: the generated gitconfig, ssh-config, and
 // allowed_signers live under ~/.local/state/prism/sessions/<id>/ and contain
-// no occurrence of the staging-HOME path or any secrets.d/<N> path — only
-// stable ~/.ssh/<keyname> paths and work-dir paths.
+// no occurrence of the legacy <sessionDir>/home path or any secrets.d/<N>
+// path — only stable ~/.ssh/<keyname> paths and work-dir paths.
 func TestPrepareSessionWorkDir_WritesConfigsWithStablePaths(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
@@ -161,7 +160,7 @@ func TestPrepareSessionWorkDir_WritesConfigsWithStablePaths(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(sessionDir) })
 
-	// The legacy staging-HOME path (deleted in Step 5 of #2132) — generated
+	// The legacy <sessionDir>/home path — generated
 	// configs must never reference anything under it.
 	legacyStagingHome := filepath.Join(sessionDir, "home")
 
@@ -268,8 +267,8 @@ func TestPrepareSessionWorkDir_CustomKeyNamesHonoured(t *testing.T) {
 	}
 }
 
-// TestPrepareSessionWorkDir_SurvivesSopsRotation pins the #1410/#1573
-// two-hop property at the unit level: the embedded paths must point at the
+// TestPrepareSessionWorkDir_SurvivesSopsRotation pins the
+// two-hop rotation property at the unit level: the embedded paths must point at the
 // stable ~/.ssh/<keyname> symlink, so that after a simulated
 // secrets.d/<N> → secrets.d/<N+1> rotation the embedded path still resolves
 // to live content. (The Darwin integration suite proves the in-sandbox read
@@ -395,10 +394,9 @@ func TestPrepareSessionWorkDir_Idempotent(t *testing.T) {
 }
 
 // TestRemoveSessionWorkDir verifies removal of the work dir tree, including
-// any legacy staging-HOME remnant nested under it (pre-Step-5-of-#2132
-// sessions) and (on Darwin) the chromium Library skeleton with any
-// per-session chromium state inside it — the edge-case AC for issue #2247:
-// session cleanup keeps chromium prefs/state ephemeral.
+// any legacy <sessionDir>/home remnant nested under it and (on Darwin) the
+// chromium Library skeleton with any per-session chromium state inside it —
+// the edge case: session cleanup keeps chromium prefs/state ephemeral.
 func TestRemoveSessionWorkDir(t *testing.T) {
 	newFakeHome(t)
 
@@ -412,7 +410,7 @@ func TestRemoveSessionWorkDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareSessionWorkDir: %v", err)
 	}
-	// Simulate a legacy staging-HOME remnant from a pre-Step-5 session —
+	// Simulate a legacy <sessionDir>/home remnant —
 	// nothing creates this dir any more, but cleanup of old sessions must
 	// still sweep it.
 	legacyStagingHome := filepath.Join(sessionDir, "home")
@@ -453,8 +451,8 @@ func TestRemoveSessionWorkDir(t *testing.T) {
 	RemoveSessionWorkDir(instanceID)
 }
 
-// TestSessionWorkDirChromiumDirs pins the skeleton path shape (issue #2247,
-// Step 4 of #2132): exactly the two Google dirs CF-derived chromium writes
+// TestSessionWorkDirChromiumDirs pins the skeleton path shape:
+// exactly the two Google dirs CF-derived chromium writes
 // under, both inside the session work dir.
 func TestSessionWorkDirChromiumDirs(t *testing.T) {
 	const dir = "/Users/u/.local/state/prism/sessions/abc"
@@ -475,7 +473,7 @@ func TestSessionWorkDirChromiumDirs(t *testing.T) {
 }
 
 // TestPrepareSessionWorkDir_ChromiumLibrarySkeleton is the work-dir half of
-// the issue #2247 AC: after session prep, the two Google skeleton dirs
+// the chromium-skeleton AC: after session prep, the two Google skeleton dirs
 // exist inside the session work dir as real directories (never symlinks —
 // a symlink to the host ~/Library/Application Support/Google/ would leak
 // the daily-driver Chrome profile), and a second prep call preserves any
@@ -540,7 +538,7 @@ func TestPrepareSessionWorkDir_ChromiumLibrarySkeleton(t *testing.T) {
 }
 
 // TestGenerateProfile_NoHostLibraryRulesForChromium is the profile
-// diff-level AC for issue #2247: Step 4 adds NO new SBPL rules. The
+// diff-level AC: the chromium skeleton adds NO new SBPL rules. The
 // chromium skeleton rides the existing (subpath <sessionDir>) RW allow, so
 // the profile must contain no rule referencing the user's real ~/Library
 // (in particular not ~/Library/Application Support/Google — the
@@ -569,12 +567,11 @@ func TestGenerateProfile_NoHostLibraryRulesForChromium(t *testing.T) {
 	// ~/Library/Application Support/Google, the daily-driver Chrome profile
 	// — still fails this test.
 	//
-	// The exceptions, each a leaf and each traceable to its issue:
+	// The exceptions, each a leaf and each a deliberate grant:
 	//
-	//   - ~/Library/Keychains/login.keychain-db — single-file grant restored
-	//     in issue #2293 (the keyring-crate / pup Keychain-access path; §5i
-	//     of generateProfile).
-	//   - ~/Library/Caches/go-build — GOCACHE, granted in issue #2621 (§5k)
+	//   - ~/Library/Keychains/login.keychain-db — single-file grant for the
+	//     keyring-crate / pup Keychain-access path (§5i of generateProfile).
+	//   - ~/Library/Caches/go-build — GOCACHE, granted in §5k
 	//     so the AGENTS.md `go build ./...` / `go test ./...` quality gate
 	//     runs in a Darwin worker. The grant is on the go-build LEAF, never
 	//     on ~/Library/Caches; the scan below is what pins that.
@@ -645,7 +642,7 @@ func TestSessionWorkDirGitEnv(t *testing.T) {
 }
 
 // TestSessionWorkDirKubeEnv verifies the kubectl cache redirect the
-// dispatcher injects (issue #2235, Step 3b of #2132): the sandbox env
+// dispatcher injects: the sandbox env
 // carries KUBECACHEDIR=<sessionDir>/kube-cache so kubectl's discovery/http
 // cache lands inside the session work dir (already RW-granted in the SBPL
 // profile) instead of the host's ~/.kube/cache.
@@ -688,7 +685,7 @@ func TestGenerateProfile_SessionWorkDirAndKnownHostsRules(t *testing.T) {
 
 	profile := generateProfile(m)
 
-	// RW subpath for the session work dir (covers the nested staging HOME).
+	// RW subpath for the session work dir.
 	if want := "(subpath " + quoteSBPL(sessionDir) + ")"; !strings.Contains(profile, want) {
 		t.Errorf("profile missing the session work dir rule %q; full profile:\n%s", want, profile)
 	}
@@ -719,7 +716,7 @@ func TestGenerateProfile_SessionWorkDirAndKnownHostsRules(t *testing.T) {
 
 // TestSandboxExecWriteGitconfig_IsolatorWritesWorkDirGitconfig verifies that
 // the Isolator-interface WriteGitconfig for sandbox-exec produces the
-// work-dir gitconfig (post-#2213 there is no staging-HOME gitconfig).
+// work-dir gitconfig.
 func TestSandboxExecWriteGitconfig_IsolatorWritesWorkDirGitconfig(t *testing.T) {
 	newFakeHome(t)
 
