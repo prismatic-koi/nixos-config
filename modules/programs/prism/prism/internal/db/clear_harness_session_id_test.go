@@ -1,6 +1,6 @@
 package db_test
 
-// Tests for ClearHarnessSessionID (issue #2035).
+// Tests for ClearHarnessSessionID.
 //
 // ClearHarnessSessionID nulls agent_status.harness_session_id for a specific
 // session AND for any ~review-N-* child sessions, mirroring SetEnded's

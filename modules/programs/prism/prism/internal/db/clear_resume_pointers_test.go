@@ -1,6 +1,6 @@
 package db_test
 
-// Tests for ClearAllResumePointers (issue #1947).
+// Tests for ClearAllResumePointers.
 //
 // ClearAllResumePointers wipes agent_status.harness_session_id on every row
 // so that the next `prism switch` into a previously-active project does not
@@ -108,7 +108,7 @@ func TestClearAllResumePointers_AllNullTable(t *testing.T) {
 }
 
 // TestMarkAllEnded_DoesNotClearHarnessSessionID is a contract test for the
-// MarkAllEnded ↔ ClearAllResumePointers separation (issue #1947). MarkAllEnded
+// MarkAllEnded ↔ ClearAllResumePointers separation. MarkAllEnded
 // must keep its narrow responsibility (end every row); it must NOT mutate
 // harness_session_id — that is ClearAllResumePointers' job. If a future
 // refactor folds the two together, that is a deliberate design decision and

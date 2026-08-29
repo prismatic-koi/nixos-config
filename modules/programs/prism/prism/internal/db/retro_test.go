@@ -1,7 +1,7 @@
 package db_test
 
 // Tests for AssembleRetro — the single data-assembly behind `prism retro`
-// (issue #2583). These cover train grouping (worker + review children,
+// These cover train grouping (worker + review children,
 // coordinator + investigators, solo investigators, A/B legs), window totals
 // with the cache-read share, waste signals (available/zero/unavailable), and
 // the live-session and empty-window edge cases.

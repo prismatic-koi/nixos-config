@@ -1,7 +1,7 @@
 package db_test
 
-// Tests for the v34→v35 migration that adds spawn_inputs.isolation_mode
-// (issue #2105). The new column carries the resolved effective isolation
+// Tests for the v34→v35 migration that adds spawn_inputs.isolation_mode.
+// The new column carries the resolved effective isolation
 // mode the session ran under — distinct from isolation_flag (the raw
 // --isolation CLI value, NULL when omitted).
 
@@ -145,7 +145,7 @@ func seedV34DB(t *testing.T, dbPath string, withIsoMode bool) {
 }
 
 // TestMigration_V34ToV35_BodyRuns_AddsIsolationMode exercises the
-// body-runs branch of the v34→v35 migration (issue #2105): a v34 DB
+// body-runs branch of the v34→v35 migration: a v34 DB
 // without the spawn_inputs.isolation_mode column. The pragma_table_info
 // guard returns 0 and the ALTER TABLE ADD COLUMN executes.
 func TestMigration_V34ToV35_BodyRuns_AddsIsolationMode(t *testing.T) {

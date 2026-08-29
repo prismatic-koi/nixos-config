@@ -1444,7 +1444,7 @@ func TestUpsertStatusWithRootAgent(t *testing.T) {
 
 // TestUpdateModelIDs verifies that UpdateModelIDs sets BOTH model_id and
 // root_model_id, overwrites an existing value, and is a no-op (no error) when
-// no row exists for the session (issue #2727).
+// no row exists for the session.
 func TestUpdateModelIDs(t *testing.T) {
 	d := openTestDB(t)
 
@@ -1525,7 +1525,7 @@ func TestUpsertStatusWithRootAgent_SidecarWins(t *testing.T) {
 }
 
 // TestQueryEventsByMessageIDs verifies the secondary query fetches events
-// keyed by either the post-#1787 `parentMessageId` field
+// keyed by either the `parentMessageId` field
 // (tool_call/tool_result) or the legacy `messageId` field
 // (permission_*, thinking), filtered by type.
 func TestQueryEventsByMessageIDs(t *testing.T) {
@@ -1533,7 +1533,7 @@ func TestQueryEventsByMessageIDs(t *testing.T) {
 
 	base := time.Now().Truncate(time.Second)
 
-	// writeE writes a tool_call / tool_result with the post-#1787 wire
+	// writeE writes a tool_call / tool_result with the wire
 	// shape: parentMessageId is the assistant-turn join key, id is the
 	// per-tool-call id (same value used for both here for simplicity).
 	writeE := func(id, typ, msgID string, offset time.Duration) {
@@ -1600,7 +1600,7 @@ func TestQueryEventsByMessageIDs(t *testing.T) {
 // secondary-query pushdown still matches event types that carry the
 // parent-link on the legacy `messageId` field (permission_ask,
 // permission_denied, thinking) — the COALESCE(`$.parentMessageId`,
-// `$.messageId`) clause is the join contract for #1787.
+// `$.messageId`) clause is the join contract.
 func TestQueryEventsByMessageIDs_LegacyMessageIdField(t *testing.T) {
 	d := openTestDB(t)
 
@@ -1714,7 +1714,7 @@ func TestAllocatePort_Exhaustion(t *testing.T) {
 
 	// Fill the entire range by creating a session for every port in the range.
 	// Seed all rows in one transaction so the fill pays a single commit (one
-	// fsync) instead of ~2000 (#2611). AllocatePort's exhaustion check only
+	// fsync) instead of ~2000. AllocatePort's exhaustion check only
 	// reads harness_port for non-ended sessions
 	// (WHERE ended_at IS NULL AND harness_port IS NOT NULL), so a direct INSERT
 	// with ended_at NULL and harness_port set is equivalent to the per-row
@@ -2586,7 +2586,7 @@ func TestCheckTransition_InvalidTransition(t *testing.T) {
 	// though the test comment historically called it one). Errorf is always
 	// on at the default level, so no level override is needed here — but
 	// the test does rely on proglog resolving os.Stderr at emit time, which
-	// is the contract written into writerFor(). See #1818.
+	// is the contract written into writerFor().
 
 	// "error → active" is valid per ValidTransitions; use only pairs that are
 	// genuinely invalid (not present in ValidTransitions).
@@ -2990,7 +2990,7 @@ func TestGroupCompleted_AllTerminal(t *testing.T) {
 	}
 }
 
-// TestGroupCompleted_InterruptedNotTerminal verifies the #1495 contract:
+// TestGroupCompleted_InterruptedNotTerminal verifies the contract:
 // an agent in "interrupted" state must NOT count as terminal for
 // GroupCompleted. The user can redirect an interrupted agent via
 // `prism prompt`, after which it will progress toward "finished" or "error".
@@ -3095,7 +3095,7 @@ func TestGroupCompleted_DeletedIsTerminal(t *testing.T) {
 	}
 }
 
-// TestGroupCompleted_EndedAtIsTerminal verifies the #1495 escape-hatch flow:
+// TestGroupCompleted_EndedAtIsTerminal verifies the escape-hatch flow:
 // `prism cleanup` sets ended_at without rewriting state, and the row's state
 // remains "interrupted" (not in terminalStates). GroupCompleted must still
 // treat such a row as terminal because ended_at IS NOT NULL signals the
@@ -3144,7 +3144,7 @@ func TestGroupCompleted_EndedAtIsTerminal(t *testing.T) {
 	}
 }
 
-// TestGroupCompleted_DeliveredAtIsTerminal verifies the #2259 contract:
+// TestGroupCompleted_DeliveredAtIsTerminal verifies the contract:
 // once session_groups.delivered_at is non-NULL, GroupCompleted returns
 // done=true regardless of any subsequent agent_status mutation. This is
 // what closes the wedge-at-idle failure class where a per-process sidecar
@@ -3162,7 +3162,7 @@ func TestGroupCompleted_DeliveredAtIsTerminal(t *testing.T) {
 	}
 
 	// Seed 5 members in non-terminal states (idle + active mix) and
-	// ended_at IS NULL — i.e. the configuration that, pre-#2259, would
+	// ended_at IS NULL — i.e. the configuration that would
 	// have returned done=false from GroupCompleted indefinitely.
 	members := []struct {
 		name  string
@@ -3250,7 +3250,7 @@ func TestSetGroupDeliveredAt_IdempotentFirstWins(t *testing.T) {
 	}
 }
 
-// TestSetGroupDeliveredAt_NoBackfillRequired verifies the #2259 edge-case
+// TestSetGroupDeliveredAt_NoBackfillRequired verifies the edge-case
 // AC: pre-migration session_groups rows (delivered_at NULL) continue to
 // be classified by the existing agent_status-based predicate. A group
 // with all-terminal members AND delivered_at NULL must still report
@@ -3275,7 +3275,7 @@ func TestSetGroupDeliveredAt_NoBackfillRequired(t *testing.T) {
 		}
 	}
 
-	// delivered_at intentionally NOT written: simulates a pre-#2259 group.
+	// delivered_at intentionally NOT written: simulates a group with no delivered_at.
 	done, err := d.GroupCompleted(groupID)
 	if err != nil {
 		t.Fatalf("GroupCompleted: %v", err)
@@ -3286,7 +3286,7 @@ func TestSetGroupDeliveredAt_NoBackfillRequired(t *testing.T) {
 }
 
 // TestSetGroupDeliveredAt_ActiveMembersStillInProgress verifies the
-// #2259 edge-case AC: a group whose members are still actively running
+// edge-case AC: a group whose members are still actively running
 // (no terminal states, no delivery) reads as in-progress from
 // GroupCompleted. This guards the negative direction of the short-circuit.
 func TestSetGroupDeliveredAt_ActiveMembersStillInProgress(t *testing.T) {
@@ -3319,7 +3319,7 @@ func TestSetGroupDeliveredAt_ActiveMembersStillInProgress(t *testing.T) {
 
 // TestGroupResults_ExcludesEndedRows verifies that GroupResults skips rows
 // whose ended_at is non-NULL. This is what makes the escape-hatch flow
-// route through buildMonitorResults's missing-session branch (#1495).
+// route through buildMonitorResults's missing-session branch.
 func TestGroupResults_ExcludesEndedRows(t *testing.T) {
 	d := openTestDB(t)
 
@@ -3486,7 +3486,7 @@ func TestGroupResults(t *testing.T) {
 
 // TestGroupResults_StartupError verifies that GroupResults populates StartupError
 // from the startup_error event written by writeStartupError when a container
-// fails to start (#1222).
+// fails to start.
 func TestGroupResults_StartupError(t *testing.T) {
 	d := openTestDB(t)
 
@@ -3541,7 +3541,7 @@ func TestGroupResults_StartupError(t *testing.T) {
 
 // TestGroupResults_StallError verifies that GroupResults populates StallError
 // from the stall_error event written by the sidecar's inactivity watchdog
-// when it fires after one or more inbound frames were received (#2239), and
+// when it fires after one or more inbound frames were received, and
 // that StartupError stays empty for such a member.
 func TestGroupResults_StallError(t *testing.T) {
 	d := openTestDB(t)
@@ -4538,11 +4538,9 @@ func TestUpsertStatusSeedRootAgentName_WorktreeUpdatedOnConflict(t *testing.T) {
 // TestActiveStatusForRepoWorktree_MatchesProductionShape verifies that
 // ActiveStatusForRepoWorktree finds a row seeded via the production write
 // path (UpsertStatusSeedRootAgentName with a full worktree filesystem path
-// in the `worktree` column). The primitive was renamed from
-// ActiveStatusForRepoBranch in #2352 after review-context flagged that
-// callers were passing the branch name where a full path was required —
-// silently mismatching every real row and letting the `--reuse` dedupe fall
-// through to a duplicate-tmux-session failure.
+// in the `worktree` column). The primitive takes a full worktree path, not a
+// branch name: passing a branch name silently mismatches every real row and
+// lets the `--reuse` dedupe fall through to a duplicate-tmux-session failure.
 func TestActiveStatusForRepoWorktree_MatchesProductionShape(t *testing.T) {
 	d := openTestDB(t)
 
@@ -4577,7 +4575,7 @@ func TestActiveStatusForRepoWorktree_MatchesProductionShape(t *testing.T) {
 }
 
 // TestActiveStatusForRepoWorktree_BranchNameArgReturnsNil is the regression
-// guard for the pre-#2352 bug: passing the branch name (e.g. "main") where a
+// guard: passing the branch name (e.g. "main") where a
 // full worktree path is expected must NOT match a row whose `worktree` column
 // holds the full path. Without this negative assertion the caller could
 // silently regress the primitive to its old broken signature.
@@ -4665,7 +4663,7 @@ func TestUpsertStatusWithRootAgent_WorktreeUpdatedOnConflict(t *testing.T) {
 	}
 }
 
-// ── Migration v12→v13: malformed session name cleanup (#826) ──────────────────
+// ── Migration v12→v13: malformed session name cleanup ──────────────────
 
 // seedV12DB creates a raw SQLite database at dbPath at schema_version=12 with
 // the full current schema (including isolation_mode and group_id columns).
@@ -4744,7 +4742,7 @@ func seedV12DB(t *testing.T, dbPath string, rows []struct {
 // ~review patterns AND whose last_seen is NULL (0), zero, or old.
 //
 // Also verifies that the current valid shape <parent>~review-<N>-review-<role>
-// is NOT matched (AC edge-case check from issue #826).
+// is NOT matched (AC edge-case check).
 func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "v12_malformed.db")
 
@@ -4765,7 +4763,7 @@ func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
 		{"nixos-config@fix-tmux~review-3~review", 0, noEnded, true},
 		// Variant with number in both positions
 		{"nixos-config@fix-tmux~review-4~review~review-1~review", 0, noEnded, true},
-		// Bare review suffix with no role (listed first in issue #826 example output):
+		// Bare review suffix with no role (listed first in the example output):
 		// matched by %~review-%-review
 		{"nixos-config@fix-tmux-keybinds~review-1-review", 0, noEnded, true},
 
@@ -4987,11 +4985,11 @@ func TestMigration_V12ToV13_Idempotent(t *testing.T) {
 	}
 }
 
-// ── WriteEvent last_seen tests (issue #824) ───────────────────────────────────
+// ── WriteEvent last_seen tests ───────────────────────────────────
 
 // TestWriteEvent_BumpsLastSeen verifies that WriteEvent updates
 // agent_status.last_seen for the owning session to the event's created_at
-// value (AC from #824).
+// value.
 func TestWriteEvent_BumpsLastSeen(t *testing.T) {
 	d := openTestDB(t)
 
@@ -5040,7 +5038,7 @@ func TestWriteEvent_BumpsLastSeen(t *testing.T) {
 
 // TestWriteEvent_LastSeen_MaxGuard verifies that writing an event with a
 // created_at OLDER than the current last_seen does NOT move last_seen backward
-// (MAX semantics from issue #824).
+// (MAX semantics).
 func TestWriteEvent_LastSeen_MaxGuard(t *testing.T) {
 	d := openTestDB(t)
 
@@ -5082,7 +5080,7 @@ func TestWriteEvent_LastSeen_MaxGuard(t *testing.T) {
 	}
 }
 
-// TestWriteEvent_UnknownSession_NoError verifies the edge-case AC from #824:
+// TestWriteEvent_UnknownSession_NoError verifies the edge-case AC:
 // writing an event for a session_name that has no agent_status row does not
 // produce an error — the event is still recorded.
 func TestWriteEvent_UnknownSession_NoError(t *testing.T) {
@@ -5116,7 +5114,7 @@ func TestWriteEvent_UnknownSession_NoError(t *testing.T) {
 }
 
 // TestUpsertStatus_SetsLastSeenOnInsert verifies that a newly created
-// agent_status row has a non-zero last_seen set to approximately now (#824 AC).
+// agent_status row has a non-zero last_seen set to approximately now.
 func TestUpsertStatus_SetsLastSeenOnInsert(t *testing.T) {
 	d := openTestDB(t)
 
@@ -5148,7 +5146,7 @@ func TestUpsertStatus_SetsLastSeenOnInsert(t *testing.T) {
 // TestMigration_V13ToV14_BackfillsLastSeen verifies the one-shot backfill
 // migration (v13→v14): agent_status rows with last_seen=0 are populated from
 // MAX(agent_events.created_at) for the owning session, while rows that already
-// have a real last_seen are left untouched (#824 AC).
+// have a real last_seen are left untouched.
 func TestMigration_V13ToV14_BackfillsLastSeen(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "v13_backfill.db")
 
@@ -5278,7 +5276,7 @@ func TestMigration_V13ToV14_BackfillsLastSeen(t *testing.T) {
 
 // TestMigration_V13ToV14_Idempotent verifies that running the v13→v14 backfill
 // a second time (by opening an already-migrated DB) does not overwrite
-// last_seen values that were set by the first migration pass (#824 AC:
+// last_seen values that were set by the first migration pass (an
 // idempotent backfill).
 func TestMigration_V13ToV14_Idempotent(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "v13_backfill_idempotent.db")
@@ -5370,7 +5368,7 @@ func TestMigration_V13ToV14_Idempotent(t *testing.T) {
 	}
 }
 
-// TestLastSeen_ActivityQuery verifies the functional AC from #824: a query
+// TestLastSeen_ActivityQuery verifies the functional AC: a query
 //
 //	SELECT session_name FROM agent_status WHERE last_seen >= unixepoch('now', '-1 day') * 1000
 //
@@ -5409,7 +5407,7 @@ func TestLastSeen_ActivityQuery(t *testing.T) {
 		t.Fatalf("WriteEvent recent: %v", err)
 	}
 
-	// Check that only 'repo@recent' qualifies for the last-24h query from #824.
+	// Check that only 'repo@recent' qualifies for the last-24h query.
 	// last_seen is stored in milliseconds; unixepoch() returns seconds.
 	var recentCount, oldCount int
 	if err := d.QueryRow(
@@ -5578,7 +5576,7 @@ func TestMigration_V14ToV15_RenamesColumn(t *testing.T) {
 }
 
 // TestMigration_V12ToV13_PostMigrationQueryReturnsZero verifies the AC
-// assertion from issue #826: after the migration, a query for rows that are
+// assertion: after the migration, a query for rows that are
 // active AND match the legacy malformed pattern returns zero results.
 //
 //	SELECT COUNT(*) FROM agent_status
@@ -5595,7 +5593,7 @@ func TestMigration_V12ToV13_PostMigrationQueryReturnsZero(t *testing.T) {
 		{"nixos-config@fix-tmux~review-1-review~review-1-review", 0, noEnded},
 		{"nixos-config@fix-tmux~review-1~review", 0, noEnded},
 		{"nixos-config@fix-tmux~review-3~review", 0, noEnded},
-		// Bare review suffix (no role) — first example in issue #826.
+		// Bare review suffix (no role).
 		{"nixos-config@fix-tmux-keybinds~review-1-review", 0, noEnded},
 		// A current valid shape — should NOT be counted by this query.
 		{"nixos-config@fix-tmux~review-2-review-code", 0, noEnded},
@@ -6149,7 +6147,7 @@ func TestWriteEvent_NullInstanceID(t *testing.T) {
 
 // TestWriteEvent_ForeignKeyViolation verifies that writing an agent_events row
 // with a non-NULL instance_id that does not exist in sessions fails with a
-// foreign-key error (AC from issue #996).
+// foreign-key error (AC).
 func TestWriteEvent_ForeignKeyViolation(t *testing.T) {
 	d := openTestDB(t)
 
@@ -6236,7 +6234,7 @@ func TestSessionsFK_OnDeleteSetNull(t *testing.T) {
 	}
 }
 
-// ── InsertSession zero-value guard (issue #1010) ──────────────────────────────
+// ── InsertSession zero-value guard ──────────────────────────────
 
 // TestInsertSession_ZeroStartedAt verifies that InsertSession with a zero
 // time.Time{} StartedAt writes a current unix-ms timestamp (not -62135596800000
@@ -6311,7 +6309,7 @@ func TestInsertSession_ExplicitStartedAt(t *testing.T) {
 	}
 }
 
-// ── Migration v17→v18 (issue #1010) ──────────────────────────────────────────
+// ── Migration v17→v18 ──────────────────────────────────────────
 
 // seedV17DB creates a raw SQLite database at dbPath seeded at schema_version=17.
 // It inserts two sessions rows with broken started_at (-62135596800000):
@@ -6511,7 +6509,7 @@ func TestMigration_V17ToV18_Idempotent(t *testing.T) {
 	}
 }
 
-// ── UpdateHarnessSessionID dual-write (#1126) ─────────────────────────────────
+// ── UpdateHarnessSessionID dual-write ─────────────────────────────────
 
 // TestUpdateHarnessSessionID_AlsoWritesSessions verifies that
 // UpdateHarnessSessionID writes the new SID to both agent_status and the
@@ -6589,7 +6587,7 @@ func TestUpdateHarnessSessionID_NoSessionsRow(t *testing.T) {
 	}
 }
 
-// ── HarnessSessionIDForInstance (#1126) ──────────────────────────────────────
+// ── HarnessSessionIDForInstance ──────────────────────────────────────
 
 // TestHarnessSessionIDForInstance_Found verifies that HarnessSessionIDForInstance
 // returns the harness_session_id from agent_status for a known instance_id.
@@ -6657,7 +6655,7 @@ func TestHarnessSessionIDForInstance_NullSID(t *testing.T) {
 	}
 }
 
-// ── Migration v20→v21 (backfill harness_session_id in sessions, #1126) ───────
+// ── Migration v20→v21 (backfill harness_session_id in sessions) ───────
 
 // seedV20DB creates a raw SQLite database seeded at schema_version=20.
 // It contains:
@@ -6881,7 +6879,7 @@ func TestMigration_V20ToV21_Idempotent(t *testing.T) {
 	}
 }
 
-// ── Migration v21→v22 (backfill started_at=0, #1127) ─────────────────────────
+// ── Migration v21→v22 (backfill started_at=0) ─────────────────────────
 
 // seedV21DB creates a raw SQLite database seeded at schema_version=21.
 // It contains:
@@ -7087,7 +7085,7 @@ func TestMigration_V21ToV22_Idempotent(t *testing.T) {
 	}
 }
 
-// ── Migration v22→v23 (backfill isolation_mode for pre-v10 NULL rows, #1129) ─
+// ── Migration v22→v23 (backfill isolation_mode for pre-v10 NULL rows) ─
 
 // seedV22DB creates a raw SQLite database seeded at schema_version=22.
 // It contains four agent_status rows:
@@ -7703,7 +7701,7 @@ func TestWriteSpawnOutcome_NoSession(t *testing.T) {
 }
 
 // TestComputeSpawnOutcome_MatchesWriteSpawnOutcome is the byte-for-byte
-// idempotence guard required by issue #2102. It verifies that the on-the-fly
+// idempotence guard. It verifies that the on-the-fly
 // aggregation surfaced to `prism stats compare` (ComputeSpawnOutcome) and the
 // persisted aggregation that `prism cleanup` writes (WriteSpawnOutcome +
 // SpawnOutcomeByInstanceID) produce identical values — every count, every
@@ -7794,7 +7792,7 @@ func TestComputeSpawnOutcome_MatchesWriteSpawnOutcome(t *testing.T) {
 // TestWriteSpawnOutcome_IdempotentOverwrite verifies that a second
 // WriteSpawnOutcome call after intervening events still produces a row that
 // matches a fresh ComputeSpawnOutcome — the incremental/cleanup overwrite
-// must not double-count or miss deltas (issue #2102 AC).
+// must not double-count or miss deltas.
 func TestWriteSpawnOutcome_IdempotentOverwrite(t *testing.T) {
 	d := openTestDB(t)
 
@@ -7859,7 +7857,7 @@ func TestWriteSpawnOutcome_IdempotentOverwrite(t *testing.T) {
 	}
 }
 
-// ── WriteSpawnOutcomeCascade (issue #2591) ───────────────────────────────────
+// ── WriteSpawnOutcomeCascade ───────────────────────────────────
 
 // seedSessionAndStatus creates both the agent_status row (via UpsertStatus +
 // SetInstanceID) and the sessions row (via InsertSession) for sessionName,
@@ -8237,24 +8235,23 @@ func TestActiveSessionsForMode_ReturnsList(t *testing.T) {
 	}
 }
 
-// TestActiveSessionCountForMode_SeedSetsMode_NullWindowClosed verifies the
-// fix for issue #1866: UpsertStatusSeedRootAgentName now accepts an
-// isolationMode argument and writes it atomically with the row insert. The
-// test simulates the race by doing what a concurrent spawn would do:
+// TestActiveSessionCountForMode_SeedSetsMode_NullWindowClosed verifies that
+// UpsertStatusSeedRootAgentName accepts an isolationMode argument and writes
+// it atomically with the row insert. The test simulates the race by doing what
+// a concurrent spawn would do:
 //
-//  1. Goroutine A calls UpsertStatusSeedRootAgentName with a mode — this is the
-//     fixed seed that no longer leaves isolation_mode NULL.
-//  2. Goroutine B calls ActiveSessionCountForMode during the window that used to
-//     be between the old seed and the subsequent SetIsolationMode call.
+//  1. Goroutine A calls UpsertStatusSeedRootAgentName with a mode — the seed
+//     sets isolation_mode, so it is never left NULL.
+//  2. Goroutine B calls ActiveSessionCountForMode in the window between the
+//     seed and a subsequent SetIsolationMode call.
 //  3. The count must include A's row because the seed already set the mode.
 //
-// Previously the seed did NOT write isolation_mode, so B would return 0.
-// After the fix, B returns 1.
+// If the seed did not write isolation_mode, B would return 0.
 func TestActiveSessionCountForMode_SeedSetsMode_NullWindowClosed(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
 
-	// Goroutine A: seed a bwrap session — with the fix, isolation_mode is set
+	// Goroutine A: seed a bwrap session — isolation_mode is set
 	// atomically by UpsertStatusSeedRootAgentName (no separate SetIsolationMode
 	// needed for the count to be correct).
 	if err := d.UpsertStatusSeedRootAgentName(
@@ -8264,7 +8261,7 @@ func TestActiveSessionCountForMode_SeedSetsMode_NullWindowClosed(t *testing.T) {
 	}
 
 	// Goroutine B: query the count in the window between seed and (hypothetical)
-	// SetIsolationMode. With the fix, isolation_mode is already set so the count
+	// SetIsolationMode. isolation_mode is already set so the count
 	// must be 1.
 	count, err := d.ActiveSessionCountForMode("bwrap")
 	if err != nil {
@@ -8288,7 +8285,7 @@ func TestActiveSessionCountForMode_SeedSetsMode_NullWindowClosed(t *testing.T) {
 }
 
 // TestActiveSessionCountForMode_ConcurrentSeedAndCount exercises the fix under
-// real goroutine concurrency (issue #1866 race detector check). Two goroutines
+// real goroutine concurrency (race detector check). Two goroutines
 // run in parallel: one seeds a row with isolation_mode set, the other queries
 // the count. The -race detector should find no data races.
 func TestActiveSessionCountForMode_ConcurrentSeedAndCount(t *testing.T) {
@@ -8406,7 +8403,7 @@ func TestAbtestPairsForSessions(t *testing.T) {
 
 // TestUpsertStatus_PreservesHarness verifies that UpsertStatus does not
 // overwrite an existing harness value when called on a row that already has
-// harness='pi' (issue #1290, Bug 1).
+// harness='pi'.
 func TestUpsertStatus_PreservesHarness(t *testing.T) {
 	d := openTestDB(t)
 
@@ -8441,7 +8438,7 @@ func TestUpsertStatus_PreservesHarness(t *testing.T) {
 
 // TestUpsertStatusWithRootAgent_FreshRowDefaultsPi verifies that a fresh
 // insert via UpsertStatusWithRootAgent writes harness='pi' when no row
-// exists (issue #1290, Bug 1 — INSERT path).
+// exists (INSERT path).
 func TestUpsertStatusWithRootAgent_FreshRowDefaultsPi(t *testing.T) {
 	d := openTestDB(t)
 
@@ -8470,7 +8467,7 @@ func TestUpsertStatusWithRootAgent_FreshRowDefaultsPi(t *testing.T) {
 // TestUpsertStatusSeedRootAgentName_OverridesStaleHarness verifies that calling
 // UpsertStatusSeedRootAgentName with an explicit non-empty harnessName overwrites
 // an existing harness value on the DB row. This is the ended-row case from
-// issue #1400: after prism reset, the ended row has harness='pi'; the
+// After prism reset, the ended row has harness='pi'; the
 // next prism switch (with active profile declaring harness='pi') must write
 // 'pi' into the row when it falls through to UpsertStatusSeedRootAgentName.
 func TestUpsertStatusSeedRootAgentName_OverridesStaleHarness(t *testing.T) {
@@ -8507,7 +8504,7 @@ func TestUpsertStatusSeedRootAgentName_OverridesStaleHarness(t *testing.T) {
 
 // TestUpsertStatusSeedRootAgentName_PreservesHarness verifies that calling
 // UpsertStatusSeedRootAgentName with an empty harnessName on a row that already
-// has harness='pi' does NOT overwrite it with the 'pi' default (issue #1297).
+// has harness='pi' does NOT overwrite it with the 'pi' default.
 func TestUpsertStatusSeedRootAgentName_PreservesHarness(t *testing.T) {
 	d := openTestDB(t)
 
@@ -8540,7 +8537,7 @@ func TestUpsertStatusSeedRootAgentName_PreservesHarness(t *testing.T) {
 }
 
 // TestQuerySessionEventsBeforeRowID covers the paged-history query for
-// rowid-paginated session-event reads (issue #1770 child 5). The query
+// rowid-paginated session-event reads. The query
 // must:
 //
 //   - return up to `limit` rows in ASC rowid order
@@ -8648,7 +8645,7 @@ func TestQuerySessionEventsBeforeRowID(t *testing.T) {
 	}
 }
 
-// ── Migration v10→v11 (drop legacy opencode_port / opencode_sid, #849) ───────
+// ── Migration v10→v11 (drop legacy opencode_port / opencode_sid) ───────
 
 // seedV10DB creates a raw SQLite database seeded at schema_version=10. This
 // is the agent_status shape with both the legacy opencode_* columns and the
@@ -8840,7 +8837,7 @@ func TestMigration_V10ToV11_Idempotent(t *testing.T) {
 	}
 }
 
-// ── Migration v11→v12 (unique active coordinator per repo, §6.1 #849) ────────
+// ── Migration v11→v12 (unique active coordinator per repo) ────────
 
 // seedV11DBWithDuplicateCoordinators creates a raw SQLite database seeded at
 // schema_version=11 with two ACTIVE coordinator rows for the same repo. The
@@ -9200,7 +9197,7 @@ func TestMigration_V16ToV17_Idempotent(t *testing.T) {
 	}
 }
 
-// ── Migration v18→v19 (introduce pending_merges table, #783) ─────────────────
+// ── Migration v18→v19 (introduce pending_merges table) ─────────────────
 
 // seedV18DB creates a raw SQLite database seeded at schema_version=18 WITHOUT
 // the pending_merges table. The v18→v19 migration is responsible for creating
@@ -9345,7 +9342,7 @@ func TestMigration_V18ToV19_Idempotent(t *testing.T) {
 	}
 }
 
-// ── Migration v19→v20 (add idx_pending_merges_status_session, #1039) ─────────
+// ── Migration v19→v20 (add idx_pending_merges_status_session) ─────────
 
 // seedV19DB creates a v19 DB with pending_merges but WITHOUT the
 // idx_pending_merges_status_session index. The v19→v20 migration adds it.
@@ -9671,7 +9668,7 @@ func TestMigration_V24ToV25_Idempotent(t *testing.T) {
 	}
 }
 
-// ── Migration v25→v26 (drop host_mode from agent_status, #1137) ──────────────
+// ── Migration v25→v26 (drop host_mode from agent_status) ──────────────
 
 // seedV25DB creates a v25 DB with agent_status still carrying the host_mode
 // column. The fixture includes the critical case for AC #4:
@@ -9928,7 +9925,7 @@ func TestMigration_V25ToV26_Idempotent(t *testing.T) {
 	}
 }
 
-// ── Migration v26→v27 (introduce harness_frames table, #1218) ────────────────
+// ── Migration v26→v27 (introduce harness_frames table) ────────────────
 
 // seedV26DB creates a v26 DB without harness_frames. The v26→v27 migration
 // creates it plus two indexes.
@@ -10585,7 +10582,7 @@ func TestMigration_V29ToV30_Idempotent(t *testing.T) {
 	}
 }
 
-// ── Migration v30→v31 (add session_groups.pr_number and round, #1709) ────────
+// ── Migration v30→v31 (add session_groups.pr_number and round) ────────
 
 // seedV30DB creates a v30 DB with session_groups missing pr_number/round.
 // The v30→v31 migration adds both columns via pragma_table_info guards.

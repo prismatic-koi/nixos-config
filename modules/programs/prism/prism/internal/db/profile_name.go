@@ -1,31 +1,28 @@
-// Active-profile resolution for the event-write path (issue #2768, parent
-// #2699).
+// Active-profile resolution for the event-write path.
 //
 // Why this exists
 // ---------------
 //
-// prism_spend_by_profile_usd_total{profile="default"} was 58% of live fleet
-// spend. "default" is not a tier; it is the fold the exporter applied when the
-// profile could not be resolved. The exporter used to read the profile through
-// a LEFT JOIN from agent_events to spawn_inputs. spawn_inputs records SPAWNS,
-// and a coordinator session is never spawned (nixos-config@main, home-ops@main,
-// obsidian start directly), so the join missed and every coordinator's spend
-// folded to "default". Coordinators are long-lived and high-volume, so they
-// dominated the bucket.
+// A coordinator session is never spawned (nixos-config@main, home-ops@main,
+// obsidian start directly). spawn_inputs records SPAWNS only, so a profile
+// read that joins agent_events to spawn_inputs misses every coordinator and
+// folds its spend to "default". Coordinators are long-lived and high-volume,
+// so they dominate that bucket. "default" is not a tier — it is the fold the
+// exporter applies when the profile cannot be resolved.
 //
-// There is nothing joinable to fix: the resolved profile of a never-spawned
-// session exists only at runtime. So this file records the resolved profile
+// The resolved profile of a never-spawned session exists only at runtime, so
+// there is nothing joinable to fix. This file records the resolved profile
 // NAME on every agent_events row AT WRITE TIME, exactly as account_name.go
-// records the account name (#2714). The exporter then reads the plain column
-// and drops the join (exporter/sql.go, CostEventsTailSQL).
+// records the account name. The exporter then reads the plain column and drops
+// the join (exporter/sql.go, CostEventsTailSQL).
 //
 // Write time, not scrape time
 // ---------------------------
 //
-// These counters accumulate across profile switches. Resolving the profile at
-// scrape time would retroactively attribute earlier spend to whichever profile
-// is active at the scrape. The profile must be pinned to the row the moment it
-// is written. This mirrors account_name.go's reasoning verbatim.
+// These counters accumulate across profile switches. A scrape-time resolution
+// attributes earlier spend to whichever profile is active at the scrape. The
+// profile must be pinned to the row the moment it is written. This mirrors
+// account_name.go's reasoning.
 //
 // Precedence
 // ----------
@@ -40,13 +37,12 @@
 // The db -> config import decision
 // --------------------------------
 //
-// The AC asked this to be resolved, not assumed. internal/config is a LEAF
-// package: `go list -deps ./internal/config` names no other internal package,
-// and internal/db does not appear in its transitive imports. So db importing
-// config creates NO cycle, and this file imports config directly to reuse the
-// exact profiles.json path (config.LoadProfiles) and state-file path
-// (config.ActiveProfilePath) that config.ResolveActiveProfile uses. No change
-// to internal/config was needed; if one ever were, the AC says escalate first.
+// internal/config is a LEAF package: `go list -deps ./internal/config` names
+// no other internal package, and internal/db does not appear in its transitive
+// imports. So db importing config creates NO cycle. This file imports config
+// directly to reuse the exact profiles.json path (config.LoadProfiles) and
+// state-file path (config.ActiveProfilePath) that config.ResolveActiveProfile
+// uses.
 //
 // mtime-cached, not stat-and-read per event
 // ------------------------------------------
@@ -71,7 +67,7 @@ import (
 // unknownProfile is the profile label recorded when no profile can be
 // resolved (no state file and no nix default), and the placeholder the
 // exporter folds a NULL profile_name to. It matches the "unknown" placeholder
-// #2766 established for the repo label and usage.UnknownAccount for accounts.
+// used for the repo label and usage.UnknownAccount for accounts.
 const unknownProfile = "unknown"
 
 // ProfileResolver resolves the active prism profile name and caches the

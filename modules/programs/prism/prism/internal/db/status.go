@@ -80,7 +80,7 @@ func (d *DB) UpsertStatus(sessionName, repo, worktree, state string, title *stri
 // using COALESCE (only overwriting when non-nil). root_agent_name and root_model_id
 // are NOT touched by this method — use UpsertStatusWithRootAgent for session creation.
 //
-// Title provenance (#2683): a non-nil title reaching this method came from
+// Title provenance: a non-nil title reaching this method came from
 // the harness (`properties.info.title` on pi's session.created /
 // session.updated), and pi emits that ONLY in response to an explicit user
 // rename — it has no auto-titling in any mode (see
@@ -204,9 +204,9 @@ func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state st
 	// isolationMode follows the same CASE pattern as harnessName: when the
 	// caller supplies a non-empty value it is written atomically; when empty
 	// the existing DB value is preserved (NULL on a fresh INSERT, existing mode
-	// on UPDATE). This eliminates the isolation_mode NULL window described in
-	// issue #1866: the row is born with the mode set and ActiveSessionCountForMode
-	// will never undercount a session that is still being set up.
+	// on UPDATE). This eliminates the isolation_mode NULL window: the row is
+	// born with the mode set and ActiveSessionCountForMode will never
+	// undercount a session that is still being set up.
 	var isolationModePtr *string
 	if isolationMode != "" {
 		isolationModePtr = &isolationMode
@@ -215,7 +215,7 @@ func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state st
 	// that don't know the mode leave it unset, which is acceptable for non-spawn
 	// paths like the tmux-session-start hook).
 	insertIsolationMode := isolationModePtr
-	// Title provenance (#2683): this is the SPAWN-TIME seeding path, so a
+	// Title provenance: this is the SPAWN-TIME seeding path, so a
 	// non-nil title here is deriveFallbackTitle's output over the spawn
 	// prompt — title_source='fallback'. That is the weakest provenance: the
 	// generator freely replaces it with a model summary, and a harness
@@ -255,7 +255,7 @@ ON CONFLICT(session_name) DO UPDATE SET
 // sidecar call. The TypeScript plugin (prism-hooks.ts) does not write
 // root_agent_name.
 //
-// Title provenance (#2683) is handled exactly as in UpsertStatusWithAgent: a
+// Title provenance is handled exactly as in UpsertStatusWithAgent: a
 // non-nil title is a harness-reported rename and is stamped
 // title_source='human'.
 func (d *DB) UpsertStatusWithRootAgent(sessionName, repo, worktree, state string, title *string, harnessSessionID *string, agentName *string, modelID *string) error {
@@ -285,7 +285,7 @@ ON CONFLICT(session_name) DO UPDATE SET
 }
 
 // SetGeneratedTitle records a machine-produced title and issue reference for
-// sessionName (issue #2683).
+// sessionName.
 //
 // title is written with title_source='generated'. issueRef is written as-is;
 // pass nil when the source text carried no reference, and the column stays
@@ -294,7 +294,7 @@ ON CONFLICT(session_name) DO UPDATE SET
 //
 // THE HUMAN-TITLE GUARD. The UPDATE refuses any row whose title_source is
 // already 'human'. A human rename is the operator saying what this session
-// is; a generated summary must never talk over it. The guard is in the SQL,
+// is. A generated summary must never talk over it. The guard is in the SQL,
 // not in the caller, so it holds for every call site including future ones
 // — a read-then-write check in Go would also be a race against the sidecar's
 // own state upserts.
@@ -506,7 +506,7 @@ WHERE  instance_id IN (
 // resume pointer is wiped by the sibling method ClearAllResumePointers,
 // which `prism reset` calls immediately after MarkAllEnded. Keeping the two
 // concerns separate means MarkAllEnded can be reused by any future caller
-// that wants to bulk-end rows without altering resume semantics (issue #1947).
+// that wants to bulk-end rows without altering resume semantics.
 //
 // Returns the number of agent_status rows updated and any database error.
 // When there are no rows with ended_at IS NULL, returns (0, nil) — not an error.
@@ -559,8 +559,8 @@ WHERE  instance_id IN (
 
 // ClearAllResumePointers clears the per-session pi conversation resume
 // pointer (agent_status.harness_session_id) on every row in agent_status.
-// It is the FS-companion-free, DB-side half of the `prism reset` resume-wipe
-// (issue #1947): after this call, no row carries a UUID that would cause
+// It is the FS-companion-free, DB-side half of the `prism reset` resume-wipe:
+// after this call, no row carries a UUID that would cause
 // the next `prism switch` / `prism agent-run` to append `--session <uuid>`
 // to the pi invocation (see internal/container/pi_invocation.go).
 //
@@ -574,8 +574,8 @@ WHERE  instance_id IN (
 //
 // The column is set to NULL (rather than the empty string) so that the
 // COALESCE in UpsertStatusSeedRootAgentName treats it as "no override" on
-// the next upsert — exactly mirroring the pre-#1838 "fresh row" semantics.
-// CurrentStatus / scanStatus already map a NULL column to a nil *string in
+// the next upsert, exactly as a fresh row does. CurrentStatus / scanStatus
+// already map a NULL column to a nil *string in
 // the Status struct.
 //
 // Returns the number of rows whose harness_session_id was actually cleared
@@ -599,11 +599,10 @@ func (d *DB) ClearAllResumePointers() (int64, error) {
 // AND for any review-agent child rows whose session_name matches
 // "<sessionName>~review-%" (mirroring SetEnded's LIKE-escape semantics).
 //
-// This is the per-session counterpart to ClearAllResumePointers (issue #1947).
-// It is called from the `prism cleanup` paths so that re-spawning a NEW
-// session on the SAME branch name does not pick up the cleaned session's
-// stale harness_session_id and unconditionally resume the dead pi conversation
-// (issue #2035).
+// This is the per-session counterpart to ClearAllResumePointers. It is called
+// from the `prism cleanup` paths so that re-spawning a NEW session on the SAME
+// branch name does not pick up the cleaned session's stale harness_session_id
+// and unconditionally resume the dead pi conversation.
 //
 // The linkage has two surfaces:
 //
@@ -616,16 +615,16 @@ func (d *DB) ClearAllResumePointers() (int64, error) {
 //     <piSessionsRoot>/<encodePiCWD(worktree)>/*_<harness_session_id>.jsonl
 //     — handled by container.RemovePiResumeJSONL on the cleanup side.
 //
-// Surface (1) — this method — is the load-bearing #2035 defence on its own,
+// Surface (1) — this method — is the load-bearing defence on its own,
 // confirmed empirically by pi's mid-session transcript rollover: stale
 // rollover JSONLs survive every close in the encoded-cwd dir and have never
 // caused a dud auto-resume, because spawn only appends `--session <id>` when
 // the DB value is non-empty. Surface (2) is therefore invoked ONLY on
 // hard-cleanup paths (severModeHard in cmd/cleanup.go) — soft closes
-// preserve the transcript so pi's interactive /resume keeps working (issue
-// #2371) and rely on this DB clear alone. Do NOT re-introduce a
-// filesystem-side sever on soft paths without re-reading #2371: doing so
-// permanently destroys the operator's /resume history on every close.
+// preserve the transcript so pi's interactive /resume keeps working and rely
+// on this DB clear alone. Do NOT re-introduce a filesystem-side sever on soft
+// paths: doing so permanently destroys the operator's /resume history on every
+// close.
 //
 // The session name is escaped for SQL LIKE wildcards before being used as a
 // pattern prefix so that names containing `%`, `_`, or `\` are handled
@@ -679,9 +678,9 @@ func (d *DB) SetMuted(sessionName string, muted bool) (bool, error) {
 // has already been ended (ended_at IS NOT NULL) — in both cases the mute
 // CLI treats the session as "not found" and refuses to toggle.
 //
-// Restricting the lookup to live (ended_at IS NULL) rows matches the AC for
-// `prism cleanup --session <name>` followed by `prism mute <name>`: after
-// cleanup, the row carries ended_at, so mute reports "session not found".
+// Restricting the lookup to live (ended_at IS NULL) rows means that after
+// `prism cleanup --session <name>`, the row carries ended_at, so
+// `prism mute <name>` reports "session not found".
 // The flag column itself is not erased — it persists alongside ended_at for
 // audit — but the operator-facing surface treats the session as gone.
 func (d *DB) IsMuted(sessionName string) (bool, bool, error) {
@@ -717,7 +716,7 @@ func (d *DB) ClearEnded(sessionName string) error {
 // AllocatePort picks a port from the range PortRangeStart–PortRangeEnd,
 // writes it to agent_status.harness_port for sessionName, and returns it.
 //
-// Allocation is idempotent per session (issue #2357): when sessionName
+// Allocation is idempotent per session: when sessionName
 // already has a recorded harness_port that no other active session holds and
 // that is free at the OS level, that same port is returned again — a repeated
 // call (e.g. a sidecar restart, or the sidecar startup path racing the
@@ -736,20 +735,21 @@ func (d *DB) ClearEnded(sessionName string) error {
 // Returns an error if all ports in the range are exhausted or if the session does
 // not exist in agent_status.
 //
-// Concurrency mechanism — transaction + retry with unique-constraint guard (#1865 / DB-F4):
+// Concurrency mechanism — transaction + retry with unique-constraint guard:
 //
-// The original check-then-write design was a race: two concurrent callers could
-// both read the same usedPorts snapshot, both pick the same free port, both call
+// A plain check-then-write is a race: two concurrent callers could both read
+// the same usedPorts snapshot, both pick the same free port, both call
 // portAvailable() (which may transiently succeed for both because the OS listen
-// window is brief), and both write the same port to different rows — with neither
-// UPDATE failing. The fix wraps each attempt in a BEGIN IMMEDIATE transaction so
-// that SQLite serialises the read+write pair: once the first writer commits, the
-// second writer's read sees the updated row and picks a different port. A
-// partial unique index on harness_port (WHERE harness_port IS NOT NULL AND ended_at IS NULL,
-// added in migration v32→v33) provides a second line of defence: even if two transactions
-// race to write the same port, only one can commit; the other receives a
-// SQLITE_CONSTRAINT_UNIQUE error and retries from scratch. The retry budget is
-// bounded (maxRetries) to prevent an infinite loop when the range is exhausted.
+// window is brief), and both write the same port to different rows — with
+// neither UPDATE failing. Each attempt therefore runs in a BEGIN IMMEDIATE
+// transaction so that SQLite serialises the read+write pair: once the first
+// writer commits, the second writer's read sees the updated row and picks a
+// different port. A partial unique index on harness_port (WHERE harness_port IS
+// NOT NULL AND ended_at IS NULL) provides a second line of defence: even if two
+// transactions race to write the same port, only one can commit. The other
+// receives a SQLITE_CONSTRAINT_UNIQUE error and retries from scratch. The retry
+// budget is bounded (maxRetries) to prevent an infinite loop when the range is
+// exhausted.
 func (d *DB) AllocatePort(sessionName string) (int, error) {
 	const maxRetries = 10
 	for attempt := range maxRetries {
@@ -803,7 +803,7 @@ func (d *DB) allocatePortOnce(sessionName string) (int, error) {
 	// the same port instead of drifting to a new one. Drifting is fatal for
 	// sandbox-exec pi sessions because `prism agent-run` does a one-shot read
 	// of harness_port and bakes PRISM_HARNESS_PIPE into PI's immutable
-	// process env — see issue #2357.
+	// process env.
 	var ownPort sql.NullInt64
 	if err := conn.QueryRowContext(ctx,
 		"SELECT harness_port FROM agent_status WHERE session_name = ?",
@@ -813,7 +813,7 @@ func (d *DB) allocatePortOnce(sessionName string) (int, error) {
 	}
 
 	// Collect ports currently assigned to OTHER active (non-ended) sessions.
-	// The requesting session's own row is excluded (issue #2357): without the
+	// The requesting session's own row is excluded: without the
 	// exclusion, a second AllocatePort call for the same session sees its own
 	// port as "in use" and is guaranteed to pick a different one.
 	rows, err := conn.QueryContext(ctx,
@@ -956,11 +956,11 @@ func (d *DB) SetIsolationMode(sessionName, mode string) error {
 	return nil
 }
 
-// SetContainersEnabled writes agent_status.containers_enabled for sessionName
-// (#2317 / #2323). enabled=true is the runtime gate the sidecar reads to
-// decide whether to start the per-session filtering podman API socket proxy;
-// the spawn-time CLI flag --containers flips this on. enabled=false leaves the
-// row at the default (proxy not started).
+// SetContainersEnabled writes agent_status.containers_enabled for sessionName.
+// enabled=true is the runtime gate the sidecar reads to decide whether to
+// start the per-session filtering podman API socket proxy; the spawn-time CLI
+// flag --containers flips this on. enabled=false leaves the row at the default
+// (proxy not started).
 //
 // No-op when sessionName has no agent_status row (the UPDATE affects zero rows
 // and returns nil). Mirrors SetIsolationMode / SetGroupID — write the boolean
@@ -1034,7 +1034,7 @@ func (d *DB) SetInstanceID(sessionName, instanceID string) error {
 
 // SetGroupID writes a group_id to the agent_status row for sessionName. Called
 // by SpawnSession when opts.GroupID is non-empty to associate the new session
-// with a session_groups entry (Issue E hook — see #849 §3.1 and #860).
+// with a session_groups entry.
 //
 // No-op when sessionName has no agent_status row (the UPDATE affects zero rows
 // and returns nil).
@@ -1130,8 +1130,7 @@ func (d *DB) UpdateHarnessSessionID(sessionName, sid string) error {
 // HarnessSessionIDForInstance returns the harness_session_id stored in
 // agent_status for the given instance_id, or "" when not found or NULL.
 // Used by cleanup as a fallback when sessions.harness_session_id is NULL
-// (e.g. for sessions started before UpdateHarnessSessionID was fixed to
-// also write to sessions).
+// (older rows do not carry it).
 func (d *DB) HarnessSessionIDForInstance(instanceID string) (string, error) {
 	var sid sql.NullString
 	err := d.conn.QueryRow(
@@ -1254,19 +1253,17 @@ WHERE ended_at IS NULL AND repo = ?`
 // test would hide `weird~repo@main` — a real coordinator — from every other
 // repo's listing.
 //
-// Two changes here came from issue #2658.
+// The bare-name arm matters. A non-worktree session such as `obsidian` has no
+// branch, so it can never equal `repo || '@main'`. Without this arm the row is
+// excluded from every cross-repo listing, yet `prism dashboard` uses a
+// different query and does show it, so the two surfaces disagree.
 //
-// First, the bare-name arm is new. A non-worktree session such as `obsidian`
-// has no branch, so it can never equal `repo || '@main'`, and the row was
-// excluded from every cross-repo listing. `prism dashboard` uses a different
-// query and did show it, so the two surfaces disagreed.
-//
-// Second, the @main arm no longer requires `root_agent_name IS NULL`. The name
-// heuristic is the designed defence against a wrong root_agent_name value —
+// The @main arm does not require `root_agent_name IS NULL`. The name heuristic
+// is the designed defence against a wrong root_agent_name value —
 // authz.IsCoordinatorSession returns dbBased || nameBased for exactly that
-// reason — but restricting it to NULL rows withheld the defence from any row
-// that had a wrong non-NULL value. A `<repo>@main` row that wrongly carries
-// root_agent_name='worker' is now listed, which is what the Go predicate has
+// reason — so restricting it to NULL rows would withhold the defence from any
+// row that has a wrong non-NULL value. A `<repo>@main` row that wrongly carries
+// root_agent_name='worker' is listed, which is what the Go predicate has
 // always said about it.
 func (d *DB) AllActiveStatusForRepoAndOtherRootSessions(repo string) ([]Status, error) {
 	// The meta-session names are bound as parameters, not written into the
@@ -1307,17 +1304,16 @@ WHERE ended_at IS NULL
 // agent_status row for the given repo and worktree path, or nil when no such
 // row exists. This is the natural-key dedupe check used by
 // `prism spawn --reuse` and by the `prism spawn --branch main` default-reuse
-// path (#2352).
+// path.
 //
 // The second argument MUST be the full worktree filesystem path
 // (e.g. "/Users/me/code/myrepo/main"), NOT the branch name. Every production
 // writer of the `worktree` column stores a full path — SpawnSession seeds
 // via `UpsertStatusSeedRootAgentName(session, repo, opts.Worktree, …)` with
 // `opts.Worktree = worktreePath`, and `event tmux-session-start --worktree`
-// is invoked with the pane's cwd. Passing a branch name here (the pre-#2352
-// signature) silently mismatched every real row, so the dedupe never fired
-// in production and the fall-through path failed at `tmux new-session -ds`
-// with "duplicate session".
+// is invoked with the pane's cwd. Passing a branch name here silently
+// mismatches every real row, so the dedupe never fires and the fall-through
+// path fails at `tmux new-session -ds` with "duplicate session".
 func (d *DB) ActiveStatusForRepoWorktree(repo, worktreePath string) (*Status, error) {
 	const q = `
 SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
@@ -1367,17 +1363,15 @@ func (d *DB) WaitingCount() (int, error) {
 // ActivePISessionsForRepo returns all active agent_status rows where
 // harness = 'pi' and repo = repo and state IN ('active', 'idle', 'waiting').
 // Used by the /apply-profile and /register-provider host-API endpoints to
-// resolve coordinator-scope targets (P3.LIVE, #1214).
+// resolve coordinator-scope targets.
 //
-// Design note: issue #1214 originally proposed filtering by coordinator_session_name
-// to restrict fan-out to sessions spawned by the calling coordinator. That column
-// does not exist in the schema; repo-based filtering is the closest available
-// approximation. In the common single-coordinator-per-repo case the semantics are
-// identical. When multiple coordinators run against the same repo simultaneously the
-// scope is slightly broader — all PI sessions in the repo receive the frame rather
-// than only those owned by the calling coordinator. This is acceptable for the P3
-// milestone; a coordinator_session_name column can be added in a follow-up if
-// strict per-coordinator targeting is required.
+// Design note: filtering by a coordinator_session_name column would restrict
+// fan-out to sessions spawned by the calling coordinator, but that column does
+// not exist in the schema. Repo-based filtering is the closest available
+// approximation. In the common single-coordinator-per-repo case the semantics
+// are identical. When multiple coordinators run against the same repo
+// simultaneously the scope is slightly broader — all PI sessions in the repo
+// receive the frame rather than only those owned by the calling coordinator.
 func (d *DB) ActivePISessionsForRepo(repo string) ([]Status, error) {
 	const q = `
 SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
@@ -1388,7 +1382,7 @@ WHERE ended_at IS NULL AND harness = 'pi' AND repo = ? AND state IN ('active', '
 
 // AllActivePISessions returns all active agent_status rows where harness = 'pi'
 // and state IN ('active', 'idle', 'waiting'). Used for scope=global fan-out
-// by the /apply-profile and /register-provider host-API endpoints (P3.LIVE, #1214).
+// by the /apply-profile and /register-provider host-API endpoints.
 func (d *DB) AllActivePISessions() ([]Status, error) {
 	const q = `
 SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
@@ -1572,8 +1566,8 @@ func (d *DB) UpsertStatusFull(sessionName, repo, worktree, state string, title, 
 	if harness != nil {
 		harnessVal = *harness
 	}
-	// Title provenance (#2683): as in UpsertStatusWithAgent, a non-nil title
-	// on this path is a harness-reported rename — title_source='human'.
+	// Title provenance: as in UpsertStatusWithAgent, a non-nil title on this
+	// path is a harness-reported rename — title_source='human'.
 	const q = `
 INSERT INTO agent_status (session_name, repo, worktree, state, title, title_source, agent_name, model_id, root_agent_name, last_seen, harness, harness_session_id)
 VALUES (?, ?, ?, ?, ?, CASE WHEN ? IS NOT NULL THEN 'human' END, ?, ?, ?, ?, ?, ?)

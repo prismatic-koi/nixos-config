@@ -19,19 +19,18 @@ func (d *DB) WriteEvent(e Event) error {
 	}
 	createdAt := e.CreatedAt.UnixMilli()
 
-	// Second redaction control (issue #2589). The harness redacts before it
-	// writes to the socket; this covers every other producer, including a
-	// harness with no redactor of its own. See redact.go.
+	// Second redaction control. The harness redacts before it writes to the
+	// socket. This covers every other producer, including a harness with no
+	// redactor of its own. See redact.go.
 	e.Payload = d.redactPayload(e.Payload)
 
-	// Resolve the active account name at write time, not at scrape time
-	// (issue #2714). See account_name.go for why. Never NULL on a new row.
+	// Resolve the active account name at write time, not at scrape time. See
+	// account_name.go for why. Never NULL on a new row.
 	accountName := d.resolveAccountName()
 
-	// Resolve the active profile the same way (issue #2768). See
-	// profile_name.go for why capture happens here rather than at scrape time,
-	// and why a coordinator — which has no spawn_inputs row — needs it. Never
-	// NULL on a new row.
+	// Resolve the active profile the same way. See profile_name.go for why
+	// capture happens here rather than at scrape time, and why a coordinator —
+	// which has no spawn_inputs row — needs it. Never NULL on a new row.
 	profileName := d.resolveProfileName()
 
 	tx, err := d.conn.Begin()
@@ -48,8 +47,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	}
 
 	// Bump last_seen only when a matching agent_status row exists. The MAX
-	// guard ensures we never move last_seen backward (e.g. for out-of-order
-	// event replays or backfill writes with old timestamps).
+	// guard never moves last_seen backward (for example on out-of-order event
+	// replays or backfill writes with old timestamps).
 	const updateQ = `
 UPDATE agent_status
    SET last_seen = MAX(last_seen, ?)
@@ -181,12 +180,12 @@ func (d *DB) QueryEvents(sessionName string, limit int, before, after *string, t
 // permission_ask, permission_denied, and thinking events that belong to a set
 // of assistant-message turns retrieved by the primary query.
 //
-// Join field by event type (#1787):
+// Join field by event type:
 //
 //   - tool_call / tool_result: matched on `$.parentMessageId`. The pi prism
 //     extension stamps this field with the in-flight assistant messageId on
-//     every tool frame; pre-#1787 these rows had no parent-link field at all
-//     and were silently dropped by the previous `$.messageId` pushdown.
+//     every tool frame. Rows written before that field existed carry no
+//     parent link and do not match.
 //   - permission_ask / permission_denied / thinking: matched on `$.messageId`
 //     (the field the plugin has always emitted for these types).
 //
@@ -385,8 +384,8 @@ func (d *DB) QueryPermissionEvents(eventType, sessionName string, sinceMs int64)
 //     limit==0 and sessionName=="")
 //
 // Note: audit events are subject to the same 90-day Prune() threshold as all
-// other agent_events rows. For the forensic use-case described in issue #642,
-// 90 days is sufficient, but audit events are not retained indefinitely.
+// other agent_events rows. For the forensic use-case, 90 days is sufficient,
+// but audit events are not retained indefinitely.
 func (d *DB) QueryAuditEvents(sessionName string, sinceMs int64, pattern string, limit int) ([]Event, error) {
 	args := []any{}
 	conditions := []string{"type = 'audit'"}
@@ -481,8 +480,8 @@ SELECT rowid, id, session_name, repo, worktree, harness_session_id,
 // MaxSessionEventRowID returns the maximum rowid in agent_events for the
 // given sessionName, or 0 if no events exist. Used by the client IPC socket to
 // snapshot the high-water mark before a replay query so that events arriving
-// during replay can be deduplicated (§4.3 design doc — the since_event_id race
-// avoidance strategy).
+// during replay can be deduplicated (the since_event_id race-avoidance
+// strategy).
 func (d *DB) MaxSessionEventRowID(sessionName string) (int64, error) {
 	const q = `SELECT COALESCE(MAX(rowid), 0) FROM agent_events WHERE session_name = ?`
 	var max int64
@@ -584,15 +583,15 @@ type EventRow struct {
 
 // WriteEventReturningRowID is identical to WriteEvent but also returns the
 // SQLite rowid of the newly inserted agent_events row. The rowid is used by
-// the client IPC socket (D-6) as the monotonic event_id for since_event_id
-// replay and fan-out ordering.
+// the client IPC socket as the monotonic event_id for since_event_id replay
+// and fan-out ordering.
 func (d *DB) WriteEventReturningRowID(e Event) (int64, error) {
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now()
 	}
 	createdAt := e.CreatedAt.UnixMilli()
 
-	// Second redaction control (issue #2589) — see WriteEvent.
+	// Second redaction control — see WriteEvent.
 	e.Payload = d.redactPayload(e.Payload)
 
 	// Write-time account and profile resolution — see WriteEvent,

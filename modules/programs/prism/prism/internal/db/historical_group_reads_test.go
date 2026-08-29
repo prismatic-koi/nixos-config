@@ -1,15 +1,13 @@
 package db_test
 
-// historical_group_reads_test.go — issue #2649.
+// Tests for the historical group reads.
 //
 // Two read sites answer a question about a review round that is already over.
-// Both used db.GroupResults, which drops rows whose ended_at is set.
-//
-// That was already lossy before #2649 — a parent cleanup closes its review
-// children, and these reads run at or after cleanup time. The automatic
-// release makes it certain and much earlier: every member of a delivered round
-// is closed 15 minutes later, so both reads see an empty map for every round
-// older than that.
+// db.GroupResults drops rows whose ended_at is set, which is lossy here — a
+// parent cleanup closes its review children, and these reads run at or after
+// cleanup time. The automatic release makes it certain and much earlier: every
+// member of a delivered round is closed 15 minutes later, so both reads see an
+// empty map for every round older than that.
 //
 // These tests seed a complete round, close every member the way the release
 // does, and assert each read still answers from the surviving history.
@@ -63,8 +61,8 @@ func seedClosedReviewRound(t *testing.T, d *db.DB, parent, verdict string, n int
 // TestComputeSpawnOutcome_ReviewRollupSurvivesTheRelease covers the fallback
 // review roll-up in ComputeSpawnOutcome (internal/db/sessions.go).
 //
-// The roll-up is a fallback: #2110 added a dedicated write path that persists
-// the verdict at review-complete time, and the merge prefers it. The fallback
+// The roll-up is a fallback: a dedicated write path persists the verdict at
+// review-complete time, and the merge prefers it. The fallback
 // therefore serves exactly the sessions where that write never fired. Reading
 // through GroupResults, those sessions lost their verdict entirely once the
 // release closed the member rows.

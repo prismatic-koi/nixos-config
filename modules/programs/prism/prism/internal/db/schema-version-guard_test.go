@@ -1,7 +1,7 @@
 package db
 
 // schema-version-guard_test.go — tests for the "schema version too new" guard
-// introduced in Open/runMigrations (#1869).
+// introduced in Open/runMigrations.
 //
 // These tests live in the internal `package db` so they can access the
 // unexported currentSchemaVersion constant.

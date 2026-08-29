@@ -1,7 +1,7 @@
 package db_test
 
 // Tests for the v36→v37 migration that adds two columns in a single
-// migration (#2317 / #2319):
+// migration:
 //
 //   - agent_status.containers_enabled — runtime gate read by the sidecar
 //     to decide whether to start the per-session filtering podman API
@@ -225,7 +225,7 @@ func readVersion(t *testing.T, d *db.DB) int {
 }
 
 // TestMigration_V36ToV37_BodyRuns_AddsBothColumns exercises the body-runs
-// branch (#2319 ACs #1, #2, #3): a v36 DB without either new column.
+// branch: a v36 DB without either new column.
 // Both ALTER TABLE statements execute, both columns end up at INTEGER
 // NOT NULL DEFAULT 0, and schema_version is bumped to 37.
 func TestMigration_V36ToV37_BodyRuns_AddsBothColumns(t *testing.T) {

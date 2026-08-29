@@ -1,18 +1,17 @@
 package db_test
 
-// Tests for the repo scoping added in issue #2354.
+// Tests for the repo scoping of pending_merges.
 //
-// Background — the incident.
+// Background — why repo scoping.
 //
-// Before v37→v38, pending_merges was keyed by (pr INTEGER PRIMARY KEY)
-// alone and every WHERE clause was `WHERE pr = ?` with no repo scope.
-// On 2026-07-06 a coordinator running `prism merge 47` for its own
-// repo's PR #47 short-circuited on a DIFFERENT repo's terminal `merged`
-// row for its (unrelated) PR #47. The short-circuit printed
-// `PR #47 merged.`, the coordinator followed the merged-notification
-// flow and destructively cleaned up an unmerged worker.
+// Keyed by (pr INTEGER PRIMARY KEY) alone, every WHERE clause is
+// `WHERE pr = ?` with no repo scope. A coordinator running `prism merge 47`
+// for its own repo's PR #47 can then short-circuit on a DIFFERENT repo's
+// terminal `merged` row for its (unrelated) PR #47, print `PR #47 merged.`,
+// follow the merged-notification flow, and destructively clean up an unmerged
+// worker.
 //
-// These tests pin down the fix at the DB layer: rows are now keyed on
+// These tests pin the DB-layer behaviour: rows are keyed on
 // (repo, pr), lookups take a repo argument, and the terminal + heartbeat
 // writes cannot touch a same-numbered row from another repo.
 //
@@ -279,11 +278,10 @@ func TestCancelMerge_RepoScoped(t *testing.T) {
 // TestEnqueueMerge_SameRepoAlreadyMergedIsIdempotent verifies edge-case AC:
 //
 //	"Re-running `prism merge <pr>` on a PR already merged in the same repo
-//	 prints the recorded merged status without re-enqueueing (#1875
-//	 behaviour preserved)."
+//	 prints the recorded merged status without re-enqueueing."
 //
 // The DB layer's contribution to this AC is that EnqueueMerge on a merged
-// row overwrites via ON CONFLICT — the #1875 short-circuit lives in the
+// row overwrites via ON CONFLICT — the short-circuit lives in the
 // cmd layer. The invariant we test here: EnqueueMerge is well-defined for
 // the (repo, pr) already-merged case and returns a fresh watching row
 // (the cmd layer's short-circuit is what prevents that call in practice).

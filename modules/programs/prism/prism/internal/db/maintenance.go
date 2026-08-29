@@ -6,16 +6,15 @@ import (
 )
 
 // Prune deletes rows older than olderThan from the prism database. All
-// deletions execute inside a single transaction; if any individual DELETE
-// fails the transaction is rolled back and the database is left in its
-// pre-Prune state.
+// deletions run inside a single transaction. If any DELETE fails, the
+// transaction rolls back and the database keeps its pre-Prune state.
 //
 // Tables that Prune touches:
 //
 //   - agent_events       — rows with created_at < threshold.
-//   - bus_messages       — rows that have been delivered (delivered_at
+//   - bus_messages       — delivered rows (delivered_at
 //     IS NOT NULL AND delivered_at < threshold) or
-//     permanently failed (failed_at IS NOT NULL AND
+//     permanently failed rows (failed_at IS NOT NULL AND
 //     failed_at < threshold). Undelivered, unfailed
 //     messages are never pruned.
 //   - sessions           — rows with ended_at IS NOT NULL AND
@@ -47,7 +46,7 @@ import (
 //     shorter) retention window for the raw wire
 //     archive. The JSONL frames are voluminous on
 //     a busy session, while agent_events stays at
-//     the historical 90-day default.
+//     the 90-day default.
 //   - pending_merges     — operational ledger for the local serial merge
 //     queue. Rows are short-lived (queued → merged
 //     or failed within a single PR cycle) and the
@@ -55,10 +54,10 @@ import (
 //   - pending_replay_deliveries
 //     — durable buffer for /prompt frames that
 //     arrived while the PI extension was
-//     disconnected. Wiped on `prism cleanup` and
-//     on `event tmux-session-start` (issue #2359)
-//     so the primary lifecycle hooks handle it;
-//     Prune sweeps stragglers via a dedicated
+//     disconnected. `prism cleanup` and
+//     `event tmux-session-start` wipe it, so the
+//     primary lifecycle hooks handle it. Prune
+//     sweeps stragglers via a dedicated
 //     time-based DELETE below with a shorter
 //     window (rows are short-lived by design).
 //   - schema_version     — a single-row table tracking the live schema
@@ -68,7 +67,7 @@ import (
 // foreign_keys = ON (set at connection time in Open). The cascade from
 // sessions to spawn_outcome / spawn_inputs and the SET NULL behaviour
 // on agent_status.group_id / sessions.group_id all participate in the
-// same transaction; a failure on any single DELETE rolls the entire
+// same transaction. A failure on any single DELETE rolls the entire
 // Prune back.
 func (d *DB) Prune(olderThan time.Duration) error {
 	threshold := time.Now().Add(-olderThan).UnixMilli()
@@ -142,12 +141,11 @@ WHERE group_id NOT IN (
 	}
 
 	// pending_replay_deliveries: sweep any straggler rows whose queued_at
-	// is older than the same threshold (issue #2359 review-context
-	// follow-up). The primary lifecycle hooks (cleanup, tmux-session-start)
-	// already purge on the common paths — this catches the abandoned
-	// case where a sidecar buffered a delivery and never came back and
-	// the session was never explicitly cleaned up. No cross-table
-	// dependency, so the DELETE is trivial.
+	// is older than the same threshold. The primary lifecycle hooks
+	// (cleanup, tmux-session-start) already purge on the common paths.
+	// This catches the abandoned case where a sidecar buffered a delivery
+	// and never came back and the session was never explicitly cleaned
+	// up. No cross-table dependency, so the DELETE is trivial.
 	if _, err := tx.Exec(
 		"DELETE FROM pending_replay_deliveries WHERE queued_at < ?", threshold,
 	); err != nil {

@@ -1,11 +1,12 @@
 package db_test
 
-// msg_assistant_decode_test.go — issue #2862.
+// Tests for msg_assistant payload decoding in groupResults.
 //
-// groupResults used to store the RAW msg_assistant JSON payload as
-// LastMessage. encoding/json escapes '<' and '>' as \u003c / \u003e, so a
-// stored verdict block read as \u003cverdict\u003ePASS\u003c/verdict\u003e and
-// the substring rule the dashboard and the roll-up apply could never match.
+// groupResults must store the DECODED text of the msg_assistant JSON payload
+// as LastMessage, not the raw payload. encoding/json escapes '<' and '>' as
+// \u003c / \u003e, so a raw stored verdict block reads as
+// \u003cverdict\u003ePASS\u003c/verdict\u003e and the substring rule the
+// dashboard and the roll-up apply could never match it.
 //
 // The fixture below is built by marshalling a real struct through
 // encoding/json, so the escaping is exercised. A hand-written literal-'<'

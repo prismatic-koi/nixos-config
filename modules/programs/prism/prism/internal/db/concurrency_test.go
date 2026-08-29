@@ -1,6 +1,6 @@
 package db_test
 
-// concurrency_test.go — concurrent-access tests for the db package (#1865).
+// concurrency_test.go — concurrent-access tests for the db package.
 //
 // These tests fire N goroutines against a shared in-memory (temp file) DB and
 // assert correctness properties that should hold under concurrent access.  All
@@ -14,7 +14,7 @@ import (
 
 // TestAllocatePort_Concurrent fires N goroutines each calling AllocatePort for
 // a distinct session_name and asserts that all returned ports are distinct
-// (F4, #1865).
+// (F4).
 func TestAllocatePort_Concurrent(t *testing.T) {
 	const N = 50
 	d := openTestDB(t)
@@ -69,7 +69,7 @@ func TestAllocatePort_Concurrent(t *testing.T) {
 // TestUpsertStatusWithRootAgent_Concurrent fires N goroutines all upserting
 // the same session_name with overlapping (but distinct) field sets, then
 // asserts row count = 1 and all expected fields are present per COALESCE
-// semantics (F19, #1865).
+// semantics (F19).
 //
 // Because COALESCE prefers the first non-NULL value, the test sets fields that
 // are written on INSERT (the first writer) and fields that are present on every
@@ -133,7 +133,7 @@ func TestUpsertStatusWithRootAgent_Concurrent(t *testing.T) {
 }
 
 // TestUpsertStatus_Concurrent does the same as TestUpsertStatusWithRootAgent_Concurrent
-// for the lower-level UpsertStatus method (F19, #1865).
+// for the lower-level UpsertStatus method (F19).
 func TestUpsertStatus_Concurrent(t *testing.T) {
 	const N = 50
 	const session = "concurrent-upsert@main"

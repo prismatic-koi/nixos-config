@@ -39,25 +39,24 @@ type DB struct {
 	conn *sql.DB
 	path string
 
-	// redactor is the write-time credential redactor for this handle
-	// (issue #2589). nil means "use the process default" — see
-	// redact.go. Guarded by redactorMu because a handle is shared
-	// across goroutines and a test may install its own.
+	// redactor is the write-time credential redactor for this handle. nil
+	// means "use the process default" — see redact.go. Guarded by redactorMu
+	// because a handle is shared across goroutines and a test may install its
+	// own.
 	redactorMu sync.RWMutex
 	redactor   *payload.Redactor
 
 	// accountResolver resolves the active account name recorded on every
-	// event and spawn-input row at write time (issue #2714). nil means "use
-	// the process default" — see account_name.go. Guarded by
-	// accountResolverMu because a handle is shared across goroutines and a
-	// test may install its own.
+	// event and spawn-input row at write time. nil means "use the process
+	// default" — see account_name.go. Guarded by accountResolverMu because a
+	// handle is shared across goroutines and a test may install its own.
 	accountResolverMu sync.RWMutex
 	accountResolver   *AccountResolver
 
 	// profileResolver resolves the active prism profile recorded on every
-	// event row at write time (issue #2768). nil means "use the process
-	// default" — see profile_name.go. Guarded by profileResolverMu because a
-	// handle is shared across goroutines and a test may install its own.
+	// event row at write time. nil means "use the process default" — see
+	// profile_name.go. Guarded by profileResolverMu because a handle is shared
+	// across goroutines and a test may install its own.
 	profileResolverMu sync.RWMutex
 	profileResolver   *ProfileResolver
 }
@@ -82,13 +81,13 @@ CREATE TABLE IF NOT EXISTS agent_events (
   created_at         INTEGER NOT NULL,
   instance_id        TEXT REFERENCES sessions(instance_id),
   -- Active prism account name at the moment this row was written, recorded
-  -- by WriteEvent from the mtime-cached resolver (issue #2714). NULLABLE for
+  -- by WriteEvent from the mtime-cached resolver. NULLABLE for
   -- back-compat with pre-migration rows; new rows always carry a value
   -- ("unknown" when the account store cannot be resolved). Records the NAME
   -- only — never any accounts/*.json token content.
   account_name       TEXT,
   -- Active prism profile at the moment this row was written, recorded by
-  -- WriteEvent from the mtime-cached resolver (issue #2768). NULLABLE for
+  -- WriteEvent from the mtime-cached resolver. NULLABLE for
   -- back-compat with pre-migration rows; new rows always carry a value
   -- ("unknown" when no profile can be resolved). This is the tier the cost
   -- counter attributes spend along. It exists BECAUSE a coordinator session
@@ -123,14 +122,14 @@ CREATE TABLE IF NOT EXISTS session_groups (
   group_id       TEXT PRIMARY KEY,
   parent_session TEXT NOT NULL,
   created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  -- pr_number and round are populated by RegisterGroupWithPR (#1709 reopen)
+  -- pr_number and round are populated by RegisterGroupWithPR
   -- so the worker-sidecar recovery watcher can format a usable review-complete
   -- prompt when the detached monitor subprocess dies. Both nullable for
   -- back-compat with the legacy RegisterGroup helper.
   pr_number      TEXT,
   round          INTEGER,
-  -- delivered_at is the authoritative end-of-life signal for a review group
-  -- (#2259). It is the epoch-ms timestamp at which prism prompt accepted
+  -- delivered_at is the authoritative end-of-life signal for a review group.
+  -- It is the epoch-ms timestamp at which prism prompt accepted
   -- the review-complete delivery for this group, written by review.MonitorFunc
   -- (happy path) or review.DeliverGroupResults (recovery path). Nullable for
   -- back-compat with pre-migration rows and for groups whose delivery has
@@ -149,11 +148,11 @@ CREATE TABLE IF NOT EXISTS agent_status (
   -- never observably holds '' -- every writer that could produce an empty
   -- string normalises it to nil/NULL before writing (see
   -- internal/session/title_fallback.go and internal/sidecar/helpers.go's
-  -- strPtr, #2641) -- so readers may treat NULL and '' identically without
+  -- strPtr) -- so readers may treat NULL and '' identically without
   -- losing information.
   title             TEXT,
   -- title_source records who wrote the title column, so a later writer can
-  -- tell a deliberate rename from a machine-derived one (#2683). Values:
+  -- tell a deliberate rename from a machine-derived one. Values:
   --   'human'      a harness-reported title -- pi only ever emits one in
   --                response to an explicit user rename, so it is the
   --                operator's own words and the generator must never
@@ -161,10 +160,9 @@ CREATE TABLE IF NOT EXISTS agent_status (
   --   'generated'  internal/titlegen's model summary.
   --   'fallback'   internal/session's deriveFallbackTitle over the spawn
   --                prompt.
-  -- NULL means the title predates provenance tracking, or there is no
-  -- title. #2666's "only seed when the title is nil" rule existed purely
-  -- because provenance could not be expressed; this column is what lets a
-  -- writer that runs more than once make the distinction properly.
+  -- NULL means the title carries no provenance, or there is no title. This
+  -- column lets a writer that runs more than once tell a human rename from a
+  -- machine-derived title.
   title_source      TEXT,
   -- issue_ref is the issue or ticket the session's work came from -- '#2683'
   -- or 'PLAT-123'. Extracted DETERMINISTICALLY from the source text by
@@ -188,10 +186,10 @@ CREATE TABLE IF NOT EXISTS agent_status (
   group_id          TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
   muted             INTEGER NOT NULL DEFAULT 0,
   -- containers_enabled is the runtime gate read by the sidecar to decide
-  -- whether to start the per-session filtering podman API socket proxy
-  -- (#2317 / #2319). 0 = proxy not started (default); 1 = proxy is
-  -- started and the agent CONTAINER_HOST / DOCKER_HOST env vars point at
-  -- the filtered socket. Flipped by prism spawn --containers (Step 6).
+  -- whether to start the per-session filtering podman API socket proxy.
+  -- 0 = proxy not started (default); 1 = proxy is started and the agent
+  -- CONTAINER_HOST / DOCKER_HOST env vars point at the filtered socket.
+  -- Flipped by prism spawn --containers.
   containers_enabled INTEGER NOT NULL DEFAULT 0
 );
 
@@ -286,12 +284,12 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
     agent_flag             TEXT,
     harness_flag           TEXT,
     -- Raw --provider flag value as the user passed it (NULL = flag omitted,
-    -- the slot provider is in effect). Added in #2852 so a routing-provider
-    -- override is auditable alongside model_flag and variant_flag.
+    -- the slot provider is in effect). A routing-provider override is
+    -- auditable alongside model_flag and variant_flag.
     provider_flag          TEXT,
     -- Raw --isolation flag value as the user passed it (NULL = flag omitted,
     -- default in effect). Preserved as audit trail; the actual mode the
-    -- session ran under lives in isolation_mode (below). Added pre-#2105.
+    -- session ran under lives in isolation_mode (below).
     isolation_flag         TEXT,
     host_mode_flag         INTEGER NOT NULL DEFAULT 0,
     pr_number              INTEGER,
@@ -299,7 +297,7 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
     ignore_concurrency_cap INTEGER NOT NULL DEFAULT 0,
 
     -- containers_flag mirrors the --containers CLI flag (audit symmetry
-    -- with host_mode_flag / isolation_flag, #2317 / #2319). 0 = flag
+    -- with host_mode_flag / isolation_flag). 0 = flag
     -- omitted (default); 1 = prism spawn --containers was passed.
     -- Written by InsertSpawnInputs and rendered by prism stats compare
     -- in the Spawn Inputs block. Distinct from
@@ -309,10 +307,10 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
 
     -- Resolved effective isolation mode the session actually ran under
     -- (bwrap/sandbox-exec/host), captured at spawn time post profile/
-    -- config/Nix-default resolution. Added in #2105 so stats compare surfaces
-    -- a meaningful value even when --isolation was omitted. NULLABLE for
-    -- back-compat with pre-#2105 rows; new rows are always populated by the
-    -- centralised writer in internal/session/spawn.go.
+    -- config/Nix-default resolution. It lets stats compare surface a
+    -- meaningful value even when --isolation was omitted. NULLABLE for
+    -- back-compat with rows written before it existed; new rows are always
+    -- populated by the centralised writer in internal/session/spawn.go.
     isolation_mode         TEXT,
 
     -- C.2: per-role model-variant overrides (JSON; NULL if no overrides).
@@ -342,7 +340,7 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
     extras                 TEXT,
 
     -- Active prism account name at spawn time, recorded by InsertSpawnInputs
-    -- from the mtime-cached resolver (issue #2714). Audit symmetry with
+    -- from the mtime-cached resolver. Audit symmetry with
     -- profile_name / isolation_flag. NULLABLE for back-compat with
     -- pre-migration rows; new rows always carry a value ("unknown" when the
     -- account store cannot be resolved). Records the NAME only.
@@ -370,10 +368,10 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 -- writer. The sidecar drains this table on the next successful pipe
 -- handshake (flushPendingReplay) and marks the replayed prompt frames with
 -- replay=true so the receiving agent can identify them as resumed
--- deliveries. The in-memory buffer that existed before #2359 was destroyed
--- on sidecar exit; persisting to disk survives sidecar restart so a
--- coordinator's reply cannot vanish if the worker's sidecar cycles between
--- delivery and the next handshake.
+-- deliveries. The in-memory buffer alone is destroyed on sidecar exit.
+-- Persisting to disk survives sidecar restart so a coordinator's reply cannot
+-- vanish if the worker's sidecar cycles between delivery and the next
+-- handshake.
 --
 -- PRIMARY KEY (session_name, delivery_id) preserves the existing in-memory
 -- dedup semantics: repeat deliveries for the same delivery_id are dropped
@@ -413,13 +411,13 @@ CREATE INDEX IF NOT EXISTS idx_pending_replay_deliveries_session
 // have been the canonical columns since v8; the legacy names were dual-written
 // for back-compat and are now removed);
 // v11→v12 adds a partial unique index to enforce at most one active coordinator
-// per repo (§6.1 from #849): UNIQUE (repo) WHERE root_agent_name='coordinator'
+// per repo: UNIQUE (repo) WHERE root_agent_name='coordinator'
 // AND ended_at IS NULL. The IF NOT EXISTS guard makes this idempotent so that
 // databases already at v12 (e.g. from a re-run) do not fail.
 // v12→v13 is a one-shot maintenance migration that ends (sets ended_at=now,
 // in milliseconds) any agent_status rows whose session_name matches legacy
-// malformed review-session patterns from a historical recursive-review bug
-// (#826): doubled ~review, back-to-back ~review~review, or bare ~review-N-review
+// malformed review-session patterns from a historical recursive-review bug:
+// doubled ~review, back-to-back ~review~review, or bare ~review-N-review
 // (no role suffix). Only rows where ended_at IS NULL and last_seen IS NULL,
 // zero, or older than 7 days are touched. The 7-day threshold is also expressed
 // in milliseconds ((unixepoch('now') - 604800) * 1000) to match the column unit.
@@ -429,7 +427,7 @@ CREATE INDEX IF NOT EXISTS idx_pending_replay_deliveries_session
 // the column was never populated by a live WriteEvent call). It is idempotent:
 // sessions that already have a non-zero last_seen are left untouched. Rows with
 // no matching agent_events remain at 0 (COALESCE preserves the NOT NULL
-// constraint). This fixes the gap described in issue #824 for pre-existing rows.
+// constraint). This backfills last_seen for pre-existing rows.
 // v14→v15 renames the agent_events.opencode_sid column to harness_session_id
 // to match the harness-agnostic naming convention used on agent_status. SQLite
 // supports ALTER TABLE ... RENAME COLUMN ... since 3.25 (2018). The migration
@@ -443,10 +441,10 @@ CREATE INDEX IF NOT EXISTS idx_pending_replay_deliveries_session
 // migration. Rows with empty instance_id are skipped (a warning is printed).
 // This migration is idempotent: CREATE TABLE IF NOT EXISTS and the ALTER TABLE
 // guard (pragma_table_info check) make it safe to run on an already-migrated DB.
-// v16→v17 is a no-op bridge that reserves the slot occupied by PR #1014
-// (local serial merge queue / pending_merges table). When #1014 lands first
-// the DB already arrives at v17 and this block is skipped; when this PR lands
-// first the bridge bumps the version so the v17→v18 block below is reachable.
+// v16→v17 is a no-op bridge that reserves the slot for the local serial merge
+// queue (pending_merges table). When that work lands first the DB already
+// arrives at v17 and this block is skipped; when the bridge lands first it
+// bumps the version so the v17→v18 block below is reachable.
 // v17→v18 is a one-shot backfill that fixes sessions rows whose started_at was
 // persisted as -62135596800000 (Go's zero time.Time{} marshalled via UnixMilli)
 // due to a wrong zero-value guard in InsertSession. For each such row it sets
@@ -455,8 +453,8 @@ CREATE INDEX IF NOT EXISTS idx_pending_replay_deliveries_session
 // via the formatDurationLong defence-in-depth fallback). The migration is
 // idempotent: a second run finds no rows with negative started_at and is a
 // no-op. Fresh databases have no such rows so the migration is trivially safe.
-// v18→v19 adds the pending_merges table for the local serial merge queue
-// (#783). Uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS so the
+// v18→v19 adds the pending_merges table for the local serial merge queue.
+// Uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS so the
 // migration is idempotent (safe to run twice). Both the declarative schema
 // block and the migration produce identical sqlite_master output on a fresh
 // database — fresh databases have the table from the schema block and skip the
@@ -464,14 +462,14 @@ CREATE INDEX IF NOT EXISTS idx_pending_replay_deliveries_session
 // v19→v20 adds idx_pending_merges_status_session ON
 // pending_merges(session_name, status, queue_position) to cover the
 // MergeQueueHead query, which was changed from filtering by instance_id to
-// filtering by session_name (#1039). The old index
+// filtering by session_name. The old index
 // idx_pending_merges_status_instance is preserved (it covers
 // AbandonWatchingMerges and CancelMerge). CREATE INDEX IF NOT EXISTS makes
 // this idempotent.
 // v20→v21 is a one-shot backfill that sets sessions.harness_session_id from
 // agent_status.harness_session_id for rows where sessions.harness_session_id
-// IS NULL. This fixes sessions created before UpdateHarnessSessionID was
-// changed to write to both tables (#1126). The join is on instance_id, which
+// IS NULL. This fixes sessions created before UpdateHarnessSessionID wrote to
+// both tables. The join is on instance_id, which
 // is present in both tables. Rows with no matching agent_status row, or where
 // agent_status.harness_session_id is also NULL, are left unchanged — their
 // raw/ directories will remain empty (the harness never ran for them).
@@ -481,7 +479,7 @@ CREATE INDEX IF NOT EXISTS idx_pending_replay_deliveries_session
 // started_at = 0 (literal Unix epoch zero). The earlier migration only fixed
 // rows with started_at < 0 (Go zero-time as -62135596800000 ms); a separate
 // code path could insert started_at = 0 directly, producing
-// "00010101T000000Z_" archive directory names (#1127). Recovery strategy is
+// "00010101T000000Z_" archive directory names. Recovery strategy is
 // the same: set started_at = MIN(agent_events.created_at) for the matching
 // instance_id. Idempotent: rows with started_at > 0 are skipped.
 // v22→v23 is a one-shot backfill that populates agent_status.isolation_mode
@@ -490,9 +488,9 @@ CREATE INDEX IF NOT EXISTS idx_pending_replay_deliveries_session
 // the old EffectiveIsolationMode() (since deleted): host_mode=1 → 'host', otherwise →
 // 'podman'. The WHERE clause makes the migration idempotent: rows already set
 // are skipped on any subsequent open. This is the Phase A prerequisite for the
-// A4 deprecation-removal sequence (#1129).
+// A4 deprecation-removal sequence.
 // v23→v24 drops sessions.outcome_summary (a JSON placeholder column with
-// zero writers) and adds the spawn_outcome table (#1130 — the discrete-event
+// zero writers) and adds the spawn_outcome table (the discrete-event
 // aggregation row that supersedes outcome_summary).
 // The outcome_summary column is dropped with a rebuild-via-rename strategy
 // because SQLite does not support ALTER TABLE ... DROP COLUMN on columns with
@@ -502,49 +500,46 @@ CREATE INDEX IF NOT EXISTS idx_pending_replay_deliveries_session
 // the migration idempotent. Fresh databases skip the column-drop (the column
 // never existed in the declarative schema) and the table creation is a no-op
 // because the schema block above already created it.
-// v24→v25 adds the spawn_inputs table (#2087 introduced the table; #2092 /
-// #2093 fixed the profile_name write path) and the agent_prompt_hash
+// v24→v25 adds the spawn_inputs table and the agent_prompt_hash
 // column within it (C4.AP). The table is created with CREATE TABLE IF NOT
 // EXISTS and its indexes with CREATE INDEX IF NOT EXISTS, making the migration
 // idempotent. Fresh databases already have the table from the declarative
 // schema block above, so the CREATE is a no-op.
 // v25→v26 drops the host_mode column from agent_status. All rows already have
-// isolation_mode set (guaranteed by the v22→v23 backfill, #1129), so the
+// isolation_mode set (guaranteed by the v22→v23 backfill), so the
 // host_mode column is redundant. The column is removed via a table-rebuild
 // migration: the table is recreated without host_mode and all rows are copied
 // across. isolation_mode remains nullable TEXT in the new schema. The migration
 // is conditional: it checks whether host_mode still exists before rebuilding,
-// making it idempotent (#1137).
-// v26→v27 adds the harness_frames table for the raw PI JSONL frame archive
-// (P5.LOGS / #1218). The table stores every inbound and outbound frame on a
+// making it idempotent.
+// v26→v27 adds the harness_frames table for the raw PI JSONL frame archive.
+// The table stores every inbound and outbound frame on a
 // socket-pipe session keyed by session_name + created_at, with a denormalised
 // type column for fast --types filtering. CREATE TABLE IF NOT EXISTS and
 // CREATE INDEX IF NOT EXISTS make the migration idempotent; fresh databases
 // already have the table from the declarative schema block above.
-// v27→v28 adds the abtest_pair_id column to spawn_inputs (P4.ABTEST, #1216).
+// v27→v28 adds the abtest_pair_id column to spawn_inputs.
 // The column is nullable TEXT; NULL means the session is not part of an A/B
 // test pair. A partial index on non-NULL values enables efficient pair lookup.
 // The ALTER TABLE is guarded by a pragma_table_info check so the migration is
 // idempotent on fresh databases where the base schema already includes the
 // column.
-// v28→v29 was a no-op-from-prism's-perspective schema bump that previously
-// added a now-abandoned column to the sessions table (#1640). The migration
-// is preserved as a version-counter bump only so schema_version progresses
-// linearly through deployed databases.
-// v31→v32 adds six missing indexes for hot DB query paths (#1864):
+// v28→v29 is a version-counter-only bump, preserved so schema_version
+// progresses linearly through deployed databases.
+// v31→v32 adds six missing indexes for hot DB query paths:
 //   - idx_events_instance, idx_events_created_at on agent_events
 //   - idx_agent_status_{active,group_id,instance_id,repo_active} on agent_status
 //
 // Each CREATE INDEX uses IF NOT EXISTS so the migration is idempotent on a
 // fresh DB (which already has the indexes via the declarative schema block).
-// v34→v35 adds spawn_inputs.isolation_mode (issue #2105). The column carries
+// v34→v35 adds spawn_inputs.isolation_mode. The column carries
 // the resolved effective isolation mode the session ran under — distinct
 // from isolation_flag, which is the raw --isolation CLI value (NULL when the
 // user relied on the resolved default). The ALTER TABLE is guarded by a
 // pragma_table_info check so the migration is idempotent on fresh databases
 // where the declarative schema block above already includes the column. No
-// backfill: pre-#2105 rows keep their NULL isolation_mode and the renderer
-// falls back to isolation_flag for them.
+// backfill: rows written before it existed keep their NULL isolation_mode and
+// the renderer falls back to isolation_flag for them.
 func Open(path string) (*DB, error) {
 	// SQLite recognises the special path ":memory:" as "open a purely
 	// in-memory database" — there is no filesystem file to create or probe
@@ -570,7 +565,6 @@ func Open(path string) (*DB, error) {
 		// read-only entry point OpenReadOnly() in readonly.go does NOT
 		// perform this probe — a read-only open of an existing DB in an
 		// unwritable directory is legitimate and must keep working.
-		// (Issue #2361.)
 		if f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644); err != nil {
 			return nil, fmt.Errorf("db: cannot open %s: %w", path, err)
 		} else {
@@ -607,7 +601,7 @@ func Open(path string) (*DB, error) {
 // sqlExecutor is the statement surface shared by *sql.DB and *sql.Tx. The
 // whole open sequence (schema, schema_version seed, migrations, post-migration
 // index block) runs against it, so the same code can execute either in
-// autocommit against the raw connection or inside one transaction (#2612).
+// autocommit against the raw connection or inside one transaction.
 //
 // It deliberately omits Begin. A migration that needs its own transaction
 // cannot take one from inside the outer transaction, and the type assertion in
@@ -646,9 +640,9 @@ func errRebuildNeedsAutocommit(migration string) error {
 //
 // The sequence runs inside one transaction when batchableOpen says every
 // migration this database still needs is safe to batch. That is the common
-// case — a fresh file, or a database already at the current version — and since
-// #2612 it takes a fresh open from 73 fsyncs to 7. Otherwise the sequence runs
-// statement by statement in autocommit, exactly as it did before #2612.
+// case — a fresh file, or a database already at the current version. The
+// batched path takes a fresh open from 73 fsyncs to 7. Otherwise the sequence
+// runs statement by statement in autocommit.
 func openAndConfigure(conn *sql.DB) (*sql.DB, error) {
 	var err error
 	if batchableOpen(conn) {
@@ -691,7 +685,7 @@ func runOpenSequence(e sqlExecutor) error {
 	// declarative block (rather than only the migration) keeps fresh and
 	// migrated DBs from drifting if the v31→v32 migration is ever pruned
 	// (the DB-F16 drift class). CREATE INDEX IF NOT EXISTS makes the
-	// double-execution (declarative + migration) idempotent. (#1864)
+	// double-execution (declarative + migration) idempotent.
 	if _, err := e.Exec(postMigrationIndexes); err != nil {
 		return fmt.Errorf("db: apply post-migration indexes: %w", err)
 	}
@@ -739,8 +733,7 @@ func runOpenSequenceBatched(conn *sql.DB) error {
 // its rebuild branch during this open? Those four toggle PRAGMA foreign_keys
 // and open their own transaction around a DROP TABLE / RENAME TO, and neither
 // works inside an outer transaction. When one of them has real work to do,
-// the whole open falls back to autocommit, which is exactly the pre-#2612
-// behaviour.
+// the whole open falls back to autocommit.
 //
 // The probe is read-only: it reads schema_version and pragma_table_info and
 // writes nothing, so it costs no fsync.
@@ -853,22 +846,21 @@ func probeColumnExists(conn *sql.DB, table, column string) bool {
 //
 // Mirrors the v31→v32 and v32→v33 migration bodies. The migrations themselves
 // are the source of truth for deployed databases; this block is the declarative
-// mirror that protects against drift if a migration is ever pruned (#1864 /
-// DB-F16). CREATE INDEX IF NOT EXISTS makes both paths idempotent.
-// harness_port is also included here (added in v32→v33, #1865 / DB-F4) because
-// harness_port was itself added by a migration (v7→v8) so it cannot live in
-// the declarative schema block.
+// mirror that protects against drift if a migration is ever pruned (the DB-F16
+// drift class). CREATE INDEX IF NOT EXISTS makes both paths idempotent.
+// harness_port is also included here because harness_port was itself added by a
+// migration (v7→v8) so it cannot live in the declarative schema block.
 const postMigrationIndexes = `
--- F1 (#1864): cover WHERE instance_id = ? on agent_events for
+-- F1: cover WHERE instance_id = ? on agent_events for
 -- WriteSpawnOutcome's aggregation and SessionTurnTokens. Includes type
 -- and created_at so the CASE-on-type sums and MIN(created_at) are
 -- covered without heap reads.
 CREATE INDEX IF NOT EXISTS idx_events_instance   ON agent_events(instance_id, type, created_at);
--- F3 (#1864): standalone created_at index for EventsSince, which has no
+-- F3: standalone created_at index for EventsSince, which has no
 -- session_name / repo filter and so cannot use the leading column of
 -- idx_events_session or idx_events_repo.
 CREATE INDEX IF NOT EXISTS idx_events_created_at ON agent_events(created_at);
--- F2 (#1864): partial indexes covering hot agent_status query paths.
+-- F2: partial indexes covering hot agent_status query paths.
 -- agent_status is never pruned, so these scale with lifetime spawn
 -- count; partial WHERE clauses keep the indexes small.
 CREATE INDEX IF NOT EXISTS idx_agent_status_active        ON agent_status(ended_at)
@@ -879,7 +871,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_status_instance_id   ON agent_status(instan
   WHERE instance_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_agent_status_repo_active   ON agent_status(repo)
   WHERE ended_at IS NULL;
--- F4 (#1865): unique partial index on harness_port so that concurrent
+-- F4: unique partial index on harness_port so that concurrent
 -- AllocatePort calls cannot assign the same port to two sessions. The
 -- partial WHERE excludes NULL (released / never-allocated ports) so the
 -- uniqueness constraint only fires when a real port value is present.
@@ -1048,7 +1040,7 @@ func runMigrations(conn sqlExecutor) error {
 	return nil
 }
 
-// migrateV31ToV32 adds six missing indexes for hot DB query paths (#1864):
+// migrateV31ToV32 adds six missing indexes for hot DB query paths:
 // two on agent_events (idx_events_instance, idx_events_created_at) and four
 // partial indexes on agent_status (active, group_id, instance_id, repo_active).
 //
@@ -1075,7 +1067,7 @@ func runMigrations(conn sqlExecutor) error {
 // the declarative-vs-migrated drift class that DB-F16 calls out).
 // migrateV32ToV33 adds a partial unique index on agent_status.harness_port
 // (WHERE harness_port IS NOT NULL) to make concurrent AllocatePort calls
-// serialisable at the DB layer (#1865 / DB-F4). Without this index, two
+// serialisable at the DB layer (DB-F4). Without this index, two
 // writers racing in the check-then-write loop could both read the same
 // usedPorts snapshot, both pick the same port, and both succeed — assigning
 // the same port to two different sessions. With the unique index, the second
@@ -1085,22 +1077,22 @@ func runMigrations(conn sqlExecutor) error {
 // The partial WHERE (harness_port IS NOT NULL AND ended_at IS NULL) excludes
 // both NULL/released ports and ended sessions, so that ended sessions' ports
 // can be reclaimed by new sessions without triggering a constraint error.
-// migrateV35ToV36 adds the `delivered_at` column to session_groups
-// (issue #2259). The column is the authoritative end-of-life signal for a
+// migrateV35ToV36 adds the `delivered_at` column to session_groups.
+// The column is the authoritative end-of-life signal for a
 // review group: it is the epoch-ms timestamp at which the review-complete
 // prompt was successfully accepted by `prism prompt` (either via the happy-
 // path monitor subprocess `review.MonitorFunc`, or via the recovery-watcher
 // primitive `review.DeliverGroupResults`).
 //
-// Pre-fix, group finalisation was derived entirely from a roll-up over
-// `agent_status.state` + `ended_at`. If any process clobbered an
+// Without this column, group finalisation is derived entirely from a roll-up
+// over `agent_status.state` + `ended_at`. If any process clobbers an
 // agent_status row back to a non-terminal state after delivery (the
 // per-process sidecar-restart anti-pattern in `cmd/sidecar.go`, or the
-// inactivity-watchdog timing race documented in the issue), the four read
-// sites (`db.GroupCompleted`, `review.ActiveReviewGroupForParent` /
+// inactivity-watchdog timing race), the four read sites
+// (`db.GroupCompleted`, `review.ActiveReviewGroupForParent` /
 // `isTerminalForGuard`, and `db.ReviewGroupsList`'s `GroupState` rollup)
-// all flipped back to "in-progress" and the parent worker's next
-// `prism review` got refused with "round N already in progress".
+// all flip back to "in-progress" and the parent worker's next
+// `prism review` gets refused with "round N already in progress".
 //
 // With this column OR'd into the predicate at all four read sites, a
 // successfully delivered group is permanently classified as terminal — the
@@ -1111,14 +1103,13 @@ func runMigrations(conn sqlExecutor) error {
 // The ALTER TABLE is guarded by a pragma_table_info check so the migration
 // is idempotent on fresh databases where the declarative schema block above
 // already includes the column.
-// migrateV36ToV37 adds two new columns in a single migration
-// (#2317 §3f / #2319):
+// migrateV36ToV37 adds two new columns in a single migration:
 //
 //   - agent_status.containers_enabled INTEGER NOT NULL DEFAULT 0 — the
 //     runtime gate read by the sidecar to decide whether to start the
 //     per-session filtering podman API socket proxy. Default 0 means no
-//     proxy; the column is flipped to 1 by Step 3 (sidecar wiring) and
-//     Step 6 (`prism spawn --containers`).
+//     proxy; the column is flipped to 1 by the sidecar wiring and
+//     `prism spawn --containers`.
 //   - spawn_inputs.containers_flag INTEGER NOT NULL DEFAULT 0 — audit
 //     symmetry with host_mode_flag / isolation_flag. Captures whether
 //     the user passed `--containers` at spawn time, independent of the
@@ -1126,7 +1117,7 @@ func runMigrations(conn sqlExecutor) error {
 //     block.
 //
 // Both columns are added in one migration because they share a single
-// rationale (the containers feature train of #2317) and the migration
+// rationale (the containers feature) and the migration
 // runner is sequential anyway — splitting would only inflate the
 // schema-version counter without any operational benefit.
 //
@@ -1171,16 +1162,14 @@ func migrateV36ToV37(conn sqlExecutor, version *int) error {
 }
 
 // migrateV37ToV38 rescopes pending_merges by repo so that PR numbers no
-// longer collide across repositories sharing one prism.db (issue #2354).
+// longer collide across repositories sharing one prism.db.
 //
-// Background — the incident. Before this migration, pending_merges was
-// keyed by (pr INTEGER PRIMARY KEY) alone, and every WHERE clause in
-// mergequeue.go was `WHERE pr = ?` with no repo scope. On 2026-07-06 an
-// aws-databases coordinator ran `prism merge 47` and its re-entry
-// short-circuit (observeExistingMergeRow, cmd/merge.go) matched a
-// terminal `merged` row that belonged to a DIFFERENT repo's PR #47.
-// The short-circuit printed `PR #47 merged.` and the coordinator
-// destructively cleaned up an unmerged worker.
+// Background — why repo scoping. Keyed by (pr INTEGER PRIMARY KEY) alone,
+// every WHERE clause in mergequeue.go is `WHERE pr = ?` with no repo scope.
+// A `prism merge 47` in one repo can then match a terminal `merged` row that
+// belongs to a DIFFERENT repo's PR #47 through the re-entry short-circuit
+// (observeExistingMergeRow, cmd/merge.go), print `PR #47 merged.`, and
+// destructively clean up an unmerged worker.
 //
 // Fix — add repo TEXT NOT NULL and rebuild the table with
 // PRIMARY KEY (repo, pr). SQLite requires a full table rebuild to
@@ -1225,7 +1214,7 @@ func migrateV37ToV38(conn sqlExecutor, version *int) error {
 	// pattern is what the SQLite docs recommend for any table rebuild:
 	// https://www.sqlite.org/lang_altertable.html#otheralter
 	//
-	// Autocommit-only (#2612): PRAGMA foreign_keys is a no-op inside a
+	// Autocommit-only: PRAGMA foreign_keys is a no-op inside a
 	// transaction and conn.Begin below would nest. batchableOpen keeps this
 	// branch out of the batched open path; the assertion enforces it.
 	autocommitConn, ok := conn.(*sql.DB)
@@ -1309,7 +1298,7 @@ func migrateV37ToV38(conn sqlExecutor, version *int) error {
 // in-memory only — if the sidecar exited between accepting a buffered
 // delivery (200 {"buffered": true}) and the next successful pipe
 // handshake, the delivery was destroyed and the coordinator's directive
-// vanished silently. See issue #2359 Gap B for the incident.
+// vanished silently.
 //
 // The migration is idempotent: CREATE TABLE IF NOT EXISTS and CREATE
 // INDEX IF NOT EXISTS make it safe to run on a fresh database whose
@@ -1345,7 +1334,7 @@ func migrateV38ToV39(conn sqlExecutor, version *int) error {
 
 // migrateV39ToV40 adds title provenance and the issue/ticket reference to
 // agent_status, and clears every title whose provenance cannot be
-// established (issue #2683).
+// established.
 //
 // Two columns, both nullable TEXT, both added with a guarded ALTER TABLE in
 // the muted-column template (v33→v34):
@@ -1360,34 +1349,33 @@ func migrateV38ToV39(conn sqlExecutor, version *int) error {
 // Why the UPDATE clears titles
 // ----------------------------
 //
-// The dashboard was showing three-month-old work. `home-ops@main` carried
-// "Renovate PR #2887 app-template v5 upgrade review" — a PR merged
-// 2026-05-07, two days before the earliest retained pi event. Those titles
-// were written by opencode, the previous harness, and survived because
+// A stale title can persist indefinitely. A row like `home-ops@main` can
+// carry an old title such as "Renovate app-template v5 upgrade review",
+// written by opencode, the previous harness. It survives because
 // UpsertStatusSeedRootAgentName applies `title = COALESCE(excluded.title,
 // title)`: a title written once resurfaces on every respawn of a stable
-// session name, permanently. Adding a "do not overwrite an existing title"
-// rule on top would have preserved them for good.
+// session name, permanently. A "do not overwrite an existing title" rule on
+// top would preserve such titles for good.
 //
 // The clear is scoped to `title_source IS NULL`, which before this migration
 // is EVERY row. That is the honest scope, and it is deliberately wider than
 // "the three known-stale rows":
 //
 //   - Provenance is precisely what did not exist before this change, so no
-//     pre-migration title can be attributed to opencode, to #2641's
-//     fallback, or to a human. There is no column to sort them by and no
-//     timestamp of the title write.
-//   - The last attempt to attribute them retroactively got it wrong —
-//     internal/session/title_fallback.go called them human renames, and they
-//     were opencode artifacts. Repeating that guess to save a display string
-//     is a bad trade.
+//     pre-migration title can be attributed to opencode, to a fallback, or
+//     to a human. There is no column to sort them by and no timestamp of the
+//     title write.
+//   - Attributing them retroactively is guesswork —
+//     internal/session/title_fallback.go once treated them as human renames
+//     when they were opencode artifacts. Repeating that guess to save a
+//     display string is a bad trade.
 //   - Clearing is self-healing and cheap. `title` is a display column with
 //     no referential meaning: SpawnSession re-seeds a fallback from the
 //     spawn prompt on the next spawn of the name, and the generator titles
 //     eligible sessions on their first turn. The only visible cost is that a
 //     session live at upgrade time shows no title until its next
 //     incarnation.
-//   - Keeping an unattributable title is what the issue is about. Retention
+//   - Keeping an unattributable title has a real cost. Retention
 //     is permanent under COALESCE; a blank cell lasts until the next spawn.
 //
 // After this runs, every title written carries a source, so no later
@@ -1432,10 +1420,10 @@ func migrateV39ToV40(conn sqlExecutor, version *int) error {
 }
 
 // migrateV40ToV41 adds a nullable account_name column to agent_events and to
-// spawn_inputs (issue #2714, parent #2699).
+// spawn_inputs.
 //
 // The column records the active prism account name at the moment each row is
-// written, so that #2704 can attribute spend to a subscription. It is written
+// written, so that the cost counter can attribute spend to a subscription. It is written
 // by WriteEvent / WriteEventReturningRowID (per event) and by
 // InsertSpawnInputs (per spawn) from the mtime-cached resolver in
 // account_name.go. See that file for why capture happens at write time rather
@@ -1480,21 +1468,20 @@ func migrateV40ToV41(conn sqlExecutor, version *int) error {
 	return nil
 }
 
-// migrateV41ToV42 adds a nullable profile_name column to agent_events
-// (issue #2768, parent #2699).
+// migrateV41ToV42 adds a nullable profile_name column to agent_events.
 //
 // The column records the active prism profile at the moment each event row is
-// written, so the #2704 cost counter can attribute spend to the real tier of
+// written, so the cost counter can attribute spend to the real tier of
 // EVERY session — including a coordinator, which is never spawned and so has
-// no spawn_inputs row to join to. Before this column, CostEventsTailSQL
-// LEFT JOINed spawn_inputs for the profile; that join missed for every
-// coordinator and folded all of their spend to "default", which was 58% of
-// live fleet spend. It is written by WriteEvent / WriteEventReturningRowID
+// no spawn_inputs row to join to. Without this column, CostEventsTailSQL
+// LEFT JOINs spawn_inputs for the profile; that join misses for every
+// coordinator and folds all of their spend to "default". It is written by
+// WriteEvent / WriteEventReturningRowID
 // from the mtime-cached resolver in profile_name.go. See that file for why
 // capture happens at write time rather than at scrape time.
 //
 // No backfill — the same policy as migrateV40ToV41's account_name, and the
-// same answer #2767 reaches for the repo label. These are tail-cursor
+// same answer used for the repo label. These are tail-cursor
 // counters: corrected values start a NEW series and the historical "default"
 // spend stays misattributed. It cannot be recomputed, because the tier was
 // never recorded on those rows and guessing today's active profile for an old
@@ -1531,8 +1518,7 @@ func migrateV41ToV42(conn sqlExecutor, version *int) error {
 	return nil
 }
 
-// migrateV42ToV43 adds a nullable provider_flag column to spawn_inputs
-// (issue #2852).
+// migrateV42ToV43 adds a nullable provider_flag column to spawn_inputs.
 //
 // The column records the raw `prism spawn --provider <name>` value, so a
 // session spawned against an alternative routing provider is auditable the
@@ -1595,14 +1581,14 @@ func migrateV35ToV36(conn sqlExecutor, version *int) error {
 	return nil
 }
 
-// migrateV34ToV35 adds the `isolation_mode` column to spawn_inputs
-// (issue #2105). The new column carries the resolved effective isolation
+// migrateV34ToV35 adds the `isolation_mode` column to spawn_inputs.
+// The new column carries the resolved effective isolation
 // mode the session ran under, captured at spawn time after profile /
 // config / Nix-default resolution — distinct from `isolation_flag`, which
 // preserves the raw --isolation CLI flag value (NULL when omitted) purely
 // as an audit trail.
 //
-// Pre-#2105 rows keep NULL `isolation_mode`; no backfill is performed.
+// Rows written before it existed keep NULL `isolation_mode`; no backfill is performed.
 // The `prism stats compare` renderer falls back to `isolation_flag` for
 // those rows so they continue to display whatever was originally recorded.
 //
@@ -1633,7 +1619,7 @@ func migrateV34ToV35(conn sqlExecutor, version *int) error {
 	return nil
 }
 
-// migrateV33ToV34 adds the `muted` column to agent_status (issue #2013).
+// migrateV33ToV34 adds the `muted` column to agent_status.
 // The column is `INTEGER NOT NULL DEFAULT 0` so existing rows are
 // initialised as unmuted (false). The ALTER TABLE is guarded by a
 // pragma_table_info check so the migration is idempotent on fresh databases
@@ -1712,8 +1698,8 @@ func migrateV31ToV32(conn sqlExecutor, version *int) error {
 }
 
 // migrateV30ToV31 adds pr_number and round columns to session_groups so the
-// worker sidecar's review-completion recovery watcher (#1709 reopen) can
-// reconstruct enough context to format and deliver the review-complete prompt
+// worker sidecar's review-completion recovery watcher can reconstruct enough
+// context to format and deliver the review-complete prompt
 // when the detached monitor subprocess dies. Both columns are nullable for
 // back-compat with rows registered prior to this migration; the recovery
 // watcher tolerates NULL by emitting a degraded but still actionable header.
@@ -1874,7 +1860,7 @@ func migrateV7toV8(conn sqlExecutor, version *int) error {
 		return nil
 	}
 	// Migration v7 → v8: add harness columns to agent_status for multi-harness
-	// support (RFC #691). harness defaults to 'pi' so existing rows
+	// support. harness defaults to 'pi' so existing rows
 	// retain their implicit harness assignment without data loss.
 	// harness_session_id and harness_port are nullable parallels of
 	// opencode_sid and opencode_port; both old and new columns are written
@@ -1917,7 +1903,7 @@ func migrateV8toV9(conn sqlExecutor, version *int) error {
 	//
 	// See https://www.sqlite.org/lang_altertable.html#otheralter
 	//
-	// Autocommit-only (#2612): PRAGMA foreign_keys is a no-op inside a
+	// Autocommit-only: PRAGMA foreign_keys is a no-op inside a
 	// transaction and conn.Begin below would nest. batchableOpen keeps this
 	// branch out of the batched open path; the assertion enforces it.
 	autocommitConn, ok := conn.(*sql.DB)
@@ -2051,7 +2037,7 @@ func migrateV11toV12(conn sqlExecutor, version *int) error {
 		return nil
 	}
 	// Migration v11 → v12: add a partial unique index enforcing at most one
-	// active coordinator per repo (§6.1 from #849). The index is partial so
+	// active coordinator per repo. The index is partial so
 	// that:
 	//   - ended coordinators (ended_at IS NOT NULL) are excluded, allowing
 	//     a new coordinator to start for the same repo after the previous one ends.
@@ -2078,7 +2064,7 @@ func migrateV12toV13(conn sqlExecutor, version *int) error {
 	}
 	// Migration v12 → v13: one-shot maintenance cleanup of agent_status rows
 	// whose session_name matches legacy malformed review-agent patterns
-	// produced by a historical recursive-review bug (#826).
+	// produced by a historical recursive-review bug.
 	//
 	// Patterns matched (three LIKE clauses cover all observed shapes):
 	//   %~review-%~review%  — doubled ~review with no role suffix
@@ -2311,12 +2297,11 @@ func migrateV16toV17(conn sqlExecutor, version *int) error {
 	if *version != 16 {
 		return nil
 	}
-	// Migration v16 → v17: no-op bridge. This slot is occupied by PR #1014
-	// (local serial merge queue / pending_merges table). When #1014 lands
-	// before this PR, the DB arrives here already at v17 and this block is
-	// skipped. When this PR lands first (or standalone), this bridge bumps
-	// the schema to v17 so the v17→v18 backfill block below is always
-	// reachable regardless of merge order.
+	// Migration v16 → v17: no-op bridge that reserves the v17 slot for the
+	// local serial merge queue (pending_merges table). When that work lands
+	// first, the DB arrives here already at v17 and this block is skipped.
+	// Otherwise the bridge bumps the schema to v17 so the v17→v18 backfill
+	// block below is always reachable.
 	if _, err := conn.Exec("UPDATE schema_version SET version = 17"); err != nil {
 		return fmt.Errorf("db: migration v16→v17: bump version: %w", err)
 	}
@@ -2388,7 +2373,7 @@ func migrateV18toV19(conn sqlExecutor, version *int) error {
 		return nil
 	}
 	// Migration v18 → v19: introduce the pending_merges table for the
-	// local serial merge queue (#783). Uses CREATE TABLE IF NOT EXISTS and
+	// local serial merge queue. Uses CREATE TABLE IF NOT EXISTS and
 	// CREATE INDEX IF NOT EXISTS so this migration is fully idempotent —
 	// running it against a fresh database that already has the table from
 	// the declarative schema block above is a safe no-op.
@@ -2424,8 +2409,8 @@ func migrateV19toV20(conn sqlExecutor, version *int) error {
 	}
 	// Migration v19 → v20: add idx_pending_merges_status_session on
 	// pending_merges(session_name, status, queue_position) to cover the
-	// MergeQueueHead query, which was changed to filter by session_name
-	// instead of instance_id (#1039). The old instance-keyed index is
+	// MergeQueueHead query, which filters by session_name
+	// rather than instance_id. The old instance-keyed index is
 	// preserved — it is still used by AbandonWatchingMerges and
 	// CancelMerge. CREATE INDEX IF NOT EXISTS makes this idempotent.
 	steps := []string{
@@ -2447,9 +2432,9 @@ func migrateV20toV21(conn sqlExecutor, version *int) error {
 	}
 	// Migration v20 → v21: backfill sessions.harness_session_id from
 	// agent_status for rows where sessions.harness_session_id IS NULL.
-	// UpdateHarnessSessionID historically only wrote to agent_status; this
-	// one-shot backfill ensures that sessions created before the fix for
-	// #1126 also have harness_session_id set in the sessions table, so that
+	// UpdateHarnessSessionID once wrote only to agent_status. This one-shot
+	// backfill sets harness_session_id in the sessions table for sessions
+	// created before it wrote to both tables, so that
 	// cleanup.runSessionArchive can archive them on the next run.
 	//
 	// The join is on instance_id (present in both tables). Rows where
@@ -2489,8 +2474,8 @@ func migrateV21toV22(conn sqlExecutor, version *int) error {
 	// cover rows where started_at = 0 (literal Unix epoch). The v17→v18
 	// migration fixed rows where started_at < 0 (Go zero-time marshalled as
 	// -62135596800000 ms), but a separate code path could store started_at = 0
-	// directly, producing "00010101T000000Z_" directory names in the archive
-	// (#1127). The same recovery strategy is used: set started_at to
+	// directly, producing "00010101T000000Z_" directory names in the archive.
+	// The same recovery strategy is used: set started_at to
 	// MIN(agent_events.created_at) for the matching instance_id. Rows with no
 	// matching events are left with started_at = 0 and will display as
 	// "00010101T000000Z_<instanceID>" in archive listings (the same
@@ -2551,7 +2536,7 @@ func migrateV22toV23(conn sqlExecutor, version *int) error {
 	// (db.Status).EffectiveIsolationMode() (since deleted): host_mode=1 → 'host', else →
 	// 'podman'. The WHERE clause skips rows already set, making the
 	// migration idempotent. Fresh databases have no rows so this is a
-	// no-op. (#1129)
+	// no-op.
 	//
 	// Skip the UPDATE when host_mode no longer exists in the schema (the
 	// v25→v26 migration drops it). On a fresh database created after that
@@ -2582,8 +2567,8 @@ func migrateV23toV24(conn sqlExecutor, version *int) error {
 	}
 	// Migration v23 → v24: drop sessions.outcome_summary (a JSON
 	// placeholder column with zero writers) and add the spawn_outcome
-	// table (issue #1130 — the discrete-event aggregation row that
-	// supersedes outcome_summary).
+	// table (the discrete-event aggregation row that supersedes
+	// outcome_summary).
 	//
 	// Dropping a column from sessions requires recreating the table because
 	// SQLite < 3.35 does not support ALTER TABLE ... DROP COLUMN and because
@@ -2614,7 +2599,7 @@ func migrateV23toV24(conn sqlExecutor, version *int) error {
 		//
 		// See https://www.sqlite.org/lang_altertable.html#otheralter
 		//
-		// Autocommit-only (#2612): PRAGMA foreign_keys is a no-op inside a
+		// Autocommit-only: PRAGMA foreign_keys is a no-op inside a
 		// transaction and conn.Begin below would nest. batchableOpen keeps
 		// this branch out of the batched open path; the assertion enforces it.
 		autocommitConn, ok := conn.(*sql.DB)
@@ -2725,8 +2710,7 @@ func migrateV24toV25(conn sqlExecutor, version *int) error {
 	if *version != 24 {
 		return nil
 	}
-	// Migration v24 → v25: add the spawn_inputs table (#2087 introduced
-	// the table; #2092 / #2093 fixed the profile_name write path).
+	// Migration v24 → v25: add the spawn_inputs table.
 	// The table holds the intent of a spawn — every flag value the user
 	// passed — keyed on instance_id (FK → sessions). Also includes
 	// agent_prompt_hash (C4.AP) and skills_manifest_hash (C4.SK) columns.
@@ -2773,11 +2757,11 @@ func migrateV25toV26(conn sqlExecutor, version *int) error {
 		return nil
 	}
 	// Migration v25 → v26: drop host_mode column from agent_status.
-	// All rows already have isolation_mode set (guaranteed by v22→v23
-	// backfill, #1129), so host_mode is redundant. We use the
+	// All rows already have isolation_mode set (guaranteed by the v22→v23
+	// backfill), so host_mode is redundant. We use the
 	// rename-copy-drop idiom because SQLite does not support
 	// ALTER TABLE ... DROP COLUMN portably. The migration is conditional
-	// on the column still existing, making it idempotent. (#1137)
+	// on the column still existing, making it idempotent.
 	var hmColExists int
 	if err := conn.QueryRow(
 		`SELECT COUNT(*) FROM pragma_table_info('agent_status') WHERE name = 'host_mode'`,
@@ -2789,7 +2773,7 @@ func migrateV25toV26(conn sqlExecutor, version *int) error {
 		// state is never visible to concurrent readers. PRAGMA foreign_keys
 		// must be set outside the transaction (SQLite requirement).
 		//
-		// Autocommit-only (#2612): PRAGMA foreign_keys is a no-op inside a
+		// Autocommit-only: PRAGMA foreign_keys is a no-op inside a
 		// transaction and conn.Begin below would nest. batchableOpen keeps
 		// this branch out of the batched open path; the assertion enforces it.
 		autocommitConn, ok := conn.(*sql.DB)
@@ -2864,7 +2848,7 @@ func migrateV26toV27(conn sqlExecutor, version *int) error {
 		return nil
 	}
 	// Migration v26 → v27: introduce the harness_frames table for the PI
-	// raw JSONL frame archive (P5.LOGS / #1218). The table stores every
+	// raw JSONL frame archive. The table stores every
 	// inbound (extension→sidecar) and outbound (sidecar→extension) frame
 	// for socket-pipe sessions, keyed by session_name and created_at, so
 	// `prism logs --harness-events <session>` can replay the wire-protocol
@@ -2908,8 +2892,8 @@ func migrateV26toV27(conn sqlExecutor, version *int) error {
 	return nil
 }
 
-// migrateV27ToV28 adds the abtest_pair_id column to spawn_inputs (P4.ABTEST,
-// issue #1216). The column is nullable TEXT; NULL means the session is not
+// migrateV27ToV28 adds the abtest_pair_id column to spawn_inputs.
+// The column is nullable TEXT; NULL means the session is not
 // part of an A/B test pair. A partial index on the non-NULL values allows
 // efficient lookup of both sessions in a pair.
 // The ALTER TABLE is guarded by a pragma_table_info check so the migration
@@ -2960,8 +2944,8 @@ func migrateV28ToV29(conn sqlExecutor, version *int) error {
 	return nil
 }
 
-// migrateV29ToV30 adds the parent_session TEXT column to the sessions table
-// (issue #1700). The column is populated at session-spawn time from the
+// migrateV29ToV30 adds the parent_session TEXT column to the sessions table.
+// The column is populated at session-spawn time from the
 // spawning session's identity (PRISM_SESSION_NAME on the calling pi child,
 // forwarded through the session_spawn wire frame). The terminal-state
 // notification path reads this column to locate the parent session that
@@ -3030,21 +3014,21 @@ type SpawnInputs struct {
 	VariantFlag *string
 	AgentFlag   *string
 	HarnessFlag *string
-	// ProviderFlag is the raw --provider flag value as the user passed it
-	// (issue #2852). nil when the flag was omitted, in which case the
-	// profile slot's provider was in effect.
+	// ProviderFlag is the raw --provider flag value as the user passed it.
+	// nil when the flag was omitted, in which case the profile slot's
+	// provider was in effect.
 	ProviderFlag *string
 	// IsolationFlag is the raw --isolation flag value as the user passed
 	// it. nil when the flag was omitted (the common case). Preserved as an
 	// audit trail; downstream readers that want the actual mode the
-	// session ran under should consult IsolationMode (below) instead.
+	// session ran under must consult IsolationMode (below) instead.
 	IsolationFlag *string
 	// IsolationMode is the resolved effective isolation mode the session
 	// actually ran under ("bwrap", "sandbox-exec", "host"),
 	// captured at spawn time after profile / config / Nix-default
-	// resolution. Always populated by the centralised writer post-#2105 so
-	// the `prism stats compare` Spawn Inputs block can surface it. nil only
-	// on pre-#2105 rows or when a writer somehow omits it.
+	// resolution. Always populated by the centralised writer so the
+	// `prism stats compare` Spawn Inputs block can surface it. nil only on
+	// rows written before it existed or when a writer somehow omits it.
 	IsolationMode *string
 	HostModeFlag  bool
 	PRNumber      *int
@@ -3052,7 +3036,7 @@ type SpawnInputs struct {
 
 	IgnoreConcurrencyCap bool
 
-	// ContainersFlag mirrors --containers (#2317 §3f / #2319). Audit-only
+	// ContainersFlag mirrors --containers. Audit-only
 	// symmetry with HostModeFlag / IsolationFlag; the live runtime gate is
 	// agent_status.containers_enabled (Status.ContainersEnabled). Defaults
 	// to false when the caller does not set it.
@@ -3081,7 +3065,7 @@ type SpawnInputs struct {
 	// Free-form JSON blob for forward-compat.
 	Extras *string
 
-	// AccountName is the active prism account at spawn time (issue #2714).
+	// AccountName is the active prism account at spawn time.
 	// It is populated on read by SpawnInputsByInstanceID. On write it is
 	// IGNORED: InsertSpawnInputs resolves the account itself from the
 	// mtime-cached resolver, so the recorded value always reflects the live

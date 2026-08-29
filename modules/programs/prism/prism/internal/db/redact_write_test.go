@@ -1,6 +1,6 @@
 package db_test
 
-// Write-time credential redaction (issue #2589).
+// Write-time credential redaction.
 //
 // These tests assert the SECOND control: a payload that reaches the database
 // layer with a credential in it does not reach a row with a credential in it.
@@ -300,10 +300,10 @@ func TestSetRedactor_NilRestoresTheProcessDefault(t *testing.T) {
 // ---------------------------------------------------------------------------
 // JSON-structure safety at write time.
 //
-// Regression tests for the round-1 review finding on PR #2606: the write-time
-// control applied the shape regexp to the serialised payload with no
-// structural awareness, so the private-key-block shape could span a JSON
-// delimiter and either store invalid JSON or silently delete fields. The
+// Tests for JSON-structure safety at write time. The write-time control
+// applies the shape regexp to the serialised payload. Without structural
+// awareness, the private-key-block shape can span a JSON delimiter and either
+// store invalid JSON or silently delete fields. The
 // intact original is never stored, so the damage was permanent.
 // ---------------------------------------------------------------------------
 

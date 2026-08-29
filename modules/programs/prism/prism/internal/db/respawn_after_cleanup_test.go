@@ -1,13 +1,13 @@
 package db_test
 
-// respawn_after_cleanup_test.go — regression tests for issue #2094.
+// Regression tests for the respawn-after-cleanup transition.
 //
 // `prism cleanup --yes --session <name>` does not touch agent_status.state;
 // it sets ended_at. Re-spawning on the same branch name calls
 // UpsertStatusSeedRootAgentName with state="idle", which routes through
-// the state-machine advisory checkTransition. Before #2094, the
-// ValidTransitions[StateError] map did not include StateIdle, so the
-// re-spawn-after-error path logged
+// the state-machine advisory checkTransition. If the
+// ValidTransitions[StateError] map does not include StateIdle, the
+// re-spawn-after-error path logs
 //
 //   [prism] UpsertStatusSeedRootAgentName: invalid transition for session
 //   "...": agent state machine: invalid transition "error" → "idle"
@@ -38,7 +38,7 @@ import (
 
 // captureStderr runs fn with os.Stderr redirected to a pipe, drains the pipe
 // concurrently to avoid the pipe-buffer deadlock documented in
-// docs/stdout-capture-testing.md (issue #1798), and returns the captured
+// docs/stdout-capture-testing.md, and returns the captured
 // bytes. Stderr is always restored even if fn panics.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
@@ -92,7 +92,7 @@ func simulateCleanup(t *testing.T, d *db.DB, session string) {
 	}
 }
 
-// TestRespawnAfterCleanup_NoTransitionWarning is AC #1 from issue #2094:
+// TestRespawnAfterCleanup_NoTransitionWarning is AC #1:
 // after cleanup leaves the row at a terminal state (error / finished /
 // interrupted), re-seeding via UpsertStatusSeedRootAgentName with state=idle
 // must not log "invalid transition" for any of those prior states.

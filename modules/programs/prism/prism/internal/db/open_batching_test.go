@@ -1,13 +1,13 @@
 package db
 
-// open_batching_test.go — tests for the batched open sequence (issue #2612).
+// open_batching_test.go — tests for the batched open sequence.
 //
-// Before #2612, db.Open ran the declarative schema, the schema_version seed,
-// all 38 migrations, and the post-migration index block statement by statement
-// in autocommit. Under journal_mode=WAL with synchronous=FULL every one of those
-// commits fsyncs the WAL, which cost 73 fsyncs on a fresh file.
+// Statement by statement in autocommit, db.Open runs the declarative schema,
+// the schema_version seed, all 38 migrations, and the post-migration index
+// block. Under journal_mode=WAL with synchronous=FULL every one of those
+// commits fsyncs the WAL, which costs 73 fsyncs on a fresh file.
 //
-// Since #2612 the open sequence runs inside one transaction when batchableOpen
+// The batched open sequence runs inside one transaction when batchableOpen
 // says that is safe. It is not safe when a table-rebuild migration still has
 // work to do: those four toggle PRAGMA foreign_keys, which SQLite silently
 // ignores inside a transaction, and they open their own transaction, which
@@ -361,9 +361,9 @@ func TestRebuildMigrationSet_MatchesProbe(t *testing.T) {
 // databases, one through the batched transaction and one statement by
 // statement in autocommit, and compares the result.
 //
-// The batched path is new; the autocommit path is what db.Open did before
-// #2612. Byte-identical sqlite_master and schema_version output is the
-// evidence that batching changed the cost of an open and nothing else.
+// The batched path and the autocommit path must produce byte-identical
+// sqlite_master and schema_version output. That is the evidence that batching
+// changed the cost of an open and nothing else.
 func TestOpenSequence_BatchedAndAutocommitProduceIdenticalSchema(t *testing.T) {
 	dir := t.TempDir()
 
@@ -428,7 +428,7 @@ func dumpSchemaForTest(t *testing.T, conn *sql.DB) string {
 
 // TestBatchableOpen_OldShapedDatabaseWithMissingSchemaVersion verifies that
 // batchableOpen correctly detects old-shaped databases when schema_version is
-// unreadable (issue #2630, edge-case AC #1).
+// unreadable (edge-case AC #1).
 //
 // A v23-shaped database with outcome_summary column should take the autocommit
 // path, not the batched path. Without this fix, batchableOpen would return true,

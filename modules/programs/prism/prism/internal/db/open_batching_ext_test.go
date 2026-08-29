@@ -1,7 +1,7 @@
 package db_test
 
-// open_batching_ext_test.go — black-box tests for the batched open sequence
-// (issue #2612), driven through db.Open.
+// open_batching_ext_test.go — black-box tests for the batched open sequence,
+// driven through db.Open.
 //
 // The companion white-box tests are in open_batching_test.go. These cover the
 // three properties a caller of db.Open can observe:
@@ -203,7 +203,7 @@ func TestOpen_FailurePartWayThrough_LeavesNoPartialDatabase(t *testing.T) {
 // Batching cuts the number of commits. It must not cut the durability of the
 // commits that remain, so SQLite must still be at synchronous=FULL (2). The
 // cheaper alternative — relaxing synchronous to NORMAL — is deliberately out
-// of scope for #2612.
+// of scope.
 func TestOpen_SynchronousStaysFull(t *testing.T) {
 	d, err := db.Open(filepath.Join(t.TempDir(), "durability.db"))
 	if err != nil {

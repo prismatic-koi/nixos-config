@@ -27,8 +27,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`
 }
 
 // WriteBusMessageDelivered inserts a new row into bus_messages with
-// delivered_at set to now. This is used for audit-trail writes when a prompt
-// was delivered via HTTP (so the plugin doesn't need to deliver it again).
+// delivered_at set to now. It records an audit-trail write for a prompt that
+// was delivered via HTTP, so the plugin does not deliver it again.
 func (d *DB) WriteBusMessageDelivered(msg BusMessage) error {
 	now := time.Now().UnixMilli()
 	var sentAt int64
@@ -91,7 +91,7 @@ WHERE delivered_at IS NULL
 // addressed to toSession whose to_instance_id does not match
 // currentInstanceID. This purges messages written to a previous incarnation
 // of the session that never got delivered. Messages with to_instance_id IS
-// NULL (legacy / no instance tagging), delivered messages
+// NULL (no instance tag), delivered messages
 // (delivered_at IS NOT NULL), and failed-delivery audit records
 // (failed_at IS NOT NULL) are all left intact.
 //
@@ -114,15 +114,14 @@ WHERE to_session = ?
 // FindRecentEquivalentBusMessage returns the most recent bus_messages row
 // matching (fromSession, toSession, text) byte-equal whose sent_at is within
 // the given window (>= now - window). It returns (nil, nil) when no match
-// exists. failed_at must be NULL on the match — a previously-failed send is
-// not a valid prior delivery to dedup against; the caller is expected to
-// retry. delivered_at MAY be NULL (queued but not yet flushed) — that still
-// counts as a prior in-flight delivery the caller should not duplicate.
+// exists. failed_at must be NULL on the match. A failed send is not a valid
+// prior delivery to dedup against, so the caller must retry. delivered_at can
+// be NULL (queued but not yet flushed). That still counts as a prior
+// in-flight delivery the caller must not duplicate.
 //
 // This powers the sender-side idempotency guard in `prism escalate` so a
 // worker that re-runs the same `escalate` invocation within a short window
 // (default 5 minutes) does not produce a second delivery to the coordinator.
-// See issue #2018.
 func (d *DB) FindRecentEquivalentBusMessage(fromSession, toSession, text string, window time.Duration) (*BusMessage, error) {
 	threshold := time.Now().Add(-window).UnixMilli()
 	const q = `

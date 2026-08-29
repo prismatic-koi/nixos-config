@@ -1,10 +1,10 @@
 package db_test
 
-// Fsync measurement harness for db.Open (issue #2612).
+// Fsync measurement harness for db.Open.
 //
 // TestProbeFreshOpen performs exactly one db.Open against a fresh database
 // file and nothing else. It is the probe the fsync measurement in
-// docs/test-database-fsync.md and issue #2612 refer to:
+// docs/test-database-fsync.md refers to:
 //
 //	go test -c -o /tmp/db.test ./internal/db/
 //	strace -f -c -e trace=fsync /tmp/db.test -test.run '^TestProbeFreshOpen$'

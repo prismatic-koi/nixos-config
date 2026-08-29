@@ -13,7 +13,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
-// hotPathIndexNames lists every index added by the v31→v32 migration (#1864).
+// hotPathIndexNames lists every index added by the v31→v32 migration.
 // Maps each index name to its table; the test asserts pragma_index_list
 // reports the index against the right table.
 var hotPathIndexNames = map[string]string{
@@ -26,7 +26,7 @@ var hotPathIndexNames = map[string]string{
 }
 
 // TestHotPathIndexes_ExistAfterOpen verifies that every index added by the
-// v31→v32 migration (#1864) is present on a freshly opened DB. The check
+// v31→v32 migration is present on a freshly opened DB. The check
 // uses pragma_index_list(<table>) rather than scanning sqlite_master so
 // that index visibility is asserted from the same metadata the planner
 // consults — if the index is reported here, EXPLAIN QUERY PLAN can use it.
@@ -78,7 +78,7 @@ func openRawSQLite(t *testing.T, path string) *sql.DB {
 }
 
 // TestHotPathIndexes_QueryPlanUsesIndex captures EXPLAIN QUERY PLAN for the
-// three hot-path queries called out in #1864 and asserts each plan reports
+// three hot-path queries and asserts each plan reports
 // `SEARCH … USING INDEX <name>` rather than `SCAN`. This proves the new
 // indexes are not just present, they are actually selected by the SQLite
 // query planner for the relevant access pattern.
@@ -112,7 +112,7 @@ func TestHotPathIndexes_QueryPlanUsesIndex(t *testing.T) {
 	}
 
 	// Insert all 10k agent_events in one transaction so the seed pays a single
-	// commit (one fsync) instead of ~10k (#2611). WriteEvent's only effect
+	// commit (one fsync) instead of ~10k. WriteEvent's only effect
 	// beyond the agent_events INSERT is a last_seen bump on a matching
 	// agent_status row; no agent_status rows exist yet (they are seeded
 	// below), so that UPDATE is a no-op here and the batched INSERT is

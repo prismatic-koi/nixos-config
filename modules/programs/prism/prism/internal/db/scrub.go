@@ -1,5 +1,4 @@
-// Remediation for rows written before the capture path redacted anything
-// (issue #2589).
+// Remediation for rows written before the capture path redacted anything.
 //
 // The write-time control in redact.go protects new rows only. Rows already in
 // prism.db hold whatever the agents printed, and the 90-day prune is far too

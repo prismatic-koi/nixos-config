@@ -1,6 +1,6 @@
 package db_test
 
-// Tests for SetGeneratedTitle and title provenance (#2683).
+// Tests for SetGeneratedTitle and title provenance.
 
 import (
 	"path/filepath"

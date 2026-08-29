@@ -18,7 +18,7 @@ import (
 //
 // countingDriver wraps modernc.org/sqlite to count every QueryContext call
 // observed at the database/sql ↔ driver boundary. It is used by the
-// query-count invariant tests for #1868: it lets us assert that
+// query-count invariant tests: it lets us assert that
 // GroupResults and ReviewGroupsList issue a bounded number of SQL
 // queries regardless of input size, regardless of whether database/sql
 // dispatches via the QueryerContext fast path or via PrepareContext +
@@ -290,8 +290,8 @@ func seedGroupWithMembers(t *testing.T, d *DB, n int) (groupID string, sessions 
 // ── F7: GroupResults query-count invariant ───────────────────────────────────
 
 // TestGroupResults_QueryCountBounded asserts that GroupResults issues at
-// most 2 SQL queries regardless of member count (#1868 F7). The previous
-// implementation issued 2 QueryRow calls per member after the initial
+// most 2 SQL queries regardless of member count (F7). A per-member
+// implementation would issue 2 QueryRow calls per member after the initial
 // status fetch, growing linearly with the group size.
 func TestGroupResults_QueryCountBounded(t *testing.T) {
 	const memberCount = 8
@@ -345,7 +345,7 @@ func TestGroupResults_QueryCountConstantInN(t *testing.T) {
 // ── F8: ReviewGroupsList query-count invariant ───────────────────────────────
 
 // TestReviewGroupsList_QueryCountBounded asserts that ReviewGroupsList
-// issues at most 2 SQL queries regardless of group count (#1868 F8).
+// issues at most 2 SQL queries regardless of group count (F8).
 // The previous implementation called GroupMembersForGroup once per group.
 func TestReviewGroupsList_QueryCountBounded(t *testing.T) {
 	const groupCount = 6

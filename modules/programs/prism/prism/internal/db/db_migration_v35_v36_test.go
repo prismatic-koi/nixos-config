@@ -1,7 +1,7 @@
 package db_test
 
-// Tests for the v35→v36 migration that adds session_groups.delivered_at
-// (issue #2259). The new column is the authoritative end-of-life signal
+// Tests for the v35→v36 migration that adds session_groups.delivered_at.
+// The new column is the authoritative end-of-life signal
 // for a review group: GroupCompleted short-circuits to true and
 // ActiveReviewGroupForParent skips the group once delivered_at is set.
 
@@ -138,7 +138,7 @@ func seedV35DB(t *testing.T, dbPath string, withDeliveredAt bool) {
 }
 
 // TestMigration_V35ToV36_BodyRuns_AddsDeliveredAt exercises the body-runs
-// branch of the v35→v36 migration (issue #2259): a v35 DB without the
+// branch of the v35→v36 migration: a v35 DB without the
 // session_groups.delivered_at column. The pragma_table_info guard returns
 // 0 and the ALTER TABLE ADD COLUMN executes.
 func TestMigration_V35ToV36_BodyRuns_AddsDeliveredAt(t *testing.T) {
@@ -256,7 +256,7 @@ func TestMigration_V35ToV36_Idempotent(t *testing.T) {
 	}
 }
 
-// TestMigration_V35ToV36_NoBackfill verifies the #2259 edge-case AC:
+// TestMigration_V35ToV36_NoBackfill verifies the edge-case AC:
 // pre-migration session_groups rows (NULL delivered_at) continue to be
 // classified by the existing agent_status-based predicate. A group with
 // all-finished members AND delivered_at NULL must still report done=true

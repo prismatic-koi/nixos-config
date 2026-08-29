@@ -1,7 +1,7 @@
 package db
 
 // Tests for ScrubSecrets — remediation for rows written before the capture
-// path redacted anything (issue #2589).
+// path redacted anything.
 //
 // This file is an INTERNAL test (package db, not db_test) because the scrub
 // path has to be exercised against rows that were written raw. Every
@@ -59,7 +59,7 @@ VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL)`
 // batched form of insertRawEvent: every row is byte-identical to what
 // insertRawEvent writes, except for the per-row random id. Batching bulk
 // test-database row writes keeps internal/db off the go-test fsync-timeout
-// path (#2611); see docs/test-database-fsync.md.
+// path; see docs/test-database-fsync.md.
 func insertRawEventsBatch(t *testing.T, d *DB, n int, eventType, rawPayload string) {
 	t.Helper()
 	tx, err := d.conn.Begin()
@@ -327,7 +327,7 @@ func TestScrubSecrets_NilRedactorFallsBackToTheProcessDefault(t *testing.T) {
 }
 
 // TestScrubSecrets_ShapeCannotSpanAJSONDelimiter is the bulk-rewrite half of
-// the round-1 review finding on PR #2606. The scrub rewrites historical rows
+// the JSON-delimiter-span guard. The scrub rewrites historical rows
 // in place, so a spanning match here corrupts data that has no other copy.
 func TestScrubSecrets_ShapeCannotSpanAJSONDelimiter(t *testing.T) {
 	d := openScrubTestDB(t)

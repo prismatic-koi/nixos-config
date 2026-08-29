@@ -1,4 +1,4 @@
-// Capture-path secret redaction at DB-write time (issue #2589).
+// Capture-path secret redaction at DB-write time.
 //
 // The harness redacts a frame before it reaches the socket, which is where the
 // primary control belongs — the secret then never leaves the agent process.

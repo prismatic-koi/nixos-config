@@ -1,6 +1,6 @@
 package db_test
 
-// group_parent_for_member_test.go — issue #2587.
+// Tests for GroupParentForMember.
 //
 // GroupParentForMember is the scope check behind tier 1 of the /checkin
 // permission model: a worker may read the review agents of its own session and

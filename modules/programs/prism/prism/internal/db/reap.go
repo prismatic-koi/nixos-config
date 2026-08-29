@@ -1,7 +1,7 @@
 package db
 
 // reap.go — the recorded cause for an agent_status row that a lifecycle path
-// closed (#2613).
+// closed.
 //
 // Background. Several prism paths close an agent_status row by stamping
 // ended_at, and some of them also force the state to "error" first. Once the
@@ -20,8 +20,8 @@ package db
 // Why an agent_events row and not an agent_status column: agent_status holds
 // the CURRENT state of a session, and a schema change there needs a migration
 // plus a backfill. agent_events is already the append-only diagnostic trail
-// that carries `startup_error` (#1222) and `stall_error` (#2239) — the two
-// causes that were already distinguishable. A reap cause is the same kind of
+// that carries `startup_error` and `stall_error` — the two causes that were
+// already distinguishable. A reap cause is the same kind of
 // fact, so it belongs on the same trail and needs no migration.
 
 import (
@@ -69,14 +69,13 @@ const (
 	ReapCauseCleanupCommand SessionReapCause = "cleanup_command"
 	// ReapCauseAutoRelease — the automatic release closed an already-terminal
 	// review agent once the grace period after its round's review-complete
-	// prompt had elapsed (internal/review/reap.go, issue #2649).
+	// prompt had elapsed (internal/review/reap.go).
 	//
 	// This cause is unlike the other five. They all close a row that was
-	// still running; this one closes a row that had already stopped. It is
-	// recorded for the same reason they are: after #2649 this is the most
-	// common closer of review-agent rows by a wide margin, and a coordinator
-	// asking "why is this row closed" must not be told that nothing recorded
-	// why.
+	// still running. This one closes a row that had already stopped. It is
+	// recorded for the same reason they are: it is the most common closer of
+	// review-agent rows by a wide margin, and a coordinator asking "why is
+	// this row closed" must not be told that nothing recorded why.
 	ReapCauseAutoRelease SessionReapCause = "auto_release"
 )
 
@@ -113,11 +112,11 @@ type SessionEndCause struct {
 	Cause SessionReapCause
 	// Detail is the free-text detail recorded with the cause, if any.
 	Detail string
-	// StartupError is the reason from the latest startup_error event
-	// (#1222): the agent never ran.
+	// StartupError is the reason from the latest startup_error event: the
+	// agent never ran.
 	StartupError string
-	// StallError is the reason from the latest stall_error event (#2239):
-	// the agent ran, then went silent.
+	// StallError is the reason from the latest stall_error event: the agent
+	// ran, then went silent.
 	StallError string
 	// TmuxSessionEnded reports whether a tmux_session_end event exists for
 	// the session — the tmux session-closed hook stamps ended_at without

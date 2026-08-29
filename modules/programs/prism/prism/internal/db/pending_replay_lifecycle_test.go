@@ -1,11 +1,9 @@
 package db
 
-// pending_replay_lifecycle_test.go — regression tests for the lifecycle
-// hooks added in response to the round-2 review-context finding on
-// PR #2365.
+// Regression tests for the pending-replay lifecycle hooks.
 //
 // The durable pending-replay buffer landed with no lifecycle management:
-// respawning on the same branch name (a supported, tested flow via #2094)
+// respawning on the same branch name (a supported, tested flow)
 // would let restorePendingReplayFromDB drain a previous incarnation's
 // coordinator directives into the fresh agent, and abandoned rows would
 // accumulate indefinitely.

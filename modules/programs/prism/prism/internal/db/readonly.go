@@ -1,5 +1,4 @@
-// Read-only query / introspection helpers used by the `prism db` surface
-// (issue #1467).
+// Read-only query / introspection helpers used by the `prism db` surface.
 //
 // These primitives are deliberately separate from db.Open(): they do NOT run
 // schema migrations and they open a fresh handle in SQLite read-only mode
@@ -166,9 +165,9 @@ type SchemaEntry struct {
 // a deterministic order: tables before indexes, each group sorted by name.
 //
 // When tableFilter is non-empty, only the matching table's CREATE TABLE row
-// is returned (indexes for that table are NOT included — the issue specifies
-// "prism db schema <table> prints only that table's DDL"). When tableFilter
-// is empty, all user tables and indexes are returned.
+// is returned (indexes for that table are NOT included — `prism db schema
+// <table>` prints only that table's DDL). When tableFilter is empty, all user
+// tables and indexes are returned.
 //
 // Internal sqlite_* objects are excluded. Rows where sql IS NULL (auto-indexes
 // for PRIMARY KEY / UNIQUE constraints) are excluded — they have no
@@ -224,8 +223,8 @@ func Schema(ctx context.Context, conn *sql.DB, tableFilter string) ([]SchemaEntr
 // The detection is a hand-rolled lexer that walks the input once and tracks
 // quoting / comment state, counting only unquoted semicolons that separate
 // complete statements. This is the equivalent of repeatedly calling
-// sqlite3_complete() for our purposes — and avoids reaching for regex (which
-// the issue explicitly calls out as the wrong primitive).
+// sqlite3_complete() for our purposes, and avoids reaching for regex, which
+// is the wrong primitive here.
 //
 // The function returns:
 //   - (true, nil)   for inputs containing exactly one statement, with or
@@ -236,7 +235,7 @@ func Schema(ctx context.Context, conn *sql.DB, tableFilter string) ([]SchemaEntr
 //   - (false, err)  for inputs that hit a malformed-token state (unterminated
 //     string, etc.).
 //
-// Callers should treat (false, _) as "reject — multi-statement or
+// Callers must treat (false, _) as "reject — multi-statement or
 // unparseable" and propagate the error for diagnostics.
 func IsSingleStatement(sqlText string) (bool, error) {
 	const (

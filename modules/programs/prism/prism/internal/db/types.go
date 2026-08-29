@@ -28,20 +28,20 @@ type Status struct {
 	// TitleSource records who wrote Title: "human" (a harness-reported
 	// rename), "generated" (internal/titlegen's model summary), or
 	// "fallback" (deriveFallbackTitle over the spawn prompt). nil means the
-	// title predates provenance tracking, or there is no title. The
-	// generator refuses to overwrite a "human" title (#2683).
+	// title carries no provenance, or there is no title. The generator
+	// refuses to overwrite a "human" title.
 	TitleSource *string
 	// IssueRef is the issue or ticket the work came from, e.g. "#2683" or
 	// "PLAT-123". Always extracted from source text by regex, never supplied
 	// by a model. nil means the source text carried no reference — it never
-	// means "not yet determined", and no reader should backfill it by
-	// guessing (#2683).
+	// means "not yet determined", and no reader must backfill it by
+	// guessing.
 	IssueRef         *string
 	AgentName        *string
 	ModelID          *string
 	RootAgentName    *string
 	RootModelID      *string
-	IsolationMode    string // "bwrap", "sandbox-exec", or "host"; "" means not recorded (back-compat); legacy rows may carry other values
+	IsolationMode    string // "bwrap", "sandbox-exec", or "host". "" means not recorded (back-compat). Legacy rows can carry other values.
 	InstanceID       *string
 	LastSeen         time.Time
 	EndedAt          *time.Time
@@ -50,7 +50,7 @@ type Status struct {
 	HarnessPort      *int
 	// GroupID is the session_groups.group_id this session belongs to, or nil
 	// when this session is not part of a group. Populated by SpawnSession
-	// when opts.GroupID is non-empty (see #849 §3.1 and #859).
+	// when opts.GroupID is non-empty.
 	GroupID *string
 	// Muted, when true, suppresses outbound coordinator notifications
 	// emitted from this session (session.finished and session.escalated).
@@ -61,16 +61,14 @@ type Status struct {
 	// notification is dropped, not queued).
 	Muted bool `json:"muted"`
 	// ContainersEnabled is the runtime gate for the per-session filtering
-	// podman API socket proxy (#2317 §3f / #2319). When true, the sidecar
-	// starts the proxy and the agent's CONTAINER_HOST / DOCKER_HOST env
-	// vars point at the filtered socket. Defaults to false; flipped by
-	// Step 3 (sidecar wiring) and Step 6 (`prism spawn --containers`).
+	// podman API socket proxy. When true, the sidecar starts the proxy and
+	// the agent's CONTAINER_HOST / DOCKER_HOST env vars point at the filtered
+	// socket. Defaults to false. `prism spawn --containers` flips it.
 	ContainersEnabled bool `json:"containers_enabled"`
 }
 
 // DisplayTitle returns the title cell for the dashboard and for
-// `prism sessions list`: the issue or ticket reference, then the title
-// (#2683).
+// `prism sessions list`: the issue or ticket reference, then the title.
 //
 // One definition, used by every renderer that reads a Status row, so those
 // surfaces cannot drift into showing different things for the same row.
@@ -158,9 +156,9 @@ type Session struct {
 	ArchivePath      *string
 	PrismVersion     *string
 	// ParentSession is the logical session_name of the session that spawned
-	// this one (issue #1700). Populated at spawn time from the spawning
-	// session's PRISM_SESSION_NAME, forwarded through the session_spawn wire
-	// frame. NULL for top-level spawns (no parent) and for pre-migration rows.
+	// this one. Populated at spawn time from the spawning session's
+	// PRISM_SESSION_NAME, forwarded through the session_spawn wire frame. NULL
+	// for top-level spawns (no parent) and for pre-migration rows.
 	ParentSession *string
 }
 
@@ -172,7 +170,7 @@ type GroupMemberResult struct {
 	State        string // terminal state: finished / interrupted / error / deleted
 	LastMessage  string // last assistant turn from agent_events; empty when none
 	StartupError string // reason from startup_error event; empty when not a no-start failure
-	StallError   string // reason from stall_error event (inactivity watchdog fired after inbound frames were seen, #2239); empty when the agent did not stall mid-run
+	StallError   string // reason from stall_error event (inactivity watchdog fired after inbound frames were seen). Empty when the agent did not stall mid-run
 }
 
 // TokenTurn holds per-turn token and cost data for a single msg_assistant event.
@@ -191,7 +189,7 @@ type TokenTurn struct {
 // Repo is the short repo slug (e.g. "nixos-config", not the full
 // "owner/name" form). It is part of the composite primary key together
 // with PR so that PR numbers can safely collide across repos sharing one
-// prism.db (issue #2354). See migrateV37ToV38 for the schema history.
+// prism.db.
 type PendingMerge struct {
 	Repo          string
 	PR            int
