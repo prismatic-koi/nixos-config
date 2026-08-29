@@ -1,27 +1,18 @@
 package review_test
 
-// reap_cause_2613_test.go — a closed agent_status row must name one cause
-// (issue #2613).
+// reap_cause_2613_test.go — a closed agent_status row must name one cause.
 //
-// The observed failure: review-qa was reaped in two consecutive rounds on PR
-// #2610. Both rounds reported, verbatim:
+// A report on a closed agent_status row must not end in a disjunction like:
 //
 //	ERROR: agent produced no verdict — session ended mid-review: the
 //	agent_status row was closed at <ts> in state "error", so it is excluded
 //	from the group results — the session was force-terminated, or its
 //	readiness gate failed
 //
-// The trailing disjunction is why the issue could not name the cause. It was
-// also wrong on one of its two halves: a readiness-gate failure could not
-// reach that message at all, because RunAsync removed the failed agent from
-// the set it handed the monitor, and ClassifyRound only classifies the set it
-// is given.
-//
-// The tests below pin, in AC order:
-//
-//	AC-2  the report names a readiness-gate failure apart from a force-terminate
-//	AC-4  a round with one reaped agent still reports the rest, and counts as no cycle
-//	AC-5  the recorded cause is readable, so a coordinator can name it
+// The trailing disjunction cannot name the cause. It is also wrong on one of
+// its two halves: a readiness-gate failure cannot reach that message, because
+// RunAsync removes the failed agent from the set it hands the monitor, and
+// ClassifyRound only classifies the set it is given.
 
 import (
 	"strings"
@@ -32,7 +23,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
-// conflatedHint is the exact text #2613 exists to remove. No report may
+// conflatedHint is the exact text these tests exist to remove. No report may
 // contain it again.
 const conflatedHint = "the session was force-terminated, or its readiness gate failed"
 
@@ -56,10 +47,10 @@ func fourPassingSiblings(sessions []string, reaped string) map[string]db.GroupMe
 	return out
 }
 
-// ── AC-2: one cause per closed row ──────────────────────────────────────────
+// ── One cause per closed row ──────────────────────────────────────────
 
 // TestClassifyRound_ReadinessGateAndForceTerminateAreDistinct is the direct
-// AC-2 pin. Two rows with identical state and identical ended_at, differing
+// pin. Two rows with identical state and identical ended_at, differing
 // only in the cause their closing path recorded, must classify differently
 // and read differently.
 func TestClassifyRound_ReadinessGateAndForceTerminateAreDistinct(t *testing.T) {
@@ -190,8 +181,8 @@ func TestClassifyRound_ClosedRowWithNoRecordedCause_SaysSo(t *testing.T) {
 	}
 }
 
-// TestClassifyRound_StalledThenClosed_ReportsTheStall is the #2610 shape that
-// the report used to lose. The sidecar's inactivity watchdog sets state="error"
+// TestClassifyRound_StalledThenClosed_ReportsTheStall pins the shape that
+// the report can lose. The sidecar's inactivity watchdog sets state="error"
 // and writes stall_error but leaves ended_at NULL; the tmux session-closed hook
 // then stamps ended_at without rewriting state. The row drops out of
 // GroupResults and the recorded stall must survive that.
@@ -244,10 +235,10 @@ func TestClassifyRound_NoStartThenClosed_ReportsTheNoStart(t *testing.T) {
 	}
 }
 
-// ── AC-4: a reaped agent leaves the round incomplete ────────────────────────
+// ── A reaped agent leaves the round incomplete ────────────────────────
 
 // TestClassifyRound_ReapedAgent_KeepsSiblingVerdictsAndConsumesNoCycle pins
-// the safety property #2573 established, across every new cause. Whatever
+// the safety property, across every new cause. Whatever
 // closed the row, the round must report the four verdicts that did arrive and
 // must not consume a review cycle.
 func TestClassifyRound_ReapedAgent_KeepsSiblingVerdictsAndConsumesNoCycle(t *testing.T) {
@@ -343,7 +334,7 @@ func TestClassSummary_NamesTheNewClasses(t *testing.T) {
 	}
 }
 
-// ── AC-5: the cause is readable from the DB ─────────────────────────────────
+// ── The cause is readable from the DB ─────────────────────────────────
 
 // TestEndedMemberCauses_ReadsWhatTheCleanupPathRecorded closes the loop from
 // the write side to the read side against a real database: record a reap the
@@ -402,11 +393,11 @@ func TestEndedMemberCauses_NilInputsDegradeQuietly(t *testing.T) {
 // ── the expected set is never shrunk to fit its own failures ────────────────
 
 // TestExpectedRoundSet_NotFilteredBySpawnErrors is the pin for the defect that
-// made a readiness-gate failure unreportable. RunAsync used to hand the monitor
-// only the agents that came up. ClassifyRound derives Expected from that list,
-// so a four-agent round read as complete: four PASS verdicts rendered as
-// "All 5 review agents passed" and consumed one of the worker's three cycles,
-// while the fifth dimension was never examined.
+// would make a readiness-gate failure unreportable. If RunAsync handed the
+// monitor only the agents that came up, ClassifyRound would derive Expected
+// from that shorter list, so a four-agent round would read as complete: four
+// PASS verdicts rendered as "All 5 review agents passed" and consumed one of
+// the worker's three cycles, while the fifth dimension was never examined.
 func TestExpectedRoundSet_NotFilteredBySpawnErrors(t *testing.T) {
 	sessions := fiveAgentSessions(3)
 	agents := review.AgentsFromSessionsForTest(sessions)

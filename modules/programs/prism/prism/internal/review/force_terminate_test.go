@@ -1,6 +1,6 @@
 package review_test
 
-// force_terminate_test.go — coverage for forceTerminateStuckMembers (#1709).
+// force_terminate_test.go — coverage for forceTerminateStuckMembers.
 //
 // When the monitor's outer safety timeout fires, any review-agent row still
 // in a non-terminal state must be force-transitioned to "error" so that
@@ -19,7 +19,7 @@ import (
 
 // seedInboundFrame records one inbound harness frame for sess at the given
 // time, so the sweep's dead-watchdog check has a last-inbound-frame timestamp
-// to read (#2729).
+// to read.
 func seedInboundFrame(t *testing.T, d *db.DB, sess string, at time.Time) {
 	t.Helper()
 	if err := d.WriteHarnessFrame(db.HarnessFrame{
@@ -34,8 +34,8 @@ func seedInboundFrame(t *testing.T, d *db.DB, sess string, at time.Time) {
 	}
 }
 
-// TestReviewAgentActivityWindow_MatchesWatchdog is the anti-drift guard
-// (#2729). The monitor sweep's activity window must equal the sidecar's
+// TestReviewAgentActivityWindow_MatchesWatchdog is the anti-drift guard.
+// The monitor sweep's activity window must equal the sidecar's
 // inactivity-watchdog timeout, or the sweep's "is the watchdog alive" test
 // stops meaning what it claims. The two constants live in different packages
 // (internal/sidecar imports internal/review, so review cannot import sidecar
@@ -46,8 +46,8 @@ func TestReviewAgentActivityWindow_MatchesWatchdog(t *testing.T) {
 	}
 }
 
-// TestForceTerminateStuckMembers_SparesLiveMember verifies the #2729 core
-// fix: a non-terminal member that produced an inbound frame within the
+// TestForceTerminateStuckMembers_SparesLiveMember verifies that a
+// non-terminal member that produced an inbound frame within the
 // activity window is SPARED, not reaped. Its watchdog is alive and owns it.
 func TestForceTerminateStuckMembers_SparesLiveMember(t *testing.T) {
 	d := openTestDB(t)
@@ -80,7 +80,7 @@ func TestForceTerminateStuckMembers_SparesLiveMember(t *testing.T) {
 
 // TestForceTerminateStuckMembers_ReapsStaleMember verifies the dead-watchdog
 // case: a non-terminal member whose newest inbound frame is older than the
-// activity window is reaped (#2729). A live watchdog would already have
+// activity window is reaped. A live watchdog would already have
 // reaped it, so a still-active row proves the watchdog is dead.
 func TestForceTerminateStuckMembers_ReapsStaleMember(t *testing.T) {
 	d := openTestDB(t)
@@ -113,8 +113,7 @@ func TestForceTerminateStuckMembers_ReapsStaleMember(t *testing.T) {
 
 // TestForceTerminateStuckMembers_TransitionsActiveRows verifies the core
 // invariant: an active row is rewritten to "error" by the sweep, AND that
-// ended_at is set so the row is fully terminal for ended_at IS NOT NULL queries
-// (#1887).
+// ended_at is set so the row is fully terminal for ended_at IS NOT NULL queries.
 func TestForceTerminateStuckMembers_TransitionsActiveRows(t *testing.T) {
 	d := openTestDB(t)
 	stuck := "prism-test@invoker-force-terminate~review-1-review-goal"
@@ -207,7 +206,7 @@ func TestForceTerminateStuckMembers_SkipsMissingRows(t *testing.T) {
 // that after the sweep, force-terminated rows are excluded from downstream
 // queries that filter on ended_at IS NOT NULL. Specifically, AllActiveStatus
 // (which is what dashboard active-session listings use) must not return rows
-// that the sweep has touched (#1887).
+// that the sweep has touched.
 func TestForceTerminateStuckMembers_EndedAtExcludedFromActiveQueries(t *testing.T) {
 	d := openTestDB(t)
 

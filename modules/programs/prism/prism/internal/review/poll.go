@@ -18,7 +18,7 @@ import (
 
 // pollAgents polls the DB until all agents reach a terminal state or the
 // timeout expires. Uses db.GroupCompleted(groupID) as the primary termination
-// signal — this replaces the prior name-prefix-based approach (#860, Issue E).
+// signal.
 //
 // Per-agent progress tracking (onProgress callbacks for "finished" and "timed
 // out" events) still checks individual session states so that progress lines
@@ -39,8 +39,8 @@ func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []s
 
 	for {
 		// Primary termination check: ask the DB whether all group members
-		// have reached a terminal state. This is the group-id-based path
-		// introduced by #860 (Issue E).
+		// have reached a terminal state. This is the group-id-based
+		// termination path.
 		groupDone, groupErr := d.GroupCompleted(groupID)
 		if groupErr != nil {
 			// DB error — log and fall through to per-agent checks below
@@ -124,7 +124,7 @@ func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []s
 // isTerminalState returns true if the state is considered terminal for the
 // purposes of the per-agent progress tracker in pollAgents.
 //
-// "interrupted" is intentionally NOT terminal here (#1495): a user-driven
+// "interrupted" is intentionally NOT terminal here: a user-driven
 // interrupt is a transient pause that may resolve to "finished" or "error"
 // after the user sends a redirection prompt. Treating it as terminal would
 // emit a premature "X finished" progress line and stop polling that agent
@@ -151,7 +151,7 @@ func BuildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 //
 // When groupID is non-empty, result data (terminal state and last assistant
 // message) is fetched via db.GroupResults(groupID) in a single batch query.
-// When groupID is empty (tests that pre-date the group wiring), per-session
+// When groupID is empty (tests that pass no group_id), per-session
 // individual queries are used as a fallback.
 //
 // Layer 3 (fail-safe): when cancelled is true, no result may have Passed=true.
@@ -161,13 +161,13 @@ func BuildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 // Layer 2: agents whose DB terminal state is "error" always produce an error
 // result, regardless of any msg_assistant events they may have. Only agents
 // that reached the "finished" state cleanly proceed to AssessPassed.
-// "interrupted" is no longer bucketed here — see #1495: an interrupted agent
-// that was redirected and resumed should be evaluated by its eventual
+// "interrupted" is not bucketed here: an interrupted agent
+// that was redirected and resumed is evaluated by its eventual
 // terminal state (finished or error), not by the fact it was interrupted.
 func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, timedOut []bool, timeout time.Duration, cancelled bool, groupID string) []AgentResult {
 	// Pre-fetch group member data when a group_id is available. This replaces
 	// individual per-session CurrentStatus + QueryEvents calls with a single
-	// batch query via GroupResults (#860, Issue E).
+	// batch query via GroupResults.
 	var groupData map[string]db.GroupMemberResult
 	if groupID != "" {
 		var grErr error
@@ -240,8 +240,8 @@ func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 		// is considered a clean completion; "error" is an error regardless of
 		// what msg_assistant events may exist.
 		//
-		// "interrupted" is intentionally NOT in this branch (#1495). pollAgents
-		// no longer treats "interrupted" as terminal, so an interrupted agent
+		// "interrupted" is intentionally NOT in this branch. pollAgents
+		// does not treat "interrupted" as terminal, so an interrupted agent
 		// either (a) resumes via `prism prompt` and reaches finished/error, or
 		// (b) is cleaned up by the user (state → "deleted", surfaced via the
 		// missing-session branch in buildMonitorResults), or (c) hits the
@@ -299,7 +299,7 @@ func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 // "error"). It is intentionally broader than db.terminalStates and
 // review.isTerminalState: it includes "interrupted" so that the cleanup
 // path does NOT clobber an interrupted session's state — doing so would
-// prevent the user from redirecting the agent later (#1495).
+// prevent the user from redirecting the agent later.
 //
 // In other words:
 //

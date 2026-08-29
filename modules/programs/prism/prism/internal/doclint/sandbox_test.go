@@ -10,8 +10,8 @@ import (
 // relocatePrismSubtree copies the REAL prism source subtree (docs and Go
 // source, exactly what LocateRoots resolves to) into a fresh temp location
 // whose four-levels-up ancestor holds no AGENTS.md. This is the working
-// reproduction of the nix homeless-shelter build called out in issue #2679:
-// only then does findRepoRootForDoc return "" for real.
+// reproduction of the nix homeless-shelter build: only then does
+// findRepoRootForDoc return "" for real.
 //
 // A naive Scan(prismRoot, "") does NOT reproduce the sandbox. scanDoc
 // ignores the repoRoot passed to Scan and re-derives the repo root per doc
@@ -55,7 +55,7 @@ func relocatePrismSubtree(t *testing.T) (prismRoot, dest string) {
 //
 // The mid-test guard asserts findRepoRootForDoc returns "" for a relocated
 // doc. That assertion is what keeps this test from decaying into the
-// vacuous Scan(prismRoot, "") form described in issue #2679.
+// vacuous Scan(prismRoot, "") form.
 func TestDocsResolve_NixSandboxConfiguration(t *testing.T) {
 	_, dest := relocatePrismSubtree(t)
 
@@ -91,9 +91,8 @@ func TestDocsResolve_NixSandboxConfiguration(t *testing.T) {
 // scanned doc in the RELOCATED copy and asserts the sandbox scan reports it.
 // The injection touches only the disposable temp copy, never a tracked doc.
 //
-// This encodes issue #2679's demonstration requirement permanently: if a
-// future refactor made the scan blind to out-of-subtree paths again, this
-// test would go green with the injection present and fail here instead.
+// If a future refactor makes the scan blind to out-of-subtree paths, this
+// test fails here with the injection present.
 func TestDocsResolve_NixSandboxConfiguration_DetectsOutOfSubtreePath(t *testing.T) {
 	_, dest := relocatePrismSubtree(t)
 

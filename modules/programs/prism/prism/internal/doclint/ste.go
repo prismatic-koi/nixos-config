@@ -34,25 +34,22 @@ import (
 )
 
 // steInScopeBasenames lists the docs (by basename, expected to live at
-// <prismRoot>/docs/) that participate in STE scanning. Extending this set
-// beyond the four measured docs is a deliberate scope decision — see the
-// issue #2490 body and docs/doclint.md.
+// <prismRoot>/docs/) that participate in STE scanning. This set is a
+// deliberate scope decision. See docs/doclint.md.
 var steInScopeBasenames = map[string]bool{
 	"doclint.md":                true,
 	"podman-proxy.md":           true,
 	"sandbox-exec-testing.md":   true,
 	"stdout-capture-testing.md": true,
-	// pi-rpc-interface.md joined the STE set in the Phase 1 skip-scoping
-	// migration (issue #2497). Its `doclint-skip-file` directive was
-	// scoped to `identifiers` only — the reason cited external
-	// TypeScript identifier resolution, not prose quality.
-	// pi-wire-protocol.md joined the STE set in Phase 2 of the same
-	// migration, with the same identifiers-only scoping.
+	// pi-rpc-interface.md and pi-wire-protocol.md carry a
+	// `doclint-skip-file` directive scoped to `identifiers` only: they
+	// skip identifier resolution of external TypeScript symbols, but
+	// their prose stays in STE scope.
 	"pi-rpc-interface.md": true,
 	"pi-wire-protocol.md": true,
 }
 
-// isSteInScope returns true when the doc path is one of the four in-scope
+// isSteInScope returns true when the doc path is one of the in-scope
 // docs at <prismRoot>/docs/. Nested subdirectories (docs/invariants/,
 // docs/diagnoses/) never participate in STE scanning.
 func isSteInScope(path, prismRoot string) bool {
@@ -111,15 +108,16 @@ var steChecks = []steCheck{
 		rule: "ste-4.2-contraction",
 		// Match `'ll`, `'re`, `'ve`, `'d`, and `n't`. The word-character
 		// prefix + `\b` at the end anchors the match. Possessive `'s` is
-		// deliberately absent from the alternation — an AC.
+		// deliberately absent from the alternation: a possessive is not a
+		// contraction.
 		re:   regexp.MustCompile(`(?i)\b\w+(?:n't|'ll|'re|'ve|'d)\b`),
 		note: "Rule 4.2 forbids contractions; write the full form.",
 	},
 	{
 		rule: "ste-gr6-latin",
 		// The trailing period is required so English words that happen to
-		// start with `e`, `i`, or `etc` do not false-positive. We accept
-		// only the three canonical spellings named in the issue.
+		// start with `e`, `i`, or `etc` do not false-positive. Match
+		// only the three canonical spellings.
 		re:   regexp.MustCompile(`(?i)\b(?:e\.g\.|i\.e\.|etc\.)`),
 		note: "GR-6 forbids Latin abbreviations; use 'for example', 'that is', 'and more'.",
 	},
@@ -226,7 +224,7 @@ func nonProseLineSet(rawContent []byte) map[int]bool {
 //
 // The `enabled` map, if non-nil, allows callers to disable specific
 // rule tags — used by the revert-and-watch-fail tests that prove each
-// check is not a no-op (AC in #2490 and #2496).
+// check is not a no-op.
 //
 // `nonProse`, if non-nil, is the set of raw 1-based line numbers on
 // which the `-ing`-after-comma check must NOT fire (tables, headings,

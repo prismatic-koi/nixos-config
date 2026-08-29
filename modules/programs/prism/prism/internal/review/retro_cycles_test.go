@@ -1,7 +1,7 @@
 package review_test
 
 // retro_cycles_test.go — tests for AssembleReviewCycles, the per-cycle,
-// per-agent review detail behind `prism retro <train-session>` (issue #2584).
+// per-agent review detail behind `prism retro <train-session>`.
 
 import (
 	"encoding/json"
@@ -77,7 +77,7 @@ func ftoaCycles(f float64) string {
 	return itoaCycles(int(whole)) + "." + itoaCycles(int(frac))
 }
 
-// TestAssembleReviewCycles_NoGroups verifies the edge-case AC: a train with no
+// TestAssembleReviewCycles_NoGroups verifies that a train with no
 // session_groups rows returns an empty, non-nil slice — the caller renders
 // "no review cycles ran", not an empty table.
 func TestAssembleReviewCycles_NoGroups(t *testing.T) {
@@ -94,7 +94,7 @@ func TestAssembleReviewCycles_NoGroups(t *testing.T) {
 	}
 }
 
-// TestAssembleReviewCycles_PassFailAndRound verifies the core AC: cost, turn
+// TestAssembleReviewCycles_PassFailAndRound verifies that cost, turn
 // count, and verdict are reported per agent, grouped by the native `round`
 // column, and read from agent_events (not spawn_outcome or live GroupResults).
 func TestAssembleReviewCycles_PassFailAndRound(t *testing.T) {
@@ -110,7 +110,7 @@ func TestAssembleReviewCycles_PassFailAndRound(t *testing.T) {
 	seedCycleAgent(t, d, pass, groupID, "finished")
 	seedCycleAgent(t, d, fail, groupID, "finished")
 	// Every review agent's session row is closed by the time an operator
-	// looks at history — mirrors the live DB (#2594).
+	// looks at history — mirrors the live DB.
 	if err := d.SetEnded(pass); err != nil {
 		t.Fatalf("SetEnded: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestAssembleReviewCycles_PassFailAndRound(t *testing.T) {
 }
 
 // TestAssembleReviewCycles_MissingVerdictIsDistinctFromPass verifies an agent
-// with no verdict is reported distinctly from PASS/FAIL, using #2573's
+// with no verdict is reported distinctly from PASS/FAIL, using the round
 // classification, not the live db.GroupResults (which would drop the reaped
 // row entirely because ended_at is set).
 func TestAssembleReviewCycles_MissingVerdictIsDistinctFromPass(t *testing.T) {
@@ -232,7 +232,7 @@ func TestAssembleReviewCycles_MissingVerdictIsDistinctFromPass(t *testing.T) {
 	}
 }
 
-// TestAssembleReviewCycles_NoDataDistinctFromZeroCost verifies correction 2:
+// TestAssembleReviewCycles_NoDataDistinctFromZeroCost verifies that
 // a round with no agent_status rows at all ("no review data recorded") must
 // render distinctly from a round whose agents ran and recorded a genuine zero
 // cost.

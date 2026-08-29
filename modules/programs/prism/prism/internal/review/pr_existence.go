@@ -2,13 +2,13 @@ package review
 
 // pr_existence.go — PR-existence/state fast-fail check for `prism review`.
 //
-// Issue #2040: `prism review <N>` used to spawn 5 review agents without first
-// verifying that PR <N> exists and is OPEN. When <N> did not resolve to an
-// open PR (never created, closed, merged, or guessed by a worker), the command
-// still registered a review group and launched 5 agents against a non-existent
-// target. Each agent independently discovered the PR did not exist, wasted a
-// full cycle, and left the group lingering in `in-progress` — manufacturing
-// the stale-group symptom that then blocks subsequent legitimate reviews.
+// `prism review <N>` verifies that PR <N> exists and is OPEN before it spawns
+// any review agent. Without this check, an <N> that does not resolve to an
+// open PR (never created, closed, merged, or guessed by a worker) still
+// registers a review group and launches 5 agents against a non-existent
+// target. Each agent independently discovers the PR does not exist, wastes a
+// full cycle, and leaves the group lingering in `in-progress` — the
+// stale-group symptom that then blocks subsequent legitimate reviews.
 //
 // This check runs as the FIRST pre-flight step in `prism review`, BEFORE the
 // rebase gate (preflight.go). The ordering matters: it is cheaper and more
@@ -29,7 +29,7 @@ package review
 //
 //   - any other gh error (network, rate-limit, auth) is surfaced as
 //     "could not determine PR state: <err>" and DOES NOT silently proceed to
-//     spawn agents against an unverified target. This is the [edge-case] AC.
+//     spawn agents against an unverified target.
 //
 // One pass-through case:
 //

@@ -1,30 +1,19 @@
 package review_test
 
 // missing_verdict_test.go — a review agent that produces no verdict must be
-// distinguishable from an agent that passed (#2573).
+// distinguishable from an agent that passed.
 //
-// The observed failure: on PR #2568 the review-qa agent failed in all three
-// rounds with "agent session not found in group (possibly deleted
-// mid-review)". Its four siblings finished normally, the round reported as
-// complete, and it consumed a review cycle each time. Four verdicts plus one
-// blank read as "four passed".
+// The failure this guards against: a review agent that fails in every round
+// with "agent session not found in group (possibly deleted mid-review)".
+// Its four siblings finish normally, the round reports as complete, and it
+// consumes a review cycle each time. Four verdicts plus one blank read as
+// "four passed".
 //
 // Root cause: db.GroupResults reads
 // `agent_status WHERE group_id = ? AND ended_at IS NULL`, so a member whose
 // row was closed mid-round is simply absent from the map. Every consumer read
 // that map alone, so the absent member was invisible to the header branch and
-// to the cycle counter. The fix walks the EXPECTED member list instead.
-//
-// The tests below pin, in AC order:
-//
-//	AC-1  an incomplete round is reported as incomplete
-//	AC-2  each agent with no verdict is named, with its recorded reason
-//	AC-3  an infrastructure failure consumes no review cycle
-//	AC-4  an infrastructure failure is distinguishable from a code FAIL
-//	AC-5  the report states the targeted re-run command
-//	AC-6  a full round is reported as before and consumes one cycle
-//	AC-7  an all-infrastructure round is a no-result round, no cycle
-//	AC-8  four PASS plus one infrastructure error never presents as passing
+// to the cycle counter. ClassifyRound walks the EXPECTED member list instead.
 
 import (
 	"fmt"
@@ -69,9 +58,9 @@ func reapedRow(sess, state string) db.Status {
 
 // ── ClassifyRound ───────────────────────────────────────────────────────────
 
-// TestClassifyRound_ReapedMemberIsMissing is the core #2573 pin: a member
+// TestClassifyRound_ReapedMemberIsMissing pins that a member
 // absent from GroupResults is classified, named, and excluded from the verdict
-// count (AC-1, AC-2, AC-3).
+// count.
 func TestClassifyRound_ReapedMemberIsMissing(t *testing.T) {
 	sessions := fiveAgentSessions(3)
 	qa := sessions[3]
@@ -115,7 +104,7 @@ func TestClassifyRound_ReapedMemberIsMissing(t *testing.T) {
 	if !m.Class.Infrastructure() {
 		t.Error("a reaped session must classify as an infrastructure failure (AC-4)")
 	}
-	// AC-2: the reason must carry what the DB actually recorded.
+	// The reason must carry what the DB actually recorded.
 	for _, want := range []string{"2026-06-12T09:14:03Z", "deleted"} {
 		if !strings.Contains(m.Reason, want) {
 			t.Errorf("Missing[0].Reason = %q, want it to mention %q", m.Reason, want)
@@ -145,7 +134,7 @@ func TestClassifyRound_AbsentMemberWithoutRowIsUnknown(t *testing.T) {
 	}
 }
 
-// TestClassifyRound_CompleteRoundCountsAsCycle is the AC-6 regression guard:
+// TestClassifyRound_CompleteRoundCountsAsCycle is the regression guard:
 // a round in which every agent produced a verdict is complete and consumes a
 // cycle, whether the verdicts are PASS or FAIL.
 func TestClassifyRound_CompleteRoundCountsAsCycle(t *testing.T) {
@@ -169,8 +158,8 @@ func TestClassifyRound_CompleteRoundCountsAsCycle(t *testing.T) {
 	}
 }
 
-// TestClassifyRound_AllInfraIsNoResult pins AC-7 for a mix of infrastructure
-// classes: no agent produced a verdict, so the round is a no-result round and
+// TestClassifyRound_AllInfraIsNoResult pins the mix-of-infrastructure-classes
+// case: no agent produced a verdict, so the round is a no-result round and
 // consumes no cycle.
 func TestClassifyRound_AllInfraIsNoResult(t *testing.T) {
 	sessions := fiveAgentSessions(1)
@@ -204,7 +193,7 @@ func TestClassifyRound_AllInfraIsNoResult(t *testing.T) {
 	}
 }
 
-// TestRoundStatus_TargetedRerunCommand pins AC-5 at the source: the command
+// TestRoundStatus_TargetedRerunCommand pins the command at the source: it
 // names exactly the agents with no verdict, in spawn order.
 func TestRoundStatus_TargetedRerunCommand(t *testing.T) {
 	sessions := fiveAgentSessions(1)
@@ -228,7 +217,7 @@ func TestRoundStatus_TargetedRerunCommand(t *testing.T) {
 	}
 }
 
-// TestRoundStatus_CompleteRoundHasNoRerunCommand guards the AC-6 no-op case.
+// TestRoundStatus_CompleteRoundHasNoRerunCommand guards the no-op case.
 func TestRoundStatus_CompleteRoundHasNoRerunCommand(t *testing.T) {
 	sessions := fiveAgentSessions(1)
 	groupData := map[string]db.GroupMemberResult{}
@@ -244,7 +233,7 @@ func TestRoundStatus_CompleteRoundHasNoRerunCommand(t *testing.T) {
 // ── cycle counting ──────────────────────────────────────────────────────────
 
 // TestCycleProducedVerdicts_MissingMemberDoesNotCount is the direct regression
-// for the #2573 cycle-counter defect (AC-3). It also documents the shape of
+// for the cycle-counter defect. It documents the shape of
 // the bug: reading only the keys that came back cannot see the member that
 // did not.
 func TestCycleProducedVerdicts_MissingMemberDoesNotCount(t *testing.T) {
@@ -263,15 +252,15 @@ func TestCycleProducedVerdicts_MissingMemberDoesNotCount(t *testing.T) {
 		t.Error("a round with a reaped member must NOT count as verdict-producing (AC-3)")
 	}
 
-	// The keys-only view — what every call site used before #2573 — sees four
-	// verdicts and calls the round complete. This assertion is the record of
-	// why the expected-member list has to be threaded through.
+	// The keys-only view sees four verdicts and calls the round complete. This
+	// assertion is the record of why the expected-member list has to be
+	// threaded through.
 	if !review.CurrentCycleProducedVerdictsForTest(groupData) {
 		t.Error("keys-only view: expected the pre-#2573 shape to report the round as verdict-producing")
 	}
 }
 
-// TestCycleProducedVerdicts_FullRoundStillCounts is the AC-6 guard for the
+// TestCycleProducedVerdicts_FullRoundStillCounts is the guard for the
 // predicate.
 func TestCycleProducedVerdicts_FullRoundStillCounts(t *testing.T) {
 	sessions := fiveAgentSessions(1)
@@ -287,7 +276,7 @@ func TestCycleProducedVerdicts_FullRoundStillCounts(t *testing.T) {
 // TestCompletedReviewCyclesForParent_ReapedMemberRoundDoesNotCount exercises
 // the historical counter end-to-end against a real DB: a round whose member
 // row was closed mid-review must not count toward the 3-cycle limit, while an
-// otherwise identical full round must (AC-3, AC-6).
+// otherwise identical full round must.
 func TestCompletedReviewCyclesForParent_ReapedMemberRoundDoesNotCount(t *testing.T) {
 	dir := t.TempDir()
 	d, err := db.Open(filepath.Join(dir, "prism.db"))
@@ -362,8 +351,8 @@ func TestCompletedReviewCyclesForParent_ReapedMemberRoundDoesNotCount(t *testing
 
 // ── report wording ──────────────────────────────────────────────────────────
 
-// TestBuildDeliveryMessage_FourPassOneReaped is the headline AC pin: the
-// #2568 shape must not read as "four passed" (AC-1, AC-2, AC-4, AC-5, AC-8).
+// TestBuildDeliveryMessage_FourPassOneReaped is the headline pin: the
+// four-pass-one-reaped shape must not read as "four passed".
 func TestBuildDeliveryMessage_FourPassOneReaped(t *testing.T) {
 	sessions := fiveAgentSessions(3)
 	qa := sessions[3]
@@ -379,25 +368,25 @@ func TestBuildDeliveryMessage_FourPassOneReaped(t *testing.T) {
 	msg := review.BuildDeliveryMessageWithEndedForTest("2568", 3, "results text", false, groupData, sessions, endedRows)
 
 	for _, want := range []string{
-		"Round incomplete: 4 of 5",                // AC-1
-		"Agents with no verdict (1 of 5)",         // AC-1 / AC-2
-		"review-qa",                               // AC-2
-		string(review.NoVerdictSessionEnded),      // AC-2 / AC-4
-		"2026-06-12T09:14:03Z",                    // AC-2
-		"infrastructure failure",                  // AC-4
-		"prism review 2568 --only review-qa",      // AC-5
-		"does NOT count toward the 3-cycle limit", // AC-3
-		"never as a pass",                         // AC-8
+		"Round incomplete: 4 of 5",
+		"Agents with no verdict (1 of 5)",
+		"review-qa",
+		string(review.NoVerdictSessionEnded),
+		"2026-06-12T09:14:03Z",
+		"infrastructure failure",
+		"prism review 2568 --only review-qa",
+		"does NOT count toward the 3-cycle limit",
+		"never as a pass",
 	} {
 		if !findSubstring(msg, want) {
 			t.Errorf("four-pass-one-reaped: message missing %q:\n%s", want, msg)
 		}
 	}
 	for _, unwanted := range []string{
-		"All 5 review agents passed", // AC-8
-		"Fix the blocking issues",    // AC-4: not an ordinary code-FAIL round
-		"failed to start",            // no agent no-started
-		"stalled mid-run",            // no agent stalled
+		"All 5 review agents passed",
+		"Fix the blocking issues", // not an ordinary code-FAIL round
+		"failed to start",         // no agent no-started
+		"stalled mid-run",         // no agent stalled
 	} {
 		if findSubstring(msg, unwanted) {
 			t.Errorf("four-pass-one-reaped: message must NOT contain %q:\n%s", unwanted, msg)
@@ -406,7 +395,7 @@ func TestBuildDeliveryMessage_FourPassOneReaped(t *testing.T) {
 }
 
 // TestBuildDeliveryMessage_AllPassedFlagWithMissingAgent is the belt-and-
-// braces arm of AC-8: even when the caller hands in allPassed=true, a round
+// braces arm: even when the caller hands in allPassed=true, a round
 // with a missing verdict must not present as passing.
 func TestBuildDeliveryMessage_AllPassedFlagWithMissingAgent(t *testing.T) {
 	sessions := fiveAgentSessions(1)
@@ -430,7 +419,7 @@ func TestBuildDeliveryMessage_AllPassedFlagWithMissingAgent(t *testing.T) {
 	}
 }
 
-// TestBuildDeliveryMessage_AllReapedIsNoResult pins AC-7 for the report: a
+// TestBuildDeliveryMessage_AllReapedIsNoResult pins the report case: a
 // round in which every agent was reaped is a no-result round.
 func TestBuildDeliveryMessage_AllReapedIsNoResult(t *testing.T) {
 	sessions := fiveAgentSessions(2)
@@ -459,8 +448,8 @@ func TestBuildDeliveryMessage_AllReapedIsNoResult(t *testing.T) {
 	}
 }
 
-// TestBuildDeliveryMessage_CompleteFailRoundUnchanged is the AC-6 guard for
-// the report: a full round with a FAIL verdict keeps the pre-#2573 wording and
+// TestBuildDeliveryMessage_CompleteFailRoundUnchanged is the guard for
+// the report: a full round with a FAIL verdict keeps the code-FAIL wording and
 // grows no no-verdict section.
 func TestBuildDeliveryMessage_CompleteFailRoundUnchanged(t *testing.T) {
 	sessions := fiveAgentSessions(1)
@@ -484,13 +473,12 @@ func TestBuildDeliveryMessage_CompleteFailRoundUnchanged(t *testing.T) {
 
 // TestBuildDeliveryMessage_MixedInfraAndCodeFailNamesBoth verifies the mixed
 // shape keeps both signals: fix what the agents that ran found, and re-run the
-// dimension that was never examined (AC-1, AC-4).
+// dimension that was never examined.
 //
 // It also pins the targeted-rerun gate. A FAIL verdict means the worker must
 // change code before re-running, which makes every verdict in this round stale
 // — so the report must advertise the FULL re-run, never `--only`. Advertising
-// `--only` here would reopen the hole #2530 / #2557 closed: four PASS verdicts
-// recorded against the pre-fix commit.
+// `--only` here would record four PASS verdicts against the pre-fix commit.
 func TestBuildDeliveryMessage_MixedInfraAndCodeFailNamesBoth(t *testing.T) {
 	sessions := fiveAgentSessions(1)
 	groupData := map[string]db.GroupMemberResult{
@@ -523,7 +511,7 @@ func TestBuildDeliveryMessage_MixedInfraAndCodeFailNamesBoth(t *testing.T) {
 // TestBuildDeliveryMessage_NoFailAdvertisesTargetedRerun is the other arm of
 // the gate: with no FAIL verdict there is nothing to fix, so the targeted
 // command is valid — but only if the worker pushes nothing else. The report
-// must carry that caveat and the full-set fallback (AC-5).
+// must carry that caveat and the full-set fallback.
 func TestBuildDeliveryMessage_NoFailAdvertisesTargetedRerun(t *testing.T) {
 	sessions := fiveAgentSessions(1)
 	groupData := map[string]db.GroupMemberResult{}
@@ -593,8 +581,8 @@ func TestRoundStatus_FailVerdictGatesTargetedRerun(t *testing.T) {
 // ── per-agent result ────────────────────────────────────────────────────────
 
 // TestBuildMonitorResults_ReapedSessionNamesReason verifies the per-agent
-// entry carries the recorded cause rather than the old "possibly deleted
-// mid-review" guess (AC-2, AC-4).
+// entry carries the recorded cause rather than a "possibly deleted
+// mid-review" guess.
 func TestBuildMonitorResults_ReapedSessionNamesReason(t *testing.T) {
 	sessions := fiveAgentSessions(3)
 	qa := sessions[3]
@@ -636,9 +624,9 @@ func TestBuildMonitorResults_ReapedSessionNamesReason(t *testing.T) {
 }
 
 // TestFormatResultsForRound_RetryHintMatchesRerunAdvice pins the summary
-// footer against the re-run advice below it. The two used to be able to
-// contradict each other: the footer always offered `--only`, even in a round
-// where a FAIL made a targeted retry invalid.
+// footer against the re-run advice below it. The two must not
+// contradict each other: the footer must not offer `--only` in a round
+// where a FAIL makes a targeted retry invalid.
 func TestFormatResultsForRound_RetryHintMatchesRerunAdvice(t *testing.T) {
 	sessions := fiveAgentSessions(1)
 	agents := review.AgentsFromSessionsForTest(sessions)
@@ -678,9 +666,9 @@ func TestFormatResultsForRound_RetryHintMatchesRerunAdvice(t *testing.T) {
 	}
 }
 
-// TestFormatResultsForRound_CompleteRoundFooterUnchanged is the AC-6 guard for
+// TestFormatResultsForRound_CompleteRoundFooterUnchanged is the guard for
 // the footer: a complete FAIL round must render byte-for-byte as FormatResults
-// renders it today.
+// renders it.
 func TestFormatResultsForRound_CompleteRoundFooterUnchanged(t *testing.T) {
 	sessions := fiveAgentSessions(1)
 	agents := review.AgentsFromSessionsForTest(sessions)

@@ -31,7 +31,7 @@ var codeFenceRe = regexp.MustCompile(`^\s*(` + "```" + `|~~~)`)
 // like “ `<!-- doclint-ignore: token1, token2 -->` “ — is not
 // accidentally honoured. That anchor plus the stripFencedBlocks pass in
 // extractIgnoreSet closes both the fenced-block leak and the inline-
-// backticked leak caught by review-context on PR #2344.
+// backticked leak.
 var ignoreDirectiveRe = regexp.MustCompile(`(?ms)^\s*<!--\s*doclint-ignore:\s*(.*?)\s*-->`)
 
 // skipFileDirectiveRe matches a whole-file opt-out annotation:
@@ -64,9 +64,8 @@ var doubleBacktickRe = regexp.MustCompile("``([^\n]+?)``")
 // Directives inside fenced code blocks are prose examples — they are
 // stripped before regex matching so that a doc that documents the
 // directive syntax does not accidentally contribute tokens to its own
-// ignore set. This is the sibling of the whole-file skip guard in
-// hasSkipFileDirective; both bugs shipped together in the initial cut
-// of #2334 and were caught by review-context on PR #2344.
+// ignore set. The whole-file skip guard in parseSkipFileDirective
+// applies the same strip for the same reason.
 func extractIgnoreSet(content []byte) map[string]bool {
 	prose := stripFencedBlocks(content)
 	out := map[string]bool{}
@@ -87,7 +86,7 @@ func extractIgnoreSet(content []byte) map[string]bool {
 // directive suppresses.
 //
 // An unparameterised directive (`<!-- doclint-skip-file: reason -->`)
-// keeps its historical global meaning: both categories are true. A
+// suppresses both categories: both fields are true. A
 // scoped directive names one or more categories before a `|`
 // separator (`<!-- doclint-skip-file: identifiers | reason -->` or
 // `<!-- doclint-skip-file: identifiers, ste | reason -->`) and only
@@ -118,8 +117,7 @@ func parseSkipFileDirective(content []byte) (skipFileScope, bool) {
 	body := string(m[1])
 	pipe := strings.Index(body, "|")
 	if pipe < 0 {
-		// Unparameterised: global scope, matches the pre-scoping
-		// behaviour. The whole body is the reason.
+		// Unparameterised: global scope. The whole body is the reason.
 		return skipFileScope{identifiers: true, ste: true}, true
 	}
 	var scope skipFileScope
@@ -135,9 +133,8 @@ func parseSkipFileDirective(content []byte) (skipFileScope, bool) {
 }
 
 // hasSkipFileDirective reports whether the document opts out of
-// every doclint category. Retained for tests that check the global
-// case; new callers should use parseSkipFileDirective and inspect the
-// per-category fields.
+// every doclint category. For per-category scope, use
+// parseSkipFileDirective and inspect its fields.
 func hasSkipFileDirective(content []byte) bool {
 	scope, ok := parseSkipFileDirective(content)
 	return ok && scope.identifiers && scope.ste

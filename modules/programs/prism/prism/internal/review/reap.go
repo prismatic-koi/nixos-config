@@ -1,6 +1,6 @@
 package review
 
-// reap.go — automatic release of finished review-agent sessions (issue #2649).
+// reap.go — automatic release of finished review-agent sessions.
 //
 // # The leak
 //
@@ -30,18 +30,17 @@ package review
 //     rows must survive. The reap writes `ended_at` and clears `harness_port`;
 //     it deletes nothing.
 //   - removes a worktree. A review agent has no worktree of its own — it
-//     inherits the parent's (see `isSafeToRemoveWorktree` in cmd/cleanup.go and
-//     issue #2638) — so there is nothing here that could remove one. No git
-//     command runs on this path at all.
-//   - deletes a branch. Same reason. #2638 / PR #2639 fixed the descendant
-//     branch-deletion defect in `prism cleanup`; the reaper sidesteps that path
-//     entirely by never calling cleanup.
+//     inherits the parent's (see `isSafeToRemoveWorktree` in cmd/cleanup.go)
+//     — so there is nothing here that could remove one. No git command runs
+//     on this path at all.
+//   - deletes a branch. Same reason. The reaper sidesteps `prism cleanup`'s
+//     descendant branch-deletion path entirely by never calling cleanup.
 //
-// # Why the reaper cannot reach a live agent (#2613)
+// # Why the reaper cannot reach a live agent
 //
 // The candidate query (`db.ReapableReviewAgents`) gates on
 // `session_groups.delivered_at`, which is written exactly once, by the monitor,
-// after the review-complete prompt has been accepted for the round (#2259).
+// after the review-complete prompt has been accepted for the round.
 // While a round is running, delivered_at is NULL for its group, so NO member of
 // that round is a candidate — not even a member that already reached
 // `finished` while its four siblings are still working. Group-level gating,
@@ -189,8 +188,8 @@ func ReapDeliveredReviewAgents(d *db.DB, groupID string, now time.Time, grace ti
 // `prism event tmux-session-end`, which calls `ReleasePort` and `SetEnded`
 // (`cmd/event.go`). So the kill can close the row from underneath this
 // function, and the guard below would then correctly — and uselessly — decline
-// to record anything. Recording after the kill lost the cause on most
-// releases, which made the #2613 invariant this change adds false in practice.
+// to record anything. Recording after the kill loses the cause on most
+// releases, which makes the cause-recording invariant false in practice.
 //
 // The two constraints do not conflict: `RecordSessionReap` appends an
 // `agent_events` row and never touches `ended_at`, so moving it to the front
@@ -200,17 +199,17 @@ func reapOne(d *db.DB, c db.ReapCandidate) {
 	proglog.Infof("[prism reap] releasing %s (state=%s, group=%s, parent=%s)\n",
 		c.SessionName, c.State, c.GroupID, c.ParentSession)
 
-	// Record why this row is about to close (#2613), before anything can close
+	// Record why this row is about to close, before anything can close
 	// it. Best-effort: a lost diagnostic must never block the release.
 	//
-	// This path differs from the five other #2613 causes in kind: they close a
+	// This path differs from the five other reap causes in kind: they close a
 	// row that was still running, and this one closes a row that had already
-	// stopped. The record matters anyway, because after #2649 this is the most
-	// common closer of review-agent rows, and without it a coordinator reading
-	// the DB is told that nothing recorded why.
+	// stopped. The record matters anyway, because this is the most common
+	// closer of review-agent rows, and without it a coordinator reading the DB
+	// is told that nothing recorded why.
 	//
 	// Guarded on ended_at, the same guard cleanupAgentSession applies and the
-	// one the #2613 invariant states: a path that finds the row already closed
+	// one the cause-recording invariant states: a path that finds the row already closed
 	// records nothing, so it cannot claim a close it did not perform. The
 	// candidate query already filtered on ended_at IS NULL, but that was at
 	// query time — a parent cleanup, or this sweep's own earlier candidate, can

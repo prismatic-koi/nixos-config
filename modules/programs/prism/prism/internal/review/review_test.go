@@ -101,13 +101,13 @@ func TestNextRoundNumber_OldShapeSessionsNotCounted(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@feature"
 
-	// Old-shape round sessions (pre-PR-C): pure integer suffix.
+	// Old-shape round sessions: pure integer suffix.
 	_ = d.UpsertStatus(parent+"~review-1", "nixos-config", "/wt", "finished", nil, nil)
 	_ = d.UpsertStatus(parent+"~review-2", "nixos-config", "/wt", "finished", nil, nil)
-	// Old-shape agent sub-sessions (pre-PR-C): ~review-N~agent.
+	// Old-shape agent sub-sessions: ~review-N~agent.
 	_ = d.UpsertStatus(parent+"~review-1~review", "nixos-config", "/wt", "idle", nil, nil)
 
-	// Despite those rows, NextRoundNumber should return 1 (no new-shape rounds exist).
+	// Despite those rows, NextRoundNumber must return 1 (no new-shape rounds exist).
 	n := review.NextRoundNumber(d, parent)
 	if n != 1 {
 		t.Errorf("NextRoundNumber = %d, want 1 (old-shape rows should not count)", n)
@@ -263,13 +263,13 @@ func TestFormatResults_PassFailResults(t *testing.T) {
 }
 
 // ── AssessPassed ──────────────────────────────────────────────────────────────
-// AssessPassed now requires an explicit <verdict>PASS</verdict> marker.
-// All tests below validate the new positive-evidence requirement (Layer 1).
+// AssessPassed requires an explicit <verdict>PASS</verdict> marker.
+// All tests below validate the positive-evidence requirement (Layer 1).
 
-// TestAssessPassed_BenignTextIsFalse verifies the core fix for #785:
-// benign partial output with no verdict marker must return false, not true.
-// Before the fix, AssessPassed returned true for any text without failure
-// phrases — this would silently classify interrupted agents as "passed".
+// TestAssessPassed_BenignTextIsFalse verifies that benign partial output with
+// no verdict marker returns false, not true. Without the positive-evidence
+// requirement, AssessPassed would return true for any text without failure
+// phrases, silently classifying interrupted agents as "passed".
 func TestAssessPassed_BenignTextIsFalse(t *testing.T) {
 	benignTexts := []string{
 		"I'll start by reading the PR...",
@@ -399,14 +399,15 @@ func seedAssistantEvent(t *testing.T, d *db.DB, sessionName, text string) {
 	}
 }
 
-// TestBuildResults_InterruptedThenResumedToFinishedPasses verifies the #1495
-// contract at the BuildResults layer: an agent that was interrupted, then
-// redirected via `prism prompt`, and then reached the "finished" state with
-// a PASS verdict must be counted as a normal pass — not as an error.
+// TestBuildResults_InterruptedThenResumedToFinishedPasses verifies the
+// interrupted-then-resumed handling at the BuildResults layer: an agent that
+// was interrupted, then redirected via `prism prompt`, and then reached the
+// "finished" state with a PASS verdict must be counted as a normal pass — not
+// as an error.
 //
-// This is the post-fix behaviour: "interrupted" is no longer in the layer-2
-// error branch, so an agent whose final DB state is "finished" proceeds to
-// AssessPassed regardless of whether it was previously interrupted.
+// "interrupted" is not in the layer-2 error branch, so an agent whose final
+// DB state is "finished" proceeds to AssessPassed regardless of whether it was
+// previously interrupted.
 func TestBuildResults_InterruptedThenResumedToFinishedPasses(t *testing.T) {
 	d := openTestDB(t)
 	ag := review.Agent{Name: "review-goal"}
@@ -435,7 +436,7 @@ func TestBuildResults_InterruptedThenResumedToFinishedPasses(t *testing.T) {
 	}
 }
 
-// TestBuildResults_InterruptedThenResumedToError verifies the #1495 edge case:
+// TestBuildResults_InterruptedThenResumedToError verifies the edge case:
 // an agent that was interrupted, redirected, and then crashed (e.g. the
 // redirect itself caused the crash) must still surface as IsError=true via the
 // genuine-error branch. The redirection does not mask a subsequent failure.
@@ -833,7 +834,7 @@ func TestAgentsByName_AllFiveEnhancedNames(t *testing.T) {
 
 // TestAgentsByName_PreservesOrder verifies that AgentsByName returns agents in
 // the order the names were requested, not the order they appear in the source
-// slice. This is the AC: output lines appear in --only input order.
+// slice. Output lines appear in --only input order.
 func TestAgentsByName_PreservesOrder(t *testing.T) {
 	agents := review.Agents()
 	// Request in reverse order.
@@ -897,7 +898,6 @@ func TestFormatResults_TwoAgentSubset(t *testing.T) {
 // agents pass and some fail, the retry hint in FormatResults output names only
 // the agents that failed — not the ones that passed.
 //
-// AC: "the retry hint in FormatResults output names only the failed agents"
 // Example: if review-qa fails and review-code passes, hint = "prism review <pr> --only review-qa"
 func TestFormatResults_RetryHintNamesOnlyFailedAgents(t *testing.T) {
 	results := []review.AgentResult{
@@ -1116,10 +1116,9 @@ func TestFormatResults_NoBlockingIssuesTagOnFail(t *testing.T) {
 }
 
 // TestFormatResults_NoFileWrittenToTmp verifies that FormatResults never writes
-// a file to /tmp regardless of output size — the overflow-to-file path has been
-// removed.
+// a file to /tmp regardless of output size.
 func TestFormatResults_NoFileWrittenToTmp(t *testing.T) {
-	// Build a large output that would previously have triggered overflow.
+	// Build a large output.
 	largeOutput := strings.Repeat("x", 500) + "\n<summary>Large output.</summary>\n<verdict>PASS</verdict>"
 	results := []review.AgentResult{
 		{Agent: review.Agent{Name: "review-goal"}, Passed: true, Output: largeOutput},
@@ -1231,8 +1230,8 @@ func TestFormatProgressDuration_AtOrAboveMinute(t *testing.T) {
 
 // TestPollAgents_ProgressCallback_HappyPath verifies that PollAgentsForTest
 // emits one "finished" progress line per agent when all agents complete
-// successfully. This covers the happy-path AC: progress lines are emitted in
-// completion order, not start order.
+// successfully. Progress lines are emitted in completion order, not start
+// order.
 func TestPollAgents_ProgressCallback_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
@@ -1413,14 +1412,11 @@ func TestPollAgents_ProgressCallback_Timeout(t *testing.T) {
 // TestRun_ProgressCallback_SpawnFailure verifies that when an agent fails to
 // spawn due to a configuration error (container mode with nil ProfilesFile),
 // a "failed to start" progress line is emitted immediately and the overall run
-// returns an error. This covers the spawn-failure path AC from issue #782:
-// "unit tests verify the progress-line output format for spawn-failure path."
+// returns an error.
 //
 // The RequireSlot gate fires before the agent loop and before any DB write or
-// tmux session — so no tmux is needed for this test. (Pre-#2854 the failure
-// came from ResolveAgentConfigContent, which sat inside the loop and so ran
-// after UpsertStatus and AllocatePort. The gate that replaced it is strictly
-// earlier, which is why no per-agent progress line is emitted.)
+// tmux session — so no tmux is needed for this test. The gate runs earlier
+// than any per-agent work, which is why no per-agent progress line is emitted.
 func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "prism.db")
 
@@ -1429,8 +1425,8 @@ func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 		{Name: "review-goal"},
 	}
 
-	// bwrap mode with nil ProfilesFile: with the RequireSlot gate (#1224),
-	// this now triggers a fan-out abort before the spawn loop, so no per-agent
+	// bwrap mode with nil ProfilesFile: with the RequireSlot gate,
+	// this triggers a fan-out abort before the spawn loop, so no per-agent
 	// progress lines are emitted and Run returns a global error immediately.
 	opts := review.Opts{
 		PRNumber:      "999",
@@ -1532,9 +1528,9 @@ func TestRun_SeedsRootAgentNameAtSpawnTime(t *testing.T) {
 // pollAgents returns (all agents finished), the sidecar PID files for each
 // review-agent session still exist on disk.
 //
-// This is a direct regression test for #816: Run() used to call KillSidecar on
-// each live session after pollAgents returned, removing the PID file and tearing
-// down the container. The fix deletes that loop, so PID files must persist.
+// Run() must NOT call KillSidecar on each live session after pollAgents
+// returns; doing so would remove the PID file and tear down the container.
+// PID files must persist.
 //
 // The test uses PollAgentsForTest with pre-created fake PID files. If KillSidecar
 // were called, it would read the file, fail the PID validity check (fake value),
@@ -1764,9 +1760,9 @@ func TestBuildReviewPrompt_ContainsFullDiffSection(t *testing.T) {
 }
 
 // TestBuildReviewPrompt_ContextSectionThenSeparator verifies that the
-// PR-context section appears before the trailing separator, that the old
+// PR-context section appears before the trailing separator, that a
 // dangling trailer line is not present, and that no role-specific section is
-// spliced in (issue #2534 — the role rubric now arrives solely via the
+// spliced in (the role rubric arrives solely via the
 // system prompt).
 func TestBuildReviewPrompt_ContextSectionThenSeparator(t *testing.T) {
 	ctx := samplePRContext()
@@ -1845,7 +1841,7 @@ func TestBuildReviewPrompt_AllFiveAgentsGetSameContext(t *testing.T) {
 	}
 }
 
-// ── RequireSlot fan-out gate (#1224) ──────────────────────────────────────────
+// ── RequireSlot fan-out gate ──────────────────────────────────────────
 
 // reviewProfilesFileWithAllSlots returns a *config.ProfilesFile that declares
 // all five review-agent slots (review-goal, review-code, review-security,
@@ -1895,13 +1891,12 @@ func reviewProfilesFileMissingOneSlot() *config.ProfilesFile {
 // TestRun_RequireSlot_MissingSlot_AbortsAllSpawns verifies that review.Run
 // fails fast with a clear error when the active profile is missing one or more
 // review-agent slots, and that no progress lines are emitted (i.e. no agent
-// spawn was attempted). This is the all-or-nothing AC from #1224.
+// spawn was attempted). This is the all-or-nothing gate behaviour.
 func TestRun_RequireSlot_MissingSlot_AbortsAllSpawns(t *testing.T) {
 	// Redirect sidecar state dir so any sidecar pid/log files created by
 	// review.Run's host-mode spawn path land in a tempdir, not the real
-	// $HOME/.local/state/prism/run/ (#1709 follow-up — defence in depth
-	// against test-isolation breaches that surfaced via cross-package
-	// timing changes after #1690 landed on main).
+	// $HOME/.local/state/prism/run/ (defence in depth against
+	// test-isolation breaches).
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	dbPath := filepath.Join(t.TempDir(), "prism.db")
@@ -1956,7 +1951,7 @@ func TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort(t *testing.T) {
 	// $HOME/.local/state/prism/run/. Without this, the pid files leak to
 	// host state and TestNotifyInvestigatorCompletion_NoHostBusLeak in the
 	// sidecar package observes them disappear when this test cleans up,
-	// flaking under parallel `go test ./...` scheduling (#1709 follow-up).
+	// flaking under parallel `go test ./...` scheduling.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	// Redirect tmux.TmuxBin to a no-op shell-script stub so review.Run's
@@ -1964,11 +1959,7 @@ func TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort(t *testing.T) {
 	// default tmux server. Without this, SpawnSession's tmux-new-session
 	// call lands on the live tmux server and the post-readiness-gate
 	// cleanup (`tmux.KillSession`, best-effort) can leak the 5 review-agent
-	// sessions — exactly what happened in #1732 (regression introduced by
-	// #1728), back then caught incidentally by the cmd/-package leak guard
-	// under parallel `go test ./...` scheduling. That guard's live-tmux
-	// session diff was dropped in #2227 (it false-positived on concurrent
-	// host activity). Since #2230 this package has suite-wide tmux
+	// sessions onto the live tmux server. This package has suite-wide tmux
 	// isolation (TestMain in tmux_isolation_test.go), so the live server is
 	// unreachable by construction even without this stub — the stub remains
 	// as defence-in-depth and to let the test assert on recorded argv.
@@ -2005,11 +1996,11 @@ func TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort(t *testing.T) {
 
 // TestRunAsync_RequireSlot_MissingSlot_AbortsAllSpawns verifies that
 // review.RunAsync also aborts the fan-out when the active profile is missing
-// a review slot (#1224 — both sync and async paths are gated).
+// a review slot (both sync and async paths are gated).
 func TestRunAsync_RequireSlot_MissingSlot_AbortsAllSpawns(t *testing.T) {
 	// Redirect sidecar state dir so any sidecar pid/log files created by
 	// review.RunAsync's host-mode spawn path land in a tempdir, not the
-	// real $HOME/.local/state/prism/run/ (#1709 follow-up).
+	// real $HOME/.local/state/prism/run/.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	dbPath := filepath.Join(t.TempDir(), "prism.db")
@@ -2086,7 +2077,7 @@ func TestBuildReviewPrompt_AllFiveAgentsGetSameContextWithLinkedIssues(t *testin
 	}
 }
 
-// ── sanitizeSpawnError / truncateProgressMsg tests (issue #1194) ──────────────
+// ── sanitizeSpawnError / truncateProgressMsg tests ──────────────
 
 // TestSanitizeSpawnError_CommandTooLong verifies that a HostLaunchCmdTooLargeError
 // produces a structured message ≤ 1 KB that does not contain PRISM_INITIAL_PROMPT.
@@ -2104,27 +2095,27 @@ func TestSanitizeSpawnError_CommandTooLong(t *testing.T) {
 
 	msg := review.SanitizeSpawnErrorForTest(prNumber, agentName, syntheticErr)
 
-	// AC: printed message ≤ 1 KiB.
+	// Printed message ≤ 1 KiB.
 	if len(msg) > 1024 {
 		t.Errorf("sanitizeSpawnError: message length = %d, want ≤ 1024 bytes\nmessage:\n%s", len(msg), msg)
 	}
 
-	// AC: does not contain PRISM_INITIAL_PROMPT.
+	// Does not contain PRISM_INITIAL_PROMPT.
 	if strings.Contains(msg, "PRISM_INITIAL_PROMPT=") {
 		t.Errorf("sanitizeSpawnError: message contains PRISM_INITIAL_PROMPT= — argv payload must not appear in stdout")
 	}
 
-	// AC: contains the failure category.
+	// Contains the failure category.
 	if !strings.Contains(msg, "HostLaunchCmdSafeBound") {
 		t.Errorf("sanitizeSpawnError: message does not mention HostLaunchCmdSafeBound\nmessage:\n%s", msg)
 	}
 
-	// AC: contains the bound exceeded.
+	// Contains the bound exceeded.
 	if !strings.Contains(msg, fmt.Sprintf("%d", safeBound)) {
 		t.Errorf("sanitizeSpawnError: message does not contain safe bound %d\nmessage:\n%s", safeBound, msg)
 	}
 
-	// AC: contains a hint.
+	// Contains a hint.
 	if !strings.Contains(msg, "hint:") {
 		t.Errorf("sanitizeSpawnError: message does not contain a 'hint:'\nmessage:\n%s", msg)
 	}
@@ -2142,12 +2133,12 @@ func TestSanitizeSpawnError_OtherError_NoPromptPayload(t *testing.T) {
 
 	msg := review.SanitizeSpawnErrorForTest(prNumber, agentName, err)
 
-	// AC: the raw PRISM_INITIAL_PROMPT value must not appear verbatim.
+	// The raw PRISM_INITIAL_PROMPT value must not appear verbatim.
 	if strings.Contains(msg, "PRISM_INITIAL_PROMPT="+rawPromptValue) {
 		t.Errorf("sanitizeSpawnError: message contains raw PRISM_INITIAL_PROMPT payload")
 	}
 
-	// AC: hard cap (message ≤ maxProgressMsgBytes + len of truncation suffix).
+	// Hard cap (message ≤ maxProgressMsgBytes + len of truncation suffix).
 	if len(msg) > review.MaxProgressMsgBytesForTest+200 {
 		t.Errorf("sanitizeSpawnError: message length = %d, want ≤ %d+200", len(msg), review.MaxProgressMsgBytesForTest)
 	}
@@ -2177,7 +2168,7 @@ func TestTruncateProgressMsg_ShortPassthrough(t *testing.T) {
 	}
 }
 
-// ── DiffFilePath / StateDir tests (issue #1446) ───────────────────────────────
+// ── DiffFilePath / StateDir tests ───────────────────────────────
 
 // TestDiffFilePathForTest_StateDirUsed verifies that when a StateDir is provided
 // the returned path is under that directory (not the /tmp fallback).
@@ -2232,7 +2223,7 @@ func TestDiffFilePathForTest_DifferentPRsInTmpDisambiguate(t *testing.T) {
 // TestDiffFilePathForTest_DifferentPRsInStateDirDisambiguate verifies that when
 // two concurrent reviews run against different PRs sharing the same worktree
 // (stateDir), the resulting paths are distinct so the agents read the correct
-// diff (security / edge-case AC from issue #1446).
+// diff (security / edge-case).
 func TestDiffFilePathForTest_DifferentPRsInStateDirDisambiguate(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), ".prism-review")
 	pathA := review.DiffFilePathForTest(dir, "111", 1)

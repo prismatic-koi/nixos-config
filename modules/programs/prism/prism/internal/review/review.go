@@ -6,7 +6,7 @@
 // "finished" state, reads their last msg_assistant event, and returns
 // aggregated findings to stdout.
 //
-// Session architecture (new per-agent model, PR-C):
+// Session architecture:
 //   - Five independent top-level tmux sessions per review round:
 //     <parent>~review-<N>-review-goal
 //     <parent>~review-<N>-review-code
@@ -15,23 +15,21 @@
 //     <parent>~review-<N>-review-context
 //   - Each session has its own port allocation, sidecar, and container.
 //   - A round's sessions are released automatically 15 minutes after its
-//     review-complete prompt is delivered (reap.go, issue #2649): the tmux
-//     session and the harness port go back, and every DB row survives. A
-//     round is NOT held until prism cleanup of the parent — that was the
-//     contract before #2649, and holding it is what filled the concurrency
-//     cap.
+//     review-complete prompt is delivered (reap.go): the tmux session and
+//     the harness port go back, and every DB row survives. A round is NOT
+//     held until prism cleanup of the parent.
 //   - No round-level multi-window session is created.
 //
 // The ~ separator in the session name is used by the dashboard for depth-2
 // child detection (review sessions appear indented under their parent branch).
 //
-// Readiness gate (#1051 Piece A):
+// Readiness gate:
 //
 // Each per-agent session.SpawnSession call only returns "the tmux session was
 // created and the sidecar process was kicked off" — the agent itself runs
 // inside the sandbox or host process the tmux pane launches, several steps
 // further along, and may take seconds to bind its TCP port (≈8.5s observed
-// in the worst healthy case captured in #1051) or never bind at all if
+// in the worst healthy case) or never bind at all if
 // startup fails silently. The spawn loop therefore runs a per-agent
 // readiness gate via gateReviewAgents (see readiness.go) after spawning, in
 // parallel goroutines so one slow agent does not delay the others.
@@ -50,7 +48,7 @@
 // (KillSidecar + cleanupAgentSession + tmux.KillSession). The other agents
 // are unaffected; the review proceeds with the survivors.
 //
-// Per-agent startup log (#1051 Piece B):
+// Per-agent startup log:
 //
 // Each spawned session has an agent-startup.log file in its run directory:
 //
@@ -61,11 +59,11 @@
 // sidecar startup, readiness gate outcome). It is the forensic trail
 // covering the gap between "session created in DB" and "first SSE event
 // arrives at the sidecar" — exactly the window in which the silent failure
-// reported by #1051 occurs. The bwrap-side stderr lands in agent-run.log in
+// occurs. The bwrap-side stderr lands in agent-run.log in
 // the same directory; together they cover the full pre-agent startup
 // timeline.
 //
-// Async Ack contract (#1051 Piece C):
+// Async Ack contract:
 //
 // RunAsync's AsyncResult.Ack distinguishes successfully-ready agents from
 // failed-to-spawn / failed-to-ready agents:
@@ -93,7 +91,7 @@ var linkedIssueRe = regexp.MustCompile(`(?i)(?:closes|fixes|refs|references)\s+#
 // reviewGoSHA is the build-time SHA of internal/review/review.go, embedded
 // via -ldflags '-X github.com/prismatic-koi/prism/internal/review.reviewGoSHA=<sha>'
 // during the Nix build. It is the SHA suffix in spawn_inputs.prompt_template_hash
-// for review fan-out sessions (C.4.PT, issue #1148). An empty value means the
+// for review fan-out sessions. An empty value means the
 // binary was not built with the ldflag (e.g. in development); prompt_template_hash
 // is then recorded as NULL (consistent with free-form CLI spawns).
 var reviewGoSHA string
@@ -102,7 +100,7 @@ var reviewGoSHA string
 // fan-out spawns: "review-fanout:<sha>" where <sha> is the build-time SHA of
 // this file. Returns "" when the binary was not built with the ldflag (dev
 // builds), causing the caller to write NULL to the DB.
-// Used by run.go's spawn loops (C.4.PT, issue #1148).
+// Used by run.go's spawn loops.
 func ReviewPromptTemplateHash() string {
 	if reviewGoSHA == "" {
 		return ""
@@ -281,8 +279,8 @@ type Opts struct {
 	PluginHostPath string
 	// PIExtensionDir is the host-side directory containing the prism PI
 	// extension file. Forwarded to session.SpawnOpts.PIExtensionDir for
-	// every spawned review agent so host-mode launches load the extension
-	// (#2065). Empty value falls back to no --extension flag on host mode;
+	// every spawned review agent so host-mode launches load the extension.
+	// Empty value falls back to no --extension flag on host mode;
 	// container modes get the flag via container.PIInvocation regardless.
 	PIExtensionDir string
 	// ProfilesFile is the loaded profiles.json. It supplies the active
@@ -307,17 +305,17 @@ type Opts struct {
 	// When empty, spawnAgentOnlyLayout resolves the machine default from
 	// cfg.DefaultIsolationMode rather than silently falling back to host.
 	IsolationMode string
-	// ModelsByRole is an optional per-role model override map (C.2,
-	// issue #1122). It is forwarded to session.SpawnOpts.ModelsByRole, which
+	// ModelsByRole is an optional per-role model override map. It is
+	// forwarded to session.SpawnOpts.ModelsByRole, which
 	// hands it to the sidecar as repeated --model-override flags.
 	//
 	// Each reviewer reads the entry keyed by its own role, and that entry
 	// selects the model the reviewer runs on — above `--model` and above the
-	// profile slot for that role (issue #2863). Entries for the other four
+	// profile slot for that role. Entries for the other four
 	// roles in the round are a no-op for this reviewer.
 	ModelsByRole map[string]string
 	// ReadinessTimeout is the per-agent deadline for the post-spawn
-	// readiness gate (#1051 Piece A). Zero falls back to
+	// readiness gate. Zero falls back to
 	// DefaultReviewReadinessTimeout (30s). The gate runs concurrently per
 	// agent so the worst-case wall time is one timeout, not five.
 	ReadinessTimeout time.Duration

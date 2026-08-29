@@ -1,7 +1,7 @@
 package review_test
 
-// Issue #2110: review-complete handler persists verdict + per-agent counts
-// on the worker's spawn_outcome row. This is the AC's "single write site"
+// The review-complete handler persists verdict + per-agent counts
+// on the worker's spawn_outcome row. This is the single write site
 // for the three review columns the `prism stats compare` renderer reads.
 //
 // Tests here cover:
@@ -26,7 +26,7 @@ import (
 
 // derefIntPtr returns 0 when p is nil, otherwise *p. Used by the error-
 // message formatters below so a failed assertion prints the actual value
-// rather than the pointer address — the difference matters when the AC
+// rather than the pointer address — the difference matters when a
 // reviewer is reading a CI log post-mortem.
 func derefIntPtr(p *int) int {
 	if p == nil {
@@ -76,7 +76,7 @@ func makeFailResult(name string) review.AgentResult {
 	}
 }
 
-// TestPersistReviewOutcome_AllPass_5PASS verifies the AC's happy-path test
+// TestPersistReviewOutcome_AllPass_5PASS verifies the happy-path test
 // case: a fully-passing round writes verdict=pass with the matching counts.
 func TestPersistReviewOutcome_AllPass_5PASS(t *testing.T) {
 	d := openTestDB(t)
@@ -107,7 +107,7 @@ func TestPersistReviewOutcome_AllPass_5PASS(t *testing.T) {
 	}
 }
 
-// TestPersistReviewOutcome_MixedFail_4PASS_1FAIL verifies the AC's
+// TestPersistReviewOutcome_MixedFail_4PASS_1FAIL verifies the
 // mixed-verdict case: any reviewer failing flips the aggregate to "fail" and
 // the per-agent counts reflect what the round actually produced.
 func TestPersistReviewOutcome_MixedFail_4PASS_1FAIL(t *testing.T) {
@@ -139,7 +139,7 @@ func TestPersistReviewOutcome_MixedFail_4PASS_1FAIL(t *testing.T) {
 	}
 }
 
-// TestPersistReviewOutcome_LatestRoundWins is the AC's negative test #2:
+// TestPersistReviewOutcome_LatestRoundWins is the latest-round-wins test:
 // a worker that runs round 1 (FAIL) then round 2 (PASS) must show round-2
 // counts, NOT a sum across rounds. This locks in the latest-round-wins
 // semantics as the source-of-truth for the renderer.
@@ -198,7 +198,7 @@ func TestPersistReviewOutcome_LatestRoundWins(t *testing.T) {
 }
 
 // TestPersistReviewOutcome_NegativeMutation_PassedDrivesCounts is the
-// AC-mandated negative-mutation guard: it locks in that the AgentResult.Passed
+// negative-mutation guard: it locks in that the AgentResult.Passed
 // field actually drives the persisted counts. If a future refactor changes
 // the helper to consume a different field (e.g. r.IsError only, or a
 // hard-coded constant) this test fails — the input clearly identifies one

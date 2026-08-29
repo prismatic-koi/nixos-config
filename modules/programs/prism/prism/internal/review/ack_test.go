@@ -1,6 +1,6 @@
 package review_test
 
-// Tests for the AsyncResult.Ack format (#1051 AC-5).
+// Tests for the AsyncResult.Ack format.
 //
 // The Ack is the worker's first piece of evidence about which agents came up
 // successfully and which did not. The headline scan target is the
@@ -48,7 +48,7 @@ func TestBuildAsyncAck_AllReady_NoFailures(t *testing.T) {
 	}
 }
 
-// TestBuildAsyncAck_PartialSuccess_SurfacesFailures verifies the AC-5
+// TestBuildAsyncAck_PartialSuccess_SurfacesFailures verifies the
 // example text exactly: "Spawned: 3, Failed: 2 (review-goal: not ready
 // within 30s, review-qa: not ready within 30s)".
 func TestBuildAsyncAck_PartialSuccess_SurfacesFailures(t *testing.T) {
@@ -63,7 +63,7 @@ func TestBuildAsyncAck_PartialSuccess_SurfacesFailures(t *testing.T) {
 	}
 	got := review.BuildAsyncAckForTest("1234", 1, "group-abc", sessions, failures, "test@feat")
 
-	// AC-5: the exact headline format.
+	// The exact headline format.
 	want := "Spawned: 3, Failed: 2 (review-goal: not ready within 30s, review-qa: not ready within 30s)"
 	if !strings.Contains(got, want) {
 		t.Errorf("Ack missing expected headline %q\nfull Ack:\n%s", want, got)

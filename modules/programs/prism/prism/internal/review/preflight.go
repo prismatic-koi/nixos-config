@@ -2,16 +2,16 @@ package review
 
 // preflight.go — pre-flight rebase gate for `prism review`.
 //
-// Issue #1518: Reviews regularly produce noisy findings of the form "you should
-// also update X" when X landed on the base branch after the feature branch was
+// Reviews regularly produce noisy findings of the form "you should also
+// update X" when X landed on the base branch after the feature branch was
 // cut. A pre-flight ancestor check on the PR's base ref catches this in one
 // fetch, before any agent spawns, and either refuses the review or (with
 // --rebase) fixes it inline.
 //
-// Issue #2304: The base branch is configurable via PreflightOpts.Branch and is
+// The base branch is configurable via PreflightOpts.Branch and is
 // resolved at the call site from `gh pr view --json baseRefName` so PRs
 // targeting non-main bases are checked against the correct upstream. The
-// default remains "main" when no branch is supplied — preserving today's
+// default remains "main" when no branch is supplied — this preserves
 // behaviour for invocations not tied to a discoverable PR.
 //
 // The gate is a snapshot at review-spawn time. It is not continuous — the base
@@ -256,7 +256,7 @@ git stderr (truncated):
 		// Not an ancestor — refuse with a clear message. The refusal names the
 		// resolved base ref in the "N commits behind …" line and in the
 		// suggested `git fetch` / `git rebase` commands so a worker on a PR
-		// targeting a non-main base sees the right ref to act on (#2304).
+		// targeting a non-main base sees the right ref to act on.
 		behind := countCommitsBehind(runner, opts.Worktree, remoteRef)
 		return &PreflightError{
 			Refused:       true,

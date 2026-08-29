@@ -2,12 +2,11 @@ package review
 
 // formatgate.go — formatter pre-flight gate for `prism review`.
 //
-// Issue #2556: PR #2552 burned a review cycle discovering a missing
-// newline at end of file — a plain `gofmt` violation. A five-agent LLM
-// round is the wrong mechanism to discover a defect a deterministic tool
-// reports for free in about a second, and `pr-gate` CI would have blocked
-// the merge regardless — so the round added nothing CI was not already
-// going to provide.
+// A five-agent LLM round is the wrong mechanism to discover a defect a
+// deterministic tool reports for free in about a second — for example a
+// missing newline at end of file, a plain `gofmt` violation. `pr-gate` CI
+// blocks the merge on such a defect regardless, so a review round on it adds
+// nothing CI does not already provide. This gate catches those defects first.
 //
 // This gate copies the shape of the pre-flight rebase gate in preflight.go:
 // it runs before any review-agent session is spawned, and on refusal it
@@ -21,10 +20,9 @@ package review
 // `git diff --name-only <remote>/<branch>...HEAD`, the same three-dot diff
 // against the resolved base ref that Preflight has already fetched.
 //
-// Fail-open on a missing formatter binary is deliberate (see AC notes in
-// #2556): a review that cannot run because a tool is absent is worse than a
-// review that runs without the gate. Do not harden this into a hard
-// failure.
+// Fail-open on a missing formatter binary is deliberate: a review that cannot
+// run because a tool is absent is worse than a review that runs without the
+// gate. Do not harden this into a hard failure.
 
 import (
 	"bytes"

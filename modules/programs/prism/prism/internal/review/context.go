@@ -54,8 +54,8 @@ type prViewJSON struct {
 // against different PRs in the same worktree do not collide. The round suffix
 // disambiguates multiple rounds against the same PR.
 //
-// When stateDir is empty the function falls back to /tmp for backward
-// compatibility (host-mode review agents, Darwin sandbox-exec).
+// When stateDir is empty the function falls back to /tmp (host-mode review
+// agents, Darwin sandbox-exec).
 func diffFilePath(stateDir, prNumber string, round int) string {
 	if round <= 0 {
 		round = 1
@@ -155,15 +155,15 @@ const ghTimeout = 30 * time.Second
 // gh subprocess (network partition, GitHub 5xx, ssh auth prompt) does not
 // block the entire review spawn indefinitely.
 //
-// Env handling (issue #2348): the child process's env is built explicitly
-// rather than inherited implicitly.  If the inherited GITHUB_TOKEN is a
-// shell command-substitution literal (starts with `$(`), it is stripped so
-// that gh does not send the literal `$(cat …)` string to GitHub and 401.
-// This is defence in depth on top of the sidecar's SanitizeGitHubTokenEnv
-// call at startup — the sidecar's fix covers the boot-restore path, and
-// this covers the case of `prism review` being invoked directly from a
-// systemd-launched shell context (e.g. a coordinator running review
-// on the host without going through the sidecar's /review handler).
+// Env handling: the child process's env is built explicitly rather than
+// inherited implicitly. If the inherited GITHUB_TOKEN is a shell
+// command-substitution literal (starts with `$(`), it is stripped so that
+// gh does not send the literal `$(cat …)` string to GitHub and 401. This is
+// defence in depth on top of the sidecar's SanitizeGitHubTokenEnv call at
+// startup: that call covers the boot-restore path, and this covers the case
+// of `prism review` invoked directly from a systemd-launched shell context
+// (for example a coordinator running review on the host without going
+// through the sidecar's /review handler).
 func runGH(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ghTimeout)
 	defer cancel()
@@ -186,10 +186,10 @@ func runGH(args ...string) (string, error) {
 
 // sanitisedGHEnv returns env with any GITHUB_TOKEN / PRISM_GITHUB_TOKEN_*
 // entries whose value is a shell command-substitution literal (`$(…)`)
-// removed.  This is the runGH-side defence against the #2348 failure mode
-// where the tmux server was launched from a non-shell context and the token
-// env vars propagated verbatim through the process tree.  Every other
-// non-token entry is passed through untouched.
+// removed. This is the runGH-side defence against the failure mode where
+// the tmux server was launched from a non-shell context and the token env
+// vars propagated verbatim through the process tree. Every other non-token
+// entry is passed through untouched.
 func sanitisedGHEnv(env []string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {

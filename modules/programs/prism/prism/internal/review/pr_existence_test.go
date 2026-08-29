@@ -171,8 +171,8 @@ func TestCheckPRState_OpenPasses(t *testing.T) {
 
 // TestCheckPRState_TransientGHError verifies that a non-"PR not found" gh
 // error is surfaced as PRStateTransient with a "could not determine PR state"
-// message — distinctly from PRStateMissing. This is the [edge-case] AC: a
-// transient gh failure must NOT silently pass through to spawn agents.
+// message — distinctly from PRStateMissing. A transient gh failure must NOT
+// silently pass through to spawn agents.
 func TestCheckPRState_TransientGHError(t *testing.T) {
 	runner := &scriptedPRRunner{
 		stderr: "error connecting to api.github.com: dial tcp: lookup api.github.com: no such host",
@@ -300,7 +300,7 @@ func TestCheckPRState_EmptyPRNumber(t *testing.T) {
 // ── no-side-effects contract: counter must NOT move on any refusal ────────────
 
 // TestCheckPRState_NoIncrementsCounter is the explicit no-counter-increment
-// test required by AC #6. It mirrors TestPreflight_NoIncrementsCounter and
+// test. It mirrors TestPreflight_NoIncrementsCounter and
 // asserts the same structural contract: as long as CheckPRState does not
 // write any `<parent>~review-<N>-<agent>` rows to agent_status, the cycle
 // counter (NextRoundNumber) cannot move. Three back-to-back refusals
@@ -370,7 +370,7 @@ func TestCheckPRState_NoIncrementsCounter(t *testing.T) {
 
 // ── ordering contract: PR-existence check runs BEFORE the rebase gate ─────────
 
-// TestCheckPRState_RunsBeforeRebaseGate is the AC #5 ordering test. It
+// TestCheckPRState_RunsBeforeRebaseGate is the ordering test. It
 // asserts the structural property by composition: a caller that runs
 // CheckPRState then Preflight, where CheckPRState refuses, must never call
 // Preflight. This is the same shape as cmd/review.go's runReview, which
@@ -378,7 +378,7 @@ func TestCheckPRState_NoIncrementsCounter(t *testing.T) {
 //
 // We use a fakeGit that records calls; if Preflight was reached, fetch would
 // have been called. The test asserts fetch was NOT called when CheckPRState
-// refused — which is the only way to satisfy AC #5 in cmd/review.go.
+// refused — the ordering cmd/review.go's runReview must preserve.
 func TestCheckPRState_RunsBeforeRebaseGate(t *testing.T) {
 	prRunner := &scriptedPRRunner{
 		stderr: "GraphQL: Could not resolve to a PullRequest with the number of 99999999. (repository.pullRequest)",
@@ -400,7 +400,7 @@ func TestCheckPRState_RunsBeforeRebaseGate(t *testing.T) {
 	}
 }
 
-// TestCheckPRState_OpenPRPassesThroughToRebaseGate verifies the AC #4
+// TestCheckPRState_OpenPRPassesThroughToRebaseGate verifies the
 // pass-through contract: when the PR is OPEN, CheckPRState returns nil and
 // the caller proceeds to Preflight. We assert by composition — calling
 // CheckPRState then Preflight should reach the rebase gate's first git call

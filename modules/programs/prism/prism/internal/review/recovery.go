@@ -1,7 +1,7 @@
 package review
 
 // recovery.go — review-completion recovery path for the worker-sidecar
-// watchdog (#1709 reopen).
+// watchdog.
 //
 // Background. The `prism review` happy path spawns a detached `prism
 // monitor-review` subprocess that polls db.GroupCompleted, aggregates
@@ -22,7 +22,7 @@ package review
 // pre-delivery DB state-flip, and delivery — but takes its inputs from the
 // DB rather than a MonitorOpts file, so it can run after the original
 // monitor subprocess is long dead. The delivery_id is supplied by the
-// caller so the host-API /prompt handler's dedup set (#1685) drops the
+// caller so the host-API /prompt handler's dedup set drops the
 // second delivery if both the original monitor and the recovery watcher
 // happen to deliver at the same instant.
 
@@ -64,7 +64,7 @@ type RecoveryDeliveryResult struct {
 // The deliveryID is forwarded to the host-API /prompt handler. Pass a
 // stable UUID for the group so that repeated invocations of this function
 // (e.g. the watcher firing twice across a daemon restart) dedup at the
-// receiving sidecar (#1685). The recommended construction is
+// receiving sidecar. The recommended construction is
 // "review-recovery:" + groupID — derived deterministically from the group
 // so any number of recovery attempts collapse to one delivered prompt.
 func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliveryResult, error) {
@@ -113,9 +113,9 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 	// members comes from GroupMembersForGroup, which — unlike GroupResults —
 	// includes rows whose ended_at is set. endedRows carries exactly those
 	// rows so a member reaped mid-review is reported with its recorded cause
-	// rather than as an unexplained absence (#2573).
+	// rather than as an unexplained absence.
 	endedRows := endedRowsFrom(members)
-	// The close cause each lifecycle path recorded for those rows (#2613), so
+	// The close cause each lifecycle path recorded for those rows, so
 	// a recovery-path delivery names the same single cause the happy path
 	// names rather than a disjunction.
 	endedCauses := endedMemberCauses(d, endedRows)
@@ -125,7 +125,7 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 	output, allPassed := FormatResultsForRound(results, info.PRNumber, info.Round, 0, status)
 	deliveryText := buildDeliveryMessage(info.PRNumber, info.Round, output, allPassed, status)
 
-	// LOOP-LIMIT footer (#1512) — mirror the MonitorFunc gating exactly so a
+	// LOOP-LIMIT footer — mirror the MonitorFunc gating exactly so a
 	// recovery-path delivery is indistinguishable from a happy-path delivery.
 	if !allPassed && status.CountsAsCycle() {
 		prior, ccErr := CompletedReviewCyclesForParent(d, info.ParentSession, groupID)
@@ -191,8 +191,8 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 		return res, fmt.Errorf("review recovery: deliver to %q: %w", info.ParentSession, delErr)
 	}
 
-	// Write the authoritative end-of-life signal for this review group
-	// (#2259). Once delivered_at is set, GroupCompleted short-circuits to
+	// Write the authoritative end-of-life signal for this review group.
+	// Once delivered_at is set, GroupCompleted short-circuits to
 	// true and ActiveReviewGroupForParent skips this group, so any
 	// subsequent mutation of agent_status (e.g. the per-process sidecar-
 	// restart anti-pattern in cmd/sidecar.go) cannot flip the parent
@@ -201,8 +201,8 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 	//
 	// Failure is non-fatal: the prompt has already been accepted by the
 	// host-API /prompt handler at this point. A missing delivered_at write
-	// leaves the system in the pre-fix state (vulnerable to agent_status
-	// clobbers) but does not lose the verdict.
+	// leaves the system vulnerable to agent_status clobbers but does not lose
+	// the verdict.
 	if setErr := d.SetGroupDeliveredAt(groupID); setErr != nil {
 		proglog.Warnf("[prism review recovery] warning: SetGroupDeliveredAt(%s): %v\n", groupID, setErr)
 	} else {

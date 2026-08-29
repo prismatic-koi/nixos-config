@@ -113,10 +113,3 @@ func FormatAgentDisplayName(name string) string {
 	}
 	return strings.Join(parts, "-")
 }
-
-// Note (#2854): ResolveAgentConfigContent used to render each reviewer's
-// profile slot into a harness-config JSON blob for the retired
-// PI_CONFIG_CONTENT / harness-config-file transports. pi read neither. Each
-// reviewer's model, provider, and thinking level now reach pi only over argv,
-// resolved at agent-run time by populatePIConfig from the profile slot that
-// the RequireSlot gate in Run / RunAsync already validates.

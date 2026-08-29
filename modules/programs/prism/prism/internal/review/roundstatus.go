@@ -1,35 +1,31 @@
 package review
 
 // roundstatus.go — the single classifier for "did every agent in this review
-// round produce a verdict, and if not, why?" (#2573).
+// round produce a verdict, and if not, why?"
 //
-// Background. Before this file existed, three separate call sites answered
-// overlapping parts of that question with their own ad-hoc scans of the
-// db.GroupResults map:
+// ClassifyRound is the single source of truth for this question. Three call
+// sites depend on the answer:
 //
 //   - buildMonitorResults      → per-agent AgentResult.Output strings
 //   - buildDeliveryMessage     → the header branch (no-start / stall / …)
 //   - currentCycleProducedVerdicts + CompletedReviewCyclesForParent
 //     → whether the round counts against the 3-cycle LOOP-LIMIT
 //
-// All three read `groupData` only, so an agent whose row was NOT in that map
-// was invisible to two of them. db.GroupResults deliberately drops any
-// agent_status row whose ended_at is set (the #1495 cleanup escape hatch),
-// so a review agent whose session was closed mid-round simply vanished: the
-// round reported "4 verdicts" and counted as a full cycle, and the lost
-// dimension read as a pass. That is the #2573 silent failure.
-//
-// ClassifyRound is now the single source of truth. It walks the EXPECTED
-// agent list (not the map that happened to come back), so an absent member is
-// a first-class outcome with a class and a reason, exactly like a no-start or
-// a mid-run stall.
+// The classifier walks the EXPECTED agent list, not the db.GroupResults map
+// that happened to come back. db.GroupResults drops any agent_status row whose
+// ended_at is set (the cleanup escape hatch), so a review agent whose session
+// was closed mid-round is absent from the map. A classifier that read the map
+// alone would report "4 verdicts", count the round as a full cycle, and read
+// the lost dimension as a pass — a silent failure. Walking the expected list
+// makes an absent member a first-class outcome with a class and a reason,
+// exactly like a no-start or a mid-run stall.
 //
 // Cycle-counting contract. A round counts against the 3-cycle limit only when
 // every expected agent produced a parseable verdict — RoundStatus.CountsAsCycle
 // is Complete(). This extends the existing "rounds that do not count"
-// machinery (#1512 / #1995 / #2239) rather than adding a parallel mechanism;
-// the same predicate now backs both the in-flight monitor gate and the
-// historical count in CompletedReviewCyclesForParent.
+// machinery rather than adding a parallel mechanism. The same predicate backs
+// both the in-flight monitor gate and the historical count in
+// CompletedReviewCyclesForParent.
 
 import (
 	"fmt"
@@ -46,29 +42,29 @@ type NoVerdictClass string
 
 const (
 	// NoVerdictNoStart — the sidecar wrote a startup_error event: the agent
-	// never ran (#1222).
+	// never ran.
 	NoVerdictNoStart NoVerdictClass = "failed to start"
 	// NoVerdictStalled — the inactivity watchdog fired after one or more
-	// inbound frames: the agent ran, then went silent (#2239).
+	// inbound frames: the agent ran, then went silent.
 	NoVerdictStalled NoVerdictClass = "stalled mid-run"
 	// NoVerdictCrashed — the member reached state "error" with neither a
 	// startup_error nor a stall_error event: a mid-run crash.
 	NoVerdictCrashed NoVerdictClass = "ended in error state"
 	// NoVerdictSessionEnded — the member's agent_status row exists but its
 	// ended_at is set, so db.GroupResults excluded it. The session was
-	// reaped mid-round; no verdict was recorded (#2573). Since #2613 this
-	// class covers only the reaps for which no closing path recorded a
-	// cause, plus the tmux-session-end hook; the two causes it used to
-	// conflate now have classes of their own below.
+	// reaped mid-round; no verdict was recorded. This class covers only the
+	// reaps for which no closing path recorded a cause, plus the
+	// tmux-session-end hook. Reaps with a recorded cause have classes of
+	// their own below.
 	NoVerdictSessionEnded NoVerdictClass = "session ended mid-review"
 	// NoVerdictNotReady — the agent was spawned but never signalled
 	// readiness, so the review readiness gate closed its row before the
-	// round began (#2613). Distinct from NoVerdictForceTerminated: nothing
+	// round began. Distinct from NoVerdictForceTerminated: nothing
 	// terminated a running agent, because the agent never came up.
 	NoVerdictNotReady NoVerdictClass = "failed its readiness gate"
 	// NoVerdictForceTerminated — a prism lifecycle path closed the row while
 	// the round was running: the monitor's safety-timeout sweep, a cleanup
-	// cascade from the parent worker, or a direct cleanup command (#2613).
+	// cascade from the parent worker, or a direct cleanup command.
 	// Distinct from NoVerdictNotReady: the agent was up and was stopped.
 	NoVerdictForceTerminated NoVerdictClass = "force-terminated"
 	// NoVerdictSessionUnknown — no agent_status row for the member could be
@@ -76,10 +72,10 @@ const (
 	// the group.
 	NoVerdictSessionUnknown NoVerdictClass = "session not found in group results"
 	// NoVerdictNoOutput — the agent reached "finished" with no recorded
-	// msg_assistant event (#1995).
+	// msg_assistant event.
 	NoVerdictNoOutput NoVerdictClass = "finished with no output"
 	// NoVerdictUnparseable — the agent reached "finished" and produced text
-	// with no parseable <verdict> tag (#1995).
+	// with no parseable <verdict> tag.
 	NoVerdictUnparseable NoVerdictClass = "finished with no parseable verdict"
 	// NoVerdictUnexpectedState — the group reported complete while this
 	// member was still in a non-terminal state (monitor safety timeout).
@@ -91,7 +87,7 @@ const (
 //
 // The distinction drives report wording, not cycle counting: EVERY class here
 // leaves a review dimension unexamined, so no class consumes a review cycle.
-// The two non-infrastructure classes (#1995) are the ones where the agent
+// The two non-infrastructure classes are the ones where the agent
 // itself ran to completion and simply failed to emit a usable verdict.
 func (c NoVerdictClass) Infrastructure() bool {
 	switch c {
@@ -160,18 +156,18 @@ func (rs RoundStatus) Complete() bool {
 }
 
 // CountsAsCycle reports whether this round consumes one of the worker's three
-// review cycles. Only a complete round does (#2573 AC-3 / AC-6).
+// review cycles. Only a complete round does.
 func (rs RoundStatus) CountsAsCycle() bool {
 	return rs.Complete()
 }
 
 // NonCountingLabel returns the short label naming why this round does not
 // count toward the 3-cycle limit, mirroring the header branch
-// buildDeliveryMessage selects for the same round (#2573). Returns "" for a
+// buildDeliveryMessage selects for the same round. Returns "" for a
 // complete round (CountsAsCycle() true) — there is nothing to label.
 //
 // This is the single source of truth for the non-counting label text so a
-// historical consumer (`prism retro`'s review-cycle detail, issue #2584) and
+// historical consumer (`prism retro`'s review-cycle detail) and
 // the live delivery message cannot drift apart.
 func (rs RoundStatus) NonCountingLabel() string {
 	if rs.Complete() {
@@ -233,7 +229,7 @@ func (rs RoundStatus) MissingAgentNames() []string {
 }
 
 // TargetedRerunCommand returns the `prism review … --only …` command that
-// re-runs exactly the agents that produced no verdict (#2573 AC-5). It
+// re-runs exactly the agents that produced no verdict. It
 // returns "" when no agent is missing or no agent name could be recovered.
 //
 // Callers must not print this command unconditionally — see TargetedRerunAllowed for
@@ -265,7 +261,7 @@ func prLabelForCommand(prNumber string) string {
 // TargetedRerunAllowed reports whether the report may advertise a targeted `--only`
 // re-run of the agents that produced no verdict.
 //
-// The targeted-rerun condition (#2530, widened by #2557, stated in
+// The targeted-rerun condition (stated in
 // `modules/programs/prism/agents/worker.md`) is prose-only — no code enforces
 // it. A worker may re-run a subset only when the inter-cycle diff is exactly
 // formatter output, comments, or documentation, and touches no file cited in a
@@ -319,7 +315,7 @@ func (rs RoundStatus) ClassSummary() string {
 //
 // ClassifyRound reports a closed row without its recorded close cause. Use
 // ClassifyRoundWithCauses wherever a DB handle is available — that is what
-// splits a readiness-gate failure from a force-terminate (#2613). This
+// splits a readiness-gate failure from a force-terminate. This
 // signature is kept for callers that need only the cycle-counting predicate,
 // which does not depend on the cause.
 func ClassifyRound(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status) RoundStatus {
@@ -386,12 +382,12 @@ func ClassifyRoundWithCauses(
 // The branch order mirrors buildMonitorResults so the per-agent AgentResult
 // and the round-level classification cannot disagree:
 //
-//  1. startup_error present → no-start, whatever the state says (#1222).
-//  2. state "error" + stall_error → mid-run stall (#2239). The state check
+//  1. startup_error present → no-start, whatever the state says.
+//  2. state "error" + stall_error → mid-run stall. The state check
 //     keeps a stale stall_error on a member that later resumed and finished
-//     (#1495) from relabelling a real verdict.
+//     from relabelling a real verdict.
 //  3. state "error" otherwise → mid-run crash.
-//  4. state "finished" → verdict, no output, or unparseable output (#1995).
+//  4. state "finished" → verdict, no output, or unparseable output.
 //  5. anything else → non-terminal at group completion.
 func classifyMember(mr db.GroupMemberResult) (NoVerdictClass, string, VerdictKind) {
 	if mr.StartupError != "" {
@@ -418,7 +414,7 @@ func classifyMember(mr db.GroupMemberResult) (NoVerdictClass, string, VerdictKin
 }
 
 // classifyAbsentMember explains why an expected member is absent from the
-// GroupResults map (#2573).
+// GroupResults map.
 //
 // db.GroupResults reads `agent_status WHERE group_id = ? AND ended_at IS
 // NULL`, so there are exactly two ways to be absent:
@@ -434,8 +430,8 @@ func classifyMember(mr db.GroupMemberResult) (NoVerdictClass, string, VerdictKin
 // The group itself never "loses" a member: group_id linkage is intact in both
 // cases, which is why db.GroupCompleted still reports the round complete.
 //
-// causes carries the close cause each lifecycle path recorded for the row
-// (#2613), plus the sidecar's own startup_error / stall_error events. The
+// causes carries the close cause each lifecycle path recorded for the row,
+// plus the sidecar's own startup_error / stall_error events. The
 // order below is causal, not alphabetical: an agent that failed on its own
 // (no-start, stall) is reported by that failure, because the later close is a
 // consequence of it, not the cause of the missing verdict.
@@ -456,21 +452,19 @@ func classifyAbsentMember(session string, endedRows map[string]db.Status, causes
 
 	cause := causes[session]
 
-	// 1. The sidecar recorded that the agent never ran (#1222). The close
+	// 1. The sidecar recorded that the agent never ran. The close
 	//    that followed is bookkeeping; the no-start is the cause.
 	if cause.StartupError != "" {
 		return NoVerdictNoStart, fmt.Sprintf("%s — %s", cause.StartupError, closedAt)
 	}
-	// 2. The sidecar recorded a mid-run stall (#2239). Same reasoning: the
-	//    stall came first, and it is what the operator must act on. Before
-	//    #2613 a stalled agent whose tmux session then died was reported as
-	//    an unexplained reap, because this branch did not exist.
+	// 2. The sidecar recorded a mid-run stall. Same reasoning: the
+	//    stall came first, and it is what the operator must act on.
 	if cause.StallError != "" {
 		return NoVerdictStalled, fmt.Sprintf("%s — %s", cause.StallError, closedAt)
 	}
 	// 3. The state the row was left in already explains itself. "finished"
 	//    means the agent completed and the row closed before the results were
-	//    aggregated (#2594); "deleted" means the harness dropped the session.
+	//    aggregated; "deleted" means the harness dropped the session.
 	//    A close cause recorded on top of either says who closed the row, not
 	//    why the verdict is missing, so the state wins.
 	if hint := selfExplainingStateHint(row.State); hint != "" {
@@ -528,11 +522,9 @@ func classForReapCause(c db.SessionReapCause) NoVerdictClass {
 }
 
 // endedRowHint is the last-resort text for a closed row with NO recorded
-// cause. Each branch names one possibility. Before #2613 the "error" branch
-// named two — "the session was force-terminated, or its readiness gate
-// failed" — which is why #2610 could not be diagnosed from the report. Those
-// two paths now record a cause and are classified above, so this branch says
-// only what is true: the row closed and nothing recorded why.
+// cause. Each branch names one possibility. The "error" branch says only what
+// is true: the row closed and nothing recorded why. The force-terminate and
+// readiness-gate paths record a cause and are classified above.
 func endedRowHint(state string) string {
 	if hint := selfExplainingStateHint(state); hint != "" {
 		return hint
@@ -559,7 +551,7 @@ func endedGroupMembers(d *db.DB, groupID string) map[string]db.Status {
 }
 
 // endedMemberCauses reads the recorded close cause for every closed row in
-// endedRows (#2613). Errors are non-fatal: the caller degrades to the
+// endedRows. Errors are non-fatal: the caller degrades to the
 // no-cause-recorded wording rather than losing the delivery.
 func endedMemberCauses(d *db.DB, endedRows map[string]db.Status) map[string]db.SessionEndCause {
 	if d == nil || len(endedRows) == 0 {

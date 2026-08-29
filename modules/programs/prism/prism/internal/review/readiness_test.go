@@ -1,6 +1,6 @@
 package review_test
 
-// Tests for the per-agent readiness gate in the review fan-out (#1051 Piece A).
+// Tests for the per-agent readiness gate in the review fan-out.
 // These exercise GateReviewAgentsForTest — the test-only export of
 // gateReviewAgents — without spinning up real tmux sessions or sidecars.
 //
@@ -14,10 +14,6 @@ package review_test
 //     spawnErr[i] with a *session.ReadinessTimeoutError (wrapped), and clean
 //     up the half-alive session via KillSidecar / cleanupAgentSession /
 //     tmux.KillSession.
-//
-// AC-7 (5-agent fan-out, 2 fail): TestGateReviewAgents_PartialFailure_2of5
-// AC-8 (port-block reproducer):   TestGateReviewAgents_TimeoutSurfacedWithin30s
-// AC-9 (no regressions, healthy): TestGateReviewAgents_AllReady_AllStarted
 
 import (
 	"path/filepath"
@@ -98,9 +94,9 @@ func containsLine(lines []string, substr string) bool {
 	return false
 }
 
-// ── AC-7: fan-out spawn where 2 of 5 agents fail their readiness check ───────
+// ── Fan-out spawn where 2 of 5 agents fail their readiness check ───────
 
-// TestGateReviewAgents_PartialFailure_2of5 simulates the headline #1051
+// TestGateReviewAgents_PartialFailure_2of5 simulates the headline
 // scenario: a 5-agent fan-out where 3 agents become ready (state_change
 // event written) and 2 stay silent (timeout). Verifies that:
 //
@@ -110,8 +106,8 @@ func containsLine(lines []string, substr string) bool {
 //     *session.ReadinessTimeoutError (visible through errors.As).
 //   - The 3 successful agents have spawnErr[i] == nil after the gate.
 //
-// AC-7 satisfied: subsequent code can build the partial-success summary
-// from the spawnErr slice.
+// Subsequent code can build the partial-success summary from the
+// spawnErr slice.
 func TestGateReviewAgents_PartialFailure_2of5(t *testing.T) {
 	d := openGateTestDB(t)
 
@@ -141,7 +137,7 @@ func TestGateReviewAgents_PartialFailure_2of5(t *testing.T) {
 	review.GateReviewAgentsForTest(d, agents, sessions, spawnErr, spawnTimes, timeout, collector.callback)
 	elapsed := time.Since(start)
 
-	// AC-7: 3 successful agents → spawnErr[i] == nil.
+	// 3 successful agents → spawnErr[i] == nil.
 	for _, i := range []int{0, 1, 4} {
 		if spawnErr[i] != nil {
 			t.Errorf("spawnErr[%d] (%s) = %v, want nil — agent should have become ready", i, agents[i].Name, spawnErr[i])
@@ -151,7 +147,7 @@ func TestGateReviewAgents_PartialFailure_2of5(t *testing.T) {
 		}
 	}
 
-	// AC-7: 2 failures → spawnErr[i] is *session.ReadinessTimeoutError.
+	// 2 failures → spawnErr[i] is *session.ReadinessTimeoutError.
 	for _, i := range []int{2, 3} {
 		if spawnErr[i] == nil {
 			t.Errorf("spawnErr[%d] (%s) = nil, want *ReadinessTimeoutError", i, agents[i].Name)
@@ -162,7 +158,7 @@ func TestGateReviewAgents_PartialFailure_2of5(t *testing.T) {
 		}
 	}
 
-	// AC-7: progress lines.
+	// Progress lines.
 	lines := collector.snapshot()
 	if !containsLine(lines, "Review-Goal started") {
 		t.Errorf("missing 'Review-Goal started' in progress lines: %v", lines)
@@ -180,16 +176,16 @@ func TestGateReviewAgents_PartialFailure_2of5(t *testing.T) {
 		t.Errorf("missing 'Review-Qa failed to start' in progress lines: %v", lines)
 	}
 
-	// AC-8 spirit: total wall time should be bounded by the timeout, not
+	// Total wall time must be bounded by the timeout, not
 	// 5x timeout. The gate runs in parallel.
 	if elapsed > timeout+1*time.Second {
 		t.Errorf("gate took %v, want close to %v (per-agent gates must run concurrently)", elapsed, timeout)
 	}
 }
 
-// ── AC-8: surface the failure within the timeout window ──────────────────────
+// ── Surface the failure within the timeout window ──────────────────────
 
-// TestGateReviewAgents_TimeoutSurfacedWithinWindow is the AC-8 reproducer:
+// TestGateReviewAgents_TimeoutSurfacedWithinWindow reproduces the case:
 // when 2 of 5 agents are blocked from emitting a readiness signal (here
 // simulated by simply not writing one), the spawn loop must surface the
 // failure within the configured window — NOT after the 20-minute monitor
@@ -197,7 +193,7 @@ func TestGateReviewAgents_PartialFailure_2of5(t *testing.T) {
 // runs sequentially or doesn't fire at all.
 //
 // We use a 1-second timeout here; on the production path the timeout is 30s
-// per AC-1 and the same parallelism guarantee holds.
+// and the same parallelism guarantee holds.
 func TestGateReviewAgents_TimeoutSurfacedWithinWindow(t *testing.T) {
 	d := openGateTestDB(t)
 
@@ -210,7 +206,7 @@ func TestGateReviewAgents_TimeoutSurfacedWithinWindow(t *testing.T) {
 	}
 
 	// Simulate the headline scenario: 3 succeed, 2 fail (review-goal and
-	// review-qa — same indices as the original #1051 incident).
+	// review-qa).
 	signalReady(t, d, sessions[1]) // review-code
 	signalReady(t, d, sessions[2]) // review-security
 	signalReady(t, d, sessions[4]) // review-context
@@ -224,14 +220,14 @@ func TestGateReviewAgents_TimeoutSurfacedWithinWindow(t *testing.T) {
 	review.GateReviewAgentsForTest(d, agents, sessions, spawnErr, spawnTimes, timeout, collector.callback)
 	elapsed := time.Since(start)
 
-	// AC-8: the gate must have completed within roughly the timeout window
+	// The gate must have completed within roughly the timeout window
 	// — categorically not in 20 minutes (which would mean the gate ran
 	// sequentially or wasn't called at all).
 	if elapsed > timeout+1*time.Second {
 		t.Errorf("gate took %v with %v timeout — failure must be surfaced within the window, not after the monitor timeout", elapsed, timeout)
 	}
 
-	// AC-8: the 2 failed agents must have a timeout error.
+	// The 2 failed agents must have a timeout error.
 	if !session.IsReadinessTimeout(spawnErr[0]) {
 		t.Errorf("review-goal: spawnErr = %v, want *ReadinessTimeoutError", spawnErr[0])
 	}
@@ -240,12 +236,12 @@ func TestGateReviewAgents_TimeoutSurfacedWithinWindow(t *testing.T) {
 	}
 }
 
-// ── AC-9: no regressions when all agents come up healthily ───────────────────
+// ── No regressions when all agents come up healthily ───────────────────
 
 // TestGateReviewAgents_AllReady_AllStarted verifies the happy path: when all
 // 5 agents signal readiness within the gate window, all 5 emit the "started"
 // progress line and none have a populated spawnErr. The wall time should be
-// ~one poll interval (250ms), well under the AC-9 ceiling of "a few seconds".
+// ~one poll interval (250ms), well under a few seconds.
 func TestGateReviewAgents_AllReady_AllStarted(t *testing.T) {
 	d := openGateTestDB(t)
 
@@ -267,7 +263,7 @@ func TestGateReviewAgents_AllReady_AllStarted(t *testing.T) {
 	review.GateReviewAgentsForTest(d, agents, sessions, spawnErr, spawnTimes, timeout, collector.callback)
 	elapsed := time.Since(start)
 
-	// AC-9: all 5 must report "started" and have no spawnErr.
+	// All 5 must report "started" and have no spawnErr.
 	lines := collector.snapshot()
 	for i, ag := range agents {
 		if spawnErr[i] != nil {
@@ -281,8 +277,8 @@ func TestGateReviewAgents_AllReady_AllStarted(t *testing.T) {
 		}
 	}
 
-	// AC-9: "the extra readiness check should add at most ~2 s on a healthy
-	// machine". We're well below that — typically <500ms in the test.
+	// The extra readiness check adds at most ~2s on a healthy machine.
+	// We're well below that — typically <500ms in the test.
 	if elapsed > 2*time.Second {
 		t.Errorf("gate took %v on healthy path — AC-9 ceiling is ~2s", elapsed)
 	}

@@ -1,6 +1,6 @@
 package review_test
 
-// AC-6 regression: the review monitor must NOT wait the full per-agent
+// The review monitor must NOT wait the full per-agent
 // timeout for an agent the spawn loop already declared failed (readiness
 // timeout, config error, SpawnSession error, etc.). The mechanism that
 // guarantees this is two-pronged:
@@ -40,7 +40,7 @@ func openMonitorTestDB(t *testing.T) *db.DB {
 	return d
 }
 
-// TestMonitor_FailedReadyAgent_DoesNotBlockGroupCompleted verifies AC-6:
+// TestMonitor_FailedReadyAgent_DoesNotBlockGroupCompleted verifies that
 // after the gate cleans up a failed-to-ready agent, the agent's row state
 // is "error" (not "idle"), and db.GroupCompleted returns true once all the
 // alive members have reached their terminal state. Without this, the monitor
@@ -108,7 +108,7 @@ func TestMonitor_FailedReadyAgent_DoesNotBlockGroupCompleted(t *testing.T) {
 		t.Fatalf("UpsertStatus(%q, finished): %v", sessReady, err)
 	}
 
-	// AC-6: GroupCompleted must now return true. Without the state=error
+	// GroupCompleted must now return true. Without the state=error
 	// transition for sessFailed, this would still return false and the
 	// monitor would block.
 	done, gErr := d.GroupCompleted(groupID)

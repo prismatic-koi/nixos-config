@@ -1,13 +1,13 @@
 package review_test
 
 // reap_state_precedence_2613_test.go — a recorded close cause must not
-// overwrite an explanation the row's state already carries (issue #2613).
+// overwrite an explanation the row's state already carries.
 //
 // `prism cleanup` records a `cleanup_command` cause on every row it closes,
 // including rows that had already reached a terminal state. For a row in state
 // "finished" the operator's cleanup says who closed the row; it does not
-// explain why the verdict is missing. The pre-#2613 wording for those states
-// is the accurate one and must survive.
+// explain why the verdict is missing. The state's own wording for those
+// states is the accurate one and must survive.
 
 import (
 	"strings"

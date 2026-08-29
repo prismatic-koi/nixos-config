@@ -1,19 +1,17 @@
 package review_test
 
-// lifetime_prose_guard_test.go — issue #2649.
+// lifetime_prose_guard_test.go — guards against prose that promises the
+// removed session-lifetime contract.
 //
-// The automatic release removed one contract and put another in its place:
-// review-agent sessions are no longer held until `prism cleanup` of the parent.
-// Prose that still promises the old contract is not a style problem. It is a
-// false statement about behaviour, sitting in the package that implements the
-// replacement, where the next reader will believe it.
+// Review-agent sessions are released 15 minutes after their round is
+// delivered. They are NOT held until `prism cleanup` of the parent. Prose
+// that still promises the old contract is not a style problem. It is a false
+// statement about behaviour, sitting in the package that implements the
+// current one, where the next reader will believe it.
 //
-// This guard exists because a comment listing the prose sites was tried first
-// and did not hold. Round 1 of PR #2676 shipped with `prism review --help`
-// still promising the removed contract; round 2 found four more statements in
-// this package, two of them in a file the same PR edited. Both misses were of
-// the same shape: the grep that found the sites was scoped to documentation
-// files, and Go source carries the same claims.
+// This guard is mechanical rather than a comment listing the prose sites,
+// because the claims appear in Go source as well as documentation, and a
+// documentation-scoped grep misses them.
 //
 // The scan is deliberately narrow. It looks for the specific phrasing that
 // asserts the removed lifetime, not for the words "persist" or "cleanup",
@@ -27,10 +25,9 @@ import (
 	"testing"
 )
 
-// removedLifetimeClaims are substrings that assert the pre-#2649 contract.
+// removedLifetimeClaims are substrings that assert the removed contract.
 // Matching is case-insensitive and whitespace-normalised, so a claim split
-// across two comment lines is still caught — which is how three of the four
-// round-2 misses were written.
+// across two comment lines is still caught.
 var removedLifetimeClaims = []string{
 	"persist until prism cleanup",
 	"persist until cleanup",

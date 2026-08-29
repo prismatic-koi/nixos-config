@@ -1,6 +1,6 @@
 package review
 
-// Per-agent readiness gate for the review fan-out (#1051 Piece A).
+// Per-agent readiness gate for the review fan-out.
 //
 // The single-worker `prism spawn` path lets session.SpawnSession run its own
 // readiness gate inline, because a single spawn does not benefit from
@@ -19,10 +19,8 @@ package review
 // Progress callback contract:
 //
 //   - "<role> started" is emitted when an agent passes its readiness gate.
-//     This replaces the old emission point (immediately after SpawnSession
-//     returns), making the line a truthful "this agent is up and reachable"
-//     signal rather than the optimistic "tmux session was created" signal
-//     it used to be.
+//     The line is a truthful "this agent is up and reachable" signal, not
+//     the optimistic "tmux session was created" signal.
 //
 //   - "<role> failed to start: not ready within <timeout>" is emitted when
 //     the readiness gate trips on timeout. Other "failed to start: …" forms
@@ -48,9 +46,7 @@ const DefaultReviewReadinessTimeout = 30 * time.Second
 // gateReviewAgents runs session.WaitForReady concurrently for every agent
 // whose spawnErr[i] is nil. agentSessions[i] is the session name to gate;
 // spawnTimes[i] is updated on successful gate so the polling phase reports
-// elapsed times relative to the moment the agent became ready (matching the
-// behaviour of the pre-#1051 code, where spawnTimes was set at SpawnSession-
-// return time).
+// elapsed times relative to the moment the agent became ready.
 //
 // Outcomes are written back into spawnErr — timeouts populate a
 // *session.ReadinessTimeoutError, surface via onProgress as "failed to start:
@@ -117,7 +113,7 @@ func gateReviewAgents(
 				//
 				// The cleanup closes the row in state "error", which is the
 				// same shape a force-terminate leaves behind. Pass the cause
-				// so the round report can tell the two apart (#2613).
+				// so the round report can tell the two apart.
 				session.KillSidecar(agentSession)
 				cleanupAgentSession(d, agentSession, db.ReapCauseReadinessGate, readyErr.Error())
 				_ = tmux.KillSession(agentSession)
@@ -125,9 +121,7 @@ func gateReviewAgents(
 			}
 			// Reset spawnTimes[i] to "ready" time so the polling phase
 			// reports elapsed durations relative to the moment the agent
-			// became reachable (consistent with the pre-#1051 behaviour
-			// where the time was captured immediately after SpawnSession
-			// returned, which was effectively the same moment).
+			// became reachable.
 			spawnTimes[i] = time.Now()
 			if onProgress != nil {
 				onProgress(fmt.Sprintf("%s started", FormatAgentDisplayName(ag.Name)))
@@ -138,11 +132,10 @@ func gateReviewAgents(
 	wg.Wait()
 }
 
-// formatReadinessTimeout renders a duration the way the AC text says it
-// should appear in the "failed to start: not ready within X" line.
-// Mirrors session.formatTimeout — duplicated here because that function is
-// unexported in the session package and we don't want to widen its surface
-// just for a string format.
+// formatReadinessTimeout renders a duration for the "failed to start: not
+// ready within X" line. Mirrors session.formatTimeout — duplicated here
+// because that function is unexported in the session package, and this
+// package does not need to widen its surface just for a string format.
 func formatReadinessTimeout(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Round(time.Second).Seconds()))

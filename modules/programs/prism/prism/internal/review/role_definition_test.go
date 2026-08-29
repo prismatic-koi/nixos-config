@@ -1,14 +1,13 @@
 package review
 
 // role_definition_test.go — white-box unit tests for roleDefinitionMissing
-// and roleDefinitionPath (issue #2534).
+// and roleDefinitionPath.
 //
-// These are the sole remaining production-side readers of the role
-// definition file's presence: they no longer read the file's *content* into
-// the review prompt (that duty now belongs entirely to prism.ts's
-// composeRoleSystemPrompt), but run.go still checks existence so a missing
-// or empty role file is surfaced to the operator via OnProgress instead of
-// failing silently.
+// These are the production-side readers of the role definition file's
+// presence. They read the file's presence, not its content — the content
+// belongs entirely to prism.ts's composeRoleSystemPrompt. run.go still checks
+// existence so a missing or empty role file is surfaced to the operator via
+// OnProgress instead of failing silently.
 
 import (
 	"os"

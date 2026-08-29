@@ -36,7 +36,7 @@ func steRules(fs []Finding) map[string]bool {
 }
 
 // TestSte_DetectsAllFiveClasses is the load-bearing "one positive case per
-// rule" test. AC: the lint reports a finding for each of the five checks.
+// rule" test: the lint reports a finding for each of the five checks.
 func TestSte_DetectsAllFiveClasses(t *testing.T) {
 	body := strings.Join([]string{
 		"# Test doc",
@@ -68,8 +68,8 @@ func TestSte_DetectsAllFiveClasses(t *testing.T) {
 	}
 }
 
-// TestSte_FencedAndInlineCodeProduceNoFindings covers the "text inside
-// fenced code blocks and inline code spans produces no findings" AC.
+// TestSte_FencedAndInlineCodeProduceNoFindings asserts that text inside
+// fenced code blocks and inline code spans produces no findings.
 func TestSte_FencedAndInlineCodeProduceNoFindings(t *testing.T) {
 	body := strings.Join([]string{
 		"# Test doc",
@@ -94,8 +94,8 @@ func TestSte_FencedAndInlineCodeProduceNoFindings(t *testing.T) {
 	}
 }
 
-// TestSte_PossessiveApostropheDoesNotFire covers the "possessive `'s`
-// produces no contraction finding" AC. This is the highest-risk false
+// TestSte_PossessiveApostropheDoesNotFire asserts that a possessive `'s`
+// produces no contraction finding. This is the highest-risk false
 // positive in the whole check set.
 func TestSte_PossessiveApostropheDoesNotFire(t *testing.T) {
 	body := strings.Join([]string{
@@ -117,8 +117,8 @@ func TestSte_PossessiveApostropheDoesNotFire(t *testing.T) {
 	}
 }
 
-// TestSte_SkipFileDirectiveSuppressesSteFindings covers the "a file
-// carrying `doclint-skip-file` produces no STE findings" AC.
+// TestSte_SkipFileDirectiveSuppressesSteFindings asserts that a file
+// carrying `doclint-skip-file` produces no STE findings.
 func TestSte_SkipFileDirectiveSuppressesSteFindings(t *testing.T) {
 	body := strings.Join([]string{
 		"<!-- doclint-skip-file: external interface -->",
@@ -138,8 +138,8 @@ func TestSte_SkipFileDirectiveSuppressesSteFindings(t *testing.T) {
 	}
 }
 
-// TestSte_IgnoreDirectiveSuppressesNamedToken covers the "`doclint-ignore`
-// suppresses the named token" AC.
+// TestSte_IgnoreDirectiveSuppressesNamedToken asserts that `doclint-ignore`
+// suppresses the named token.
 func TestSte_IgnoreDirectiveSuppressesNamedToken(t *testing.T) {
 	body := strings.Join([]string{
 		"# Test doc",
@@ -174,8 +174,8 @@ func TestSte_IgnoreDirectiveSuppressesNamedToken(t *testing.T) {
 	}
 }
 
-// TestSte_FindingShape covers the "each finding names the file, line,
-// offending text, and a rule identifier" AC.
+// TestSte_FindingShape asserts that each finding names the file, line,
+// offending text, and a rule identifier.
 func TestSte_FindingShape(t *testing.T) {
 	body := "# Test\n\nA semicolon; here.\n"
 	root, _ := synthSteRoot(t, body)
@@ -210,8 +210,8 @@ func TestSte_FindingShape(t *testing.T) {
 	}
 }
 
-// TestSte_OnlyScansInScopeBasenames covers "the lint scans only the four
-// named docs, and produces no findings for others". A doc at
+// TestSte_OnlyScansInScopeBasenames asserts that the lint scans only the
+// in-scope named docs, and produces no findings for others. A doc at
 // docs/invariants/other.md must not be STE-scanned even if its basename
 // matches (parent-dir guard), and an unrelated basename must not scan.
 func TestSte_OnlyScansInScopeBasenames(t *testing.T) {
@@ -245,11 +245,11 @@ func TestSte_OnlyScansInScopeBasenames(t *testing.T) {
 	}
 }
 
-// TestSte_NoOutOfScopeChecksFire covers the "no findings for passive
-// voice, part-of-speech misuse, or synonym rotation" AC. Sentence
-// length, slop words, and `-ing`-after-comma ARE in-scope now (#2496)
+// TestSte_NoOutOfScopeChecksFire asserts no findings for passive
+// voice, part-of-speech misuse, or synonym rotation. Sentence
+// length, slop words, and `-ing`-after-comma are in-scope
 // and have dedicated tests below — this test only asserts the
-// permanent omissions still do not fire.
+// permanent omissions do not fire.
 func TestSte_NoOutOfScopeChecksFire(t *testing.T) {
 	body := strings.Join([]string{
 		"# Test doc",
@@ -275,8 +275,8 @@ func TestSte_NoOutOfScopeChecksFire(t *testing.T) {
 	}
 }
 
-// TestSte_SentenceLengthFiresOverLimit covers the "sentence over the
-// applied word limit" AC. A 30-word descriptive sentence must fire.
+// TestSte_SentenceLengthFiresOverLimit asserts that a sentence over the
+// applied word limit fires. A 30-word descriptive sentence must fire.
 func TestSte_SentenceLengthFiresOverLimit(t *testing.T) {
 	// A 30-word single sentence. STE 6.3 limit is 25.
 	body := strings.Join([]string{
@@ -328,9 +328,9 @@ func TestSte_SentenceLengthRuleAppliedIsRule63(t *testing.T) {
 	}
 }
 
-// TestSte_SentenceLengthTokenisationRules8_5_6_7 covers the "backticked
+// TestSte_SentenceLengthTokenisationRules8_5_6_7 asserts that backticked
 // spans, numbers with units, parenthesised text, and hyphenated words
-// each count as one word" AC. A sentence carrying enough Rule 8.5/8.6/8.7
+// each count as one word. A sentence carrying enough Rule 8.5/8.6/8.7
 // tokens that the naive word count would exceed 25 must NOT fire when
 // each such token is correctly counted as one.
 func TestSte_SentenceLengthTokenisationRules8_5_6_7(t *testing.T) {
@@ -360,15 +360,11 @@ func TestSte_SentenceLengthTokenisationRules8_5_6_7(t *testing.T) {
 	}
 }
 
-// TestSte_SentenceLengthColonTerminatesSentence covers the Rule 8.4 AC:
-// a vertical-list lead-in colon terminates a sentence for word-count
-// purposes. A paragraph that would exceed 25 words if the colon did NOT
-// terminate must, with the terminator honoured, split into two short
-// sentences and produce no finding.
-// Rule 8.4: a vertical-list lead-in colon terminates the sentence for
-// word-count purposes. The check runs on the segmenter directly so the
-// paragraph-boundary segmentation does not accidentally satisfy the AC
-// by acting as a fallback terminator.
+// TestSte_SentenceLengthColonTerminatesSentence asserts Rule 8.4: a
+// vertical-list lead-in colon terminates a sentence for word-count
+// purposes. The check runs on the segmenter directly so the
+// paragraph-boundary segmentation does not act as a fallback terminator
+// that masks the result.
 func TestSte_SentenceLengthColonTerminatesSentence(t *testing.T) {
 	paragraph := "The scanner walks every file in the tree and reports a finding for each token it cannot resolve against its index:"
 	sentences := segmentSentences(paragraph)
@@ -392,9 +388,9 @@ func TestSte_SentenceLengthColonTerminatesSentence(t *testing.T) {
 	}
 }
 
-// TestSte_SentenceLengthSkipsListItemsHeadingsAndTables covers the
-// "list-item fragments, table cells, and headings produce no
-// sentence-length findings" AC.
+// TestSte_SentenceLengthSkipsListItemsHeadingsAndTables asserts that
+// list-item fragments, table cells, and headings produce no
+// sentence-length findings.
 func TestSte_SentenceLengthSkipsListItemsHeadingsAndTables(t *testing.T) {
 	body := strings.Join([]string{
 		// 40+ word heading, list item, and table row.
@@ -419,8 +415,8 @@ func TestSte_SentenceLengthSkipsListItemsHeadingsAndTables(t *testing.T) {
 	}
 }
 
-// TestSte_SlopWordFires covers the "slop word from the documented list"
-// AC.
+// TestSte_SlopWordFires asserts that a slop word from the documented list
+// fires.
 func TestSte_SlopWordFires(t *testing.T) {
 	body := "# Test\n\nThis will leverage the tool. Also seamlessly integrated.\nWe use it in order to move faster.\n"
 	root, _ := synthSteRoot(t, body)
@@ -448,8 +444,8 @@ func TestSte_SlopWordFires(t *testing.T) {
 	}
 }
 
-// TestSte_IngAfterCommaFires covers the "-ing clause after a comma"
-// AC. The check runs only on prose paragraphs, so this test uses a
+// TestSte_IngAfterCommaFires asserts that an `-ing` clause after a comma
+// fires. The check runs only on prose paragraphs, so this test uses a
 // paragraph body.
 func TestSte_IngAfterCommaFires(t *testing.T) {
 	body := "# Test\n\nThe migration ran to completion, making the table available for reads.\n"
@@ -500,7 +496,7 @@ func TestSte_IngAfterCommaSkipsTablesAndListItems(t *testing.T) {
 // TestSte_EachCheckIsNotANoOp is the revert-and-watch-fail proof: for
 // each of the five checks, we assert that disabling it causes its
 // positive test to STOP reporting a finding. That guarantees the check
-// contributed the finding, i.e. the regex is not vacuous. AC.
+// contributed the finding: the regex is not vacuous.
 func TestSte_EachCheckIsNotANoOp(t *testing.T) {
 	cases := []struct {
 		rule  string
@@ -565,8 +561,8 @@ func TestSte_EachCheckIsNotANoOp(t *testing.T) {
 	})
 }
 
-// TestSte_SkipFileScopedToIdentifiersKeepsSteFindings covers the Phase 1
-// per-lint scoping AC (#2497): a doc carrying `<!-- doclint-skip-file:
+// TestSte_SkipFileScopedToIdentifiersKeepsSteFindings asserts per-lint
+// scoping: a doc carrying `<!-- doclint-skip-file:
 // identifiers | reason -->` must still be scanned by STE, and produce STE
 // findings on prose that violates a rule.
 func TestSte_SkipFileScopedToIdentifiersKeepsSteFindings(t *testing.T) {
@@ -641,12 +637,10 @@ func TestSte_SkipFileScopedToSteSuppressesSteFindings(t *testing.T) {
 	}
 }
 
-// TestSte_UnparameterisedSkipFileStaysGlobal covers the backwards-compat
-// AC: an existing `<!-- doclint-skip-file: reason -->` without a class
-// list keeps its historical global behaviour — both STE and identifier
-// findings are suppressed. This is the invariant that let
-// pi-wire-protocol.md keep its global skip through Phase 1 of the #2497
-// migration, before Phase 2 migrated it to the `identifiers`-only scope.
+// TestSte_UnparameterisedSkipFileStaysGlobal asserts that an existing
+// `<!-- doclint-skip-file: reason -->` without a class
+// list keeps its global behaviour: both STE and identifier
+// findings are suppressed.
 func TestSte_UnparameterisedSkipFileStaysGlobal(t *testing.T) {
 	body := strings.Join([]string{
 		"<!-- doclint-skip-file: external interface, no scoping given -->",
@@ -668,7 +662,7 @@ func TestSte_UnparameterisedSkipFileStaysGlobal(t *testing.T) {
 }
 
 // TestParseSkipFileDirective_Shapes covers the parser directly across the
-// shapes the AC calls out: no directive, unparameterised (global),
+// shapes: no directive, unparameterised (global),
 // identifiers-only, ste-only, both classes, unknown class (silently
 // dropped so a typo does not widen the skip).
 func TestParseSkipFileDirective_Shapes(t *testing.T) {
@@ -727,15 +721,14 @@ func TestParseSkipFileDirective_Shapes(t *testing.T) {
 	}
 }
 
-// TestSte_SkipScopingIsNotANoOp is the revert-and-watch-fail proof for
-// Phase 1: hasSkipFileDirective (the pre-scoping global gate) must NOT
+// TestSte_SkipScopingIsNotANoOp is the revert-and-watch-fail proof:
+// hasSkipFileDirective (the global gate) must NOT
 // short-circuit STE scanning when the directive is scoped to identifiers.
-// The check simulates the pre-scoping behaviour by calling
-// hasSkipFileDirective on the same content that
+// The check calls hasSkipFileDirective on the same content that
 // TestSte_SkipFileScopedToIdentifiersKeepsSteFindings uses — that helper
-// returns true only when both categories are suppressed. If it returned
-// true for an identifier-scoped directive, the STE pass would silently
-// skip and the AC test above would still pass vacuously.
+// returns true only when both categories are suppressed. If it reported an
+// identifier-scoped directive as global, the STE pass short-circuits and
+// the test above passes vacuously.
 func TestSte_SkipScopingIsNotANoOp(t *testing.T) {
 	identScoped := []byte("<!-- doclint-skip-file: identifiers | reason -->\n")
 	if hasSkipFileDirective(identScoped) {
@@ -751,9 +744,9 @@ func TestSte_SkipScopingIsNotANoOp(t *testing.T) {
 	}
 }
 
-// TestSte_SandboxRootAbsentDoesNotFail exercises the "runs in the nix
-// sandbox where the repo root is absent" AC. Passing repoRoot="" is the
-// canonical simulation.
+// TestSte_SandboxRootAbsentDoesNotFail exercises the case where the scan
+// runs in the nix sandbox with the repo root absent. Passing repoRoot=""
+// is the canonical simulation.
 func TestSte_SandboxRootAbsentDoesNotFail(t *testing.T) {
 	body := "# Sandbox\n\nClean prose.\n"
 	root, _ := synthSteRoot(t, body)

@@ -130,10 +130,9 @@ func TestMonitorFunc_DetectsCompletionAndDelivers(t *testing.T) {
 	}
 }
 
-// TestMonitorFunc_FlipsReviewingToActiveBeforeDelivery verifies the option-1
-// fix for issue #1049: the review monitor must clear the worker's `reviewing`
-// state by writing `active` to the DB *before* delivering the review-complete
-// prompt. This ensures the busy event triggered by the prompt arriving is
+// TestMonitorFunc_FlipsReviewingToActiveBeforeDelivery verifies that the
+// review monitor clears the worker's `reviewing` state by writing `active` to
+// the DB *before* delivering the review-complete prompt. This ensures the busy event triggered by the prompt arriving is
 // processed against `active` (not `reviewing`, which the sidecar treats as
 // sticky and refuses to overwrite), so the subsequent idle debounce can fire
 // the genuine end-of-review handoff.
@@ -459,15 +458,14 @@ func TestActiveReviewGroupForParent_InProgressRound(t *testing.T) {
 }
 
 // TestActiveReviewGroupForParent_InterruptedWithEndedAtIsTerminal is the
-// primary regression test for #1962 Bug A.
+// primary regression test for the ended_at-terminal case.
 //
 // Reproducer shape: a review group has one member in state "interrupted"
 // whose sidecar has already exited (ended_at is non-NULL, simulating what
-// `prism cleanup --yes --session <agent>` does via SetEnded). Before #1962
-// this row was treated as non-terminal forever, permanently blocking the
-// next `prism review` invocation. After the fix, ActiveReviewGroupForParent
-// must treat the ended_at-non-NULL row as terminal regardless of state
-// string and return "" (no active group).
+// `prism cleanup --yes --session <agent>` does via SetEnded). An
+// ended_at-non-NULL row must be treated as terminal regardless of state
+// string: ActiveReviewGroupForParent returns "" (no active group). Otherwise
+// the row blocks the next `prism review` invocation forever.
 func TestActiveReviewGroupForParent_InterruptedWithEndedAtIsTerminal(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@interrupted-cleaned"
@@ -512,13 +510,13 @@ func TestActiveReviewGroupForParent_InterruptedWithEndedAtIsTerminal(t *testing.
 }
 
 // TestActiveReviewGroupForParent_InterruptedWithLiveSidecarStillBlocks is the
-// edge-case test for #1962 AC #4: when the in-progress guard fires for a
+// edge-case test: when the in-progress guard fires for a
 // genuinely active round (a live sidecar with a not-yet-terminal agent), the
 // existing refusal behaviour is preserved unchanged.
 //
 // "Genuinely active" here means an interrupted row whose ended_at is still
 // NULL — the sidecar is alive and the user may still redirect the agent via
-// `prism prompt` (#1495). This row must NOT be treated as terminal.
+// `prism prompt`. This row must NOT be treated as terminal.
 func TestActiveReviewGroupForParent_InterruptedWithLiveSidecarStillBlocks(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@interrupted-live"
@@ -579,9 +577,9 @@ func TestActiveReviewGroupForParent_DeletedIsTerminal(t *testing.T) {
 }
 
 // TestRunAsync_InProgressGuardReportsCorrectRound is the regression test for
-// #1962 Bug B: the in-progress-guard error message must report the round of
-// the actually-stuck group, not the lowest-numbered round across all groups
-// for this parent.
+// the round-reporting case: the in-progress-guard error message must report
+// the round of the actually-stuck group, not the lowest-numbered round across
+// all groups for this parent.
 //
 // Reproducer shape: three prior rounds for the same parent, only round 3
 // has a non-terminal (live-sidecar interrupted) member. The guard must fire
@@ -701,10 +699,10 @@ func TestBuildMonitorResults_FinishedPassed(t *testing.T) {
 	}
 }
 
-// TestBuildMonitorResults_InterruptedState_FallsToDefault verifies the #1495
-// contract at the buildMonitorResults layer.
+// TestBuildMonitorResults_InterruptedState_FallsToDefault verifies the
+// interrupted-state handling at the buildMonitorResults layer.
 //
-// Under the new contract, db.GroupCompleted does NOT consider "interrupted"
+// db.GroupCompleted does NOT consider "interrupted"
 // terminal, so the monitor's poll loop only flushes results once every agent
 // has reached "finished", "error", or "deleted". The only way an agent's
 // state in groupData can still be "interrupted" when buildMonitorResults
@@ -744,7 +742,7 @@ func TestBuildMonitorResults_InterruptedState_FallsToDefault(t *testing.T) {
 	}
 }
 
-// TestBuildMonitorResults_StalledMidRun verifies the #2239 contract at the
+// TestBuildMonitorResults_StalledMidRun verifies the stall handling at the
 // buildMonitorResults layer: an agent whose inactivity watchdog fired AFTER
 // inbound frames were received (StallError set, StartupError empty) is
 // reported as a mid-run stall — elapsed time and frame count included via
@@ -786,7 +784,7 @@ func TestBuildMonitorResults_StalledMidRun(t *testing.T) {
 }
 
 // TestBuildMonitorResults_NoStartStillUsesStartupErrorBranch pins the other
-// half of the #2239 split: an agent with a StartupError (and no StallError)
+// half of the stall/no-start split: an agent with a StartupError (and no StallError)
 // retains the existing failed-to-start report.
 func TestBuildMonitorResults_NoStartStillUsesStartupErrorBranch(t *testing.T) {
 	agents := []review.Agent{{Name: "review-code"}}
@@ -817,7 +815,7 @@ func TestBuildMonitorResults_NoStartStillUsesStartupErrorBranch(t *testing.T) {
 }
 
 // TestBuildMonitorResults_StallRecoveredToFinishedPasses guards the
-// #1495-style resume edge against the new stall label: a member that has a
+// resume edge against the stall label: a member that has a
 // stale stall_error event but ultimately reached "finished" with a parseable
 // PASS verdict must be counted as a normal pass — StallError is only
 // consulted for members whose terminal state is "error".
@@ -847,8 +845,8 @@ func TestBuildMonitorResults_StallRecoveredToFinishedPasses(t *testing.T) {
 	}
 }
 
-// TestBuildMonitorResults_InterruptedThenResumedToFinishedPasses verifies the
-// #1495 contract: an agent that was interrupted, redirected via `prism
+// TestBuildMonitorResults_InterruptedThenResumedToFinishedPasses verifies
+// that an agent that was interrupted, redirected via `prism
 // prompt`, and ultimately reached "finished" with a PASS verdict must be
 // counted as a normal pass. The earlier interruption leaves no trace in
 // groupData (only the latest state is retained).
@@ -874,7 +872,7 @@ func TestBuildMonitorResults_InterruptedThenResumedToFinishedPasses(t *testing.T
 	}
 }
 
-// TestBuildMonitorResults_InterruptedThenCleanedUp verifies the #1495 escape
+// TestBuildMonitorResults_InterruptedThenCleanedUp verifies the cleanup escape
 // hatch at the buildMonitorResults layer: when the row is missing from
 // groupData, buildMonitorResults routes it through the missing-session
 // branch with IsError=true, while the remaining agents are reported normally.
@@ -930,7 +928,7 @@ func TestBuildMonitorResults_InterruptedThenCleanedUp(t *testing.T) {
 }
 
 // TestMonitor_InterruptedThenCleanedUp_FlowsThroughDB is the end-to-end
-// regression test for #1495's escape hatch. It exercises the actual DB
+// regression test for the cleanup escape hatch. It exercises the actual DB
 // state that `prism cleanup --yes --session <interrupted-agent>` produces
 // (state="interrupted" + ended_at set) and verifies the full flow:
 //
@@ -941,8 +939,7 @@ func TestBuildMonitorResults_InterruptedThenCleanedUp(t *testing.T) {
 //     the existing 'session not found in group' branch with IsError=true.
 //
 // Without the (1) and (2) gates, an interrupted-then-cleaned-up agent would
-// hang the review monitor forever — the regression review-context flagged on
-// PR #1509 round 1.
+// hang the review monitor forever.
 func TestMonitor_InterruptedThenCleanedUp_FlowsThroughDB(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "prism.db")
@@ -979,7 +976,7 @@ func TestMonitor_InterruptedThenCleanedUp_FlowsThroughDB(t *testing.T) {
 	}
 
 	// At this point the group is NOT done — interrupted is non-terminal
-	// (#1495) and the other two are still active.
+	// and the other two are still active.
 	if done, _ := d.GroupCompleted(groupID); done {
 		t.Fatal("pre-cleanup: GroupCompleted = true; want false (interrupted is non-terminal, others still active)")
 	}
@@ -1225,7 +1222,7 @@ func setHarnessInfo(t *testing.T, d *db.DB, sessionName string, port int, sessio
 	return err
 }
 
-// ── no-start error distinction (#1222) ───────────────────────────────────────
+// ── no-start error distinction ───────────────────────────────────────
 
 // TestBuildMonitorResults_NoStartError verifies that an agent in error state
 // with a StartupError reason produces an output containing "no-start" to
@@ -1298,11 +1295,11 @@ func TestBuildMonitorResults_ErrorNoCrashMidRun(t *testing.T) {
 	}
 }
 
-// ── buildDeliveryMessage (#1222) ─────────────────────────────────────────────
+// ── buildDeliveryMessage ─────────────────────────────────────────────
 
 // TestBuildDeliveryMessage_AllPassed verifies the all-passed header.
 //
-// The member carries a parseable PASS verdict: under #2573 the all-passed
+// The member carries a parseable PASS verdict. The all-passed
 // header requires a COMPLETE round (every expected agent produced a verdict),
 // not just the allPassed flag the caller hands in. A finished member with no
 // assistant message produced no verdict and is covered by
@@ -1382,7 +1379,7 @@ func TestBuildDeliveryMessage_PureCodeFail(t *testing.T) {
 	}
 }
 
-// TestBuildDeliveryMessage_RanButNoParseableVerdict pins the #1995 framing:
+// TestBuildDeliveryMessage_RanButNoParseableVerdict pins the ran-but-no-parseable-verdict framing:
 // when at least one agent reached `finished` state but emitted no parseable
 // `<verdict>` tag, the delivery message must surface a dedicated branch
 // that is distinct from both the "all-no-start" and "mixed no-start"
@@ -1394,10 +1391,10 @@ func TestBuildDeliveryMessage_RanButNoParseableVerdict(t *testing.T) {
 	sessSec := "nixos-config@parent~review-1-review-security"
 	groupData := map[string]db.GroupMemberResult{
 		// review-goal: finished without a parseable verdict (mid-analysis
-		// truncation — the #1993 root-cause shape).
+		// truncation).
 		sessGoal: {SessionName: sessGoal, State: "finished", LastMessage: `{"text":"AC6 ACHIEVED."}`},
 		// review-code: finished with empty LastMessage (tool-only final
-		// turn — the other #1993 sub-case).
+		// turn).
 		sessCode: {SessionName: sessCode, State: "finished", LastMessage: ""},
 		// review-security: ran fine and emitted a verdict.
 		sessSec: {SessionName: sessSec, State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
@@ -1443,7 +1440,7 @@ func TestBuildDeliveryMessage_NoStartTakesPrecedenceOverNoVerdict(t *testing.T) 
 	}
 }
 
-// ── buildDeliveryMessage: stall-vs-no-start labels (#2239) ─────────────────
+// ── buildDeliveryMessage: stall-vs-no-start labels ─────────────────
 
 // stalledMember builds a GroupMemberResult in the shape the inactivity
 // watchdog leaves behind for a mid-run stall: state "error", StallError set,
@@ -1456,7 +1453,7 @@ func stalledMember(sess string) db.GroupMemberResult {
 	}
 }
 
-// TestBuildDeliveryMessage_AllStalled verifies the #2239 header when EVERY
+// TestBuildDeliveryMessage_AllStalled verifies the header when EVERY
 // agent stalled mid-run: the header carries the stall label and the
 // infrastructure-failure framing (re-run, not a code-quality FAIL), and does
 // NOT use the failed-to-start wording.
@@ -1558,7 +1555,7 @@ func TestBuildDeliveryMessage_StallTakesPrecedenceOverNoVerdict(t *testing.T) {
 }
 
 // TestBuildDeliveryMessage_StaleStallOnFinishedMemberIgnored guards the
-// #1495-style resume edge at the header layer: a member with a stale
+// resume edge at the header layer: a member with a stale
 // stall_error event that ultimately finished with a PASS verdict must not
 // trigger the stall framing.
 func TestBuildDeliveryMessage_StaleStallOnFinishedMemberIgnored(t *testing.T) {

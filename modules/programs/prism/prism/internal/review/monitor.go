@@ -30,14 +30,14 @@ import (
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
 )
 
-// Event types written by persistReviewOutcome (#2703). Each round that
+// Event types written by persistReviewOutcome. Each round that
 // reaches a real pass/fail verdict writes exactly one of these as a durable
 // agent_events row, so the exporter's tail cursor can count
 // prism_review_verdicts_total{verdict} without ever reading the free-form
 // review report text. The verdict lives in the TYPE, not the payload — the
-// exporter must never read agent_events.payload (#2699 section 5), and
-// folding the verdict into the type is the same trick eventtypes.go already
-// uses for the closed label set.
+// exporter must never read agent_events.payload — and folding the verdict
+// into the type is the same trick eventtypes.go already uses for the closed
+// label set.
 const (
 	// EventReviewVerdictPass is written when every review agent in the round
 	// passed.
@@ -80,7 +80,7 @@ type MonitorOpts struct {
 	Timeout time.Duration
 	// ReapAfterDelivery makes MonitorFunc wait out the reap grace period after
 	// it delivers the review-complete prompt, then release this round's agent
-	// sessions (issue #2649). RunAsync sets it for every production round.
+	// sessions. RunAsync sets it for every production round.
 	//
 	// It is opt-in rather than always-on so MonitorFunc stays a fast, pure
 	// function for the tests that drive it directly: a test that does not ask
@@ -142,7 +142,7 @@ func MonitorFunc(opts MonitorOpts) error {
 
 	// Set deadline if timeout is specified. This is a single GROUP-WIDE wall
 	// clock for the whole round — every member shares it. It is NOT a
-	// per-agent budget (#2729): the structurally-slowest agent absorbs the
+	// per-agent budget: the structurally-slowest agent absorbs the
 	// group's elapsed time.
 	var deadline time.Time
 	if opts.Timeout > 0 {
@@ -152,9 +152,10 @@ func MonitorFunc(opts MonitorOpts) error {
 	// Poll loop: check GroupCompleted every pollInterval.
 	//
 	// When the group-wide safety deadline fires we do NOT reap every
-	// non-terminal member outright — the old behaviour reaped a live agent
-	// mid-build identically to a wedged one, and the round was then reported
-	// incomplete and re-run (#2729). Instead forceTerminateStuckMembers reaps
+	// non-terminal member outright. Reaping every non-terminal member would
+	// reap a live agent mid-build identically to a wedged one, and the round
+	// would then be reported incomplete and re-run. Instead
+	// forceTerminateStuckMembers reaps
 	// only the DEAD-watchdog members — those with no recent inbound frame —
 	// and returns how many still-live members it spared.
 	//
@@ -164,7 +165,7 @@ func MonitorFunc(opts MonitorOpts) error {
 	// and the round is reported as a normal completion rather than
 	// incomplete-with-no-verdict.
 	//
-	// The #1709 guarantee — rows must not sit `active` forever and block the
+	// The guarantee — rows must not sit `active` forever and block the
 	// next `prism review` — is preserved two independent ways. First, a
 	// dead-watchdog member IS still reaped here, and a spared member cannot
 	// stay live forever: once it goes silent its newest inbound frame ages
@@ -209,15 +210,14 @@ func MonitorFunc(opts MonitorOpts) error {
 	}
 
 	// Read the rows db.GroupResults drops — members whose ended_at is set
-	// (#2573). Without them a reaped session is indistinguishable from a
+	// Without them a reaped session is indistinguishable from a
 	// session that never existed, and the report cannot say why the agent
 	// produced no verdict.
 	endedRows := endedGroupMembers(d, opts.GroupID)
 
-	// Read the close cause each lifecycle path recorded for those rows
-	// (#2613). Without it the report can only see the state string, which is
-	// why it used to name a force-terminate and a readiness-gate failure as
-	// two possibilities for the same row.
+	// Read the close cause each lifecycle path recorded for those rows.
+	// Without it the report can only see the state string, which cannot
+	// separate a force-terminate from a readiness-gate failure.
 	endedCauses := endedMemberCauses(d, endedRows)
 
 	// Build AgentResult slice, handling "missing" sessions (row reaped or
@@ -225,18 +225,18 @@ func MonitorFunc(opts MonitorOpts) error {
 	results := buildMonitorResults(opts.Agents, opts.AgentSessions, groupData, endedRows, endedCauses)
 
 	// Classify the round once. RoundStatus is the single source of truth for
-	// both the report wording and the cycle-counter gate below (#2573).
+	// both the report wording and the cycle-counter gate below.
 	status := ClassifyRoundWithCauses(opts.Agents, opts.AgentSessions, groupData, endedRows, endedCauses)
 
 	// Format the delivery message. FormatResultsForRound keeps the summary
-	// footer's retry hint consistent with the re-run advice below (#2573).
+	// footer's retry hint consistent with the re-run advice below.
 	output, allPassed := FormatResultsForRound(results, opts.PRNumber, opts.Round, 0, status)
 	deliveryText := buildDeliveryMessage(opts.PRNumber, opts.Round, output, allPassed, status)
 
-	// Issue #2110: persist the latest-round review verdict and counts on the
-	// worker's spawn_outcome row. This is the single write site that the AC
-	// requires — it lives at the same point that constructs the delivery
-	// prompt, so the persisted values match exactly what the worker sees.
+	// Persist the latest-round review verdict and counts on the worker's
+	// spawn_outcome row. This is the single write site — it lives at the same
+	// point that constructs the delivery prompt, so the persisted values
+	// match exactly what the worker sees.
 	//
 	// Latest-round-wins semantics: each MonitorFunc call represents one
 	// review round. The UPSERT in UpdateSpawnOutcomeReviewResult overwrites
@@ -252,11 +252,11 @@ func MonitorFunc(opts MonitorOpts) error {
 	// the existing — placeholder.
 	persistReviewOutcome(d, opts.WorkerSession, results, allPassed)
 
-	// LOOP-LIMIT footer (#1512). Append the footer to the prompt body when
+	// LOOP-LIMIT footer. Append the footer to the prompt body when
 	//   (a) the cycle has not converged (¬allPassed),
 	//   (b) THIS cycle is itself a verdict-producing cycle — i.e. every
-	//       EXPECTED member emitted a parseable `<verdict>` tag (#1995,
-	//       #2573). When the cycle is NOT verdict-producing, the relevant
+	//       EXPECTED member emitted a parseable `<verdict>` tag. When the
+	//       cycle is NOT verdict-producing, the relevant
 	//       branch in buildDeliveryMessage ("infrastructure failure",
 	//       "Round incomplete", or "ran but produced no parseable verdict")
 	//       already tells the worker to re-run — it is not yet at the
@@ -267,7 +267,7 @@ func MonitorFunc(opts MonitorOpts) error {
 	// The footer is naturally rate-limited — it appears once per actual
 	// completed verdict-producing cycle, embedded in the prompt the worker is
 	// already going to act on. This dissolves the per-turn-spam and the
-	// bash-substring false-match defects at the source (#1512).
+	// bash-substring false-match defects at the source.
 	if !allPassed {
 		if status.CountsAsCycle() {
 			prior, ccErr := CompletedReviewCyclesForParent(d, opts.WorkerSession, opts.GroupID)
@@ -282,8 +282,8 @@ func MonitorFunc(opts MonitorOpts) error {
 	// Before delivery, clear the worker's `reviewing` state by writing `active`.
 	// Background: RunAsync writes `reviewing` to the DB so that incidental busy
 	// turns + idle debounces in the worker session do not produce a premature
-	// "has finished" notification while the review is in flight (see #1036 and
-	// #1049). The sidecar's busy-event handler treats `reviewing` as a sticky
+	// "has finished" notification while the review is in flight. The sidecar's
+	// busy-event handler treats `reviewing` as a sticky
 	// state and refuses to write `active` over it. We must therefore flip the
 	// DB state to `active` ourselves *just before* delivering the review-
 	// complete prompt — that way, the busy event triggered by the prompt
@@ -313,7 +313,7 @@ func MonitorFunc(opts MonitorOpts) error {
 	// Use the same deterministic delivery_id as the recovery path so that if
 	// the worker-sidecar recovery watcher (internal/sidecar/review_recovery.go)
 	// races us to deliver for the same group, the sidecar's /prompt dedup set
-	// (#1685) drops whichever copy arrives second. See recovery.go and
+	// drops whichever copy arrives second. See recovery.go and
 	// RecoveryDeliveryID for the shared-dedup-ID contract.
 	monitorDeliveryID := RecoveryDeliveryID(opts.GroupID)
 	deliverErr := deliverWithRetry(opts.WorkerSession, deliveryText, maxRetries, retryBackoff, dbPath, monitorDeliveryID)
@@ -330,8 +330,8 @@ func MonitorFunc(opts MonitorOpts) error {
 		return fmt.Errorf("monitor-review: delivery failed and fallback written to %s", fallbackPath)
 	}
 
-	// Write the authoritative end-of-life signal for this review group
-	// (#2259). Once delivered_at is set, GroupCompleted short-circuits to
+	// Write the authoritative end-of-life signal for this review group.
+	// Once delivered_at is set, GroupCompleted short-circuits to
 	// true and ActiveReviewGroupForParent skips this group, so any
 	// subsequent mutation of agent_status (e.g. the per-process sidecar-
 	// restart anti-pattern in cmd/sidecar.go) cannot flip the parent
@@ -341,8 +341,8 @@ func MonitorFunc(opts MonitorOpts) error {
 	// `prism prompt` at this point and the recovery watcher's grace timer
 	// will not re-fire because the worker sidecar's /prompt handler
 	// clears reviewingInFlight. A missing delivered_at write leaves the
-	// system in the pre-fix state (vulnerable to agent_status clobbers)
-	// but does not lose the verdict.
+	// system vulnerable to agent_status clobbers but does not lose the
+	// verdict.
 	if setErr := d.SetGroupDeliveredAt(opts.GroupID); setErr != nil {
 		proglog.Warnf("[prism monitor-review] warning: SetGroupDeliveredAt(%s): %v\n", opts.GroupID, setErr)
 	} else {
@@ -351,8 +351,8 @@ func MonitorFunc(opts MonitorOpts) error {
 
 	proglog.Infof("[prism monitor-review] results delivered to %s\n", opts.WorkerSession)
 
-	// Release this round's agent sessions once the grace period elapses
-	// (#2649). This runs LAST, and only after delivered_at is written: the
+	// Release this round's agent sessions once the grace period elapses.
+	// This runs LAST, and only after delivered_at is written: the
 	// reap predicate reads that column, so a failed SetGroupDeliveredAt above
 	// leaves the round un-reapable rather than reaping it early. The wait
 	// blocks this process, which has no work left to do — see
@@ -364,10 +364,9 @@ func MonitorFunc(opts MonitorOpts) error {
 }
 
 // persistReviewOutcome records the latest-round verdict and pass/fail counts
-// on the worker's spawn_outcome row (issue #2110). It is intentionally a thin
-// glue function so that the write-site for the three columns surfaces as a
-// single point in MonitorFunc — callers can grep for the issue number and
-// see the entire write path. The instance_id is resolved via the most-recent
+// on the worker's spawn_outcome row. It is intentionally a thin
+// glue function so the write-site for the three columns surfaces as a
+// single point in MonitorFunc. The instance_id is resolved via the most-recent
 // sessions row for the worker session name; a missing row makes the call a
 // silent no-op.
 //
@@ -409,7 +408,7 @@ func persistReviewOutcome(d *db.DB, workerSession string, results []AgentResult,
 	}
 	proglog.Infof("[prism monitor-review] persisted review verdict=%s pass=%d fail=%d on worker spawn_outcome (iid=%s)\n", verdict, passCount, failCount, sess.InstanceID)
 
-	// Durable event for the exporter's tail cursor (#2703). Best-effort:
+	// Durable event for the exporter's tail cursor. Best-effort:
 	// telemetry must never break the review-outcome path it rides alongside.
 	instanceID := sess.InstanceID
 	eventType := EventReviewVerdictFail
@@ -451,8 +450,8 @@ func persistReviewOutcome(d *db.DB, workerSession string, results []AgentResult,
 const reviewAgentActivityWindow = 15 * time.Minute
 
 // memberWatchdogAlive reports whether sess has produced an inbound frame
-// recently enough that its sidecar inactivity watchdog cannot have fired yet
-// (#2729). A member with no inbound frame on record is treated as not alive:
+// recently enough that its sidecar inactivity watchdog cannot have fired yet.
+// A member with no inbound frame on record is treated as not alive:
 // a review agent that never sent a frame either failed to start or has a dead
 // pipe, and in both cases the watchdog is not resetting on its behalf.
 func memberWatchdogAlive(d *db.DB, sess string) (bool, error) {
@@ -472,15 +471,15 @@ func memberWatchdogAlive(d *db.DB, sess string) (bool, error) {
 // no inbound frame inside reviewAgentActivityWindow. It returns the number of
 // members it SPARED because their watchdog is still alive.
 //
-// Why not reap every non-terminal member (the pre-#2729 behaviour): the
-// deadline is a group-wide wall clock, and reaping on it alone killed a live
-// agent mid-build identically to a wedged one. The sweep exists as a
+// Why not reap every non-terminal member: the deadline is a group-wide wall
+// clock, and reaping on it alone would kill a live agent mid-build
+// identically to a wedged one. The sweep exists as a
 // belt-and-braces backstop for a DEAD watchdog (a sidecar that crashed, was
 // killed without cleanup, or ran with ActivityTimeout=0), NOT as a cap on a
 // healthy agent — so a member whose watchdog is demonstrably alive (recent
 // inbound frames) is left to that watchdog and to normal completion.
 //
-// What happens to a spared live member (the #1709 constraint): the caller
+// What happens to a spared live member: the caller
 // keeps polling while spared > 0. A spared member therefore never sits
 // `active` forever — it either reaches a real verdict (GroupCompleted trips
 // and the round is reported complete), or it goes silent and its newest
@@ -494,14 +493,14 @@ func memberWatchdogAlive(d *db.DB, sess string) (bool, error) {
 // SetEnded for the same reason — without SetEnded the row has state="error"
 // but ended_at=NULL, and any query that filters on "ended_at IS NOT NULL"
 // (e.g. AllActiveStatus, dashboard active-session listings) will still treat
-// the row as live. Same table-drift class as #1870 (MarkAllEnded/SetEnded)
-// and #1881 (cleanupHalfAliveSession).
+// the row as live. Same table-drift class as MarkAllEnded/SetEnded and
+// cleanupHalfAliveSession.
 //
 // All failures are logged but non-fatal: a stuck DB row is recoverable via
 // `prism cleanup`, but a hard error here would also block the partial
 // review-results delivery the monitor has already promised the worker. A
 // frame-read error is treated as "cannot confirm alive" and the member is
-// reaped rather than spared — leaving a row `active` forever (the #1709 bug)
+// reaped rather than spared — leaving a row `active` forever
 // is the worse failure, and the poll loop would otherwise spin on it.
 func forceTerminateStuckMembers(d *db.DB, agentSessions []string, groupDeadline time.Duration) (spared int) {
 	for _, sess := range agentSessions {
@@ -522,7 +521,7 @@ func forceTerminateStuckMembers(d *db.DB, agentSessions []string, groupDeadline 
 		if isTerminalAgentState(status.State) {
 			continue
 		}
-		// Dead-watchdog check (#2729): spare a member whose watchdog is still
+		// Dead-watchdog check: spare a member whose watchdog is still
 		// alive (recent inbound frames). The caller keeps polling while any
 		// member is spared, so the row is not abandoned.
 		if alive, aliveErr := memberWatchdogAlive(d, sess); aliveErr != nil {
@@ -533,7 +532,7 @@ func forceTerminateStuckMembers(d *db.DB, agentSessions []string, groupDeadline 
 		}
 		proglog.Warnf("[prism monitor-review] force-terminating dead-watchdog member %s (state=%q, group-wide deadline=%v)\n",
 			sess, status.State, groupDeadline)
-		// Record WHY this row is about to close, before it closes (#2613).
+		// Record WHY this row is about to close, before it closes.
 		// The monitor is the only path that force-terminates a member of a
 		// live round, and without this record the resulting row is
 		// indistinguishable in the report from a readiness-gate cleanup.
@@ -560,8 +559,8 @@ func forceTerminateStuckMembers(d *db.DB, agentSessions []string, groupDeadline 
 //
 // endedRows carries the group's agent_status rows whose ended_at is set —
 // exactly the rows db.GroupResults drops. It lets the missing-session branch
-// state WHY the member vanished (#2573). endedCauses carries the close cause
-// each lifecycle path recorded for those rows (#2613). Pass nil for either
+// state WHY the member vanished. endedCauses carries the close cause
+// each lifecycle path recorded for those rows. Pass nil for either
 // when no DB handle is available; the branch then reports the absence without
 // a cause.
 func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status, endedCauses map[string]db.SessionEndCause) []AgentResult {
@@ -588,8 +587,7 @@ func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[s
 
 		switch mr.State {
 		case "error":
-			// Distinguish the failure classes within state "error" (#1222,
-			// #2239):
+			// Distinguish the failure classes within state "error":
 			//
 			//   - no-start: a startup_error event was written (by the
 			//     sidecar's writeStartupError, or by the inactivity watchdog
@@ -605,8 +603,8 @@ func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[s
 			// Label each clearly so the coordinator treats the first two as
 			// infrastructure failures rather than code-quality verdicts.
 			//
-			// Note: "interrupted" is intentionally NOT bucketed with "error" here
-			// (#1495). An interrupted agent that was redirected via `prism prompt`
+			// Note: "interrupted" is intentionally NOT bucketed with "error" here.
+			// An interrupted agent that was redirected via `prism prompt`
 			// and subsequently crashes still lands here with state="error" — the
 			// genuine-error path is unchanged. "interrupted" only reaches this
 			// switch via the default branch below, which would only fire if the
@@ -682,16 +680,16 @@ func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[s
 //
 // status is the round classification produced by ClassifyRound — the single
 // source of truth for which agents produced a verdict and why the others did
-// not (#2573). The header branch and the cycle-counter gate in MonitorFunc
+// not. The header branch and the cycle-counter gate in MonitorFunc
 // read the same classification, so the report and the counter cannot drift.
 func buildDeliveryMessage(prNumber string, round int, formattedResults string, allPassed bool, status RoundStatus) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("## Review complete: PR #%s (round %d)\n\n", prNumber, round))
 
-	// No-start failures (#1222): the sidecar wrote a startup_error event
+	// No-start failures: the sidecar wrote a startup_error event
 	// (container never bound its port, or the inactivity watchdog fired with
-	// zero inbound frames). Mid-run stalls (#2239): the watchdog fired after
+	// zero inbound frames). Mid-run stalls: the watchdog fired after
 	// one or more inbound frames — the agent ran, then went silent. Both are
 	// infrastructure failures, but they keep separate headers because the
 	// operational response differs: a never-started agent suggests config or
@@ -717,15 +715,15 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 		sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL.\n\n")
 	case len(stalled) > 0 && len(stalled) == status.Expected:
 		// Every agent stalled mid-run — infrastructure failure, but distinct
-		// from no-start: the agents DID run and then went silent (#2239).
+		// from no-start: the agents DID run and then went silent.
 		sb.WriteString("**All review agents stalled mid-run (infrastructure failure).** ")
 		sb.WriteString("This is NOT a code-quality verdict — the agents ran but stopped producing frames before completing. ")
 		sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL. ")
 		sb.WriteString("Repeated mid-run stalls under concurrent load may indicate provider rate/subscription limits — escalate rather than burning rounds on blind re-runs if this recurs.\n\n")
 	case !status.HasInfrastructureFailure():
 		// One or more agents ran to `finished` but produced no parseable
-		// `<verdict>` tag (#1995). The signal is incomplete — not a
-		// code-quality FAIL — so the worker should re-run rather than
+		// `<verdict>` tag. The signal is incomplete — not a
+		// code-quality FAIL — so the worker must re-run rather than
 		// treat this as a normal failed review.
 		sb.WriteString("**One or more review agents ran but produced no parseable verdict.** ")
 		sb.WriteString("This is NOT a code-quality FAIL — the agents reached `finished` state without emitting a `<verdict>PASS</verdict>` / `<verdict>FAIL</verdict>` tag (e.g. truncated mid-analysis or ended on a tool-only turn). ")
@@ -735,7 +733,7 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 		// The round is incomplete and at least one absence is an
 		// infrastructure fault: a no-start, a mid-run stall, a mid-run crash,
 		// a session reaped mid-round, or a member still non-terminal at the
-		// monitor's safety timeout (#2573). Report the shortfall first — the
+		// monitor's safety timeout. Report the shortfall first — the
 		// verdicts that did arrive are NOT the result of the round.
 		sb.WriteString(fmt.Sprintf("**Round incomplete: %d of %d review agents produced a verdict.** ",
 			status.Verdicts, status.Expected))
@@ -745,7 +743,7 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 		case status.HasFailVerdict():
 			// A FAIL means the worker must change code, and that change makes
 			// every verdict in this round stale — so the whole set has to run
-			// again. See the targeted-rerun condition (#2530 / #2557).
+			// again. See the targeted-rerun condition.
 			sb.WriteString("The missing dimensions were never examined; a missing verdict is NOT a pass and is NOT a code-quality verdict. ")
 			sb.WriteString(fmt.Sprintf("Fix the blocking issues from the agents that ran, then re-run the FULL set (`%s`) — your fix invalidates the verdicts this round produced. ",
 				status.FullRerunCommand(prNumber)))
@@ -763,15 +761,15 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 	sb.WriteString(formattedResults)
 
 	// Name every agent that produced no verdict, with the reason recorded for
-	// it, and the targeted re-run command (#2573).
+	// it, and the targeted re-run command.
 	sb.WriteString(buildNoVerdictSection(status, prNumber))
 
 	return sb.String()
 }
 
 // buildNoVerdictSection renders the per-agent "no verdict" roll-call appended
-// to the delivery message (#2573). It returns "" for a complete round, so a
-// round in which all agents produced verdicts is reported exactly as before.
+// to the delivery message. It returns "" for a complete round, so a
+// round in which all agents produced verdicts gets no roll-call.
 func buildNoVerdictSection(status RoundStatus, prNumber string) string {
 	if len(status.Missing) == 0 {
 		return ""
@@ -799,7 +797,7 @@ func buildNoVerdictSection(status RoundStatus, prNumber string) string {
 
 // buildRerunAdvice renders the re-run instruction for an incomplete round.
 //
-// The targeted-rerun condition (#2530, widened by #2557) is prose-only: a
+// The targeted-rerun condition is prose-only: a
 // worker may re-run a subset of the agents only when the inter-cycle diff is
 // exactly formatter output, comments, or documentation. The report cannot see
 // that diff, so it must not print a bare `--only` command as if the condition
@@ -871,7 +869,7 @@ func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff ti
 // session's host-API Unix socket. For HTTP-harness sessions, it uses the
 // harness HTTP API (prompt_async).
 // deliveryID is forwarded to the host-API /prompt handler; pass
-// RecoveryDeliveryID(groupID) so the sidecar's dedup set (#1685) can
+// RecoveryDeliveryID(groupID) so the sidecar's dedup set can
 // collapse a concurrent recovery-watcher delivery to exactly one prompt.
 func deliverPrompt(workerSession, text, dbPath, deliveryID string) error {
 	if dbPath == "" {
@@ -1003,18 +1001,18 @@ func StartMonitorProcess(opts MonitorOpts, prismBinary string) error {
 //     db.terminalStates so a "deleted" sibling does not block the guard; OR
 //   - its ended_at is non-NULL — the row has been closed by `prism cleanup`,
 //     `prism reset`, or any other lifecycle path that calls SetEnded, even
-//     if the state string is still "interrupted" or "active" (#1962
-//     primary fix: closes the dead-sidecar gap where cleanup runs but the
-//     state flip to "deleted" never happens because the sidecar is gone).
+//     if the state string is still "interrupted" or "active" (this closes
+//     the dead-sidecar gap where cleanup runs but the state flip to
+//     "deleted" never happens because the sidecar is gone).
 //
 // An "interrupted" row whose ended_at is still NULL is intentionally NOT
 // terminal here: the sidecar is alive and the user may still redirect the
-// agent via `prism prompt`, eventually reaching finished/error (#1495).
+// agent via `prism prompt`, eventually reaching finished/error.
 // Only once cleanup (or any other SetEnded path) closes the row does the
 // ended_at arm trip and the guard release.
 func ActiveReviewGroupForParent(d *db.DB, parentSession string) (string, error) {
-	// Skip groups whose review-complete prompt has already been delivered
-	// (#2259): once session_groups.delivered_at is set, the group is
+	// Skip groups whose review-complete prompt has already been delivered:
+	// once session_groups.delivered_at is set, the group is
 	// authoritatively complete regardless of any subsequent member-row
 	// mutation. This closes the wedge-at-idle failure class where a per-
 	// process sidecar restart (cmd/sidecar.go) re-seeded an agent_status
@@ -1071,7 +1069,7 @@ func ActiveReviewGroupForParent(d *db.DB, parentSession string) (string, error) 
 //  1. state-based: {finished, error, deleted}
 //  2. ended_at-based: ended_at IS NOT NULL
 //
-// Arm 2 is the "ended_at wins" check from #1962: any row whose session has
+// Arm 2 is the "ended_at wins" check: any row whose session has
 // been closed by `prism cleanup` (which calls SetEnded) is terminal here
 // regardless of what the state string says, because the sidecar that would
 // have updated the state to "deleted" is already gone. This is what makes
@@ -1093,7 +1091,7 @@ func isTerminalForGuard(m db.Status) bool {
 // produced a parseable `<verdict>` tag — the predicate that decides whether a
 // round counts toward the LOOP-LIMIT threshold.
 //
-// Contract (#1995, extended by #2573): a cycle is verdict-producing iff there
+// Contract: a cycle is verdict-producing iff there
 // is at least one expected member AND every expected member is finished with a
 // non-empty assistant message that AssessPassed classifies as VerdictPass or
 // VerdictFail. A member that is in a non-finished state, has no LastMessage,
@@ -1102,8 +1100,8 @@ func isTerminalForGuard(m db.Status) bool {
 // expected to re-run.
 //
 // expectedSessions is the authoritative member list. Reading only the
-// groupData keys was the #2573 defect: db.GroupResults omits reaped rows, so a
-// four-verdict round looked like a full set and consumed a cycle.
+// groupData keys would be a defect: db.GroupResults omits reaped rows, so a
+// four-verdict round would look like a full set and consume a cycle.
 //
 // Both the in-flight gate (MonitorFunc, via RoundStatus.CountsAsCycle) and the
 // historical count (CompletedReviewCyclesForParent) resolve to ClassifyRound,
@@ -1118,7 +1116,7 @@ func cycleProducedVerdicts(expectedSessions []string, groupData map[string]db.Gr
 
 // REVIEW_CYCLE_THRESHOLD is the number of completed verdict-producing review
 // cycles after which the review-complete prompt gets a LOOP-LIMIT footer
-// appended. The threshold itself is out of scope for #1512; this constant is
+// appended. The threshold itself is out of scope. This constant is
 // the single source of truth for the firing condition.
 const REVIEW_CYCLE_THRESHOLD = 3
 
@@ -1155,39 +1153,36 @@ func buildLoopLimitFooter(cycles int, prNumber string) string {
 //     longer running), AND
 //  2. Every member finished with a parseable `<verdict>PASS</verdict>` /
 //     `<verdict>FAIL</verdict>` tag — i.e. the group produced a full set
-//     of real per-agent verdicts (#1995). The per-member check is shared
+//     of real per-agent verdicts. The per-member check is shared
 //     with the in-flight predicate via ClassifyRound so the two callsites
 //     cannot drift.
 //
 // This is the single source of truth for cycle counting in the LOOP-LIMIT
 // firing logic. Condition 2 excludes pure-infrastructure failures (every
 // member never bound its port), ran-but-no-parseable-verdict rounds (any
-// member terminated in `finished` state without emitting a `<verdict>` tag —
-// the #1993 shape), and rounds where a member's row was reaped mid-review (the
-// #2573 shape) — mirroring the documented contract in
+// member terminated in `finished` state without emitting a `<verdict>` tag),
+// and rounds where a member's row was reaped mid-review — mirroring the
+// documented contract in
 // `modules/programs/prism/skills/prism/SKILL.md`:
 //
 //	"Count re-run cycles from the first round that had a full set of agent
 //	 results; do not count infrastructure-failure rounds toward your 3-cycle
 //	 limit."
 //
-// What enforces those exclusions changed in #2649. This function reads
-// db.GroupResultsAll, so a closed row is no longer dropped from groupData and
-// no longer excluded by its ABSENCE. Each of the three is now excluded by the
-// per-member predicate itself, on the facts the row carries: a non-terminal
-// state, an empty LastMessage, a recorded startup_error or stall_error, or a
-// terminal row whose message holds no parseable `<verdict>` tag. A member
-// reaped mid-review still fails that predicate — it was reaped precisely
-// because it had not produced a verdict — so the #2573 outcome is unchanged.
+// This function reads db.GroupResultsAll, so a closed row is not dropped from
+// groupData and not excluded by its ABSENCE. Each of the three is excluded by
+// the per-member predicate itself, on the facts the row carries: a
+// non-terminal state, an empty LastMessage, a recorded startup_error or
+// stall_error, or a terminal row whose message holds no parseable `<verdict>`
+// tag. A member reaped mid-review still fails that predicate — it was reaped
+// precisely because it had not produced a verdict.
 //
-// One outcome DID change, deliberately: the #2594 sub-case. A member that
-// closed AFTER reaching `finished` with a parseable verdict used to drop out
-// of the narrow read and make its round non-counting. It is now present, and
-// its round counts. That is the correct answer — the round did produce a full
-// set of verdicts — and it is load-bearing after #2649, because the automatic
-// release closes every member of every delivered round. Without the wide read
-// this count returned zero for every past round and the LOOP-LIMIT footer
-// never fired.
+// A member that closed AFTER reaching `finished` with a parseable verdict is
+// present in the wide read, so its round counts — the round did produce a full
+// set of verdicts. This is load-bearing: the automatic release closes every
+// member of every delivered round, so a narrow read (GroupResults) would
+// return zero for every past round and the LOOP-LIMIT footer would never
+// fire.
 //
 // Pass excludeGroupID="" to count every group; pass the current group's id
 // when computing "cycles before this one" so that a caller can ask
@@ -1231,50 +1226,39 @@ func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID stri
 		// Condition 2: every member produced a parseable `<verdict>` tag.
 		// We read each member's last assistant message, startup_error, and
 		// state, and require AssessPassed to return VerdictPass or VerdictFail
-		// for every member (#1995). A group where any member terminated
+		// for every member. A group where any member terminated
 		// without a parseable verdict — empty LastMessage, startup_error, or
 		// mid-analysis truncation — is NOT counted: the worker is expected to
 		// re-run.
 		//
-		// The read is GroupResultsAll, not GroupResults (#2649, #2584).
+		// The read is GroupResultsAll, not GroupResults.
 		// The `ended_at IS NULL` filter on GroupResults is correct on the live
-		// aggregation path — it is what makes the #1495 cleanup escape hatch
-		// work — and wrong here. Review agents are now released automatically
+		// aggregation path — it is what makes the cleanup escape hatch
+		// work — and wrong here. Review agents are released automatically
 		// 15 minutes after their round is delivered, so by the time a later
 		// round asks "how many cycles came before me", every earlier round's
-		// rows are closed. Through the narrow read this loop counted zero every
-		// time, and the LOOP-LIMIT footer — the thing that tells a worker to
-		// stop and escalate at three cycles — never fired.
+		// rows are closed. Through the narrow read this loop would count zero
+		// every time, and the LOOP-LIMIT footer — the thing that tells a worker
+		// to stop and escalate at three cycles — would never fire. The release
+		// deletes no row and no event, so the wider read still sees the full
+		// history.
 		//
 		// Widening the read does not loosen the predicate. A row closed while
-		// still non-terminal, or closed before it emitted a verdict, is now
+		// still non-terminal, or closed before it emitted a verdict, is
 		// visible with its real state and its empty LastMessage, and
 		// ClassifyRound rejects it for that reason instead of for its absence.
-		// The #1495 abandoned-agent row reads as state "interrupted", which is
-		// not verdict-producing, so that round still does not count. The one
-		// behaviour that changes is the #2594 sub-case — a row that closed
-		// AFTER delivering a full verdict now counts, which is what it always
-		// should have done.
+		// The abandoned-agent row reads as state "interrupted", which is
+		// not verdict-producing, so that round still does not count.
 		//
 		// The expected member list comes from gMembers (agent_status rows,
-		// including closed ones), NOT from the groupData keys. That is the
-		// #2573 fix: counting the keys that came back cannot detect a member
-		// that never came back.
+		// including closed ones), NOT from the groupData keys: counting the
+		// keys that came back cannot detect a member that never came back.
 		//
-		// Rationale: the lenient predicate ("at least one finished member
-		// with non-empty LastMessage") tripped the LOOP-LIMIT at cycle 3 in
-		// PR #1992 even though only 3 of 5 agents had actually emitted
-		// verdicts; the other two finished with no parseable `<verdict>` tag.
-		// See `docs/diagnoses/review-agent-no-verdict-1993.md` for the full
-		// trace; #1995 tightened both predicates to share this contract.
-		// The HISTORICAL read (#2649). GroupResults drops rows whose ended_at
-		// is set, which is correct on the live aggregation path and wrong
-		// here: review agents are released automatically 15 minutes after
-		// their round is delivered, so by the time a later round asks "how
-		// many cycles came before me", every earlier round's rows are closed.
-		// Read through GroupResults, this loop counted zero every time and the
-		// LOOP-LIMIT footer never fired. The release deletes no row and no
-		// event, so the wider read still sees the full history.
+		// Rationale: a lenient predicate ("at least one finished member
+		// with non-empty LastMessage") would trip the LOOP-LIMIT at cycle 3
+		// even when only 3 of 5 agents emitted verdicts and the other two
+		// finished with no parseable `<verdict>` tag. See
+		// `docs/diagnoses/review-agent-no-verdict-1993.md` for the full trace.
 		groupData, gErr := d.GroupResultsAll(gid)
 		if gErr != nil {
 			// Be defensive: a bad row should not silently underreport cycle
@@ -1364,20 +1348,19 @@ func fallbackFilePath(prNumber string, round int) string {
 
 // BuildMonitorResultsForTest is an exported wrapper around buildMonitorResults
 // for use in external test packages. It passes no ended-row detail, which is
-// the degraded shape a caller without a DB handle sees (#2573).
+// the degraded shape a caller without a DB handle sees.
 func BuildMonitorResultsForTest(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult) []AgentResult {
 	return buildMonitorResults(agents, agentSessions, groupData, nil, nil)
 }
 
-// BuildMonitorResultsWithEndedForTest is the #2573 variant: it also supplies
+// BuildMonitorResultsWithEndedForTest also supplies
 // the group's closed (ended_at set) agent_status rows so tests can assert the
-// reaped-session reason text. It records no close cause, which is the shape a
-// pre-#2613 row has.
+// reaped-session reason text. It records no close cause.
 func BuildMonitorResultsWithEndedForTest(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status) []AgentResult {
 	return buildMonitorResults(agents, agentSessions, groupData, endedRows, nil)
 }
 
-// BuildMonitorResultsWithCausesForTest is the #2613 variant: it also supplies
+// BuildMonitorResultsWithCausesForTest also supplies
 // the close cause recorded for each closed row, so tests can assert that the
 // report names one cause rather than a disjunction.
 func BuildMonitorResultsWithCausesForTest(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status, endedCauses map[string]db.SessionEndCause) []AgentResult {
@@ -1385,7 +1368,7 @@ func BuildMonitorResultsWithCausesForTest(agents []Agent, agentSessions []string
 }
 
 // EndedMemberCausesForTest is an exported wrapper around endedMemberCauses so
-// tests can exercise the DB read that feeds the classifier (#2613).
+// tests can exercise the DB read that feeds the classifier.
 func EndedMemberCausesForTest(d *db.DB, endedRows map[string]db.Status) map[string]db.SessionEndCause {
 	return endedMemberCauses(d, endedRows)
 }
