@@ -1,6 +1,6 @@
 package sidecar
 
-// Tests for the @-less session-name resolution path introduced by issue #2112.
+// Tests for the @-less session-name resolution path.
 //
 // # Isolation contract
 //
@@ -12,7 +12,7 @@ package sidecar
 //     dialling a real host socket.
 //   - The DB is an isolated SQLite file in a private MkdirTemp dir.
 //
-// Fixture session names use the discipline from #2112:
+// Fixture session names use this discipline:
 //   - @-bearing sessions   → "prism-test@<descriptor>"
 //   - @-less host-mode sessions → "prism-test-<descriptor>"
 //   - investigator descendants → "prism-test-<descriptor>~investigate-<slug>"
@@ -21,51 +21,48 @@ package sidecar
 // "nixos-config@main") or a real ProjectIsolationOverrides slug
 // ("obsidian", "obsidian~investigate-apis"). The fixture shape mirrors
 // production without colliding with any live coordinator on the developer's
-// host — see the sidecartest package doc and AC #9 of issue #2112.
+// host — see the sidecartest package doc.
 //
 // # Why @-less fixtures still drive the regression test
 //
 // The production failure mode is name-shape, not name-value. A fixture named
 // "prism-test-obsidianlike" lacks an "@" separator in the exact same way
-// that "obsidian" does, and therefore trips the pre-#2112 string-parser in
-// the exact same way. The negative-mutation re-runs (see commit message of
-// the original PR) verified this directly: every test in this file FAILS
-// when helpers.go::repoFromSession is reverted to its pre-fix body, with
-// the expected "contains no '@'" error shape.
+// that "obsidian" does, and therefore trips a string-parser that assumes an
+// "@" in the exact same way.
 //
 // # Negative-mutation guarantee
 //
 // Every test is constructed so that reverting helpers.go::repoFromSession to
-// its pre-#2112 string-only form causes the test to FAIL:
+// a string-only form that requires an "@" causes the test to FAIL:
 //
 //   - TestHostAPI_RepoFromSession_DBFallback:
 //       Asserts repoFromSession("prism-test-obsidianlike", d) ==
-//       "prism-test-obsidianlike". Pre-fix code returns an error and an
-//       empty string; the assertion fails.
+//       "prism-test-obsidianlike". A string-only parser returns an error and
+//       an empty string; the assertion fails.
 //
 //   - TestHostAPI_AtlessSession_Checkin_Resolves:
-//       Asserts /checkin against an @-less target returns 200. Pre-fix code
-//       returns 400 ("contains no '@'"); the assertion fails.
+//       Asserts /checkin against an @-less target returns 200. A string-only
+//       parser returns 400 ("contains no '@'"); the assertion fails.
 //
 //   - TestHostAPI_AtlessSession_Checkin_NotFound:
 //       Asserts /checkin against an unknown @-less name returns 404 with a
-//       "not found" body. Pre-fix code returns 400 with "contains no '@'";
-//       the assertion fails on both status code and body content.
+//       "not found" body. A string-only parser returns 400 with "contains no
+//       '@'"; the assertion fails on both status code and body content.
 //
 //   - TestHostAPI_AtlessSession_Prompt_Resolves:
-//       Asserts /prompt with an @-less target succeeds. Pre-fix code returns
-//       400 ("invalid target session name"); the assertion fails.
+//       Asserts /prompt with an @-less target succeeds. A string-only parser
+//       returns 400 ("invalid target session name"); the assertion fails.
 //
 //   - TestHostAPI_AtlessSession_CrossRepoWorker_403:
 //       Asserts that a coordinator in repo A cannot /checkin an @-less
 //       worker in repo B (the cross-repo permission check still fires).
-//       Pre-fix code returns 400 before reaching the permission check;
-//       the assertion that the code is 403 fails.
+//       A string-only parser returns 400 before reaching the permission
+//       check; the assertion that the code is 403 fails.
 //
 //   - TestHostAPI_AtlessSession_Spawn_Resolves:
 //       Asserts /spawn succeeds when the sidecar's own session has an
-//       @-less name. Pre-fix code returns 500 ("cannot derive repo") at
-//       the own-repo derivation step; the assertion fails.
+//       @-less name. A string-only parser returns 500 ("cannot derive repo")
+//       at the own-repo derivation step; the assertion fails.
 
 import (
 	"log"
@@ -85,7 +82,7 @@ import (
 // session-name test. It routes through sidecartest.NewIsolated so that
 // XDG_STATE_HOME is redirected to a tempdir and the
 // PRISM_TEST_MODE_RESTRICT_HOSTAPI guard is set — closing both isolation
-// gaps surfaced by review-goal on the first round of #2112 review.
+// gaps.
 //
 // The bus's DB is returned so the caller can seed any additional fixture
 // rows (caller-coordinator, target-worker, etc.) needed by the test.
@@ -263,7 +260,7 @@ func TestHostAPI_RepoFromSession_DBFallback(t *testing.T) {
 
 	// Sanity: isCoordinatorSession still recognises the @-less row as a
 	// coordinator via root_agent_name. The cross-repo permission check
-	// path depends on this composition working post-#2112.
+	// path depends on this composition working.
 	if !isCoordinatorSession("prism-test-obsidianlike", d, log.Default()) {
 		t.Error("isCoordinatorSession(\"prism-test-obsidianlike\", d): got false, want true (root_agent_name=coordinator)")
 	}
@@ -337,7 +334,7 @@ func TestHostAPI_AtlessSession_Checkin_InvestigatorShape(t *testing.T) {
 	}
 	// Investigator inherits the @-less parent's shape. The DB row keeps
 	// repo=<parent-repo> even though the session name embeds a
-	// "~investigate-" suffix. Pre-#2112 the parse path failed here too.
+	// "~investigate-" suffix. A string-only parser fails here too.
 	if err := d.UpsertStatusSeedRootAgentName(
 		investigator, repo, "/tmp/"+investigator,
 		"active", nil, nil, "worker", "", "host",
@@ -545,11 +542,8 @@ func TestHostAPI_AtlessSession_BackwardsCompat(t *testing.T) {
 }
 
 // TestHostAPI_AtlessSession_Spawn_Resolves covers the /spawn handler's
-// own-repo derivation path for an @-less sidecar. Pre-#2112, /spawn called
-// repoFromSession(s.cfg.SessionName) which returned an error for @-less
-// sidecar sessions; the handler short-circuited at 500 "cannot derive repo"
-// before invoking the prism binary. Post-#2112 the DB-fallback resolves the
-// repo from agent_status, the spawn proceeds, and the stub binary's
+// own-repo derivation path for an @-less sidecar. The DB-fallback resolves
+// the repo from agent_status, the spawn proceeds, and the stub binary's
 // `session "<name>" created` line is parsed back as the response.
 func TestHostAPI_AtlessSession_Spawn_Resolves(t *testing.T) {
 	const (

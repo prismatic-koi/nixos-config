@@ -11,7 +11,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 )
 
-// TestNotifyCoordinator_EscalatedSuppressed verifies AC #3 and #4: while a
+// TestNotifyCoordinator_EscalatedSuppressed verifies that while a
 // session is in the escalated state, the sidecar must NOT call
 // notifyCoordinator with a "has finished" message. The session.escalated bus
 // event has already informed the coordinator and a finished notification

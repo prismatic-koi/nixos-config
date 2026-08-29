@@ -1,18 +1,17 @@
 package sidecar
 
-// host_api_bare_name_prompt_test.go — issue #2658.
+// host_api_bare_name_prompt_test.go — the cross-repo arm of the host-API
+// /prompt gate.
 //
-// The cross-repo arm of the host-API /prompt gate used to ask
-// isCoordinatorSession. A non-worktree session such as `obsidian` has a bare
-// name — no "@", so no branch, so no "@main" suffix — and its DB row carried a
-// wrong root_agent_name, so both halves of that predicate answered false. The
-// prompt was refused with:
+// The gate asks isRootSession, not isCoordinatorSession. A non-worktree
+// session such as `obsidian` has a bare name — no "@", so no branch, so no
+// "@main" suffix — and its DB row can carry a wrong root_agent_name, so both
+// halves of isCoordinatorSession answer false and the prompt is refused with:
 //
 //	cross-repo prompts can only target coordinators (<repo>@main), got "obsidian"
 //
-// The gate now asks isRootSession, which admits a bare name and nothing else
-// new. This file pins the admission AND the four refusals that must survive
-// it.
+// isRootSession admits a bare name and nothing else new. This file pins the
+// admission AND the four refusals that must survive it.
 //
 // # Isolation contract
 //
@@ -53,9 +52,9 @@ func bareNamePromptFixture(t *testing.T, callerRole string) *Sidecar {
 	); err != nil {
 		t.Fatalf("seed caller: %v", err)
 	}
-	// The reported row: a bare name whose root_agent_name is 'review-goal'.
-	// The session is not a review agent; the value is simply wrong, and
-	// before #2658 nothing could override it.
+	// A bare name whose root_agent_name is 'review-goal'. The session is not
+	// a review agent; the value is simply wrong, and the name-based path
+	// cannot override it.
 	if err := d.UpsertStatusSeedRootAgentName(
 		bare, bare, "/tmp/"+bare, "active", nil, nil, "review-goal", "", "host",
 	); err != nil {
@@ -131,8 +130,7 @@ func TestHostAPI_Prompt_CrossRepoWorker_StillRefused(t *testing.T) {
 // and no agent_status row, one step earlier.
 //
 // If this ever regresses to 403 or 200, `prism prompt <typo>` stops saying
-// "not found" and starts failing opaquely at delivery — the second symptom
-// reported in #2658.
+// "not found" and starts failing opaquely at delivery.
 func TestHostAPI_Prompt_UnknownBareName_Is404(t *testing.T) {
 	sc := bareNamePromptFixture(t, "coordinator")
 

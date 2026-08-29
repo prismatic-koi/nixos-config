@@ -1,4 +1,4 @@
-// Tests for the muted-session notification-suppression path (#2013).
+// Tests for the muted-session notification-suppression path.
 //
 // The mute check in notifyCoordinator is additive next to the existing
 // escalated / review-agent / investigate-agent / coordinator-session

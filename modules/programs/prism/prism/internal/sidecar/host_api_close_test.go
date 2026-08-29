@@ -1,4 +1,4 @@
-// Tests for the /close host-API endpoint (issue #2179). The endpoint mirrors
+// Tests for the /close host-API endpoint. The endpoint mirrors
 // /cleanup: a coordinator-only POST that shells out to a host-side prism
 // binary and forwards stdout/stderr verbatim. These tests use a shell-script
 // stub bound to PrismBinaryPath in place of the real `prism close` so we can
@@ -179,9 +179,9 @@ func TestHostAPI_Close_RequiresCoordinator(t *testing.T) {
 }
 
 // TestHostAPI_Close_ForwardsKeepWorktreeToCleanup verifies the /cleanup
-// endpoint also accepts and forwards keep_worktree (the parity surface added
-// by issue #2179 for coordinators that want to soft-close via /cleanup
-// without going through /close's decision tree).
+// endpoint also accepts and forwards keep_worktree (the parity surface for
+// coordinators that want to soft-close via /cleanup without going through
+// /close's decision tree).
 func TestHostAPI_Close_ForwardsKeepWorktreeToCleanup(t *testing.T) {
 	script := `printf '%s\n' "$@"
 exit 0`

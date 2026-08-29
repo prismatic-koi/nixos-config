@@ -1,21 +1,21 @@
 package sidecar
 
-// host_api_review_rollback_test.go — issue #2258.
+// host_api_review_rollback_test.go — regression tests for the /review
+// handler's pre-emptive `reviewing` state write.
 //
-// Regression tests for the /review handler's pre-emptive `reviewing` state
-// write. Pre-#2258 the handler wrote `reviewing` to the DB and set
-// reviewingInFlight=true BEFORE decoding/validating the request body, and
-// did not roll back on any post-write failure (host-side child refusal,
-// subprocess spawn failure, etc.). A refused /review therefore left the
-// calling worker pinned in `reviewing`, suppressing both finished-debounce
-// notifications (handleSessionFinished, events.go) and turn_start active
-// writes (handlePipeFrame), so the worker silently wedged until a
-// successful review-complete prompt arrived. When the worker could not
-// re-run review (e.g. a stuck companion group), the wedge was indefinite.
+// The handler writes `reviewing` to the DB and sets reviewingInFlight=true
+// only AFTER decoding and validating the request body, and rolls back on any
+// post-write failure (host-side child refusal, subprocess spawn failure).
+// Without the rollback, a refused /review would leave the calling worker
+// pinned in `reviewing`, suppressing both finished-debounce notifications
+// (handleSessionFinished, events.go) and turn_start active writes
+// (handlePipeFrame), so the worker would silently wedge until a successful
+// review-complete prompt arrived. When the worker could not re-run review
+// (e.g. a stuck companion group), the wedge would be indefinite.
 //
-// The fix splits the failure modes:
+// The failure modes split:
 //
-//   - Validation errors (bad JSON, bad pr_number, unknown agent) now fire
+//   - Validation errors (bad JSON, bad pr_number, unknown agent) fire
 //     BEFORE the pre-emptive write, so nothing to roll back.
 //   - Subprocess failures (Start error, Wait non-zero exit — i.e. host-side
 //     refusal: behind-`origin/main` gate, round-already-in-progress, fetch
@@ -23,7 +23,7 @@ package sidecar
 //     in the DB, clears reviewingInFlight, and pushes reviewing_state{false}
 //     to the PI extension.
 //
-// # Isolation contract (#1608)
+// # Isolation contract
 //
 // Every test in this file constructs its Sidecar via
 // sidecartest.NewIsolated(t, ""), so:
@@ -120,14 +120,13 @@ func reviewingInFlightOf(s *Sidecar) bool {
 	return s.reviewingInFlight
 }
 
-// ── AC #1: validation failures preserve pre-call state and flag ─────────────
+// ── validation failures preserve pre-call state and flag ─────────────
 
-// TestReviewRollback_BadJSON_NoStateChange covers AC #1: a /review request
+// TestReviewRollback_BadJSON_NoStateChange verifies that a /review request
 // with malformed JSON returns 400 and leaves both agent_status.state and
-// s.reviewingInFlight exactly as they were before the call. Pre-fix this
-// test FAILS because the handler wrote `reviewing` before decoding the
-// body — the assertion that state remains "active" and that the flag is
-// false would not hold.
+// s.reviewingInFlight exactly as they were before the call. If the handler
+// wrote `reviewing` before decoding the body, this test would FAIL: state
+// would not remain "active" and the flag would not be false.
 func TestReviewRollback_BadJSON_NoStateChange(t *testing.T) {
 	sc, d, sessionName := newReviewRollbackSidecar(t, "#!/bin/sh\nexit 0\n")
 
@@ -151,7 +150,7 @@ func TestReviewRollback_BadJSON_NoStateChange(t *testing.T) {
 	}
 }
 
-// TestReviewRollback_BadPRNumber_NoStateChange covers AC #1 for the
+// TestReviewRollback_BadPRNumber_NoStateChange covers the
 // non-numeric pr_number case. The validation now runs before the
 // pre-emptive write, so the rejection must leave state untouched.
 func TestReviewRollback_BadPRNumber_NoStateChange(t *testing.T) {
@@ -173,7 +172,7 @@ func TestReviewRollback_BadPRNumber_NoStateChange(t *testing.T) {
 	}
 }
 
-// TestReviewRollback_UnknownAgent_NoStateChange covers AC #1 for the
+// TestReviewRollback_UnknownAgent_NoStateChange covers the
 // unknown-agent-name case. The handler must reject the bogus agent name
 // before any state mutation.
 func TestReviewRollback_UnknownAgent_NoStateChange(t *testing.T) {
@@ -196,7 +195,7 @@ func TestReviewRollback_UnknownAgent_NoStateChange(t *testing.T) {
 	}
 }
 
-// TestReviewRollback_MissingPRNumber_NoStateChange covers AC #1 for the
+// TestReviewRollback_MissingPRNumber_NoStateChange covers the
 // missing pr_number case. This path runs BEFORE the numeric-check but
 // AFTER decode, so it likewise must not touch state.
 func TestReviewRollback_MissingPRNumber_NoStateChange(t *testing.T) {
@@ -215,9 +214,9 @@ func TestReviewRollback_MissingPRNumber_NoStateChange(t *testing.T) {
 	}
 }
 
-// ── AC #2: host-side child refusal rolls back state, flag, and pi push ──────
+// ── host-side child refusal rolls back state, flag, and pi push ──────
 
-// TestReviewRollback_ChildRefusal_RollsBackStateAndFlag covers AC #2: a
+// TestReviewRollback_ChildRefusal_RollsBackStateAndFlag verifies that a
 // /review request that passes validation but whose subprocess (the
 // host-side `prism review`) exits non-zero — modelling the behind-main
 // gate refusal, round-already-in-progress refusal, fetch failure, etc. —
@@ -343,9 +342,9 @@ func TestReviewRollback_SubprocessSpawnFailure_RollsBackStateAndFlag(t *testing.
 	}
 }
 
-// ── AC #3: post-rollback, finished-debounce / turn_start behave normally ────
+// ── post-rollback, finished-debounce / turn_start behave normally ────
 
-// TestReviewRollback_AfterRefusal_FinishedDebounceFires covers AC #3:
+// TestReviewRollback_AfterRefusal_FinishedDebounceFires verifies that
 // after a refused /review, the worker's finished-debounce path must run
 // normally (no reviewing-based suppression). Both suppression guards in
 // events.go (handleSessionFinished, handleSessionIdle) gate on
@@ -372,7 +371,7 @@ exit 1
 		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 	}
 
-	// AC #3 — both suppression paths (handleSessionFinished and
+	// Both suppression paths (handleSessionFinished and
 	// handleSessionIdle) and the turn_start guard read
 	// s.reviewingInFlight before checking anything else. With the flag
 	// cleared by rollback, none of those paths suppress.
@@ -388,9 +387,9 @@ exit 1
 	}
 }
 
-// ── AC #4: successful /review immediately after refused behaves normally ────
+// ── successful /review immediately after refused behaves normally ────
 
-// TestReviewRollback_RefusedThenSuccess covers AC #4: a successful
+// TestReviewRollback_RefusedThenSuccess verifies that a successful
 // /review issued immediately after a refused one must behave identically
 // to a first-time /review — no double-set or stale-clear interactions.
 //

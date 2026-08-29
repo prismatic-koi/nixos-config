@@ -390,10 +390,10 @@ func TestNotifyInvestigatorCompletion_ConcurrentDelivery(t *testing.T) {
 // events on an investigate-agent session do NOT produce notifications to the
 // invoker — only completion should trigger delivery.
 //
-// This is the regression test for issue #1580: the old code called
-// notifyInvestigatorTurnEnd on every turn_end, flooding the coordinator with
-// noise notifications. The new code accumulates the text and fires exactly
-// once at terminal state.
+// This is the regression test against flooding: the handler must not call
+// notifyInvestigatorTurnEnd on every turn_end, which would flood the
+// coordinator with noise notifications. It accumulates the text and fires
+// exactly once at terminal state.
 func TestInvestigatorNoIntermediatePings(t *testing.T) {
 	invokerSession := "prism-test@invoker-nopings"
 	investigatorSession := invokerSession + "~investigate-nopings"
@@ -453,7 +453,7 @@ func TestInvestigatorNoIntermediatePings(t *testing.T) {
 // cannot touch the real host prism state, and that the delivery lands on the
 // isolated httptest.Server.
 //
-// This is the "defence in depth" test for issue #1608: it verifies that the
+// This is the "defence in depth" test for isolation: it verifies that the
 // isolation invariants hold even when the test session name collides with a
 // live coordinator slug.
 //
@@ -466,19 +466,19 @@ func TestInvestigatorNoIntermediatePings(t *testing.T) {
 // multi-worker host those probes raced live sidecars: any concurrent session
 // writing the real prism.db during the test window tripped the mtime check,
 // a false positive that asserted "the host is quiet", not "this test is
-// isolated" (issue #2227). Path-comparison assertions are race-free and hold
+// isolated". Path-comparison assertions are race-free and hold
 // regardless of concurrent host activity.
 func TestNotifyInvestigatorCompletion_NoHostBusLeak(t *testing.T) {
 	// Capture the real XDG_STATE_HOME *before* NewIsolated redirects it, so we
 	// can assert nothing resolves under it. It may legitimately be unset (CI,
-	// nix sandbox where HOME=/homeless-shelter — issue #1857); the
+	// nix sandbox where HOME=/homeless-shelter); the
 	// by-construction assertions below don't need a real host path to exist,
 	// so the real-path comparisons are simply skipped in that case rather than
 	// falling back to UserHomeDir.
 	realXDGStateHome := os.Getenv("XDG_STATE_HOME")
 
 	// Use a session name that matches a real coordinator slug — this is the
-	// exact scenario that caused the observed leak in issue #1608. The
+	// exact scenario that can leak to a live coordinator. The
 	// investigatorSession parses to invokerSession="nixos-config@main", which
 	// is what collided with the live coordinator on the host. We seed that
 	// session in the ISOLATED DB so the delivery path exercises the same code
@@ -504,7 +504,7 @@ func TestNotifyInvestigatorCompletion_NoHostBusLeak(t *testing.T) {
 	}
 	s := New(cfg)
 
-	// ── Isolation by construction (#2227) ──────────────────────────────────
+	// ── Isolation by construction ──────────────────────────────────
 
 	// The env redirect must be in effect: any code that resolves prism paths
 	// from $XDG_STATE_HOME during this test lands in the tempdir.
@@ -589,7 +589,7 @@ func seedEndedSessionInvestigate(t *testing.T, database *db.DB, sessionName, rep
 
 // pathWithin reports whether path resides inside dir (or equals it). Pure
 // lexical comparison — no filesystem access, so it cannot race concurrent
-// host activity (#2227).
+// host activity.
 func pathWithin(path, dir string) bool {
 	rel, err := filepath.Rel(dir, path)
 	if err != nil {

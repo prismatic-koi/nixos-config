@@ -1,16 +1,16 @@
 package sidecar
 
-// host_api_prompt_proxy_test.go — regression tests for issue #2359
-// review-code / review-context follow-up.
+// host_api_prompt_proxy_test.go — regression tests for the cross-session
+// /prompt handler's envelope forwarding.
 //
 // The sidecar's cross-session /prompt handler shells to host-side
-// `prism prompt`. Round-2 review flagged that the branch discarded the
-// child's stdout and returned an empty envelope on success — so a
-// sandboxed caller (worker → coordinator, sandboxed coordinator → worker)
-// saw a plain "prompt delivered" line even when the target sidecar had
-// buffered the delivery.
+// `prism prompt`. The branch must not discard the child's stdout and return
+// an empty envelope on success — that would make a sandboxed caller
+// (worker → coordinator, sandboxed coordinator → worker) see a plain
+// "prompt delivered" line even when the target sidecar had buffered the
+// delivery.
 //
-// The fix passes --json to the child and forwards the child's stdout
+// The handler passes --json to the child and forwards the child's stdout
 // envelope through the response. This file locks that contract in with a
 // stub binary that emits a scripted --json envelope and asserts the
 // forwarded response carries the expected fields.
@@ -162,7 +162,7 @@ func TestHostAPI_Prompt_CrossSession_ChildInvokedWithJSON(t *testing.T) {
 // TestHostAPI_Prompt_CrossSession_UnparseableStdoutFallsBack verifies the
 // robustness clause: a child that emits garbage on stdout (non-JSON) does
 // NOT fail the request — the handler falls back to synchronous-success
-// defaults so pre-#2359 callers see identical behaviour.
+// defaults so callers see the synchronous-success shape.
 func TestHostAPI_Prompt_CrossSession_UnparseableStdoutFallsBack(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script stubs are POSIX-only")
@@ -196,7 +196,7 @@ func TestHostAPI_Prompt_CrossSession_UnparseableStdoutFallsBack(t *testing.T) {
 
 // newCrossSessionSidecar constructs a coordinator sidecar with a stubbed
 // prism binary, wired for cross-session /prompt tests. The session name
-// uses the prism-test@ prefix per #1608.
+// uses the prism-test@ prefix for isolation.
 func newCrossSessionSidecar(t *testing.T, sessionName, repo, role, prismBinaryPath string, d *db.DB) *Sidecar {
 	t.Helper()
 	if !strings.HasPrefix(sessionName, "prism-test@") {

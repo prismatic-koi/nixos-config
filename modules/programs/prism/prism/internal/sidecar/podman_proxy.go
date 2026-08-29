@@ -1,9 +1,9 @@
-// Podman proxy lifecycle wiring (Step 3 of #2317 / issue #2320).
+// Podman proxy lifecycle wiring.
 //
-// This file plumbs the standalone internal/podmanproxy package (Step 1)
-// into the per-session sidecar, gated on the agent_status.containers_enabled
-// column (Step 2). Policy and request inspection live in the proxy package;
-// this file does NOT make policy decisions -- it only:
+// This file plumbs the standalone internal/podmanproxy package into the
+// per-session sidecar, gated on the agent_status.containers_enabled column.
+// Policy and request inspection live in the proxy package; this file does
+// NOT make policy decisions -- it only:
 //
 //   1. Discovers the upstream podman socket per platform.
 //   2. Opens the per-session audit log file.
@@ -16,12 +16,6 @@
 // `prism escalate` and either admit the new field upstream in the
 // podmanproxy package or revisit the integration design, NOT to weaken the
 // proxy here.
-//
-// Out-of-scope reminders for Step 3:
-//   - bwrap CONTAINER_HOST/DOCKER_HOST + container-scratch bind -- Step 4.
-//   - sandbox-exec SBPL allow + env injection -- Step 5.
-//   - prism spawn --containers CLI flag -- Step 6.
-//   - orphan-container cleanup sweep -- Step 7.
 
 package sidecar
 
@@ -42,8 +36,8 @@ import (
 // defaultPodmanMachineName is the Darwin podman-machine name probed when
 // Config.PodmanMachineName is empty. This matches the default machine name
 // used by `podman machine init` when no --name flag is passed, and is the
-// only machine name we attempt to discover automatically. Step 6 will add a
-// per-spawn override via the same Config.PodmanMachineName field.
+// only machine name we attempt to discover automatically. A per-spawn
+// override arrives through the same Config.PodmanMachineName field.
 const defaultPodmanMachineName = "podman-machine-default"
 
 // runPodmanProxyIfEnabled starts the per-session filtering podman API socket
@@ -53,16 +47,14 @@ const defaultPodmanMachineName = "podman-machine-default"
 // and the row must exist before any audit writes occur.
 //
 // When containers_enabled is false (the default), this function returns
-// without creating any listener, file, or goroutine -- the AC for "no proxy
-// listener when containers_enabled=0" is enforced by this early return.
+// without creating any listener, file, or goroutine.
 //
 // When containers_enabled is true:
 //
 //   - Upstream discovery is attempted per platform. Failure is NOT fatal:
 //     the proxy is still started with the resolved (possibly non-existent)
 //     upstream path, and the proxy package's friendly 503 envelope handles
-//     every request until the upstream becomes reachable. This matches
-//     #2317 sec.3e ("friendly failure mode") and the corresponding AC.
+//     every request until the upstream becomes reachable.
 //   - The audit log is opened in append-only mode under
 //     <XDG_STATE_HOME>/prism/sessions/<instanceID>/podman-proxy.log so log
 //     entries survive sidecar restarts within a single session incarnation.
@@ -78,8 +70,7 @@ const defaultPodmanMachineName = "podman-machine-default"
 // pipe, SSE) is independent of container access.
 func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 	// Resolve the listener path. Empty means the caller did not wire a path
-	// (back-compat for older spawns / tests that do not need the proxy);
-	// skip silently.
+	// (spawns and tests that do not need the proxy). Skip silently.
 	listenerPath := s.cfg.PodmanProxyListenerPath
 	if listenerPath == "" {
 		return
@@ -98,8 +89,7 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 		return
 	}
 	if status == nil || !status.ContainersEnabled {
-		// Default-off path: no listener, no audit file, no goroutine. This
-		// is the AC asserted by tests that grep for podman.sock absence.
+		// Default-off path: no listener, no audit file, no goroutine.
 		return
 	}
 
@@ -113,10 +103,9 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 	// lines.
 	auditFile, auditPath, auditErr := s.openPodmanProxyAuditFile()
 	if auditErr != nil {
-		// Audit-file open failure should not prevent the proxy from
-		// starting (the AC "audit log exists" only fires when the proxy
-		// itself is healthy). Log and run with a nil writer -- the proxy
-		// package silently drops audit events when AuditWriter is nil.
+		// Audit-file open failure must not prevent the proxy from
+		// starting. Log and run with a nil writer -- the proxy package
+		// silently drops audit events when AuditWriter is nil.
 		s.logger().Printf("sidecar: podman-proxy: audit log open: %v (proxy will run without audit)", auditErr)
 		auditFile = nil
 		auditPath = ""
@@ -127,18 +116,15 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 		ListenerPath:       listenerPath,
 		UpstreamPath:       upstream,
 		AllowedBindSources: allowed,
-		// Step 7 of #2317 / #2324 — wire the per-session container
-		// name prefix. The proxy auto-injects this prefix into
-		// containers/create requests with no Name field, and rejects
-		// any explicit Name that does not start with it. Cleanup
+		// Per-session container name prefix. The proxy auto-injects this
+		// prefix into containers/create requests with no Name field, and
+		// rejects any explicit Name that does not start with it. Cleanup
 		// (`cmd/cleanup.go`) sweeps any orphan container matching the
 		// same prefix at session teardown.
 		ContainerNamePrefix: "prism-" + s.cfg.SessionName + "-",
-		// Step 3 ships with the default-deny policy from Step 1. No
-		// AllowedCaps, no AllowedSecurityOpts, no MaxMemoryBytes etc.
-		// Step 6 / Step 7 may revisit cap defaults once real workloads
-		// surface. Until then, every escape vector documented in
-		// #2317 sec.4 is rejected by default.
+		// The default-deny policy applies: no AllowedCaps, no
+		// AllowedSecurityOpts, no MaxMemoryBytes. Every escape vector is
+		// rejected by default.
 	}
 	if auditFile != nil {
 		cfg.AuditWriter = auditFile
@@ -155,8 +141,8 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 
 	// Track the audit file on the Sidecar so Shutdown can close it once the
 	// proxy goroutine has exited. We deliberately do NOT log the upstream
-	// socket path verbatim -- the security AC says it must not appear in
-	// the sidecar log. The discovery-classification string ("env-derived",
+	// socket path verbatim -- it must not appear in the sidecar log. The
+	// discovery-classification string ("env-derived",
 	// "fallback", "machine-inspect", "override", "missing") is the
 	// observability we expose instead.
 	s.mu.Lock()
@@ -201,12 +187,10 @@ func (s *Sidecar) closePodmanProxyAuditFile() {
 // resolvePodmanUpstreamPath returns the absolute path of the upstream
 // docker/podman Unix socket the proxy should forward to. The path does not
 // have to exist -- if it doesn't, the proxy returns the friendly 503
-// envelope for every request, which is the documented behaviour from
-// #2317 sec.3e.
+// envelope for every request.
 //
 // Precedence:
-//  1. Config.PodmanUpstreamPath override (test seam; will also be the
-//     conduit for the Step-6 --podman-machine flag).
+//  1. Config.PodmanUpstreamPath override (test seam).
 //  2. Platform-specific discovery (NixOS env, Darwin `podman machine inspect`).
 //  3. A non-existent placeholder path as a final fallback -- the proxy
 //     handles ENOENT/ECONNREFUSED at dial time and returns the friendly 503.
@@ -245,8 +229,8 @@ func (s *Sidecar) resolvePodmanUpstreamLinux() string {
 // --format '{{.ConnectionInfo.PodmanSocket.Path}}'` and returns the trimmed
 // stdout. When the command is missing, exits non-zero, or returns empty
 // output, a non-existent placeholder is returned so the proxy hits its
-// friendly 503 path. Discovery is best-effort by design -- #2317 sec.3e
-// documents that a stopped machine is a normal failure mode.
+// friendly 503 path. Discovery is best-effort by design: a stopped machine
+// is a normal failure mode.
 func (s *Sidecar) resolvePodmanUpstreamDarwin() string {
 	machine := s.cfg.PodmanMachineName
 	if machine == "" {
@@ -266,15 +250,15 @@ func (s *Sidecar) resolvePodmanUpstreamDarwin() string {
 		s.logger().Printf("sidecar: podman-proxy: machine-inspect returned empty path; proxy will return 503 envelope")
 		return "/podman-machine-unavailable.sock"
 	}
-	// IMPORTANT: do NOT log `path` here. The security AC requires the
-	// upstream socket path to NOT appear in the sidecar log.
+	// IMPORTANT: do NOT log `path` here. The upstream socket path must not
+	// appear in the sidecar log.
 	return path
 }
 
 // classifyDiscoveryError produces a short, redaction-safe token describing
 // why upstream discovery failed. Never include err.Error() verbatim in the
 // sidecar log -- the upstream socket path may appear in stderr output and
-// the security AC forbids that leak.
+// must not reach the sidecar log.
 func classifyDiscoveryError(err error) string {
 	if err == nil {
 		return "ok"
@@ -291,8 +275,7 @@ func classifyDiscoveryError(err error) string {
 
 // allowedPodmanBindSources returns the set of host path prefixes that may
 // appear as the source side of HostConfig.Binds / Mounts entries on a
-// containers/create request. Step 4 (bwrap) and Step 5 (sandbox-exec) will
-// also bind / SBPL-allow these same paths inside the sandbox.
+// containers/create request.
 //
 // The set always includes:
 //   - The session's worktree (cfg.Worktree).

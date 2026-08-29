@@ -1,6 +1,6 @@
 package sidecar
 
-// Tests for the three read-only wait-probe endpoints (#1500):
+// Tests for the three read-only wait-probe endpoints:
 //
 //   GET /merges/by-pr      — single pending_merges row lookup
 //   GET /sessions/status   — single agent_status row lookup
@@ -175,9 +175,9 @@ func TestHostAPI_GroupsPoll_RejectsMissingGroupID(t *testing.T) {
 
 // ── /groups/list ──────────────────────────────────────────────────────────────
 
-// TestHostAPI_GroupsList_ReturnsGroupsNewestFirst exercises the new
-// /groups/list endpoint added in #1500 round-3 to fix the shadow-DB
-// regression for `prism reviews list` from inside a sandbox.
+// TestHostAPI_GroupsList_ReturnsGroupsNewestFirst exercises the
+// /groups/list endpoint, which fixes the shadow-DB regression for
+// `prism reviews list` from inside a sandbox.
 func TestHostAPI_GroupsList_ReturnsGroupsNewestFirst(t *testing.T) {
 	d := openTestDB(t)
 	// Two groups; ReviewGroupsList sorts by created_at DESC (newest

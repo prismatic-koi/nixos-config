@@ -1,5 +1,5 @@
-// Tests in this file exercise the worker follow-ups convention (issue
-// #2528): a worker's terminal notification to the coordinator is normally
+// Tests in this file exercise the worker follow-ups convention: a worker's
+// terminal notification to the coordinator is normally
 // the fixed "has finished"/"has errored" string. When the worker's last
 // completed turn contains a well-formed <follow_ups>...</follow_ups>
 // section, that content is folded into the notification body instead.

@@ -1,6 +1,6 @@
 package sidecar
 
-// Tests for the repo scoping added to `GET /merges/by-pr` in issue #2354.
+// Tests for the repo scoping on `GET /merges/by-pr`.
 //
 // The endpoint accepts an optional `repo` query parameter; when omitted,
 // the sidecar substitutes its own repo. Both behaviours must be exercised
