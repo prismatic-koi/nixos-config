@@ -2,13 +2,13 @@ package review_test
 
 // loop_limit_test.go — tests for the LOOP-LIMIT footer that the review-complete
 // prompt grows after the worker has run REVIEW_CYCLE_THRESHOLD verdict-producing
-// review cycles for the same parent without convergence (#1512).
+// review cycles for the same parent without convergence.
 //
 // Invariants under test:
 //
 //   1. CompletedReviewCyclesForParent counts only groups that (a) are fully
 //      terminal AND (b) every member finished with a parseable `<verdict>`
-//      tag (#1995). Pure-infrastructure failures and rounds where any agent
+//      tag. Pure-infrastructure failures and rounds where any agent
 //      terminated without a parseable verdict do not count.
 //
 //   2. The LOOP-LIMIT footer is appended to the review-complete delivery body
@@ -17,7 +17,7 @@ package review_test
 //      review did not converge (allPassed == false).
 //
 //   3. A converged cycle (allPassed == true) never receives the footer, even
-//      if 3+ cycles have run for the PR (AC: edge-case 7 in #1512).
+//      if 3+ cycles have run for the PR.
 //
 //   4. A bash-substring "prism review N" mention does not, on its own, cause
 //      cycle counting to advance — because cycle counting is fed by the DB
@@ -82,10 +82,10 @@ func TestCurrentCycleProducedVerdicts_AllNoStartIsNotVerdictProducing(t *testing
 	}
 }
 
-// TestCurrentCycleProducedVerdicts_AllStalledIsNotVerdictProducing pins the
-// #2239 edge-case AC: a mid-run stall (state "error" + stall_error event) is
-// a non-counting infrastructure round under the #1995 contract, exactly like
-// a no-start — the new label must not change the cycle-counter behaviour.
+// TestCurrentCycleProducedVerdicts_AllStalledIsNotVerdictProducing pins that
+// a mid-run stall (state "error" + stall_error event) is a non-counting
+// infrastructure round, exactly like a no-start. The stall label must not
+// change the cycle-counter behaviour.
 func TestCurrentCycleProducedVerdicts_AllStalledIsNotVerdictProducing(t *testing.T) {
 	groupData := map[string]db.GroupMemberResult{
 		"a~review-1-review-goal":     {State: "error", StallError: "stalled mid-run after 1m20s (4 frame(s) received, last at 2026-06-11T13:51:04Z): inactivity timeout: no inbound frame for 15m0s"},
@@ -118,11 +118,10 @@ func TestCurrentCycleProducedVerdicts_FinishedButEmptyMessageIsNotVerdictProduci
 	}
 }
 
-// TestCurrentCycleProducedVerdicts_MixedNoStartIsNotVerdictProducing replaces
-// the pre-#1995 lenient-contract assertion. Under the tightened contract a
-// group only counts as verdict-producing when EVERY member emitted a
-// parseable `<verdict>` tag; one no-start sibling alongside one PASS is no
-// longer sufficient.
+// TestCurrentCycleProducedVerdicts_MixedNoStartIsNotVerdictProducing pins the
+// contract: a group only counts as verdict-producing when EVERY member
+// emitted a parseable `<verdict>` tag. One no-start sibling alongside one
+// PASS is not sufficient.
 func TestCurrentCycleProducedVerdicts_MixedNoStartIsNotVerdictProducing(t *testing.T) {
 	groupData := map[string]db.GroupMemberResult{
 		"a~review-1-review-goal": {State: "error", StartupError: "container failed to bind port"},
@@ -134,7 +133,7 @@ func TestCurrentCycleProducedVerdicts_MixedNoStartIsNotVerdictProducing(t *testi
 }
 
 // TestCurrentCycleProducedVerdicts_AllPassesIsVerdictProducing is the
-// regression guard for the happy path (AC #1995): a round where every
+// regression guard for the happy path: a round where every
 // member emits a parseable `<verdict>PASS</verdict>` still counts.
 func TestCurrentCycleProducedVerdicts_AllPassesIsVerdictProducing(t *testing.T) {
 	groupData := map[string]db.GroupMemberResult{
@@ -150,7 +149,7 @@ func TestCurrentCycleProducedVerdicts_AllPassesIsVerdictProducing(t *testing.T) 
 }
 
 // TestCurrentCycleProducedVerdicts_FourPassOneFailIsVerdictProducing is the
-// second regression guard (AC #1995): a round with 4 PASS + 1 parseable
+// second regression guard: a round with 4 PASS + 1 parseable
 // FAIL is still verdict-producing — the FAIL is surfaced as a normal
 // review failure, not a no-verdict re-run signal.
 func TestCurrentCycleProducedVerdicts_FourPassOneFailIsVerdictProducing(t *testing.T) {
@@ -167,8 +166,8 @@ func TestCurrentCycleProducedVerdicts_FourPassOneFailIsVerdictProducing(t *testi
 }
 
 // TestCurrentCycleProducedVerdicts_NoVerdictTagIsNotVerdictProducing covers
-// AC #1995 case (a): finished + non-empty LastMessage + no parseable verdict
-// tag — NOT verdict-producing. This is the #1993 root-cause shape (model
+// case (a): finished + non-empty LastMessage + no parseable verdict
+// tag — NOT verdict-producing. This is the root-cause shape (model
 // truncated mid-analysis without emitting `<verdict>`).
 func TestCurrentCycleProducedVerdicts_NoVerdictTagIsNotVerdictProducing(t *testing.T) {
 	groupData := map[string]db.GroupMemberResult{
@@ -180,7 +179,7 @@ func TestCurrentCycleProducedVerdicts_NoVerdictTagIsNotVerdictProducing(t *testi
 }
 
 // TestCurrentCycleProducedVerdicts_ParseablePassIsVerdictProducing covers
-// AC #1995 case (b): finished + non-empty LastMessage + parseable
+// case (b): finished + non-empty LastMessage + parseable
 // `<verdict>PASS</verdict>` — verdict-producing.
 func TestCurrentCycleProducedVerdicts_ParseablePassIsVerdictProducing(t *testing.T) {
 	groupData := map[string]db.GroupMemberResult{
@@ -192,7 +191,7 @@ func TestCurrentCycleProducedVerdicts_ParseablePassIsVerdictProducing(t *testing
 }
 
 // TestCurrentCycleProducedVerdicts_ParseableFailIsVerdictProducing covers
-// AC #1995 case (c): finished + non-empty LastMessage + parseable
+// case (c): finished + non-empty LastMessage + parseable
 // `<verdict>FAIL</verdict>` — verdict-producing.
 func TestCurrentCycleProducedVerdicts_ParseableFailIsVerdictProducing(t *testing.T) {
 	groupData := map[string]db.GroupMemberResult{
@@ -204,9 +203,9 @@ func TestCurrentCycleProducedVerdicts_ParseableFailIsVerdictProducing(t *testing
 }
 
 // TestCurrentCycleProducedVerdicts_PartialNoVerdictIsNotVerdictProducing
-// covers AC #1995 edge-case 6: a round where 3 agents produce parseable
+// covers edge-case 6: a round where 3 agents produce parseable
 // verdicts and 2 terminate without parseable verdicts does NOT count as
-// verdict-producing. This is exactly the PR #1992 / #1993 shape.
+// verdict-producing.
 func TestCurrentCycleProducedVerdicts_PartialNoVerdictIsNotVerdictProducing(t *testing.T) {
 	groupData := map[string]db.GroupMemberResult{
 		"a~review-1-review-security": {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
@@ -238,7 +237,7 @@ func TestCurrentCycleProducedVerdicts_EmptyGroupIsNotVerdictProducing(t *testing
 // bash-substring false-match invariant: cycle counting is fed by DB group
 // history, not by tool-call regex, so a parent with no groups always reports
 // zero — regardless of how many `prism review N` strings appeared in tool
-// output or rg / grep / heredoc bodies (AC #1512: edge-case bash-substring).
+// output or rg / grep / heredoc bodies.
 func TestCompletedReviewCyclesForParent_NoGroups_ReturnsZero(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@no-groups"
@@ -252,8 +251,8 @@ func TestCompletedReviewCyclesForParent_NoGroups_ReturnsZero(t *testing.T) {
 	}
 }
 
-// TestBashSubstringFalseMatch_DoesNotIncrementCycles verifies AC #3 explicitly:
-// each of the bash command shapes called out in the issue body — `rg
+// TestBashSubstringFalseMatch_DoesNotIncrementCycles verifies explicitly that
+// each of the bash command shapes — `rg
 // "prism review"`, `git log --grep=...`, `echo "..."`, and a heredoc
 // containing `prism review 42` — must not increment the counter or fire the
 // LOOP-LIMIT footer. Under Shape B this is structurally guaranteed: cycle
@@ -265,7 +264,7 @@ func TestBashSubstringFalseMatch_DoesNotIncrementCycles(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@false-match"
 
-	// The shapes from #1512 — listed here for documentation, not exercised
+	// The shapes — listed here for documentation, not exercised
 	// directly. Cycle counting is divorced from these strings entirely
 	// because the new pipeline never inspects tool-call text.
 	falseMatchExamples := []string{
@@ -320,8 +319,8 @@ func TestCompletedReviewCyclesForParent_CountsVerdictProducingGroups(t *testing.
 
 // TestCompletedReviewCyclesForParent_ExcludesNoVerdictGroups is the
 // historical-cycle twin of
-// TestCurrentCycleProducedVerdicts_PartialNoVerdictIsNotVerdictProducing
-// (#1995). A prior round where even one member terminated without a
+// TestCurrentCycleProducedVerdicts_PartialNoVerdictIsNotVerdictProducing.
+// A prior round where even one member terminated without a
 // parseable `<verdict>` tag must NOT count toward the cycle total — the
 // monitor will instead deliver the ran-but-no-parseable-verdict prompt and
 // expect the worker to re-run.
@@ -335,7 +334,7 @@ func TestCompletedReviewCyclesForParent_ExcludesNoVerdictGroups(t *testing.T) {
 		memberSpec{role: "review-code", state: "finished", text: `<verdict>PASS</verdict>`},
 	)
 	// Round 2: review-goal terminated mid-analysis without a verdict tag
-	// (the #1993 shape) — must not count toward the total.
+	// — must not count toward the total.
 	registerGroupAndSeedMembers(t, d, parent, 2,
 		memberSpec{role: "review-goal", state: "finished", text: "AC6: host mode is uncapped. ACHIEVED."},
 		memberSpec{role: "review-code", state: "finished", text: `<verdict>PASS</verdict>`},
@@ -376,7 +375,7 @@ func TestCompletedReviewCyclesForParent_ExcludesAllNoStartGroups(t *testing.T) {
 	}
 }
 
-// TestCompletedReviewCyclesForParent_ExcludesAllStalledGroups is the #2239
+// TestCompletedReviewCyclesForParent_ExcludesAllStalledGroups is the
 // twin of the all-no-start exclusion above: a historical round where every
 // member stalled mid-run (state "error" + stall_error event, no verdict)
 // must not count toward the cycle total. This pins the edge-case AC that
@@ -477,8 +476,7 @@ func TestCompletedReviewCyclesForParent_ExcludeGroupID(t *testing.T) {
 // TestMonitorFunc_ReproducesIssue1512Spam_AndFix demonstrates that on the
 // 3rd verdict-producing non-converging cycle the worker receives the
 // LOOP-LIMIT footer exactly once, embedded in the review-complete prompt
-// body — as opposed to the pre-fix behaviour where it would have been
-// re-injected on every subsequent turn (#1512 spam).
+// body, not re-injected on every subsequent turn.
 //
 // The reproducer asserts:
 //   - delivery happens exactly once (i.e. the footer is part of the prompt
@@ -491,7 +489,7 @@ func TestMonitorFunc_AppendsFooterOnThirdNonConvergedCycle(t *testing.T) {
 	parent := "nixos-config@spam-repro"
 
 	// Seed two prior verdict-producing cycles on this parent. Each member
-	// emits a parseable `<verdict>` tag so the #1995 "every member must
+	// emits a parseable `<verdict>` tag so the "every member must
 	// emit a verdict" predicate counts both rounds.
 	registerGroupAndSeedMembers(t, d, parent, 1,
 		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
@@ -521,7 +519,7 @@ func TestMonitorFunc_AppendsFooterOnThirdNonConvergedCycle(t *testing.T) {
 	}
 }
 
-// TestMonitorFunc_NoFooterOnConvergedCycle pins AC: if the 3rd cycle PASSES,
+// TestMonitorFunc_NoFooterOnConvergedCycle pins that if the 3rd cycle PASSES,
 // no footer is emitted (the limit only fires on non-convergence).
 func TestMonitorFunc_NoFooterOnConvergedThirdCycle(t *testing.T) {
 	d := openTestDB(t)
@@ -565,7 +563,7 @@ func TestMonitorFunc_NoFooterOnInfrastructureFailureCycle(t *testing.T) {
 	}
 }
 
-// TestMonitorFunc_NoFooterOnAllStalledCycle is the #2239 twin of the
+// TestMonitorFunc_NoFooterOnAllStalledCycle is the twin of the
 // infrastructure-failure footer pin: a 3rd cycle in which every agent
 // stalled mid-run must NOT emit the LOOP-LIMIT footer — the worker keeps
 // getting the "stalled mid-run (infrastructure failure): re-run" framing
@@ -599,7 +597,7 @@ type memberSpec struct {
 	state        string
 	text         string // assistant message text; empty → no msg_assistant event
 	startupError string // when set, write a startup_error event
-	stallError   string // when set, write a stall_error event (#2239)
+	stallError   string // when set, write a stall_error event
 }
 
 // registerGroupAndSeedMembers creates a session group, inserts agent_status
@@ -650,7 +648,7 @@ func seedStartupErrorEvent(t *testing.T, d *db.DB, sessionName, reason string) {
 }
 
 // seedStallErrorEvent writes a stall_error event for the named session
-// (#2239 — the inactivity watchdog's mid-run-stall classification).
+// (the inactivity watchdog's mid-run-stall classification).
 func seedStallErrorEvent(t *testing.T, d *db.DB, sessionName, reason string) {
 	t.Helper()
 	payload := `{"reason":` + `"` + strings.ReplaceAll(reason, `"`, `\"`) + `"}`

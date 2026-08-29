@@ -1,7 +1,7 @@
 package review_test
 
 // spawn_prompt_file_test.go — integration test for the review-agent prompt-file
-// delivery path (issue #1195 / regression of #1092).
+// delivery path.
 //
 // These tests synthesise a >100 KiB review context (the prompt that Run/RunAsync
 // builds for each review agent) and verify that session.SpawnSession:
@@ -21,12 +21,6 @@ package review_test
 //     session test binary).
 //   - XDG_STATE_HOME is redirected to a temp dir so no real state files are
 //     written to the user's home directory.
-//
-// AC: [functional] An integration test under internal/integration/ or
-// internal/review/ synthesises a >100 KiB review context, invokes the spawn
-// path, and asserts (a) the spawn succeeds, (b) the constructed launch command
-// is < 16 KiB, (c) the agent receives the full prompt content via the file.
-// — issue #1195
 
 import (
 	"os"
@@ -89,14 +83,15 @@ func openSpawnIntegTestDB(t *testing.T) (*db.DB, string) {
 }
 
 // TestSpawnReviewAgent_LargePrompt_UsesPromptFile is the regression test for
-// issue #1195. It verifies that session.SpawnSession (the shared primitive used
-// by review.Run and review.RunAsync) routes a >100 KiB review prompt through
-// the initial-prompt-file mechanism rather than inlining it in the tmux argv.
+// the prompt-file delivery path. It verifies that session.SpawnSession (the
+// shared primitive used by review.Run and review.RunAsync) routes a >100 KiB
+// review prompt through the initial-prompt-file mechanism rather than inlining
+// it in the tmux argv.
 //
 // The test synthesises a PRContext whose diff section alone exceeds 100 KiB,
 // then builds the review prompt via the exported BuildReviewPromptForTest shim.
 // It then calls SpawnSession in bwrap mode (the mode that triggered the original
-// failure in #1092 and the reported regression in #1195) and verifies:
+// inline-argv failure) and verifies:
 //
 //	(a) The spawn succeeds — HostLaunchCmdSafeBound (16 KiB) is NOT exceeded.
 //	(b) The tmux argv does NOT contain the prompt body inline.
@@ -164,9 +159,9 @@ func TestSpawnReviewAgent_LargePrompt_UsesPromptFile(t *testing.T) {
 		IsolationMode: "bwrap",
 	}
 
-	// (a) Spawn must succeed. Before the #1092 / #1195 fix, this call would
-	// fail with HostLaunchCmdTooLargeError because the full prompt was inlined
-	// into the tmux new-window argv as -e PRISM_INITIAL_PROMPT=<120KB>.
+	// (a) Spawn must succeed. Without the file-based path, this call would
+	// fail with HostLaunchCmdTooLargeError because the full prompt would be
+	// inlined into the tmux new-window argv as -e PRISM_INITIAL_PROMPT=<120KB>.
 	if err := session.SpawnSession(d, opts); err != nil {
 		t.Fatalf("SpawnSession with >100 KiB prompt: %v — bwrap review-agent spawn must not exceed HostLaunchCmdSafeBound (regression of #1092, #1195)", err)
 	}
@@ -235,12 +230,11 @@ func TestSpawnReviewAgent_LargePrompt_UsesPromptFile(t *testing.T) {
 	t.Logf("initial-prompt file verified: %d bytes at %s", len(body), promptFilePath)
 }
 
-// TestSpawnReviewAgent_LargePrompt_HostMode is the AC integration test for the
-// LayoutAgentOnly+host cell that was missing from the needsPromptFile gate
-// before issue #1195. Darwin coordinators run review fan-outs with
-// IsolationMode="host" and Layout=LayoutAgentOnly. Before the fix, this
-// combination inlined the full prompt in the tmux argv, hitting
-// HostLaunchCmdSafeBound on any non-trivial PR.
+// TestSpawnReviewAgent_LargePrompt_HostMode is the integration test for the
+// LayoutAgentOnly+host cell of the needsPromptFile gate. Darwin coordinators
+// run review fan-outs with IsolationMode="host" and Layout=LayoutAgentOnly.
+// Without the file-based path, this combination inlines the full prompt in the
+// tmux argv, hitting HostLaunchCmdSafeBound on any non-trivial PR.
 //
 // This test must NOT call t.Parallel(): it rewrites the global tmux.TmuxBin.
 func TestSpawnReviewAgent_LargePrompt_HostMode(t *testing.T) {
@@ -251,7 +245,7 @@ func TestSpawnReviewAgent_LargePrompt_HostMode(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", tmp)
 
 	// Synthesise the same >100 KiB review prompt as the bwrap test, this time
-	// with IsolationMode="host" to exercise the previously-missing cell.
+	// with IsolationMode="host" to exercise the host cell.
 	largeDiff := strings.Repeat("+// host-mode regression test for #1195\n", 3000) // ~120 KB
 
 	prCtx := &review.PRContext{
@@ -281,17 +275,17 @@ func TestSpawnReviewAgent_LargePrompt_HostMode(t *testing.T) {
 		AgentRole:     "review-goal",
 		Prompt:        prompt,
 		Layout:        session.LayoutAgentOnly,
-		IsolationMode: "host", // the previously-broken cell
+		IsolationMode: "host", // the host cell
 		// PIExtensionDir is required for host-mode pi launches
-		// (#2065 fail-fast guard — see ValidatePILaunchOpts). The path
+		// (fail-fast guard — see ValidatePILaunchOpts). The path
 		// itself is never read; it just satisfies the guard so the test
-		// can exercise the #1195 prompt-file regression unchanged.
+		// can exercise the prompt-file path unchanged.
 		PIExtensionDir: "/test/prism-pi-extension",
 	}
 
-	// (a) Spawn must succeed. Before the #1195 fix, this call would trip
+	// (a) Spawn must succeed. Without the file-based path, this call would trip
 	// HostLaunchCmdSafeBound because PRISM_INITIAL_PROMPT=<120KB> would be
-	// inlined into the tmux new-window env var — a regression of #1092.
+	// inlined into the tmux new-window env var.
 	if err := session.SpawnSession(d, opts); err != nil {
 		t.Fatalf("SpawnSession (host mode, LayoutAgentOnly) with >100 KiB prompt: %v — regression of #1195: host-mode review fan-out must not exceed HostLaunchCmdSafeBound", err)
 	}
@@ -330,7 +324,7 @@ func TestSpawnReviewAgent_LargePrompt_HostMode(t *testing.T) {
 	// The agentCmd (the `sh -c <cmd>` argument) must use $(cat <path>) rather
 	// than inlining the prompt body. Verify the body snippet doesn't appear
 	// anywhere in the tmux argv — if it does, buildDirectAgentCmd inlined
-	// the prompt despite the PromptFilePath being set (#1195 review-code AC).
+	// the prompt despite the PromptFilePath being set.
 	bodySnippet := largeDiff[:200]
 	if strings.Contains(joined, bodySnippet) {
 		t.Errorf("tmux argv (host mode) contains prompt body inline (snippet: %.50q…) — spawnAgentOnlyLayout must pass PromptFilePath to BuildAgentCmd (#1195)", bodySnippet)

@@ -33,7 +33,7 @@ const maxProgressMsgBytes = 4 * 1024
 // Two tiers:
 //  1. *session.HostLaunchCmdTooLargeError — always produces a ≤1 KB structured
 //     message naming the agent, the failure category, the bound exceeded, and a
-//     hint. This is the "command too long" case described in issue #1194.
+//     hint. This is the "command too long" case.
 //  2. All other errors — the raw error string is stripped of any
 //     PRISM_INITIAL_PROMPT= content, then hard-capped at maxProgressMsgBytes
 //     via truncateProgressMsg.
@@ -152,9 +152,9 @@ func ExtractAssistantText(payload string) string {
 //   - anything else            → (false, VerdictNone)
 //
 // The marker rule itself lives in internal/verdict, the one place it is
-// defined (#2862). PASS_WITH_DISAGREEMENT maps to (false, VerdictNone) here so
-// this pipeline path keeps its pre-existing behaviour unchanged; the dashboard
-// renders that verdict distinctly through its own mapping of verdict.Kind.
+// defined. PASS_WITH_DISAGREEMENT maps to (false, VerdictNone) on this
+// pipeline path. The dashboard renders that verdict distinctly through its
+// own mapping of verdict.Kind.
 //
 // Exported so it can be tested directly without needing a live DB.
 func AssessPassed(text string) (bool, VerdictKind) {
@@ -170,7 +170,7 @@ func AssessPassed(text string) (bool, VerdictKind) {
 
 // failureReason returns the user-facing reason string for a spawn / readiness
 // failure. For *session.ReadinessTimeoutError it produces "not ready within
-// <timeout>" (matching the AC-5 example text exactly). All other errors are
+// <timeout>". All other errors are
 // sanitized to prevent exposing PRISM_INITIAL_PROMPT payloads.
 func failureReason(prNumber, agentName string, err error) string {
 	if err == nil {
@@ -241,10 +241,10 @@ func FormatResults(results []AgentResult, prNumber string, round int, sizeBudget
 // FAIL, the summary footer offers the full re-run rather than the targeted
 // one: the fix the worker is about to push makes this round's verdicts stale,
 // so re-running a subset would carry them forward against a commit they never
-// saw (the targeted-rerun condition, #2530 / #2557).
+// saw (the targeted-rerun condition).
 //
 // For a complete round the footer is byte-identical to FormatResults, so an
-// ordinary PASS or FAIL round reads exactly as it did before #2573.
+// ordinary PASS or FAIL round reads the same.
 func FormatResultsForRound(results []AgentResult, prNumber string, round int, sizeBudget int, status RoundStatus) (string, bool) {
 	return formatResults(results, prNumber, round, sizeBudget, &status)
 }
@@ -256,8 +256,8 @@ func FormatResultsForRound(results []AgentResult, prNumber string, round int, si
 //
 // The full per-agent monologue is not included. No file is written to /tmp.
 //
-// The sizeBudget and round parameters are retained in the signature for
-// call-site compatibility but are no longer used.
+// The sizeBudget and round parameters are unused; they remain in the
+// signature for call-site compatibility.
 //
 // Returns the formatted string and a boolean indicating whether all passed.
 func formatResults(results []AgentResult, prNumber string, round int, sizeBudget int, status *RoundStatus) (string, bool) {

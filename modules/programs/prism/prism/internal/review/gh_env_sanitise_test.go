@@ -1,8 +1,8 @@
 package review_test
 
 // gh_env_sanitise_test.go — tests for sanitisedGHEnv, the runGH-side defence
-// against issue #2348 (shell-literal `$(cat …)` values propagating through
-// the process tree and being sent to gh as GITHUB_TOKEN).
+// against shell-literal `$(cat …)` values propagating through
+// the process tree and being sent to gh as GITHUB_TOKEN.
 
 import (
 	"slices"
@@ -14,8 +14,7 @@ import (
 // TestSanitisedGHEnv_DropsShellLiteralGitHubToken asserts that an inherited
 // GITHUB_TOKEN whose value is a `$(cat …)` shell literal is dropped from the
 // env passed to gh. Without this, gh would send the literal string to
-// GitHub as a bearer token and 401 every request — the exact symptom the
-// live host exhibited before the fix.
+// GitHub as a bearer token and 401 every request.
 func TestSanitisedGHEnv_DropsShellLiteralGitHubToken(t *testing.T) {
 	in := []string{
 		"PATH=/usr/bin:/bin",

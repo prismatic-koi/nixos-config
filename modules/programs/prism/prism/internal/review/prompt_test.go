@@ -3,11 +3,10 @@ package review_test
 // prompt_test.go — unit tests for buildReviewPrompt and the role-file
 // existence check used by run.go.
 //
-// Issue #2534: the role rubric used to be spliced into this prompt as well
-// as appended to the system prompt by prism.ts, delivering it twice per
-// agent. buildReviewPrompt no longer reads or splices role-definition files
-// at all — these tests assert the negative (no splice, no role-specific
-// section) and cover the context sections that remain.
+// buildReviewPrompt does not read or splice role-definition files. The role
+// rubric arrives solely via the system prompt (prism.ts). These tests assert
+// the negative (no splice, no role-specific section) and cover the context
+// sections that remain.
 
 import (
 	"testing"
@@ -17,9 +16,9 @@ import (
 
 // ── No role splice ──────────────────────────────────────────────────────────
 
-// TestBuildReviewPrompt_NoRoleSpecificSection verifies that the prompt no
-// longer contains a "## Your role-specific instructions" section — that
-// content now arrives solely via the system prompt (prism.ts,
+// TestBuildReviewPrompt_NoRoleSpecificSection verifies that the prompt does
+// not contain a "## Your role-specific instructions" section — that
+// content arrives solely via the system prompt (prism.ts,
 // before_agent_start).
 func TestBuildReviewPrompt_NoRoleSpecificSection(t *testing.T) {
 	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-security")

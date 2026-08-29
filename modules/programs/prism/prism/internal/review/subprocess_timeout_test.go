@@ -2,7 +2,7 @@ package review_test
 
 // subprocess_timeout_test.go — timeout tests for runGH and runGitInWorktree.
 //
-// Both functions now use exec.CommandContext with a fixed deadline. These tests
+// Both functions use exec.CommandContext with a fixed deadline. These tests
 // PATH-inject a stub script that sleeps longer than the configured timeout and
 // assert that the call returns context.DeadlineExceeded (or a wrapped error
 // containing it).

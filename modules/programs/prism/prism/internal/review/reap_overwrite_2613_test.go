@@ -1,7 +1,7 @@
 package review_test
 
 // reap_overwrite_2613_test.go — a cleanup path must not claim a close it did
-// not perform (issue #2613, round-2 review finding).
+// not perform.
 //
 // `db.SessionEndCauses` returns the LATEST session_reaped event for a session.
 // `db.SetEnded` guards with `AND ended_at IS NULL`, so a second cleanup over an
@@ -22,7 +22,8 @@ package review_test
 // Without the guard the row then reports "force-terminated — a cleanup of the
 // parent worker session cascaded to this review agent", which is false. State
 // "error" is not self-explaining, so the state-precedence branch does not
-// rescue it. A wrong cause is worse than the disjunction #2613 removed.
+// rescue it. A wrong cause is worse than the disjunction the recorded cause
+// replaced.
 
 import (
 	"testing"

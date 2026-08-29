@@ -1,27 +1,27 @@
 package review
 
 // retro_cycles.go — per-cycle, per-agent review detail for `prism retro
-// <train-session>` (issue #2584, part 3/4 of tracking issue #2529).
+// <train-session>`.
 //
 // This lives in internal/review, not internal/db, because it reuses the
-// #2573 classifier (ClassifyRound, classifyMember, classifyAbsentMember) so a
-// round `prism retro` renders as non-counting is the SAME round #2573's live
-// review-complete path would have marked non-counting — internal/db cannot
+// round classifier (ClassifyRound, classifyMember, classifyAbsentMember) so a
+// round `prism retro` renders as non-counting is the SAME round the live
+// review-complete path marks non-counting — internal/db cannot
 // import internal/review (internal/review already imports internal/db), so
 // the assembly has to sit on this side of that boundary.
 //
 // Data source: db.GroupResultsAll, NOT the live db.GroupResults. GroupResults
 // filters `WHERE ended_at IS NULL`, which is correct for the in-flight
-// monitor loop (see its doc comment — the #1495 cleanup escape hatch), but
+// monitor loop (see its doc comment — the cleanup escape hatch), but
 // wrong for a historical read: by the time an operator runs `prism retro`,
 // every review-agent agent_status row for a completed round has been closed
 // (measured on the live DB: 3,290 of 3,290 review agent_status rows are
-// closed — issue #2594). Reading GroupResults here would return an empty map
+// closed). Reading GroupResults here would return an empty map
 // for every historical round and mislabel every agent as having no verdict.
 //
 // Per-agent cost and turn counts come from agent_events directly
 // (db.SessionEventAggregates), not from spawn_outcome: review-agent sessions
-// almost never get a spawn_outcome row (measured coverage before #2591: 41 of
+// almost never get a spawn_outcome row (measured coverage: 41 of
 // 3,384, 1.2%), so relying on it would render "no data" for nearly every
 // review agent.
 
@@ -33,17 +33,16 @@ import (
 )
 
 // ReviewCycleAgent is one review agent's contribution to one review cycle:
-// its cost, turn count, and verdict (issue #2584).
+// its cost, turn count, and verdict.
 //
 // Verdict is "PASS", "FAIL", or "" when the agent produced no parseable
 // verdict. NoVerdictClass and NoVerdictReason are populated only when Verdict
-// is "" — NoVerdictClass is the #2573 classification label (e.g. "stalled
+// is "" — NoVerdictClass is the classification label (e.g. "stalled
 // mid-run"), and NoVerdictReason is the detail recorded for it.
 //
 // DataRecorded distinguishes "no review data was ever recorded for this
 // agent" (turns == 0, no msg_assistant events at all) from "the agent ran and
-// recorded a genuine zero" — these must never render the same (issue #2584
-// correction 2).
+// recorded a genuine zero" — these must never render the same.
 type ReviewCycleAgent struct {
 	Agent            string  `json:"agent"`
 	Session          string  `json:"session"`
@@ -59,7 +58,7 @@ type ReviewCycleAgent struct {
 }
 
 // ReviewCycle is one review round (one session_groups row) for a train, with
-// its per-agent detail (issue #2584).
+// its per-agent detail.
 type ReviewCycle struct {
 	// Round is the native session_groups.round column — never inferred from a
 	// session name.
@@ -75,13 +74,13 @@ type ReviewCycle struct {
 	CreatedAt string `json:"created_at"`
 	// DeliveredAt is the RFC 3339 time the review-complete prompt was
 	// delivered for this round, or "" when the round was never delivered
-	// (#2259 — the authoritative end-of-life signal).
+	// (the authoritative end-of-life signal).
 	DeliveredAt string `json:"delivered_at,omitempty"`
 	// CountsAsCycle reports whether this round counted toward the worker's
-	// 3-cycle limit, per #2573's classification (RoundStatus.CountsAsCycle).
+	// 3-cycle limit, per the round classification (RoundStatus.CountsAsCycle).
 	CountsAsCycle bool `json:"counts_as_cycle"`
 	// NonCountingLabel names why the round did not count, using the same
-	// label #2573's RoundStatus.NonCountingLabel assigns. Empty when
+	// label RoundStatus.NonCountingLabel assigns. Empty when
 	// CountsAsCycle is true.
 	NonCountingLabel string `json:"non_counting_label,omitempty"`
 	// Agents is the per-agent detail, in the order the group's members were
@@ -107,13 +106,13 @@ type RetroReportWithCycles struct {
 }
 
 // AssembleReviewCycles builds the review-cycle detail for `prism retro
-// <train-session>` (issue #2584): every session_groups row whose
+// <train-session>`: every session_groups row whose
 // parent_session is root, each with its per-agent cost, turn count, and
-// verdict, and a non-counting label per #2573's classification.
+// verdict, and a non-counting label per the round classification.
 //
 // Returns an empty, non-nil slice when root has no review groups (no
 // session_groups rows) — callers must render "no review cycles ran" for that
-// case rather than an empty table (issue #2584 edge case AC).
+// case rather than an empty table.
 func AssembleReviewCycles(d *db.DB, root string) ([]ReviewCycle, error) {
 	groups, err := d.GroupsForParent(root)
 	if err != nil {
@@ -151,9 +150,8 @@ func assembleOneReviewCycle(d *db.DB, g db.GroupInfo) (ReviewCycle, error) {
 	}
 	if len(members) == 0 {
 		// No agent_status rows were ever written for this group — "no review
-		// data recorded", not "review cost was zero" (issue #2584 correction
-		// 2). CountsAsCycle stays false with no label: there is nothing to
-		// classify.
+		// data recorded", not "review cost was zero". CountsAsCycle stays
+		// false with no label: there is nothing to classify.
 		return cyc, nil
 	}
 
@@ -215,7 +213,7 @@ func assembleOneReviewCycle(d *db.DB, g db.GroupInfo) (ReviewCycle, error) {
 				a.Verdict = "FAIL"
 			}
 		} else {
-			// Defensive: should be impossible — every session in
+			// Defensive: this cannot happen — every session in
 			// sessionNames came from the same group_id GroupResultsAll
 			// queried, with no filter to drop rows. Treat as unclassified
 			// rather than crash.

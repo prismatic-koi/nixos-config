@@ -2,19 +2,19 @@ package review
 
 // base_ref.go — resolve a PR's base branch name via `gh pr view`.
 //
-// Issue #2304: the pre-flight rebase gate (preflight.go) refuses the review
-// when HEAD is not a descendant of `origin/main`, hardcoding "main". This is
-// correct for PRs targeting main but wrong for PRs targeting any other base
+// The pre-flight rebase gate (preflight.go) refuses the review when HEAD is
+// not a descendant of the base branch. The base defaults to "main", which is
+// correct for PRs targeting main but wrong for PRs targeting another base
 // branch — long-lived integration branches, release branches, environment
-// branches, etc. — and `--rebase` against the wrong base is a silent footgun.
+// branches. A `--rebase` against the wrong base is a silent footgun.
 //
-// The fix is to discover the PR's actual base ref before invoking Preflight,
-// and pass it through PreflightOpts.Branch. This file provides the discovery
-// helper. The discovery is best-effort: any failure (gh missing, network
-// error, unauthenticated, PR not found, empty baseRefName) returns "" and the
-// caller falls back silently to the existing "main" default. The fallback
-// preserves today's behaviour for invocations not tied to a discoverable PR
-// and never surfaces a warning that would scare the operator.
+// This file discovers the PR's actual base ref before Preflight runs; the
+// caller passes it through PreflightOpts.Branch. The discovery is
+// best-effort: any failure (gh missing, network error, unauthenticated, PR
+// not found, empty baseRefName) returns "" and the caller falls back silently
+// to the "main" default. The silent fallback preserves behaviour for
+// invocations not tied to a discoverable PR and never surfaces a warning that
+// scares the operator.
 
 import (
 	"encoding/json"

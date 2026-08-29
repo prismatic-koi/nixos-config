@@ -30,8 +30,8 @@ func scanDocWithSteEnabled(path string, idx *sourceIndex, steEnabled map[string]
 
 	// Whole-file opt-out for docs that describe an interface living outside
 	// this repository (pi-rpc-interface.md, pi-wire-protocol.md). The
-	// directive may be scoped per-category (`identifiers`, `ste`); an
-	// unparameterised directive keeps its historical global meaning.
+	// directive may be scoped per-category (`identifiers`, `ste`). An
+	// unparameterised directive keeps its global meaning.
 	skipScope, hasSkip := parseSkipFileDirective(content)
 	if hasSkip && skipScope.identifiers && skipScope.ste {
 		return nil, nil

@@ -25,7 +25,7 @@ func RunGHForTest(args ...string) (string, error) {
 }
 
 // SanitisedGHEnvForTest exposes sanitisedGHEnv for external test coverage of
-// the $(-literal guard added in issue #2348.
+// the $(-literal guard.
 func SanitisedGHEnvForTest(env []string) []string {
 	return sanitisedGHEnv(env)
 }
@@ -69,13 +69,13 @@ func ParseLinkedIssuesForTest(body string) []string {
 // DiffFilePathForTest is an exported wrapper around diffFilePath for tests.
 // stateDir mirrors the StateDir field of FetchPRContextOpts: when non-empty the
 // diff file lands in the provided directory; when empty it falls back to /tmp
-// (matching the backward-compat path for host-mode agents).
+// (the /tmp path for host-mode agents).
 func DiffFilePathForTest(stateDir, prNumber string, round int) string {
 	return diffFilePath(stateDir, prNumber, round)
 }
 
 // BuildAsyncAckForTest is an exported wrapper around buildAsyncAck for use
-// in external tests. Mirrors the production signature so AC-5 assertions
+// in external tests. Mirrors the production signature so tests
 // can verify the partial-success summary text without spinning up a real
 // review run.
 func BuildAsyncAckForTest(prNumber string, round int, groupID string, sessionNames []string, failures [][2]string, workerSession string) string {
@@ -96,21 +96,21 @@ func PollAgentsForTest(ctx context.Context, d *db.DB, agents []Agent, agentSessi
 
 // BuildDeliveryMessageForTest is an exported wrapper around buildDeliveryMessage
 // for use in external test packages. Allows tests to verify the header text and
-// no-start error signalling without spinning up a real monitor loop (#1222).
+// no-start error signalling without spinning up a real monitor loop.
 // The round is classified from groupData with no ended-row detail, which is
-// the degraded shape a caller without a DB handle sees (#2573).
+// the degraded shape a caller without a DB handle sees.
 func BuildDeliveryMessageForTest(prNumber string, round int, formattedResults string, allPassed bool, groupData map[string]db.GroupMemberResult, agentSessions []string) string {
 	return BuildDeliveryMessageWithEndedForTest(prNumber, round, formattedResults, allPassed, groupData, agentSessions, nil)
 }
 
-// BuildDeliveryMessageWithEndedForTest is the #2573 variant: it also supplies
+// BuildDeliveryMessageWithEndedForTest also supplies
 // the group's closed (ended_at set) agent_status rows, so tests can assert the
 // reaped-session reason text.
 func BuildDeliveryMessageWithEndedForTest(prNumber string, round int, formattedResults string, allPassed bool, groupData map[string]db.GroupMemberResult, agentSessions []string, endedRows map[string]db.Status) string {
 	return BuildDeliveryMessageWithCausesForTest(prNumber, round, formattedResults, allPassed, groupData, agentSessions, endedRows, nil)
 }
 
-// BuildDeliveryMessageWithCausesForTest is the #2613 variant: it also supplies
+// BuildDeliveryMessageWithCausesForTest also supplies
 // the close cause recorded for each closed row, so tests can assert that the
 // rendered report names one cause rather than a disjunction.
 func BuildDeliveryMessageWithCausesForTest(prNumber string, round int, formattedResults string, allPassed bool, groupData map[string]db.GroupMemberResult, agentSessions []string, endedRows map[string]db.Status, causes map[string]db.SessionEndCause) string {
@@ -119,14 +119,14 @@ func BuildDeliveryMessageWithCausesForTest(prNumber string, round int, formatted
 }
 
 // CleanupAgentSessionForTest is an exported wrapper around cleanupAgentSession
-// so tests can pin that the reap record is guarded on ended_at (#2613).
+// so tests can pin that the reap record is guarded on ended_at.
 func CleanupAgentSessionForTest(d *db.DB, agentSession string, cause db.SessionReapCause, detail ...string) {
 	cleanupAgentSession(d, agentSession, cause, detail...)
 }
 
 // ExpectedRoundSetForTest is an exported wrapper around expectedRoundSet so
 // tests can pin that a round's expected set is never filtered by spawn
-// failures (#2613).
+// failures.
 func ExpectedRoundSetForTest(agents []Agent, agentSessions []string, spawnErr []error) ([]Agent, []string) {
 	return expectedRoundSet(agents, agentSessions, spawnErr)
 }
@@ -141,7 +141,7 @@ func AgentsFromSessionsForTest(agentSessions []string) []Agent {
 	return agents
 }
 
-// EndedRowsFromForTest is an exported wrapper around endedRowsFrom (#2573).
+// EndedRowsFromForTest is an exported wrapper around endedRowsFrom.
 func EndedRowsFromForTest(members []db.Status) map[string]db.Status {
 	return endedRowsFrom(members)
 }
@@ -149,7 +149,7 @@ func EndedRowsFromForTest(members []db.Status) map[string]db.Status {
 // SanitizeSpawnErrorForTest is an exported wrapper around sanitizeSpawnError
 // for use in external test packages. Allows tests to verify that the
 // per-agent error message never includes PRISM_INITIAL_PROMPT or oversized
-// argv content (issue #1194).
+// argv content.
 func SanitizeSpawnErrorForTest(prNumber, agentName string, err error) string {
 	return sanitizeSpawnError(prNumber, agentName, err)
 }
@@ -164,7 +164,7 @@ func TruncateProgressMsgForTest(prNumber, agentName, msg string) string {
 const MaxProgressMsgBytesForTest = maxProgressMsgBytes
 
 // BuildLoopLimitFooterForTest is an exported wrapper around buildLoopLimitFooter
-// for use in external test packages (#1512).
+// for use in external test packages.
 func BuildLoopLimitFooterForTest(cycles int, prNumber string) string {
 	return buildLoopLimitFooter(cycles, prNumber)
 }
@@ -193,7 +193,7 @@ type ReviewerSpawnInputForTest struct {
 
 // NewReviewerSpawnOptsForTest is an exported wrapper around
 // newReviewerSpawnOpts (spawn_opts.go) for use in external test
-// packages verifying the #2097 ProfileName-inheritance wiring.
+// packages verifying the ProfileName-inheritance wiring.
 //
 // Tests construct a ReviewerSpawnInputForTest, pass it through this
 // shim, and assert on the returned session.SpawnOpts.ProfileName.
@@ -220,9 +220,9 @@ func NewReviewerSpawnOptsForTest(in ReviewerSpawnInputForTest) session.SpawnOpts
 }
 
 // CurrentCycleProducedVerdictsForTest is an exported wrapper around
-// cycleProducedVerdicts for use in external test packages (#1512). The
-// expected member list degrades to the groupData keys, which is the
-// pre-#2573 shape: it can only see the members that came back.
+// cycleProducedVerdicts for use in external test packages. The
+// expected member list degrades to the groupData keys: it can only see the
+// members that came back.
 func CurrentCycleProducedVerdictsForTest(groupData map[string]db.GroupMemberResult) bool {
 	names := make([]string, 0, len(groupData))
 	for name := range groupData {
@@ -232,7 +232,7 @@ func CurrentCycleProducedVerdictsForTest(groupData map[string]db.GroupMemberResu
 	return cycleProducedVerdicts(names, groupData, nil)
 }
 
-// CycleProducedVerdictsForTest is the #2573 variant: the caller supplies the
+// CycleProducedVerdictsForTest lets the caller supply the
 // authoritative expected-member list, so a member absent from groupData is
 // visible to the predicate.
 func CycleProducedVerdictsForTest(expectedSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status) bool {
@@ -240,20 +240,20 @@ func CycleProducedVerdictsForTest(expectedSessions []string, groupData map[strin
 }
 
 // ForceTerminateStuckMembersForTest is an exported wrapper around
-// forceTerminateStuckMembers for use in external test packages (#1709, #2729).
+// forceTerminateStuckMembers for use in external test packages.
 // It returns the number of live members the sweep spared.
 func ForceTerminateStuckMembersForTest(d *db.DB, agentSessions []string, groupDeadline time.Duration) int {
 	return forceTerminateStuckMembers(d, agentSessions, groupDeadline)
 }
 
 // ReviewAgentActivityWindowForTest exposes the activity window the sweep uses
-// so the guard test can assert it equals the sidecar watchdog timeout (#2729).
+// so the guard test can assert it equals the sidecar watchdog timeout.
 func ReviewAgentActivityWindowForTest() time.Duration {
 	return reviewAgentActivityWindow
 }
 
 // ReapSideEffectsForTest replaces the reaper's three process-side effects
-// (issue #2649) and returns a restore function the caller must defer.
+// and returns a restore function the caller must defer.
 //
 // Tests must stub all three. The suite is isolated from host state
 // (`internal/sidecar` test-isolation convention): a real tmux.KillSession, a
@@ -280,7 +280,7 @@ func ReapSideEffectsForTest(killTmux func(string), killSidecar func(string), rem
 	}
 }
 
-// ReapClockForTest replaces the ReapGroupAfterGrace clock pair (issue #2649)
+// ReapClockForTest replaces the ReapGroupAfterGrace clock pair
 // and returns a restore function. Without it, a test that exercises the
 // post-delivery reap would block for ReapGracePeriod.
 //
@@ -296,7 +296,7 @@ func ReapClockForTest(sleep func(time.Duration), now func() time.Time) func() {
 }
 
 // PersistReviewOutcomeForTest is an exported wrapper around persistReviewOutcome
-// for use in external test packages (#2110). It allows tests to verify the
+// for use in external test packages. It allows tests to verify the
 // review-complete write trigger — verdict + pass/fail counts persisted on the
 // worker's spawn_outcome row — without standing up an entire MonitorFunc poll
 // loop.

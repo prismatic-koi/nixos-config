@@ -1,7 +1,6 @@
 package review_test
 
-// Suite-wide tmux isolation for the review package (#2230, pattern from
-// #2214/#2224).
+// Suite-wide tmux isolation for the review package.
 //
 // Several production code paths in internal/review reach the live tmux
 // server when invoked without a stub:
@@ -16,15 +15,10 @@ package review_test
 // Crucially, `tmux list-sessions` / `tmux display-message` reach the live
 // host server even when $TMUX is unset or empty: the tmux client falls back
 // to the default socket ($TMUX_TMPDIR/tmux-<uid>/default, /tmp/tmux-<uid>/
-// default when TMUX_TMPDIR is unset). Historically this package relied on
-// per-test opt-in stubs (spawnSpyTmuxBin rewriting tmux.TmuxBin) as the ONLY
-// line of defence — and #1732 is the proof it is not enough: a test that
-// forgot the stub leaked 5 real review-agent sessions onto the live server,
-// caught only incidentally by the cmd package's leak guard under parallel
-// `go test ./...` scheduling. That incidental backstop was dropped in #2227
-// (it false-positived on concurrent host activity), leaving nothing to
-// detect this leak class. The suite-wide neutralisation below, applied by
-// TestMain before m.Run():
+// default when TMUX_TMPDIR is unset). Per-test opt-in stubs (spawnSpyTmuxBin
+// rewriting tmux.TmuxBin) are not enough on their own: a test that forgets
+// the stub leaks 5 real review-agent sessions onto the live server. The
+// suite-wide neutralisation below, applied by TestMain before m.Run():
 //
 //   1. clears $TMUX, so a socket path inherited from an enclosing live pane
 //      is never used; and
@@ -40,7 +34,7 @@ package review_test
 // domain sockets and sun_path is ~104 bytes on Darwin. os.MkdirTemp("", ...)
 // on macOS yields /var/folders/... paths that overflow it once tmux appends
 // tmux-<uid>/<socket-name>. No review test runs an intentional real tmux
-// server (audited for #2230: all tmux interaction goes through the
+// server (audited: all tmux interaction goes through the
 // spawnSpyTmuxBin stub), so the short path only matters for keeping the
 // failure mode "connection refused" rather than "path too long" — but we
 // follow the cmd package's /tmp-first convention anyway so a future
@@ -78,7 +72,7 @@ var isoTmuxTmpdir string
 //     The 50ms sleep mirrors the session package's stub: long enough for a
 //     parent to observe a live PID, short enough to be free.
 //
-//  2. Tmux isolation (#2230): clears $TMUX and redirects $TMUX_TMPDIR to an
+//  2. Tmux isolation: clears $TMUX and redirects $TMUX_TMPDIR to an
 //     empty directory so no code under test can reach the live host tmux
 //     server via the default-socket fallback. See the package comment above
 //     for the full rationale. The original environment is restored after
@@ -145,7 +139,7 @@ func isolateSuiteFromHostTmux() (restore func()) {
 }
 
 // TestSuiteTmuxIsolation_HostServerUnreachable is the deterministic
-// regression guard for the #1732 leak class (#2230). It asserts that, under
+// regression guard for the tmux-leak class. It asserts that, under
 // the TestMain-level neutralisation:
 //
 //   - the env redirect is actually in effect ($TMUX cleared, $TMUX_TMPDIR
@@ -158,7 +152,7 @@ func isolateSuiteFromHostTmux() (restore func()) {
 //     chain through which a forgotten stub would reach the host server.
 //
 // Verified non-vacuous by no-opping isolateSuiteFromHostTmux in TestMain and
-// observing this test fail against a live host server (see PR for #2230).
+// observing this test fail against a live host server.
 func TestSuiteTmuxIsolation_HostServerUnreachable(t *testing.T) {
 	if isoTmuxTmpdir == "" {
 		t.Fatal("isoTmuxTmpdir is empty — TestMain did not apply isolateSuiteFromHostTmux before m.Run() (#2230)")

@@ -27,7 +27,7 @@ import (
 // roleFile is the filename stem for the agent's definition file under
 // $XDG_CONFIG_HOME/prism/agents/ (e.g. "review-goal"). The role rubric itself
 // is NOT spliced into this prompt — it is appended to the system prompt by
-// prism.ts's composeRoleSystemPrompt at before_agent_start (issue #2534).
+// prism.ts's composeRoleSystemPrompt at before_agent_start.
 // Splicing it here too would deliver the same ~7000-byte rubric twice per
 // agent, paid from a cold (uncached) user-message turn.
 func buildReviewPrompt(prNumber string, prCtx *PRContext, roleFile string) string {
@@ -189,13 +189,13 @@ func roleDefinitionPath(roleFile string) string {
 }
 
 // roleDefinitionMissing reports whether the role definition file for roleFile
-// is absent or empty. The Go side no longer reads role rubric content into
-// the review prompt (issue #2534 — that content now arrives solely via the
-// agent's system prompt, injected by prism.ts's composeRoleSystemPrompt at
-// before_agent_start). This check exists so a missing/empty role file is
-// still surfaced to the operator via OnProgress rather than failing silently
-// — the agent starts regardless, but with a degraded (rubric-less) system
-// prompt, and that degradation must be visible.
+// is absent or empty. The Go side does not read role rubric content into the
+// review prompt. That content arrives solely via the agent's system prompt,
+// injected by prism.ts's composeRoleSystemPrompt at before_agent_start. This
+// check exists so a missing or empty role file is still surfaced to the
+// operator via OnProgress rather than failing silently — the agent starts
+// regardless, but with a degraded (rubric-less) system prompt, and that
+// degradation must be visible.
 func roleDefinitionMissing(roleFile string) bool {
 	data, err := os.ReadFile(roleDefinitionPath(roleFile))
 	if err != nil {

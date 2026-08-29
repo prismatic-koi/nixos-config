@@ -22,8 +22,8 @@ import (
 // Returns 1 when no prior rounds exist.
 //
 // Old-shape round sessions (~review-<N> with pure integer suffix) are NOT
-// counted — they belong to the pre-PR-C model and should not affect the counter.
-// Old-shape agent sub-sessions (~review-<N>~<agent>) are also excluded.
+// counted. They must not affect the counter. Old-shape agent sub-sessions
+// (~review-<N>~<agent>) are also excluded.
 func NextRoundNumber(d *db.DB, parentSession string) int {
 	prefix := parentSession + "~review-"
 	rows, err := d.AllStatusesWithPrefix(prefix)
@@ -167,12 +167,12 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession string) {
 //
 // In addition to releasing the port and marking the row ended, this transitions
 // the state to "error" when the row is non-terminal. That matters for the
-// review monitor's GroupCompleted check (#1051 AC-6): a half-alive agent
+// review monitor's GroupCompleted check: a half-alive agent
 // stuck at "idle" would otherwise block the group's terminal-state count
 // forever. State="error" is a valid agent state machine transition from any
 // non-terminal state and is treated as terminal by GroupCompleted.
 //
-// cause names the path that is closing the row (#2613). It is recorded as a
+// cause names the path that is closing the row. It is recorded as a
 // session_reaped event so the review report and a coordinator reading the DB
 // can both name one cause instead of guessing between the paths that leave
 // state="error" behind. detail is optional free text; pass "" when the cause

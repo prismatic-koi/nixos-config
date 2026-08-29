@@ -1,16 +1,11 @@
 package review_test
 
-// run_profile_test.go — issue #2097 regression tests for the review
-// fan-out's profile-inheritance path.
+// run_profile_test.go — regression tests for the review fan-out's
+// profile-inheritance path.
 //
-// The child-spawn surfaces (review fan-out, investigate) previously
-// resolved their child profile via ResolveActiveProfile(pf, "") — empty
-// flag — so every review and investigate session since `--abtest`
-// (#1216) shipped ran on the host default regardless of the parent
-// worker's `--profile` choice. PR #2093 fixed this for the worker
-// layer; #2097 extends the same precedence chain to review and
-// investigate by feeding the parent's spawn_inputs.profile_name through
-// profile.InheritFromParent.
+// The review fan-out feeds the parent's spawn_inputs.profile_name through
+// profile.InheritFromParent, so a review session runs on the parent worker's
+// `--profile` choice rather than the host default.
 //
 // These tests don't drive the full review.Run / RunAsync (those spin
 // up tmux / sidecar / a real agent); they exercise the resolution +
@@ -18,20 +13,19 @@ package review_test
 // behaviours are pinned:
 //
 //  1. Modern parent → child SpawnOpts.ProfileName = parent's value,
-//     spawn_inputs row would record it (AC #5).
+//     spawn_inputs row would record it.
 //  2. Abtest legs → each leg's children get their own profile,
-//     never the sibling's or the state-file value (AC #7).
-//  3. Legacy parent → child falls through to state-file > nix-default
-//     (AC #8). No regression for pre-#2090 sessions.
+//     never the sibling's or the state-file value.
+//  3. Legacy parent → child falls through to state-file > nix-default.
 //
-// Plus a #1207-invariant pin: profile.InheritFromParent is called
+// Plus a single-resolve-per-round pin: profile.InheritFromParent is called
 // exactly once per round inside review.Run / review.RunAsync, so all
 // 5 reviewers in a single round share the same resolved profile. The
 // inline call-site comments in run.go assert this in code; this test
 // asserts it through behaviour by resolving once and treating the
 // result as the value used by every reviewer's SpawnOpts.
 //
-// Test-suite isolation contract (AGENTS.md, issue #1608):
+// Test-suite isolation contract (AGENTS.md):
 //   - sidecartest.NewIsolated redirects $XDG_STATE_HOME to a t.TempDir()
 //     and sets PRISM_TEST_MODE_RESTRICT_HOSTAPI so no host bus / DB /
 //     tmux state is touched.
@@ -131,7 +125,7 @@ func makeProfilesWithReviewSlots(defaultName string, profileNames ...string) *co
 // session.SpawnInputsFromOpts so the assertion is exactly the row that
 // SpawnSession would write.
 //
-// This is the critical seam for issue #2097: by driving the real
+// This is the critical seam: by driving the real
 // builder (rather than constructing a SpawnOpts literal in the test),
 // a regression where the production code drops ProfileName from the
 // builder output is caught here — the test cannot pass vacuously.
@@ -156,11 +150,11 @@ func resolvedSpawnInputsForReviewer(t *testing.T, activeProfile, agentName, pare
 	return session.SpawnInputsFromOpts(opts)
 }
 
-// TestReviewFanout_ProfileInheritedFromModernParent is the AC #5
-// positive: parent has spawn_inputs.profile_name=X → every reviewer's
+// TestReviewFanout_ProfileInheritedFromModernParent is the positive
+// case: parent has spawn_inputs.profile_name=X → every reviewer's
 // SpawnOpts.ProfileName = X (so the child's audit row records X and
 // the child's runtime populatePIConfig resolves to X's models via the
-// #2092 chain).
+// spawn_inputs chain).
 func TestReviewFanout_ProfileInheritedFromModernParent(t *testing.T) {
 	bus := sidecartest.NewIsolated(t, "")
 	const parent = "prism-test@worker-modern-parent"
@@ -196,7 +190,7 @@ func TestReviewFanout_ProfileInheritedFromModernParent(t *testing.T) {
 	}
 }
 
-// TestReviewFanout_AbtestLegsResolveIndependently is the AC #7 abtest
+// TestReviewFanout_AbtestLegsResolveIndependently is the abtest
 // shape: two parents sharing an abtest_pair_id but each carrying its
 // own spawn_inputs.profile_name produce review fan-outs that record
 // the leg-specific profile on every reviewer's audit row. No leg's
@@ -270,13 +264,11 @@ func TestReviewFanout_AbtestLegsResolveIndependently(t *testing.T) {
 	}
 }
 
-// TestReviewFanout_LegacyParentFallsThroughToStateFile is the AC #8
-// negative: parent has no spawn_inputs row (pre-#2090) → resolution
-// falls through to the state-file value → no regression for legacy
-// sessions. The child's audit row records the resolved state-file
+// TestReviewFanout_LegacyParentFallsThroughToStateFile is the negative
+// case: parent has no spawn_inputs row → resolution falls through to the
+// state-file value. The child's audit row records the resolved state-file
 // value, and the child's runtime populatePIConfig resolves to that
-// same value via the #2092 chain (so behaviour matches the pre-#2097
-// world where legacy parents ran on whatever state-file pointed at).
+// same value via the spawn_inputs chain.
 func TestReviewFanout_LegacyParentFallsThroughToStateFile(t *testing.T) {
 	bus := sidecartest.NewIsolated(t, "")
 	const parent = "prism-test@worker-legacy-review"
@@ -307,9 +299,9 @@ func TestReviewFanout_LegacyParentFallsThroughToStateFile(t *testing.T) {
 }
 
 // TestReviewFanout_LegacyParentFallsThroughToNixDefault completes the
-// AC #8 chain: legacy parent + no state-file → resolution lands on
-// pf.Default. This is the path every pre-#2097 review ran on for users
-// who had not invoked `prism profile set`.
+// chain: legacy parent + no state-file → resolution lands on
+// pf.Default. This is the path a review runs on for users who have not
+// invoked `prism profile set`.
 func TestReviewFanout_LegacyParentFallsThroughToNixDefault(t *testing.T) {
 	bus := sidecartest.NewIsolated(t, "")
 	const parent = "prism-test@worker-fully-legacy-review"
@@ -338,7 +330,7 @@ func TestReviewFanout_LegacyParentFallsThroughToNixDefault(t *testing.T) {
 }
 
 // TestReviewFanout_RoundLevelConsistency_Issue1207 is the regression
-// pin for the #1207 invariant referenced in
+// pin for the single-resolve-per-round invariant referenced in
 // internal/review/run.go (the resolution-once-per-round comment).
 // Even though the parent's profile_name could change between two
 // review rounds for the same parent (e.g. a `prism profile set` in

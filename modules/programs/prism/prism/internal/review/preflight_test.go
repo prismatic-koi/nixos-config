@@ -284,8 +284,8 @@ func TestPreflight_RebaseConflictAbortsAndRestores(t *testing.T) {
 	}
 }
 
-// TestPreflight_NoIncrementsCounter is the explicit no-counter-increment test
-// required by the AC and by issue #1518. It exercises the contract that a
+// TestPreflight_NoIncrementsCounter is the explicit no-counter-increment test.
+// It exercises the contract that a
 // worker hitting the gate three times in a row (refusal, fetch failure,
 // conflict abort) and then running three real reviews must still have all
 // three real cycles available before the LOOP-LIMIT fires.
@@ -386,7 +386,7 @@ func TestPreflight_WorktreeRequired(t *testing.T) {
 	}
 }
 
-// ── base-ref resolver tests (#2304) ───────────────────────────────────────────
+// ── base-ref resolver tests ───────────────────────────────────────────
 
 // fakeBaseRefRunner is a scripted baseRefRunner for unit-testing
 // resolvePRBaseRefWithRunner. It captures the PR numbers it was called with
@@ -404,8 +404,7 @@ func (f *fakeBaseRefRunner) run(prNumber string) (string, error) {
 
 // TestResolvePRBaseRef_Success verifies that the resolver returns the
 // baseRefName from a successful gh response. This is the happy path that
-// drives a PR-aware base-branch in the rebase gate (#2304 AC "base-ref
-// resolution from PR metadata").
+// drives a PR-aware base-branch in the rebase gate.
 func TestResolvePRBaseRef_Success(t *testing.T) {
 	fr := &fakeBaseRefRunner{
 		stdout: `{"baseRefName":"eks-pipeline"}` + "\n",
@@ -432,9 +431,8 @@ func TestResolvePRBaseRef_SuccessMainBase(t *testing.T) {
 
 // TestResolvePRBaseRef_GHFailureFallsBack verifies the silent-fallback
 // contract: a gh failure (network error, unauthenticated, PR not found, gh
-// missing) collapses to "" so the caller defaults to "main". This is the
-// [edge-case] AC: preflight falls back silently to origin/main without a
-// scary warning.
+// missing) collapses to "" so the caller defaults to "main". Preflight falls
+// back silently to origin/main without a scary warning.
 func TestResolvePRBaseRef_GHFailureFallsBack(t *testing.T) {
 	fr := &fakeBaseRefRunner{err: errors.New("gh: Could not resolve to a PullRequest with the number of 9999")}
 	got := resolvePRBaseRefWithRunner("9999", fr)
@@ -444,8 +442,8 @@ func TestResolvePRBaseRef_GHFailureFallsBack(t *testing.T) {
 }
 
 // TestResolvePRBaseRef_EmptyBaseFallsBack verifies that gh succeeding with
-// an empty baseRefName is treated the same as a lookup failure — required by
-// the [edge-case] AC "empty baseRefName falls back to origin/main".
+// an empty baseRefName is treated the same as a lookup failure — an empty
+// baseRefName falls back to origin/main.
 func TestResolvePRBaseRef_EmptyBaseFallsBack(t *testing.T) {
 	fr := &fakeBaseRefRunner{stdout: `{"baseRefName":""}`}
 	got := resolvePRBaseRefWithRunner("7", fr)
@@ -479,14 +477,13 @@ func TestResolvePRBaseRef_EmptyPRNumberSkipsGH(t *testing.T) {
 	}
 }
 
-// ── Preflight tests against a non-main base branch (#2304) ────────────────────
+// ── Preflight tests against a non-main base branch ────────────────────
 
 // TestPreflight_NonMainBaseRefusalNamesResolvedRef verifies that when the
 // caller supplies a non-main Branch, the refusal message names the resolved
 // ref in the "N commits behind …" line, the "<base> has advanced" line, and
 // in the suggested `git fetch` / `git rebase` commands. The hardcoded
-// origin/main from #1518 must NOT appear (#2304 AC: refusal message
-// references the resolved ref).
+// origin/main must NOT appear.
 func TestPreflight_NonMainBaseRefusalNamesResolvedRef(t *testing.T) {
 	fg := newFakeGit().
 		on("rev-parse HEAD", scriptedResponse{stdout: "deadbeef\n", exitCode: 0}).
@@ -526,7 +523,7 @@ func TestPreflight_NonMainBaseRefusalNamesResolvedRef(t *testing.T) {
 	}
 	// Defence in depth: the message must NOT reference origin/main when the
 	// resolved base is something else. A leaked "origin/main" or stray "main"
-	// reference is the #2304 footgun.
+	// reference is the footgun.
 	for _, mustNot := range []string{
 		"origin/main",
 		"behind main",
@@ -548,7 +545,7 @@ func TestPreflight_NonMainBaseRefusalNamesResolvedRef(t *testing.T) {
 
 // TestPreflight_NonMainBaseRebaseTargetsResolvedRef verifies that --rebase
 // against a PR with a non-main base rebases onto the resolved ref (not
-// origin/main) and force-pushes the result. This is the #2304 footgun: a
+// origin/main) and force-pushes the result. This is the footgun: a
 // rebase onto the wrong base silently pulls in unrelated commits and inflates
 // the PR's apparent diff.
 func TestPreflight_NonMainBaseRebaseTargetsResolvedRef(t *testing.T) {
@@ -596,8 +593,7 @@ func TestPreflight_NonMainBaseRebaseTargetsResolvedRef(t *testing.T) {
 // TestPreflight_NonMainBaseMissingUpstreamSurfacesResolvedRef verifies that
 // when the resolved base ref does not exist after fetch (e.g. base branch
 // deleted upstream), the missing-upstream error names the resolved ref —
-// preflight does NOT silently retry against main (#2304 AC "resolved base
-// ref missing" edge case).
+// preflight does NOT silently retry against main.
 func TestPreflight_NonMainBaseMissingUpstreamSurfacesResolvedRef(t *testing.T) {
 	fg := newFakeGit().
 		on("rev-parse HEAD", scriptedResponse{stdout: "deadbeef\n", exitCode: 0}).
@@ -638,8 +634,7 @@ func TestPreflight_NonMainBaseMissingUpstreamSurfacesResolvedRef(t *testing.T) {
 // TestPreflight_NonMainBaseRebaseConflictAbortsAndRestores verifies the
 // rebase-conflict abort/restore guarantee holds for non-main bases — the
 // worktree is never left mid-rebase, mirroring the same-restoration
-// guarantee the original gate provides against main (#2304 AC "on --rebase
-// conflict against a non-main base, the rebase is aborted, HEAD restored").
+// guarantee the gate provides against main.
 func TestPreflight_NonMainBaseRebaseConflictAbortsAndRestores(t *testing.T) {
 	fg := newFakeGit().
 		on("rev-parse HEAD", scriptedResponse{stdout: "deadbeef\n", exitCode: 0}).

@@ -135,11 +135,9 @@ func TestScan_SkipFileDirectiveSuppressesAllFindings(t *testing.T) {
 	}
 }
 
-// TestScan_SkipFileDirectiveInsideFencedBlockDoesNotSkip is the regression
-// for the review-context finding on PR #2344: a doclint-skip-file directive
-// that appears INSIDE a fenced code block is a prose example, not an active
-// directive, and must NOT opt the file out. Before the fix, this test's
-// stale `mountTypeAllowlist` reference would have been silently masked.
+// TestScan_SkipFileDirectiveInsideFencedBlockDoesNotSkip asserts that a
+// doclint-skip-file directive INSIDE a fenced code block is a prose
+// example, not an active directive, and must NOT opt the file out.
 func TestScan_SkipFileDirectiveInsideFencedBlockDoesNotSkip(t *testing.T) {
 	root := synthPrismRoot(t)
 	docPath := filepath.Join(root, "docs", "example.md")
@@ -163,11 +161,10 @@ func TestScan_SkipFileDirectiveInsideFencedBlockDoesNotSkip(t *testing.T) {
 	}
 }
 
-// TestScan_IgnoreDirectiveInsideFencedBlockDoesNotSuppress is the sibling
-// regression for the same class of leak on the per-token annotation. A
-// `<!-- doclint-ignore: token -->` directive that appears inside a fenced
-// code block is a prose example of the directive syntax and must NOT
-// contribute tokens to the ignore set.
+// TestScan_IgnoreDirectiveInsideFencedBlockDoesNotSuppress asserts that a
+// `<!-- doclint-ignore: token -->` directive inside a fenced code block is
+// a prose example of the directive syntax and must NOT contribute tokens
+// to the ignore set.
 func TestScan_IgnoreDirectiveInsideFencedBlockDoesNotSuppress(t *testing.T) {
 	root := synthPrismRoot(t)
 	docPath := filepath.Join(root, "docs", "example.md")
@@ -190,9 +187,8 @@ func TestScan_IgnoreDirectiveInsideFencedBlockDoesNotSuppress(t *testing.T) {
 	}
 }
 
-// TestScan_InlineBacktickedDirectiveIsProseNotActive is the sibling of the
-// fenced-block tests for the second half of the same review finding: a
-// directive that appears INLINE inside a backticked prose phrase (e.g. a
+// TestScan_InlineBacktickedDirectiveIsProseNotActive asserts that a
+// directive INLINE inside a backticked prose phrase (e.g. a
 // section heading like “ ### Per-file: `<!-- doclint-skip-file: reason -->` “)
 // is a prose example, not an active directive, because the directive text
 // is not at the start of a logical line.
@@ -313,9 +309,7 @@ func TestScan_FileWithMember_BareBasename(t *testing.T) {
 
 // TestScan_RecursesIntoDocsSubdirectories asserts that discoverDocs walks
 // docs/ recursively, so files like `docs/invariants/session-lifecycle.md`
-// and `docs/diagnoses/*.md` are scanned. Regression against the initial
-// single-level `os.ReadDir` implementation surfaced by review-context on
-// PR #2344.
+// and `docs/diagnoses/*.md` are scanned.
 func TestScan_RecursesIntoDocsSubdirectories(t *testing.T) {
 	root := synthPrismRoot(t)
 	subDoc := filepath.Join(root, "docs", "invariants", "nested.md")
@@ -338,8 +332,8 @@ func TestScan_RecursesIntoDocsSubdirectories(t *testing.T) {
 }
 
 func TestScan_FindingIncludesResolutionRule(t *testing.T) {
-	// AC #2: every finding must name the file, line, offending token,
-	// AND the resolution rule that was attempted.
+	// Every finding must name the file, line, offending token, AND the
+	// resolution rule that was attempted.
 	root := synthPrismRoot(t)
 	docPath := filepath.Join(root, "docs", "example.md")
 	if err := os.WriteFile(docPath, []byte("Path `internal/no/such/file.go`.\n"), 0o644); err != nil {

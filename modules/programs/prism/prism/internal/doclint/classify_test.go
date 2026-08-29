@@ -73,8 +73,7 @@ func TestClassify(t *testing.T) {
 }
 
 // TestClassify_PlaceholdersNeverFlagged is the load-bearing false-positive
-// suppression test called out in the issue AC (edge-case: placeholder tokens
-// must not be flagged).
+// suppression test: placeholder tokens must never be flagged.
 func TestClassify_PlaceholdersNeverFlagged(t *testing.T) {
 	placeholders := []string{
 		"<sessionName>",

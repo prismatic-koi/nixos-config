@@ -33,16 +33,15 @@ import (
 //
 // Each agent is spawned as its own independent top-level tmux session named
 // <parent>~review-<N>-<agent.Name>. Previous rounds' sessions are NOT killed
-// here — that is a deliberate behaviour change from the old multi-window round
-// model, and it still holds.
+// here — that is deliberate.
 //
-// What releases them has changed (#2649). A round's sessions are now released
-// automatically 15 minutes after its review-complete prompt is delivered; they
-// are no longer held until prism cleanup of the parent. That release gates on
-// session_groups.delivered_at, which only the async delivery paths write
-// (MonitorFunc and the recovery watcher), so it does not apply to a round this
-// synchronous entry point ran. Run has no production caller today — RunAsync
-// is the live path — so no round actually reaches that state.
+// A round's sessions are released automatically 15 minutes after its
+// review-complete prompt is delivered. They are not held until prism cleanup
+// of the parent. That release gates on session_groups.delivered_at, which only
+// the async delivery paths write (MonitorFunc and the recovery watcher), so it
+// does not apply to a round this synchronous entry point ran. Run has no
+// production caller today — RunAsync is the live path — so no round actually
+// reaches that state.
 //
 // On SIGINT, only the current round's in-progress sessions are killed by the
 // caller via KillSessionsByNames (using the session names from onSessionsCreated).
@@ -70,17 +69,16 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	defer d.Close()
 
 	// Determine round number from DB. We do NOT kill previous review sessions
-	// here (deliberate). Since #2649 they are released automatically 15 minutes
+	// here (deliberate). They are released automatically 15 minutes
 	// after their round is delivered — see the Run doc comment for why that
 	// release does not cover a round this function ran.
 	round := NextRoundNumber(d, opts.ParentSession)
 	roundPrefix := fmt.Sprintf("%s~review-%d-", opts.ParentSession, round)
 
-	// sessionname.Repo, not the old local deriveRepo: the old helper split on
-	// "@" alone, so a non-worktree parent such as `obsidian` gave each of its
-	// review agents a repo of its own — `obsidian~investigate-v2` instead of
-	// `obsidian` (issue #2658). The repo written here is what every later
-	// repo-scoped query reads.
+	// sessionname.Repo derives the repo. A helper that split on "@" alone
+	// would give a non-worktree parent such as `obsidian` a repo of its own
+	// — `obsidian~investigate-v2` instead of `obsidian`. The repo written
+	// here is what every later repo-scoped query reads.
 	repo := sessionname.Repo(opts.ParentSession)
 
 	agents := opts.Agents
@@ -89,18 +87,16 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	}
 
 	// Resolve the runtime active profile once for the whole round so every
-	// agent in this fan-out spawns with the same models (#1207). Errors are
+	// agent in this fan-out spawns with the same models. Errors are
 	// surfaced — a corrupt state file would otherwise silently leak the
 	// pf.Default profile into review agents.
 	//
-	// Issue #2097: the parent worker's spawn-time profile (recorded on
-	// `spawn_inputs.profile_name` by #2090) is fed as the highest-precedence
-	// input via profile.InheritFromParent. Before #2097 we passed "" here,
-	// so the resolution silently fell through to state-file > nix-default —
-	// every review fan-out since `--abtest` (#1216) shipped ran on the host
-	// default regardless of the parent's `--profile` choice. The #1207
-	// single-resolve-per-round invariant is preserved: this call happens
-	// once, outside the agent loop, so all 5 reviewers share one profile.
+	// The parent worker's spawn-time profile (recorded on
+	// `spawn_inputs.profile_name`) is fed as the highest-precedence input via
+	// profile.InheritFromParent, so every review fan-out runs on the parent's
+	// `--profile` choice rather than the host default. The
+	// single-resolve-per-round invariant holds: this call happens once,
+	// outside the agent loop, so all 5 reviewers share one profile.
 	activeProfile, profErr := profile.InheritFromParent(d, opts.ParentSession, opts.ProfilesFile)
 	if profErr != nil {
 		return nil, fmt.Errorf("resolve active profile: %w", profErr)
@@ -108,7 +104,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 
 	// RequireSlot gate: validate that the active profile defines a slot for
 	// every review agent before spawning any. This is an all-or-nothing check
-	// (#1224): if any slot is missing we fail the entire fan-out with a clear
+	// if any slot is missing we fail the entire fan-out with a clear
 	// error rather than silently falling back to the legacy model chain.
 	for _, ag := range agents {
 		if slotErr := config.RequireSlot(opts.ProfilesFile, activeProfile, ag.Name); slotErr != nil {
@@ -120,10 +116,10 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	// session will carry this group_id, enabling GroupCompleted-based
 	// termination detection and GroupResults-based result aggregation.
 	// Fail fast if RegisterGroup fails — no sessions are spawned without a
-	// group to belong to (AC: edge-case).
+	// group to belong to.
 	//
 	// PRNumber and round are persisted on session_groups so the worker
-	// sidecar's review-completion recovery watcher (#1709 reopen) can
+	// sidecar's review-completion recovery watcher can
 	// reconstruct the delivery message when the detached monitor subprocess
 	// dies before delivering.
 	groupID, groupErr := d.RegisterGroupWithPR(opts.ParentSession, opts.PRNumber, round)
@@ -156,7 +152,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree, ag.Name)
 
 		// The role rubric arrives via the agent's system prompt (prism.ts,
-		// before_agent_start), not this Go-built prompt (issue #2534). Surface
+		// before_agent_start), not this Go-built prompt. Surface
 		// a missing/empty role file so the degraded (rubric-less) prompt is
 		// visible rather than silent — the agent still starts.
 		if roleDefinitionMissing(ag.Name) && opts.OnProgress != nil {
@@ -166,10 +162,10 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// Spawn the per-agent session via the shared primitive. SpawnSession
 		// handles DB seed (with root_agent_name from AgentRole), port
 		// allocation, tmux session creation, and sidecar startup — keeping
-		// review.go free of direct db/tmux/sidecar machinery (#859).
+		// review.go free of direct db/tmux/sidecar machinery.
 		//
 		// WorktreeReadOnly=true ensures review containers cannot modify the
-		// branch under review (satisfies the [security] acceptance criterion).
+		// branch under review.
 		//
 		// Pi is the sole harness. Use it directly unless --harness was
 		// explicitly passed (opts.HarnessExplicit).
@@ -187,7 +183,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			continue
 		}
 		// Build the per-reviewer SpawnOpts via the shared builder so the
-		// audit-row shape, isolation-mode propagation, and #2097
+		// audit-row shape, isolation-mode propagation, and
 		// ProfileName inheritance are guaranteed identical between Run
 		// (sync) and RunAsync (async monitor). See spawn_opts.go for the
 		// field-level rationale.
@@ -226,12 +222,11 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// reset it once the agent is actually ready, and so the polling
 		// phase has a sensible fallback if the gate is somehow skipped.
 		// The "started" progress line is emitted by the readiness gate,
-		// not here — see #1051 for why "spawned" is not the same as
-		// "ready".
+		// not here — "spawned" is not the same as "ready".
 		spawnTimes[i] = time.Now()
 	}
 
-	// Per-agent readiness gate (#1051 Piece A). Runs in parallel goroutines
+	// Per-agent readiness gate. Runs in parallel goroutines
 	// so one slow agent does not delay the others. Updates spawnErr[i] for
 	// agents whose gate trips on timeout, and emits "<role> started" /
 	// "<role> failed to start: not ready within <timeout>" via OnProgress.
@@ -275,7 +270,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	// for termination detection instead of per-session name-based polling.
 	liveResults, pollErr := pollAgents(ctx, d, liveAgents, liveSessions, opts.Timeout, liveSpawnTimes, opts.OnProgress, groupID)
 
-	// Do NOT kill the sessions here. Since #2649 a round is released
+	// Do NOT kill the sessions here. A round is released
 	// automatically 15 minutes after its review-complete prompt is delivered,
 	// and prism cleanup of the parent still cascades via
 	// KillReviewSessionsForParent. Neither is this function's job. Re-reading a
@@ -355,7 +350,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		// round — without this filter, ReviewRoundForGroup returns the
 		// first round it encounters across ALL groups for this parent,
 		// which is almost always round 1 even when the stuck group is
-		// round N>1 (#1962 Bug B).
+		// round N>1.
 		allMembers, _ := d.GroupMembersForParent(opts.ParentSession)
 		activeMembers := make([]db.Status, 0, len(allMembers))
 		for _, m := range allMembers {
@@ -380,15 +375,15 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	// See the matching call in Run() above for why this is sessionname.Repo.
 	repo := sessionname.Repo(opts.ParentSession)
 
-	// Resolve the runtime active profile once for the round (#1207). See
+	// Resolve the runtime active profile once for the round. See
 	// the matching block in Run() above for rationale, including the
-	// #2097 inheritance of the parent worker's spawn-time profile.
+	// inheritance of the parent worker's spawn-time profile.
 	activeProfile, profErr := profile.InheritFromParent(d, opts.ParentSession, opts.ProfilesFile)
 	if profErr != nil {
 		return nil, fmt.Errorf("resolve active profile: %w", profErr)
 	}
 
-	// RequireSlot gate: same all-or-nothing check as in Run() (#1224). Validate
+	// RequireSlot gate: same all-or-nothing check as in Run(). Validate
 	// every review agent slot before registering a group or spawning anything.
 	for _, ag := range agents {
 		if slotErr := config.RequireSlot(opts.ProfilesFile, activeProfile, ag.Name); slotErr != nil {
@@ -398,7 +393,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 
 	// Register session group. PRNumber and round are persisted on
 	// session_groups so the worker sidecar's review-completion recovery
-	// watcher (#1709 reopen) can reconstruct the delivery message when the
+	// watcher can reconstruct the delivery message when the
 	// detached monitor subprocess dies before delivering.
 	groupID, groupErr := d.RegisterGroupWithPR(opts.ParentSession, opts.PRNumber, round)
 	if groupErr != nil {
@@ -470,11 +465,11 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			continue
 		}
 
-		// "started" is now emitted by the readiness gate below, not here.
-		// See #1051 — "spawned" is not the same as "agent is ready".
+		// "started" is emitted by the readiness gate below, not here.
+		// "spawned" is not the same as "agent is ready".
 	}
 
-	// Per-agent readiness gate (#1051 Piece A). Runs concurrently so one
+	// Per-agent readiness gate. Runs concurrently so one
 	// slow agent does not delay the others. Updates spawnErr[i] for agents
 	// whose gate trips, and emits "<role> started" or
 	// "<role> failed to start: not ready within <timeout>" via OnProgress.
@@ -498,7 +493,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	}
 
 	// Collect successfully-spawned-and-ready sessions, plus the failure
-	// list for the Ack (#1051 Piece C) so the worker sees which agents
+	// list for the Ack so the worker sees which agents
 	// did not come up and why.
 	var liveSessions []string
 	var liveAgents []Agent
@@ -522,15 +517,14 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	// Start the detached monitor process.
 	//
 	// Agents/AgentSessions carry the FULL spawned set, not just the agents
-	// that came up (#2613). ClassifyRound walks exactly this list to decide
-	// how many agents the round expected, so passing only the live set made
-	// the round shrink to fit its own failures: four live agents that all
-	// passed produced Expected=4, Missing=0, and therefore a "complete"
-	// round that printed "All 5 review agents passed" and consumed one of
-	// the worker's three cycles. That is the exact failure #2573 closed for
-	// mid-round reaps, reopened on the spawn-time path. An agent that never
-	// came up now stays in the expected set and is reported as missing, with
-	// the cause its cleanup recorded.
+	// that came up. ClassifyRound walks exactly this list to decide
+	// how many agents the round expected, so passing only the live set would
+	// make the round shrink to fit its own failures: four live agents that all
+	// passed produce Expected=4, Missing=0, and therefore a "complete"
+	// round that prints "All 5 review agents passed" and consumes one of
+	// the worker's three cycles. An agent that never came up stays in the
+	// expected set and is reported as missing, with the cause its cleanup
+	// recorded.
 	//
 	// The other consumers of these fields tolerate the wider set:
 	// forceTerminateStuckMembers skips rows that are already closed or
@@ -547,7 +541,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		DBPath:        dbPath,
 		Timeout:       opts.Timeout * 2, // 2x per-agent timeout as group monitor limit
 		// Release this round's agent sessions ReapGracePeriod after the
-		// review-complete prompt lands (#2649). Without this the round's five
+		// review-complete prompt lands. Without this the round's five
 		// sessions hold a concurrency slot and a harness port until a human
 		// notices.
 		ReapAfterDelivery: true,
@@ -581,7 +575,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		proglog.Warnf("[prism review] warning: could not look up worker session %q: %v\n", opts.WorkerSession, stErr)
 	}
 
-	// Build acknowledgement message (#1051 Piece C: surface partial-success).
+	// Build acknowledgement message (surface partial-success).
 	failurePairs := make([][2]string, 0, len(failures))
 	for _, f := range failures {
 		failurePairs = append(failurePairs, [2]string{f.name, f.reason})
@@ -598,9 +592,9 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 
 // buildAsyncAck constructs the acknowledgement message returned to the worker
 // immediately after spawning the review agents. failures is a list of
-// (agentName, reason) pairs for agents that did not become ready — see
-// #1051 AC-5: "Coordinators reading the Ack should be able to see
-// `Spawned: 3, Failed: 2 (review-goal: not ready within 30s, …)`."
+// (agentName, reason) pairs for agents that did not become ready. The Ack
+// lets a coordinator see
+// `Spawned: 3, Failed: 2 (review-goal: not ready within 30s, …)`.
 func buildAsyncAck(prNumber string, round int, groupID string, sessionNames []string, failures [][2]string, workerSession string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Review in progress — PR #%s, round %d (group: %s)\n\n", prNumber, round, groupID))
@@ -666,12 +660,12 @@ func LookupParentSession() string {
 //
 // It returns the full spawned set. spawnErr is accepted, and deliberately not
 // used to filter, because filtering by it is the defect this function exists
-// to prevent (#2613): ClassifyRound derives RoundStatus.Expected from the
+// to prevent: ClassifyRound derives RoundStatus.Expected from the
 // list it is given, so a monitor handed only the agents that came up counts a
 // four-agent round as complete. Four PASS verdicts then render as "All 5
 // review agents passed" and consume one of the worker's three cycles, while
 // the fifth dimension was never examined. That is the same silent-pass
-// failure #2573 closed for a mid-round reap, on the spawn-time path.
+// failure, on the spawn-time path.
 //
 // An agent that failed to spawn or to become ready stays in the expected set
 // and surfaces as a missing verdict, classified by the cause its cleanup

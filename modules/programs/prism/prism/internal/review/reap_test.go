@@ -1,9 +1,9 @@
 package review_test
 
 // reap_test.go — tests for the automatic release of finished review-agent
-// sessions (issue #2649).
+// sessions.
 //
-// The suite is grouped by acceptance criterion:
+// The suite is grouped by concern:
 //
 //   - release          — a terminal review agent loses its tmux session and
 //                        its harness port with no operator action.
@@ -13,9 +13,9 @@ package review_test
 //                        working.
 //   - no git           — no worktree is removed and no branch is deleted.
 //   - liveness safety  — a live agent is never a candidate, on either of the
-//                        two arms that can make it live (#2613).
+//                        two arms that can make it live.
 //   - grace period     — nothing is released before the window elapses.
-//   - three rounds     — the leak the issue reports does not accumulate.
+//   - three rounds     — the reported leak does not accumulate.
 //   - orphaned parent  — reaping is safe when the parent has already gone.
 
 import (
@@ -94,9 +94,9 @@ func installReapProbe(t *testing.T) *reapProbe {
 // involved.
 //
 // This is the ONE side effect the reap suite otherwise never fires:
-// `reapKillTmuxSession` is stubbed to a no-op everywhere, which is precisely
-// why the suite could not see the ordering defect on PR #2676 while it was
-// live (#2680). The fake makes that side effect visible to `go test`.
+// `reapKillTmuxSession` is stubbed to a no-op everywhere, so without this fake
+// the suite cannot see an ordering defect between the tmux kill and the reap's
+// DB writes. The fake makes that side effect visible to `go test`.
 func performTmuxSessionClosedHook(t *testing.T, d *db.DB, name string) {
 	t.Helper()
 	if err := d.ReleasePort(name); err != nil {
@@ -186,9 +186,9 @@ func statusOf(t *testing.T, d *db.DB, sess string) *db.Status {
 	return st
 }
 
-// ── AC: a terminal review agent is released without operator action ─────────
+// ── A terminal review agent is released without operator action ─────────
 
-// TestReap_ReleasesFinishedReviewAgent is the primary functional AC: after a
+// TestReap_ReleasesFinishedReviewAgent is the primary functional test: after a
 // round has been delivered and the grace period has elapsed, every member's
 // tmux session is killed and its harness port is returned to the pool, with
 // no operator command in between.
@@ -279,9 +279,9 @@ func TestReap_ReleasesConcurrencySlot(t *testing.T) {
 	}
 }
 
-// ── AC: the agent_status row and the review history survive ─────────────────
+// ── The agent_status row and the review history survive ─────────────────
 
-// TestReap_PreservesRowsAndHistory covers the "never delete a DB row" AC.
+// TestReap_PreservesRowsAndHistory covers the "never delete a DB row" property.
 // `prism retro` and the retro flow read historical review data, so the
 // agent_status row, the session_groups row, and every agent_events row must
 // outlive the reap.
@@ -332,7 +332,7 @@ func TestReap_PreservesRowsAndHistory(t *testing.T) {
 	}
 }
 
-// TestReap_WorkerCanStillReadItsReviewAgents is the edge-case AC on the
+// TestReap_WorkerCanStillReadItsReviewAgents is the edge-case test on the
 // documented post-round read. `prism checkin <parent>~review-<N>-<agent>` is
 // admitted by authz tier 1, which resolves membership through
 // db.GroupParentForMember, and it renders agent_events rows. Both survive the
@@ -372,16 +372,17 @@ func TestReap_WorkerCanStillReadItsReviewAgents(t *testing.T) {
 	}
 }
 
-// ── AC: reaping never removes a worktree and never deletes a branch ─────────
+// ── Reaping never removes a worktree and never deletes a branch ─────────
 
 // TestReap_LeavesWorktreeAndBranchIntact is the direct falsification of the
-// git AC. It builds a real repository with a real branch, points the review
-// agents' rows at that worktree (which is how a review agent's row is written
-// — it inherits the parent's worktree path), reaps, and asserts both survive.
+// git safety property. It builds a real repository with a real branch, points
+// the review agents' rows at that worktree (which is how a review agent's row
+// is written — it inherits the parent's worktree path), reaps, and asserts
+// both survive.
 //
-// This is the #2638 failure mode restated as a test: descendant sessions
-// inherit the parent's worktree, so any teardown that resolves a branch from
-// the worktree HEAD would force-delete the PARENT's branch here.
+// Descendant sessions inherit the parent's worktree, so any teardown that
+// resolves a branch from the worktree HEAD would force-delete the PARENT's
+// branch here.
 func TestReap_LeavesWorktreeAndBranchIntact(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -417,8 +418,8 @@ func TestReap_LeavesWorktreeAndBranchIntact(t *testing.T) {
 		t.Fatalf("RegisterGroupWithPR: %v", err)
 	}
 	sess := parent + "~review-1-review-goal"
-	// The agent row carries the PARENT's worktree — the inheritance that
-	// #2638 turned into a branch deletion.
+	// The agent row carries the PARENT's worktree — the inheritance that a
+	// naive teardown would turn into a branch deletion.
 	if err := d.UpsertStatus(sess, "nixos-config", worktree, "finished", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
@@ -448,13 +449,13 @@ func TestReap_LeavesWorktreeAndBranchIntact(t *testing.T) {
 	}
 }
 
-// ── AC: reaping cannot act on an agent that is not terminal (#2613) ─────────
+// ── Reaping cannot act on an agent that is not terminal ─────────
 
 // TestReap_DoesNotReapLiveAgentInRunningRound covers the first and most
 // important liveness arm: the round has NOT been delivered, so no member is a
 // candidate — not even the member that has already finished while its
-// siblings work. This is the group-level gate that makes #2613 structurally
-// impossible.
+// siblings work. This is the group-level gate that makes reaching a live
+// agent structurally impossible.
 func TestReap_DoesNotReapLiveAgentInRunningRound(t *testing.T) {
 	d := openTestDB(t)
 	probe := installReapProbe(t)
@@ -491,7 +492,7 @@ func TestReap_DoesNotReapLiveAgentInRunningRound(t *testing.T) {
 // running. That member must survive; its terminal siblings are released.
 //
 // The `interrupted` case is included deliberately: an interrupted agent can
-// still be redirected with `prism prompt` (#1495), so it is not terminal for
+// still be redirected with `prism prompt`, so it is not terminal for
 // the reaper any more than it is for db.terminalStates.
 func TestReap_DoesNotReapNonTerminalAgentInDeliveredRound(t *testing.T) {
 	for _, liveState := range []string{"active", "idle", "waiting", "interrupted", "reviewing"} {
@@ -590,7 +591,7 @@ func TestReap_SkipsSessionThatIsNotAReviewAgent(t *testing.T) {
 	}
 }
 
-// ── AC: the grace period ────────────────────────────────────────────────────
+// ── The grace period ────────────────────────────────────────────────────
 
 // TestReap_HonoursGracePeriod asserts that a round delivered just now is not
 // released, and that the same round IS released once the window has passed.
@@ -649,12 +650,11 @@ func TestReap_HonoursGracePeriod(t *testing.T) {
 //   - modules/programs/prism/prism/internal/review/run.go (the Run doc
 //     comment and two inline comments inside Run)
 //
-// Do not rely on this list. It was tried on its own and it failed twice: the
-// cobra `Long` string went stale in round 1 of PR #2676, and the four
-// internal/review sites in round 2. Two mechanical guards now cover the sites
-// a list kept missing — TestReviewHelp_* in package cmd for the runtime help
-// text, and TestNoProseClaimsSessionsPersistUntilCleanup in this package for
-// Go source. The list is a pointer for the author, not the enforcement.
+// Do not rely on this list. A prose-site list does not hold on its own. Two
+// mechanical guards cover the sites a list keeps missing — TestReviewHelp_*
+// in package cmd for the runtime help text, and
+// TestNoProseClaimsSessionsPersistUntilCleanup in this package for Go source.
+// The list is a pointer for the author, not the enforcement.
 func TestReapGracePeriod_MatchesDocumentedValue(t *testing.T) {
 	if review.ReapGracePeriod != 15*time.Minute {
 		t.Errorf("ReapGracePeriod = %s, want 15m — update the four prose sites listed on this test together with the constant",
@@ -662,7 +662,7 @@ func TestReapGracePeriod_MatchesDocumentedValue(t *testing.T) {
 	}
 }
 
-// ── AC: three review cycles leave no live review sessions ───────────────────
+// ── Three review cycles leave no live review sessions ───────────────────
 
 // TestReap_ThreeRoundsLeaveNoLiveSessions is the acceptance test for the
 // reported symptom. Three completed rounds on one worker produce fifteen
@@ -734,7 +734,7 @@ func TestReap_ThreeRoundsLeaveNoLiveSessions(t *testing.T) {
 	}
 }
 
-// ── AC: reaping is safe when the parent has already been cleaned up ─────────
+// ── Reaping is safe when the parent has already been cleaned up ─────────
 
 // TestReap_SafeWhenParentAlreadyCleanedUp covers the edge-case AC. The parent
 // worker's row is closed (or absent entirely); the reaper must still release
@@ -751,7 +751,7 @@ func TestReap_SafeWhenParentAlreadyCleanedUp(t *testing.T) {
 		// Close the parent the way `prism cleanup` does, BEFORE the review
 		// children exist. SetEnded cascades to `<parent>~review-%` rows that
 		// are present when it runs, so seeding afterwards reproduces the
-		// orphan shape the AC describes: parent closed, children still live.
+		// orphan shape: parent closed, children still live.
 		if err := d.SetEnded(parent); err != nil {
 			t.Fatalf("SetEnded(parent): %v", err)
 		}
@@ -1122,21 +1122,21 @@ func seedVerdictRound(t *testing.T, d *db.DB, parent string, round int, verdict 
 }
 
 // TestCompletedReviewCycles_SurviveTheReap is the regression guard for the
-// interaction between the automatic release (#2649) and the LOOP-LIMIT footer
-// (#1512).
+// interaction between the automatic release and the LOOP-LIMIT footer.
 //
 // CompletedReviewCyclesForParent counts a past round only when every member
-// produced a parseable verdict. Its read used to be db.GroupResults, which
-// drops rows with ended_at set. The release stamps ended_at on every member of
-// a delivered round, so once it runs, every past round read as "produced no
-// verdicts" and the count collapsed to zero.
+// produced a parseable verdict. A read through db.GroupResults, which drops
+// rows with ended_at set, would miss a released round: the release stamps
+// ended_at on every member of a delivered round, so a narrow read would count
+// every past round as "produced no verdicts" and collapse to zero.
 //
-// The consequence was not cosmetic: the footer is what tells a worker it has
-// reached three cycles and must stop and escalate. A worker whose rounds were
-// released before the next round completed would never have been told.
+// The consequence is not cosmetic: the footer is what tells a worker it has
+// reached three cycles and must stop and escalate. A worker whose rounds are
+// released before the next round completes would never be told.
 //
 // The history the count needs is intact after a release — the release deletes
-// no agent_status row and no agent_events row. Only the read had to change.
+// no agent_status row and no agent_events row. The wide read (GroupResultsAll)
+// sees it.
 func TestCompletedReviewCycles_SurviveTheReap(t *testing.T) {
 	d := openTestDB(t)
 	installReapProbe(t)
@@ -1214,9 +1214,9 @@ func TestCompletedReviewCycles_ReapedRoundWithoutVerdictsStillDoesNotCount(t *te
 }
 
 // TestReap_RecordsAutoReleaseCause verifies that the release records why it
-// closed the row (#2613). Without it, a coordinator asking why a review-agent
-// row is closed is told that nothing recorded why — the exact gap #2613 exists
-// to remove, on what is now the most common closer of these rows.
+// closed the row. Without it, a coordinator asking why a review-agent row is
+// closed is told that nothing recorded why — the exact gap the cause-recording
+// removes, on the most common closer of these rows.
 func TestReap_RecordsAutoReleaseCause(t *testing.T) {
 	d := openTestDB(t)
 	installReapProbe(t)
@@ -1249,8 +1249,9 @@ func TestReap_RecordsAutoReleaseCause(t *testing.T) {
 	}
 }
 
-// TestReap_CauseIsRecordedBeforeTheRowCloses pins the ordering the #2613
-// contract requires: a reader that sees a closed row must also see the cause.
+// TestReap_CauseIsRecordedBeforeTheRowCloses pins the ordering the
+// cause-recording contract requires: a reader that sees a closed row must also
+// see the cause.
 // A cause written after the row closes leaves a window in which the row reads
 // as closed with nothing to explain it.
 //
@@ -1262,11 +1263,11 @@ func TestReap_RecordsAutoReleaseCause(t *testing.T) {
 // only point where the ordering is falsifiable, and it is falsifiable against
 // the REAL closer, not a stubbed final write.
 //
-// Before #2680 this test used a no-op kill stub and observed the reaper's
-// final `SetEnded` seam. With a no-op kill the row never closed early, so
-// moving the cause record to after the kill changed nothing the test could
-// see: it passed with the ordering defect live and was vacuous with respect to
-// the property it names. Firing the fake removes that blind spot.
+// A no-op kill stub would observe only the reaper's final `SetEnded` seam.
+// With a no-op kill the row never closes early, so moving the cause record to
+// after the kill would change nothing the test could see: it would pass with
+// the ordering defect present and be vacuous. Firing the fake removes that
+// blind spot.
 func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@reap-cause-order"
@@ -1316,9 +1317,9 @@ func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
 	}
 }
 
-// TestReap_CauseSurvivesTheTmuxSessionClosedHook is the regression test for
-// the PR #2676 defect: `reapOne` killed the tmux session before it recorded
-// the `auto_release` cause.
+// TestReap_CauseSurvivesTheTmuxSessionClosedHook guards against a defect where
+// `reapOne` kills the tmux session before it records the `auto_release`
+// cause.
 //
 // Killing a review agent's tmux session fires tmux's GLOBAL `session-closed`
 // hook (`modules/programs/prism/tmux.nix`), which runs
@@ -1366,7 +1367,7 @@ func TestReap_CauseSurvivesTheTmuxSessionClosedHook(t *testing.T) {
 // overwrite a true parent_cleanup with a close this sweep did not perform.
 //
 // The race is staged across two candidates of one sweep, because the cause
-// write is now the FIRST thing reapOne does — there is no per-session hook
+// write is the FIRST thing reapOne does — there is no per-session hook
 // left that runs before it. Tearing down the alphabetically-first candidate
 // closes the second one, so by the time reapOne reaches it the guard has
 // something real to refuse.

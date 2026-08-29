@@ -1,13 +1,12 @@
 package review_test
 
 // agents_env_filter_test.go — binds the canonical review-agent set to the
-// role-aware AgentEnvVars filter (issue #2533).
+// role-aware AgentEnvVars filter.
 //
 // config.FilterAgentEnvVarsForRole lists the five review roles as literals,
 // because internal/review imports internal/config and the reverse import is a
 // cycle. Without this test a sixth review agent added to Agents() would
-// silently regain the 65-tool grafana surface, which is the exact defect
-// #2533 closed.
+// silently regain the 65-tool grafana surface.
 
 import (
 	"testing"
