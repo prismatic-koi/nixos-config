@@ -8,7 +8,7 @@ package cmd
 // (SSH config, gitconfig), and then runs:
 //
 //	bwrap <args...>        (bwrap mode — supervised child with PTY, Linux-only)
-//	sandbox-exec <args...> (sandbox-exec mode — supervised child with kqueue lifecycle, Darwin-only; see #1018)
+//	sandbox-exec <args...> (sandbox-exec mode — supervised child with kqueue lifecycle, Darwin-only)
 //
 // as a child process (not a direct exec). A PTY pair is created so that bwrap
 // and the agent sees a real terminal on all three fds (stdin/stdout/stderr).
@@ -41,11 +41,11 @@ package cmd
 //
 //	--session <name>   prism session name (e.g. "nixos-config@feature")
 //	--model <id>       model identifier override (overrides profile slot's model;
-//	                    sourced from `prism spawn --model`, issue #2086)
+//	                    sourced from `prism spawn --model`)
 //	--variant <name>   variant/thinking-level override (overrides profile slot's
-//	                    thinking; sourced from `prism spawn --variant`, issue #2086)
+//	                    thinking; sourced from `prism spawn --variant`)
 //	--provider <name>  routing-provider override (overrides profile slot's
-//	                    provider; sourced from `prism spawn --provider`, issue #2852)
+//	                    provider; sourced from `prism spawn --provider`)
 
 import (
 	"context"
@@ -75,7 +75,7 @@ import (
 // when the dispatcher has not stashed a DB status in the per-session cache.
 // In practice this should not happen — runAgentRun stashes the status
 // before calling iso.AgentRun — but the handler surfaces a clear error
-// rather than panicking on a nil pointer.
+// rather than a nil-pointer panic.
 func errAgentRunNoStatus(sessionName string) error {
 	return fmt.Errorf("agent-run: session %q: status cache is empty (programming error)", sessionName)
 }
@@ -101,23 +101,22 @@ func init() {
 	agentRunCmd.Flags().String("session", "", "Prism session name (e.g. nixos-config@main)")
 	_ = agentRunCmd.MarkFlagRequired("session")
 	// --model / --variant: CLI overrides forwarded from `prism spawn` via the
-	// tmux pane command (issue #2086). When set, populatePIConfig uses these
-	// values in place of the active profile slot's Model / Thinking. Empty
-	// values fall back to the slot, matching the pre-#2086 behaviour.
+	// tmux pane command. When set, populatePIConfig uses these values in place
+	// of the active profile slot's Model / Thinking. Empty values fall back to
+	// the slot.
 	agentRunCmd.Flags().String("model", "", "Model identifier override (overrides profile slot's model; sourced from prism spawn --model)")
 	agentRunCmd.Flags().String("variant", "", "Variant/thinking-level override (overrides profile slot's thinking; sourced from prism spawn --variant)")
-	// --agent-model: the per-role model override for THIS session's role
-	// (issue #2863), sourced from `prism spawn --model-override <role>=<model>`.
-	// It outranks --model above. Empty value falls back to --model, then the
-	// slot.
+	// --agent-model: the per-role model override for THIS session's role,
+	// sourced from `prism spawn --model-override <role>=<model>`. It outranks
+	// --model above. Empty value falls back to --model, then the slot.
 	agentRunCmd.Flags().String("agent-model", "", "Per-role model override for this session's role (outranks --model; sourced from prism spawn --model-override <role>=<model>)")
-	// --provider: pi-only routing override forwarded from `prism spawn`
-	// (issue #2852). Empty value falls back to the slot's provider.
+	// --provider: pi-only routing override forwarded from `prism spawn`.
+	// Empty value falls back to the slot's provider.
 	agentRunCmd.Flags().String("provider", "", "Routing-provider override (overrides profile slot's provider; sourced from prism spawn --provider)")
 	rootCmd.AddCommand(agentRunCmd)
 
-	// Register the per-mode AgentRun handlers with the container package
-	// (issue #1140 A1.L6). The dispatch in cmd/agent_run.go's runAgentRun
+	// Register the per-mode AgentRun handlers with the container package.
+	// The dispatch in cmd/agent_run.go's runAgentRun
 	// resolves the persisted isolation mode from the DB, looks up the
 	// registered isolator via container.For(mode, ...), and calls
 	// iso.AgentRun(ctx, opts) — which routes back here via the registered
@@ -175,18 +174,16 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 
 	// Dispatch based on the session's isolation mode.
 	//
-	// Post A1.L6 (issue #1140): the per-mode switch collapses to a single
-	// container.For(mode).AgentRun(ctx, opts) call. host is not a
-	// valid mode for `prism agent-run`; the registered isolator returns
-	// the original "this command is only for bwrap and sandbox-exec
-	// sessions" error verbatim, replacing the manual `else` arm.
+	// Dispatch resolves the isolator via container.For(mode) and calls
+	// AgentRun(ctx, opts). host is not a valid mode for `prism agent-run`.
+	// The registered isolator returns the "this command is only for bwrap and
+	// sandbox-exec sessions" error.
 	isoMode := config.IsolationMode(status.IsolationMode)
 
 	// Belt-and-braces platform guard. The container.For-resolved isolator's
-	// AgentRun body would also fail eventually (bubblewrap is Linux-only,
-	// sandbox-exec is macOS-only) but the platform check here surfaces a
-	// clearer error before the binary lookup. Mirrors the pre-refactor
-	// switch's runtime.GOOS gates.
+	// AgentRun body also fails eventually (bubblewrap is Linux-only,
+	// sandbox-exec is macOS-only), but the platform check here surfaces a
+	// clearer error before the binary lookup.
 	switch isoMode {
 	case config.IsolationBwrap:
 		if runtime.GOOS != "linux" {
@@ -213,7 +210,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	// Stash CLI overrides (--model / --variant) so per-mode handlers can
 	// read them without re-parsing argv. Cleared by clearAgentRunStatus.
 	// Empty fields mean "no override" — the active profile slot's value
-	// is used unchanged (issue #2086).
+	// is used unchanged.
 	storeAgentRunOverrides(sessionName, piOverrides{
 		Model:      modelOverride,
 		AgentModel: agentModelOverride,
@@ -229,10 +226,8 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 }
 
 // runAgentRunBwrapHandler is the registered AgentRun handler for the bwrap
-// isolation mode (issue #1140 A1.L6). It is the body that previously lived
-// in the bwrap arm of runAgentRun's switch statement. The handler reads the
-// pre-looked-up DB status from the package-level cache populated by
-// runAgentRun.
+// isolation mode. It reads the pre-looked-up DB status from the
+// package-level cache populated by runAgentRun.
 func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) error {
 	sessionName := opts.SessionName
 	agentRunStart := opts.StartTime
@@ -289,10 +284,10 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	// AWS_CONFIG_FILE), filtered for the session role. Non-fatal if missing —
 	// agent env vars are injected on a best-effort basis.
 	//
-	// The role filter runs here, upstream of the isolator (issue #2533): the
-	// map handed to container.Config already has the keys this role must not
-	// receive removed, so the isolator stays role-agnostic and keeps emitting
-	// every key it is given (the #2235 invariant).
+	// The role filter runs here, upstream of the isolator: the map handed to
+	// container.Config already has the keys this role must not receive
+	// removed, so the isolator stays role-agnostic and emits every key it is
+	// given.
 	agentEnvVars := config.AgentEnvVarsForRole(agentRole)
 
 	// Resolve the harness name from the DB status. Fall back to "pi"
@@ -317,7 +312,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 
 	// Resolve the host-side agent-run log path so bwrap can expose it as
 	// PRISM_AGENT_RUN_LOG — the durable target for the PI extension's
-	// first-connect give-up diagnostic (issue #2357). Non-fatal on error:
+	// first-connect give-up diagnostic. Non-fatal on error:
 	// the extension falls back to pane-scrollback-only logging.
 	agentRunLogPath := ""
 	if p, logPathErr := session.AgentRunLogPath(sessionName); logPathErr == nil {
@@ -334,7 +329,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	}
 	// Carry the persisted harness session UUID through to ctrCfg so that
 	// PIInvocation can append --session <id> for conversation resume on
-	// restore (issue #1838). Empty when the harness never started or this is
+	// restore. Empty when the harness never started or this is
 	// a spawn/switch path — PIInvocation treats empty as a silent no-op.
 	harnessSessionID := ""
 	if status.HarnessSessionID != nil {
@@ -342,10 +337,10 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	}
 
 	// Resolve InstanceID from DB status. Required so the per-session work dir
-	// is namespaced by the same instance_id that prism cleanup uses (#2317 /
-	// #2321: bwrap with containers_enabled needs the work dir for the
-	// container-scratch bind mount). Sandbox-exec already populates this on
-	// the same path (cmd/agent_run_sandbox_exec_darwin.go).
+	// is namespaced by the same instance_id that prism cleanup uses: bwrap
+	// with containers_enabled needs the work dir for the container-scratch
+	// bind mount. Sandbox-exec populates this on the same path
+	// (cmd/agent_run_sandbox_exec_darwin.go).
 	instanceID := ""
 	if status.InstanceID != nil {
 		instanceID = *status.InstanceID
@@ -440,8 +435,8 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	// Pass the real PTY fds directly to bwrap so that the agent's Bubble Tea
 	// TUI sees a real terminal on stdin/stdout. This is essential: Bubble Tea
 	// calls TIOCGWINSZ on stdout (fd 1); if stdout is a pipe the ioctl returns
-	// ENOTTY and the TUI renders at zero width. Using the real fds replicates
-	// the behaviour of the previous syscall.Exec approach.
+	// ENOTTY and the TUI renders at zero width. The real fds give the child a
+	// real terminal so the ioctl succeeds.
 	//
 	// stderr is piped so that bwrap harness startup errors can be tee'd to
 	// both the pane and the log file. stderr does not need TIOCGWINSZ (it is
@@ -484,7 +479,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	// stitch them via wall-clock from each log to bound "exec → agent up".
 	logTimingTo(logFile, "bwrap exec", time.Since(agentRunStart))
 
-	// Layer 1 FD isolation (#2190): cap the sandbox child's RLIMIT_NOFILE so
+	// Layer 1 FD isolation: cap the sandbox child's RLIMIT_NOFILE so
 	// a misbehaving agent cannot exhaust the host-wide FD pool. The caps are
 	// applied to this process immediately before Start() and restored
 	// immediately after — the child inherits them at fork time, while the
@@ -528,10 +523,8 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 
 	// Supervise the child: foreground the pgid, forward signals (including
 	// SIGWINCH for the bwrap path so resizes propagate to the sandbox), and
-	// wait. The shared SuperviseChild helper (supervise.go, A2.SUP) replaces
-	// the previous open-coded tcsetpgrpForeground / signal-forwarder /
-	// cmd.Wait / tcsetpgrpRestore sequence — same behaviour, single
-	// implementation across the bwrap and sandbox-exec dispatch paths.
+	// wait. The shared SuperviseChild helper (supervise.go) drives the bwrap
+	// and sandbox-exec dispatch paths with one implementation.
 	waitErr := SuperviseChild(bwrapCmd, int(os.Stdin.Fd()), SuperviseOpts{
 		ForwardWinch: true,
 		OnWinch:      nil,
@@ -619,17 +612,16 @@ func minimalBwrapExecEnv(hostEnv []string) []string {
 // applyInitialPromptEnvVar populates cfg.InitialPrompt from the agent pane's
 // environment. Two delivery shapes are supported:
 //
-//  1. PRISM_INITIAL_PROMPT_FILE (post-#1092): the env var holds a filesystem
+//  1. PRISM_INITIAL_PROMPT_FILE: the env var holds a filesystem
 //     path. agent-run reads the file and uses its contents as the prompt.
 //     This is the shape SpawnSession uses for bwrap/sandbox-exec sessions
 //     so the prompt body never has to fit on tmux's `new-window -e` argv —
 //     the file lives in the per-session run directory next to
 //     agent-startup.log / agent-run.log / hostapi.sock.
 //
-//  2. PRISM_INITIAL_PROMPT (pre-#1092 fallback): the env var carries the
-//     prompt body inline. Honoured for back-compat with any pane env that
-//     was set up before #1092 (and for direct callers of agent-run that
-//     have not migrated yet).
+//  2. PRISM_INITIAL_PROMPT: the env var carries the prompt body inline.
+//     Honoured for a pane env that carries the inline value, and for direct
+//     callers of agent-run that use it.
 //
 // Precedence — `PRISM_INITIAL_PROMPT_FILE` wins outright when set:
 //
@@ -645,10 +637,9 @@ func minimalBwrapExecEnv(hostEnv []string) []string {
 //     the read error to stderr and proceeds with no initial prompt.
 //
 // File-read failures are not fatal to agent-run itself. The pane is
-// already alive; failing here would leave the operator with a dead review
-// window and no way to recover. The empty-prompt outcome is no worse than
-// the pre-#1042 behaviour where review agents started without a prompt at
-// all.
+// already alive; a failure here leaves the operator with a dead review
+// window and no way to recover. An empty initial prompt is the acceptable
+// outcome — the agent starts with no prompt.
 func applyInitialPromptEnvVar(cfg *container.Config) {
 	if path := os.Getenv("PRISM_INITIAL_PROMPT_FILE"); path != "" {
 		body, err := os.ReadFile(path)
@@ -697,7 +688,7 @@ func validateSandboxExecArgs(args []string) error {
 
 // openAgentRunLog opens the per-session agent-run log file in append mode for
 // the bwrap and sandbox-exec dispatch paths. It encapsulates the resolve →
-// mkdir → open dance previously inlined in runAgentRun, and is reused by both
+// mkdir → open dance, and is reused by both
 // dispatch paths so they share a single log destination for `[timing]` markers
 // and bwrap stderr tee output.
 //
@@ -745,7 +736,7 @@ func logTimingTo(logFile *os.File, phase string, d time.Duration) {
 	// Stderr is gated through proglog so the line is visible only when
 	// PRISM_LOG_LEVEL=debug; the file write below is unconditional so the
 	// per-session agent-run.log keeps every [timing] marker for post-mortem
-	// `grep '\[timing\]'` diagnostics (see issue #1818).
+	// `grep '\[timing\]'` diagnostics.
 	proglog.Debugf("%s", line)
 	if logFile != nil {
 		_, _ = logFile.WriteString(line)
@@ -756,7 +747,7 @@ func logTimingTo(logFile *os.File, phase string, d time.Duration) {
 // stderr (the tmux pane) and the per-session agent-run log file (when
 // non-nil). Mirrors logTimingTo's dual-destination shape so warnings are
 // greppable post-mortem in agent-run.log alongside the [timing] markers.
-// Used by the #2190 RLIMIT_NOFILE clamp/apply path on both the bwrap and
+// Used by the RLIMIT_NOFILE clamp/apply path on both the bwrap and
 // sandbox-exec dispatch paths.
 func logAgentRunWarning(logFile *os.File, format string, args ...any) {
 	line := fmt.Sprintf("[agent-run] warning: "+format+"\n", args...)
@@ -767,15 +758,14 @@ func logAgentRunWarning(logFile *os.File, format string, args ...any) {
 }
 
 // piOverrides bundles the CLI override values that `prism agent-run` accepts
-// for the pi harness (issue #2086). Empty fields mean "no override" and the
-// active profile slot's value is used unchanged. A non-empty Model wins over
-// slot.Model; a non-empty Variant wins over slot.Thinking (pi consumes both
-// via --model and --thinking on its argv in PIInvocation). A non-empty
-// Provider wins over slot.Provider (pi consumes it via --provider on the same
-// argv; issue #2852).
+// for the pi harness. Empty fields mean "no override" and the active profile
+// slot's value is used unchanged. A non-empty Model wins over slot.Model. A
+// non-empty Variant wins over slot.Thinking. pi consumes both via --model and
+// --thinking on its argv in PIInvocation. A non-empty Provider wins over
+// slot.Provider, which pi consumes via --provider on the same argv.
 //
 // AgentModel is the per-role model override for this session's role, from
-// `prism spawn --model-override <role>=<model>` (issue #2863). It is kept
+// `prism spawn --model-override <role>=<model>`. It is kept
 // apart from Model rather than folded into it because the two are different
 // rungs of the same axis: populatePIConfig copies AgentModel to
 // container.Config.AgentModel and Model to container.Config.PIModel, and
@@ -792,39 +782,35 @@ type piOverrides struct {
 // It:
 //  1. Loads profiles.json.
 //  2. Resolves the profile for this session using the precedence
-//     spawn_inputs.profile_name (#2090) > runtime state file > nix-default.
-//     The DB lookup is the post-#2092 fix for the silent-drop of
-//     `prism spawn --profile <X>` / `--abtest <A> <B>`: spawn-time profile
-//     choice is now read back from the audit row that #2090 writes for every
-//     session, so `--abtest` legs run on their own profile slot instead of
-//     the active profile's slot. When the DB has no row (legacy sessions,
-//     paths that legitimately don't write spawn_inputs, or transient lookup
-//     errors), the function falls through to the existing
-//     state-file / nix-default resolution unchanged.
+//     spawn_inputs.profile_name > runtime state file > nix-default. The DB
+//     lookup makes the spawn-time profile choice authoritative: the audit
+//     row records the profile per session, so `--abtest` legs run on their
+//     own profile slot instead of the active profile's slot. When the DB has
+//     no row (a session with no spawn_inputs row, a path that does not write
+//     spawn_inputs, or a transient lookup error), the function falls through
+//     to the state-file / nix-default resolution.
 //  3. Looks up the slot for the session's agent role — returns a clear error if
 //     the profile does not define a slot for this role.
 //  4. Calls EnsurePIAgentConfigDir to resolve the shared host ~/.pi/agent path
 //     (creating it if absent on a fresh install) and records the host/sandbox
 //     paths on ctrCfg so bwrap can bind-mount the directory and set
 //     PI_CODING_AGENT_DIR. The shared mount carries settings.json, themes/,
-//     AGENTS.md, skills/, and auth.json — all identical across sessions —
-//     since design #2031 PR3 (#2034) collapsed the per-session staging dir.
+//     AGENTS.md, skills/, and auth.json — all identical across sessions.
 //     The role system-prompt is injected at runtime by the prism PI extension,
 //     not staged here.
 //  5. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
 //  6. Copies PIProvider, PIModel, PIThinking from the profile slot, then
-//     applies any CLI overrides from `prism agent-run --model` /
-//     `--variant` (issue #2086). A non-empty Model override wins over
-//     slot.Model; a non-empty Variant override wins over slot.Thinking.
-//     Empty override fields leave the slot value unchanged so the
-//     pre-#2086 default path is preserved. A non-empty Provider override
-//     wins over slot.Provider on the same terms (issue #2852). This whole
-//     function runs only for harness=pi sessions — both call sites gate on
-//     that — so the provider override cannot reach a non-pi launch.
-//  7. Copies the `prism agent-run --agent-model` value to AgentModel (issue
-//     #2863). That is the per-role `prism spawn --model-override` entry for
-//     this session's role; PIInvocation ranks it above PIModel when it
-//     renders pi's --model argument.
+//     applies any CLI overrides from `prism agent-run --model` / `--variant`.
+//     A non-empty Model override wins over slot.Model. A non-empty Variant
+//     override wins over slot.Thinking. Empty override fields leave the slot
+//     value unchanged. A non-empty Provider override wins over slot.Provider
+//     on the same terms. This whole function runs only for harness=pi
+//     sessions — both call sites gate on that — so the provider override
+//     cannot reach a non-pi launch.
+//  7. Copies the `prism agent-run --agent-model` value to AgentModel. That is
+//     the per-role `prism spawn --model-override` entry for this session's
+//     role. PIInvocation ranks it above PIModel when it renders pi's --model
+//     argument.
 func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, cfg config.Config, overrides piOverrides) error {
 	// Load profiles.json.
 	pf, pfErr := config.LoadProfiles()
@@ -834,19 +820,18 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 
 	// Resolve the profile for this session.
 	//
-	// Precedence (post-#2092): spawn_inputs.profile_name > state file > nix-default.
+	// Precedence: spawn_inputs.profile_name > state file > nix-default.
 	//
-	// Before #2092 we passed "" as the flag value, so `prism spawn --profile <X>`
-	// and both legs of `prism spawn --abtest <A> <B>` were silently substituted
-	// for the active profile. The #2090 audit row now carries the spawn-time
-	// profile per instance_id, so reading it back here makes the spawn-time
-	// choice authoritative without re-plumbing a CLI flag on `agent-run`.
+	// The audit row carries the spawn-time profile per instance_id. Reading
+	// it back here makes the spawn-time choice authoritative without a CLI
+	// flag on `agent-run`, so each `--abtest` leg runs on its own profile slot
+	// instead of the active profile.
 	//
 	// When the lookup returns "" (no spawn_inputs row, NULL profile_name, or a
-	// transient DB error) we fall through to the existing state-file /
-	// nix-default path. This preserves restart / restore semantics for legacy
-	// sessions that pre-date #2090 and the host-mode path that does not call
-	// this function at all.
+	// transient DB error) the function falls through to the state-file /
+	// nix-default path. This preserves restart / restore semantics for a
+	// session with no spawn_inputs row and for the host-mode path that does
+	// not call this function at all.
 	spawnProfile := spawnTimeProfileForSession(sessionName)
 	profileName, _, err := config.ResolveActiveProfile(pf, spawnProfile)
 	if err != nil {
@@ -872,8 +857,7 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	// host-path RW bind of auth.json is also retained so $HOME-resolving
 	// call paths inside the sandbox keep working. On sandbox-exec, the
 	// in-sandbox path is overridden in the dispatcher to equal the host
-	// path because sandbox-exec shares the host filesystem. Design #2031,
-	// PR3 (#2034).
+	// path because sandbox-exec shares the host filesystem.
 	//
 	// EnsurePIAgentConfigDir creates the host dir if absent so a fresh install
 	// does not fail the spawn. sessionName is intentionally unused here — the
@@ -894,11 +878,11 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 
 	// Model/provider/thinking from the profile slot, then CLI overrides win.
 	//
-	// Issue #2086: `prism spawn --model` / `--variant` flow through to
-	// `prism agent-run` as explicit flags (threaded via AgentPaneOpts in the
-	// tmux pane command). When non-empty they replace the slot's value here,
-	// before PIInvocation reads PIModel / PIThinking. Empty override fields
-	// fall through to the slot value unchanged.
+	// `prism spawn --model` / `--variant` flow through to `prism agent-run`
+	// as explicit flags (threaded via AgentPaneOpts in the tmux pane
+	// command). When non-empty they replace the slot's value here, before
+	// PIInvocation reads PIModel / PIThinking. Empty override fields fall
+	// through to the slot value unchanged.
 	ctrCfg.PIProvider = slot.Provider
 	ctrCfg.PIModel = slot.Model
 	ctrCfg.PIThinking = slot.Thinking
@@ -908,17 +892,16 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	if overrides.Variant != "" {
 		ctrCfg.PIThinking = overrides.Variant
 	}
-	// Issue #2852: the routing-provider override. An empty value falls
-	// through to slot.Provider unchanged, so no blank `--provider ""` can
-	// ever reach pi's argv — PIInvocation omits the flag for an empty
-	// PIProvider.
+	// The routing-provider override. An empty value falls through to
+	// slot.Provider unchanged, so no blank `--provider ""` can ever reach
+	// pi's argv — PIInvocation omits the flag for an empty PIProvider.
 	if overrides.Provider != "" {
 		ctrCfg.PIProvider = overrides.Provider
 	}
-	// Issue #2863: the per-role `--model-override` entry travels on its own
-	// field so PIInvocation can rank it above PIModel when it renders pi's
-	// --model argument. An empty value leaves AgentModel empty and PIModel
-	// (slot, or agent-run's own --model) decides the model unchanged.
+	// The per-role `--model-override` entry travels on its own field so
+	// PIInvocation can rank it above PIModel when it renders pi's --model
+	// argument. An empty value leaves AgentModel empty and PIModel (slot, or
+	// agent-run's own --model) decides the model unchanged.
 	ctrCfg.AgentModel = overrides.AgentModel
 
 	// Resolve the pi binary path. This must be the absolute store

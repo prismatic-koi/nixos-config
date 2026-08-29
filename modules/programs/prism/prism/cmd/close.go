@@ -1,6 +1,6 @@
 package cmd
 
-// prism close — smart-decide session close based on PR state (issue #2179).
+// prism close — smart-decide session close based on PR state.
 //
 // The decision tree:
 //
@@ -39,25 +39,24 @@ import (
 )
 
 // ghProbeTimeout caps the `gh pr list` probe so a hung GitHub API never
-// wedges the tmux popup (issue #2179, AC: performance ≤ 5s). On timeout the
-// command fails safe to a soft close.
+// wedges the tmux popup. On timeout the command fails safe to a soft close.
 //
 // A var, not a const: tests shrink it so the timeout→fail-safe path is
-// covered without a real 5-second wall-clock wait (issue #2217).
+// covered without a real 5-second wall-clock wait.
 var ghProbeTimeout = 5 * time.Second
 
 // prProbe is the indirection used by decideClose to query PR state for a
 // branch. Replaced in tests with a fake that returns canned responses.
 var prProbe = probePRStateExec
 
-// ghExecOutput is the exec seam used by probePRStateExec to run the gh CLI
-// (issue #2217). Production points at ghExecOutputReal, which shells out to
-// `gh` on $PATH. Tests replace it with a stub returning canned stdout so the
-// probe's argv construction, JSON parsing, and state reduction run
-// in-process — no subprocess, no $PATH lookup, and no network. PATH-injected
-// fake binaries proved environment-fragile (the probe reached the real gh in
-// some worker sandboxes and hit its 5s network timeout), which is why the
-// seam sits at the exec boundary rather than on $PATH.
+// ghExecOutput is the exec seam used by probePRStateExec to run the gh CLI.
+// Production points at ghExecOutputReal, which shells out to `gh` on $PATH.
+// Tests replace it with a stub returning canned stdout so the probe's argv
+// construction, JSON parsing, and state reduction run in-process — no
+// subprocess, no $PATH lookup, and no network. PATH-injected fake binaries
+// are environment-fragile (the probe can reach the real gh in some worker
+// sandboxes and hit its 5s network timeout), which is why the seam sits at
+// the exec boundary rather than on $PATH.
 var ghExecOutput = ghExecOutputReal
 
 // ghExecOutputReal runs `gh` with the given argv in workdir (empty = caller
@@ -145,7 +144,7 @@ func runCloseCmd(cmd *cobra.Command, args []string) error {
 		session = sessionFlag
 		// Validate the session name early against the DB so a typo produces a
 		// helpful enumerated error rather than a later "worktree not found".
-		// Match `prism cleanup`'s error shape exactly (AC: edge-case parity).
+		// Match `prism cleanup`'s error shape exactly.
 		if d, dbErr := openDB(); dbErr == nil {
 			st, stErr := d.CurrentStatus(session)
 			if stErr == nil && st == nil {
@@ -304,10 +303,10 @@ type prProbeResult struct {
 // `gh pr list --head <branch> --state all --json state,number --limit 10`
 // in the supplied working directory with a bounded context timeout.
 //
-// Why `gh pr list` and not `gh pr view`: the AC requires that when multiple
-// PRs exist for the same head branch and any of them is OPEN, the probe
-// returns OPEN. `gh pr view` returns a single PR; `gh pr list --head` returns
-// the full set, which is necessary to honour the multi-PR AC.
+// Why `gh pr list` and not `gh pr view`: when multiple PRs exist for the same
+// head branch and any of them is OPEN, the probe must return OPEN. `gh pr
+// view` returns a single PR; `gh pr list --head` returns the full set, which
+// is necessary to honour the multi-PR case.
 //
 // Returns:
 //   - ("OPEN", nil) when any PR for the branch is OPEN.
@@ -336,7 +335,7 @@ func probePRStateExec(workdir, branch string) (string, error) {
 	if len(prs) == 0 {
 		return "", nil
 	}
-	// Multi-PR case: if any PR is OPEN, treat as OPEN (AC: edge-case).
+	// Multi-PR case: if any PR is OPEN, treat as OPEN.
 	for _, pr := range prs {
 		if strings.EqualFold(pr.State, "OPEN") {
 			return "OPEN", nil

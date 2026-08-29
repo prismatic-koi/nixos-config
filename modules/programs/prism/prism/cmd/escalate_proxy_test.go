@@ -4,8 +4,7 @@ package cmd
 // proxyEscalateWithWriters). These tests stand up a mock host-API on a Unix
 // socket, send an escalate request through proxyEscalateWithWriters, and
 // assert that the stdout/stderr returned by the host are forwarded
-// byte-for-byte to the caller's writers — closing the gap that the
-// review-context blocker on PR #2019 / issue #2018 round 1 surfaced:
+// byte-for-byte to the caller's writers — closing the silent-success gap:
 // without this round-trip, the container path is silent on success.
 
 import (
@@ -180,7 +179,7 @@ func TestProxyEscalate_ForwardsDedupWindow(t *testing.T) {
 // TestProxyEscalate_ForwardsErrorWithStdoutStderr verifies that on a non-2xx
 // response carrying stdout/stderr alongside an error, the proxy forwards
 // both streams to the caller's writers AND returns an error containing the
-// underlying message. Parity with proxyCleanupToHostAPIWithWriters (#1527).
+// underlying message. Parity with proxyCleanupToHostAPIWithWriters.
 func TestProxyEscalate_ForwardsErrorWithStdoutStderr(t *testing.T) {
 	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

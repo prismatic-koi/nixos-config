@@ -1,7 +1,7 @@
 package cmd
 
-// Per-session DB status cache for the AgentRun dispatch path (issue #1140
-// A1.L6). The runAgentRun command opens the prism DB once at the top of the
+// Per-session DB status cache for the AgentRun dispatch path. The runAgentRun
+// command opens the prism DB once at the top of the
 // dispatch, looks up the session status, and stashes it here so the
 // registered AgentRun handlers (runAgentRunBwrapHandler,
 // runAgentRunSandboxExecHandler) can read it without re-querying the DB.
@@ -30,7 +30,7 @@ var (
 	// agentRunOverridesCache caches the CLI override flag values
 	// (--model / --variant) for the session being dispatched, so the
 	// sandbox-exec handler can read them without re-parsing argv. Same
-	// single-entry contract as agentRunStatusCache (issue #2086).
+	// single-entry contract as agentRunStatusCache.
 	agentRunOverridesCache = map[string]piOverrides{}
 )
 
@@ -65,7 +65,7 @@ func clearAgentRunStatus(sessionName string) {
 // storeAgentRunOverrides stashes the CLI overrides parsed by runAgentRun so
 // the registered per-mode handler can read them via loadAgentRunOverrides.
 // Empty fields mean "no override" and the active profile slot's value is
-// used unchanged (issue #2086).
+// used unchanged.
 func storeAgentRunOverrides(sessionName string, overrides piOverrides) {
 	agentRunStatusMu.Lock()
 	defer agentRunStatusMu.Unlock()
@@ -82,7 +82,7 @@ func loadAgentRunOverrides(sessionName string) piOverrides {
 }
 
 // runAgentRunSandboxExecHandler is the registered AgentRun handler for the
-// sandbox-exec isolation mode (issue #1140 A1.L6). It forwards to
+// sandbox-exec isolation mode. It forwards to
 // runAgentRunSandboxExec, which is implemented per-platform
 // (agent_run_sandbox_exec_darwin.go on Darwin, _other.go elsewhere) and
 // owns the kqueue parent-death watcher and the supervised-child lifecycle.

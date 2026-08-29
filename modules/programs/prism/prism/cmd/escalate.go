@@ -113,7 +113,7 @@ func init() {
 
 // escalateDefaultDedupWindow is the default sender-side dedup window for
 // `prism escalate`. A second invocation with byte-identical (from, target,
-// prompt_text) within this window short-circuits as a replay. See #2018.
+// prompt_text) within this window short-circuits as a replay.
 const escalateDefaultDedupWindow = 5 * time.Minute
 
 func runEscalate(cmd *cobra.Command, args []string) error {
@@ -136,8 +136,8 @@ func runEscalate(cmd *cobra.Command, args []string) error {
 	// on the host with PRISM_HOST_API unset. The host-side invocation will
 	// produce the success line; the proxy forwards its stdout/stderr to the
 	// caller's streams so the OK signal reaches the container's bash tool.
-	// (Without this re-emit, the container caller would see no output on
-	// success — the exact symptom issue #2018 set out to eliminate.)
+	// Without this re-emit, the container caller sees no output on success,
+	// which this path must avoid.
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		dedupArg := ""
 		if cmd.Flags().Changed("dedup-window") {
@@ -222,9 +222,9 @@ func (q *quietExitErr) Unwrap() error { return q.inner }
 
 // runEscalateForSession is the testable core of runEscalate, parameterised on
 // the calling session name so unit tests can drive it without the CWD walk.
-// This is the public, backwards-compatible signature used by existing tests;
-// new callers should use runEscalateForSessionOpts to thread --json and
-// --dedup-window through.
+// This signature is used by tests that do not need the --json or
+// --dedup-window switches; other callers use runEscalateForSessionOpts to
+// thread those through.
 func runEscalateForSession(database *db.DB, fromSession, explicitTo, promptText string) error {
 	return runEscalateForSessionOpts(database, fromSession, explicitTo, promptText, escalateOptions{dedupWindow: escalateDefaultDedupWindow})
 }
@@ -286,7 +286,7 @@ func runEscalateForSessionOpts(database *db.DB, fromSession, explicitTo, promptT
 		OccurredAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// Sender-side idempotency guard (issue #2018): if this is a byte-equal
+	// Sender-side idempotency guard: if this is a byte-equal
 	// re-run of a recent escalation we already delivered to the same target,
 	// short-circuit before any state transition, agent_events write, or
 	// bus_messages row. The session must currently be in `escalated` state
@@ -341,7 +341,7 @@ func runEscalateForSessionOpts(database *db.DB, fromSession, explicitTo, promptT
 	// dashboard reflects reality; only the bus delivery is skipped. This
 	// mirrors the notifyCoordinator suppression in internal/sidecar/notify.go
 	// for the finish-notification path — outbound to the coordinator is the
-	// suppression boundary, DB writes are unaffected. (#2013)
+	// suppression boundary, DB writes are unaffected.
 	if selfStatus.Muted {
 		fmt.Fprintf(os.Stderr,
 			"prism escalate: session %q is muted; coordinator notification suppressed (state still transitioned to escalated, bus event still written).\n",
@@ -422,8 +422,7 @@ func emitEscalateReplay(opts escalateOptions, target string, prior *db.BusMessag
 }
 
 // formatEscalateAge renders a duration as the shortest of "<N>s", "<N>m",
-// or "<N>h". Sub-second durations clamp to "0s". This matches the format
-// described in the acceptance criteria of issue #2018.
+// or "<N>h". Sub-second durations clamp to "0s".
 func formatEscalateAge(d time.Duration) string {
 	if d < 0 {
 		d = 0
@@ -519,8 +518,8 @@ func echoEscalationToSelf(database *db.DB, fromSession string, selfStatus *db.St
 }
 
 // writeSessionEscalatedEvent writes a bus-shaped event of type
-// "session.escalated" into agent_events for the calling session. This is the
-// new event type distinct from "session.finished": handlers that subscribe
+// "session.escalated" into agent_events for the calling session. This event
+// type is distinct from "session.finished": handlers that subscribe
 // only to session.finished receive nothing for an escalation.
 func writeSessionEscalatedEvent(database *db.DB, fromSession string, selfStatus *db.Status, payload EscalationPayload) {
 	body, err := json.Marshal(payload)
@@ -579,7 +578,7 @@ func deliverEscalationPrompt(database *db.DB, fromSession string, target *db.Sta
 			return "", err
 		}
 	} else {
-		// Pre-migration row with no harness column. Fall back to HTTP delivery.
+		// A row with no harness column falls back to HTTP delivery.
 		if err := deliverEscalationToTarget(target, promptText); err != nil {
 			if writeErr := database.WriteBusMessageFailed(msg); writeErr != nil {
 				fmt.Fprintf(os.Stderr, "prism escalate: write failed audit: %v\n", writeErr)
@@ -671,8 +670,7 @@ func discoverLastReviewVerdicts(database *db.DB, fromSession string) []string {
 // in the response body and re-emitted on the local streams here so the
 // container caller sees the success/replay line (and — in --json mode — the
 // JSON envelope on stdout). Without this round-trip, the container path
-// would be silent on success, reproducing the symptom issue #2018 set out
-// to eliminate.
+// is silent on success.
 func proxyEscalate(apiURL, explicitTo, promptText string, jsonOut bool, dedupWindow string) error {
 	return proxyEscalateWithWriters(apiURL, explicitTo, promptText, jsonOut, dedupWindow, os.Stdout, os.Stderr)
 }
@@ -698,7 +696,7 @@ type escalateProxyResponse struct {
 // the handler attaches to error responses. We need both streams forwarded
 // unconditionally so the caller sees partial output and the underlying
 // cause even when the host child failed. This is parity with
-// proxyCleanupToHostAPIWithWriters (issue #1527).
+// proxyCleanupToHostAPIWithWriters.
 func proxyEscalateWithWriters(apiURL, explicitTo, promptText string, jsonOut bool, dedupWindow string, stdout, stderr io.Writer) error {
 	body := map[string]any{
 		"prompt": promptText,

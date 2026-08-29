@@ -16,8 +16,8 @@ import (
 // `prism event doom-loop-detected` writes a doom_loop_detected event to the DB
 // with the correct payload fields.
 func TestEventDoomLoopDetected_WritesEvent(t *testing.T) {
-	resetRootCmdFlags(t) // #1521: wipe leftover cobra flag state
-	// Unset PRISM_HOST_API so the direct DB path is exercised (#1254 — proxy
+	resetRootCmdFlags(t) // wipe leftover cobra flag state
+	// Unset PRISM_HOST_API so the direct DB path is exercised (proxy
 	// tests are in event_proxy_test.go).
 	t.Setenv("PRISM_HOST_API", "")
 	const session = "testrepo@main"
@@ -87,7 +87,7 @@ func TestEventDoomLoopDetected_WritesEvent(t *testing.T) {
 // event even when the session does not have an agent_status row (repo/worktree
 // default to empty strings in that case).
 func TestEventDoomLoopDetected_UnknownSession(t *testing.T) {
-	resetRootCmdFlags(t) // #1521: wipe leftover cobra flag state
+	resetRootCmdFlags(t) // wipe leftover cobra flag state
 	t.Setenv("PRISM_HOST_API", "")
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
@@ -131,7 +131,7 @@ func TestEventDoomLoopDetected_UnknownSession(t *testing.T) {
 // TestEventDoomLoopDetected_DefaultCount verifies that the default count is 5
 // when not specified.
 func TestEventDoomLoopDetected_DefaultCount(t *testing.T) {
-	resetRootCmdFlags(t) // #1521: wipe leftover cobra flag state
+	resetRootCmdFlags(t) // wipe leftover cobra flag state
 	t.Setenv("PRISM_HOST_API", "")
 	const session = "testrepo@main"
 
@@ -185,7 +185,7 @@ func TestEventDoomLoopDetected_DefaultCount(t *testing.T) {
 // TestEventDoomLoopDetected_PayloadContainsFields verifies the raw JSON payload
 // contains the expected field names.
 func TestEventDoomLoopDetected_PayloadContainsFields(t *testing.T) {
-	resetRootCmdFlags(t) // #1521: wipe leftover cobra flag state
+	resetRootCmdFlags(t) // wipe leftover cobra flag state
 	t.Setenv("PRISM_HOST_API", "")
 	const session = "testrepo@main"
 

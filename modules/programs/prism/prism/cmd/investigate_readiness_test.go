@@ -1,6 +1,6 @@
 package cmd
 
-// investigate_readiness_test.go — issue #2360 regression tests.
+// investigate_readiness_test.go — readiness-gate regression tests.
 //
 // Pins that:
 //
@@ -9,9 +9,8 @@ package cmd
 //     internal/session/spawn.go actually blocks on the child agent's
 //     handshake AND initial prompt delivery. Without this the /investigate
 //     command exits 0 the moment tmux + sidecar are kicked off — the
-//     silent-success pathology observed at 07:48 on 2026-07-06 where the
-//     host-API endpoint returned 200 with no live session afterwards
-//     (finding B4 of #2356).
+//     silent-success pathology where the host-API endpoint returns 200 with
+//     no live session afterwards.
 //
 //  2. investigateClientTimeout — the worker-side (container-side) client
 //     timeout for POST /investigate — is at least as large as the host-side
@@ -21,7 +20,7 @@ package cmd
 //     r.Context() on the server and SIGKILLs the `prism investigate` child
 //     mid-spawn with no unwind.
 //
-// Test-suite isolation contract (AGENTS.md, issue #1608): the readiness
+// Test-suite isolation contract (AGENTS.md): the readiness
 // gate test reuses the isolateForInvestigateBuilder helper, which pipes
 // through sidecartest.NewIsolated — no $HOME writes, no host tmux/DB/bus
 // state. The client-timeout test is a pure constant assertion + a mock
@@ -36,7 +35,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
-// TestInvestigateBuildSpawnOpts_SetsReadinessTimeout is the #2360 primary
+// TestInvestigateBuildSpawnOpts_SetsReadinessTimeout is the primary
 // regression: without ReadinessTimeout set, SpawnSession's readiness gate at
 // internal/session/spawn.go is skipped (the gate check is `if
 // opts.ReadinessTimeout > 0`), so the command exits 0 before the agent has
@@ -54,17 +53,18 @@ func TestInvestigateBuildSpawnOpts_SetsReadinessTimeout(t *testing.T) {
 	}
 	// The gate check at internal/session/spawn.go is `if opts.ReadinessTimeout > 0`.
 	// Any non-zero value would technically satisfy the gate; we pin the specific
-	// value (DefaultReadinessTimeout) to match the AC "same default duration as
-	// prism spawn" — this is the value cmd/spawn.go uses for its readiness gate,
-	// and matching it ensures /investigate and /spawn behave symmetrically.
+	// value (DefaultReadinessTimeout) to match the "same default duration as
+	// prism spawn" contract — this is the value cmd/spawn.go uses for its
+	// readiness gate, and matching it ensures /investigate and /spawn behave
+	// symmetrically.
 	if opts.ReadinessTimeout != session.DefaultReadinessTimeout {
 		t.Errorf("SpawnOpts.ReadinessTimeout = %v, want session.DefaultReadinessTimeout (%v) — "+
 			"without this the child exits 0 before the agent handshake is observed (#2360)",
 			opts.ReadinessTimeout, session.DefaultReadinessTimeout)
 	}
-	// Defence-in-depth: a zero value means the gate is skipped entirely, which
-	// is the pre-fix behaviour. Fail loudly if that regresses even if the
-	// exact-value assertion above is loosened.
+	// Defence-in-depth: a zero value means the gate is skipped entirely. Fail
+	// loudly if that regresses even if the exact-value assertion above is
+	// loosened.
 	if opts.ReadinessTimeout == 0 {
 		t.Errorf("SpawnOpts.ReadinessTimeout is zero — readiness gate is skipped, silent-success regression (#2360)")
 	}
@@ -92,9 +92,9 @@ func TestInvestigateClientTimeout_MeetsOrExceedsHandlerBudget(t *testing.T) {
 // TestProxyToHostAPIWithTimeout_HonoursOverride verifies the plumbing: when
 // clientTimeout is smaller than the server's response latency, the client
 // aborts (any error is fine — the point is it does not silently wait for the
-// server). This is the mechanism by which the pre-fix 60 s client timeout
-// aborted slow-but-successful /investigate spawns; the fix aligns the two
-// values so this class of abort can no longer fire.
+// server). This is the mechanism by which a 60 s client timeout aborts
+// slow-but-successful /investigate spawns; aligning the two values removes
+// this class of abort.
 func TestProxyToHostAPIWithTimeout_HonoursOverride(t *testing.T) {
 	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
 		// Sleep longer than the client timeout so client.Timeout fires.
@@ -122,13 +122,13 @@ func TestProxyToHostAPIWithTimeout_HonoursOverride(t *testing.T) {
 
 // TestProxyToHostAPIWithTimeout_ZeroPreservesDefault verifies the negative
 // case: clientTimeout=0 means "use the default 60 s from newHostAPIClient"
-// — the override path must not clobber the default to 0 (which would mean
+// — the override path must not set the default to 0 (which would mean
 // "no timeout" and could hang callers indefinitely).
 //
 // We check this by exercising a fast handler with clientTimeout=0 and
 // asserting the call succeeds. If clientTimeout=0 accidentally set
 // client.Timeout = 0, the call would still succeed here (0 means unbounded),
-// so we complement with a second call using proxyToHostAPI (the pre-fix
+// so we complement with a second call using proxyToHostAPI (the plain
 // entry point) to confirm the wrapping is a no-op — the point of this test
 // is that adding the timeout parameter does not change existing behaviour
 // for callers that don't opt in.
@@ -145,7 +145,7 @@ func TestProxyToHostAPIWithTimeout_ZeroPreservesDefault(t *testing.T) {
 	})
 
 	// Both entry points on a fast handler with clientTimeout=0 must succeed
-	// — the timeout parameter is opt-in and defaults to the pre-fix 60 s.
+	// — the timeout parameter is opt-in and defaults to 60 s.
 	if err := proxyToHostAPIWithTimeout(srv.apiURL(), "/investigate", map[string]any{"prompt": "x"}, nil, 0); err != nil {
 		t.Errorf("proxyToHostAPIWithTimeout(0) on fast handler: unexpected error: %v", err)
 	}

@@ -1,7 +1,6 @@
 package cmd
 
-// Tests for the `prism reset` transcript-removal code path (issue #2220,
-// superseding the dead-layout sweep from issue #1947).
+// Tests for the `prism reset` transcript-removal code path.
 //
 // resetClearPiTranscripts deletes exactly the *_<harness_session_id>.jsonl
 // files belonging to the snapshotted resume pointers from the shared host pi
@@ -22,7 +21,7 @@ import (
 )
 
 // TestResetClearPiTranscripts_RemovesExactlyTargetedJSONLs is the primary
-// issue #2220 AC test: transcripts are planted for two distinct cwd roots,
+// test: transcripts are planted for two distinct cwd roots,
 // the reset covers only one of them, and the other root is untouched. A
 // sibling transcript with a different harness_session_id in the SAME
 // encoded-cwd directory must also survive — the removal is per-file, not
@@ -96,8 +95,8 @@ func TestResetClearPiTranscripts_MultiplePointersAllRemoved(t *testing.T) {
 	}
 }
 
-// TestResetClearPiTranscripts_NoTranscriptsNoError is the issue #2220
-// edge-case AC: `prism reset` on a host with no transcripts completes
+// TestResetClearPiTranscripts_NoTranscriptsNoError is the edge case:
+// `prism reset` on a host with no transcripts completes
 // without error, and the sessions root is not materialised as a side
 // effect.
 func TestResetClearPiTranscripts_NoTranscriptsNoError(t *testing.T) {
@@ -162,14 +161,14 @@ func TestResetClearPiTranscripts_BlankPointerFieldsSkipped(t *testing.T) {
 	}
 }
 
-// TestResetClearPiTranscripts_DeadLayoutsNotSwept pins the removal of the
-// pre-#2220 dead-layout sweeps. The old implementation deleted
-// $XDG_STATE_HOME/prism/run/<hash>/pi-agent/sessions/ (pre-#1985 bwrap
-// layout) and $XDG_STATE_HOME/prism/sessions/<instanceID>/home/.pi/agent/
-// sessions/ (sandbox-exec staging HOME). Both trees are planted here and
-// must survive a reset that DOES remove a targeted shared-root transcript —
-// proving the test is not vacuous and that reset no longer walks the prism
-// state root at all.
+// TestResetClearPiTranscripts_DeadLayoutsNotSwept pins that reset does NOT
+// sweep the dead-layout trees: $XDG_STATE_HOME/prism/run/<hash>/pi-agent/
+// sessions/ (an old bwrap layout) and
+// $XDG_STATE_HOME/prism/sessions/<instanceID>/home/.pi/agent/sessions/
+// (a sandbox-exec staging HOME). Both trees are planted here and must survive
+// a reset that DOES remove a targeted shared-root transcript — proving the
+// test is not vacuous and that reset does not walk the prism state root at
+// all.
 func TestResetClearPiTranscripts_DeadLayoutsNotSwept(t *testing.T) {
 	clearPICodingAgentDir(t)
 	home := t.TempDir()
@@ -177,7 +176,7 @@ func TestResetClearPiTranscripts_DeadLayoutsNotSwept(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 
-	// Dead layout 1: pre-#1985 bwrap run-dir layout.
+	// Dead layout 1: an old bwrap run-dir layout.
 	bwrapLegacy := filepath.Join(stateHome, "prism", "run", "abc123def456", "pi-agent", "sessions", "--wt--")
 	if err := os.MkdirAll(bwrapLegacy, 0o700); err != nil {
 		t.Fatalf("mkdir bwrap legacy: %v", err)

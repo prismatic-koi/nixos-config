@@ -1,7 +1,7 @@
 package cmd
 
-// Tests for the PRISM_HOST_API proxy paths in cmd/event.go added in #1254 to
-// fix the container shadow-DB issue.
+// Tests for the PRISM_HOST_API proxy paths in cmd/event.go, which fix the
+// container shadow-DB issue.
 //
 // These tests stand up a real HTTP server bound to a Unix socket on disk
 // and point PRISM_HOST_API at it, then exercise each event subcommand and
@@ -158,7 +158,7 @@ func TestEventDoomLoopDetected_ProxyDoesNotTouchLocalDB(t *testing.T) {
 }
 
 // TestEventDoomLoopDetected_ProxyUnreachableSocketReturnsClearError covers the
-// AC edge-case: when PRISM_HOST_API is set but the socket is unreachable, the
+// edge case: when PRISM_HOST_API is set but the socket is unreachable, the
 // command must return a clear error and exit non-zero without falling back to
 // the local DB.
 func TestEventDoomLoopDetected_ProxyUnreachableSocketReturnsClearError(t *testing.T) {
@@ -270,7 +270,7 @@ func TestEventProxy_TmuxSessionEndProxies(t *testing.T) {
 
 // TestEventProxy_ServerReturns400ForUnknownKindSurfacesError verifies that
 // when the server returns a 400 (e.g. for an unknown kind), the CLI returns a
-// non-nil error containing the server's message. This covers the AC edge-case
+// non-nil error containing the server's message. This covers the case
 // where an unknown kind is rejected with a clear error message.
 func TestEventProxy_ServerReturns400ForUnknownKindSurfacesError(t *testing.T) {
 	server, apiURL := startFakeEventAPIServer(t)

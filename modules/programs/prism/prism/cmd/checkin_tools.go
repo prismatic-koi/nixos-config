@@ -22,15 +22,15 @@ func extractMessageID(raw string) string {
 
 // extractParentMessageID returns the assistant-turn message id that owns a
 // child event (tool_call, tool_result, permission_*, thinking). It prefers
-// the post-#1787 `parentMessageId` field (emitted by the pi prism extension
-// on tool_call/tool_result frames) and falls back to `messageId` for event
-// types that have always carried the parent link on that field
-// (permission_ask, permission_denied, thinking).
+// the `parentMessageId` field (emitted by the pi prism extension on
+// tool_call/tool_result frames) and falls back to `messageId` for event
+// types that carry the parent link on that field (permission_ask,
+// permission_denied, thinking).
 //
 // Returns an empty string for orphan events whose parent assistant turn is
-// not represented in the payload at all — callers should treat that as the
-// "no parent" signal rather than skip silently, so #1787's edge-case AC
-// (orphan rendered as a standalone summary) is honoured.
+// not represented in the payload at all — callers must treat that as the
+// "no parent" signal rather than skip silently, so an orphan is rendered as
+// a standalone summary.
 func extractParentMessageID(raw string) string {
 	var p struct {
 		ParentMessageID string `json:"parentMessageId"`
@@ -138,11 +138,11 @@ func toolKeyArg(tool, args string) string {
 		return ""
 
 	default:
-		// Post-#1783: payload.ToolCall.Args is a JSON RawMessage,
-		// so a string-typed args arrives here with its JSON quotes
+		// payload.ToolCall.Args is a JSON RawMessage, so a
+		// string-typed args arrives here with its JSON quotes
 		// intact (e.g. `"main.go"`). Strip the quoting via
-		// json.Unmarshal so the generic-tool fallback matches the
-		// pre-#1783 behaviour for unrecognised tools.
+		// json.Unmarshal so the generic-tool fallback shows the
+		// unquoted value for unrecognised tools.
 		display := args
 		var s string
 		if err := json.Unmarshal([]byte(args), &s); err == nil {

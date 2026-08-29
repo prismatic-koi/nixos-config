@@ -40,7 +40,7 @@ import (
 // On success (or if PRISM_HOST_API is unset) returns ("", false), which tells
 // the caller to proceed with the direct DB path. When PRISM_HOST_API is set,
 // this always returns a non-nil error or (nil, true) — it never falls back to
-// the local DB (which would re-introduce the shadow-DB bug, AC edge-case).
+// the local DB (which would re-introduce the shadow-DB bug).
 func proxyEventToHostAPI(kind, session string, args map[string]string) (bool, error) {
 	apiURL := sandboxenv.HostAPISocket()
 	if apiURL == "" {
@@ -109,10 +109,9 @@ func deriveBareRoot(worktree string) string {
 //
 // The name says "worktree path" because this function takes a filesystem path.
 // Its name-taking counterpart is sessionname.Repo, which takes a session name.
-// Until issue #2658 both were called `deriveRepo`, in two packages, with
-// incompatible semantics: this one returns "" for a non-worktree session,
-// while the other returned the whole session name. That is how
-// `obsidian~investigate-v2` came to be stored as its own repo.
+// This function returns "" for a non-worktree session. A function that returns
+// the whole session name instead stores a session like
+// `obsidian~investigate-v2` as its own repo.
 func repoFromWorktreePath(worktree string) string {
 	bareRoot := deriveBareRoot(worktree)
 	if bareRoot == "" {
@@ -339,9 +338,8 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 		}
 		// Wipe the durable pending-replay buffer for this session name so a
 		// fresh incarnation cannot resurrect stale coordinator directives
-		// buffered against a previous incarnation (issue #2359
-		// review-context follow-up). Session names are reused by design
-		// (respawn-after-cleanup, #2094); without this the sidecar's
+		// buffered against a previous incarnation. Session names are reused
+		// by design (respawn-after-cleanup); without this the sidecar's
 		// restorePendingReplayFromDB would drain the previous incarnation's
 		// rows into the fresh agent's next handshake. Best-effort: a purge
 		// failure is logged but does not fail the event — the worst case is
@@ -358,28 +356,28 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 		//
 		//  2. agent_status has an instance_id AND the corresponding sessions
 		//     row has ended_at unset (live incarnation) — reuse it. This
-		//     preserves the post-#1507 host-side mint (SpawnSession writes the
+		//     preserves the host-side mint (SpawnSession writes the
 		//     fresh instance_id before tmux-session-start fires) and the
-		//     within-incarnation profile-pin semantics from #2092 (an
+		//     within-incarnation profile-pin semantics (an
 		//     agent-pane restart while ended_at is unset must keep resolving
 		//     to the same spawn_inputs.profile_name, including legitimate
 		//     `prism spawn --profile X` / `--abtest A B` pins).
 		//
 		//  3. agent_status has an instance_id AND the corresponding sessions
 		//     row has ended_at set (previous incarnation is over) — mint a
-		//     fresh UUID (#2253). Reusing the instance_id would otherwise
+		//     fresh UUID. Reusing the instance_id would otherwise
 		//     carry the previous incarnation's `spawn_inputs.profile_name`
 		//     pin forward forever, so respawned long-lived coordinators (e.g.
 		//     `home-ops@main` reopened via `prism switch`) ignore the
 		//     currently-active profile. A fresh instance_id has no
 		//     spawn_inputs row, so profile resolution at agent-run time falls
 		//     through to the state file / nix default (the user's active
-		//     profile). Historical spawn_inputs rows are left intact as the
-		//     #2090 audit trail that `prism stats` / archive queries
-		//     aggregate by profile_name — see SessionByInstanceID lookup
-		//     below; we never UPDATE or DELETE the ended row.
+		//     profile). The prior spawn_inputs rows are left intact as the
+		//     audit trail that `prism stats` / archive queries aggregate by
+		//     profile_name — see SessionByInstanceID lookup below; we never
+		//     UPDATE or DELETE the ended row.
 		//
-		// A nil prevSess (legacy pre-#1606 agent_status row whose instance_id
+		// A nil prevSess (an agent_status row whose instance_id
 		// has no matching sessions entry) and any lookup error preserve the
 		// existing reuse behaviour — only a positive "previous incarnation
 		// has ended" signal triggers a fresh mint.
@@ -432,7 +430,7 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 				GroupID:          groupID,
 			}
 			if err := d.InsertSession(sessRow); err != nil {
-				// Non-fatal: session table is new infrastructure; log and continue.
+				// Non-fatal: log and continue.
 				fmt.Fprintf(os.Stderr, "prism event tmux-session-start: insert session: %v\n", err)
 			}
 		}
@@ -544,12 +542,12 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 			return fmt.Errorf("event tmux-session-end: purge bus messages: %w", err)
 		}
 
-		// Clean up any per-session bus sentinel files that may have been written
-		// by older versions of `prism prompt`. The sentinel (<session>.signal in
-		// prism/bus/) is no longer created as of the HTTP-only delivery refactor,
-		// but the removal is retained to clean up files left from prior runs.
-		// It is separate from the shared .dashboard.signal used by the dashboard
-		// watcher. The removal is best-effort — the file may not exist.
+		// Clean up any per-session bus sentinel files. The sentinel
+		// (<session>.signal in prism/bus/) is not created by the current
+		// HTTP-only delivery path; this removal clears files left by earlier
+		// versions of `prism prompt`. It is separate from the shared
+		// .dashboard.signal used by the dashboard watcher. The removal is
+		// best-effort — the file may not exist.
 		stateHome := os.Getenv("XDG_STATE_HOME")
 		if stateHome == "" {
 			home, _ := os.UserHomeDir()

@@ -1,13 +1,11 @@
 package cmd
 
-// wait.go — shared helpers for the --wait flag on prism merge / review / spawn
-// (issue #1500).
+// wait.go — shared helpers for the --wait flag on prism merge / review / spawn.
 //
 // Three concerns live here:
 //
 //   1. backoffSchedule — exponential backoff with jitter for poll loops.
-//      Centralised so reviewers can spot the implementation in one place
-//      (AC: "verifiable by reading the code").
+//      Centralised so reviewers can spot the implementation in one place.
 //
 //   2. setupWaitSignals — installs a SIGINT/SIGTERM handler that does NOT
 //      cancel the underlying job (merge, review, spawn). It only flips a
@@ -46,9 +44,7 @@ const (
 
 // Exit codes emitted by --wait paths. The wait commands return these via an
 // exitCodeError so cobra surfaces them on os.Exit. "Timeout" is distinct from
-// a "real" terminal failure so callers can tell the two apart (AC: "On
-// timeout, exits non-zero with a status payload distinguishable from a real
-// merge failure.").
+// a "real" terminal failure so callers can tell the two apart.
 const (
 	waitExitOK            = 0
 	waitExitTerminalFail  = 2 // job reached a non-success terminal state
@@ -84,9 +80,8 @@ func newExitErr(code int, msg string) error {
 //
 //	~500ms, ~1s, ~2s, ~4s, ~5s, ~5s, ... (each ±50%)
 //
-// Centralising this in one named function makes the AC ("verifiable by
-// reading the code") trivially auditable: every --wait poll loop calls
-// backoffSchedule and uses the returned closure.
+// Centralising this in one named function makes it trivially auditable:
+// every --wait poll loop calls backoffSchedule and uses the returned closure.
 func backoffSchedule(base, max time.Duration) func() time.Duration {
 	if base <= 0 {
 		base = 500 * time.Millisecond
@@ -116,7 +111,7 @@ func backoffSchedule(base, max time.Duration) func() time.Duration {
 // with waitExitUserInterrupt.
 //
 // Critical: pressing Ctrl-C must NOT cancel the underlying merge / review /
-// spawn job (AC: edge-case). The job is driven by a separate process (the
+// spawn job. The job is driven by a separate process (the
 // merge-queue watcher, the review monitor, or the spawned agent's sidecar);
 // Ctrl-C only interrupts our local poller. setupWaitSignals installs a
 // signal handler that flips this flag and does nothing else.
@@ -146,9 +141,9 @@ func setupWaitSignals() (*waitInterruptState, func()) {
 				state.tripped.Store(1)
 				// Continue draining so a second Ctrl-C doesn't terminate
 				// us before the poll loop sees the first one. We deliberately
-				// do NOT exit on a second Ctrl-C: the AC requires that we
-				// always return cleanly so the underlying job is not
-				// cancelled. The user can kill -9 if they want a hard exit.
+				// do NOT exit on a second Ctrl-C: we always return cleanly
+				// so the underlying job is not cancelled. The user can
+				// kill -9 if they want a hard exit.
 			case <-done:
 				signal.Stop(ch)
 				return
@@ -178,8 +173,7 @@ func (s *waitInterruptState) userInterrupted() bool {
 // before calling.
 //
 // The first probe call runs with no sleep beforehand so an already-terminal
-// state is observed immediately (AC: "calling prism merge --wait on an
-// already-merged PR returns immediately").
+// state is observed immediately.
 func pollWait(ctx context.Context, timeout time.Duration, base, max time.Duration, probe func() (done bool, err error)) error {
 	state, stop := setupWaitSignals()
 	defer stop()
