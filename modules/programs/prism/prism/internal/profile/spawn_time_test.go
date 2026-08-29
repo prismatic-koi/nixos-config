@@ -1,15 +1,13 @@
 package profile
 
-// spawn_time_test.go — issue #2097 unit tests for the lifted lookup helper.
+// spawn_time_test.go — unit tests for the spawn-time lookup helper.
 //
-// SpawnTimeForSession was originally an unexported cmd-side function
-// (`cmd/agent_run_profile.go::spawnTimeProfileForSession`, #2092). It
-// was promoted into this package so the child-spawn surfaces
+// SpawnTimeForSession lives in this package so the child-spawn surfaces
 // (`internal/review`, `cmd/investigate.go`) can read the same column
 // without an import cycle. The tests here pin the lookup behaviour and
 // the best-effort error swallowing contract.
 //
-// Test-suite isolation contract (AGENTS.md, issue #1608):
+// Test-suite isolation contract (AGENTS.md):
 //   - sidecartest.NewIsolated redirects $XDG_STATE_HOME to a t.TempDir()
 //     and sets PRISM_TEST_MODE_RESTRICT_HOSTAPI so no host bus / DB /
 //     tmux state is touched.
@@ -82,7 +80,7 @@ func TestSpawnTimeForSession_NullProfileName(t *testing.T) {
 }
 
 // TestSpawnTimeForSession_MissingSpawnInputs covers a sessions row
-// that has no spawn_inputs row (pre-#2090 legacy). The lookup must
+// that has no spawn_inputs row (legacy). The lookup must
 // short-circuit without error.
 func TestSpawnTimeForSession_MissingSpawnInputs(t *testing.T) {
 	bus := sidecartest.NewIsolated(t, "")

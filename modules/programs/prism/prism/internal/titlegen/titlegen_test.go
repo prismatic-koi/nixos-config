@@ -85,8 +85,8 @@ func TestSanitise_OSCSequenceIsDefanged(t *testing.T) {
 	}
 }
 
-// TestIsRejected pins the small, table-driven rejection rule set from
-// issue #2693: a reply that is not title-shaped must be rejected so the
+// TestIsRejected pins the small, table-driven rejection rule set:
+// a reply that is not title-shaped must be rejected so the
 // caller falls back, rather than being truncated into the title column.
 func TestIsRejected(t *testing.T) {
 	cases := []struct {

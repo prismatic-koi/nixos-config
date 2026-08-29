@@ -1,5 +1,5 @@
 // Package account tests for the on-disk store and atomic swap logic
-// behind `prism account` (#2283).
+// behind `prism account`.
 //
 // All tests are hermetic: $XDG_CONFIG_HOME is redirected to a per-test
 // tempdir and $PI_AUTH_JSON points at a file inside that tempdir.

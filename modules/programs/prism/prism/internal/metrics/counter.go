@@ -11,7 +11,7 @@ import (
 // It is deliberately write-restricted: Add refuses a negative delta and
 // there is no Set. A counter that can move backwards is read by Prometheus
 // as a process restart, and rate() / increase() then return wrong numbers
-// across that boundary with no error anywhere (#2699 section 3). Restore is
+// across that boundary with no error anywhere. Restore is
 // the single exception — it seeds the values from a persisted snapshot
 // before the counter is first exposed, which is what makes a restart
 // invisible to the scraper.
@@ -61,7 +61,7 @@ func WithLabelValueNormaliser(f func([]string) []string) CounterOption {
 }
 
 // NewCounterVec returns a counter family. labelNames must be a closed,
-// bounded set — see #2699 section 6. session_name, instance_id, and
+// bounded set. session_name, instance_id, and
 // issue_ref are unbounded and must never appear here.
 //
 // A label NAME drawn from a closed set is necessary but not sufficient: when

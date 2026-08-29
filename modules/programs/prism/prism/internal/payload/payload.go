@@ -68,21 +68,11 @@ type MsgAssistant struct {
 
 // ToolCall is the payload for tool_call events.
 //
-// Field shape (issue #1783): the JSON field names mirror what the pi
-// prism extension emits verbatim on the harness socket
+// Field shape: the JSON field names mirror what the pi prism extension
+// emits verbatim on the harness socket
 // (`pi/extensions/prism.ts:2429-2444`):
 //
 //	{"type":"tool_call","id":"...","name":"bash","args":{"command":"…"},"truncated":false}
-//
-// Pre-#1783 the struct declared `tool`, `args` (Go `string`), and
-// `messageId` — a wire format that no live producer has emitted since
-// at least pi 0.75.3. Renderers using the old fields saw
-// `json.Unmarshal` fail on `args` (object vs string mismatch) and
-// emitted `(parse error)` for every tool call. The rename here
-// realigns the consumer side with the upstream wire shape; the older
-// `internal/harness/pi/adapter.go::NormaliseFrame` Translate path is
-// updated alongside so DB rows written by that path also carry the
-// new field names.
 //
 // Args is a `json.RawMessage` because the extension emits a JSON
 // object (a `Record<string, unknown>`), not an escaped string. Each
@@ -93,13 +83,12 @@ type MsgAssistant struct {
 // Truncated is set by the extension when args were oversized for the
 // 500-char budget; renderers may surface this as a visual hint.
 //
-// DurationMs is kept for backward compatibility with the older PI
-// stdio adapter (B5.TR Translate strategy in
-// `internal/harness/pi/adapter.go`) which still populates it from
-// `elapsed_ms`. The current prism extension does not emit a duration
-// field; DurationMs is zero in that case.
+// DurationMs is populated by the older PI stdio adapter (Translate
+// strategy in `internal/harness/pi/adapter.go`) from `elapsed_ms`. The
+// current prism extension does not emit a duration field; DurationMs is
+// zero in that case.
 //
-// ParentMessageID (issue #1787) is the messageId of the assistant turn
+// ParentMessageID is the messageId of the assistant turn
 // that issued this tool call. The pi prism extension stamps it from
 // the `message_start` event observed immediately before the matching
 // `tool_execution_start`, so it always points at the in-flight
@@ -121,7 +110,7 @@ type ToolCall struct {
 
 // ToolResult is the payload for tool_result events.
 //
-// Field shape (issue #1783) matches the pi prism extension's emitted
+// Field shape matches the pi prism extension's emitted
 // JSON (`pi/extensions/prism.ts:2503-2517`):
 //
 //	{"type":"tool_result","id":"...","success":true,"output":"…","truncated":false}
@@ -132,9 +121,9 @@ type ToolCall struct {
 // to the extension's character budget.
 //
 // The older PI stdio adapter (Translate path) produces the same
-// shape after #1783; see `internal/harness/pi/adapter.go`.
+// shape; see `internal/harness/pi/adapter.go`.
 //
-// ParentMessageID (issue #1787) mirrors the field on ToolCall and
+// ParentMessageID mirrors the field on ToolCall and
 // carries the assistant messageId of the turn that issued the matching
 // tool_call. Populated by the pi extension on both frames so the
 // secondary-query pushdown can fetch the pair together. Empty when the
@@ -252,11 +241,6 @@ type DoomLoopDetected struct {
 //
 // The Command field contains the full command string as passed to the bash tool.
 // SessionName, HarnessSessionID, and MessageID provide forensic attribution.
-//
-// Note: an instanceId field (per issue #641) is intentionally absent until
-// the instance-ID feature lands. Once #641 is implemented, add an InstanceID
-// field here and populate it from the sidecar's instance ID so that audit
-// events can be attributed to a specific sidecar process invocation.
 type Audit struct {
 	Tool             string `json:"tool"`
 	Command          string `json:"command"`
@@ -264,7 +248,7 @@ type Audit struct {
 	HarnessSessionID string `json:"harnessSessionID,omitempty"`
 	MessageID        string `json:"messageId,omitempty"`
 	// Target names the session that a privileged read acted upon. It is
-	// written by the tier-3 /checkin grant (issue #2587), where SessionName
+	// written by the tier-3 /checkin grant, where SessionName
 	// is the caller and Target is the session whose history was returned.
 	// Empty on the bash-promotion rows, where the command names its own
 	// object.

@@ -1,5 +1,4 @@
-// Tests for the read path behind `prism account usage` (issue #2539,
-// parent #2537).
+// Tests for the read path behind `prism account usage`.
 package usage
 
 import (

@@ -1,7 +1,7 @@
 package config_test
 
-// github_token_paths_test.go — tests for the github_token_paths config field
-// added in issue #2348. This is the pathway that carries the sops-decrypted
+// github_token_paths_test.go — tests for the github_token_paths config field.
+// This is the pathway that carries the sops-decrypted
 // GitHub token file paths (keyed by <ACCOUNT>_<ROLE>) from Nix into the Go
 // runtime, so that credentialEnvVars can read the file at spawn time rather
 // than depending on shell expansion of PRISM_GITHUB_TOKEN_* env vars.
@@ -20,7 +20,7 @@ import (
 // round-trip through the JSON parser with keys preserved. If Nix writes
 // PRISMATIC_KOI_WORKER as a JSON key, the Go side must see the same key —
 // otherwise credentialEnvVars will look under a mismatched key and silently
-// fall through to the env-var chain (recreating the #2348 failure mode).
+// fall through to the env-var chain (recreating the token-freeze failure mode).
 func TestGitHubTokenPaths_LoadFromJSON(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

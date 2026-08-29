@@ -11,8 +11,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/usage"
 )
 
-// cost.go — the cost and token counters of issue #2704, and the account
-// dimension that is the point of this issue.
+// cost.go — the cost and token counters, and the account dimension that is
+// the point of this file.
 //
 // # What it produces
 //
@@ -23,7 +23,7 @@ import (
 //
 // All three counters accumulate through the same tail cursor as the rest of
 // the exporter (costEventSource in sql.go), so a counter value never comes
-// from a full-table aggregate over a pruned table (#2699 section 3).
+// from a full-table aggregate over a pruned table.
 //
 // # Identity is the org ID, display is the name
 //
@@ -37,8 +37,8 @@ import (
 // # Resolve name -> org ID at EMIT time, not accumulate time
 //
 // The counters accumulate keyed on the account NAME recorded on each event
-// at write time (#2714). The name is mapped to an org ID only when the
-// counter is emitted, from the usage snapshots (#2713). This is the whole
+// at write time. The name is mapped to an org ID only when the counter is
+// emitted, from the usage snapshots. This is the whole
 // reason accountCounter exists rather than a plain metrics.CounterVec:
 //
 //   - Accumulating on the name keeps each series' identity stable. A rename
@@ -53,7 +53,7 @@ import (
 //     to whichever account is active now. The per-event name, stamped at
 //     write time, is the only correct source.
 
-// Metric names for the four #2704 metrics.
+// Metric names for the four metrics.
 const (
 	MetricModelCostUSDTotal      = "prism_model_cost_usd_total"
 	MetricModelTokensTotal       = "prism_model_tokens_total"
@@ -61,24 +61,24 @@ const (
 	MetricAccountInfo            = "prism_account_info"
 )
 
-// TailerCostEvents is the state-file key the #2704 tailer's cursor is stored
-// under. Independent of the #2700 and #2703 cursors even though all three
+// TailerCostEvents is the state-file key the cost tailer's cursor is stored
+// under. Independent of the other cursors even though all three
 // tail agent_events; changing it makes a running daemon lose its place on
 // these counters only.
 const TailerCostEvents = "agent_events_cost"
 
 // unknownOrgID is the org-ID label value for spend that cannot be attributed
-// to a known subscription: a row with a SQL NULL account_name (written before
-// #2714), or an account name with no usage snapshot and therefore no known
-// org ID. Both edge cases are explicit ACs of #2704 — attribute, never drop.
+// to a known subscription: a row with a SQL NULL account_name, or an account
+// name with no usage snapshot and therefore no known org ID. Both edge
+// cases: attribute, never drop.
 const unknownOrgID = "unknown"
 
 // unknownProfile is the profile label for a cost row whose profile_name is
-// SQL NULL — a pre-#2768 row that never recorded the tier. #2768 folds NULL
-// to this explicit placeholder at scan time (sql.go) rather than to an empty
-// label or the old, meaningless "default" bucket. New rows always carry a
-// resolved tier stamped at write time (db/profile_name.go), so "unknown"
-// here means "written before the tier was recorded", never "coordinator".
+// SQL NULL — a row that never recorded the tier. NULL folds to this explicit
+// placeholder at scan time (sql.go) rather than to an empty label or a
+// meaningless "default" bucket. New rows always carry a resolved tier
+// stamped at write time (db/profile_name.go), so "unknown" here means
+// "written before the tier was recorded", never "coordinator".
 const unknownProfile = "unknown"
 
 // Token-kind label values for prism_model_tokens_total{kind}.
@@ -343,8 +343,8 @@ type costCounters struct {
 	spendByProfile *accountCounter
 }
 
-// newCostCounters constructs, registers, and returns the three #2704
-// counters and the prism_account_info gauge. resolver is shared by all four
+// newCostCounters constructs, registers, and returns the three counters and
+// the prism_account_info gauge. resolver is shared by all four
 // so they read one consistent view of the accounts on each scrape.
 func newCostCounters(reg *metrics.Registry, resolver *accountResolver) *costCounters {
 	cc := &costCounters{

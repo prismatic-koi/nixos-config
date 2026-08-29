@@ -1,7 +1,7 @@
 // Package config — checkin_privilege.go
 //
 // Loads the tier-3 `/checkin` troubleshooting privilege list from
-// ~/.config/prism/checkin-privileged-repos.json (issue #2587).
+// ~/.config/prism/checkin-privileged-repos.json.
 //
 // `/checkin` has three permission tiers. Tier 1 is a worker, which may read
 // only the review agents of its own session. Tier 2 is a coordinator, which
@@ -23,14 +23,14 @@
 // unwritable from inside every sandbox. A hand-edited runtime file would not
 // carry those properties.
 //
-// Two host-side readers exist, one per route of the verb (issue #2619). The
+// Two host-side readers exist, one per route of the verb. The
 // sidecar reads the file once at start, for the host-API route. The direct
 // CLI route reads it per invocation in cmd/checkin_permission.go, because a
 // `host`-mode caller has no sidecar of its own to read it. Both readers treat
 // an unreadable file as an empty list.
 //
 // A missing file is not an error: it yields an empty list, which grants the
-// privilege to nobody and reproduces the pre-#2587 behaviour exactly.
+// privilege to nobody.
 
 package config
 
@@ -73,8 +73,8 @@ func CheckinPrivilegedReposPath() string {
 // LoadCheckinPrivilegedRepos reads and parses checkin-privileged-repos.json
 // and returns the repo names it declares.
 //
-// A missing file returns (nil, nil): the privilege is granted to nobody, which
-// is the same behaviour prism had before the file existed. An unreadable or
+// A missing file returns (nil, nil): the privilege is granted to nobody. An
+// unreadable or
 // malformed file returns an error, and the caller must fail closed — treat the
 // list as empty rather than as "everyone".
 //

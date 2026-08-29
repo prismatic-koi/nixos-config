@@ -62,7 +62,7 @@ func TestGenerateTitle_HappyPath(t *testing.T) {
 
 // TestGenerateTitle_RequestShape pins the three WAF-critical elements the
 // internal/usage doc comment describes. Omitting any of them returns a 429
-// that reads exactly like quota exhaustion and is not (#2537), so each is
+// that reads exactly like quota exhaustion and is not, so each is
 // asserted explicitly rather than assumed.
 func TestGenerateTitle_RequestShape(t *testing.T) {
 	type captured struct {
@@ -150,8 +150,8 @@ func TestGenerateTitle_SanitisesModelOutput(t *testing.T) {
 }
 
 // TestGenerateTitle_OverBudgetReplyIsRejected verifies a chatty, over-budget
-// reply is rejected rather than truncated into the title column (issue
-// #2693): truncation is a display guard, not a validity check.
+// reply is rejected rather than truncated into the title column:
+// truncation is a display guard, not a validity check.
 func TestGenerateTitle_OverBudgetReplyIsRejected(t *testing.T) {
 	long := strings.Repeat("very long title ", 40)
 	g := newTestGenerator(t, func(w http.ResponseWriter, r *http.Request) {

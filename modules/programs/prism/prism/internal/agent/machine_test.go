@@ -31,7 +31,7 @@ func TestTransition_ValidPairs(t *testing.T) {
 		{StateCompacting, StateInterrupted, "pane-died during compaction"},
 		{StateError, StateInterrupted, "pane-died after error"},
 
-		// Container startup failure path (issue #994)
+		// Container startup failure path
 		{StateIdle, StateError, "container startup failure before session.created (WaitHealthy/CreateSession)"},
 
 		// Edge cases from acceptance criteria
@@ -42,14 +42,14 @@ func TestTransition_ValidPairs(t *testing.T) {
 		{StateInterrupted, StateIdle, "tmux-session-start resets interrupted session on recreate"},
 		{StateError, StateIdle, "tmux-session-start resets errored session on recreate (issue #2094)"},
 
-		// Reviewing state (issue #1033)
+		// Reviewing state
 		{StateActive, StateReviewing, "prism review called — entering reviewing state"},
 		{StateReviewing, StateFinished, "PASS verdict received — coordinator notified"},
 		{StateReviewing, StateActive, "FAIL verdict received — worker resumes to fix issues"},
 		{StateReviewing, StateInterrupted, "pane-died or SIGTERM while awaiting review results"},
 		{StateReviewing, StateDeleted, "session.deleted while reviewing"},
 
-		// Escalated state (issue #1517)
+		// Escalated state
 		{StateActive, StateEscalated, "prism escalate called — entering escalated state"},
 		{StateEscalated, StateActive, "any incoming turn_start — worker resumes"},
 		{StateEscalated, StateFinished, "task completes while escalated (rare)"},
@@ -57,7 +57,7 @@ func TestTransition_ValidPairs(t *testing.T) {
 		{StateEscalated, StateError, "sidecar startup failure while escalated"},
 		{StateEscalated, StateDeleted, "session.deleted while escalated"},
 
-		// Dead-pipe escalation paths (issue #2359): a session whose harness
+		// Dead-pipe escalation paths: a session whose harness
 		// pipe never delivered turn events sits at idle or error while pi is
 		// alive and working. `prism escalate` from those states must still
 		// enter escalated so the finish-notification suppression and
@@ -99,7 +99,7 @@ func TestTransition_InvalidPairs(t *testing.T) {
 		{StateIdle, StateFinished, "idle → finished (nothing happened)"},
 		{StateIdle, StateCompacting, "idle → compacting (nothing happened)"},
 
-		// Compacting resumes to active; finished is no longer a valid direct transition
+		// Compacting resumes to active; a direct compacting → finished transition is not valid
 		{StateCompacting, StateFinished, "compacting → finished (compaction ≠ task completion)"},
 		{StateCompacting, StateWaiting, "compacting → waiting"},
 		{StateCompacting, StateError, "compacting → error"},
@@ -111,7 +111,7 @@ func TestTransition_InvalidPairs(t *testing.T) {
 		{StateEscalated, StateCompacting, "escalated → compacting"},
 
 		// finished/interrupted are terminal-adjacent and do not have a direct
-		// escalate path (issue #2359): those sessions require session.updated to
+		// escalate path: those sessions require session.updated to
 		// resume to active before an escalation makes sense.
 		{StateFinished, StateEscalated, "finished → escalated (must resume first)"},
 		{StateInterrupted, StateEscalated, "interrupted → escalated (must resume first)"},

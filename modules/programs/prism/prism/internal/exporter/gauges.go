@@ -11,13 +11,13 @@ import (
 	"github.com/prismatic-koi/prism/internal/metrics"
 )
 
-// gauges.go — the four #2702 state gauges: point-in-time fleet state,
+// gauges.go — the four state gauges: point-in-time fleet state,
 // recomputed with plain SQL on every scrape.
 //
 // Unlike the counters in lifecycle.go and cost.go, none of these use the
-// tail cursor (#2699 section 4): a gauge carries no monotonicity contract,
-// so the 90-day prune cannot invalidate it the way it would a full-table
-// counter aggregate (#2699 section 3). A collector below simply issues a
+// tail cursor: a gauge carries no monotonicity contract, so the 90-day
+// prune cannot invalidate it the way it would a full-table counter
+// aggregate. A collector below simply issues a
 // plain SELECT at Collect() time and folds the rows into label counts in
 // Go — there is no COUNT()/SUM() in the SQL itself (see sql.go for why that
 // also keeps these queries clear of the aggregate ban that governs the
@@ -32,7 +32,7 @@ import (
 // pending_merges' PK, and the pending-bus partial index at db.go:181), so
 // they are cheap enough to recompute on every scrape.
 //
-// Two more gauges, added by #2708, share this file and this shape for the
+// Two more gauges share this file and this shape for the
 // same reason -- a point-in-time liveness question is exactly what a
 // scrape-time plain-SQL recompute is for:
 //
@@ -45,7 +45,7 @@ import (
 // waiting, escalated) are excluded from both gauges rather than counted
 // stale.
 
-// Metric names for the four #2702 gauges.
+// Metric names for the four gauges.
 const (
 	MetricSessionsActive     = "prism_sessions_active"
 	MetricMergeQueueDepth    = "prism_merge_queue_depth"
@@ -53,7 +53,7 @@ const (
 	MetricBusMessagesPending = "prism_bus_messages_pending"
 )
 
-// Metric names for the #2708 sidecar-liveness gauges.
+// Metric names for the sidecar-liveness gauges.
 const (
 	MetricSidecarsLive  = "prism_sidecars_live"
 	MetricSidecarsStale = "prism_sidecars_stale"
@@ -62,7 +62,7 @@ const (
 // SidecarStaleThreshold is how long agent_status.last_seen can go silent,
 // for a session in an activity-expected state (see
 // sidecarActivityExpected below) with ended_at IS NULL, before its sidecar
-// counts as dead or wedged rather than merely quiet (#2708).
+// counts as dead or wedged rather than merely quiet.
 //
 // last_seen is a heartbeat: it is populated from MAX(agent_events.created_at)
 // (see the v13->v14 migration in internal/db/db.go) and updated by every
@@ -110,8 +110,7 @@ const unknownRepoLabel = "unknown"
 
 // stateLabel folds an agent_status.state value into the closed label set
 // pinned to internal/agent/agent.go's AgentState constants — the
-// authoritative state enum for a prism session (#2702's "pin the state
-// label set" requirement).
+// authoritative state enum for a prism session.
 //
 // Folding matters because agent_status.state is not actually
 // constrained to this set at write time: internal/agent/agent.go's own doc
@@ -135,7 +134,7 @@ func stateLabel(state string) (label string, known bool) {
 
 // repoLabel folds an agent_status.repo value that is empty or whitespace-only
 // into unknownRepoLabel. An empty repo label value has two effects on a
-// dashboard (#2764):
+// dashboard:
 //   - sum by (repo) collects every repo-less session into one unnamed bucket
 //   - a repo template variable gets a blank entry, which an operator cannot
 //     read
@@ -157,7 +156,7 @@ type sessionsActiveCollector struct {
 	logger *log.Logger
 
 	// warnUnknownState logs the "unknown state" advisory exactly once for
-	// the lifetime of the collector, never per scrape (#2702 edge-case AC).
+	// the lifetime of the collector, never per scrape.
 	warnUnknownState sync.Once
 }
 
@@ -322,9 +321,9 @@ func (c *mergesByStatusCollector) Collect() []metrics.Sample {
 // them in Go, grouped by repo.
 //
 // It reads bus_messages.repo only — never bus_messages.text, the free-form
-// inter-session message body that #2699 section 5 bans (see the boundary-
+// inter-session message body the exporter must never read (see the boundary-
 // test narrowing in sql_boundary_test.go: the table-level ban is narrowed to
-// that one column, exactly as #2720 narrowed spawn_inputs).
+// that one column, exactly as the spawn_inputs ban is narrowed).
 type busMessagesPendingCollector struct {
 	conn   *sql.DB
 	logger *log.Logger
@@ -372,7 +371,7 @@ func (c *busMessagesPendingCollector) Collect() []metrics.Sample {
 // sidecarActivityExpected reports whether a session in state s is expected
 // to be continuously producing agent_events -- and so whether a silent
 // last_seen in that state is evidence the sidecar has died or wedged,
-// rather than evidence of nothing at all (#2708 round-1 review finding).
+// rather than evidence of nothing at all.
 //
 // Real fleet data caught the gap this closes: a session in StateIdle can sit
 // quiet for well over an hour with a perfectly healthy sidecar -- nobody is
@@ -475,8 +474,7 @@ func (c *sidecarLivenessCollector) Collect() []metrics.Sample {
 
 		// A session in a quiet-by-design state (idle, waiting, escalated) or
 		// a terminal/unrecognised state carries no liveness signal either
-		// way and is excluded from both gauges (#2708 round-1 review
-		// finding; see sidecarActivityExpected).
+		// way and is excluded from both gauges (see sidecarActivityExpected).
 		if !sidecarActivityExpected(state.String) {
 			continue
 		}
@@ -509,8 +507,8 @@ func (c *sidecarLivenessCollector) Collect() []metrics.Sample {
 	return samples
 }
 
-// registerStateGauges constructs and registers the four #2702 gauges plus
-// the two #2708 sidecar-liveness gauges.
+// registerStateGauges constructs and registers the four state gauges plus
+// the two sidecar-liveness gauges.
 func registerStateGauges(reg *metrics.Registry, conn *sql.DB, logger *log.Logger) {
 	reg.MustRegister(&sessionsActiveCollector{conn: conn, logger: logger})
 	reg.MustRegister(&mergeQueueDepthCollector{conn: conn, logger: logger})

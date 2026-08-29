@@ -1,6 +1,6 @@
 package authz
 
-// checkin_test.go — issue #2619.
+// checkin_test.go
 //
 // The tier table itself is pinned from the outside, once per route:
 // internal/sidecar/checkin_permission_test.go drives the host-API handler, and
@@ -25,7 +25,7 @@ import (
 // quietLogger keeps the fail-closed diagnostics out of the test output.
 func quietLogger() *log.Logger { return log.New(io.Discard, "", 0) }
 
-// TestAuthorizeCheckin_CallerIsAParameter is the structural AC of #2619: one
+// TestAuthorizeCheckin_CallerIsAParameter is the structural AC: one
 // copy of the predicate serves both routes, with caller identity passed in.
 //
 // The same target, the same configuration, and two different callers must
@@ -138,7 +138,7 @@ func TestAuthorizeCheckin_WorkerScopeIsResolvedForTheGivenCaller(t *testing.T) {
 }
 
 // TestAuthorizeCheckinReviewAggregate_SelfTargetIsGranted is the reason this
-// predicate exists (issue #2628): the aggregate form's Target IS the parent
+// predicate exists: the aggregate form's Target IS the parent
 // session, so a worker reading the summary of its own review group has
 // Caller == Target. AuthorizeCheckin's tier 1 refuses that shape (it is the
 // self-checkin denial); AuthorizeCheckinReviewAggregate must grant it.

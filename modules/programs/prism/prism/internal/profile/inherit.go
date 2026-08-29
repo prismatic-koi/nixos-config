@@ -1,15 +1,10 @@
 package profile
 
-// inherit.go — child-spawn profile-inheritance helper (issue #2097).
+// inherit.go — child-spawn profile-inheritance helper.
 //
 // `prism review` and `prism investigate` spawn child agents whose
-// profile must inherit the parent worker's spawn-time profile. Before
-// #2097 both front doors resolved the child's profile via
-// `ResolveActiveProfile(pf, "")` — empty flag value — so the resolution
-// silently fell through to state-file > nix-default regardless of the
-// parent's `--profile` choice. This was the same shape of bug #2092
-// fixed for the worker layer; this file extends the precedence chain
-// to the child-spawn surfaces.
+// profile must inherit the parent worker's spawn-time profile. This file
+// extends the profile precedence chain to the child-spawn surfaces.
 
 import (
 	"github.com/prismatic-koi/prism/internal/config"
@@ -17,10 +12,9 @@ import (
 )
 
 // InheritFromParent returns the profile name a child session should be
-// spawned with, given the parent session it was invoked from
-// (issue #2097).
+// spawned with, given the parent session it was invoked from.
 //
-// Precedence (matches the worker-layer chain established in #2092):
+// Precedence:
 //
 //  1. Parent's `spawn_inputs.profile_name` — highest. Carries the
 //     `prism spawn --profile X` / `--abtest A B` choice forward to
@@ -38,7 +32,7 @@ import (
 //     `spawn_inputs.profile_name` row is populated, downstream
 //     `prism stats` / archive queries reflect the inherited profile,
 //     and the child's runtime `populatePIConfig` resolves to the
-//     same value via the #2092 lookup.
+//     same value via the runtime lookup.
 //
 // pf may be nil — in that case the function returns the parent's raw
 // spawn-time profile (which may itself be "") and the caller falls
@@ -46,9 +40,8 @@ import (
 // ResolveActiveProfile also tolerates nil pf, so no extra guard is
 // needed here.
 //
-// State-file read errors are surfaced (matching the worker-layer
-// semantic from #2092) — a corrupt active-profile file is a real
-// problem, not a silent fallthrough condition.
+// State-file read errors are surfaced: a corrupt active-profile file is
+// a real problem, not a silent fallthrough condition.
 func InheritFromParent(d *db.DB, parentSession string, pf *config.ProfilesFile) (string, error) {
 	spawnProfile := SpawnTimeForSession(d, parentSession)
 	resolved, _, err := config.ResolveActiveProfile(pf, spawnProfile)

@@ -1,6 +1,5 @@
 // Package tailcursor is the reusable mechanism that lets prism publish
-// Prometheus counters from a database that is pruned (issue #2700, parent
-// #2699).
+// Prometheus counters from a database that is pruned.
 //
 // # The problem it exists to solve
 //

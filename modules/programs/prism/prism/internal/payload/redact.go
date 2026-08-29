@@ -1,4 +1,4 @@
-// Secret redaction for captured event payloads (issue #2589).
+// Secret redaction for captured event payloads.
 //
 // Why this file exists
 // --------------------
@@ -91,7 +91,7 @@ const (
 	// fallback in container.ResolveGitHubToken.
 	GitHubTokenEnvName = "GITHUB_TOKEN"
 
-	// GitLabTokenEnvName is the GitLab API token (issue #2668). It is NOT
+	// GitLabTokenEnvName is the GitLab API token. It is NOT
 	// forwarded verbatim from the host environment: container.
 	// ResolveGitLabToken resolves it host-side — the sops file named by
 	// Config.GitLabTokenPath first, then the inherited env var behind the
@@ -413,7 +413,7 @@ type Redactor struct {
 //   - a value shorter than MinCredentialValueLen is skipped;
 //   - a value that is empty or whitespace-only is skipped;
 //   - a value that looks like an unexpanded shell literal (`$(…)`) is
-//     skipped — it is not a secret, it is a propagation bug (see #2348).
+//     skipped — it is not a secret, it is a propagation bug.
 //
 // When two names carry the same value, the marker names the
 // lexicographically first of them, so the output is deterministic.
@@ -521,8 +521,8 @@ func usableSecretValue(v string) bool {
 	if len(strings.TrimSpace(v)) < MinCredentialValueLen {
 		return false
 	}
-	// An unexpanded `$(cat …)` value is a propagation bug, not a secret
-	// (issue #2348). Redacting it would hide the bug.
+	// An unexpanded `$(cat …)` value is a propagation bug, not a secret.
+	// Redacting it would hide the bug.
 	if strings.Contains(v, "$(") {
 		return false
 	}

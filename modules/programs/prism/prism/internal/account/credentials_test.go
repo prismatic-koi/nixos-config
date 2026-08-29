@@ -1,6 +1,6 @@
 package account
 
-// Tests for ReadCredentials (issue #2541, parent #2537).
+// Tests for ReadCredentials.
 //
 // The security assertions carry the most weight here: the refresh path is the
 // first and only caller in this package that handles a token value in the
@@ -166,7 +166,7 @@ func TestReadCredentials_RejectsAPathTraversingName(t *testing.T) {
 	}
 }
 
-// ── ReadLiveCredentials (#2541, corrected in #2569 review round 1) ───────────
+// ── ReadLiveCredentials ─────────────────────────────────────────────────────
 
 func writeLiveAuthJSON(t *testing.T, p Paths, anthropicBlob string) {
 	t.Helper()

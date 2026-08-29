@@ -8,8 +8,6 @@ package harness
 // harness.New / harness.NewContainer / harness.Lookup / harness.Names
 // without importing the adapter package directly (only a blank import is
 // needed to trigger registration).
-//
-// B.2 proposal actioned in PR #1162.
 
 import (
 	"fmt"
@@ -38,8 +36,7 @@ const (
 	// dials it on a TCP port. Health checks are HTTP probes against
 	// a known endpoint. Event delivery is server-sent events (SSE) or
 	// long-polling. Prompts are POSTed; the response status code is the
-	// delivery acknowledgement. Examples: pi (today),
-	// Claude Code (planned).
+	// delivery acknowledgement. Examples: pi, Claude Code.
 	TransportHTTPPort TransportShape = "http-port"
 
 	// TransportStdioPipe declares that the harness runs as a child
@@ -49,7 +46,7 @@ const (
 	// Prompts are written to stdin fire-and-forget — the OS write
 	// succeeds or fails, but there is no transport-level
 	// acknowledgement that the harness has processed the prompt.
-	// Examples: PI (planned, RFC #606), Codex (likely future).
+	// Examples: PI, Codex.
 	TransportStdioPipe TransportShape = "stdio-pipe"
 
 	// TransportFallbackScreenScrape declares that the harness has no
@@ -71,7 +68,7 @@ const (
 	// control commands are sent outbound via an internal queue.
 	// Health is the connection being open and the hello handshake
 	// having completed successfully.
-	// Examples: PI (P2.SIDECAR #1209).
+	// Examples: PI.
 	TransportSocketPipe TransportShape = "socket-pipe"
 )
 
@@ -229,11 +226,6 @@ func Names() []string {
 // Returns an error if the name is not registered. The endpoint /
 // httpClient / agentRole / agentModel arguments are forwarded to the
 // registered Factory verbatim.
-//
-// Replaces the hard-coded harness constructor calls at cmd/sidecar.go:296
-// and the construction-only-for-side-effects harness.New("", nil, "", "")
-// calls in cmd/spawn.go, cmd/agent_run.go, cmd/restore.go, cmd/switch.go,
-// cmd/pr.go, cmd/review.go.
 func New(name, endpoint string, httpClient *http.Client, agentRole, agentModel string) (Harness, error) {
 	reg, ok := Lookup(name)
 	if !ok {
@@ -265,9 +257,6 @@ func NewWithModelOverrides(name, endpoint string, httpClient *http.Client, agent
 // named harness. If the registration has a ContainerFactory it is used;
 // otherwise Factory is used. Returns an error if the name is not
 // registered.
-//
-// Replaces the hard-coded NewContainerMode(...) call at
-// cmd/sidecar.go:294.
 func NewContainer(name, endpoint string, httpClient *http.Client, agentRole, agentModel string) (Harness, error) {
 	reg, ok := Lookup(name)
 	if !ok {

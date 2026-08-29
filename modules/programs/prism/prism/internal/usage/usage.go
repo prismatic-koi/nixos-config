@@ -7,7 +7,7 @@
 // successful `/v1/messages` response on the Claude Code OAuth path. The
 // vendored `anthropic-oauth` pi extension captures those headers and POSTs
 // them to the sidecar host-API endpoint `/usage/snapshot`. This package owns
-// the on-disk format and the write path (issue #2538, parent #2537).
+// the on-disk format and the write path.
 //
 // On-disk layout
 // --------------
@@ -29,10 +29,10 @@
 // ------------------
 //
 // This directory — the LEAF, not any parent — is bound into agent sandboxes
-// READ-ONLY (issue #2572): `StandardSandboxMounts` emits an `--ro-bind` for
+// READ-ONLY: `StandardSandboxMounts` emits an `--ro-bind` for
 // bwrap and `generateProfile` emits a read-only `(subpath ...)` grant for
 // sandbox-exec. Read-only is the correct level. Every writer goes through
-// the sidecar host-API endpoint `POST /usage/snapshot` (issue #2538), so
+// the sidecar host-API endpoint `POST /usage/snapshot`, so
 // nothing inside a sandbox needs write access, and a compromised session
 // cannot forge usage figures.
 //
@@ -42,14 +42,14 @@
 // Every optional field is a pointer or has `omitempty`. A header that the
 // response did not carry is OMITTED from the JSON rather than written as a
 // zero value, so a reader can tell "not present" from "zero". The downstream
-// readers (issues #2539, #2540, #2541) depend on that distinction.
+// readers depend on that distinction.
 //
 // Security
 // --------
 //
 // No function in this package reads, accepts, or writes a token value. The
 // Snapshot type is a closed struct whose fields all derive from the
-// allowlisted `anthropic-ratelimit-unified-*` headers documented in #2537.
+// allowlisted `anthropic-ratelimit-unified-*` headers.
 package usage
 
 import (
@@ -121,8 +121,8 @@ type Overage struct {
 }
 
 // Snapshot is the persisted per-account rate-limit snapshot. The JSON shape is
-// the contract documented in issue #2537 and read by issues #2539, #2540, and
-// #2541 — do not rename or retype a field without updating all three.
+// the contract the usage readers and the `prism account usage` display depend
+// on — do not rename or retype a field without updating all of them.
 //
 // CapturedAt and Account are set host-side by the sidecar at write time. They
 // are the only two fields not derived from a response header, and neither is
@@ -138,8 +138,8 @@ type Snapshot struct {
 	Fallback            *Fallback `json:"fallback,omitempty"`
 	Overage             *Overage  `json:"overage,omitempty"`
 	// OrganizationID and WorkspaceID mirror the `anthropic-organization-id`
-	// and `anthropic-workspace-id` response headers (issue #2713, parent
-	// #2699). Both are server-assigned and stable across a local account
+	// and `anthropic-workspace-id` response headers. Both are server-assigned
+	// and stable across a local account
 	// rename, which is why fleet-wide attribution keys off the org ID rather
 	// than the account name. Neither is derived from, nor read alongside, the
 	// bearer token — the token reaches only the `authorization` request
@@ -161,8 +161,7 @@ type Snapshot struct {
 //   - usageSnapshotPath() in pi/extensions/prism.ts (the bottom-bar reader,
 //     which does $XDG_STATE_HOME-else-os.homedir()/.local/state);
 //   - StandardSandboxMounts / generateProfile in internal/container, which
-//     must grant the sandbox exactly the directory those two agree on
-//     (issue #2572).
+//     must grant the sandbox exactly the directory those two agree on.
 //
 // The container callers cannot use DefaultDir: they resolve the host home
 // once at the top of the mount walk and pass it down, and their unit tests
@@ -259,7 +258,7 @@ func SanitizeAccountName(name string) string {
 //
 // The resolution happens at write time, not at session-spawn time, so a
 // snapshot captured after the user switches accounts is attributed to the new
-// account (issue #2537, reason 2).
+// account.
 func CurrentAccountName() string {
 	paths, err := account.ResolvePaths()
 	if err != nil {

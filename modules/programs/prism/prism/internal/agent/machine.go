@@ -44,10 +44,10 @@ import "fmt"
 //   - interrupted → idle: same as finished → idle but starting from interrupted.
 //   - error → escalated: `prism escalate` invoked from a session whose startup
 //     handshake timed out and stamped `error` (writeStartupError,
-//     internal/sidecar/sidecar.go). Same rationale as idle→escalated above
-//     (issue #2359): a dead-pipe session that missed its handshake still
-//     needs to be able to hand a question to its coordinator; the escalated
-//     contract must apply regardless of the source state.
+//     internal/sidecar/sidecar.go). Same rationale as idle→escalated above:
+//     a dead-pipe session that missed its handshake still needs to be able
+//     to hand a question to its coordinator; the escalated contract must
+//     apply regardless of the source state.
 //   - error → idle: same as finished → idle but starting from error. After
 //     `prism cleanup --yes --session <name>` ends a session whose last state
 //     was error, re-spawning on the same branch name reuses the existing
@@ -55,8 +55,7 @@ import "fmt"
 //     incarnation. Without this entry, every re-spawn-after-cleanup on a
 //     session that ended in error logs an advisory transition warning, and
 //     would become a hard failure if checkTransition is ever tightened to
-//     return errors (issue #2094, prerequisite for any future tightening of
-//     checkTransition raised by #2081).
+//     return errors.
 //   - * → deleted: any state can transition to deleted when session.deleted fires.
 //
 // The TypeScript plugin writes state directly to SQLite and is not constrained
@@ -66,7 +65,7 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 		StateActive:      true,
 		StateInterrupted: true,
 		StateError:       true, // container startup failure before session.created
-		StateEscalated:   true, // #2359: dead-pipe session sits at idle; escalate must still enter escalated
+		StateEscalated:   true, // dead-pipe session sits at idle; escalate must still enter escalated
 		StateDeleted:     true,
 	},
 	StateActive: {
@@ -97,13 +96,13 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 	// error→idle: tmux-session-start resets a previously-errored session on
 	// recreate. Mirrors finished→idle and interrupted→idle so that
 	// re-spawning on the same branch name after `prism cleanup` succeeds
-	// without an advisory transition warning (issue #2094).
+	// without an advisory transition warning.
 	StateError: {
 		StateActive:      true,
 		StateInterrupted: true,
 		StateFinished:    true,
 		StateIdle:        true,
-		StateEscalated:   true, // #2359: startup-handshake-timeout session stamped error; escalate must still enter escalated
+		StateEscalated:   true, // startup-handshake-timeout session stamped error; escalate must still enter escalated
 		StateDeleted:     true,
 	},
 	// reviewing→finished: PASS verdict received; coordinator notified now.

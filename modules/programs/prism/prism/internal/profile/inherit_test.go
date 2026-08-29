@@ -1,11 +1,11 @@
 package profile
 
-// inherit_test.go — issue #2097 unit tests for the child-spawn
+// inherit_test.go — unit tests for the child-spawn
 // profile-inheritance helper.
 //
 // InheritFromParent composes SpawnTimeForSession with
 // config.ResolveActiveProfile to give callers a single entry point that
-// honours the same precedence chain as the worker-layer #2092 fix:
+// honours the profile precedence chain:
 //
 //   1. Parent's spawn_inputs.profile_name (highest).
 //   2. Runtime state file ($XDG_STATE_HOME/prism/active-profile).
@@ -60,11 +60,9 @@ func writeStateFile(t *testing.T, profileName string) {
 	}
 }
 
-// TestInheritFromParent_ParentSpawnProfileWinsOverState pins the AC #1
-// positive: when the parent has spawn_inputs.profile_name=X and the
-// state-file points to a different profile, the parent's X wins. This
-// is the inverse of the pre-#2097 silent-drop: every review / investigate
-// would have returned the state-file value instead.
+// TestInheritFromParent_ParentSpawnProfileWinsOverState pins the
+// positive case: when the parent has spawn_inputs.profile_name=X and the
+// state-file points to a different profile, the parent's X wins.
 func TestInheritFromParent_ParentSpawnProfileWinsOverState(t *testing.T) {
 	bus := sidecartest.NewIsolated(t, "")
 	const parent = "prism-test@worker-parent-wins"
@@ -108,7 +106,7 @@ func TestInheritFromParent_ParentSpawnProfileWinsOverNixDefault(t *testing.T) {
 }
 
 // TestInheritFromParent_LegacyParentFallsThroughToStateFile is the
-// AC #8 negative: a parent with no spawn_inputs row (pre-#2090
+// AC #8 negative: a parent with no spawn_inputs row (legacy
 // session) falls through to the state-file value when one is set.
 // This preserves restart semantics for legacy sessions.
 func TestInheritFromParent_LegacyParentFallsThroughToStateFile(t *testing.T) {
@@ -130,8 +128,7 @@ func TestInheritFromParent_LegacyParentFallsThroughToStateFile(t *testing.T) {
 // TestInheritFromParent_LegacyParentFallsThroughToNixDefault completes
 // the AC #8 chain: with no spawn_inputs row AND no state file, the
 // nix-default wins. This is the "no per-session profile, no per-user
-// override" path and is what every pre-#2097 review / investigate ran
-// on.
+// override" path.
 func TestInheritFromParent_LegacyParentFallsThroughToNixDefault(t *testing.T) {
 	bus := sidecartest.NewIsolated(t, "")
 	const parent = "prism-test@worker-legacy-no-state"

@@ -1,6 +1,6 @@
 // Package config — agent_env_roles.go
 //
-// Role-aware filtering of the profile-level AgentEnvVars map (issue #2533).
+// Role-aware filtering of the profile-level AgentEnvVars map.
 //
 // AgentEnvVars (profiles.json `agent_env_vars`) is a single flat map shared by
 // every session role. Some entries are capability gates: the pi grafana MCP
@@ -14,7 +14,7 @@
 //
 //   - The isolator (internal/container) stays role-agnostic. It emits every
 //     key present in the map it receives — the invariant that
-//     internal/container/env_test.go pins since issue #2235.
+//     internal/container/env_test.go pins.
 //   - Role policy lives here, at the point where the map is built, so the
 //     bwrap dispatch (cmd/agent_run.go), the sandbox-exec dispatch
 //     (cmd/agent_run_sandbox_exec_darwin.go), the host agent-only layout
@@ -45,7 +45,7 @@ var grafanaMCPEnvKeys = []string{
 // `investigate` is deliberately absent. It is a read-only role, but read-only
 // is not the axis that matters: an investigator answering an observability
 // question has a legitimate use for the grafana tools, so it is treated like
-// `coordinator` (decision recorded on issue #2533).
+// `coordinator`.
 var reviewRoleEnvExclusions = map[string][]string{
 	"review-goal":     grafanaMCPEnvKeys,
 	"review-code":     grafanaMCPEnvKeys,
@@ -80,8 +80,7 @@ func FilterAgentEnvVarsForRole(role string, vars map[string]string) map[string]s
 // This is the single resolver for the sandboxed dispatch paths and the host
 // agent-only layout, so both produce the same map for the same role. Env var
 // injection is best-effort: a missing or malformed profiles.json returns a nil
-// map rather than an error, which matches the pre-existing behaviour of every
-// caller.
+// map rather than an error, which matches the behaviour of every caller.
 func AgentEnvVarsForRole(role string) map[string]string {
 	pf, err := LoadProfiles()
 	if err != nil || pf == nil {

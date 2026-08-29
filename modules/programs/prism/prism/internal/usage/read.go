@@ -1,6 +1,5 @@
-// This file implements the read path behind `prism account usage`
-// (issue #2539, parent #2537). It reads what usage.go already writes and
-// adds no new on-disk format of its own.
+// This file implements the read path behind `prism account usage`. It reads
+// what usage.go already writes and adds no new on-disk format of its own.
 //
 // Sandbox constraint: this package must never depend on
 // ~/.config/prism/accounts/ (invisible inside an agent sandbox — see
@@ -20,7 +19,7 @@ import (
 )
 
 // StaleAfter is the age past which a snapshot's percentage is considered
-// stale (issue #2537: "a snapshot older than 15 minutes is stale"). The
+// stale ("a snapshot older than 15 minutes is stale"). The
 // countdown to reset is unaffected — Reset is an absolute timestamp and stays
 // correct regardless of snapshot age.
 const StaleAfter = 15 * time.Minute
@@ -60,9 +59,8 @@ func (a AccountSnapshot) Stale(now time.Time) bool {
 }
 
 // ErrUsageDirMissing is returned by ReadAll when the usage directory does not
-// exist. Callers should treat this as a non-fatal, exit-0 condition per
-// issue #2539's acceptance criteria, printing a message naming the missing
-// directory.
+// exist. Callers should treat this as a non-fatal, exit-0 condition,
+// printing a message naming the missing directory.
 type ErrUsageDirMissing struct {
 	Dir string
 }
@@ -77,7 +75,7 @@ func (e *ErrUsageDirMissing) Error() string {
 //
 // A malformed snapshot file is reported via that row's ReadErr rather than
 // failing the whole call, so the remaining accounts' rows are still
-// returned (issue #2539 edge case).
+// returned.
 //
 // Returns *ErrUsageDirMissing when dir does not exist. Any other error is a
 // genuine I/O failure reading the directory itself.

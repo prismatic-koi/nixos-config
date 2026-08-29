@@ -15,7 +15,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/usage"
 )
 
-// The model call (issue #2683).
+// The model call.
 //
 // Reuses internal/usage/refresh.go's request shape wholesale — same URL,
 // same `?beta=true`, same OAuth/WAF header block, same Claude Code identity
@@ -62,14 +62,14 @@ const (
 	// block; the first must remain the Claude Code identity string (see
 	// usage.ClaudeCodeIdentity).
 	//
-	// It is framed as a title generator, not a conversational assistant
-	// (issue #2693): the earlier prompt presumed the user message always
-	// carried a task description, and when it didn't — a coordinator's
-	// first message is often a one-line "can we get started on issue
-	// 2458?" — the model did what a chat model does and asked a follow-up
-	// question. The rules below forbid that outright, and the examples
-	// pin the expected shape against real prism source text (a spawn
-	// prompt, a coordinator one-liner, a short conversational message).
+	// It is framed as a title generator, not a conversational assistant.
+	// The user message does not always carry a task description — a
+	// coordinator's first message is often a one-line "can we get started
+	// on issue 2458?" — and a chat model answers such a message with a
+	// follow-up question instead of a title. The rules below forbid that
+	// outright, and the examples pin the expected shape against real prism
+	// source text (a spawn prompt, a coordinator one-liner, a short
+	// conversational message).
 	titleSystemPrompt = "You are a title generator. You output ONLY a short title. Nothing else.\n" +
 		"\n" +
 		"Read the user message below and reply with a title that names the work in it: " +
@@ -98,8 +98,8 @@ const (
 var ErrEmptyTitle = errors.New("titlegen: the model returned no usable title")
 
 // ErrRejectedTitle reports that the request succeeded but the reply was not
-// title-shaped — a refusal, a question, or a reply over the title budget
-// (issue #2693). It is a normal outcome, not a fault: the caller falls back
+// title-shaped — a refusal, a question, or a reply over the title budget.
+// It is a normal outcome, not a fault: the caller falls back
 // to the deterministic title exactly as it does for a transport error, and
 // never retries.
 var ErrRejectedTitle = errors.New("titlegen: the model returned a non-title reply")
@@ -200,14 +200,13 @@ func (g *Generator) GenerateTitle(ctx context.Context, sourceText string) (strin
 	stripped := strings.TrimSpace(stripWrappingQuotes(text))
 	if stripped == "" {
 		// Distinct from a rejected reply: the model said nothing at all,
-		// which is the pre-existing empty-reply outcome and not a defect
-		// in the reply's shape.
+		// not a reply whose shape is wrong.
 		return "", ErrEmptyTitle
 	}
 	// IsRejected runs BEFORE Sanitise, and on the un-truncated reply.
 	// Sanitise truncates; a reply that had to be cut was never a
 	// title-length string to begin with, so it must be rejected outright,
-	// not shortened into the column (issue #2693).
+	// not shortened into the column.
 	if IsRejected(stripped) {
 		return "", ErrRejectedTitle
 	}

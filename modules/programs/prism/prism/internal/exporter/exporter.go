@@ -1,6 +1,6 @@
 // Package exporter is the `prism exporter` host daemon: a long-running
 // process that opens prism.db read-only and serves prism's own operational
-// metrics on /metrics for Alloy to scrape (issue #2700, parent #2699).
+// metrics on /metrics for Alloy to scrape.
 //
 // # The split that is the whole design
 //
@@ -11,9 +11,6 @@
 // Gauges are recomputed at scrape time. They are point-in-time by
 // definition, carry no monotonicity contract, and so the 90-day prune
 // cannot hurt them.
-//
-// This issue ships exactly two metrics, one of each kind, to prove both
-// halves. #2702 to #2706 add the rest.
 //
 // # Where it runs
 //
@@ -48,8 +45,8 @@ import (
 // what a `go build` produces.
 var Version = "dev"
 
-// Fixed names. #2701 points its Alloy scrape at DefaultPort and
-// MetricsPath; nothing else may move them without editing that config too.
+// Fixed names. The Alloy scrape points at DefaultPort and MetricsPath;
+// nothing else may move them without editing that config too.
 const (
 	// DefaultListenHost is the loopback address the daemon binds by
 	// default. The exporter carries prism's operational history and has no
@@ -103,7 +100,7 @@ type Config struct {
 	StatePath string
 	// UsageDir is the prism usage-snapshot directory
 	// (~/.local/state/prism/usage), read at scrape time to map an account
-	// name to its org ID for the #2704 account dimension. Optional: when
+	// name to its org ID for the account dimension. Optional: when
 	// empty, New resolves it from usage.DefaultDir(), and if that also fails
 	// every account folds to account_org_id="unknown" rather than the scrape
 	// failing.
@@ -238,11 +235,11 @@ func New(cfg Config) (*Exporter, error) {
 		return nil, fmt.Errorf("exporter: build agent_events tailer: %w", err)
 	}
 
-	// The six #2703 lifecycle and outcome counters. A second, independent
-	// tailer over the same agent_events table, with its own cursor — see
+	// The six lifecycle and outcome counters. A second, independent tailer
+	// over the same agent_events table, with its own cursor — see
 	// lifecycle.go and LifecycleEventsTailSQL for why one more tailer is
-	// simpler and safer here than teaching the #2700 tailer a second Value
-	// shape.
+	// simpler and safer here than teaching the agent_events tailer a second
+	// Value shape.
 	e.lifecycle = newLifecycleCounters(e.registry)
 	lifecycleTailer, err := tailcursor.New[lifecycleEvent](
 		TailerLifecycleEvents,
@@ -255,7 +252,7 @@ func New(cfg Config) (*Exporter, error) {
 		return nil, fmt.Errorf("exporter: build lifecycle events tailer: %w", err)
 	}
 
-	// The three #2704 cost and token counters, plus the prism_account_info
+	// The three cost and token counters, plus the prism_account_info
 	// join gauge. A third tailer over agent_events, with its own cursor,
 	// reading only the msg_assistant rows that carry token usage. The account
 	// resolver reads the usage snapshots at scrape time (cost.go).
@@ -284,7 +281,7 @@ func New(cfg Config) (*Exporter, error) {
 
 	e.tailers = []tailcursor.Advancer{tailer, lifecycleTailer, costTailer}
 
-	// The four #2702 state gauges. Unlike the tailers above, these read
+	// The four state gauges. Unlike the tailers above, these read
 	// prism.db directly on every Collect() — see gauges.go for why that is
 	// correct for a gauge and safe against the 90-day prune.
 	registerStateGauges(e.registry, conn, logger)

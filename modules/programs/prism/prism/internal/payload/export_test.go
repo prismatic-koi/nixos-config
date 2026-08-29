@@ -1,6 +1,6 @@
 package payload
 
-// Test-only hooks for the redactor internals (issue #2589).
+// Test-only hooks for the redactor internals.
 //
 // The shape layer runs behind a literal prefilter for cost. The prefilter is
 // only safe if every trigger is a NECESSARY substring of its pattern, so the

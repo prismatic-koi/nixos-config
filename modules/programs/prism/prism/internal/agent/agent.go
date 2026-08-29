@@ -49,7 +49,7 @@ const (
 // reviewing, escalated) — those sessions may still emit events.
 //
 // Called by `prism stats compare` to decide whether to compute an outcome
-// on the fly when no `spawn_outcome` row exists yet (issue #2102).
+// on the fly when no `spawn_outcome` row exists yet.
 func IsTerminal(s AgentState) bool {
 	switch s {
 	case StateFinished, StateError, StateInterrupted, StateDeleted:

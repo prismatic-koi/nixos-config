@@ -8,7 +8,7 @@
 // This package contains only the interface definition and its supporting types.
 // Concrete implementations live in sub-packages (e.g. internal/harness/pi/).
 // The sidecar receives a Harness at construction time (via sidecar.Config.Harness)
-// and delegates all runtime-specific behaviour through it (Phase 0a, RFC #691).
+// and delegates all runtime-specific behaviour through it.
 package harness
 
 import (

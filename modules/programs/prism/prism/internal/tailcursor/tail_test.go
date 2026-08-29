@@ -397,7 +397,7 @@ func TestNew_ValidatesArguments(t *testing.T) {
 }
 
 // A daemon that runs several tailers over different row types holds them in
-// one slice. That is what #2703 and #2704 need from this package.
+// one slice.
 func TestTailer_SatisfiesTheNonGenericAdvancerInterface(t *testing.T) {
 	strSrc := &fakeSource{records: recordsFrom("a")}
 	intTailer, err := tailcursor.New[int]("ints", intSource{}, func(int) error { return nil })

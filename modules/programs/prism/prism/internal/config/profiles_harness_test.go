@@ -1,17 +1,14 @@
 package config_test
 
-// profiles_harness_test.go — harness plumbing tests (#1612).
+// profiles_harness_test.go — harness plumbing tests.
 //
-// The harness-default resolution chain (HarnessForSlot, DefaultHarness,
-// default_harness) was removed in #1612. Pi is now the sole harness and is
-// hardwired via harness.Lookup("pi") at callsites. This file retains a
-// minimal smoke test that confirms the harness registry is reachable from the
-// config package's test binary (the blank import wires up the validator hook).
+// Pi is the sole harness, hardwired via harness.Lookup("pi") at callsites.
+// This file retains a minimal smoke test that confirms the harness registry
+// is reachable from the config package's test binary (the blank import wires
+// up the validator hook).
 //
-// The LoadProfiles tests that previously tested default_harness validation
-// are replaced by TestLoadProfiles_StaleKeysIgnored in profiles_test.go,
-// which verifies the Go side ignores unknown JSON fields including
-// default_harness.
+// TestLoadProfiles_StaleKeysIgnored in profiles_test.go verifies the Go side
+// ignores unknown JSON fields, including default_harness.
 
 import (
 	"testing"

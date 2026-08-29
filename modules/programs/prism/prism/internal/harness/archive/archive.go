@@ -45,12 +45,10 @@ type SourceParams struct {
 //  2. Archive    — copy session files from the storage root into the archive dir.
 //  3. Version    — report the harness binary version for the manifest.
 //
-// The historical Export step (separate "normalisation" pass that translated
-// the raw archive into a downstream format) was removed when opencode left
-// the codebase — pi is the only remaining harness and its on-disk JSONL is
-// already in the downstream format, so Archive writes the final layout in a
-// single step. If a second harness lands in future, this interface can
-// re-grow an Export method then, with a real implementation.
+// This interface has no Export (normalisation) step: pi is the only harness
+// and its on-disk JSONL is already in the downstream format, so Archive
+// writes the final layout in a single step. If a second harness lands in
+// future, the interface can grow an Export method then.
 type ArchiveAdapter interface {
 	// SourcePath returns the host-side storage root directory for the session
 	// described by p. The returned path is used as the srcPath argument to
@@ -65,7 +63,7 @@ type ArchiveAdapter interface {
 	// harness-specific session artifacts in their final on-disk layout —
 	// no further normalisation step is run.
 	//
-	// Return value (issue #2336): copied reports whether Archive actually
+	// Return value: copied reports whether Archive actually
 	// wrote a transcript file into archiveDir. copied == false with err ==
 	// nil is the "nothing to copy" case (e.g. srcPath does not exist because
 	// the harness never produced output, or srcPath is a directory because
@@ -76,7 +74,7 @@ type ArchiveAdapter interface {
 	// preserved — most importantly the hard-cleanup mode of
 	// severPiResumeLinkage, which deletes the same source file that
 	// Archive just copied (soft closes preserve the source file and bypass
-	// the gate — issue #2371).
+	// the gate).
 	Archive(ctx context.Context, srcPath, archiveDir string) (copied bool, err error)
 
 	// Version returns the harness binary version string (e.g. "1.1.30"), or

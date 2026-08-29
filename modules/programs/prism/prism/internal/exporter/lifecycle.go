@@ -7,24 +7,23 @@ import (
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
-// lifecycle.go — the six lifecycle and outcome counters of issue #2703.
+// lifecycle.go — the six lifecycle and outcome counters.
 //
 // All six are produced by ONE tailer (TailerLifecycleEvents), running over
-// the same agent_events table as the #2700 events tailer but keeping its own
+// the same agent_events table as the events tailer but keeping its own
 // cursor. Every counter comes from the tail cursor, never from an aggregate
-// over a pruned table (#2699 section 3) — see LifecycleEventsTailSQL in
-// sql.go for the query and the prune-safety argument for its join.
+// over a pruned table — see LifecycleEventsTailSQL in sql.go for the query
+// and the prune-safety argument for its join.
 //
 // The dispatch below is closed-set by construction: (*lifecycleCounters).apply
 // only ever calls Inc on one of the six CounterVecs constructed in New, and
 // every label value handed to Inc is either a value already sanctioned as a
-// safe label by #2699 section 6 (repo, agent_role, isolation_mode, end_state,
-// profile) or a value drawn from a two-element closed set (verdict).
-// prism_spawns_total DOES carry a profile label (issue #2720) — see the
-// comment on LifecycleEventsTailSQL in sql.go for the boundary-test
-// narrowing that made this safe.
+// safe label (repo, agent_role, isolation_mode, end_state, profile) or a
+// value drawn from a two-element closed set (verdict). prism_spawns_total
+// DOES carry a profile label — see the comment on LifecycleEventsTailSQL in
+// sql.go for the boundary-test narrowing that makes this safe.
 
-// Metric names for the six #2703 counters.
+// Metric names for the six counters.
 const (
 	MetricSpawnsTotal           = "prism_spawns_total"
 	MetricSessionsEndedTotal    = "prism_sessions_ended_total"
@@ -34,14 +33,14 @@ const (
 	MetricPermissionDeniedTotal = "prism_permission_denied_total"
 )
 
-// TailerLifecycleEvents is the state-file key the #2703 tailer's cursor is
-// stored under. It is independent of TailerAgentEvents (#2700) even though
+// TailerLifecycleEvents is the state-file key the lifecycle tailer's cursor
+// is stored under. It is independent of TailerAgentEvents even though
 // both tail the same table — changing this name makes a running daemon lose
 // its place on these six counters only.
 const TailerLifecycleEvents = "agent_events_lifecycle"
 
 // eventTypeEscalated, eventTypeDoomLoop, and eventTypePermissionDenied name
-// the agent_events.type values that directly drive a #2703 counter with no
+// the agent_events.type values that directly drive a lifecycle counter with no
 // join required. They are unexported because nothing outside this file
 // needs them; the durable constants a reader may want to cross-check against
 // are session.EventSpawnIntent, db.SessionReapEventType (both imported
@@ -76,11 +75,11 @@ type lifecycleCounters struct {
 	permissionDeniedTotal *metrics.CounterVec
 }
 
-// newLifecycleCounters constructs and registers the six #2703 CounterVecs.
+// newLifecycleCounters constructs and registers the six CounterVecs.
 func newLifecycleCounters(reg *metrics.Registry) *lifecycleCounters {
 	lc := &lifecycleCounters{
 		// profile is sourced from spawn_inputs.profile_name via the
-		// LifecycleEventsTailSQL join (issue #2720); NULL folds to "default"
+		// LifecycleEventsTailSQL join; NULL folds to "default"
 		// at scan time in sql.go, never the empty string.
 		spawnsTotal: metrics.NewCounterVec(
 			MetricSpawnsTotal,
@@ -131,11 +130,11 @@ func newLifecycleCounters(reg *metrics.Registry) *lifecycleCounters {
 // escalationsTotal, doomLoopsTotal, permissionDeniedTotal) fold empty or
 // whitespace-only ev.Repo to the unknownRepoLabel placeholder via repoLabel(),
 // to prevent unbounded label cardinality and blank template-variable entries
-// (#2764, #2767). Counters are tail-cursor accumulated and persisted across
+// to prevent unbounded label cardinality and blank template-variable
+// entries. Counters are tail-cursor accumulated and persisted across
 // restarts, so a label-value correction ends the old series and starts a new
-// one at zero. Per #2769's precedent on the profile label, corrected values
-// start a new series going forward; pre-correction rows keep their original
-// label value (no backfill).
+// one at zero: corrected values start a new series going forward;
+// pre-correction rows keep their original label value (no backfill).
 func (lc *lifecycleCounters) apply(ev lifecycleEvent) error {
 	switch ev.Type {
 	case session.EventSpawnIntent:

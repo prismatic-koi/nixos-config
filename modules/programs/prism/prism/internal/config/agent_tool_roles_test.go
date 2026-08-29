@@ -1,7 +1,7 @@
 package config_test
 
 // agent_tool_roles_test.go — coverage for the role-aware pi builtin tool
-// exclusion (issue #2531).
+// exclusion.
 
 import (
 	"reflect"
