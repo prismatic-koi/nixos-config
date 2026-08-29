@@ -3,14 +3,13 @@ package sidecar
 // message_tracking_bound_test.go — acceptance-criteria tests for the
 // bounded-LRU treatment of the four per-message tracking maps on Sidecar
 // (writtenMessages / textByMessage / msgCreatedAtMs / ttftByMessage).
-// Issue #1846.
 
 import (
 	"strconv"
 	"testing"
 )
 
-// TestMessageTrackingMaps_BoundedAfterFlood is AC #1: after many more inserts
+// TestMessageTrackingMaps_BoundedAfterFlood checks that after many more inserts
 // than the cap, none of the four maps exceed the cap. This drives the real
 // HandleEvent pipeline (not the boundedMap helper directly), so it also
 // guards against any future call-site that bypasses the bounded type.
@@ -96,7 +95,7 @@ func TestMessageTrackingMaps_BoundedAfterFlood(t *testing.T) {
 	}
 }
 
-// TestMessageTrackingMaps_ShortConversationNoEviction is AC #2: a normal
+// TestMessageTrackingMaps_ShortConversationNoEviction checks that a normal
 // 10-turn conversation must not trigger eviction. writtenMessages
 // accumulates every completed user + assistant message; the streaming maps
 // (textByMessage / msgCreatedAtMs / ttftByMessage) are drained on

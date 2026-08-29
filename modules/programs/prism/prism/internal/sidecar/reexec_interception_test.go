@@ -1,15 +1,14 @@
 package sidecar
 
-// Regression guard for TestMain's re-exec stub interception (#2237, residual
-// from #2230).
+// Regression guard for TestMain's re-exec stub interception.
 //
 // The host-API handlers re-exec prismBinary() — which falls back to
-// os.Executable(), i.e. THIS test binary — with the subcommand argv shapes
+// os.Executable(), that is, THIS test binary — with the subcommand argv shapes
 // below (the exec.CommandContext sites in host_api.go). Without the TestMain
 // interception (testmain_test.go) such a re-invocation runs the ENTIRE test
-// suite as a detached child — verified against the pre-#2237 binary:
-// `<self> prompt prism-test@reexec-guard --prompt hi` ran the full suite for
-// 47 seconds and wrote 2.9 MB of output ending in PASS.
+// suite as a detached child. For example, without the interception,
+// `<self> prompt prism-test@reexec-guard --prompt hi` runs the full suite for
+// tens of seconds and writes megabytes of output ending in PASS.
 //
 // This guard execs the test binary the way the production re-exec would —
 // the same argv shapes prismBinary() callers build, no stub env var — and

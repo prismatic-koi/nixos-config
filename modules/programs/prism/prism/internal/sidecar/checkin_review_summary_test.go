@@ -1,12 +1,12 @@
 package sidecar
 
-// checkin_review_summary_test.go — issue #2628.
+// checkin_review_summary_test.go
 //
 // GET /checkin/review-summary, the host-API half of the aggregate gate for
-// the non-verbose `prism checkin <parent>~review` form. Before this, the CLI
-// rendered that form entirely from a local direct-DB read with no host-API
-// route at all, so a sandboxed caller could not reach it, and a host-mode
-// caller reached it with no gate (issue #2628). These tests pin the endpoint
+// the non-verbose `prism checkin <parent>~review` form. Without this route,
+// the CLI renders that form entirely from a local direct-DB read with no
+// host-API route at all, so a sandboxed caller cannot reach it, and a
+// host-mode caller reaches it with no gate. These tests pin the endpoint
 // from the outside — through the HTTP handler — mirroring
 // checkin_permission_test.go's shape for GET /checkin.
 
@@ -40,7 +40,7 @@ func TestCheckinReviewSummary_Worker_AllowsOwnParent(t *testing.T) {
 }
 
 // TestCheckinReviewSummary_Worker_RefusesOtherWorkersGroup is the headline
-// defect of #2628: a worker must not be able to read another worker's
+// The defect: a worker must not be able to read another worker's
 // review-agent summary through the aggregate form.
 func TestCheckinReviewSummary_Worker_RefusesOtherWorkersGroup(t *testing.T) {
 	f := newCheckinFixture(t)

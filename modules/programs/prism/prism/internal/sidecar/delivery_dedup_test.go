@@ -1,7 +1,7 @@
 package sidecar
 
 // delivery_dedup_test.go — unit tests for the bounded LRU dedup set used
-// by the /prompt handler to drop repeat deliveries. Issue #1685.
+// by the /prompt handler to drop repeat deliveries.
 
 import (
 	"sync"

@@ -1,6 +1,6 @@
 package sidecar
 
-// Unit tests for the pi_extension_dir staleness diagnostic (issue #2739).
+// Unit tests for the pi_extension_dir staleness diagnostic.
 //
 // piExtensionStaleDiagnostic is the pure core of the fix: given the sidecar's
 // startup-cached extension dir and a fresh re-read of config.json, it returns

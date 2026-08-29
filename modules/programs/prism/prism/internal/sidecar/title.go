@@ -1,6 +1,6 @@
 package sidecar
 
-// title.go — once-per-session title generation (issue #2683).
+// title.go — once-per-session title generation.
 //
 // What it does
 // ------------
@@ -18,10 +18,10 @@ package sidecar
 //     the task description before the agent has said a word. The trigger is
 //     the first turn_start.
 //   - A COORDINATOR has no spawn prompt. Its motivating text is whatever the
-//     operator typed first, which reaches prism as a msg_user frame (#2678).
+//     operator typed first, which reaches prism as a msg_user frame.
 //     The trigger is that frame.
 //
-// Whichever arrives first wins; the guard below means the other is a no-op.
+// Whichever arrives first wins. The guard below makes the other a no-op.
 //
 // Exactly one model call per session
 // ----------------------------------
@@ -92,7 +92,7 @@ const titleGenTimeout = 20 * time.Second
 //   - the session's role is not eligible. Review agents are the reason this
 //     check exists: there are thousands of them, a name like
 //     `...~review-1-review-qa` already says what the session is, and titling
-//     them would be pure cost. The check is on root_agent_name via an
+//     them is pure cost. The check is on root_agent_name via an
 //     allowlist, so a role added later is excluded until someone opts it in.
 func (s *Sidecar) maybeGenerateTitle(sourceText string) {
 	if s.titleGenAttempted {
@@ -101,7 +101,7 @@ func (s *Sidecar) maybeGenerateTitle(sourceText string) {
 	if titlegen.Sanitise(sourceText) == "" {
 		// No usable text yet. Do NOT latch the flag: a later frame in this
 		// same session may carry the real prompt, and burning the single
-		// attempt on an empty string would leave the session untitled for
+		// attempt on an empty string leaves the session untitled for
 		// good.
 		return
 	}
@@ -145,13 +145,13 @@ func (s *Sidecar) maybeGenerateTitle(sourceText string) {
 			case err != nil:
 				// Never fatal, and never retried. The fallback title is
 				// already in hand, and this runs on the first turn of every
-				// eligible session — a retry storm here would be paid on
+				// eligible session — a retry storm here is paid on
 				// every spawn.
 				s.logger().Printf("sidecar: title generation failed (falling back to the derived title): %v", err)
 			case titlegen.IsRejected(generated):
 				// Not title-shaped: a refusal, a question, or over budget.
 				// Same outcome as a transport error — log it, keep the
-				// deterministic fallback, and never retry (issue #2693).
+				// deterministic fallback, and never retry.
 				s.logger().Printf("sidecar: title generation returned a non-title reply (falling back to the derived title): %q", generated)
 			case titlegen.Sanitise(generated) == "":
 				s.logger().Printf("sidecar: title generation returned an empty title (falling back to the derived title)")
@@ -163,9 +163,9 @@ func (s *Sidecar) maybeGenerateTitle(sourceText string) {
 
 		if title == "" {
 			// Sanitise already returned "" for the source above, so this is
-			// unreachable via maybeGenerateTitle's guard. Kept because
-			// writing an empty-string title would break the NULL-vs-''
-			// distinction the title column documents.
+			// unreachable via maybeGenerateTitle's guard. It is kept because an
+			// empty-string title breaks the NULL-vs-'' distinction the title
+			// column documents.
 			return
 		}
 
@@ -187,7 +187,7 @@ func (s *Sidecar) maybeGenerateTitle(sourceText string) {
 // cfg.AgentRole is authoritative when set — it is passed at spawn and is the
 // same value written to root_agent_name. s.rootAgent is the host-mode
 // fallback, inferred from the first user message, and matches what
-// upsertState would write to root_agent_name for such a session. Using the
+// upsertState writes to root_agent_name for such a session. Using the
 // same precedence as upsertState keeps the eligibility decision and the DB
 // column in agreement.
 func (s *Sidecar) titleRole() string {

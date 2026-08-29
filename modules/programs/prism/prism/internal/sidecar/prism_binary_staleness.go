@@ -11,7 +11,7 @@ import (
 // prism executable has diverged from the currently-installed prism binary,
 // and returns a loud, named diagnostic when it has.
 //
-// Background (issue #2742). The sidecar resolves its own executable once, at
+// The sidecar resolves its own executable once, at
 // launch time, via os.Executable() inside the prismBinary() closure
 // (host_api.go). It execs that path for every delegated operation — 10 call
 // sites today, covering /spawn, /review, /cleanup, /prompt, /investigate, and
@@ -57,7 +57,7 @@ func prismBinaryStaleDiagnostic(cached, current string) string {
 		cached, current)
 }
 
-// checkBinaryStale runs the prism-binary staleness check (issue #2742) at
+// checkBinaryStale runs the prism-binary staleness check at
 // most once for the life of this Sidecar, caching its result in
 // s.binaryStaleDiag. It resolves the sidecar's own launch-time prism binary
 // (mirroring prismBinary()'s own resolution: s.cfg.PrismBinaryPath when a
@@ -71,7 +71,7 @@ func prismBinaryStaleDiagnostic(cached, current string) string {
 // first. See the binaryStaleOnce field comment on *Sidecar for why this
 // state lives on the Sidecar rather than a closure-local variable: on
 // Darwin, hostAPIHandler() backs two listeners (Unix socket and, in
-// container mode, TCP), and a closure-local sync.Once would not dedupe
+// container mode, TCP), and a closure-local sync.Once does not dedupe
 // across both.
 //
 // Never blocks, delays, or fails the caller: resolution failures on either
@@ -103,8 +103,8 @@ func (s *Sidecar) checkBinaryStale() {
 }
 
 // currentInstalledPrismPath resolves the prism binary currently on PATH,
-// following any symlink chain to the real underlying path (e.g. the nix
-// store path a home-manager-rendered symlink ultimately points at). It
+// following any symlink chain to the real underlying path (for example,
+// the nix store path a home-manager-rendered symlink points at). It
 // returns ("", err) whenever resolution is not possible — no `prism` on
 // PATH, or a symlink chain that cannot be fully resolved — so that callers
 // can fail open per the staleness contract above rather than guessing.

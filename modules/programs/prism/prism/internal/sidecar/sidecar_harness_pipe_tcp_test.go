@@ -1,7 +1,7 @@
 package sidecar
 
 // sidecar_harness_pipe_tcp_test.go — tests for the harness-pipe TCP listener
-// bind address on Darwin (issue #1482).
+// bind address on Darwin.
 //
 // ACs covered:
 //
@@ -95,7 +95,7 @@ func waitForTCPListening(addr string, deadline time.Duration) bool {
 
 // TestHarnessPipeTCP_ListenerBinds127001 verifies that the harness-pipe TCP
 // listener is bound exclusively to 127.0.0.1 (loopback), not 0.0.0.0 (all
-// interfaces). This is the security AC from issue #1482:
+// interfaces). This is the security requirement:
 //
 //	[security] The sidecar's harness-pipe TCP listener binds 127.0.0.1:<port>
 //	rather than 0.0.0.0:<port>.
@@ -198,14 +198,14 @@ func TestHarnessPipeTCP_ListenerBinds127001(t *testing.T) {
 //
 // and that Run() then exits promptly when the outer context is cancelled.
 //
-// Originally written for the edge-case AC from issue #1482:
+// Covers the edge-case requirement:
 //
 //	[edge-case] When the sidecar's harness-pipe TCP listen fails (e.g. port
 //	already in use), runStartupSocketPipe returns an error whose message
 //	contains the port number, the session is moved to error, and no extension
 //	is left dialling a non-existent listener.
 //
-// Updated for #1493 to match the post-#1490 contract: a non-nil return from
+// Under the absorb contract, a non-nil return from
 // runStartupSocketPipe is absorbed by Run() (host-API stays alive for the
 // in-sandbox `prism` CLI) and Run() blocks on ctx.Done() rather than returning
 // the listen error directly. The contract under test is therefore the
@@ -249,9 +249,9 @@ func TestHarnessPipeTCP_ListenFail_ReturnsErrorWithPort(t *testing.T) {
 	go func() { errc <- sc.Run(ctx) }()
 
 	// Observe the listen failure via DB state — Run() does NOT return the
-	// error directly under the post-#1490 contract.
+	// error directly under the absorb contract.
 	//
-	// Synchronisation (issue #1515): waitForState polls the DB at 1ms intervals
+	// Synchronisation: waitForState polls the DB at 1ms intervals
 	// up to a 10s deadline rather than the previous 20ms / 2s loop. The
 	// previous bound was tight enough to flake under the contended scheduling
 	// of the Nix build sandbox, where the path Run() → instance_id mint →
@@ -277,13 +277,14 @@ func TestHarnessPipeTCP_ListenFail_ReturnsErrorWithPort(t *testing.T) {
 		t.Errorf("startup_error reason %q does not contain port number %q", errMsg, portStr)
 	}
 
-	// Cancel the context and assert Run() exits promptly. Post-#1490 the
-	// host-API is held open until external shutdown; cancel is the trigger.
+	// Cancel the context and assert Run() exits promptly. Under the absorb
+	// contract the host-API is held open until external shutdown; cancel is
+	// the trigger.
 	cancel()
 	select {
 	case err := <-errc:
 		// Run() may return nil or ctx.Err() after cancel; either is acceptable
-		// per the post-#1490 absorb contract. We deliberately do NOT require
+		// per the absorb contract. This test deliberately does NOT require
 		// the listen error to surface here.
 		_ = err
 	case <-time.After(2 * time.Second):

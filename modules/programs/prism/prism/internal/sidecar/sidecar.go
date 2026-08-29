@@ -7,12 +7,12 @@
 //
 // Host-API socket path budget. The Unix socket the sidecar binds for the
 // host-API server (Config.HostAPISockPath) must fit the kernel's sun_path
-// limit: 108 bytes on Linux, 104 bytes on Darwin. We treat 104 as the budget
-// for both platforms so the same code path works everywhere. The path is
-// constructed by session.SidecarHostAPIPath and uses a 12-hex-char SHA-256
-// prefix of the session name as the per-session directory — see #1050 for the
-// path arithmetic and the regression tests in
-// internal/session/sidecar_test.go (TestSidecarHostAPIPath_LengthInvariant_*).
+// limit: 108 bytes on Linux, 104 bytes on Darwin. The sidecar treats 104 as
+// the budget for both platforms so the same code path works everywhere. The
+// path is constructed by session.SidecarHostAPIPath and uses a 12-hex-char
+// SHA-256 prefix of the session name as the per-session directory. The
+// regression tests in internal/session/sidecar_test.go
+// (TestSidecarHostAPIPath_LengthInvariant_*) cover the path arithmetic.
 // If a future change reverts that to a long-form session name, those tests
 // will fail with a clear message before the bug ships.
 //
@@ -20,11 +20,10 @@
 // subscription, event type mapping, message extraction, container command,
 // health check, config mount path) is delegated to the Harness interface.
 // The concrete implementation used in production is internal/harness/pi.
-// The Harness value is injected at construction time via Config.Harness
-// (Phase 0a of the multi-harness migration, RFC #691).
+// The Harness value is injected at construction time via Config.Harness.
 //
 // In container mode (Config.Container != nil — a legacy of the removed
-// container isolation mode; no current mode sets it), the sidecar also
+// container isolation mode, which no current mode sets), the sidecar also
 // manages the container lifecycle: create, health-check, stop, remove.
 //
 // All timer and clock operations go through an abstracted Clock interface so
@@ -72,17 +71,17 @@ const IdleDebounce = 2 * time.Second
 // will wait for the first SSE event from the harness. If no event is received
 // within this window, the session is transitioned to StateError via
 // writeStartupError. This mirrors the WaitHealthy/CreateSession timeout
-// mechanism added in #1011 for the legacy container path.
+// mechanism for the legacy container path.
 const DefaultStartupConnectTimeout = 5 * time.Minute
 
 // DefaultShutdownDrainTimeout is the upper bound on how long Shutdown waits
 // for the socket-pipe writer goroutine to flush the final abort frame onto
 // the wire before tearing down the connection. On a healthy connection the
 // writer signals completion within a single scheduler tick (well under 10ms);
-// the bound only matters when the writer is blocked (e.g. the PI extension
-// has stopped reading from its end of the socket).
+// the bound only matters when the writer is blocked (for example, the PI
+// extension has stopped reading from its end of the socket).
 //
-// Configurable via Config.ShutdownDrainTimeout (issue #1849).
+// Configurable via Config.ShutdownDrainTimeout.
 const DefaultShutdownDrainTimeout = 250 * time.Millisecond
 
 // ReconnectRecoveryDelay is the window the sidecar waits after a reconnect
@@ -100,14 +99,14 @@ const ReconnectRecoveryDelay = 60 * time.Second
 // The agent runtime emits a rapid burst of events in the same millisecond
 // after an error (session.error → session.status → session.updated → session.idle),
 // and the session.updated is internal housekeeping, not a user action. Without
-// this guard, the false resume would erase the error state and the coordinator
-// would see a spurious "finished" notification.
+// this guard, the false resume erases the error state and the coordinator
+// sees a spurious "finished" notification.
 const ErrorResumeDebounce = 5 * time.Second
 
 // DefaultReviewAgentInactivityTimeout is the default per-session inactivity
-// watchdog window for review-agent sessions (#1709). When no inbound frame
+// watchdog window for review-agent sessions. When no inbound frame
 // arrives from the PI extension (turn_start, turn_end, msg_assistant,
-// state_change, tool_call, tool_result, etc.) for this duration, the sidecar
+// state_change, tool_call, tool_result, and more) for this duration, the sidecar
 // force-transitions the session to StateError with a "inactivity timeout"
 // note so the review group can complete and a follow-up `prism review` can
 // proceed.
@@ -162,16 +161,16 @@ type Config struct {
 	// type extraction, and event mapping. When non-nil it is used directly;
 	// when nil, New() panics — callers must always provide a Harness.
 	Harness harness.Harness
-	// AgentRole is the top-level agent role for this session (e.g. "worker" or
-	// "coordinator"), derived from the --agent-role CLI flag. When non-empty, it
-	// is used to pre-set rootAgent at initialisation time so that subagent user
-	// messages (which have a non-empty agent field) do not accidentally overwrite
-	// rootAgent with a subagent name (#555). It is also written to
-	// root_agent_name in the DB so that `prism prompt` can target the correct
-	// agent for follow-up messages (#557).
+	// AgentRole is the top-level agent role for this session (for example,
+	// "worker" or "coordinator"), derived from the --agent-role CLI flag. When
+	// non-empty, it is used to pre-set rootAgent at initialisation time so that
+	// subagent user messages (which have a non-empty agent field) do not
+	// accidentally overwrite rootAgent with a subagent name. It is also written
+	// to root_agent_name in the DB so that `prism prompt` can target the correct
+	// agent for follow-up messages.
 	AgentRole string
 	// CheckinPrivilegedRepos is the tier-3 `/checkin` troubleshooting
-	// privilege list (issue #2587): the repos whose coordinator may check in
+	// privilege list: the repos whose coordinator may check in
 	// on ANY session in ANY repo, including another coordinator's workers and
 	// review agents. Every access the privilege admits writes an audit event,
 	// and the grant covers /checkin alone.
@@ -182,20 +181,19 @@ type Config struct {
 	// file is not bound into any sandbox, so no agent can edit its own
 	// privilege.
 	//
-	// An empty or nil slice grants the privilege to nobody and reproduces the
-	// pre-#2587 behaviour. Tests leave it at the zero value unless the tier-3
-	// path is the subject under test.
+	// An empty or nil slice grants the privilege to nobody. Tests leave it at
+	// the zero value unless the tier-3 path is the subject under test.
 	CheckinPrivilegedRepos []string
-	// AgentModel is the model identifier for the agent role (e.g.
+	// AgentModel is the model identifier for the agent role (for example,
 	// "anthropic/claude-sonnet-4-6"), resolved by cmd/sidecar.go from
 	// --model-override or the harness adapter's EffectiveModel.
 	// When non-empty it is seeded into root_model_id in the DB so that
-	// buildPromptBody can include the model in the prompt_async body (#557).
+	// buildPromptBody can include the model in the prompt_async body.
 	//
 	// This field is a reporting value on the sidecar's own path: the model pi
 	// runs on is selected by the launch path instead — buildDirectAgentCmd on
 	// host, and populatePIConfig → container.Config.AgentModel → PIInvocation
-	// on bwrap and sandbox-exec (issue #2863).
+	// on bwrap and sandbox-exec.
 	//
 	// When a --model-override entry exists for this role, both paths resolve
 	// that same entry and the reported value matches the running model. With
@@ -205,11 +203,11 @@ type Config struct {
 	// not mean an unset model. Do not make this field the source for either
 	// the reported value or the running model.
 	AgentModel string
-	// ModelsByRole is the per-role model override map (C.2). When non-nil
+	// ModelsByRole is the per-role model override map. When non-nil
 	// it takes precedence over AgentModel for any role present in the map.
 	// The map is passed directly to the harness adapter at construction time.
 	ModelsByRole map[string]string
-	// HarnessName is the registered harness name (e.g. "pi"). When
+	// HarnessName is the registered harness name (for example, "pi"). When
 	// non-empty, Run consults harness.ShapeOf(HarnessName) at the top of the
 	// function to determine the transport shape and route to the appropriate
 	// startup helper (runStartupHTTP or runStartupStdio). When empty, Run
@@ -222,10 +220,10 @@ type Config struct {
 	InstanceID string
 	// Logger, when non-nil, is the logger used for all sidecar log output.
 	// When nil, New() defaults it to log.Default() so existing production log
-	// output is unchanged. Tests should supply a per-test logger backed by a
+	// output is unchanged. A test must supply a per-test logger backed by a
 	// bytes.Buffer so that parallel test runs do not race on the global logger.
 	//
-	// Doc: once set on a Sidecar, the logger is never changed. All goroutines
+	// Once set on a Sidecar, the logger is never changed. All goroutines
 	// spawned by the sidecar capture it at construction time via the parent
 	// sidecar's cfg.Logger field.
 	Logger *log.Logger
@@ -261,14 +259,14 @@ type Config struct {
 	// session with the prompt already in flight so the conversation is visible
 	// in the TUI from the start. The sidecar then calls CreateSession (GET
 	// /session) to discover the session ID for subsequent prism prompt delivery.
-	// DeliverInitialPrompt is a no-op in container mode (RFC #691, Phase 1a).
+	// DeliverInitialPrompt is a no-op in container mode.
 	InitialPrompt string
-	// TitleGenerator produces the once-per-session dashboard title (#2683).
+	// TitleGenerator produces the once-per-session dashboard title.
 	//
 	// NIL DISABLES THE MODEL CALL ENTIRELY. The session still gets its
 	// deterministic fallback title and its regex-extracted issue_ref — only
 	// the summarisation step is skipped. nil is the default, so no test
-	// makes a network call unless it opts in; cmd/sidecar.go sets it for the
+	// makes a network call unless it opts in. cmd/sidecar.go sets it for the
 	// real process. See internal/sidecar/title.go.
 	TitleGenerator TitleGenerator
 	// PrismBinaryPath, when non-empty, overrides the path to the prism binary
@@ -285,7 +283,7 @@ type Config struct {
 	// A `nixos-rebuild switch` that changes the extension rewrites
 	// config.json's pi_extension_dir on disk, but this cached value does not
 	// move — the running sidecar keeps handing the pre-switch store path to
-	// every session it spawns, silently (issue #2739). The /spawn handler
+	// every session it spawns, silently. The /spawn handler
 	// compares this cached value against a fresh re-read of config.json and
 	// logs a loud, named diagnostic on mismatch so the failure is named
 	// rather than silent. `prism restart` clears it by replacing the process.
@@ -311,13 +309,13 @@ type Config struct {
 	// writer goroutine to flush the final abort frame to the PI extension before
 	// tearing down the connection. On a healthy connection the ack fires within
 	// a scheduler tick, so this bound only applies when the writer is blocked
-	// (e.g. the extension stopped reading). Defaults to DefaultShutdownDrainTimeout
-	// (250ms) when zero. Set to a small value in tests to assert the bounded
-	// fallback path (issue #1849).
+	// (for example, the extension stopped reading). Defaults to
+	// DefaultShutdownDrainTimeout (250ms) when zero. Set to a small value in
+	// tests to assert the bounded fallback path.
 	ShutdownDrainTimeout time.Duration
 	// ActivityTimeout is the duration of inbound-frame silence after which the
 	// sidecar force-transitions the session to StateError with note="inactivity
-	// timeout" (#1709). The watchdog is reset on every inbound frame received
+	// timeout". The watchdog is reset on every inbound frame received
 	// from the PI extension or SSE harness. Zero disables the watchdog
 	// (default for workers, coordinators, and other non-review sessions). For
 	// review-agent sessions, New() defaults this to
@@ -325,8 +323,8 @@ type Config struct {
 	// tests to exercise the timeout path deterministically.
 	ActivityTimeout time.Duration
 	// ReviewRecoveryInterval is the period of the worker-sidecar's review-
-	// completion recovery watcher (#1709 reopen). When zero, the watcher
-	// uses defaultReviewRecoveryInterval. Set to a small value (e.g.
+	// completion recovery watcher. When zero, the watcher
+	// uses defaultReviewRecoveryInterval. Set to a small value (for example,
 	// 50 ms) in tests to drive the loop deterministically via a fake clock.
 	// A negative value disables the watcher entirely.
 	ReviewRecoveryInterval time.Duration
@@ -373,15 +371,15 @@ type Config struct {
 	// DashboardSink, when non-nil, is the test-isolation hook used by
 	// writeStateChangeWithSID to perform the two dashboard side-effects
 	// (socket push and sentinel touch). When nil, New() installs the
-	// production sink (productionDashboardSink), which preserves the
-	// historical behaviour exactly: PushEvent dispatches a fire-and-forget
-	// goroutine that dials $XDG_STATE_HOME/prism/bus/dashboard.sock, and
-	// TouchSentinel runs an inline os.MkdirAll+os.Chtimes pair.
+	// production sink (productionDashboardSink): PushEvent dispatches a
+	// fire-and-forget goroutine that dials
+	// $XDG_STATE_HOME/prism/bus/dashboard.sock, and TouchSentinel runs an
+	// inline os.MkdirAll+os.Chtimes pair.
 	//
 	// sidecartest.NewIsolated installs NoopDashboardSink() so that tests
 	// constructed via the isolation helper never touch $XDG_STATE_HOME-derived
-	// paths, even when $HOME is unwritable (e.g. /homeless-shelter in the nix
-	// sandbox). See dashboard.go and issue #1851 for the footgun analysis.
+	// paths, even when $HOME is unwritable (for example, /homeless-shelter in
+	// the nix sandbox). See dashboard.go for the footgun analysis.
 	DashboardSink DashboardSink
 
 	// BareRoot is the bare repository root for sessions in the bare+worktree
@@ -394,7 +392,7 @@ type Config struct {
 
 	// PodmanProxyListenerPath is the Unix socket path the per-session
 	// filtering podman API socket proxy listens on when containers are
-	// enabled for the session (#2317 / #2320). When empty the proxy is
+	// enabled for the session. When empty the proxy is
 	// never started, regardless of the agent_status.containers_enabled
 	// gate. Typically set to session.SidecarPodmanProxyPath(sessionName).
 	PodmanProxyListenerPath string
@@ -404,17 +402,13 @@ type Config struct {
 	// purpose is test isolation: a sidecar test can point the proxy at a
 	// stub upstream (or at a non-existent path to exercise the 503
 	// envelope) without depending on a real podman socket on the host
-	// (AGENTS.md "Test-suite isolation (#1608)"). Step 6 will reuse the
-	// same override as the conduit for a future
-	// `prism spawn --containers --podman-upstream <path>` flag.
+	// (AGENTS.md "Test-suite isolation").
 	PodmanUpstreamPath string
 
 	// PodmanMachineName is the Darwin podman-machine name probed by the
 	// upstream discovery shellout when PodmanUpstreamPath is empty. When
 	// empty, defaultPodmanMachineName ("podman-machine-default") is used.
-	// Step 6 will surface a `--podman-machine` spawn flag whose value is
-	// forwarded into this field for per-spawn machine selection. No-op on
-	// non-Darwin platforms.
+	// No-op on non-Darwin platforms.
 	PodmanMachineName string
 }
 
@@ -435,8 +429,7 @@ type Sidecar struct {
 	// are dispatched from synchronous state-transition paths but write to
 	// s.cfg.Logger and other test-observable state asynchronously. Production
 	// code does not call Wait; the wg exists so tests can drain in-flight
-	// notifies via WaitNotifies() before reading captureLog output. See
-	// issues #1713 and #1716 for the race class this closes.
+	// notifies via WaitNotifies() before reading captureLog output.
 	notifyWG sync.WaitGroup
 
 	mu               sync.Mutex
@@ -448,8 +441,8 @@ type Sidecar struct {
 	harnessSessionID string
 	// writtenMessages dedupes message.updated writes. Bounded LRU
 	// (messageTrackingCap entries) — coordinator sidecars run for days, so
-	// the previous unbounded map leaked entries linearly with message volume
-	// (issue #1846). Entries are never explicitly deleted, only evicted on
+	// an unbounded map leaks entries linearly with message volume.
+	// Entries are never explicitly deleted, only evicted on
 	// overflow in strict insertion order.
 	writtenMessages *boundedMap[bool]
 	// textByMessage accumulates streamed text-part updates for an in-flight
@@ -464,7 +457,7 @@ type Sidecar struct {
 	// part arrives. Keyed by message ID; entries are deleted when the message
 	// is written (same lifecycle as textByMessage). Bounded LRU
 	// (messageTrackingCap entries) — see textByMessage for the leak class
-	// this closes (issue #1846).
+	// this closes.
 	msgCreatedAtMs *boundedMap[float64]
 	// ttftByMessage tracks the computed TTFT (ms) for each assistant message,
 	// set when the first text part with a time.start timestamp arrives.
@@ -489,14 +482,14 @@ type Sidecar struct {
 	// hostAPITCPSrv is the HTTP server for the host-API TCP listener (Darwin only).
 	// Stored so Shutdown() can drain in-flight requests gracefully. Protected by mu.
 	hostAPITCPSrv *http.Server
-	// binaryStaleOnce and binaryStaleDiag hold the (issue #2742) prism-binary
+	// binaryStaleOnce and binaryStaleDiag hold the prism-binary
 	// staleness check's process-scoped result. Deliberately fields on
 	// *Sidecar rather than a closure-local var inside hostAPIHandler():
 	// hostAPIHandler() is called once per listener it backs, and on Darwin a
 	// container session starts BOTH the Unix-socket server (Run(), always)
 	// and the TCP server (runStartupHTTP(), Darwin container mode) — each
-	// call would otherwise build its own independent sync.Once/diagnostic
-	// pair, and a stale sidecar could log the diagnostic twice. Hoisting to
+	// call otherwise builds its own independent sync.Once/diagnostic
+	// pair, and a stale sidecar can log the diagnostic twice. Hoisting to
 	// the Sidecar makes the dedup genuinely once-per-process regardless of
 	// how many host-API listeners this process starts.
 	binaryStaleOnce sync.Once
@@ -506,7 +499,7 @@ type Sidecar struct {
 	// probe succeeds during the container-stop grace period. Protected by mu.
 	shuttingDown bool
 	// rootAgent is the name of the top-level agent for this session.
-	// Pre-set from Config.AgentRole in New() when non-empty (#555); falls back
+	// Pre-set from Config.AgentRole in New() when non-empty. Falls back
 	// to inference from the first user message with a non-empty agent field when
 	// AgentRole is empty (see handleMessageUpdated).
 	rootAgent string
@@ -519,14 +512,14 @@ type Sidecar struct {
 	// busyEpoch is incremented each time a session.status busy event is
 	// received. It is used by the root-agent-message debounce path to detect
 	// whether a new busy event arrived after the timer was started (which
-	// would mean the agent started a new turn and the debounce should be
+	// means the agent started a new turn and the debounce must be
 	// cancelled). The existing cancelIdleTimer() in handleSessionStatus
 	// already stops the timer; busyEpoch provides an additional guard for
 	// the timer closure so it can bail out even if Stop() loses the race.
 	busyEpoch uint64
 	// titleGenAttempted latches once this session has tried to generate its
 	// title, so the attempt happens at most once per sidecar process however
-	// many turns the session runs (#2683). Guarded by s.mu. See
+	// many turns the session runs. Guarded by s.mu. See
 	// internal/sidecar/title.go for the second, SQL-side guard that covers a
 	// restarted sidecar.
 	titleGenAttempted bool
@@ -541,7 +534,7 @@ type Sidecar struct {
 	// emits in the same millisecond as session.error. Protected by s.mu.
 	lastErrorAt time.Time
 	// spawnTime records when the sidecar Run() began; used to compute elapsed
-	// time for the "first event received" log line (Gap 1b).
+	// time for the "first event received" log line.
 	// Set at the top of Run(), read under s.mu in HandleEvent.
 	spawnTime time.Time
 	// firstEventLogged is set to true after the "first event received" log
@@ -573,11 +566,11 @@ type Sidecar struct {
 	// reads from it; callers enqueue via enqueueHarnessPipeFrame.
 	harnessPipeOutCh chan []byte
 	// harnessPipeAbortAck, when non-nil, is closed by the socket-pipe writer
-	// goroutine immediately after processing an abort frame (i.e. after the
+	// goroutine immediately after processing an abort frame (that is, after the
 	// write attempt completes, whether or not the underlying conn was healthy).
 	// Shutdown installs this channel before enqueueing the final abort frame so
 	// it can wait for the actual flush instead of sleeping unconditionally
-	// (issue #1849). The writer clears it back to nil after closing so a
+	// The writer clears it back to nil after closing so a
 	// second close cannot occur. Protected by s.mu.
 	harnessPipeAbortAck chan struct{}
 
@@ -593,9 +586,9 @@ type Sidecar struct {
 	// PI socket-pipe pipeAccum appends, stdio pipeAccum appends, and
 	// SSE handleMessageUpdated). It stays true for the life of the
 	// sidecar — the finished-debounce zero-output-exit branch
-	// (events.go, issue #2409) reads it to distinguish a genuine
+	// (events.go) reads it to distinguish a genuine
 	// zero-output exit (still-idle persisted state AND no assistant
-	// output produced this session — issue #2081 case; resolves to
+	// output produced this session — resolves to
 	// error) from the fast-agent race where the turn_start
 	// (idle -> active) upsert has not been persisted before the
 	// finished-debounce fires but real output was produced (resolves
@@ -604,17 +597,17 @@ type Sidecar struct {
 	assistantOutputSeen bool
 
 	// lastInvestigatorText holds the most recent completed turn text for ANY
-	// session — the name predates issue #2528 and is investigator-specific in
-	// name only; it carries no role gate and is populated identically for
-	// investigate-agent sessions and ordinary worker sessions alike. Updated
+	// session — the name is investigator-specific in name only. It carries no
+	// role gate and is populated identically for investigate-agent sessions
+	// and ordinary worker sessions alike. Updated
 	// on every turn_end. Read at completion time by two consumers:
 	//   - notifyInvestigatorCompletion, to deliver the investigator's final
 	//     report to its invoker.
 	//   - the worker terminal-notification path (notifyCoordinator /
 	//     notifyCoordinatorError, via buildWorkerNotifyText in notify.go), to
 	//     extract an opt-in <follow_ups> section for the coordinator.
-	// Do not role-gate this field to investigate-agent sessions only — doing
-	// so would silently disable the worker follow-ups feature.
+	// Do not role-gate this field to investigate-agent sessions only — that
+	// silently disables the worker follow-ups feature.
 	// Protected by s.mu.
 	lastInvestigatorText string
 
@@ -622,7 +615,7 @@ type Sidecar struct {
 	// Each /prompt request carries a delivery_id (UUID minted by the sender);
 	// repeats whose ID has been seen recently are dropped before they reach
 	// DeliverPrompt. Sized at deliveryDedupCapacity (256) — see
-	// delivery_dedup.go for rationale. Issue #1685.
+	// delivery_dedup.go for rationale.
 	//
 	// Safe for concurrent use; protected internally — does not require s.mu.
 	promptDedup *deliveryDedup
@@ -633,8 +626,8 @@ type Sidecar struct {
 	// the prompt frame's `replay` field set to true so the receiving agent
 	// (and any human reading the audit trail) can identify them as resumed
 	// deliveries rather than fresh signals. Capacity is bounded by
-	// pendingReplayCapacity (16) — older entries are dropped FIFO. Issue #1685
-	// AC #7. Protected by s.mu.
+	// pendingReplayCapacity (16) — older entries are dropped FIFO. Protected
+	// by s.mu.
 	pendingReplayDeliveries []pendingReplayDelivery
 
 	// reviewingInFlight is set to true when the /review handler successfully
@@ -642,11 +635,11 @@ type Sidecar struct {
 	// delivers the review-complete prompt via /prompt (same-session,
 	// TransportSocketPipe path only — HTTP-harness sessions bypass /prompt).
 	//
-	// Clearing semantics for the same-session /prompt path (#1843):
+	// Clearing semantics for the same-session /prompt path:
 	//   - Synchronous-success branch: cleared AFTER DeliverPrompt returns true.
-	//     Clearing earlier would let an incidental state_change{finished} /
-	//     session.idle frame slip past the suppression guards in events.go and
-	//     fire a spurious "finished" notification — the #1372 / #1652 race class.
+	//     If cleared earlier, an incidental state_change{finished} /
+	//     session.idle frame can slip past the suppression guards in events.go and
+	//     fire a spurious "finished" notification — a race class.
 	//   - Buffered-for-replay branch (PI disconnected at delivery time):
 	//     remains true until flushPendingReplay re-enqueues the replayed frame
 	//     on the next handshake. The pendingReplayDelivery's Source field
@@ -656,18 +649,18 @@ type Sidecar struct {
 	// The suppress guards in events.go additionally check currentDBState() ==
 	// StateReviewing so they lift naturally when the monitor's pre-delivery DB
 	// write ("active") lands, even on HTTP-harness sessions where
-	// reviewingInFlight is never cleared via /prompt. See #1384.
+	// reviewingInFlight is never cleared via /prompt.
 	//
 	// Protected by s.mu.
 	reviewingInFlight bool
 
 	// escalatedInFlight is the in-memory mirror of the `escalated` agent state
-	// for the turn that invoked `prism escalate` (issue #2255). It is the
-	// escalate-path twin of reviewingInFlight and exists for the same #1372 /
-	// #1652 race class: the `escalated` DB state is written by a separate
+	// for the turn that invoked `prism escalate`. It is the
+	// escalate-path twin of reviewingInFlight and exists for the same race
+	// class: the `escalated` DB state is written by a separate
 	// host-side `prism escalate` process mid-turn, and the very next agent-loop
 	// iteration emits a turn_start frame whose unconditional active upsert
-	// would silently clobber it (escalated→active is a valid transition, so
+	// silently clobbers it (escalated→active is a valid transition, so
 	// not even an advisory warning fires). Once clobbered, the finished
 	// debounce sees `active`, writes `finished`, and notifyCoordinator emits
 	// the "has finished" notification the escalate contract requires to be
@@ -693,15 +686,15 @@ type Sidecar struct {
 	// Host-isolation-mode limitation: host-mode sessions run `prism escalate`
 	// directly (no PRISM_HOST_API proxy), so the sidecar never observes the
 	// escalate and this flag stays false. Those sessions retain the
-	// pre-#2255 DB-read-only guards.
+	// DB-read-only guards.
 	//
 	// Protected by s.mu.
 	escalatedInFlight bool
 
-	// activityTimer is the per-session inactivity watchdog (#1709). It is
+	// activityTimer is the per-session inactivity watchdog. It is
 	// (re-)armed by touchActivity() on every inbound frame from the PI
 	// extension (handlePipeFrame) or the SSE harness (HandleEvent). If it
-	// fires — i.e. cfg.ActivityTimeout has elapsed with no inbound frame — the
+	// fires (that is, cfg.ActivityTimeout elapsed with no inbound frame), the
 	// session is force-transitioned to StateError with note="inactivity
 	// timeout". nil when the watchdog is disabled (cfg.ActivityTimeout == 0).
 	// Protected by s.mu.
@@ -712,7 +705,7 @@ type Sidecar struct {
 	// path) or HandleEvent (SSE path). The post-handshake watchdog arm does
 	// NOT count: a session that completes the wire handshake but never
 	// produces a frame has inboundFrameCount == 0. Used by the inactivity
-	// watchdog (#2239) to distinguish a mid-run stall (frames flowed, then
+	// watchdog to distinguish a mid-run stall (frames flowed, then
 	// stopped) from a never-started agent (no frames at all). Protected by
 	// s.mu.
 	inboundFrameCount int
@@ -720,13 +713,13 @@ type Sidecar struct {
 	// firstInboundFrameAt and lastInboundFrameAt record the Clock timestamps
 	// of the first and most recent inbound frames. Zero when no frame has
 	// been received. Used by handleActivityTimeout to report "stalled
-	// mid-run after <elapsed> (<n> frames received, last at <t>)" (#2239).
+	// mid-run after <elapsed> (<n> frames received, last at <t>)".
 	// Protected by s.mu.
 	firstInboundFrameAt time.Time
 	lastInboundFrameAt  time.Time
 
 	// reviewRecoveryCancel cancels the worker-sidecar's review-completion
-	// recovery watcher (#1709 reopen). Set in Run() when the watcher is
+	// recovery watcher. Set in Run() when the watcher is
 	// started; called by Shutdown so the goroutine exits before the DB is
 	// closed. nil for review-agent sessions (which never own a group) and
 	// when ReviewRecoveryInterval is negative. Protected by mu.
@@ -750,7 +743,7 @@ type Sidecar struct {
 
 	// notifyCoordinatorDeliverFn, when non-nil, is used by notifyCoordinator
 	// in place of promptdelivery.DeliverToSession. This is a narrow test seam
-	// (issue #1856) — the only purpose is to let tests force a delivery
+	// — the only purpose is to let tests force a delivery
 	// failure so the WriteBusMessageFailed audit-row path can be asserted on,
 	// without requiring a SIGTERMed coordinator to vanish mid-flight in real
 	// time. Production code leaves this nil and the real promptdelivery call
@@ -761,7 +754,7 @@ type Sidecar struct {
 	notifyCoordinatorDeliverFn func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error
 
 	// podmanProxyAuditFile is the open audit-log file handle held by the
-	// per-session podman proxy (#2317 / #2320). Set by
+	// per-session podman proxy. Set by
 	// runPodmanProxyIfEnabled when the proxy is started; closed by Shutdown
 	// after the proxy goroutine has exited so the last audit line is
 	// flushed. nil when the proxy is not started (containers_enabled=0) or
@@ -812,7 +805,7 @@ func New(cfg Config) *Sidecar {
 		// dashboard side-effects — even if the test forgets to set
 		// DashboardSink explicitly. Production callers do not set this env
 		// var and so receive the unchanged productionDashboardSink behaviour.
-		// See issue #1851 for the homeless-shelter footgun this closes.
+		// See dashboard.go for the homeless-shelter footgun this closes.
 		if os.Getenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI") != "" {
 			cfg.DashboardSink = noopDashboardSink{}
 		} else {
@@ -833,14 +826,14 @@ func New(cfg Config) *Sidecar {
 	// messages (which have a non-empty agent field in SSE events) do not
 	// accidentally overwrite it. The existing user-message inference logic
 	// (handleMessageUpdated) is preserved as a fallback for when AgentRole is
-	// empty (#555).
+	// empty.
 	if cfg.AgentRole != "" {
 		s.rootAgent = cfg.AgentRole
 	}
-	// Default the inactivity watchdog for review-agent sessions (#1709). The
+	// Default the inactivity watchdog for review-agent sessions. The
 	// watchdog is opt-in for every other role: workers, coordinators, and
 	// investigate agents may legitimately sit idle awaiting human or peer
-	// input, so force-transitioning them on a silence window would corrupt
+	// input, so force-transitioning them on a silence window corrupts
 	// normal flow. Review agents, by contrast, have no human-in-the-loop
 	// branch and a stuck review-agent row blocks the whole review group's
 	// completion path — hence the default rescue here.
@@ -868,21 +861,21 @@ type containerMgr struct {
 // health-checks the container before subscribing to the SSE stream.
 // The container is stopped and removed by Shutdown().
 func (s *Sidecar) Run(ctx context.Context) error {
-	// Record spawn time for "first event received" log line (Gap 1b).
+	// Record spawn time for "first event received" log line.
 	s.mu.Lock()
 	s.spawnTime = time.Now()
 	s.mu.Unlock()
 
-	// Duplicate-start guard (#1936). Before doing ANY work that would touch
+	// Duplicate-start guard. Before doing ANY work that touches
 	// the database or the socket files, check whether another sidecar process
 	// is already alive and listening on this session's Unix socket paths. If
 	// so, refuse to start: do not os.Remove the socket, do not write to the
-	// DB, do not affect the live sidecar in any way. Just log the duplicate-
+	// DB, do not affect the live sidecar in any way. Log the duplicate-
 	// start error and exit non-zero.
 	//
-	// We check both sockets even though in practice a live sidecar owns both
-	// — a partial liveness (one socket alive, the other gone) is an unusual
-	// state, but checking both is cheap (one fast dial each) and gives us
+	// The check covers both sockets even though in practice a live sidecar
+	// owns both. A partial liveness (one socket alive, the other gone) is an
+	// unusual state, but checking both is cheap (one fast dial each) and gives
 	// defence-in-depth.
 	logf := func(format string, args ...any) { s.logger().Printf(format, args...) }
 	if err := checkNoLiveSidecar(s.cfg.HostAPISockPath, s.cfg.SessionName, "hostapi.sock", logf); err != nil {
@@ -894,14 +887,10 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		return err
 	}
 
-	// Start the host-API Unix socket server (AC-1, AC-9).
+	// Start the host-API Unix socket server.
 	// This runs for ALL harness types — any session with HostAPISockPath set
 	// needs the Unix socket so the sandboxed agent can proxy prism CLI calls
-	// back to the host. Previously this block was nested inside the
-	// Container!=nil branch (and then after the transport-shape switch), which
-	// meant bwrap sessions never got a socket: socket-pipe (pi) and
-	// stdio-pipe harnesses return early from the switch, so the block was
-	// unreachable for them.
+	// back to the host.
 	//
 	// This block MUST run before the transport-shape switch so that pi
 	// (socket-pipe) and stdio-pipe sessions get the listener before
@@ -913,9 +902,9 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// HTTP-port harnesses reach the post-switch TCP server block because
 	// socket-pipe and stdio-pipe return early from the switch.
 	//
-	// Guard with !shuttingDown: if SIGTERM arrived before we reach here,
-	// Shutdown() will have already run and we must not create listeners that
-	// would never be closed.
+	// Guard with !shuttingDown: if SIGTERM arrived before this point,
+	// Shutdown() has already run, and this must not create listeners that
+	// nothing will close.
 	s.mu.Lock()
 	alreadyShuttingDown := s.shuttingDown
 	s.mu.Unlock()
@@ -933,7 +922,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		_ = os.Remove(s.cfg.HostAPISockPath)
 		ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
 		if listenErr != nil {
-			// Failure to bind is FATAL (#1050). Continuing without a socket
+			// Failure to bind is FATAL. Continuing without a socket
 			// produces a partially-functional agent: bwrap exec proceeds with
 			// PRISM_HOST_API set but nothing listening, so anything inside the
 			// container that hits the host-API channel hangs or fails in a
@@ -960,7 +949,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		}()
 	}
 
-	// B.3 Stage 1: Mint or load instance_id. This is transport-agnostic and
+	// Stage 1: Mint or load instance_id. This is transport-agnostic and
 	// must run for ALL transport shapes (HTTP-port, socket-pipe, stdio-pipe).
 	// When --instance-id was passed at spawn time, s.cfg.InstanceID is already
 	// set (fast path). Otherwise, query the DB: if the row has a non-NULL
@@ -985,11 +974,11 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		}
 	}
 
-	// FK guard (#1760). Any subsequent writeEvent call sets agent_events.instance_id
+	// FK guard. Any subsequent writeEvent call sets agent_events.instance_id
 	// to s.cfg.InstanceID, which is a foreign key into sessions(instance_id). In
 	// production the parent row is inserted by the tmux-session-start handler
 	// (cmd/event.go) or by session.SpawnSession before the sidecar runs, but the
-	// sidecar may also be started in contexts where that didn't happen — sidecar
+	// sidecar may also be started in contexts where that did not happen — sidecar
 	// unit tests, ad-hoc bring-up, or any future caller that mints an instance_id
 	// inline above. InsertSession uses INSERT OR IGNORE so the call is a no-op
 	// when the row already exists; this guarantees that downstream event writes
@@ -1016,20 +1005,20 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	}
 
 	// Start the per-session filtering podman API socket proxy when the
-	// agent_status.containers_enabled gate is set (Step 3 of #2317 / #2320).
+	// agent_status.containers_enabled gate is set.
 	// Placed after the FK guard so the audit log path's instance_id-derived
 	// directory is safe to create. The call is a no-op when the gate is off,
 	// when PodmanProxyListenerPath is empty, or when DB is nil — see
 	// runPodmanProxyIfEnabled for the gate logic.
 	s.runPodmanProxyIfEnabled(ctx)
 
-	// B.3 Stage 2: Start the merge-queue watcher for coordinator sessions.
+	// Stage 2: Start the merge-queue watcher for coordinator sessions.
 	// This is transport-agnostic and must run for ALL transport shapes so that
 	// PI coordinator sessions receive merge-queue notifications exactly like
 	// HTTP-harness coordinator sessions.
 	//
-	// The watcher polls the pending_merges head on a 30s ticker (mergequeue.PollInterval,
-	// reduced from 45s in #2420) and drives PRs through the merge lifecycle. It is
+	// The watcher polls the pending_merges head on a 30s ticker
+	// (mergequeue.PollInterval) and drives PRs through the merge lifecycle. It is
 	// started only when:
 	//   - AgentRole is "coordinator" (explicit), OR
 	//   - SessionName ends with "@main" (legacy heuristic).
@@ -1050,8 +1039,8 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		}
 	}
 
-	// B.3 Stage 2b: Start the review-completion recovery watcher (#1709
-	// reopen). This watcher runs in every session that may host a review
+	// Stage 2b: Start the review-completion recovery watcher. This watcher
+	// runs in every session that may host a review
 	// group as a parent (any session that can call `prism review` —
 	// workers, coordinators, and any human-driven session) and rescues
 	// groups whose detached monitor subprocess has died before delivery.
@@ -1062,15 +1051,15 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	s.reviewRecoveryCancel = recoveryCancel
 	s.mu.Unlock()
 
-	// B.3 Stage 3: transport-shape gate. Consult the harness registry to
+	// Stage 3: transport-shape gate. Consult the harness registry to
 	// determine the wire-level shape and dispatch to the appropriate startup
 	// helper. Socket-pipe and stdio-pipe helpers run the duplex loop and return
 	// when the session ends — the remaining blocks below (TCP server, SSE loop)
 	// are HTTP-port-specific and are only reached for TransportHTTPPort.
 	//
 	// When HarnessName is empty (back-compat: callers that pre-date this field)
-	// the registry lookup is skipped and we fall through to runStartupHTTP,
-	// preserving today's behaviour for all existing sessions.
+	// the registry lookup is skipped and control falls through to
+	// runStartupHTTP, which is the behaviour for all existing sessions.
 	if s.cfg.HarnessName != "" {
 		shape, ok := harness.ShapeOf(s.cfg.HarnessName)
 		if !ok {
@@ -1086,24 +1075,24 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		case harness.TransportSocketPipe:
 			// The host-API and harness-pipe are independent surfaces. When the
 			// harness-pipe handshake fails (extension never dials, bad hello,
-			// version mismatch, timeout), we must NOT tear down the host-API
-			// server — the in-sandbox `prism` CLI depends on it for the full
+			// version mismatch, timeout), the host-API server must NOT be torn
+			// down — the in-sandbox `prism` CLI depends on it for the full
 			// session lifetime. Instead: log/record the failure, transition
 			// the harness to error state, and then hold until the external
 			// shutdown trigger arrives (context cancel, SIGTERM, prism cleanup).
 			//
 			// runStartupSocketPipe already records the error state in the DB and
-			// logs via writeStartupError before returning. Here we just need to
-			// decide whether to propagate the error (fatal path) or absorb it
+			// logs via writeStartupError before returning. The only decision
+			// here is whether to propagate the error (fatal path) or absorb it
 			// (harness-error, host-API still alive path).
 			//
 			// When runStartupSocketPipe returns nil (clean session_shutdown or
-			// ctx cancellation), we fall through to ctx.Err() at the bottom —
-			// same as the clean path today.
+			// ctx cancellation), control falls through to ctx.Err() at the
+			// bottom — the clean path.
 			//
-			// When it returns a non-nil error, we absorb it: the harness has
-			// already been placed in error state; the host-API listener is still
-			// running. We block on ctx.Done() so Run() outlives the handshake
+			// When it returns a non-nil error, absorb it: the harness is
+			// already in error state, and the host-API listener is still
+			// running. Block on ctx.Done() so Run() outlives the handshake
 			// failure and the host-API server keeps accepting connections.
 			if pipeErr := s.runStartupSocketPipe(ctx); pipeErr != nil {
 				// The harness-pipe loop failed. Log the failure (writeStartupError
@@ -1116,7 +1105,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				// Return nil — Shutdown() is responsible for writing the final
 				// state and cleaning up the host-API listener. Returning nil
 				// (rather than the pipe error) prevents cmd/sidecar.go from
-				// treating this as a fatal error exit; the normal deferred
+				// treating this as a fatal error exit. The normal deferred
 				// Shutdown() path handles all cleanup.
 				return nil
 			}
@@ -1136,10 +1125,10 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// Start the host-API TCP server — Darwin only, for HTTP-port (pi
 	// container) sessions. The TCP listener is bound inside runStartupHTTP
 	// (before container creation, so the port is known at container launch
-	// time). We start the server goroutine here, after runStartupHTTP returns,
+	// time). The server goroutine starts here, after runStartupHTTP returns,
 	// because s.hostAPITCPListener is not set until runStartupHTTP runs.
 	// Socket-pipe and stdio-pipe cases return early above and never reach here,
-	// so this block only executes for HTTP-port sessions — exactly as before.
+	// so this block only executes for HTTP-port sessions.
 	s.mu.Lock()
 	tcpLn := s.hostAPITCPListener
 	s.mu.Unlock()
@@ -1196,7 +1185,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// runs forever, leaving the session stuck at "idle".
 	//
 	// After startupConnectTimeout with no first event, transition the session
-	// to StateError (same mechanism as #1011's WaitHealthy/CreateSession paths)
+	// to StateError (same mechanism as the WaitHealthy/CreateSession paths)
 	// and cancel the SSE loop so the sidecar exits cleanly.
 	//
 	// Container-owning modes have WaitHealthy/CreateSession covering startup
@@ -1234,25 +1223,25 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				s.cfg.SessionName, url, startupTimeout)
 			s.logger().Printf("sidecar: startup-connect timeout fired: %v", startupErr)
 
-			// Write-ordering invariant (#1690, mirrors #1657): perform ALL startup-
-			// failure writes (DB state transition + startup_error event + parent/
-			// coordinator notification) BEFORE emitting the `[timing] harness
-			// listening: ... (timed out)` log marker. The marker must be the LAST
-			// log line written by this goroutine so that any reader (test, operator
-			// tailing logs) that observes the marker is guaranteed not to race with
+			// Write-ordering invariant: perform ALL startup-failure writes (DB
+			// state transition + startup_error event + parent/coordinator
+			// notification) BEFORE emitting the `[timing] harness listening: ...
+			// (timed out)` log marker. The marker must be the LAST log line
+			// written by this goroutine so that any reader (test, operator tailing
+			// logs) that observes the marker is guaranteed not to race with
 			// further concurrent writes from the startup-error path.
 			//
-			// We use writeStartupErrorSync (not writeStartupError) so that
+			// This uses writeStartupErrorSync (not writeStartupError) so that
 			// notifyParentWorkerOnStartupFailure runs inline rather than on a
-			// background goroutine — otherwise the notify goroutine could outlive
+			// background goroutine. Otherwise the notify goroutine can outlive
 			// this one and continue writing to s.cfg.Logger after Run() returns,
 			// triggering a data race on test loggers that share a strings.Builder.
 			s.writeStartupErrorSync(startupErr)
 			// For non-review-agent (worker) sessions, also notify the coordinator so
 			// the coordinator learns the worker is dead — symmetric to the finished
 			// notification path (notifyCoordinator is suppressed for review agents
-			// and self-notifications internally). This satisfies the routing requirement
-			// from #1022: "worker agents notify the coordinator."
+			// and self-notifications internally). This satisfies the routing requirement:
+			// worker agents notify the coordinator.
 			//
 			// Called synchronously (not `go s.notifyCoordinator()`) so its log
 			// writes complete before the `[timing]` marker is emitted below — part
@@ -1267,13 +1256,13 @@ func (s *Sidecar) Run(ctx context.Context) error {
 
 			// Emit a `[timing] harness listening` line recording the timeout
 			// duration so the grep-the-log workflow yields a coherent timeline
-			// even on the failure path (#1052 AC: "When the harness never reaches
-			// the listening state and the sidecar times out, the timing line
-			// emitted records the timeout duration, not silence."). The
-			// "(timed out)" suffix distinguishes failure from a real listening
-			// marker without changing the leading prefix that grep targets.
+			// even on the failure path: when the harness never reaches the
+			// listening state and the sidecar times out, the timing line records
+			// the timeout duration, not silence. The "(timed out)" suffix
+			// distinguishes failure from a real listening marker without changing
+			// the leading prefix that grep targets.
 			//
-			// EMITTED LAST (#1690 invariant): see the comment block above. Any
+			// EMITTED LAST (invariant): see the comment block above. Any
 			// reader that sees this marker is guaranteed that the DB row already
 			// shows StateError, the startup_error event has been written, and any
 			// parent/coordinator notification work has finished.
@@ -1299,7 +1288,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 func (s *Sidecar) Shutdown() {
 	s.mu.Lock()
 	// Mark shutdown before releasing the lock so that Run()'s OnReady guard
-	// sees shuttingDown=true even if it races with Shutdown() (AC-16).
+	// sees shuttingDown=true even if it races with Shutdown().
 	s.shuttingDown = true
 	ctr := s.container
 	watcherCancel := s.mergeWatcherCancel
@@ -1314,7 +1303,7 @@ func (s *Sidecar) Shutdown() {
 		watcherCancel()
 	}
 
-	// Cancel the review-recovery watcher (#1709 reopen). Like the merge-queue
+	// Cancel the review-recovery watcher. Like the merge-queue
 	// watcher, this must run before the DB is closed so the goroutine exits
 	// cleanly. The watcher does not write any state during shutdown so the
 	// ordering relative to AbandonWatchingMerges is unconstrained.
@@ -1335,12 +1324,12 @@ func (s *Sidecar) Shutdown() {
 	}
 
 	// Stop and remove the container before writing state — this ensures
-	// cleanup happens even if SIGTERM arrives during health-check (AC-16).
+	// cleanup happens even if SIGTERM arrives during health-check.
 	if ctr != nil {
 		ctr.mgr.Shutdown()
 	}
 
-	// Close the host-API Unix socket listener and remove the socket file (AC-5).
+	// Close the host-API Unix socket listener and remove the socket file.
 	// Drain in-flight requests with a short deadline before closing.
 	s.mu.Lock()
 	ln := s.hostAPIListener
@@ -1357,9 +1346,9 @@ func (s *Sidecar) Shutdown() {
 	}
 	if ln != nil {
 		_ = os.Remove(s.cfg.HostAPISockPath)
-		// Also remove the per-session socket directory introduced by security
-		// fix #960. os.Remove only succeeds when the directory is empty (which
-		// it will be after the socket file is removed), so this is safe.
+		// Also remove the per-session socket directory. os.Remove only succeeds
+		// when the directory is empty (which it is after the socket file is
+		// removed), so this is safe.
 		_ = os.Remove(filepath.Dir(s.cfg.HostAPISockPath))
 	}
 	// Close the TCP host-API listener/server (Darwin only). Idempotent when
@@ -1391,7 +1380,7 @@ func (s *Sidecar) Shutdown() {
 		// Install an ack channel before enqueueing the abort frame so the
 		// writer goroutine can signal completion. The writer closes (and
 		// nils) harnessPipeAbortAck after the abort frame's write attempt
-		// finishes — see runStartupSocketPipe's writer loop. Issue #1849.
+		// finishes — see runStartupSocketPipe's writer loop.
 		ackCh := make(chan struct{})
 		s.mu.Lock()
 		s.harnessPipeAbortAck = ackCh
@@ -1406,8 +1395,8 @@ func (s *Sidecar) Shutdown() {
 			// the wire (it closes ackCh after the write attempt completes,
 			// regardless of whether the underlying conn was healthy). Bound
 			// the wait by ShutdownDrainTimeout so an unresponsive writer
-			// (e.g. blocked on a stalled conn) cannot stall Shutdown longer
-			// than the documented budget.
+			// (for example, blocked on a stalled conn) cannot stall Shutdown
+			// longer than the documented budget.
 			//
 			// The drain bound is armed via s.cfg.Clock (not time.After) so
 			// tests can substitute the fake clock and assert the ack path
@@ -1424,8 +1413,8 @@ func (s *Sidecar) Shutdown() {
 			case <-drainTimedOut:
 				s.logger().Printf("sidecar: Shutdown: abort-frame flush timed out after %s; tearing down connection anyway", drainTimeout)
 				// Clear the ack channel so a late writer iteration does not
-				// attempt to close a channel we have already abandoned. We
-				// don't close ackCh ourselves — it just becomes garbage.
+				// attempt to close a channel already abandoned. Do not close
+				// ackCh here — it becomes garbage.
 				s.mu.Lock()
 				if s.harnessPipeAbortAck == ackCh {
 					s.harnessPipeAbortAck = nil
@@ -1436,9 +1425,9 @@ func (s *Sidecar) Shutdown() {
 			// Outbound queue full or no longer accepting — fall through to
 			// the connection close. handlePipeFrame's connection-dropped
 			// handler will mark the session error if PI exits unexpectedly.
-			// The ack channel was installed speculatively; clear it so a
+			// The ack channel was installed speculatively. Clear it so a
 			// stray writer iteration on an unrelated abort frame does not
-			// close it under us.
+			// close it.
 			s.mu.Lock()
 			if s.harnessPipeAbortAck == ackCh {
 				s.harnessPipeAbortAck = nil
@@ -1461,7 +1450,7 @@ func (s *Sidecar) Shutdown() {
 	// returned on ctx cancellation; this call is a no-op then (the handle
 	// is nilled under s.mu so a double close cannot occur). The defensive
 	// path covers Shutdown invocations that race with Run failure-modes
-	// where the goroutine was never spawned (e.g. NewProxy returned an
+	// where the goroutine was never spawned (for example, NewProxy returned an
 	// error after the file was opened) — closePodmanProxyAuditFile reads
 	// the handle under s.mu so the second writer is safe.
 	s.closePodmanProxyAuditFile()
@@ -1479,7 +1468,7 @@ func (s *Sidecar) Shutdown() {
 		s.lastState != agent.StateError {
 		// Note: StateError is excluded because writeStartupError may have already
 		// written it before Run() returned on the startup-failure path. Overwriting
-		// error with interrupted here would clobber the correct terminal state.
+		// error with interrupted here clobbers the correct terminal state.
 		s.logger().Printf("sidecar: transition -> interrupted (cause=sigterm)")
 		s.upsertState(agent.StateInterrupted, nil, nil)
 		s.writeStateChange(agent.StateInterrupted)
@@ -1487,7 +1476,7 @@ func (s *Sidecar) Shutdown() {
 }
 
 // runStartupHTTP runs the HTTP-port startup sequence for TransportHTTPPort
-// harnesses (e.g. pi). It is called from Run when the harness transport
+// harnesses (for example, pi). It is called from Run when the harness transport
 // shape is TransportHTTPPort (or when HarnessName is empty for back-compat).
 //
 // When OwnsContainerLifecycle is false (bwrap / host mode), this function is a
@@ -1502,16 +1491,16 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 		// On Darwin, start a TCP listener on 0.0.0.0:0 BEFORE container creation
 		// so the OS-allocated port is known when the container env is configured.
 		// virtiofs returns ENOTSUP on connect() for Unix sockets mounted into the
-		// container VM, so TCP is used instead (#661). The listener must bind on
+		// container VM, so TCP is used instead. The listener must bind on
 		// 0.0.0.0 (not 127.0.0.1) so that gvproxy's bridge interface
 		// (192.168.127.254) can reach it from inside the container VM — loopback
 		// is not reachable from the VM network. No --publish flag is needed:
 		// the container reaches the sidecar via host.containers.internal:<port>,
 		// which routes through the gvproxy bridge directly to this listener.
 		//
-		// Failure to bind is FATAL. A silent fallback to Unix-socket-only mode would
-		// reproduce the ENOTSUP bug (#661) — the container would start without a
-		// working host-API channel. Returning an error here aborts container startup
+		// Failure to bind is FATAL. A silent fallback to Unix-socket-only mode
+		// reproduces the ENOTSUP bug — the container starts without a working
+		// host-API channel. Returning an error here aborts container startup
 		// with a clear message rather than creating a silently broken session.
 		if runtime.GOOS == "darwin" && s.cfg.HostAPISockPath != "" {
 			tcpLn, tcpErr := net.Listen("tcp", "0.0.0.0:0")
@@ -1528,10 +1517,10 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 		}
 
 		// closeTCPListenerOnEarlyReturn closes the TCP listener (Darwin only) when
-		// Run() returns an error before the SSE loop — i.e. before Shutdown() has been
-		// (or will be) called by the signal handler. We use a flag rather than a
-		// defer-always so that the normal success path leaves the listener open for the
-		// running HTTP server (which is closed by Shutdown() later).
+		// Run() returns an error before the SSE loop, that is, before the signal
+		// handler calls Shutdown(). This uses a flag rather than a defer-always so
+		// that the normal success path leaves the listener open for the running
+		// HTTP server (which Shutdown() closes later).
 		tcpListenerClosed := false
 		closeTCPListenerOnError := func() {
 			if tcpListenerClosed {
@@ -1564,12 +1553,12 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 		t0 = time.Now()
 		if err := mgr.WaitHealthy(ctx); err != nil {
 			s.logger().Printf("sidecar: health check failed: %v", err)
-			// AC-14: genuine timeout — Shutdown() has not been called yet, so we
-			// must stop/remove the container here.
+			// Genuine timeout — Shutdown() has not been called yet, so stop/remove
+			// the container here.
 			// When SIGTERM arrives, the signal goroutine calls Shutdown() (which
 			// sets shuttingDown=true and stops the container) then cancel(). In
 			// that case ctx may still be non-nil here (cancel fires after Shutdown),
-			// but we check shuttingDown to distinguish a SIGTERM-cancelled WaitHealthy
+			// but shuttingDown distinguishes a SIGTERM-cancelled WaitHealthy
 			// (Shutdown already ran) from a genuine probe timeout (no Shutdown yet),
 			// avoiding a double-Shutdown with spurious log lines.
 			//
@@ -1589,7 +1578,7 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 				// On SIGTERM, Shutdown() handles cleanup and writes StateInterrupted.
 				mgr.Shutdown()
 				closeTCPListenerOnError()
-				// Gap 1 fix: write StateError directly so the DB row transitions
+				// Write StateError directly so the DB row transitions
 				// to "error" (not relying on the fragile pane-died tmux hook).
 				// This is skipped on SIGTERM to avoid racing with Shutdown().
 				s.writeStartupError(startupErr)
@@ -1600,7 +1589,7 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 		s.logger().Printf("[timing] WaitHealthy: %s", healthyAt.Sub(t0).Round(time.Millisecond))
 		s.logger().Printf("sidecar: container %q is healthy", mgr.Name())
 
-		// Signal readiness after the container is healthy (AC-7, AC-19).
+		// Signal readiness after the container is healthy.
 		// Guard with shuttingDown to prevent OnReady from firing after SIGTERM,
 		// even if WaitHealthy returned a genuine 200 during the container-stop
 		// grace period. Shutdown() sets shuttingDown=true before stopping the
@@ -1609,7 +1598,7 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 		s.mu.Lock()
 		isShuttingDown := s.shuttingDown
 		s.mu.Unlock()
-		// Discover the session ID and deliver the initial prompt (#487).
+		// Discover the session ID and deliver the initial prompt.
 		// In container mode (agent --prompt "text"), the prompt was already
 		// delivered via the CLI flag — the agent starts the session and begins
 		// processing immediately. The sidecar still needs the session ID for
@@ -1699,22 +1688,6 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 // is considered cleanly terminated and runStartupStdio returns nil. Any other
 // outcome (non-zero exit, process exits before any frame is read, or the last
 // frame was not state=finished) is treated as a startup error.
-//
-// # Open questions (deferred to later stages)
-//
-//   - TUI bridging: how does the user-facing PTY connect to the harness
-//     process's output? Options include a capture pipe, a tmux pane that
-//     attaches to the child PTY, or a dedicated log-tail view.
-//   - fd separation: stdout is the JSON-Lines protocol channel; a separate
-//     fd (stderr, or a dedicated pipe fd) must carry human-readable harness
-//     log output so the two streams do not interfere.
-//   - Readiness signal: HTTP harnesses use WaitHealthy (HTTP probe loop);
-//     stdio harnesses need a different readiness signal — either a sentinel
-//     line on stdout/stderr, a timeout heuristic, or a protocol-level
-//     handshake message.
-//   - Signal handling: SIGTERM must drain in-flight stdio messages before
-//     closing the pipe and waiting for the child process to exit; the
-//     current Shutdown() path is HTTP-centric.
 func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 	if s.cfg.HarnessBinaryPath == "" {
 		const note = "stdio harness lifecycle not yet implemented; refusing to start"
@@ -1762,8 +1735,8 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 		return startupErr
 	}
 
-	// Check whether the harness implements FrameNormaliser (B5.TR Translate
-	// strategy). When it does, NormaliseFrame is called for each raw JSONL line
+	// Check whether the harness implements FrameNormaliser. When it does,
+	// NormaliseFrame is called for each raw JSONL line
 	// to produce pi-shaped payloads before writing to agent_events. When
 	// the harness does not implement FrameNormaliser, the legacy fallback path
 	// below is used (which writes raw frames for state_change and msg_assistant,
@@ -1775,7 +1748,7 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 	var lastState string
 	scanner := bufio.NewScanner(stdout)
 	// Bump the scanner buffer to 16 MiB to match the /review handler precedent
-	// (host_api.go); large msg_assistant frames can exceed the default 64 KiB.
+	// (host_api.go). Large msg_assistant frames can exceed the default 64 KiB.
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -1801,7 +1774,7 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 		s.logger().Printf("sidecar: runStartupStdio: frame type=%q", frame.Type)
 
 		if hasNormaliser {
-			// B5.TR path: the harness adapter normalises PI frames to
+			// The harness adapter normalises PI frames to
 			// pi-shaped payloads at write time. The normaliser is
 			// responsible for logging unknown event types at info level
 			// (not silently dropping them) per the edge-case AC.
@@ -1941,7 +1914,7 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 	s.mu.Unlock()
 
 	// Wait for the child process to exit. cmd.Wait() also closes the stdout
-	// pipe, which is fine because we have already read all frames above.
+	// pipe, which is fine because all frames have already been read above.
 	waitErr := cmd.Wait()
 
 	if framesRead == 0 {
@@ -1971,9 +1944,8 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 }
 
 // piWireProtocolVersion is the protocol version this sidecar implementation
-// supports. Matches the value in P2.WIRE (#1208) §4.
-// Bumped from 1→2 in #1434: extension now emits state_change{finished}
-// directly at turn boundaries (replaces state_change{idle}).
+// supports. Matches the value in P2.WIRE §4. Version 2: the extension emits
+// state_change{finished} directly at turn boundaries.
 const piWireProtocolVersion = 2
 
 // pipeDisconnectTimeout is the window the sidecar waits after an unexpected
@@ -1989,8 +1961,8 @@ const socketPipeMaxLineBytes = 16 * 1024 * 1024
 
 // abortFrameBytes is the canonical wire encoding of the abort frame. Both
 // Shutdown's clean-shutdown path and the /abort host-API endpoint serialise to
-// these exact bytes; the socket-pipe writer goroutine compares against this
-// value to detect when an ack on harnessPipeAbortAck is owed (issue #1849).
+// these exact bytes. The socket-pipe writer goroutine compares against this
+// value to detect when an ack on harnessPipeAbortAck is owed.
 var abortFrameBytes = []byte(`{"type":"abort"}` + "\n")
 
 // acceptOutcome enumerates the reasons an Accept attempt in
@@ -1999,12 +1971,11 @@ var abortFrameBytes = []byte(`{"type":"abort"}` + "\n")
 //
 //   - a startup timeout from a concurrent ctx cancellation — the timeout
 //     path must record state=error in the DB even if ctx happens to be
-//     cancelled in the same scheduling tick (#1760); and
-//   - a genuine accept timeout from a listener-level error — before #2341
-//     both paths shared one branch, so a listener close (Accept returns
-//     "use of closed network connection", the typical SIGTERM path) was
-//     mislabelled as a timeout in both the log line and the state_change
-//     note.
+//     cancelled in the same scheduling tick.
+//   - a genuine accept timeout from a listener-level error. A listener close
+//     (Accept returns "use of closed network connection", the typical
+//     SIGTERM path) must not be mislabelled as a timeout in the log line or
+//     the state_change note.
 type acceptOutcome int
 
 const (
@@ -2020,8 +1991,8 @@ const (
 //
 // # Readiness signal
 //
-// The hello frame from the extension serves as the readiness signal that would
-// otherwise be provided by WaitHealthy / CreateSession in the HTTP path. Once
+// The hello frame from the extension serves as the readiness signal that
+// WaitHealthy / CreateSession provides in the HTTP path. Once
 // hello is received and hello_ack is sent, OnReady is called (if set) and the
 // sidecar enters the frame loop.
 //
@@ -2029,7 +2000,7 @@ const (
 //
 // A reader goroutine consumes inbound frames; a writer goroutine drains the
 // harnessPipeOutCh channel. Both goroutines run concurrently after the
-// handshake. The function blocks until the reader goroutine finishes (i.e.
+// handshake. The function blocks until the reader goroutine finishes (that is,
 // until the connection is closed or session_shutdown is received).
 //
 // # Reconnect loop
@@ -2075,7 +2046,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 	if s.cfg.HarnessPipeTCPPort != 0 {
 		// Darwin: TCP listener bound to loopback only. sandbox-exec and the
 		// sidecar run on the same host; there is no VM or gvproxy bridge, so
-		// 0.0.0.0 would unnecessarily expose the listener on all interfaces.
+		// binding 0.0.0.0 exposes the listener on all interfaces for no benefit.
 		ln, listenErr = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.cfg.HarnessPipeTCPPort))
 		if listenErr != nil {
 			err := fmt.Errorf("sidecar: runStartupSocketPipe: TCP listen :%d: %w", s.cfg.HarnessPipeTCPPort, listenErr)
@@ -2108,7 +2079,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 	s.harnessPipeListener = ln
 	s.mu.Unlock()
 
-	// Reload the durable pending-replay buffer (issue #2359 Gap B) so any
+	// Reload the durable pending-replay buffer so any
 	// /prompt frames buffered by a prior sidecar incarnation are re-armed
 	// before the first handshake. Rows persisted by bufferPendingReplay
 	// survive sidecar exit; they must appear in the in-memory buffer with
@@ -2129,9 +2100,9 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 	// Returns the connection and an outcome value identifying which select
 	// case fired. The outcome is required (not just a bool) because the caller
 	// must perform a state=error write on timeout even when ctx is concurrently
-	// cancelled — collapsing timeout and ctx-cancel into a single "!ok" branch
-	// caused issue #1760, where the select picked ctx.Done() under contended
-	// scheduling and the state write was short-circuited.
+	// cancelled. Collapsing timeout and ctx-cancel into a single "!ok" branch
+	// lets the select pick ctx.Done() under contended scheduling and
+	// short-circuits the state write.
 	type acceptResult struct {
 		conn net.Conn
 		err  error
@@ -2151,11 +2122,10 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		case <-ctx.Done():
 			// Prefer the timeout outcome whenever the wall-clock deadline has
 			// already passed, regardless of which channel happened to be ready
-			// first. The original implementation reported ctx-cancel here and
-			// the caller then skipped the state=error write, producing the
-			// #1760 flake: under contended scheduling the deadline can elapse
-			// well before the timer goroutine actually delivers to timer.C,
-			// so a strict "is timer.C ready?" check is not reliable.
+			// first. A ctx-cancel outcome here makes the caller skip the
+			// state=error write. Under contended scheduling the deadline can
+			// elapse well before the timer goroutine delivers to timer.C, so a
+			// strict "is timer.C ready?" check is not reliable.
 			if !time.Now().Before(deadline) {
 				return nil, acceptTimedOut, nil
 			}
@@ -2164,7 +2134,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			if ar.err != nil {
 				// Carry the underlying Accept() error so the caller can log
 				// it and route the failure through a distinct diagnostic
-				// path from a genuine accept timeout (#2341).
+				// path from a genuine accept timeout.
 				return nil, acceptListenerErr, ar.err
 			}
 			return ar.conn, acceptConnected, nil
@@ -2195,16 +2165,15 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			if c != nil {
 				if _, err := c.Write(frame); err != nil {
 					s.logger().Printf("sidecar: runStartupSocketPipe: write outbound frame: %v", err)
-					// Don't return — the reader loop will detect the drop and
+					// Do not return — the reader loop will detect the drop and
 					// reconnect. The writer stays alive for the next connection.
 				}
 			}
 			// If this was an abort frame (either from Shutdown or from a
 			// /abort host-API call), signal any waiter on harnessPipeAbortAck.
-			// We close-and-clear under s.mu so a second consumer can install a
-			// fresh ack channel for a subsequent abort and so the close cannot
+			// Close-and-clear under s.mu so a second consumer can install a
+			// fresh ack channel for a subsequent abort, and so the close cannot
 			// race with a concurrent Shutdown installing a new channel.
-			// Issue #1849.
 			if bytes.Equal(frame, abortFrameBytes) {
 				s.mu.Lock()
 				if s.harnessPipeAbortAck != nil {
@@ -2221,7 +2190,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 	onReadyFired := false
 
 	// --- Main reconnect loop ----------------------------------------------
-	// acceptTimeout governs how long we wait for the FIRST connection.
+	// acceptTimeout governs how long to wait for the FIRST connection.
 	// After a non-shutdown drop it switches to pipeDisconnectTimeout.
 	acceptTimeout := startupTimeout
 
@@ -2260,7 +2229,8 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 				// Internal buffer is full but no newline yet; keep reading.
 				continue
 			}
-			// Any other error (io.EOF, net.OpError, etc.) — return what we have.
+			// Any other error (io.EOF, net.OpError, and others) — return the
+			// bytes read so far.
 			return buf, err
 		}
 	}
@@ -2272,12 +2242,11 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			switch outcome {
 			case acceptTimedOut:
 				// Genuine accept timeout — no (re)connection arrived within
-				// acceptTimeout. We must record the error state in the DB
-				// BEFORE consulting ctx — under contended scheduling the
-				// timer fire and an external ctx cancel can land in the same
-				// window, and skipping the write because ctx happens to be
-				// cancelled produces the flake described in #1760 (state
-				// stays "idle" forever).
+				// acceptTimeout. Record the error state in the DB BEFORE
+				// consulting ctx — under contended scheduling the timer fire
+				// and an external ctx cancel can land in the same window, and
+				// skipping the write because ctx happens to be cancelled
+				// leaves the session stuck at "idle" forever.
 				s.mu.Lock()
 				s.flushPipeAccum()
 				s.upsertState(agent.StateError, nil, nil)
@@ -2297,19 +2266,16 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 				// fault lands here too.
 				//
 				// This is a DIFFERENT diagnostic class from a genuine accept
-				// timeout: before #2341 both paths shared the "reconnect
-				// timeout" log line and state_change note, so a sub-second
-				// listener close was mislabelled as a 5-minute timeout
-				// misconfiguration in the log. The underlying Accept() error
-				// (acceptErr) is logged verbatim so the true cause is on the
-				// record, and the state_change note is distinct so DB
-				// forensics can tell the two classes apart.
+				// timeout. The underlying Accept() error (acceptErr) is logged
+				// verbatim so the true cause is on the record, and the
+				// state_change note is distinct so DB forensics can tell the
+				// two classes apart.
 				//
-				// The #1760 invariant applies to this branch as well: the
-				// state=error write must land BEFORE consulting ctx, since
-				// the SIGTERM path closes the listener via Shutdown() AND
-				// cancels ctx concurrently — skipping the write when ctx is
-				// already cancelled would leave the session stuck in "idle".
+				// The same invariant applies to this branch: the state=error
+				// write must land BEFORE consulting ctx, since the SIGTERM path
+				// closes the listener via Shutdown() AND cancels ctx
+				// concurrently. Skipping the write when ctx is already
+				// cancelled leaves the session stuck in "idle".
 				s.mu.Lock()
 				s.flushPipeAccum()
 				s.upsertState(agent.StateError, nil, nil)
@@ -2461,8 +2427,8 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			s.mu.Lock()
 			if !s.shuttingDown {
 				s.writeStateChange(agent.StateActive)
-				// Arm the inactivity watchdog once the session is active
-				// (#1709). Subsequent inbound frames reset the timer via
+				// Arm the inactivity watchdog once the session is active.
+				// Subsequent inbound frames reset the timer via
 				// touchActivity(); if the very first inbound frame never
 				// arrives the watchdog still fires after the full window.
 				s.touchActivity()
@@ -2475,7 +2441,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		}
 
 		// Flush any prompts that were buffered while the PI extension was
-		// disconnected (issue #1685 AC #7). Replayed frames carry replay=true
+		// disconnected. Replayed frames carry replay=true
 		// so the receiver can identify them as resumed deliveries. Done in a
 		// goroutine so a slow drain cannot block the reader loop.
 		go s.flushPendingReplay()
@@ -2483,10 +2449,10 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		// Push the authoritative reviewingInFlight value to the freshly-
 		// connected extension so its pendingReviewCall guard is initialised
 		// from the sidecar's ledger-backed state rather than relying on the
-		// fragile bash-substring detection that was the root cause of #2050.
-		// On a fresh session this is always false; on resume after PI restart
-		// it may legitimately be true (a review group was started before the
-		// restart and has not yet delivered review-complete).
+		// fragile bash-substring detection. On a fresh session this is always
+		// false. On resume after PI restart it can legitimately be true (a
+		// review group was started before the restart and has not yet delivered
+		// review-complete).
 		s.mu.Lock()
 		reviewingInFlight := s.reviewingInFlight
 		s.mu.Unlock()
@@ -2534,7 +2500,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		}
 
 		// Non-shutdown disconnect: wait for PI to reconnect within
-		// reconnectTimeout (e.g. after /new triggers session_start).
+		// reconnectTimeout (for example, after /new triggers session_start).
 		s.logger().Printf("sidecar: runStartupSocketPipe: waiting up to %s for reconnect", reconnectTimeout)
 		acceptTimeout = reconnectTimeout
 	}
@@ -2590,12 +2556,12 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Record the inbound frame and reset the inactivity watchdog (#1709):
+	// Record the inbound frame and reset the inactivity watchdog:
 	// any inbound frame counts as activity, so the watchdog only fires after
 	// a full silence window. The frame counter feeds the stall-vs-no-start
-	// classification when the watchdog fires (#2239). The watchdog reset is
+	// classification when the watchdog fires. The watchdog reset is
 	// a no-op when cfg.ActivityTimeout is zero (disabled for non-review
-	// roles); the frame stats are recorded unconditionally.
+	// roles). The frame stats are recorded unconditionally.
 	s.recordInboundFrame()
 
 	switch frame.Type {
@@ -2603,15 +2569,15 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		st := agent.AgentState(frame.State)
 		switch st {
 		case agent.StateFinished:
-			// Protocol v2 (issue #1434): the extension emits state_change{finished}
-			// directly at turn boundaries instead of state_change{idle}. The sidecar
-			// applies the same 2 s debounce via handleSessionFinished (PI path) before
-			// writing StateFinished and calling notifyCoordinator().
+			// Protocol v2: the extension emits state_change{finished} directly at
+			// turn boundaries. The sidecar applies the same 2 s debounce via
+			// handleSessionFinished (PI path) before writing StateFinished and
+			// calling notifyCoordinator().
 			// Do NOT write "finished" as a raw state yet — the debounce is applied first.
 			s.writeEvent("state_change", map[string]string{"state": string(st)}, nil)
 			s.handleSessionFinished()
 		case agent.StateError:
-			// Gap 3: cancel any in-flight timers and record lastErrorAt before
+			// Cancel any in-flight timers and record lastErrorAt before
 			// writing StateError, so that (a) a stale debounce cannot overwrite
 			// the error state, and (b) a subsequent turn_start within
 			// ErrorResumeDebounce is treated as churn, not a genuine resume.
@@ -2620,19 +2586,19 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			s.lastErrorAt = s.cfg.Clock.Now()
 			// Terminal exit while escalated is permitted by the state machine
 			// (escalated→error); release the escalate guard so it does not
-			// outlive the session's escalated window (issue #2255).
+			// outlive the session's escalated window.
 			s.escalatedInFlight = false
 			s.logger().Printf("sidecar: transition -> error (cause=pi_state_change)")
 			s.upsertState(st, nil, nil)
 			s.writeStateChange(st)
 			s.lastState = st
 		case agent.StateWaiting:
-			// Gap 5: cancel finished debounce so the session does not spuriously
+			// Cancel finished debounce so the session does not spuriously
 			// transition to finished while waiting for user input (permission prompt).
 			s.cancelIdleTimer()
 			if s.escalatedInFlight {
 				// Same-turn frame after `prism escalate` — do not clobber the
-				// escalated state (issue #2255).
+				// escalated state.
 				s.logger().Printf("sidecar: state_change{waiting} suppressed (cause=escalated — same-turn frame after prism escalate)")
 				break
 			}
@@ -2642,7 +2608,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		default:
 			if s.escalatedInFlight && !agent.IsTerminal(st) {
 				// Same-turn frame after `prism escalate` — do not clobber the
-				// escalated state (issue #2255). Terminal states pass through:
+				// escalated state. Terminal states pass through:
 				// escalated→interrupted/deleted are valid terminal exits.
 				s.logger().Printf("sidecar: state_change{%s} suppressed (cause=escalated — same-turn frame after prism escalate)", st)
 				break
@@ -2664,10 +2630,10 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// Guard: if reviewingInFlight is set, skip the active write. The /review
 		// handler sets this flag atomically in-memory when the pre-emptive
 		// reviewing DB write succeeds, closing the race where currentDBState()
-		// could return active after the write (#1372). Using the in-memory flag
+		// can return active after the write. Using the in-memory flag
 		// instead of currentDBState() avoids the SQLite read-after-write race.
 		//
-		// Gap 1 (turn_start cancels debounce): cancel any in-flight finished
+		// Cancel any in-flight finished
 		// debounce started by a preceding state_change{finished} frame, so the
 		// session does not spuriously transition to StateFinished.
 		s.cancelIdleTimer()
@@ -2675,17 +2641,17 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		case s.reviewingInFlight:
 			s.logger().Printf("sidecar: turn_start suppressed (cause=reviewing — awaiting review-complete prompt)")
 		case s.escalatedInFlight:
-			// Same-turn frame after `prism escalate` (issue #2255): the
-			// agent-loop iteration that follows the escalate bash call emits
-			// turn_start, whose unconditional active upsert would clobber the
-			// escalated state the host-side child just wrote — escalated→active
-			// is a valid transition, so nothing else catches it. Suppress the
-			// state write; the frame is still persisted to agent_events below.
+			// Same-turn frame after `prism escalate`: the agent-loop iteration
+			// that follows the escalate bash call emits turn_start, whose
+			// unconditional active upsert clobbers the escalated state the
+			// host-side child just wrote — escalated→active is a valid
+			// transition, so nothing else catches it. Suppress the state write.
+			// The frame is still persisted to agent_events below.
 			// Genuine resumes (incoming `prism prompt`) clear escalatedInFlight
 			// at delivery time, so their turn_start transitions normally.
 			s.logger().Printf("sidecar: turn_start suppressed (cause=escalated — same-turn frame after prism escalate)")
 		default:
-			// Gap 4: when resuming from a terminal state (error or interrupted),
+			// When resuming from a terminal state (error or interrupted),
 			// clear ended_at so the session reappears in AllActiveStatus and
 			// prism sessions list. Check lastState (in-memory) first; if it is
 			// still empty (initial turn) also check the DB for robustness.
@@ -2707,7 +2673,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		s.pipeAccum = &empty
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 
-		// Title the session from its spawn prompt (#2683). This is the WORKER
+		// Title the session from its spawn prompt. This is the WORKER
 		// path: a spawned session has its task description in cfg.InitialPrompt
 		// before the agent produces any output, so the first turn is the
 		// earliest point a title can be written. A coordinator has no spawn
@@ -2758,7 +2724,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		}
 		s.pipeAccum = nil
 
-		// Gap 7: update lastAssistantAgent after a root-agent turn_end so that
+		// Update lastAssistantAgent after a root-agent turn_end so that
 		// handleSessionFinished()'s subagent-suppression logic works correctly
 		// for PI sessions. When the turn_end carries an agent field, use it;
 		// otherwise fall back to rootAgent (PI may omit the field for root turns).
@@ -2779,7 +2745,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 
 		// Only write a msg_assistant row when there is actual text content.
 		// Tool-only turns emit turn_start/turn_end with zero msg_assistant
-		// fragments, which would produce a spurious "(no text)" row in checkin.
+		// fragments, which produces a spurious "(no text)" row in checkin.
 		if text != "" {
 			p := payload.MsgAssistant{
 				Text:             text,
@@ -2806,7 +2772,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			// handleSessionFinished (events.go:266) share one root cause: pi exposes no
 			// subagent identity, so agentName is always empty and this gate always
 			// passes on its second clause. Both sites must be revisited together if pi
-			// ever grows subagent identity. See issue #2735.
+			// ever grows subagent identity.
 			isRootAgent := s.rootAgent == "" || agentName == "" || agentName == s.rootAgent
 			if isRootAgent {
 				if err := s.cfg.DB.UpdateModelIDs(s.cfg.SessionName, f.Model); err != nil {
@@ -2821,19 +2787,19 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		}
 
 	case "auto_retry_start":
-		// Gap 6: cancel any in-flight finished debounce so the session does not
+		// Cancel any in-flight finished debounce so the session does not
 		// spuriously finish during the retry window.
 		s.cancelIdleTimer()
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 
 	case "msg_user":
-		// The extension emits this on a user message_start (#2678). It is the
+		// The extension emits this on a user message_start. It is the
 		// COORDINATOR's title source: a coordinator has no spawn prompt, so
 		// the first thing the operator typed is the only text that says what
 		// the session is for.
 		//
-		// The frame is persisted exactly as the default branch would, so this
-		// case changes no existing behaviour — it only adds the title hook.
+		// The frame is persisted exactly as the default branch persists it.
+		// This case adds the title hook.
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 		var userFrame struct {
 			Text string `json:"text"`
@@ -2849,28 +2815,25 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 
 	case "tool_progress":
-		// Mid-tool heartbeat (#1761). The PI extension emits this frame on
+		// Mid-tool heartbeat. The PI extension emits this frame on
 		// a fixed cadence while a tool call is in flight so that long-running
-		// bash invocations (e.g. `nix build`, `go test -count=20`) don't
-		// silence the wire long enough to trip the inactivity watchdog added
-		// in #1728.
+		// bash invocations (for example, `nix build`, `go test -count=20`) do
+		// not silence the wire long enough to trip the inactivity watchdog.
 		//
 		// recordInboundFrame (called at the top of handlePipeFrame) already
 		// resets the watchdog — the heartbeat needs no further action here.
 		// Deliberately do NOT writeEvent: the narrative renderer's default
-		// case prints unknown event types, and we don't want the heartbeat
-		// to surface as a duplicate tool call / extra turn / visible artefact
+		// case prints unknown event types, and the heartbeat must not surface
+		// as a duplicate tool call / extra turn / visible artefact
 		// in `prism checkin`, the TUI, or any downstream consumer.
 		s.logger().Printf("sidecar: tool_progress heartbeat received (activity reset)")
 
 	case "session_status":
 		// Extract the PI session ID from the frame and record it in the DB so
 		// that prism cleanup can locate the correct session directory for
-		// archiving. Bug #1538 fix #1: this frame was previously falling
-		// through to the default case and only stored as a raw event; the
-		// harness_session_id column was never populated for PI sessions.
+		// archiving.
 		//
-		// Write ordering invariant (fix for issue #1656): the agent_events row
+		// Write ordering invariant: the agent_events row
 		// is written BEFORE agent_status.harness_session_id is set. This
 		// guarantees that any reader polling agent_status for harness_session_id
 		// will always see the corresponding session_status event already present
@@ -2897,7 +2860,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			// writeStateChange (called at handshake) only writes to agent_events,
 			// not agent_status. If session_status arrives before the first
 			// turn_start or state_change (which call upsertState), the UPDATE
-			// in UpdateHarnessSessionID would affect 0 rows. EnsureStatusRow
+			// in UpdateHarnessSessionID affects 0 rows. EnsureStatusRow
 			// guarantees the row is present without clobbering existing values.
 			if err := dbConn.EnsureStatusRow(sessionName, repo, worktree); err != nil {
 				s.logger().Printf("sidecar: session_status: EnsureStatusRow: %v", err)
@@ -2913,13 +2876,13 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 	case "session_shutdown":
 		// Flush any partial accumulator before marking finished.
 		s.flushPipeAccum()
-		// Gap 8: cancel any in-flight idle/recovery timers before writing
+		// Cancel any in-flight idle/recovery timers before writing
 		// StateFinished so the coordinator receives exactly one notification.
 		s.cancelIdleTimer()
 		s.cancelRecoveryTimer()
-		// Capture the pre-write state BEFORE the finished upsert (issue #2255):
+		// Capture the pre-write state BEFORE the finished upsert:
 		// notifyCoordinator's escalated guard reads the DB, so writing finished
-		// first would defeat it. A terminal exit while escalated is valid
+		// first defeats it. A terminal exit while escalated is valid
 		// (escalated→finished), but the "has finished" notification must stay
 		// suppressed — the session.escalated bus event already informed the
 		// coordinator.
@@ -2946,7 +2909,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 
 // markAssistantOutputSeen latches the assistantOutputSeen flag to true when
 // non-empty assistant text has been observed. Guards the zero-output-exit
-// discriminator (issue #2409) against setting the flag on empty fragments.
+// discriminator against setting the flag on empty fragments.
 // Must be called with s.mu held.
 func (s *Sidecar) markAssistantOutputSeen(text string) {
 	if text == "" {
@@ -3019,7 +2982,7 @@ func (s *Sidecar) sendPipeError(conn net.Conn, code, message string) {
 	}
 	b, _ := json.Marshal(errFrame)
 	b = append(b, '\n')
-	// Archive the outbound error (P5.LOGS / #1218) so handshake failures show
+	// Archive the outbound error so handshake failures show
 	// up in `prism logs --harness-events`.
 	s.archiveOutboundFrame(b)
 	_, _ = conn.Write(b)
@@ -3027,8 +2990,8 @@ func (s *Sidecar) sendPipeError(conn net.Conn, code, message string) {
 }
 
 // restorePendingReplayFromDB seeds the in-memory pendingReplayDeliveries
-// buffer from the durable pending_replay_deliveries table (issue #2359
-// Gap B). Called once at sidecar startup, before the harness-pipe
+// buffer from the durable pending_replay_deliveries table. Called once at
+// sidecar startup, before the harness-pipe
 // listener starts accepting connections, so any /prompt frames buffered
 // by a prior sidecar incarnation are re-armed for flushPendingReplay to
 // drain on the next handshake.
@@ -3038,8 +3001,8 @@ func (s *Sidecar) sendPipeError(conn net.Conn, code, message string) {
 // most recent pendingReplayCapacity entries are kept in memory. Older
 // entries are deleted from the DB to preserve the "buffer bounded"
 // contract across restart; without this, a restart could carry
-// arbitrarily many stale entries and the very next partition would
-// drop the newest legitimate delivery when eviction kicks in.
+// arbitrarily many stale entries and the very next partition
+// drops the newest legitimate delivery when eviction kicks in.
 //
 // Concurrency: acquires s.mu internally; call from a single-threaded
 // startup path (no other flush should be in flight).
@@ -3095,9 +3058,9 @@ func (s *Sidecar) restorePendingReplayFromDB() {
 // buffer, evicting the oldest entry when at capacity. Called by the /prompt
 // handler when DeliverPrompt fails because the PI extension is disconnected.
 // The buffer is drained by flushPendingReplay on the next successful
-// handshake. Issue #1685 AC #7.
+// handshake.
 //
-// Issue #2359 Gap B: entries are also persisted to the pending_replay_deliveries
+// Entries are also persisted to the pending_replay_deliveries
 // DB table so they survive a sidecar exit/restart. The DB round-trip happens
 // BEFORE the in-memory append so that a DB failure fails the buffer call
 // (the /prompt handler must be able to distinguish durable buffering from a
@@ -3133,10 +3096,10 @@ func (s *Sidecar) bufferPendingReplay(d pendingReplayDelivery) {
 		if err != nil {
 			// The durable buffer failed — log the class of failure so the
 			// operator can see it in the audit trail. Continue with the
-			// in-memory append so we do not degrade below the pre-#2359
-			// contract; the coordinator's directive is still deliverable
-			// on the next handshake within this sidecar's lifetime, just
-			// not across a restart.
+			// in-memory append so the buffer does not degrade below the
+			// in-memory-only contract. The coordinator's directive is still
+			// deliverable on the next handshake within this sidecar's
+			// lifetime, but not across a restart.
 			s.logger().Printf("sidecar: bufferPendingReplay: DB persist failed (%v) — falling back to in-memory buffer only for delivery_id=%s", err, d.DeliveryID)
 		} else {
 			d.PersistKey = persistKey
@@ -3164,7 +3127,7 @@ func (s *Sidecar) bufferPendingReplay(d pendingReplayDelivery) {
 // true so the receiver can identify replayed deliveries. Called from
 // runStartupSocketPipe after a successful handshake. Entries that fail to
 // enqueue (because the connection dropped again before the writer ran)
-// remain in the buffer for the next reconnect attempt. Issue #1685 AC #7.
+// remain in the buffer for the next reconnect attempt.
 //
 // Concurrency: acquires s.mu internally; do NOT call with s.mu held.
 func (s *Sidecar) flushPendingReplay() {
@@ -3179,24 +3142,24 @@ func (s *Sidecar) flushPendingReplay() {
 	s.logger().Printf("sidecar: flushing %d pending-replay delivery(ies) after handshake", len(pending))
 	// flushDedup tracks delivery_ids forwarded during this flush pass so that
 	// if the buffer somehow contains two entries with the same id (a defensive
-	// invariant: the /prompt handler's dedup should prevent this, but if a bug
-	// allows it the flush should still produce exactly one frame per id).
+	// invariant: the /prompt handler's dedup prevents this, but if a bug
+	// allows it the flush must still produce exactly one frame per id).
 	// This is a local pass-level set, distinct from the global promptDedup
 	// (which marks IDs as seen on first /prompt handler invocation — using it
-	// here would always drop legitimate buffered entries whose id was already
+	// here always drops legitimate buffered entries whose id was already
 	// recorded by the handler when it accepted and buffered the delivery).
 	flushDedup := make(map[string]bool)
 
 	var requeue []pendingReplayDelivery
 	for _, d := range pending {
 		// Dedup check within this flush pass: if the same delivery_id appears
-		// more than once in the buffer (F6/#1885 defence-in-depth), only
+		// more than once in the buffer (defence-in-depth), only
 		// forward the first occurrence and log+drop subsequent copies.
 		if d.DeliveryID != "" {
 			if flushDedup[d.DeliveryID] {
 				s.logger().Printf("sidecar: flushPendingReplay: dropping duplicate delivery_id=%s (already forwarded in this flush pass)", d.DeliveryID)
 				// Drop this entry — do not re-enqueue.
-				// Also purge the duplicate's DB row (issue #2359) so a
+				// Also purge the duplicate's DB row so a
 				// subsequent restart-and-flush cannot resurrect it.
 				if s.cfg.DB != nil && d.PersistKey != "" {
 					if dbErr := s.cfg.DB.DeletePendingReplayDelivery(s.cfg.SessionName, d.PersistKey); dbErr != nil {
@@ -3219,7 +3182,7 @@ func (s *Sidecar) flushPendingReplay() {
 		if d.DeliveryID != "" {
 			flushDedup[d.DeliveryID] = true
 		}
-		// Successful enqueue — delete the DB row (issue #2359). A subsequent
+		// Successful enqueue — delete the DB row. A subsequent
 		// sidecar restart must not re-deliver this frame. A DB-delete failure
 		// is logged but does not fail the flush: the in-memory buffer has
 		// already dropped the entry, so the worst-case outcome on restart is
@@ -3231,7 +3194,7 @@ func (s *Sidecar) flushPendingReplay() {
 			}
 		}
 		// Successful re-enqueue: incoming guidance has reached the session, so
-		// release the escalate same-turn guard (issue #2255) — the next
+		// release the escalate same-turn guard — the next
 		// turn_start must transition escalated→active per the contract.
 		s.mu.Lock()
 		if s.escalatedInFlight {
@@ -3246,7 +3209,7 @@ func (s *Sidecar) flushPendingReplay() {
 		// so the flag has remained true to keep the events.go suppression
 		// guards active through the disconnect window. With the replayed
 		// frame now on the wire, the suppression has done its job and the
-		// post-replay turn_start must observe the cleared flag. Issue #1843.
+		// post-replay turn_start must observe the cleared flag.
 		if d.Source == "review-complete" {
 			s.mu.Lock()
 			s.reviewingInFlight = false
@@ -3254,7 +3217,7 @@ func (s *Sidecar) flushPendingReplay() {
 			s.logger().Printf("sidecar: flushPendingReplay: cleared reviewingInFlight after replayed review-complete enqueue (delivery_id=%s)", d.DeliveryID)
 			// Mirror the in-memory transition on the wire so the PI extension's
 			// pendingReviewCall guard releases in lock-step with the sidecar.
-			// See writeReviewingState's doc comment for #2050 context.
+			// See writeReviewingState's doc comment.
 			s.writeReviewingState(false)
 		}
 	}
@@ -3281,7 +3244,7 @@ func (s *Sidecar) flushPendingReplay() {
 // Callers MUST check the return value or handle failure explicitly; this
 // function never blocks the writer. A false return means the control-plane
 // frame was NOT delivered — the caller is responsible for propagating that
-// failure to its own caller (e.g. returning a non-200 HTTP response). Issue #1844.
+// failure to its own caller (for example, returning a non-200 HTTP response).
 func (s *Sidecar) enqueueHarnessPipeFrame(frame []byte) bool {
 	s.mu.Lock()
 	ch := s.harnessPipeOutCh
@@ -3301,7 +3264,7 @@ func (s *Sidecar) enqueueHarnessPipeFrame(frame []byte) bool {
 // DeliverPrompt enqueues a prompt frame to the PI extension for
 // TransportSocketPipe sessions. For other transport shapes (HTTP-port,
 // stdio-pipe), this method is a no-op and the caller must use the
-// harness-specific delivery path (e.g. harness.DeliverPrompt or stdin write).
+// harness-specific delivery path (for example, harness.DeliverPrompt or stdin write).
 //
 // deliverAs controls the prompt delivery mode:
 //   - "steer"    — mid-turn steering message
@@ -3317,7 +3280,7 @@ func (s *Sidecar) DeliverPrompt(text, deliverAs string) bool {
 // a `replay` flag. The flag is propagated to the receiving PI extension via
 // the prompt frame's `replay` field so replayed deliveries (those that
 // arrived while the extension was disconnected and were flushed on
-// reconnect) can be identified by the receiver. Issue #1685 AC #5/#7.
+// reconnect) can be identified by the receiver.
 func (s *Sidecar) deliverPromptFrame(text, deliverAs string, replay bool) bool {
 	if deliverAs == "" {
 		deliverAs = "nextTurn"
@@ -3343,8 +3306,7 @@ func (s *Sidecar) deliverPromptFrame(text, deliverAs string, replay bool) bool {
 }
 
 // SetModel enqueues a set_model control frame to the PI extension.
-// Stub for P3.LIVE — the sidecar does not yet act on this internally;
-// it only forwards the frame.
+// The sidecar does not act on this internally. It only forwards the frame.
 //
 // Returns false if the frame could not be enqueued (no active connection or
 // outbound channel full). Callers should propagate this as a non-200 response.
@@ -3366,7 +3328,6 @@ func (s *Sidecar) SetModel(provider, model, thinking string) bool {
 }
 
 // RegisterProvider enqueues a register_provider frame to the PI extension.
-// Stub for P3.LIVE.
 //
 // Returns false if the frame could not be enqueued (no active connection or
 // outbound channel full). Callers should propagate this as a non-200 response.
@@ -3386,7 +3347,6 @@ func (s *Sidecar) RegisterProvider(name string, cfg map[string]any) bool {
 }
 
 // SetActiveTools enqueues a set_active_tools frame to the PI extension.
-// Stub for P3.LIVE.
 //
 // Returns false if the frame could not be enqueued (no active connection or
 // outbound channel full). Callers should propagate this as a non-200 response.
@@ -3404,7 +3364,6 @@ func (s *Sidecar) SetActiveTools(tools []string) bool {
 }
 
 // Abort enqueues an abort frame to the PI extension.
-// Stub for P3.LIVE.
 //
 // Returns false if the frame could not be enqueued (no active connection or
 // outbound channel full). Callers should propagate this as a non-200 response.
@@ -3420,8 +3379,8 @@ func (s *Sidecar) Abort() bool {
 // writeReviewingState enqueues a reviewing_state frame to the PI extension,
 // telling it the sidecar's authoritative reviewingInFlight value. The extension
 // uses this as the canonical source of truth for its own pendingReviewCall
-// guard, replacing the fragile bash-substring detection that previously set
-// the guard on any tool call containing "prism review" (issue #2050).
+// guard, rather than the fragile bash-substring detection that set the guard
+// on any tool call containing "prism review".
 //
 // Emission sites:
 //   - Immediately after handshake completion (so a freshly-connected
@@ -3465,9 +3424,7 @@ func (s *Sidecar) writeReviewingState(inFlight bool) bool {
 //   - PATH and HOME environment variables forwarded from the caller
 //
 // This is sufficient for the fake test harness and for most real stdio
-// harnesses that are simple binaries. Future stages (Stage 3/4) may extend
-// the sandbox to match the full bwrap profile in bwrap.go when a real harness
-// (PI) requires additional mounts (config dirs, SSH keys, etc.).
+// harnesses that are simple binaries.
 func (s *Sidecar) buildStdioHarnessCmd(ctx context.Context) (*exec.Cmd, bool) {
 	bwrapBin := s.cfg.BwrapPath
 	if bwrapBin == "" {

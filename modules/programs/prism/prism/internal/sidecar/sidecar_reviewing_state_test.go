@@ -1,6 +1,6 @@
 package sidecar
 
-// sidecar_reviewing_state_test.go — issue #2050.
+// sidecar_reviewing_state_test.go
 //
 // Verifies that the sidecar emits a `reviewing_state` frame to the PI
 // extension on every transition of reviewingInFlight plus once immediately
@@ -44,7 +44,7 @@ func TestReviewingState_EmittedOnHandshake(t *testing.T) {
 // true} frame to the connected PI extension. The frame is what drives the
 // extension's pendingReviewCall guard ON, replacing the prior bash-substring
 // set-trigger that false-matched on any bash command containing "prism review"
-// (the #2050 root cause).
+// (the root cause).
 func TestReviewingState_EmittedOnSetTrue(t *testing.T) {
 	sockPath := shortSockPath(t)
 	d := openTestDB(t)

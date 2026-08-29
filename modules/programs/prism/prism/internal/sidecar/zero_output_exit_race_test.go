@@ -1,6 +1,6 @@
 package sidecar
 
-// Tests for issue #2409: fast-agent race in the finished-debounce
+// Tests for the fast-agent race in the finished-debounce
 // zero-output-exit branch. A fast agent that produces real assistant output
 // and then signals `finished` before its `turn_start` (idle -> active) upsert
 // has been persisted must not be misclassified as an errored zero-output exit.
@@ -8,7 +8,7 @@ package sidecar
 // See internal/sidecar/events.go (finished-debounce handler) and the
 // assistantOutputSeen flag on Sidecar for the fix. The paired negative case
 // (state_change{finished} from idle with NO assistant output) must still land
-// in error to preserve the #2081 phantom-PR guard.
+// in error to preserve the phantom-PR guard.
 
 import (
 	"strings"
@@ -21,7 +21,7 @@ import (
 )
 
 // TestSocketPipe_FastAgentRace_MsgAssistantThenFinishedFromIdle reproduces
-// issue #2409: a worker seeds persisted state idle, sends a msg_assistant
+// the race: a worker seeds persisted state idle, sends a msg_assistant
 // (which the sidecar buffers in pipeAccum and latches assistantOutputSeen
 // for), then sends state_change{finished} WITHOUT a persisted turn_start
 // before the finished-debounce fires. Because assistant output was produced
@@ -29,9 +29,9 @@ import (
 // idle -> active -> finished path) and notify the coordinator with the
 // "has finished" wording.
 //
-// This is the positive AC in #2409: fast agent that DID produce output must
-// reach finished, not error. Before the fix, the debounce would see
-// persisted state = idle and route to notifyCoordinatorError.
+// This is the positive case: a fast agent that DID produce output must
+// reach finished, not error. Without the fix, the debounce sees
+// persisted state = idle and routes to notifyCoordinatorError.
 func TestSocketPipe_FastAgentRace_MsgAssistantThenFinishedFromIdle(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, clk := newZeroOutputWorkerSidecar(t, sockPath)
@@ -103,9 +103,9 @@ func TestSocketPipe_FastAgentRace_MsgAssistantThenFinishedFromIdle(t *testing.T)
 }
 
 // TestSocketPipe_TrueZeroOutputExit_NoMsgAssistantStillErrors is the paired
-// negative for issue #2409: same sequence (state_change{finished} from
+// negative case: same sequence (state_change{finished} from
 // persisted idle) but WITHOUT any msg_assistant frame. This is a genuine
-// zero-output exit (the #2081 phantom-PR case) and must still resolve to
+// zero-output exit (the phantom-PR case) and must still resolve to
 // StateError with the "has errored" wording.
 //
 // It complements TestSocketPipe_ZeroOutputExit_ClassifiesAsError (which

@@ -1,7 +1,7 @@
 package sidecar
 
 // Tests for the host-API /merge, /merges, and /merges/cancel endpoints
-// added in #1043 to fix the bwrap shadow-DB issue.
+// for the bwrap shadow-DB issue.
 //
 // These tests exercise the hostAPIHandler() method directly without spinning
 // up a real Unix socket server. The shape mirrors the existing /spawn,
@@ -45,10 +45,10 @@ func newSidecarCoordinatorWithInstance(t *testing.T, sessionName, repo, instance
 // ── /merge ────────────────────────────────────────────────────────────────────
 
 // TestHostAPI_Merge_EnqueuesRowWithSidecarIdentity is the headline test for the
-// fix in #1043. It verifies that when /merge is called with just the PR number
+// bwrap shadow-DB fix. It verifies that when /merge is called with just the PR number
 // and title, the resulting pending_merges row uses the sidecar's own
 // session_name and instance_id — the values the watcher queries against — so
-// the watcher will find the row on its next tick (AC #7).
+// the watcher will find the row on its next tick.
 func TestHostAPI_Merge_EnqueuesRowWithSidecarIdentity(t *testing.T) {
 	d := openTestDB(t)
 	const (
@@ -102,11 +102,10 @@ func TestHostAPI_Merge_EnqueuesRowWithSidecarIdentity(t *testing.T) {
 // minimal valid body and asserting the DB row's identity matches the
 // sidecar's own config.
 //
-// Note: as of issue #1848, all host-API POST handlers run with
-// DisallowUnknownFields, so a body that *did* contain stray identity fields
-// (the pre-#1848 spoof attempt) would now be rejected with 400 before it ever
-// reached the merge logic — the identity-spoof property is preserved
-// (strengthened, in fact) by strict decoding. The companion test
+// Note: all host-API POST handlers run with DisallowUnknownFields, so a body
+// that contains stray identity fields (a spoof attempt) is rejected with 400
+// before it ever reaches the merge logic — strict decoding strengthens the
+// identity-spoof guard. The companion test
 // TestHostAPI_Merge_StrayClientFields_Rejected covers that path explicitly.
 func TestHostAPI_Merge_ClientIdentityIsIgnored(t *testing.T) {
 	d := openTestDB(t)
@@ -132,8 +131,8 @@ func TestHostAPI_Merge_ClientIdentityIsIgnored(t *testing.T) {
 }
 
 // TestHostAPI_Merge_StrayClientFields_Rejected verifies the strict-decoding
-// contract added in issue #1848: a /merge request body that contains stray
-// fields (e.g. an attempt to spoof session_name or instance_id) is rejected
+// contract: a /merge request body that contains stray
+// fields (for example, an attempt to spoof session_name or instance_id) is rejected
 // with HTTP 400 by DisallowUnknownFields before any merge work happens.
 func TestHostAPI_Merge_StrayClientFields_Rejected(t *testing.T) {
 	d := openTestDB(t)

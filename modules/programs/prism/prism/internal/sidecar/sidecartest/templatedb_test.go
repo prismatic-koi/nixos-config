@@ -1,18 +1,16 @@
 package sidecartest
 
-// templatedb_test.go — guards for the seeded-template test-database opener
-// (issue #2598).
+// templatedb_test.go — guards for the seeded-template test-database opener.
 //
 // Two properties matter and each has a test here:
 //
 //  1. Equivalence — a database from OpenDB is indistinguishable from one from
-//     a plain db.Open. If it were not, every test in internal/sidecar would be
-//     running against a subtly different schema.
+//     a plain db.Open. Without equivalence, every test in internal/sidecar
+//     runs against a subtly different schema.
 //  2. The fast path is live — the file OpenDB hands to db.Open already carries
-//     the full schema. Without this, the template could silently degrade to an
-//     empty file, db.Open would re-run the schema and every migration, the
-//     fsync cost would come back, and property 1 would still hold, so nothing
-//     would fail.
+//     the full schema. Without this test, the template can silently degrade to
+//     an empty file. db.Open then re-runs the schema and every migration, the
+//     fsync cost returns, and property 1 still holds, so nothing fails.
 
 import (
 	"os"

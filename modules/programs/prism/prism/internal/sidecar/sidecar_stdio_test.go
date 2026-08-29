@@ -1,6 +1,6 @@
 package sidecar
 
-// Integration tests for runStartupStdio coalescing (issue #1316).
+// Integration tests for runStartupStdio coalescing.
 //
 // These tests exercise the msg_assistant accumulator added to the
 // runStartupStdio scanner loop. The "harness binary" is the test binary
@@ -99,7 +99,7 @@ func init() {
 	case "large_frame":
 		// Emit a single msg_assistant frame whose text is 128 KiB — well above
 		// the default 64 KiB bufio.Scanner limit — to exercise the enlarged
-		// scanner buffer added in issue #1852.
+		// scanner buffer.
 		writeFrame(sc("active"))
 		writeFrame(map[string]any{"type": "turn_start"})
 		writeFrame(map[string]any{
@@ -189,7 +189,7 @@ func runStdioSidecarAsync(sc *Sidecar) func() error {
 // runner's apparmor profile), the wrapped exec fails with "setting up uid
 // map: Permission denied" and the harness exits before writing any frames.
 //
-// The skip message is loud and named per issue #1510 — see the follow-up for
+// The skip message is loud and named — see the follow-up for
 // alternative-runner / privileged-container investigations.
 func requireUsableBwrap(t *testing.T) {
 	t.Helper()
@@ -203,7 +203,7 @@ func requireUsableBwrap(t *testing.T) {
 
 // TestStdio_MsgAssistantCoalesced verifies that multiple msg_assistant
 // fragments between turn_start and turn_end produce exactly one msg_assistant
-// row per turn with concatenated text and token/cost fields (issue #1316 AC).
+// row per turn with concatenated text and token/cost fields.
 func TestStdio_MsgAssistantCoalesced(t *testing.T) {
 	requireUsableBwrap(t)
 	sc := newStdioSidecar(t, "coalesced_2turn", nil)
@@ -357,7 +357,7 @@ func TestStdio_LegacyCoalesced(t *testing.T) {
 
 // TestStdio_LargeFrameNoErrTooLong verifies that a 128 KiB single-line frame
 // emitted by the stdio harness is processed without bufio.ErrTooLong and
-// without causing StateError (issue #1852).
+// without causing StateError.
 //
 // Prior to the fix the scanner used the default 64 KiB max token size; a
 // large msg_assistant frame would cause scanner.Scan() to return false with

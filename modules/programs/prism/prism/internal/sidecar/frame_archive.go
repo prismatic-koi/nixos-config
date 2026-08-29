@@ -1,7 +1,6 @@
 package sidecar
 
-// frame_archive.go — persistence helpers for the raw PI JSONL frame archive
-// (P5.LOGS / #1218).
+// frame_archive.go — persistence helpers for the raw PI JSONL frame archive.
 //
 // The PI extension and sidecar exchange JSONL frames over a Unix-or-TCP socket
 // (see runStartupSocketPipe in sidecar.go). Structured agent_events rows are
@@ -11,13 +10,9 @@ package sidecar
 // later replay the stream with `prism logs --harness-events <session>`.
 //
 // Design intent: the helpers MUST be cheap and tolerant of malformed input.
-// A failure to archive a frame is non-fatal — we log and move on. The hot
+// A failure to archive a frame is non-fatal — the sidecar logs it and
+// continues. The hot
 // path (the duplex frame loop) cannot afford to block on slow DB writes.
-//
-// Why a separate file? P2.SPAWN (#1212) is touching the same sidecar.go
-// concurrently. Keeping the persistence helpers in their own file (and the
-// call sites in sidecar.go to one-liner invocations) makes the rebase across
-// the two PRs mechanical.
 
 import (
 	"encoding/json"
@@ -44,8 +39,8 @@ func (s *Sidecar) archiveInboundFrame(frame []byte) {
 func (s *Sidecar) archiveOutboundFrame(frame []byte) {
 	// Strip a single trailing '\n' if present so the archive stores the same
 	// shape as inbound frames (one JSON object, no terminator). Callers
-	// already terminate outbound frames before calling Write; we don't want
-	// the trailing newline to show up in the persisted payload.
+	// already terminate outbound frames before calling Write. The trailing
+	// newline must not appear in the persisted payload.
 	if n := len(frame); n > 0 && frame[n-1] == '\n' {
 		frame = frame[:n-1]
 	}
@@ -60,12 +55,12 @@ func (s *Sidecar) archiveFrame(direction string, payload []byte) {
 	}
 
 	// Best-effort extraction of the frame type. A frame that fails to parse
-	// here (or whose type is empty) is still persisted — we keep the raw
-	// payload so the operator can see the corrupt bytes.
+	// here (or whose type is empty) is still persisted — the raw payload is
+	// kept so the operator can see the corrupt bytes.
 	var typeOnly struct {
 		Type string `json:"type"`
 	}
-	_ = json.Unmarshal(payload, &typeOnly) // best-effort, errors ignored
+	_ = json.Unmarshal(payload, &typeOnly)
 
 	var instanceIDPtr *string
 	if s.cfg.InstanceID != "" {

@@ -59,7 +59,7 @@ func newPiSidecarForHostAPITest(t *testing.T, sessionName, repo, role string, d 
 
 // TestHostAPI_Prompt_PiSession_WaitingStateRejected verifies that the /prompt
 // same-session socket-pipe path returns HTTP 409 Conflict when the pi session
-// is in "waiting" state, consistent with `prism prompt` CLI behaviour (#1364).
+// is in "waiting" state, consistent with `prism prompt` CLI behaviour.
 func TestHostAPI_Prompt_PiSession_WaitingStateRejected(t *testing.T) {
 	d := openTestDB(t)
 
@@ -133,10 +133,10 @@ func TestHostAPI_Prompt_PiSession_ActiveState_ConnectedPipe(t *testing.T) {
 
 // TestHostAPI_Prompt_PiSession_NotConnected verifies that /prompt returns
 // 200 with {"buffered":true} when the pi harness pipe is not connected.
-// Pre-#1685 this returned 503 Service Unavailable; the new contract is that
-// the delivery is buffered for replay on the next handshake (with
-// replay=true on the resumed frame) so a transient disconnect during an
-// escalation cannot lose the prompt. Issue #1685 AC #7.
+// The delivery is buffered for replay on the next handshake (with
+// replay=true on the resumed frame) rather than returning 503 Service
+// Unavailable, so a transient disconnect during an escalation cannot lose
+// the prompt.
 func TestHostAPI_Prompt_PiSession_NotConnected(t *testing.T) {
 	d := openTestDB(t)
 
@@ -172,7 +172,7 @@ func TestHostAPI_Prompt_PiSession_NotConnected(t *testing.T) {
 // TestHostAPI_Prompt_ReviewComplete_ClearsReviewingInFlight verifies that a
 // /prompt delivery with source="review-complete" clears the reviewingInFlight
 // flag, allowing the subsequent turn_start to transition normally to active.
-// This is the primary AC #7 gate for #1372.
+// This is the primary gate for the reviewing-window race.
 func TestHostAPI_Prompt_ReviewComplete_ClearsReviewingInFlight(t *testing.T) {
 	d := openTestDB(t)
 
@@ -324,7 +324,7 @@ func TestHostAPI_Prompt_DeliverAs_InvalidRejected(t *testing.T) {
 // TestHostAPI_Prompt_NonReviewComplete_DoesNotClearReviewingInFlight verifies
 // that a /prompt delivery without source="review-complete" (e.g. a coordinator
 // follow-up) does NOT clear reviewingInFlight. Clearing on non-review prompts
-// would prematurely end the reviewing window and reintroduce the race (#1372, AC #7).
+// would prematurely end the reviewing window and reintroduce the race.
 func TestHostAPI_Prompt_NonReviewComplete_DoesNotClearReviewingInFlight(t *testing.T) {
 	d := openTestDB(t)
 
