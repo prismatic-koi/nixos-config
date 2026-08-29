@@ -10,8 +10,8 @@ package session
 // InsertSession calls succeed with different PKs, leaving one orphaned row;
 // AllocatePort may pick the same port for both callers.
 //
-// The fix uses a per-session-name sync.Mutex (stored in spawnMu sync.Map) to
-// serialise the prologue so only one caller runs it at a time.
+// SpawnSession uses a per-session-name sync.Mutex (stored in spawnMu sync.Map)
+// to serialise the prologue so only one caller runs it at a time.
 
 import (
 	"sync"

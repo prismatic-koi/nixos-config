@@ -26,7 +26,7 @@ func TestSessionColumnWidth(t *testing.T) {
 			sessions: []dashboard.AgentSession{},
 			want:     7,
 		},
-		// [functional] Short session name (< 20 chars) → narrower than old hardcoded 20.
+		// [functional] Short session name (< 20 chars) → narrower than a 20-char floor.
 		// "nixos-config@main" = 17 chars; needed = 17 - 10 = 7 → at header min.
 		{
 			name: "single short top-level session (17 chars) → at header min 7",
@@ -94,11 +94,11 @@ func TestSessionColumnWidth(t *testing.T) {
 			},
 			want: 15,
 		},
-		// [functional] Long top-level @main name between 20-40 chars — old floor of 20
-		// must NOT artificially cap it at 20.
+		// [functional] Long top-level @main name between 20-40 chars — a 20-char
+		// floor must NOT artificially cap it at 20.
 		// "my-very-long-repo-name@main" = 27 chars; top-level (branch=="@main");
-		// needed = 27 - 10 = 17. (The old code would yield 20 as floor, which
-		// is larger than 17; new code correctly yields the exact fit.)
+		// needed = 27 - 10 = 17. A 20-char floor would yield 20, larger than 17;
+		// the content-derived width yields the exact fit.
 		{
 			name: "long top-level @main name (27 chars) → 17, not old floor 20",
 			sessions: []dashboard.AgentSession{
@@ -260,7 +260,7 @@ func TestSessionColumnWidth_DashViewIntegration(t *testing.T) {
 
 	// Verify DashView starts from sessionW=22 (not a fixed floor of 20).
 	// We check that SessionColumnWidth is what DashView would use.
-	// The new code does: sessionW := SessionColumnWidth(d.Displayed)
+	// DashView does: sessionW := SessionColumnWidth(d.Displayed)
 	// so SessionColumnWidth(longSessions) IS the starting sessionW.
 	d2 := dashboard.Shared{
 		Width:     120,

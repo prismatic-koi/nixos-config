@@ -126,8 +126,8 @@ func writeTurnStart(t *testing.T, d *db.DB, sessionName string) {
 // insufficient evidence and waits for prompt-processing evidence (turn_start /
 // msg_user / msg_assistant) or a terminal transition.
 //
-// The test seeds exactly the post-handshake state the issue's symptom-2
-// reproduction left behind ("state -> active" event present, no agent
+// The test seeds exactly the post-handshake state the lost-prompt
+// reproduction leaves behind ("state -> active" event present, no agent
 // activity afterwards) and asserts the strict gate trips on timeout
 // rather than returning success.
 func TestWaitForReadyWithOpts_StrictMode_BareActiveDoesNotSatisfyGate(t *testing.T) {
@@ -135,7 +135,7 @@ func TestWaitForReadyWithOpts_StrictMode_BareActiveDoesNotSatisfyGate(t *testing
 	const sess = "myrepo@lost-prompt-strict-bare"
 	seedLostPromptSession(t, d, sess)
 
-	// Replicate the issue's symptom-2 sidecar log post-condition: the
+	// Replicate the lost-prompt sidecar log post-condition: the
 	// handshake completed and the sidecar wrote state -> active.
 	writeStateChange(t, d, sess, "active", "1")
 
@@ -287,7 +287,7 @@ func TestSpawnSession_LostPromptRace_StrictGateFiresAndCleansUp(t *testing.T) {
 		PIExtensionDir:   testPIExtensionDir,
 	}
 
-	// Inject the symptom-2 precondition partway through the wait: the
+	// Inject the lost-prompt precondition partway through the wait: the
 	// handshake completes and the sidecar writes state -> active, but no
 	// turn_start ever arrives because the prompt was lost. We wrap in
 	// best-effort writes (no t.Fatalf in goroutine) to avoid the post-test

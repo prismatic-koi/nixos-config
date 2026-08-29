@@ -174,7 +174,7 @@ func TestSpawnSession_FullLayout_ConcurrentSpawnsAllPreSeeded(t *testing.T) {
 	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	const N = 6 // covers AC-1's "≥5"
+	const N = 6 // exercises the "≥5 concurrent spawns" case
 	var wg sync.WaitGroup
 	errs := make([]error, N)
 	names := make([]string, N)

@@ -8,7 +8,7 @@ package dashboard_test
 // @main~review-1-review-*, the dashboard rendered them as children of the last
 // depth-1 branch alphabetically before @main rather than as children of @main.
 //
-// The fix has two parts:
+// Correct attribution has two parts:
 //  1. db.ParentSessionFor() — single named source of truth for parent
 //     attribution, used by both views; backed by session_groups.parent_session
 //     with a name-heuristic fallback for pre-migration rows.
