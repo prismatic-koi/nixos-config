@@ -4,7 +4,7 @@ package session
 // end-to-end. Both `prism spawn` (cmd/spawn.go → ensureAndSwitch) and
 // `prism review` (internal/review/review.go per-agent loop) compose over it.
 //
-// Design (see #849 §3.1 and #859):
+// Design:
 //
 //   - A prism session is the fundamental primitive. A spawn-style command is
 //     an abstraction over the primitive. The primitive is uniform; the
@@ -16,11 +16,10 @@ package session
 //     ask whether it should be a new SpawnOpts field.
 //
 //   - root_agent_name is written at spawn time from opts.AgentRole — no NULL
-//     window (relies on #857 / Issue B).
+//     window.
 //
 //   - group_id is written from opts.GroupID when non-empty. It is a no-op for
-//     single-session spawns (spawn/pr); Issue E (#860) will wire it into
-//     review.go once this primitive lands.
+//     single-session spawns (spawn/pr).
 
 import (
 	"encoding/json"
@@ -43,7 +42,7 @@ import (
 // This handles the realistic case where all SpawnSession callers (spawn, review
 // fan-out) share one process. It does NOT protect against two separate prism
 // binaries racing on the same session name — that is a cross-process race that
-// would require a DB-side conditional UPDATE (option 2 from issue #1880). For
+// would require a DB-side conditional UPDATE. For
 // the current usage pattern (all callers in one coordinator process) in-process
 // serialisation is sufficient and is the simpler implementation.
 //
@@ -107,7 +106,7 @@ type SpawnOpts struct {
 	PromptTemplateHash string
 
 	// PromptFilePath is set internally by SpawnSession when it has written
-	// the prompt to the per-session run directory (#1064 / #1092). Callers
+	// the prompt to the per-session run directory. Callers
 	// should leave this empty; SpawnSession populates it from opts.Prompt
 	// before the layout-specific spawn runs.
 	//
@@ -150,9 +149,8 @@ type SpawnOpts struct {
 	WorktreeReadOnly bool
 
 	// GroupID, when non-empty, associates this session with a SessionGroup
-	// (see db.RegisterGroup). Written to agent_status.group_id. This is the
-	// hook for Issue E (#860) — SpawnSession writes it when present but does
-	// not create the group itself.
+	// (see db.RegisterGroup). Written to agent_status.group_id. SpawnSession
+	// writes it when present but does not create the group itself.
 	GroupID string
 
 	// AgentEnvVars are additional env vars prefixed to the agent command
@@ -195,10 +193,10 @@ type SpawnOpts struct {
 	// Empty for non-socket-pipe harnesses (e.g. HTTP-based ones).
 	HarnessPipeSockPath string
 
-	// ModelsByRole is the per-role model override map (C.2). When non-empty
-	// it is forwarded to the sidecar via repeated --model-override flags so
-	// the harness adapter reports the per-role model, and to Opts.ModelsByRole
-	// so the entry for AgentRole selects the model pi runs on (issue #2863).
+	// ModelsByRole is the per-role model override map. When non-empty it is
+	// forwarded to the sidecar via repeated --model-override flags so the
+	// harness adapter reports the per-role model, and to Opts.ModelsByRole so
+	// the entry for AgentRole selects the model pi runs on.
 	ModelsByRole map[string]string
 
 	// ReadinessTimeout, when > 0, causes SpawnSession to gate its return on
@@ -216,40 +214,38 @@ type SpawnOpts struct {
 	// Single-worker `prism spawn` sets this to DefaultReadinessTimeout so
 	// operators see a clear `failed to start: not ready within 30s` message
 	// instead of a "session created" success line followed by an idle
-	// session that will never make progress (see #1051 widening comment).
+	// session that will never make progress.
 	ReadinessTimeout time.Duration
 
-	// AllowEmptyPrompt opts the caller out of the layer-4 empty-prompt guard
-	// for LayoutFull / LayoutAgentOnly (issues #2012, #2073). The tmux
-	// Prefix+a keybind invokes `prism spawn --attach` with no --prompt so
-	// the operator can type the initial prompt to the live agent after the
-	// popup attaches; `cmd/spawn.go` sets this field when
-	// `PRISM_KEYBIND_SPAWN` is present (the dedicated keybind sentinel
-	// introduced in #2073 to replace the overloaded PRISM_SPAWN_PATH). All
-	// other callers should leave this false so the original "agent pane
-	// needs a prompt" guard (#1891) keeps firing.
+	// AllowEmptyPrompt opts the caller out of the empty-prompt guard for
+	// LayoutFull / LayoutAgentOnly. The tmux Prefix+a keybind invokes
+	// `prism spawn --attach` with no --prompt so the operator can type the
+	// initial prompt to the live agent after the popup attaches; `cmd/spawn.go`
+	// sets this field when `PRISM_KEYBIND_SPAWN` is present (the dedicated
+	// keybind sentinel). All other callers should leave this false so the
+	// "agent pane needs a prompt" guard keeps firing.
 	AllowEmptyPrompt bool
 
 	// PIExtensionDir is the host-side absolute path to the directory that
 	// contains the prism PI extension file. Forwarded to Opts.PIExtensionDir
 	// so buildDirectAgentCmd can emit --extension <dir>/prism.ts on the
-	// host-mode pi launch (#2065). Empty value falls back to no --extension
-	// flag on host mode.
+	// host-mode pi launch. Empty value falls back to no --extension flag on
+	// host mode.
 	PIExtensionDir string
 
 	// Model, when non-empty, is the CLI-supplied model override from
 	// `prism spawn --model <X>`. Forwarded to Opts.Model and (for bwrap /
 	// sandbox-exec) into the AgentPaneOpts that builds the `prism
-	// agent-run` tmux pane command. Issue #2086.
+	// agent-run` tmux pane command.
 	Model string
 
 	// Variant, when non-empty, is the CLI-supplied variant override from
-	// `prism spawn --variant <Y>`. Semantics mirror Model. Issue #2086.
+	// `prism spawn --variant <Y>`. Semantics mirror Model.
 	Variant string
 
 	// Provider, when non-empty, is the CLI-supplied routing-provider override
 	// from `prism spawn --provider <P>`. Semantics mirror Model, with one
-	// addition: every emit site is gated on a pi harness name. Issue #2852.
+	// addition: every emit site is gated on a pi harness name.
 	Provider string
 
 	// Note: ModelFlag / VariantFlag below are distinct from Model / Variant
@@ -258,7 +254,7 @@ type SpawnOpts struct {
 	// In `prism spawn` they carry the same string — keeping them as separate
 	// fields lets the audit shape evolve independently of launch-time semantics.
 
-	// ── spawn_inputs audit fields (issue #2087) ──────────────────────────
+	// ── spawn_inputs audit fields ────────────────────────────────────────
 	//
 	// These mirror the CLI flag values passed at spawn time and are written
 	// to the spawn_inputs table by SpawnSession. Each front door
@@ -280,7 +276,7 @@ type SpawnOpts struct {
 	VariantFlag string
 
 	// ProviderFlag is the raw --provider flag value (e.g. "openrouter").
-	// Mirrors spawn_inputs.provider_flag. Issue #2852.
+	// Mirrors spawn_inputs.provider_flag.
 	ProviderFlag string
 
 	// AgentFlag is the raw --agent flag value as the user passed it
@@ -300,7 +296,7 @@ type SpawnOpts struct {
 	// HostModeFlag mirrors --host-mode. Mirrors spawn_inputs.host_mode_flag.
 	HostModeFlag bool
 
-	// ContainersFlag mirrors --containers (#2317 / #2323). Audit-only:
+	// ContainersFlag mirrors --containers. Audit-only:
 	// SpawnSession writes it to spawn_inputs.containers_flag and also flips
 	// agent_status.containers_enabled to 1 when true so the sidecar starts
 	// the per-session filtering podman socket proxy. Defaults to false (the
@@ -329,7 +325,7 @@ type SpawnOpts struct {
 
 	// AbtestPairID is the shared UUID minted at the spawn-call site when
 	// --abtest is used. Both sibling sessions receive the same value so the
-	// rows pair via spawn_inputs.abtest_pair_id (P4.ABTEST, #1216).
+	// rows pair via spawn_inputs.abtest_pair_id.
 	AbtestPairID string
 
 	// InvokerSession, when non-empty, is the session name of the caller that
@@ -340,7 +336,7 @@ type SpawnOpts struct {
 	//
 	//   - populate the `from_session` column of the durable
 	//     `session.spawn_intent` / `session.spawn_failed` agent_events
-	//     payloads written for every spawn attempt (#2364);
+	//     payloads written for every spawn attempt;
 	//   - address a best-effort `bus_messages` audit row to the invoker on
 	//     the failure paths so the caller has a forensic breadcrumb even when
 	//     the sidecar hop between them and SpawnSession swallowed the error.
@@ -360,7 +356,7 @@ type SpawnOpts struct {
 // call db.AllocatePort + tmux.NewSessionDetached + StartSidecarWithOpts
 // directly.
 //
-// Ordering is preserved from the pre-extraction call sites:
+// Ordering:
 //
 //  1. DB seed (UpsertStatusSeedRootAgentName) — writes root_agent_name
 //     immediately so the DB row reflects agent identity from the first
@@ -381,8 +377,8 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	if opts.Worktree == "" {
 		return fmt.Errorf("spawn session: Worktree is required")
 	}
-	// Reject an empty prompt for layouts that require one (layer 4 of issue
-	// #1891). LayoutFull and LayoutAgentOnly host an agent pane and need a
+	// Reject an empty prompt for layouts that require one. LayoutFull and
+	// LayoutAgentOnly host an agent pane and need a
 	// prompt to drive the agent; without one the session is created
 	// successfully but the agent sits idle forever. LayoutBare and
 	// LayoutScratchpad are not agent panes — they are plain shells/dashboards
@@ -390,13 +386,13 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// an empty opts.Prompt.
 	//
 	// opts.AllowEmptyPrompt opts the caller out of this guard — used by the
-	// keybind carve-out (issue #2012) where the operator types the initial
+	// keybind carve-out where the operator types the initial
 	// prompt to the live agent after the popup attaches.
 	if opts.Prompt == "" && !opts.AllowEmptyPrompt && (opts.Layout == LayoutFull || opts.Layout == LayoutAgentOnly) {
 		return fmt.Errorf("spawn session: Prompt is required for layout %d (LayoutFull or LayoutAgentOnly) — an agent pane cannot start without a prompt", opts.Layout)
 	}
 
-	// Fail-fast guard for the host-mode pi launch (#2065 edge-case AC).
+	// Fail-fast guard for the host-mode pi launch.
 	// Mirrors the container-path guard at cmd/agent_run.go:730: refuse to
 	// spawn rather than silently launch pi without --extension. Container
 	// modes (bwrap / sandbox-exec) route through PIInvocation which has its
@@ -422,49 +418,43 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		return fmt.Errorf("spawn session %q: %w", opts.SessionName, err)
 	}
 
-	// Open the per-session startup log as the very first step (#1051 Piece B).
-	// Doing this before any other work means the per-session run directory
-	// exists from the moment the spawn begins, so any later failure has a
-	// place to leave breadcrumbs — even when `prism agent-run` never reaches
-	// its own log-open call (the failure mode #1051 reports).
+	// Open the per-session startup log as the very first step. Doing this
+	// before any other work means the per-session run directory exists from
+	// the moment the spawn begins, so any later failure has a place to leave
+	// breadcrumbs — even when `prism agent-run` never reaches its own log-open
+	// call.
 	startup := openStartupLog(opts.SessionName)
 	defer startup.close()
 	startup.log("spawn-session: begin (role=%q, worktree=%q, layout=%d, isolation=%q)",
 		opts.AgentRole, opts.Worktree, opts.Layout, opts.IsolationMode)
 
-	// #1064 / #1092: with a non-empty prompt, write the prompt to the
-	// per-session run directory and let the launch path reference it by
-	// path rather than inlining the prompt body into the tmux command.
+	// With a non-empty prompt, write the prompt to the per-session run
+	// directory and let the launch path reference it by path rather than
+	// inlining the prompt body into the tmux command.
 	//
 	//   - LayoutFull + host: buildDirectAgentCmd emits
 	//     `--prompt "$(cat <path>)"` so tmux's `sh -c <cmd>` stays small.
-	//   - LayoutFull / LayoutAgentOnly + bwrap or sandbox-exec: the
-	//     prompt used to be carried as `-e PRISM_INITIAL_PROMPT=<huge>`
-	//     on the tmux new-window argv, where role-prompt + boilerplate +
-	//     bind paths could collectively exceed tmux's command size budget
-	//     and produce a `command too long` failure (#1092). Switching to
-	//     a `-e PRISM_INITIAL_PROMPT_FILE=<path>` env var keeps the
-	//     launch command's size O(1) in prompt size; `prism agent-run`
-	//     reads the file when it sees the env var and feeds the contents
-	//     to the bwrap/sandbox-exec --prompt path.
+	//   - LayoutFull / LayoutAgentOnly + bwrap or sandbox-exec: carrying the
+	//     prompt as `-e PRISM_INITIAL_PROMPT=<huge>` on the tmux new-window
+	//     argv can push role-prompt + boilerplate + bind paths past tmux's
+	//     command size budget and produce a `command too long` failure. A
+	//     `-e PRISM_INITIAL_PROMPT_FILE=<path>` env var keeps the launch
+	//     command's size O(1) in prompt size; `prism agent-run` reads the file
+	//     when it sees the env var and feeds the contents to the
+	//     bwrap/sandbox-exec --prompt path.
 	//
 	// All modes (host and sandbox) write the prompt file regardless of
-	// layout — see the needsPromptFile gate below (#1195).
+	// layout — see the needsPromptFile gate below.
 	mode := resolveLayoutIsolationMode(opts)
 	var promptFilePath string
 	isSandbox := mode == "bwrap" || mode == "sandbox-exec"
 	// needsPromptFile is true for every mode/layout combination that carries a
-	// non-empty prompt. Before #1195, the gate was:
-	//
-	//   (LayoutFull && host) || isSandbox
-	//
-	// which silently excluded LayoutAgentOnly+host — the Darwin coordinator's
-	// review fan-out path. That left `spawnAgentPaneEnvVars` to fall back to
-	// the legacy PRISM_INITIAL_PROMPT=<blob> env var, re-introducing the
-	// HostLaunchCmdSafeBound failure that #1092 fixed for other modes.
-	//
-	// Post-#1195: the invariant is universal — **every** mode/layout
-	// combination with a non-empty prompt uses the file path. LayoutBare and
+	// non-empty prompt. The invariant is universal: **every** mode/layout
+	// combination with a non-empty prompt uses the file path, including
+	// LayoutAgentOnly+host (the Darwin coordinator's review fan-out path). A
+	// narrower gate that excluded that cell would let spawnAgentPaneEnvVars
+	// fall back to the inline PRISM_INITIAL_PROMPT=<blob> env var and
+	// re-introduce the HostLaunchCmdSafeBound failure. LayoutBare and
 	// LayoutScratchpad never carry prompts (those layouts are for shells and
 	// dashboards, not agent panes), so the `opts.Prompt != ""` guard already
 	// excludes them without needing an explicit carve-out.
@@ -472,8 +462,8 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	if needsPromptFile {
 		path, writeErr := WriteInitialPrompt(opts.SessionName, opts.Prompt)
 		if writeErr != nil {
-			// AC-5: prompt-delivery setup failures must surface to the
-			// operator instead of being swallowed. Bail out before any
+			// Prompt-delivery setup failures must surface to the operator
+			// instead of being swallowed. Bail out before any
 			// tmux state is created so a re-spawn after fixing the
 			// underlying issue (e.g. disk full) starts from a clean slate.
 			startup.log("spawn-session: write initial-prompt FAILED: %v", writeErr)
@@ -483,9 +473,9 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		startup.log("spawn-session: wrote initial-prompt file (%d bytes) to %s", len(opts.Prompt), path)
 	}
 
-	// #1064 AC-6 / #1092 / #1195: pre-spawn size check. Build the launch
-	// command preview using the same Opts shape that the layout spawner will
-	// reuse below, and reject any session whose tmux-bound command exceeds
+	// Pre-spawn size check. Build the launch command preview using the same
+	// Opts shape that the layout spawner will reuse below, and reject any
+	// session whose tmux-bound command exceeds
 	// the safe bound. Doing this BEFORE any tmux state is created means a
 	// rejected spawn has no observable side effects on the tmux server.
 	//
@@ -496,19 +486,17 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	//     would be inlined onto `sh -c <cmd>`; with it the cmd stays O(1)
 	//     in prompt size.
 	//
-	//   - LayoutAgentOnly + host (#1195): review agents on Darwin coordinators
-	//     run in host mode. Pre-#1195 this cell was missing from the gate and
-	//     from the needsPromptFile logic above, causing PRISM_INITIAL_PROMPT
-	//     inline delivery with its HostLaunchCmdSafeBound failure mode. Now
-	//     covered by the unified gate below.
+	//   - LayoutAgentOnly + host: review agents on Darwin coordinators run in
+	//     host mode. This cell is covered by the unified gate so it cannot
+	//     fall back to PRISM_INITIAL_PROMPT inline delivery with its
+	//     HostLaunchCmdSafeBound failure mode.
 	//
 	//   - LayoutFull / LayoutAgentOnly + bwrap or sandbox-exec:
 	//     BuildAgentCmd returns `prism agent-run --session <name>`,
 	//     but the env-var map (which becomes `-e KEY=VALUE` flags on
-	//     tmux new-window) used to carry the entire prompt — the failure
-	//     mode in #1092. The "size" measured here adds the env-var
-	//     contribution so the guard reflects the bytes tmux actually
-	//     sees on its argv.
+	//     tmux new-window) can carry the entire prompt. The "size" measured
+	//     here adds the env-var contribution so the guard reflects the bytes
+	//     tmux actually sees on its argv.
 	hostLaunchCmdSize := 0
 	switch {
 	case mode == "host" && opts.Layout == LayoutFull:
@@ -536,12 +524,12 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			hostLaunchCmdSize, HostLaunchCmdSafeBound, HostLaunchCmdWarnThreshold)
 
 	case mode == "host" && opts.Layout == LayoutAgentOnly:
-		// LayoutAgentOnly + host: Darwin coordinator review fan-out (#1195).
+		// LayoutAgentOnly + host: Darwin coordinator review fan-out.
 		// The agent command is `prism agent-run --session <name>` in bwrap
 		// and sandbox-exec, but for host mode it is a direct agent
 		// invocation — same as LayoutFull + host but without the sidecar-
-		// managed 3-window layout. The env-var map carries PRISM_INITIAL_PROMPT_FILE
-		// (post-#1195 path); measure the full contribution so any exotic
+		// managed 3-window layout. The env-var map carries
+		// PRISM_INITIAL_PROMPT_FILE; measure the full contribution so any exotic
 		// prompt or large session name is caught here.
 		previewEnvs := spawnAgentPaneEnvVars(SpawnOpts{
 			Prompt:         opts.Prompt,
@@ -553,7 +541,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		}
 		// The host-mode LayoutAgentOnly command is built inside
 		// spawnAgentOnlyLayout; route through the same builder so this
-		// preview carries every field the real launch does (#2878).
+		// preview carries every field the real launch does.
 		previewSpawnOpts := opts
 		previewSpawnOpts.PromptFilePath = promptFilePath
 		previewOpts := buildOptsForAgentOnlyLayout(previewSpawnOpts, 0, mode)
@@ -598,8 +586,8 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			return fmt.Errorf("spawn session: build %s launch command for %q: %w", mode, opts.SessionName, buildErr)
 		}
 		// For the env-var preview, route through the same helper used at
-		// spawn time so the file-path branch (post-#1092) and the legacy
-		// inline branch produce matching size estimates.
+		// spawn time so the file-path branch and the inline branch produce
+		// matching size estimates.
 		var previewEnvs map[string]string
 		if opts.Layout == LayoutFull {
 			previewEnvs = agentPaneEnvVars(Opts{
@@ -635,8 +623,8 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	}
 	opts.PromptFilePath = promptFilePath
 
-	// F2 (#1880): Serialise concurrent SpawnSession calls for the same session
-	// name. Without this guard, two concurrent callers both execute the
+	// Serialise concurrent SpawnSession calls for the same session name.
+	// Without this guard, two concurrent callers both execute the
 	// non-atomic prologue (seed → instance_id → InsertSession → AllocatePort)
 	// in parallel: SetInstanceID is an unconditional UPDATE so the last writer
 	// wins; both InsertSession calls succeed (different PKs) leaving one orphan;
@@ -672,16 +660,16 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// COALESCE-preserve the values written here.
 	//
 	// Resolve effective harness for DB seeding. Pi is the sole harness;
-	// if HarnessName is blank fall back to "pi" (#1612).
+	// if HarnessName is blank fall back to "pi".
 	effectiveHarness := opts.HarnessName
 	if effectiveHarness == "" {
 		effectiveHarness = "pi"
 	}
 	// Pass the resolved isolation mode so the row is born with isolation_mode
-	// set — eliminating the NULL window between seed and SetIsolationMode
-	// (issue #1866). ActiveSessionCountForMode counts this row correctly from
-	// the moment the seed returns.
-	// Seed a fallback dashboard title from the spawn prompt (#2641). pi never
+	// set — eliminating the NULL window between seed and SetIsolationMode.
+	// ActiveSessionCountForMode counts this row correctly from the moment the
+	// seed returns.
+	// Seed a fallback dashboard title from the spawn prompt. pi never
 	// auto-generates a session title in any mode (see title_fallback.go for
 	// the full diagnosis), so a headless spawned worker would otherwise never
 	// show one.
@@ -689,7 +677,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// UpsertStatusSeedRootAgentName is an upsert: on a fresh session name it
 	// INSERTs; on a re-spawn of a session name that was cleaned up but left
 	// its agent_status row behind (the documented respawn-after-cleanup path
-	// — internal/db/respawn_after_cleanup_test.go, #2094), it UPDATEs the
+	// — internal/db/respawn_after_cleanup_test.go), it UPDATEs the
 	// existing row via ON CONFLICT, and title = COALESCE(excluded.title,
 	// title) there behaves exactly like the INSERT branch: a non-nil incoming
 	// title always wins. A fallback derived fresh from the new prompt would
@@ -722,7 +710,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	}
 
 	// Step 2b: Flip agent_status.containers_enabled when --containers was
-	// passed (#2317 / #2323). This is the runtime gate the sidecar reads at
+	// passed. This is the runtime gate the sidecar reads at
 	// startup to decide whether to start the per-session filtering podman
 	// API socket proxy. Only call when the flag is set — the column defaults
 	// to 0 in the schema so an unset spawn never enables the proxy.
@@ -736,22 +724,22 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		startup.log("spawn-session: agent_status.containers_enabled=1 (--containers)")
 	}
 
-	// Issue #1507 (FK race): mint instance_id host-side and pre-insert the
-	// sessions row BEFORE the sidecar starts, so that the sidecar's first
-	// agent_events writes (state_change, session_status, turn_start, …) can
-	// satisfy the foreign-key constraint on agent_events.instance_id →
+	// FK race: mint instance_id host-side and pre-insert the sessions row
+	// BEFORE the sidecar starts, so that the sidecar's first agent_events
+	// writes (state_change, session_status, turn_start, …) can satisfy the
+	// foreign-key constraint on agent_events.instance_id →
 	// sessions(instance_id).
 	//
-	// Pre-#1507 the sessions row was inserted only by the tmux-session-start
+	// Without this, the sessions row is inserted only by the tmux-session-start
 	// event hook, which fires asynchronously when the agent window is created.
-	// Under concurrent-spawn load the sidecar's mint-or-load-instance_id
-	// path won the race against the hook, the sidecar wrote events keyed on
-	// an instance_id that had no sessions row yet, every insert failed with
+	// Under concurrent-spawn load the sidecar's mint-or-load-instance_id path
+	// wins the race against the hook, the sidecar writes events keyed on an
+	// instance_id that has no sessions row yet, every insert fails with
 	// FOREIGN KEY constraint failed (787), and the agent's first ~30s of work
-	// was silently dropped before the extension reconnect-timeout killed the
+	// is silently dropped before the extension reconnect-timeout kills the
 	// sidecar.
 	//
-	// Fix: own the instance_id and the sessions-row insert here, host-side,
+	// So own the instance_id and the sessions-row insert here, host-side,
 	// synchronously, before tmux/sidecar start. Both downstream minting paths
 	// (the sidecar's startup-time mint and the tmux-session-start hook's
 	// mint+InsertSession) are idempotent — they observe the existing
@@ -790,14 +778,14 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			// Pre-inserting the sessions row is the FK-race fix; if it
 			// fails we cannot guarantee event writes will succeed. Surface
 			// the error rather than letting the spawn proceed into the
-			// pre-#1507 racy state.
+			// racy state where events precede the sessions row.
 			startup.log("spawn-session: InsertSession FAILED: %v", insertErr)
 			return fmt.Errorf("spawn session: insert sessions row: %w", insertErr)
 		}
 		startup.log("spawn-session: sessions row pre-inserted (instance_id=%s)", opts.InstanceID)
 	}
 
-	// Durable spawn-intent event (#2364 B5). Written after the sessions row
+	// Durable spawn-intent event. Written after the sessions row
 	// (the FK target for agent_events.instance_id) is committed and before
 	// port allocation / layout work runs. Every spawn attempt that reaches
 	// this point leaves an audit-log breadcrumb, so failed spawns are no
@@ -808,8 +796,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// break the happy path).
 	writeSpawnIntentEvent(d, opts, startup)
 
-	// Write spawn_inputs row (C.4.SRC / C.4.PT, issue #1148; centralised in
-	// SpawnSession per issue #2087). SpawnSession is the single chokepoint:
+	// Write spawn_inputs row. SpawnSession is the single chokepoint:
 	// every front door (`prism spawn`, `prism pr`, `prism investigate`,
 	// `prism review`) populates the audit fields on SpawnOpts and the row is
 	// written here, after the sessions row has been pre-inserted (FK target)
@@ -851,8 +838,8 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	}
 	if layoutErr != nil {
 		startup.log("spawn-session: layout setup FAILED: %v", layoutErr)
-		// F5 (#1880): Auto-clean on layout failure to match the readiness-timeout
-		// path. Both failure modes leave the same residue (pre-inserted sessions
+		// Auto-clean on layout failure to match the readiness-timeout path.
+		// Both failure modes leave the same residue (pre-inserted sessions
 		// row, allocated port, prompt file, possibly a partial sidecar process);
 		// cleaning here removes operator toil and prevents stale DB rows from
 		// blocking a retry with the same session name.
@@ -863,7 +850,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		//                               starts the sidecar first).
 		//   - cleanupHalfAliveSession:  marks agent_status ended, releases the
 		//                               port, purges bus messages, and writes
-		//                               sessions.ended_at (#1881).
+		//                               sessions.ended_at.
 		//   - tmux.KillSession:         removes any partial tmux session created
 		//                               before the failure (e.g. NewSessionDetached
 		//                               succeeded but NewWindow failed).
@@ -874,7 +861,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		_ = tmux.KillSession(opts.SessionName)
 		removeInitialPrompt(opts.SessionName)
 		// Durable failure event + best-effort bus-message notification to
-		// the invoker (#2364 B7). Written AFTER cleanupHalfAliveSession so
+		// the invoker. Written AFTER cleanupHalfAliveSession so
 		// the bus-message row survives — cleanupHalfAliveSession calls
 		// PurgeBusMessages(sessionName) which would otherwise delete any
 		// undelivered row with from_session = opts.SessionName. The audit
@@ -890,7 +877,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	}
 	startup.log("spawn-session: tmux session and sidecar kicked off — handing control to agent pane (further bwrap stderr in agent-run.log)")
 
-	// Step 6 (#1051 Piece A): readiness gate. When the caller opted in by
+	// Step 6: readiness gate. When the caller opted in by
 	// setting opts.ReadinessTimeout > 0, block here until the sidecar
 	// observes the first SSE event from the agent (i.e. the agent actually
 	// bound its port and the sidecar connected). On timeout, clean up the
@@ -904,7 +891,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// and call WaitForReady directly in goroutines, so per-agent gates run
 	// concurrently and one slow agent does not delay the others.
 	if opts.ReadinessTimeout > 0 {
-		// Issue #1507 Symptom 2 (lost prompt): when the spawn carries an
+		// Lost-prompt guard: when the spawn carries an
 		// initial prompt, raise the readiness bar so a bare
 		// state_change->active (which fires on harness handshake even when
 		// the prompt is lost between the spawn driver and the agent's
@@ -925,7 +912,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		})
 		if readyErr != nil {
 			startup.log("spawn-session: readiness gate FAILED: %v", readyErr)
-			// #1064 AC-7: enrich the readiness-gate error when the host-mode
+			// Enrich the readiness-gate error when the host-mode
 			// launch command was unusually large. The bare timeout message
 			// ("not ready within 30s") leaves the operator without a hint
 			// for why the agent never came up; for the size-driven failure
@@ -954,7 +941,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			// Drop the per-session prompt file so a retry starts fresh.
 			removeInitialPrompt(opts.SessionName)
 			// Durable failure event + best-effort bus-message notification
-			// to the invoker (#2364 B7). Written AFTER cleanupHalfAliveSession
+			// to the invoker. Written AFTER cleanupHalfAliveSession
 			// so the bus_messages row is not caught by that helper's purge
 			// of undelivered messages for this session (from_session =
 			// opts.SessionName). See the layout-failure branch above for the
@@ -977,9 +964,9 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 // machine default that spawnAgentOnlyLayout uses
 // (config.Load().DefaultIsolationMode). This keeps the prompt-file gate
 // aligned with the layout's actual mode — otherwise a caller that leaves
-// IsolationMode empty for a bwrap-default machine would get the legacy inline
+// IsolationMode empty for a bwrap-default machine would get the inline
 // PRISM_INITIAL_PROMPT path here while spawnAgentOnlyLayout runs the agent
-// under bwrap, re-introducing #1092 by another route.
+// under bwrap, re-introducing the command-size failure by another route.
 func resolveLayoutIsolationMode(opts SpawnOpts) string {
 	if opts.IsolationMode != "" {
 		return opts.IsolationMode
@@ -998,9 +985,9 @@ func resolveLayoutIsolationMode(opts SpawnOpts) string {
 // The size guard calls this with port=0 (the port is allocated only after
 // the guard runs), while the real launch path passes the allocated port.
 // The few-byte difference (--port <N> --hostname 127.0.0.1 contributes <30
-// bytes) is well within the safe bound (16 KiB after #1092; 4 KiB before)
-// and the 1 KiB warn threshold, so the guard's verdict cannot flip between
-// preview and launch in practice.
+// bytes) is well within the safe bound (16 KiB) and the 1 KiB warn
+// threshold, so the guard's verdict cannot flip between preview and launch
+// in practice.
 func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 	return Opts{
 		Prompt:              opts.Prompt,
@@ -1020,11 +1007,11 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 		HarnessPipeSockPath: opts.HarnessPipeSockPath,
 		ModelsByRole:        opts.ModelsByRole,
 		PIExtensionDir:      opts.PIExtensionDir,
-		// CLI overrides (issue #2086) flow into buildDirectAgentCmd (host)
-		// and AgentPaneOpts (bwrap / sandbox-exec) via BuildAgentCmd.
+		// CLI overrides flow into buildDirectAgentCmd (host) and AgentPaneOpts
+		// (bwrap / sandbox-exec) via BuildAgentCmd.
 		Model:   opts.Model,
 		Variant: opts.Variant,
-		// Provider override (issue #2852) rides the same seam.
+		// Provider override rides the same seam.
 		Provider: opts.Provider,
 	}
 }
@@ -1038,15 +1025,15 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 // Importantly, this transitions the agent_status state to "error" so that
 // db.GroupCompleted treats the row as terminal — without that, a review
 // monitor watching the group would block indefinitely on the half-alive
-// member's "idle" state (#1051 AC-6).
+// member's "idle" state.
 //
 // instanceID is the host-minted UUID pre-inserted into sessions by
-// SpawnSession (#1507). When non-empty, cleanupHalfAliveSession also writes
-// sessions.ended_at and sessions.end_state so the two tables stay in lock-step
-// (fixing the zombie-incarnation drift class described in #1881).
+// SpawnSession. When non-empty, cleanupHalfAliveSession also writes
+// sessions.ended_at and sessions.end_state so the two tables stay in
+// lock-step, avoiding the zombie-incarnation drift class.
 //
 // cause names the path that is closing the row, recorded as a session_reaped
-// event (#2613). This helper is on the review-agent lifecycle:
+// event. This helper is on the review-agent lifecycle:
 // internal/review's spawn loop calls SpawnSession, so a review agent that
 // fails its layout step or SpawnSession's own inline readiness gate is closed
 // here, in state "error". Without the record, that row is indistinguishable in
@@ -1076,7 +1063,7 @@ func cleanupHalfAliveSession(d *db.DB, sessionName, instanceID string, cause db.
 	// Keep sessions in lock-step with agent_status: write ended_at and
 	// end_state to the sessions row so consumers that join on
 	// sessions.ended_at IS NULL do not see a zombie incarnation for every
-	// readiness-timeout (#1881).
+	// readiness-timeout.
 	//
 	// end_state "readiness-timeout" is chosen over the generic "error" to
 	// make the specific failure mode visible in audit queries and dashboards —
@@ -1109,17 +1096,17 @@ func spawnFullLayout(d *db.DB, opts SpawnOpts, port int) error {
 // tmux pane. It mirrors session.agentPaneEnvVars but takes SpawnOpts directly,
 // since the two layout paths use different opts structs.
 //
-// When opts.PromptFilePath is non-empty (the post-#1092/#1195 path),
-// PRISM_INITIAL_PROMPT_FILE carries the path to the prompt file and the prompt
-// body itself is NOT inlined into tmux's argv. `prism agent-run` reads the
-// file when it sees the env var and feeds the contents to the agent's --prompt
-// path. This keeps the tmux launch command O(1) in prompt size.
+// When opts.PromptFilePath is non-empty, PRISM_INITIAL_PROMPT_FILE carries
+// the path to the prompt file and the prompt body itself is NOT inlined into
+// tmux's argv. `prism agent-run` reads the file when it sees the env var and
+// feeds the contents to the agent's --prompt path. This keeps the tmux launch
+// command O(1) in prompt size.
 //
 // SpawnSession always writes the prompt file when there is a non-empty prompt,
-// regardless of isolation mode or layout, so the legacy PRISM_INITIAL_PROMPT
-// inline branch below is exercised only by direct callers of this helper (e.g.
-// test code) that pass Prompt without going through SpawnSession. Every
-// production callsite goes through SpawnSession and receives a file path.
+// regardless of isolation mode or layout, so the PRISM_INITIAL_PROMPT inline
+// branch below is exercised only by direct callers of this helper (e.g. test
+// code) that pass Prompt without going through SpawnSession. Every production
+// callsite goes through SpawnSession and receives a file path.
 //
 // Returns nil when no env vars are needed, producing no -e flags in tmux
 // (an empty-string entry would override an inherited value, which is not
@@ -1139,7 +1126,7 @@ func spawnAgentPaneEnvVars(opts SpawnOpts) map[string]string {
 }
 
 // agentOnlyAgentEnvVars resolves the profile-level AgentEnvVars map for the
-// agent-only layout, filtered for opts.AgentRole (issue #2533).
+// agent-only layout, filtered for opts.AgentRole.
 //
 // When the caller supplies an explicit map, that map is filtered. Otherwise
 // the map is loaded from profiles.json through config.AgentEnvVarsForRole —
@@ -1171,7 +1158,7 @@ func agentOnlyAgentEnvVars(opts SpawnOpts) map[string]string {
 func buildOptsForAgentOnlyLayout(opts SpawnOpts, port int, mode string) Opts {
 	return Opts{
 		Prompt:         opts.Prompt,
-		PromptFilePath: opts.PromptFilePath, // set by SpawnSession (#1195: keeps agentCmd O(1) in prompt size for host mode)
+		PromptFilePath: opts.PromptFilePath, // set by SpawnSession; keeps agentCmd O(1) in prompt size for host mode
 		Agent:          opts.AgentRole,
 		SessionName:    opts.SessionName,
 		Port:           port,
@@ -1179,23 +1166,21 @@ func buildOptsForAgentOnlyLayout(opts SpawnOpts, port int, mode string) Opts {
 		PluginHostPath: opts.PluginHostPath,
 		RuntimeEnvVars: opts.RuntimeEnvVars,
 		PIExtensionDir: opts.PIExtensionDir,
-		// CLI overrides (issue #2086) for review-style agent-only layouts.
+		// CLI overrides for review-style agent-only layouts.
 		Model:   opts.Model,
 		Variant: opts.Variant,
-		// Provider override (issue #2852) on the same seam.
+		// Provider override on the same seam.
 		Provider: opts.Provider,
-		// ModelsByRole (issue #2863): the review fan-out is the primary user
-		// of `--model-override`, and every reviewer lands on this layout. The
-		// field was absent here, so the entry for a reviewer's own role never
-		// reached BuildAgentCmd and could select no model.
+		// ModelsByRole: the review fan-out is the primary user of
+		// `--model-override`, and every reviewer lands on this layout. This
+		// field must be forwarded so the entry for a reviewer's own role
+		// reaches BuildAgentCmd and selects the model.
 		ModelsByRole: opts.ModelsByRole,
-		// AgentEnvVars: the role-filtered profile env vars (issue #2533).
-		// This used to be omitted entirely, so a host-mode review session got
-		// no profile env vars while the same session under bwrap or
-		// sandbox-exec got the full set. Both paths now resolve the map
-		// through the same role filter, so host mode and sandboxed mode agree.
-		// The field is load-bearing for host mode only — the sandboxed modes
-		// run `prism agent-run`, which resolves the same map itself.
+		// AgentEnvVars: the role-filtered profile env vars. Both host mode and
+		// the sandboxed modes resolve the map through the same role filter, so
+		// they agree. The field is load-bearing for host mode only — the
+		// sandboxed modes run `prism agent-run`, which resolves the same map
+		// itself.
 		AgentEnvVars: agentOnlyAgentEnvVars(opts),
 	}
 }
@@ -1212,11 +1197,7 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	// When IsolationMode is not set, resolve the machine default from config
 	// rather than silently falling back to host. A silent host fallback breaks
 	// bwrap sessions: review agents would run unsandboxed with the invoking
-	// session's own agent identity and trigger the recursive review explosion
-	// described in issue #1001. (#1001's original mechanism was a per-agent
-	// harness-config blob that pinned each reviewer's identity; #2854 retired
-	// that blob as unread. Reviewer identity now rides on the --agent flag,
-	// but the fallback is still wrong for the sandbox reason alone.)
+	// session's own agent identity and trigger a recursive review explosion.
 	if mode == "" {
 		mode = string(config.Load().DefaultIsolationMode)
 	}
@@ -1336,7 +1317,7 @@ func spawnInputsFromOpts(opts SpawnOpts) db.SpawnInputs {
 	// Spawn Inputs block surfaces a meaningful value even when the user
 	// relied on the default and omitted --isolation (the common case).
 	// Distinct from IsolationFlag above, which preserves the raw CLI value
-	// (nil when omitted) as a separate audit trail. Issue #2105.
+	// (nil when omitted) as a separate audit trail.
 	if opts.IsolationMode != "" {
 		s := opts.IsolationMode
 		si.IsolationMode = &s
@@ -1396,7 +1377,7 @@ func SpawnInputsFromOpts(opts SpawnOpts) db.SpawnInputs {
 	return spawnInputsFromOpts(opts)
 }
 
-// Event types written by SpawnSession (#2364). Named constants so tests and
+// Event types written by SpawnSession. Named constants so tests and
 // downstream tooling (prism audit, prism review recovery, dashboard) can key
 // off them without stringly-typed drift.
 const (
@@ -1453,7 +1434,7 @@ func layoutLabel(l Layout) string {
 // writeSpawnIntentEvent writes the durable EventSpawnIntent row into
 // agent_events. Best-effort: a write failure is logged to the startup log
 // and stderr but does NOT abort the spawn — telemetry must never break the
-// happy path (issue #2364 AC edge-case).
+// happy path.
 func writeSpawnIntentEvent(d *db.DB, opts SpawnOpts, startup *startupLogger) {
 	payload := spawnEventPayload{
 		SessionName:    opts.SessionName,
@@ -1469,9 +1450,9 @@ func writeSpawnIntentEvent(d *db.DB, opts SpawnOpts, startup *startupLogger) {
 
 // writeSpawnFailedEvent writes the durable EventSpawnFailed row into
 // agent_events AND, when opts.InvokerSession is non-empty, a best-effort
-// bus_messages audit row so the invoker's forensic trail names the failure
-// (issue #2364 B7). Both writes are best-effort — a write failure here must
-// never propagate to the caller.
+// bus_messages audit row so the invoker's forensic trail names the failure.
+// Both writes are best-effort — a write failure here must never propagate to
+// the caller.
 func writeSpawnFailedEvent(d *db.DB, opts SpawnOpts, failingStep string, cause error, startup *startupLogger) {
 	payload := spawnEventPayload{
 		SessionName:    opts.SessionName,

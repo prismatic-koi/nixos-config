@@ -1,13 +1,13 @@
 package session
 
-// Tests for F2 (#1880): concurrent SpawnSession calls for the same session name
+// Tests for concurrent SpawnSession calls for the same session name: they
 // must leave the DB in a consistent state — exactly one agent_status row,
 // exactly one un-orphaned sessions row, exactly one allocated port.
 //
-// Before the in-process lock was added, two concurrent callers would both run
-// the non-atomic prologue (seed → instance_id → InsertSession → AllocatePort)
-// in parallel. SetInstanceID is an unconditional UPDATE so the last writer wins;
-// both InsertSession calls succeed with different PKs, leaving one orphaned row;
+// Without the in-process lock, two concurrent callers both run the non-atomic
+// prologue (seed → instance_id → InsertSession → AllocatePort) in parallel.
+// SetInstanceID is an unconditional UPDATE so the last writer wins; both
+// InsertSession calls succeed with different PKs, leaving one orphaned row;
 // AllocatePort may pick the same port for both callers.
 //
 // The fix uses a per-session-name sync.Mutex (stored in spawnMu sync.Map) to

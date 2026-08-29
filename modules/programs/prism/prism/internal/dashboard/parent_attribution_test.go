@@ -3,7 +3,7 @@ package dashboard_test
 // Tests for parent-attribution consistency between the dashboard (SortDisplayed
 // / BuildDisplayRows) and the flat session list (db.ParentSessionFor).
 //
-// These tests reproduce the bug described in issue #847: when a coordinator
+// These tests reproduce the parent-attribution bug: when a coordinator
 // running on the @main branch spawns five review sessions named
 // @main~review-1-review-*, the dashboard rendered them as children of the last
 // depth-1 branch alphabetically before @main rather than as children of @main.
@@ -106,7 +106,7 @@ func TestParentSessionFor_NameHeuristicFallback(t *testing.T) {
 }
 
 // TestParentSessionFor_MainParent_NameHeuristic verifies the name heuristic
-// specifically for @main-parent sessions (the bug scenario from #847).
+// specifically for @main-parent sessions.
 func TestParentSessionFor_MainParent_NameHeuristic(t *testing.T) {
 	d := openTestDBForDash(t)
 	repo := "nixos-config"
@@ -122,15 +122,16 @@ func TestParentSessionFor_MainParent_NameHeuristic(t *testing.T) {
 	}
 }
 
-// TestSortDisplayed_MainParentChildrenSortAfterMain is the regression test for
-// issue #847: review sessions spawned from @main must sort immediately after
-// @main, not after other depth-1 branches whose names sort after "@d" etc.
+// TestSortDisplayed_MainParentChildrenSortAfterMain is the regression test:
+// review sessions spawned from @main must sort immediately after @main, not
+// after other depth-1 branches whose names sort after "@d" etc.
 //
-// Before the fix, nixos-config@main~review-1-review-* would sort after
-// nixos-config@design-prism-session-uniformity because the sort key used
-// "\x01@main" (the \x01 band) which sorted after "\x01@design" but ALSO after
-// all other \x01 band entries, so the review sessions appeared visually nested
-// under @design-prism-session-uniformity instead of @main.
+// A sort key of "\x01@main" (the \x01 band) would sort
+// nixos-config@main~review-1-review-* after
+// nixos-config@design-prism-session-uniformity, because "\x01@main" sorts
+// after "\x01@design" and after all other \x01 band entries. The review
+// sessions would then appear visually nested under
+// @design-prism-session-uniformity instead of @main.
 func TestSortDisplayed_MainParentChildrenSortAfterMain(t *testing.T) {
 	sessions := []dashboard.AgentSession{
 		{Name: "nixos-config@ci-pr-gate-workflow", AgentState: "idle"},
@@ -193,7 +194,7 @@ func TestSortDisplayed_MainParentChildrenSortAfterMain(t *testing.T) {
 // views (dashboard SortDisplayed+BuildDisplayRows and db.ParentSessionFor)
 // against the same DB state and asserts identical parent-child structure.
 //
-// Scenario (reproducing issue #847):
+// Scenario:
 //   - Coordinator: nixos-config@main
 //   - Worker:      nixos-config@design-prism-session-uniformity
 //   - Review sessions spawned by @main coordinator: 5 × @main~review-1-<agent>
@@ -511,7 +512,7 @@ func TestStatusToAgentSession_FallsBackToNameHeuristic(t *testing.T) {
 // is set from the DB (post-migration), SortDisplayed correctly uses it for sort
 // ordering. This ensures the DB-backed parent wins over any name-derived parent.
 func TestSortDisplayed_WithDBBackedParent(t *testing.T) {
-	// Simulate the exact scenario from issue #847: coordinator at @main,
+	// Simulate the scenario: coordinator at @main,
 	// sessions named @main~review-*, DB records parent as @main.
 	sessions := []dashboard.AgentSession{
 		{Name: "nixos-config@main", AgentState: "active"},

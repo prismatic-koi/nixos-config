@@ -29,9 +29,9 @@ func seedPersistent(t *testing.T, sessionName string) PersistentModel {
 
 // TestPersistentEnter_SwitchesOnFirstKeypress asserts that a single Enter on a
 // highlighted live row switches immediately, with no cursor-activation keypress
-// first. Reverting the fix (Enter re-activating the cursor when CursorActive is
-// false) makes the first Enter return CursorTimeoutMsg and record no switch,
-// which fails this test. Regression for issue #2522, defect 1.
+// first. If Enter re-activated the cursor when CursorActive is false, the
+// first Enter would return CursorTimeoutMsg and record no switch, failing this
+// test.
 func TestPersistentEnter_SwitchesOnFirstKeypress(t *testing.T) {
 	origSwitch := switchSessionFunc
 	origResolve := resolveDashClientFunc
@@ -68,10 +68,9 @@ func TestPersistentEnter_SwitchesOnFirstKeypress(t *testing.T) {
 
 // TestPersistentEnter_SwitchesDeterministicDashClient asserts that Enter
 // switches the client resolved from the dashboard session (the client that
-// pressed Enter), NOT the client that display-message would return. Reverting
-// the fix (using CurrentClientFunc) makes the switch target the leaked
-// other-session client, which fails this test. Regression for issue #2522,
-// defect 2.
+// pressed Enter), NOT the client that display-message would return. Using
+// CurrentClientFunc here would target the leaked other-session client, failing
+// this test.
 func TestPersistentEnter_SwitchesDeterministicDashClient(t *testing.T) {
 	origSwitch := switchSessionFunc
 	origResolve := resolveDashClientFunc
@@ -105,7 +104,6 @@ func TestPersistentEnter_SwitchesDeterministicDashClient(t *testing.T) {
 // TestPersistentEnter_NoClientAttached_ShowsStatus asserts that when no client
 // is attached to the dashboard session, Enter reports a visible status message
 // and does not silently no-op or attempt a switch with an empty client.
-// Regression for issue #2522 (edge case).
 func TestPersistentEnter_NoClientAttached_ShowsStatus(t *testing.T) {
 	origSwitch := switchSessionFunc
 	origResolve := resolveDashClientFunc
@@ -136,7 +134,7 @@ func TestPersistentEnter_NoClientAttached_ShowsStatus(t *testing.T) {
 
 // TestPersistentEnter_ReviewGroupToggles asserts that Enter on a review-round
 // group row toggles expand/collapse instead of switching sessions, even on the
-// first keypress. Regression for issue #2522 (AC: review-group row behaviour).
+// first keypress.
 func TestPersistentEnter_ReviewGroupToggles(t *testing.T) {
 	origSwitch := switchSessionFunc
 	t.Cleanup(func() { switchSessionFunc = origSwitch })

@@ -1,6 +1,6 @@
 package session
 
-// host_resume_test.go — issue #1838.
+// host_resume_test.go — host-mode pi-resume tests.
 //
 // Unit tests for the host-mode pi-resume branch in buildDirectAgentCmd.
 // The corresponding bwrap/sandbox-exec resume path lives in PIInvocation
@@ -16,7 +16,7 @@ import (
 // clearPICodingAgentDir clears PI_CODING_AGENT_DIR for the duration of the
 // test. Required by tests that exercise the host-fallback branch of the
 // pi-resume resolver — the developer host sets that env var system-wide
-// (post-#2185 the resolver honours it), and without clearing it tests that
+// (the resolver honours it), and without clearing it tests that
 // set up a temp HOME would silently fall through to the host's PI data root
 // and fail.
 func clearPICodingAgentDir(t *testing.T) {
@@ -128,8 +128,8 @@ func TestBuildDirectAgentCmd_HostMode_EmptyHarnessSessionIDIsSilent(t *testing.T
 	}
 }
 
-// TestBuildDirectAgentCmd_BwrapMode_DoesNotInvokeResolver verifies the
-// review-context round-2 blocker fix: BuildAgentCmd calls buildDirectAgentCmd
+// TestBuildDirectAgentCmd_BwrapMode_DoesNotInvokeResolver guards the
+// host-mode gate: BuildAgentCmd calls buildDirectAgentCmd
 // for every isolation mode, but the bwrap/sandbox-exec AgentPaneCmd discards
 // the result and substitutes `prism agent-run`. If buildDirectAgentCmd ran
 // ResolvePIResumeSession unconditionally, the resolver's host-fallback path
@@ -229,11 +229,9 @@ func TestBuildDirectAgentCmd_HostMode_NonPiHarnessSkipsResume(t *testing.T) {
 }
 
 // TestBuildDirectAgentCmd_HostMode_AppendsSessionUnderPICodingAgentDir is the
-// issue #2185 regression fixture for the resume probe: when
-// PI_CODING_AGENT_DIR is set on the host, the resolver MUST look up the
-// JSONL under <dir>/sessions/ rather than <HOME>/.pi/agent/sessions/. Pre-fix
-// this test would fail because the resolver hardcoded the HOME-based root and
-// missed the transcript that pi actually wrote.
+// regression fixture for the resume probe: when PI_CODING_AGENT_DIR is set on
+// the host, the resolver MUST look up the JSONL under <dir>/sessions/ rather
+// than <HOME>/.pi/agent/sessions/.
 func TestBuildDirectAgentCmd_HostMode_AppendsSessionUnderPICodingAgentDir(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
@@ -245,8 +243,8 @@ func TestBuildDirectAgentCmd_HostMode_AppendsSessionUnderPICodingAgentDir(t *tes
 	worktree := filepath.Join(fakeHome, "code", "myrepo", "feature")
 
 	// Plant the session JSONL under the PI_CODING_AGENT_DIR path — NOT
-	// under <HOME>/.pi/agent/sessions/. Pre-fix this is the location the
-	// resolver missed.
+	// under <HOME>/.pi/agent/sessions/. This is the location the resolver
+	// must consult.
 	dir := filepath.Join(piDataRoot, "sessions", piEncodeCWDForTest(worktree))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir env-mode sessions dir: %v", err)

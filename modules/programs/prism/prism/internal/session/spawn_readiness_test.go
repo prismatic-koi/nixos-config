@@ -1,6 +1,6 @@
 package session
 
-// Tests for SpawnSession's integrated readiness gate (#1051 AC-14). The
+// Tests for SpawnSession's integrated readiness gate. The
 // gate fires when SpawnOpts.ReadinessTimeout > 0 and waits for a readiness
 // signal in the DB; on timeout it cleans up the half-alive session and
 // returns *ReadinessTimeoutError.
@@ -13,8 +13,8 @@ package session
 //     returns a *ReadinessTimeoutError after the configured deadline AND
 //     cleans up the half-alive DB row.
 //   - With ReadinessTimeout = 0, SpawnSession returns immediately after
-//     tmux/sidecar setup (legacy behaviour, used by the review fan-out
-//     which runs WaitForReady itself in goroutines).
+//     tmux/sidecar setup (the path used by the review fan-out, which runs
+//     WaitForReady itself in goroutines).
 //
 // The full happy path (with a real sidecar emitting state_change events) is
 // covered indirectly by the existing TestSpawnSession_AgentOnly_*
@@ -77,8 +77,8 @@ func TestSpawnSession_ReadinessTimeout_FiresAndCleansUp(t *testing.T) {
 	}
 }
 
-// TestSpawnSession_ReadinessTimeoutZero_SkipsGate verifies the legacy
-// behaviour: with ReadinessTimeout = 0, SpawnSession does NOT run the gate
+// TestSpawnSession_ReadinessTimeoutZero_SkipsGate verifies that with
+// ReadinessTimeout = 0, SpawnSession does NOT run the gate
 // and returns success as soon as tmux/sidecar setup completes. This is the
 // path the review fan-out uses (it runs WaitForReady itself in goroutines).
 func TestSpawnSession_ReadinessTimeoutZero_SkipsGate(t *testing.T) {
@@ -164,15 +164,13 @@ func TestSpawnSession_WritesStartupLog(t *testing.T) {
 	}
 }
 
-// TestSpawnSession_ReadinessTimeout_SetsSessionsRowEnded verifies the fix
-// for #1881: after cleanupHalfAliveSession runs on readiness-timeout,
-// the pre-inserted sessions row (which SpawnSession inserts host-side per
-// #1507) must have ended_at IS NOT NULL and end_state set to the documented
-// value "readiness-timeout".
+// TestSpawnSession_ReadinessTimeout_SetsSessionsRowEnded verifies that after
+// cleanupHalfAliveSession runs on readiness-timeout, the pre-inserted sessions
+// row (which SpawnSession inserts host-side) has ended_at IS NOT NULL and
+// end_state set to the documented value "readiness-timeout".
 //
-// Prior to the fix, sessions.ended_at remained NULL even though
-// agent_status.ended_at was set, leaving a zombie incarnation row for every
-// readiness-timeout failure.
+// If sessions.ended_at stayed NULL while agent_status.ended_at was set, a
+// zombie incarnation row would linger for every readiness-timeout failure.
 func TestSpawnSession_ReadinessTimeout_SetsSessionsRowEnded(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	_ = spyTmuxBin(t)

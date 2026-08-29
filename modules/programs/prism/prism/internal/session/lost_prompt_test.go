@@ -1,8 +1,7 @@
 package session
 
-// Regression tests for issue #1507 — concurrent `prism spawn` invocations
-// produced two distinct races in the spawn pipeline. This file covers the
-// lost-prompt race ("Symptom 2" in the issue):
+// Regression tests for the concurrent-spawn races in the spawn pipeline.
+// This file covers the lost-prompt race:
 //
 //   The sidecar comes up cleanly (active), the harness handshake completes,
 //   the agent connects — but the user --prompt never reaches the agent.
@@ -10,10 +9,10 @@ package session
 //   prism list-sessions shows a normal-looking session, and only the
 //   complete absence of agent activity hints something is wrong.
 //
-// The fix lives in WaitForReadyWithOpts (the new strict-mode readiness gate):
-// when ReadinessOpts.RequirePromptDelivered is true, a bare state_change ->
-// active (which fires on harness handshake even when the prompt is lost) is
-// no longer sufficient evidence of a successful spawn. The gate additionally
+// WaitForReadyWithOpts provides the strict-mode readiness gate: when
+// ReadinessOpts.RequirePromptDelivered is true, a bare state_change -> active
+// (which fires on harness handshake even when the prompt is lost) is not
+// sufficient evidence of a successful spawn. The gate additionally
 // requires turn_start / msg_user / msg_assistant evidence that the agent is
 // actually processing the prompt, OR a state_change to a non-"active"
 // terminal state, OR harness_session_id set on agent_status.
@@ -120,12 +119,11 @@ func writeTurnStart(t *testing.T, d *db.DB, sessionName string) {
 }
 
 // TestWaitForReadyWithOpts_StrictMode_BareActiveDoesNotSatisfyGate is the
-// primary deterministic regression test for the lost-prompt race
-// (#1507 Symptom 2). On the pre-fix code path, a bare "state_change ->
-// active" event satisfied WaitForReady — so a lost-prompt spawn returned
-// success even when the agent never processed the prompt. After the fix,
-// strict-mode WaitForReadyWithOpts treats bare active as insufficient
-// evidence and waits for prompt-processing evidence (turn_start /
+// primary deterministic regression test for the lost-prompt race. A bare
+// "state_change -> active" event must not satisfy the strict gate: a
+// lost-prompt spawn would otherwise return success even when the agent never
+// processed the prompt. Strict-mode WaitForReadyWithOpts treats bare active as
+// insufficient evidence and waits for prompt-processing evidence (turn_start /
 // msg_user / msg_assistant) or a terminal transition.
 //
 // The test seeds exactly the post-handshake state the issue's symptom-2
@@ -230,10 +228,10 @@ func TestWaitForReadyWithOpts_StrictMode_TerminalStateChangeSatisfiesGate(t *tes
 }
 
 // TestWaitForReadyWithOpts_LooseMode_BareActiveStillSatisfies verifies that
-// loose-mode (the legacy WaitForReady semantics) still returns success when
+// loose-mode WaitForReady still returns success when
 // only a bare active event is present. This is the path used by callers
-// that do not deliver a prompt (or that gate the prompt question downstream),
-// and the legacy review-fan-out tests rely on this shape.
+// that do not deliver a prompt (or that gate the prompt question downstream);
+// the review-fan-out tests rely on this shape.
 func TestWaitForReadyWithOpts_LooseMode_BareActiveStillSatisfies(t *testing.T) {
 	d := openLostPromptTestDB(t)
 	const sess = "myrepo@loose-bare-active"
@@ -248,24 +246,24 @@ func TestWaitForReadyWithOpts_LooseMode_BareActiveStillSatisfies(t *testing.T) {
 		t.Errorf("WaitForReadyWithOpts (loose): got %v, want nil — bare active should still satisfy the loose gate (legacy semantics)", err)
 	}
 	// And the package-level WaitForReady wrapper must keep this behaviour
-	// (review fan-out and #1051 callers depend on it).
+	// (review fan-out and other callers depend on it).
 	if err := WaitForReady(d, sess, 2*time.Second); err != nil {
 		t.Errorf("WaitForReady (legacy): got %v, want nil", err)
 	}
 }
 
 // TestSpawnSession_LostPromptRace_StrictGateFiresAndCleansUp is the
-// end-to-end deterministic regression test for the lost-prompt race
-// (#1507 Symptom 2 / AC-2 / AC-3). It uses the same shape as
+// end-to-end deterministic regression test for the lost-prompt race.
+// It uses the same shape as
 // TestSpawnSession_ReadinessTimeout_FiresAndCleansUp but with the precise
-// post-handshake state the issue's symptom-2 reproduction left behind:
+// post-handshake state the lost-prompt reproduction leaves behind:
 // a state_change -> active event written by the sidecar (the harness
 // handshake completed), but no further agent progress.
 //
-// The pre-fix code path returned success here: a bare active satisfied
-// WaitForReady, and the spawn driver said "session created" while the
-// agent silently sat idle. The post-fix code path treats this as a
-// readiness-timeout failure (AC-3), cleans up the half-alive state, and
+// The loose gate returns success here: a bare active satisfies WaitForReady,
+// and the spawn driver says "session created" while the agent silently sits
+// idle. The strict gate treats this as a readiness-timeout failure, cleans up
+// the half-alive state, and
 // surfaces *ReadinessTimeoutError to the caller.
 func TestSpawnSession_LostPromptRace_StrictGateFiresAndCleansUp(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
@@ -370,10 +368,10 @@ func TestSpawnSession_LostPromptRace_TurnStartUnblocksGate(t *testing.T) {
 }
 
 // TestSpawnSession_NoPrompt_LayoutAgentOnly_Rejected verifies the layer-4
-// guard from issue #1891: an agent-only layout requires a prompt. Pre-#1891
-// this combination silently produced a session that came up successfully
-// on every observable surface but sat idle forever because no prompt was
-// ever delivered. Now SpawnSession refuses the spawn upfront.
+// empty-prompt guard: an agent-only layout requires a prompt. Without the
+// guard, this combination silently produces a session that comes up
+// successfully on every observable surface but sits idle forever because no
+// prompt was ever delivered. SpawnSession refuses the spawn upfront.
 func TestSpawnSession_NoPrompt_LayoutAgentOnly_Rejected(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	_ = spyTmuxBin(t)

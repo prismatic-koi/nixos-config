@@ -7,7 +7,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/dashboard"
 )
 
-// TestSessionColumnWidth covers the AC scenarios from issue #754.
+// TestSessionColumnWidth covers the session-column-width scenarios.
 func TestSessionColumnWidth(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -211,10 +211,10 @@ func TestSessionColumnWidth(t *testing.T) {
 
 // TestSessionColumnWidth_DashViewIntegration verifies that DashView starts the
 // session column from the content-derived width (via SessionColumnWidth) rather
-// than the old hardcoded 20-char floor. We test two scenarios side-by-side at
+// than a hardcoded 20-char floor. We test two scenarios side-by-side at
 // a very narrow width (50 chars) where the difference between sessionW=7 and
-// sessionW=20 is unambiguous: at width=50 with the old floor the layout runs
-// out of room faster, while with the new content-derived width there is more
+// sessionW=20 is unambiguous: at width=50 a 20-char floor runs out of room
+// faster, while the content-derived width leaves more
 // room for the title column.
 //
 // The test probes DashView with:
@@ -258,7 +258,7 @@ func TestSessionColumnWidth_DashViewIntegration(t *testing.T) {
 		t.Errorf("long sessions: SessionColumnWidth = %d, want 22", gotLongW)
 	}
 
-	// Verify DashView starts from sessionW=22 (not the old floor of 20).
+	// Verify DashView starts from sessionW=22 (not a fixed floor of 20).
 	// We check that SessionColumnWidth is what DashView would use.
 	// The new code does: sessionW := SessionColumnWidth(d.Displayed)
 	// so SessionColumnWidth(longSessions) IS the starting sessionW.
@@ -293,7 +293,7 @@ func TestSessionColumnWidth_DashViewIntegration(t *testing.T) {
 			t.Errorf("header line missing %q: %q", label, headerLine)
 		}
 	}
-	// After the slim row format (#1799) the dropped columns must NOT appear.
+	// In the slim row format the dropped columns must NOT appear.
 	for _, label := range []string{"type", "harness", "model", "changes", "+/-"} {
 		if strings.Contains(headerLine, label) {
 			t.Errorf("header line should not contain dropped column %q: %q", label, headerLine)

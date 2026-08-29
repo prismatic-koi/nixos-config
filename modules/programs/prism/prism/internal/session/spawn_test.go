@@ -1,7 +1,7 @@
 package session
 
 // Tests for SpawnSession — the shared primitive that powers both `prism spawn`
-// and `prism review`'s per-agent spawn loop. See #849 §3.1 and #859.
+// and `prism review`'s per-agent spawn loop.
 //
 // SpawnSession's responsibilities, in order:
 //   1. Seed agent_status with root_agent_name (via UpsertStatusSeedRootAgentName).
@@ -100,7 +100,7 @@ func TestSpawnSession_AgentOnly_SeedsRootAgentName(t *testing.T) {
 
 // TestSpawnSession_AgentOnly_SeedsFallbackTitle verifies that SpawnSession
 // seeds agent_status.title from the spawn prompt when the row is freshly
-// created (#2641) — the fallback used because pi never emits a
+// created — the fallback used because pi never emits a
 // harness-reported title for a headless session (see title_fallback.go).
 func TestSpawnSession_AgentOnly_SeedsFallbackTitle(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
@@ -144,10 +144,10 @@ func TestSpawnSession_AgentOnly_SeedsFallbackTitle(t *testing.T) {
 // (a real harness-reported title, or a human rename — simulated here via
 // UpsertStatusWithRootAgent, matching what the sidecar would have written)
 // does not get clobbered by a fallback derived from a new spawn prompt. This
-// is the respawn-after-cleanup path (internal/db/respawn_after_cleanup_test.go,
-// #2094): cleanup leaves the row behind with ended_at set; a later spawn on
+// is the respawn-after-cleanup path (internal/db/respawn_after_cleanup_test.go):
+// cleanup leaves the row behind with ended_at set; a later spawn on
 // the same session name re-seeds it to idle via the same
-// UpsertStatusSeedRootAgentName call SpawnSession uses (#2641 review).
+// UpsertStatusSeedRootAgentName call SpawnSession uses.
 func TestSpawnSession_AgentOnly_RespawnPreservesExistingTitle(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 
@@ -176,7 +176,7 @@ func TestSpawnSession_AgentOnly_RespawnPreservesExistingTitle(t *testing.T) {
 	realTitle := "a real harness-reported title"
 	// Use "finished" rather than "active" so the subsequent idle re-seed on
 	// respawn is a recognised transition (matches the terminal states
-	// covered by internal/db/respawn_after_cleanup_test.go, #2094) and does
+	// covered by internal/db/respawn_after_cleanup_test.go) and does
 	// not log a spurious advisory warning unrelated to what this test checks.
 	if err := d.UpsertStatusWithRootAgent(sessionName, "myrepo", "/worktrees/myrepo-branch", "finished", &realTitle, nil, nil, nil); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
@@ -210,8 +210,8 @@ func TestSpawnSession_AgentOnly_RespawnPreservesExistingTitle(t *testing.T) {
 }
 
 // TestSpawnSession_AgentOnly_WritesGroupID verifies that when opts.GroupID is
-// non-empty, SpawnSession writes it to agent_status.group_id. This is the hook
-// Issue E (#860) will use to wire review rounds into session_groups.
+// non-empty, SpawnSession writes it to agent_status.group_id. Review rounds
+// use this hook to wire sessions into session_groups.
 func TestSpawnSession_AgentOnly_WritesGroupID(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	_ = spyTmuxBin(t)
@@ -258,8 +258,7 @@ func TestSpawnSession_AgentOnly_WritesGroupID(t *testing.T) {
 
 // TestSpawnSession_AgentOnly_CreatesTmuxSession verifies that SpawnSession
 // invokes tmux.NewSessionDetached and tmux.NewWindow for the agent window —
-// i.e. SpawnSession produces the tmux-side shape that previously lived in
-// review.go's createAgentSession helper.
+// i.e. SpawnSession produces the tmux-side shape for a review agent session.
 func TestSpawnSession_AgentOnly_CreatesTmuxSession(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	argsFile := spyTmuxBin(t)
@@ -300,7 +299,7 @@ func TestSpawnSession_AgentOnly_CreatesTmuxSession(t *testing.T) {
 // TestSpawnSession_NoAgentRole_LeavesRootAgentNameNull verifies that when
 // opts.AgentRole is empty, SpawnSession does NOT write a root_agent_name value
 // — the UpsertStatusSeedRootAgentName helper preserves NULL in that case. This
-// matches the pre-spawn-time seeding semantics (see Issue B / #857).
+// matches the spawn-time seeding semantics.
 func TestSpawnSession_NoAgentRole_LeavesRootAgentNameNull(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	_ = spyTmuxBin(t)
@@ -438,10 +437,10 @@ func TestSpawnSession_Validation_RequiresDB(t *testing.T) {
 
 // TestSpawnSession_AgentOnly_WritesIsolationMode verifies that spawnAgentOnlyLayout
 // writes isolation_mode to agent_status BEFORE the agent window is created.
-// This is the fix for issue #1034: prism agent-run reads isolation_mode from
-// the DB immediately on startup and rejects the session if the mode doesn't
-// match "bwrap". If we write isolation_mode only after tmux.NewWindow, agent-run
-// races and sees NULL → the agent-run rejects the session.
+// This guards the isolation-mode write ordering: prism agent-run reads
+// isolation_mode from the DB immediately on startup and rejects the session if
+// the mode doesn't match "bwrap". Writing isolation_mode only after
+// tmux.NewWindow races: agent-run sees NULL and rejects the session.
 //
 // We test "bwrap" and "sandbox-exec" modes to verify the write happens for
 // both.
@@ -486,16 +485,16 @@ func TestSpawnSession_AgentOnly_WritesIsolationMode(t *testing.T) {
 }
 
 // TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Host verifies the
-// LayoutAgentOnly+host cell that was missing from the needsPromptFile gate
-// before issue #1195. Darwin coordinators running review fan-outs use
-// IsolationMode="host" with Layout=LayoutAgentOnly. Before the fix, this
-// combination fell through to the legacy PRISM_INITIAL_PROMPT inline path,
-// exceeding HostLaunchCmdSafeBound on non-trivial PRs.
+// LayoutAgentOnly+host cell of the needsPromptFile gate. Darwin coordinators
+// running review fan-outs use IsolationMode="host" with Layout=LayoutAgentOnly.
+// Without the file path this combination falls through to the inline
+// PRISM_INITIAL_PROMPT path, exceeding HostLaunchCmdSafeBound on non-trivial
+// PRs.
 //
-// Post-#1195: host mode also uses PRISM_INITIAL_PROMPT_FILE regardless of
-// layout. The legacy PRISM_INITIAL_PROMPT env var is no longer set by
-// SpawnSession for any mode — it remains as a fallback only for direct
-// callers of spawnAgentPaneEnvVars / agentPaneEnvVars that bypass SpawnSession.
+// Host mode also uses PRISM_INITIAL_PROMPT_FILE regardless of layout.
+// SpawnSession does not set the inline PRISM_INITIAL_PROMPT env var for any
+// mode — it remains a fallback only for direct callers of
+// spawnAgentPaneEnvVars / agentPaneEnvVars that bypass SpawnSession.
 func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Host(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	argsFile := spyTmuxBin(t)
@@ -520,7 +519,7 @@ func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Host(t *testing.T) {
 		t.Fatalf("SpawnSession: %v", err)
 	}
 
-	// Post-#1195: PRISM_INITIAL_PROMPT_FILE must appear (file-based delivery).
+	// PRISM_INITIAL_PROMPT_FILE must appear (file-based delivery).
 	filePath, pathErr := InitialPromptPath(sessionName)
 	if pathErr != nil {
 		t.Fatalf("InitialPromptPath: %v", pathErr)
@@ -530,7 +529,7 @@ func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Host(t *testing.T) {
 		t.Errorf("tmux args %v do not contain [-e PRISM_INITIAL_PROMPT_FILE=%s] — host-mode LayoutAgentOnly must now use file-based delivery (#1195)", args, filePath)
 	}
 
-	// The legacy inline env var must NOT appear — that was the pre-#1195 broken path.
+	// The inline env var must NOT appear — it re-introduces the launch-cmd size failure.
 	for i, a := range args {
 		if a == "-e" && i+1 < len(args) && strings.HasPrefix(args[i+1], "PRISM_INITIAL_PROMPT=") {
 			t.Errorf("tmux args contain inline PRISM_INITIAL_PROMPT for host mode — would re-introduce #1195 launch-cmd size failure: %v", args)
@@ -548,21 +547,13 @@ func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Host(t *testing.T) {
 	}
 }
 
-// TestSpawnSession_AgentOnly_PromptEnvVar_NoPrompt used to verify that
-// spawnAgentOnlyLayout did not set an empty PRISM_INITIAL_PROMPT env var when
-// opts.Prompt was empty. Since issue #1891 that combination is rejected at
-// the SpawnSession entry point (LayoutAgentOnly requires a non-empty Prompt),
-// so this test would never reach the env-var setup code it was guarding. The
-// new rejection is covered by TestSpawnSession_NoPrompt_LayoutAgentOnly_Rejected
-// in lost_prompt_test.go.
-
 // TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Bwrap is the regression
-// test for #1092. When opts.IsolationMode is "bwrap" and opts.Prompt is
-// non-empty, SpawnSession must write the prompt to a per-session file and
-// set PRISM_INITIAL_PROMPT_FILE on the agent pane — not the inline
-// PRISM_INITIAL_PROMPT env var that previously carried the prompt body
-// onto tmux's argv and tripped the launch-command size guard for review
-// fan-outs with long role prompts.
+// test for prompt-file delivery. When opts.IsolationMode is "bwrap" and
+// opts.Prompt is non-empty, SpawnSession must write the prompt to a
+// per-session file and set PRISM_INITIAL_PROMPT_FILE on the agent pane — not
+// the inline PRISM_INITIAL_PROMPT env var, which carries the prompt body onto
+// tmux's argv and trips the launch-command size guard for review fan-outs with
+// long role prompts.
 //
 // Verifies the three pieces of the contract together:
 //   - The file exists at the expected per-session path.
@@ -621,7 +612,7 @@ func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Bwrap(t *testing.T) {
 
 	// Tmux side: PRISM_INITIAL_PROMPT_FILE must point to the file, and
 	// PRISM_INITIAL_PROMPT must NOT carry the body — that would re-introduce
-	// the #1092 failure mode.
+	// the launch-command size failure.
 	args := readSpyArgs(argsFile)
 	if !containsSeq(args, []string{"-e", "PRISM_INITIAL_PROMPT_FILE=" + filePath}) {
 		t.Errorf("tmux args do not contain [-e PRISM_INITIAL_PROMPT_FILE=%s] — review agents in bwrap mode must receive the prompt-file path (#1092)\nargs: %v", filePath, args)
@@ -633,9 +624,9 @@ func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Bwrap(t *testing.T) {
 		}
 	}
 	// Defence-in-depth: the tmux argv as a whole must not contain the
-	// prompt body. With #1092 fixed, the only thing tmux sees is the
-	// file path; a regression that put the body back on argv would fail
-	// this assertion before the size guard or kernel ARG_MAX trips.
+	// prompt body. The only thing tmux sees is the file path; a regression
+	// that put the body back on argv would fail this assertion before the
+	// size guard or kernel ARG_MAX trips.
 	for _, a := range args {
 		if strings.Contains(a, prompt) {
 			t.Errorf("tmux argv element contains the prompt body inline (len=%d) — file-based delivery is broken", len(a))
@@ -691,8 +682,8 @@ func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_SandboxExec(t *testing.T) 
 }
 
 // TestSpawnAgentPaneEnvVars verifies the helper directly across the three
-// shapes: file path set (post-#1092), inline prompt only (legacy), and no
-// prompt at all (no env vars emitted).
+// shapes: file path set, inline prompt only, and no prompt at all (no env
+// vars emitted).
 func TestSpawnAgentPaneEnvVars(t *testing.T) {
 	t.Run("with prompt file", func(t *testing.T) {
 		got := spawnAgentPaneEnvVars(SpawnOpts{
@@ -756,10 +747,10 @@ func TestSpawnSession_UnsupportedLayout_ReturnsError(t *testing.T) {
 }
 
 // TestSpawnSession_NeedsPromptFile_AllModesAndLayouts is a table-driven
-// regression test for issue #1195. It verifies that SpawnSession writes the
-// initial-prompt file for every (mode, layout) combination that carries a
-// non-empty prompt — including the LayoutAgentOnly+host cell that was missing
-// from the gate before #1195 and caused Darwin host-mode review fan-outs to
+// regression test for the prompt-file gate. It verifies that SpawnSession
+// writes the initial-prompt file for every (mode, layout) combination that
+// carries a non-empty prompt — including the LayoutAgentOnly+host cell, the
+// one that, if dropped from the gate, causes Darwin host-mode review fan-outs to
 // inline large prompts in the tmux argv.
 //
 // The test checks the observable outcome (file written to InitialPromptPath)
@@ -776,7 +767,7 @@ func TestSpawnSession_NeedsPromptFile_AllModesAndLayouts(t *testing.T) {
 		{"LayoutFull+bwrap", LayoutFull, "bwrap"},
 		{"LayoutFull+sandbox-exec", LayoutFull, "sandbox-exec"},
 
-		// LayoutAgentOnly cases (the #1195 regression was LayoutAgentOnly+host)
+		// LayoutAgentOnly cases (LayoutAgentOnly+host is the fragile cell)
 		{"LayoutAgentOnly+host", LayoutAgentOnly, "host"},
 		{"LayoutAgentOnly+bwrap", LayoutAgentOnly, "bwrap"},
 		{"LayoutAgentOnly+sandbox-exec", LayoutAgentOnly, "sandbox-exec"},
@@ -827,8 +818,8 @@ func TestSpawnSession_NeedsPromptFile_AllModesAndLayouts(t *testing.T) {
 	}
 }
 
-// TestSpawnSession_AgentOnly_PromptFile_WriteFails_ReturnsError is the AC5
-// edge-case test for issue #1195. When WriteInitialPrompt fails (e.g. because
+// TestSpawnSession_AgentOnly_PromptFile_WriteFails_ReturnsError is the
+// edge-case test for a prompt-file write failure. When WriteInitialPrompt fails (e.g. because
 // the run directory is not writable), SpawnSession must return a clear error
 // naming the failed write target and must NOT create any tmux session.
 //
@@ -924,12 +915,12 @@ func TestSpawnSession_AgentOnly_PromptFile_CleanedUpOnReadinessTimeout(t *testin
 	}
 }
 
-// ── empty-prompt rejection (issue #1891 layer 4) ────────────────────────────
+// ── empty-prompt rejection ────────────────────────────
 //
 // LayoutFull and LayoutAgentOnly host an agent pane and require a prompt to
 // drive the agent. LayoutBare and LayoutScratchpad are plain shells or
-// dashboards and legitimately have no prompt. The layer-4 guard must reject
-// the former and accept the latter — see issue #1891 AC5/AC6.
+// dashboards and legitimately have no prompt. The guard must reject the
+// former and accept the latter.
 
 // TestSpawnSession_EmptyPrompt_LayoutFull_Rejected verifies AC6(d): an empty
 // Prompt with LayoutFull is rejected before any side-effects (no tmux session,
@@ -975,15 +966,15 @@ func TestSpawnSession_EmptyPrompt_LayoutFull_Rejected(t *testing.T) {
 }
 
 // TestSpawnSession_EmptyPrompt_NonAgentLayouts_NotRejectedForEmptyPrompt is
-// the regression guard for AC6(e) / AC5 of issue #1891: the layer-4 empty
-// prompt guard must fire ONLY for LayoutFull and LayoutAgentOnly. LayoutBare
+// the regression guard: the empty-prompt guard must fire ONLY for LayoutFull
+// and LayoutAgentOnly. LayoutBare
 // and LayoutScratchpad are shell/dashboard layouts with no agent pane and
 // legitimately have no prompt.
 //
 // SpawnSession does not currently support LayoutBare/LayoutScratchpad end to
 // end — they have their own creation path — so we cannot assert nil-error
-// here. What we *can* assert (and what would catch the regression #1891
-// warns against) is that the error returned for these layouts is NOT the
+// here. What we *can* assert is that the error returned for these layouts is
+// NOT the
 // new "Prompt is required" guard. If a future refactor routes these layouts
 // through SpawnSession, this test still passes; if the guard accidentally
 // widens to reject them, this test fails immediately.
@@ -1020,15 +1011,14 @@ func TestSpawnSession_EmptyPrompt_NonAgentLayouts_NotRejectedForEmptyPrompt(t *t
 }
 
 // TestSpawnSession_WritesSpawnInputs_AllFields is the end-to-end integration
-// test for the centralised spawn_inputs writer (issue #2087). It verifies
+// test for the centralised spawn_inputs writer. It verifies
 // that SpawnSession, given a SpawnOpts populated with every audit-mirror
 // field, inserts a single spawn_inputs row keyed by the host-minted
 // instance_id and that every column lands with the expected value.
 //
 // This test exercises the writer path inside SpawnSession itself (rather than
 // the helper SpawnInputsFromOpts in isolation), so a regression that
-// silently drops the InsertSpawnInputs call — the failure mode that
-// motivated #2087 — would be caught here.
+// silently drops the InsertSpawnInputs call would be caught here.
 func TestSpawnSession_WritesSpawnInputs_AllFields(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	_ = spyTmuxBin(t)
@@ -1132,10 +1122,9 @@ func TestSpawnSession_WritesSpawnInputs_AllFields(t *testing.T) {
 }
 
 // TestSpawnSession_WritesSpawnInputs_MinimalRow verifies the floor of the
-// AC contract for #2087: a SpawnSession invocation with only the required
+// spawn_inputs contract: a SpawnSession invocation with only the required
 // inputs (no audit flags) still produces a spawn_inputs row keyed by
-// instance_id with created_at populated, so downstream JOINs see the row
-// instead of the pre-fix empty-table state.
+// instance_id with created_at populated, so downstream JOINs see the row.
 func TestSpawnSession_WritesSpawnInputs_MinimalRow(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	_ = spyTmuxBin(t)

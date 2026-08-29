@@ -1,13 +1,13 @@
 package session
 
 // agent_env_role_test.go — coverage for the role-filtered AgentEnvVars map in
-// the agent-only layout (issue #2533).
+// the agent-only layout.
 //
-// Before #2533 the agent-only layout omitted AgentEnvVars entirely, so a
-// host-mode review session got no profile env vars while the same session
-// under bwrap or sandbox-exec got the full set, including the two keys that
-// register the 65-tool grafana MCP surface. Both paths now resolve the map
-// through config.AgentEnvVarsForRole, so a given role gets the same map in
+// The agent-only layout must resolve AgentEnvVars, not omit them. Without the
+// map, a host-mode review session gets no profile env vars while the same
+// session under bwrap or sandbox-exec gets the full set, including the two
+// keys that register the 65-tool grafana MCP surface. Both paths resolve the
+// map through config.AgentEnvVarsForRole, so a given role gets the same map in
 // either mode.
 
 import (

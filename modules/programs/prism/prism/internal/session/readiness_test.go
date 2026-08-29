@@ -1,6 +1,6 @@
 package session_test
 
-// Tests for the readiness gate (#1051 Piece A). These use a real prism DB
+// Tests for the readiness gate. These use a real prism DB
 // and exercise the actual signals SpawnSession's gate consumes:
 //
 //   - "state_change" event written to agent_events (the cleanest readiness

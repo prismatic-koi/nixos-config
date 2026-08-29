@@ -1,7 +1,7 @@
 package dashboard
 
 // export_test.go exposes package-private review-summary helpers to the
-// dashboard_test package (#2868), so review_summary_test.go can assert the
+// dashboard_test package, so review_summary_test.go can assert the
 // exact codepoint and column width each verdict renders without duplicating
 // the mapping in the test file.
 

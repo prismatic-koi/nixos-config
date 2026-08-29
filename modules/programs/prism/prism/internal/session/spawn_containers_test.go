@@ -1,7 +1,7 @@
 package session
 
-// spawn_containers_test.go — SpawnSession integration coverage for the new
-// ContainersFlag SpawnOpts field (#2317 / #2323).
+// spawn_containers_test.go — SpawnSession integration coverage for the
+// ContainersFlag SpawnOpts field.
 //
 // The mapping is two-pronged:
 //   - opts.ContainersFlag=true → spawn_inputs.containers_flag=1 (written by
@@ -9,9 +9,9 @@ package session
 //   - opts.ContainersFlag=true → agent_status.containers_enabled=1 (written
 //     by an explicit d.SetContainersEnabled call after the seed).
 //
-// Both are required by ACs #1 and #2 of #2323: the audit row records the
-// CLI flag verbatim, and the runtime gate is the live signal the sidecar
-// reads at startup to decide whether to start the podman socket proxy.
+// Both are required: the audit row records the CLI flag verbatim, and the
+// runtime gate is the live signal the sidecar reads at startup to decide
+// whether to start the podman socket proxy.
 
 import (
 	"testing"
@@ -83,8 +83,7 @@ func TestSpawnSession_ContainersFlag_TrueFlipsBothColumns(t *testing.T) {
 
 // TestSpawnSession_ContainersFlag_DefaultLeavesBothZero verifies the
 // default case — a SpawnSession invocation that does NOT set
-// ContainersFlag leaves both columns at the schema default of 0. This is
-// the runtime side of AC #3 of #2323.
+// ContainersFlag leaves both columns at the schema default of 0.
 //
 // It also guards against an accidental future "default-on" regression: a
 // SpawnOpts field with a non-zero default value would silently enable

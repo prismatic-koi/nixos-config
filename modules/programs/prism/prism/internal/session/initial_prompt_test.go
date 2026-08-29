@@ -1,6 +1,6 @@
 package session
 
-// Tests for #1064 — host-mode prompt-file plumbing and launch-command size
+// Tests for host-mode prompt-file plumbing and launch-command size
 // guard. The headline failure mode: prism spawn --isolation host with a
 // prompt above ~12 KB silently failed because the entire prompt was
 // inlined onto the launch command, which then got truncated by tmux's
@@ -32,8 +32,8 @@ import (
 
 // TestInitialPromptPath_CoLocatedWithAgentLogs verifies that the prompt-file
 // path lives in the same per-session run directory as agent-startup.log,
-// agent-run.log, and hostapi.sock — see #1066 for the SessionDirName
-// alignment that this test pins. A single
+// agent-run.log, and hostapi.sock, sharing the SessionDirName alignment that
+// this test pins. A single
 // `ls run/<sessionDirName>/` should show every forensic artefact for the
 // session.
 func TestInitialPromptPath_CoLocatedWithAgentLogs(t *testing.T) {
@@ -191,10 +191,9 @@ func TestBuildAgentCmd_HostMode_PromptFile(t *testing.T) {
 	}
 }
 
-// TestBuildAgentCmd_HostMode_NoPromptFile verifies the legacy inline path
-// (PromptFilePath empty) still works for small prompts. This covers the
-// no-regression AC-2: small prompts that worked before the fix continue to
-// work without the file plumbing.
+// TestBuildAgentCmd_HostMode_NoPromptFile verifies the inline path
+// (PromptFilePath empty) still works for small prompts. Small prompts work
+// without the file plumbing.
 func TestBuildAgentCmd_HostMode_NoPromptFile(t *testing.T) {
 	opts := Opts{
 		IsolationMode: "host",
@@ -350,10 +349,11 @@ func TestSpawnSession_HostMode_RejectsOversizedLaunchCmd(t *testing.T) {
 
 // TestSpawnSession_HostMode_AgentOnly_RejectsOversizedLaunchCmd_ModelsByRole
 // pins ModelsByRole forwarding on the host+LayoutAgentOnly size-guard
-// preview path (issue #2878). Before the fix, that branch built its preview
-// Opts from an inline literal that omitted ModelsByRole, so a huge per-role
-// override entry for this session's own role never reached the measured
-// command and the guard could not see it. Routing the preview through
+// preview path. The preview branch must build its Opts through the shared
+// builder rather than an inline literal that omits ModelsByRole: a huge
+// per-role override entry for this session's own role would otherwise never
+// reach the measured command and the guard could not see it. Routing the
+// preview through
 // buildOptsForAgentOnlyLayout (the same builder the real launch uses) fixes
 // that; this test fails if ModelsByRole is dropped from the preview again.
 func TestSpawnSession_HostMode_AgentOnly_RejectsOversizedLaunchCmd_ModelsByRole(t *testing.T) {
@@ -452,8 +452,8 @@ func TestReadinessTimeoutError_WithHint(t *testing.T) {
 }
 
 // TestReadinessTimeoutError_WithoutHint verifies that the Hint field is
-// optional — when empty, the error message stays exactly as it was before
-// #1064 (so non-host callers see no behavioural change).
+// optional — when empty, the error message stays the bare timeout string
+// (so non-host callers see no behavioural change).
 func TestReadinessTimeoutError_WithoutHint(t *testing.T) {
 	rte := &ReadinessTimeoutError{
 		SessionName: "myrepo@small",
@@ -469,7 +469,7 @@ func TestReadinessTimeoutError_WithoutHint(t *testing.T) {
 // ── helpers ────────────────────────────────────────────────────────────────
 
 // buildLargePrompt returns a prompt of approximately size bytes that
-// includes the byte classes named in #1064 AC-4 (single quotes, backticks,
+// includes the awkward byte classes (single quotes, backticks,
 // dollar signs, double quotes, newlines) so a faithful roundtrip
 // demonstrably preserves all of them.
 func buildLargePrompt(size int) string {

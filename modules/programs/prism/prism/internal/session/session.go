@@ -1,6 +1,5 @@
 // Package session provides composable session lifecycle operations for prism.
-// It extracts the core create/attach/name logic that was previously
-// embedded in the monolithic ensureAndSwitchSession function in cmd/switch.go.
+// It holds the core create/attach/name logic.
 package session
 
 import (
@@ -56,7 +55,7 @@ type Opts struct {
 	// emits `--prompt "$(cat <quoted PromptFilePath>)"` rather than
 	// inlining Prompt onto the launch command. Prompt is still required
 	// (non-empty) to enable the substitution; the field's value is not
-	// embedded in the command in that case. See #1064.
+	// embedded in the command in that case.
 	Prompt string
 	// PromptFilePath, when non-empty AND IsolationMode is "host" AND Prompt
 	// is non-empty, makes buildDirectAgentCmd emit
@@ -65,7 +64,6 @@ type Opts struct {
 	// already contain the prompt bytes (caller-owned: see
 	// session.WriteInitialPrompt). Ignored for non-host isolation modes —
 	// those route the prompt through the host-API or sidecar instead.
-	// See #1064 for the failure mode this guards against.
 	PromptFilePath string
 	// Agent is the agent name (e.g. "coordinator", "worker").
 	// When empty, DefaultAgent is called to derive a default from the directory.
@@ -167,7 +165,7 @@ type Opts struct {
 	// puts it on AgentPaneOpts.AgentModel, which reaches pi's argv via
 	// `prism agent-run --agent-model` → populatePIConfig →
 	// container.Config.AgentModel → PIInvocation. Entries for other roles are
-	// a no-op for this session. Issue #2863.
+	// a no-op for this session.
 	ModelsByRole map[string]string
 	// HarnessSessionID is the persisted harness-specific session UUID to
 	// resume when launching the harness (e.g. pi's session UUID). Populated
@@ -185,8 +183,6 @@ type Opts struct {
 	// the bwrap/sandbox-exec tmux pane runs `prism agent-run`, which
 	// reconstructs its container config from the DB rather than carrying
 	// the launch opts forward.
-	//
-	// Issue #1838.
 	HarnessSessionID string
 	// Worktree is the absolute worktree path the session was created in. It
 	// is required only by the host-mode pi-resume path (buildDirectAgentCmd
@@ -201,16 +197,16 @@ type Opts struct {
 	// is pi, buildDirectAgentCmd appends --extension <dir>/prism.ts to the
 	// host-mode launch command so the extension loads and the prism↔pi
 	// integration surface (role prompt, sidecar bridge, status bar) works
-	// the same as it does under bwrap / sandbox-exec. Closes #2065.
+	// the same as it does under bwrap / sandbox-exec.
 	//
 	// Production callers MUST set this for host-mode pi launches —
 	// ValidatePILaunchOpts (called from SpawnSession and Create+LayoutFull)
 	// rejects an empty value with a clear error mirroring the container-path
 	// guard at cmd/agent_run.go:730. buildDirectAgentCmd remains a pure
 	// string emitter and omits --extension when this field is empty so test
-	// fixtures and the validator-bypass paths in restore (with the legacy
-	// agent-pane shape) don't need to fake a directory; the fail-fast policy
-	// is centralised in ValidatePILaunchOpts, not the emitter.
+	// fixtures and the validator-bypass paths in restore don't need to fake a
+	// directory; the fail-fast policy is centralised in ValidatePILaunchOpts,
+	// not the emitter.
 	PIExtensionDir string
 
 	// Model, when non-empty, is the CLI-supplied model override (`prism spawn
@@ -219,10 +215,10 @@ type Opts struct {
 	// sandbox-exec modes the value is threaded into AgentPaneOpts so the
 	// `prism agent-run` tmux pane command carries it forward to the
 	// populatePIConfig override path. Empty value omits the flag and the
-	// profile slot's model is used unchanged. Issue #2086.
+	// profile slot's model is used unchanged.
 	//
 	// A ModelsByRole entry for this session's role outranks this field on
-	// every isolation mode (issue #2863).
+	// every isolation mode.
 	Model string
 
 	// Variant, when non-empty, is the CLI-supplied variant override (`prism
@@ -230,7 +226,7 @@ type Opts struct {
 	// is appended as `--variant <Y>` (pi consumes it as a thinking/reasoning
 	// level via the harness's --thinking mapping at the populatePIConfig
 	// override path); in bwrap and sandbox-exec modes it flows through
-	// AgentPaneOpts. Issue #2086.
+	// AgentPaneOpts.
 	Variant string
 
 	// Provider, when non-empty, is the CLI-supplied routing-provider override
@@ -240,7 +236,7 @@ type Opts struct {
 	// into AgentPaneOpts so the `prism agent-run` tmux pane command carries it
 	// forward to the populatePIConfig override path. Empty value omits the
 	// flag and the profile slot's provider is used unchanged. Scoped to the pi
-	// harness at every emit site. Issue #2852.
+	// harness at every emit site.
 	Provider string
 }
 
@@ -248,8 +244,8 @@ type Opts struct {
 // pi launch. It is the host-mode analogue of the container-path guard at
 // cmd/agent_run.go:730: when the prism PI extension cannot be located the
 // session must fail fast with a clear error rather than launch pi with no
-// extension (and therefore no role-prompt injection, no sidecar bridge, no
-// status bar — the #2065 silent-degradation shape).
+// extension. That degrades silently: no role-prompt injection, no sidecar
+// bridge, no status bar.
 //
 // Returns nil for every non-host isolation mode (container modes route
 // through PIInvocation which has its own guard upstream) and for every
@@ -307,7 +303,7 @@ const (
 // The walk is depth-agnostic: it correctly resolves worktrees nested more
 // than one level below the bare root (e.g. a branch name containing "/",
 // such as "feat/my-thing", produces a worktree at <bare>/feat/my-thing —
-// two levels below the bare root, not one). See issue #2510.
+// two levels below the bare root, not one).
 //
 // Because the walk is depth-agnostic, it resolves a role for ANY directory
 // beneath a bare root, not only worktree roots — e.g. <bare>/main/subdir
@@ -386,28 +382,26 @@ func effectiveIsolationMode(opts Opts) string {
 //   - "sandbox-exec": "<abs-path>/prism agent-run --session <session-name>"
 //   - "host":         direct agent invocation (default)
 //
-// D4 (issue #1133): the per-mode switch collapses into a single
-// Isolator.AgentPaneCmd dispatch. Unknown / unregistered modes fall back to
-// the direct (host-shape) command — matching the pre-refactor "default" arm.
+// The per-mode switch is a single Isolator.AgentPaneCmd dispatch. Unknown or
+// unregistered modes fall back to the direct (host-shape) command.
 //
 // Returns a non-nil error when the bwrap / sandbox-exec branch cannot
 // resolve the prism binary's absolute path (os.Executable failure). Host
-// mode and the unknown-mode fallback never fail. Issue #2260: callers must
-// propagate the error rather than fall back to a bare "prism" — silent
-// fallback would re-introduce the PATH-shadow class the fix exists to
-// eliminate.
+// mode and the unknown-mode fallback never fail. Callers must propagate the
+// error rather than fall back to a bare "prism". A silent fallback
+// re-introduces the PATH-shadow class this rule prevents.
 func BuildAgentCmd(opts Opts) (string, error) {
 	mode := config.IsolationMode(effectiveIsolationMode(opts))
 	direct := buildDirectAgentCmd(opts)
 	iso, err := container.For(mode, container.ConstructorOpts{Name: opts.SessionName})
 	if err != nil {
-		// Unknown mode: behave like the pre-refactor default arm.
+		// Unknown mode: fall back to the direct (host-shape) command.
 		return direct, nil
 	}
 	return iso.AgentPaneCmd(container.AgentPaneOpts{
 		SessionName: opts.SessionName,
 		DirectCmd:   direct,
-		// Model / Variant overrides (issue #2086) are forwarded into the
+		// Model / Variant overrides are forwarded into the
 		// tmux pane command for bwrap and sandbox-exec so that `prism
 		// agent-run` receives them as explicit flags and can override the
 		// active profile slot's model/variant on the final pi argv. The
@@ -416,12 +410,12 @@ func BuildAgentCmd(opts Opts) (string, error) {
 		Model:   opts.Model,
 		Variant: opts.Variant,
 		// AgentModel is the per-role `--model-override` entry for THIS
-		// session's role (issue #2863), forwarded as its own
+		// session's role, forwarded as its own
 		// `prism agent-run --agent-model` flag so PIInvocation can apply the
 		// published precedence at the point it renders pi's argv. An entry
 		// naming any other role does not match here and is a no-op.
 		AgentModel: roleModelOverride(opts),
-		// Provider (issue #2852) rides the same seam. HarnessName is
+		// Provider rides the same seam. HarnessName is
 		// forwarded alongside it because appendAgentRunOverrides gates the
 		// provider clause on a pi harness name.
 		Provider:    opts.Provider,
@@ -441,7 +435,7 @@ func harnessBinary(harnessName string) string {
 }
 
 // roleModelOverride returns the `prism spawn --model-override <role>=<model>`
-// entry that applies to this session, or "" when none does (issue #2863).
+// entry that applies to this session, or "" when none does.
 //
 // A session runs exactly one role, so at most one entry of the map can apply:
 // the one keyed by opts.Agent. Entries naming any other role belong to other
@@ -462,7 +456,7 @@ func roleModelOverride(opts Opts) string {
 // harness (pre-container mode). For harness="" or "pi" this is a pi
 // invocation.
 //
-// Host-mode pi-resume (issue #1838): when opts.HarnessSessionID is non-empty
+// Host-mode pi-resume: when opts.HarnessSessionID is non-empty
 // and the harness is pi, the launcher calls container.ResolvePIResumeSession
 // to look up the on-disk session JSONL under ~/.pi/agent/sessions and, if
 // found, appends `--session <id>` immediately before any --prompt argument so
@@ -479,12 +473,12 @@ func buildDirectAgentCmd(opts Opts) string {
 	} else {
 		cmd = binary
 	}
-	// --extension <dir>/prism.ts for pi harnesses (#2065). Container modes
+	// --extension <dir>/prism.ts for pi harnesses. Container modes
 	// (bwrap / sandbox-exec) route through container.PIInvocation, which
-	// emits --extension unconditionally. Host mode previously launched pi
-	// with no --extension flag at all, so the prism PI extension never
-	// loaded and role-prompt injection (plus the sidecar bridge, status
-	// bar, doom-loop guard, and review-cycle tracking) silently no-op'd.
+	// emits --extension unconditionally. Host mode must emit it here too:
+	// without --extension the prism PI extension never loads and role-prompt
+	// injection (plus the sidecar bridge, status bar, doom-loop guard, and
+	// review-cycle tracking) silently no-ops.
 	//
 	// Scoped to pi (or empty harness, which defaults to pi). Non-pi
 	// harnesses do not have a prism extension and must not receive this
@@ -495,27 +489,26 @@ func buildDirectAgentCmd(opts Opts) string {
 			cmd += " --extension " + shellQuote(extPath)
 		}
 	}
-	// --exclude-tools <names> for role-scoped builtin tool restriction
-	// (issue #2531), host-mode mirror of container.PIInvocation. See
+	// --exclude-tools <names> for role-scoped builtin tool restriction,
+	// host-mode mirror of container.PIInvocation. See
 	// internal/config/agent_tool_roles.go for the role list and rationale.
 	if (opts.HarnessName == "pi" || opts.HarnessName == "") && agent != "" {
 		if excluded := config.ExcludedToolsForRole(agent); len(excluded) > 0 {
 			cmd += " --exclude-tools " + shellQuote(strings.Join(excluded, ","))
 		}
 	}
-	// CLI overrides for model and variant (issue #2086). Scoped to the pi
-	// harness (or empty, which defaults to pi). The flag pair must appear
-	// before the positional prompt so pi parses them as named flags rather
-	// than as positional message bytes. Empty values omit the flag and the
-	// profile slot's model/variant is used unchanged (no-regression default
-	// path).
+	// CLI overrides for model and variant. Scoped to the pi harness (or
+	// empty, which defaults to pi). The flag pair must appear before the
+	// positional prompt so pi parses them as named flags rather than as
+	// positional message bytes. Empty values omit the flag and the profile
+	// slot's model/variant is used unchanged.
 	if container.IsPIHarness(opts.HarnessName) {
 		// --provider first, mirroring container.PIInvocation's flag order so
-		// the host-mode and sandboxed argvs read the same way (issue #2852).
+		// the host-mode and sandboxed argvs read the same way.
 		if opts.Provider != "" {
 			cmd += " --provider " + shellQuote(opts.Provider)
 		}
-		// Model axis, highest rung first (issue #2863): the per-role
+		// Model axis, highest rung first: the per-role
 		// `--model-override` entry for this session's role beats the
 		// session-wide `--model`, which beats the profile slot (resolved by
 		// pi itself in host mode). Host mode emits ONE `--model` flag, so the
@@ -532,7 +525,7 @@ func buildDirectAgentCmd(opts Opts) string {
 			cmd += " --thinking " + shellQuote(opts.Variant)
 		}
 	}
-	// Append --session <id> for host-mode pi-resume (issue #1838).
+	// Append --session <id> for host-mode pi-resume.
 	//
 	// Three guards stack here:
 	//
@@ -542,15 +535,13 @@ func buildDirectAgentCmd(opts Opts) string {
 	//     `prism agent-run --session <name>`). The gate keeps this host-side
 	//     probe from running redundantly on every restore: bwrap and
 	//     sandbox-exec resume via prism agent-run's DB-read + PIInvocation
-	//     path, which performs the same host-root lookup itself — post-#1985
-	//     (bwrap) and post-#2210 (sandbox-exec) all modes resolve to the same
-	//     host PI sessions root ($PI_CODING_AGENT_DIR/sessions or
-	//     ~/.pi/agent/sessions), so a lookup here would succeed but its
-	//     result would be discarded, and any transient miss would spuriously
-	//     write a misleading "resume failed" line to the agent-run.log via
-	//     piLogResumeWarning even though the actual resume happens in
-	//     agent-run. (Review round 2 / review-context; comment refreshed for
-	//     #2210.)
+	//     path, which performs the same host-root lookup itself. All modes
+	//     resolve to the same host PI sessions root
+	//     ($PI_CODING_AGENT_DIR/sessions or ~/.pi/agent/sessions), so a
+	//     lookup here succeeds but its result is discarded, and any
+	//     transient miss spuriously writes a misleading "resume failed" line
+	//     to the agent-run.log via piLogResumeWarning even though the actual
+	//     resume happens in agent-run.
 	//  2. HarnessName ∈ {"pi", ""} — ResolvePIResumeSession's encoded-cwd /
 	//     sessions-root layout is pi-specific.
 	//  3. HarnessSessionID != "" — empty IDs are a silent no-op (AC5).
@@ -570,7 +561,7 @@ func buildDirectAgentCmd(opts Opts) string {
 		}
 	}
 	if opts.Prompt != "" {
-		// #1064: when PromptFilePath is supplied, route the prompt through
+		// When PromptFilePath is supplied, route the prompt through
 		// $(cat …) so the prompt content is loaded inside the pane shell
 		// from disk rather than carried on the tmux command line. Keeps
 		// the launch command small (a few hundred bytes) regardless of
@@ -634,7 +625,7 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-// Host-mode launch-command size thresholds (#1064 / #1092).
+// Host-mode launch-command size thresholds.
 //
 // HostLaunchCmdSafeBound is the maximum constructed launch-command size
 // SpawnSession will hand to tmux without rejecting up-front. Above this,
@@ -646,25 +637,18 @@ func shellQuote(s string) string {
 // per-argv ARG_MAX is far higher — 128 KiB on Linux and 256 KiB on Darwin —
 // so the binding constraint here is tmux's own command parser, not execve.
 //
-// 4 KiB was the original (pre-#1092) bound, chosen when the only spawned
-// shape was LayoutFull and the prompt body was already pulled off the
-// launch command via the $(cat …) plumbing (see initial_prompt.go). It
-// turned out to be too tight once review fan-outs (LayoutAgentOnly) started
-// going through the same guard with the role prompt still inlined into a
-// `-e PRISM_INITIAL_PROMPT=<huge>` pair on tmux's argv.
-//
-// Post-#1092 the role prompt is also delivered via a per-session file
+// The role prompt is delivered via a per-session file
 // (PRISM_INITIAL_PROMPT_FILE), so the launch command size is bounded by
 // boilerplate (session name, env-var prefixes, harness paths) regardless
 // of prompt size. 16 KiB is comfortably above any realistic boilerplate
-// total, and well below tmux's empirical ceiling — exotic prompts or
-// huge AgentEnvVars are still surfaced as a clear pre-spawn failure rather
-// than left to fail silently inside tmux.
+// total, and well below tmux's empirical ceiling. Exotic prompts or huge
+// AgentEnvVars are still surfaced as a clear pre-spawn failure rather than
+// left to fail silently inside tmux.
 const HostLaunchCmdSafeBound = 16 * 1024
 
 // HostLaunchCmdWarnThreshold is the launch-command size above which
 // SpawnSession enriches a readiness-gate timeout error with a hint that
-// prompt size may be the cause (see #1064 AC-7). Most healthy host-mode
+// prompt size may be the cause. Most healthy host-mode
 // launch commands are a few hundred bytes (env-var prefixes plus the
 // agent invocation); 1 KB is "unusual but not necessarily broken" and
 // big enough to be worth mentioning when a timeout fires.
@@ -673,15 +657,13 @@ const HostLaunchCmdWarnThreshold = 1024
 // HostLaunchCmdTooLargeError is returned by SpawnSession when the
 // constructed launch command exceeds HostLaunchCmdSafeBound. It carries the
 // actual size, the safe bound, and the session name so the operator can
-// pattern-match the message and mechanically extract the numbers (#1064
-// AC-6). The error fires before any tmux state is created; callers can
-// treat the spawn as having had no observable side effects on the tmux
-// server.
+// pattern-match the message and mechanically extract the numbers. The error
+// fires before any tmux state is created; callers can treat the spawn as
+// having had no observable side effects on the tmux server.
 //
-// The type retains its "HostLaunchCmd…" name for back-compat with #1064
-// callers (IsHostLaunchCmdTooLarge etc.) even though the post-#1092 guard
-// also covers bwrap/sandbox-exec review fan-outs whose size budget is
-// dominated by the env-var pair tmux carries on `new-window -e`.
+// The name keeps the "HostLaunchCmd…" prefix although the guard also covers
+// bwrap/sandbox-exec review fan-outs, whose size budget is dominated by the
+// env-var pair tmux carries on `new-window -e`.
 type HostLaunchCmdTooLargeError struct {
 	SessionName string
 	CmdSize     int
@@ -721,8 +703,8 @@ func IsHostLaunchCmdTooLarge(err error) bool {
 //     is killed silently and true is returned so a fresh session is created.
 //     This is the switch/launch path.
 //
-// When d is nil and ForceFresh is false, falls back to the legacy no-op: an
-// existing session is treated as live and creation is skipped (returns false).
+// When d is nil and ForceFresh is false, falls back to a no-op: an existing
+// session is treated as live and creation is skipped (returns false).
 // When d is nil and ForceFresh is true, kills the existing session unconditionally.
 func startupGuardKillOld(name string, d *db.DB, forceFresh bool) bool {
 	if !tmux.HasSession(name) {
@@ -750,13 +732,13 @@ func startupGuardKillOld(name string, d *db.DB, forceFresh bool) bool {
 			return false
 		}
 		if d == nil {
-			// No DB handle, can't determine liveness — legacy no-op: skip creation.
+			// No DB handle, can't determine liveness — no-op: skip creation.
 			return false
 		}
 		if SidecarAlive(name) {
 			// The DB row is quiet but the sidecar is responsive. Paused-by-
 			// design states (escalated, reviewing, waiting) freeze last_seen
-			// while the session is healthy — do not kill it (issue #2255).
+			// while the session is healthy — do not kill it.
 			return false
 		}
 		// Stale or zombie session — kill it silently and recreate.
@@ -798,9 +780,9 @@ func startupGuardKillOld(name string, d *db.DB, forceFresh bool) bool {
 //     60s in opts.DB) is left untouched and Create returns nil so the caller's
 //     subsequent Attach() reconnects to it. A stale or zombie session is killed
 //     and recreated. When opts.DB is nil, any existing session is treated as
-//     live (legacy no-op behaviour).
+//     live (no-op behaviour).
 func Create(name, directory string, opts Opts) error {
-	// Fail-fast guard for the host-mode pi launch (#2065 edge-case AC).
+	// Fail-fast guard for the host-mode pi launch.
 	// Only applies to LayoutFull, which is the layout that actually launches
 	// an agent pane. LayoutBare and LayoutScratchpad have no agent and
 	// legitimately leave PIExtensionDir empty (scratchpad sessions are pure
@@ -840,29 +822,27 @@ func Create(name, directory string, opts Opts) error {
 
 // agentPaneEnvVars builds the env-var map for the agent tmux pane.
 //
-// When opts.PromptFilePath is non-empty (the post-#1092/#1195 path),
-// PRISM_INITIAL_PROMPT_FILE carries the path to the prompt file and the
-// prompt body itself is NOT inlined into tmux's argv. `prism agent-run`
-// reads the file when it sees the env var and feeds the contents to
-// the agent's --prompt path. This keeps the launch-command size O(1) in
-// prompt size.
+// When opts.PromptFilePath is non-empty, PRISM_INITIAL_PROMPT_FILE carries
+// the path to the prompt file and the prompt body itself is NOT inlined into
+// tmux's argv. `prism agent-run` reads the file when it sees the env var and
+// feeds the contents to the agent's --prompt path. This keeps the
+// launch-command size O(1) in prompt size.
 //
 // SpawnSession always writes the prompt file when there is a non-empty
-// prompt, regardless of isolation mode or layout, so the legacy
-// PRISM_INITIAL_PROMPT inline branch below is exercised only by direct
-// callers that have not opted into the file path (e.g. test code).
-// Every production callsite goes through SpawnSession and receives a
-// file path.
+// prompt, regardless of isolation mode or layout, so the PRISM_INITIAL_PROMPT
+// inline branch below is exercised only by direct callers that have not opted
+// into the file path (e.g. test code). Every production callsite goes through
+// SpawnSession and receives a file path.
 //
 // Skipped entirely for host mode: the host-mode launch path reads the
-// prompt directly via $(cat …) (see buildDirectAgentCmd / #1064), so
-// no agent-pane env var is needed at all.
+// prompt directly via $(cat …) (see buildDirectAgentCmd), so no agent-pane
+// env var is needed at all.
 //
 // Returns nil when no env vars are needed, producing no -e flags in tmux.
 func agentPaneEnvVars(opts Opts) map[string]string {
 	if effectiveIsolationMode(opts) == "host" {
 		// In host mode the prompt is delivered via $(cat …) in the launch
-		// command (buildDirectAgentCmd / #1064), so no PRISM_INITIAL_PROMPT
+		// command (buildDirectAgentCmd), so no PRISM_INITIAL_PROMPT
 		// env var is needed. However, for socket-pipe harnesses (e.g. "pi")
 		// we must inject PRISM_HARNESS_PIPE so the PI extension can find the
 		// sidecar Unix socket. bwrap and sandbox-exec set this via their own
@@ -871,7 +851,7 @@ func agentPaneEnvVars(opts Opts) map[string]string {
 			envs := map[string]string{
 				"PRISM_HARNESS_PIPE": "unix://" + opts.HarnessPipeSockPath,
 			}
-			// Durable give-up diagnostics (#2357): host mode has no
+			// Durable give-up diagnostics: host mode has no
 			// agent-run process, but the per-session run dir (which also
 			// holds the pipe socket above) is the durable home for the PI
 			// extension's first-connect give-up line. Best-effort — on
@@ -946,7 +926,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	//
 	// Propagate the worktree path into opts so buildDirectAgentCmd (host
 	// mode) can resolve the encoded-cwd component of the pi sessions
-	// directory for conversation resume (issue #1838). Other isolation
+	// directory for conversation resume. Other isolation
 	// modes ignore opts.Worktree — their `prism agent-run` dispatch reads
 	// the worktree from the DB row instead.
 	opts.Worktree = directory
@@ -955,13 +935,12 @@ func setupFullLayout(name, directory string, opts Opts) error {
 		return fmt.Errorf("setupFullLayout: build agent command for %q: %w", name, err)
 	}
 
-	// Persist isolation_mode BEFORE opening the agent window. This is the
-	// critical ordering fix: prism agent-run in window 1 reads isolation_mode
-	// from agent_status immediately on start. If we write isolation_mode only
-	// after the window exists (as the old post-ensureAndSwitch block in
-	// cmd/spawn.go did), prism agent-run races and sees NULL → dies with a
-	// mode mismatch error. Writing here, synchronously before NewWindow,
-	// removes the race entirely. See issue #894.
+	// Persist isolation_mode BEFORE opening the agent window. This ordering is
+	// load-bearing: prism agent-run in window 1 reads isolation_mode from
+	// agent_status immediately on start. Writing isolation_mode after the
+	// window exists races: prism agent-run sees NULL and dies with a mode
+	// mismatch error. Writing here, synchronously before NewWindow, removes
+	// the race entirely.
 	if mode != "" {
 		// Always write isolation_mode when we have a non-empty mode.
 		if d, dbErr := openDB(); dbErr == nil {
@@ -985,11 +964,9 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// no usable pane and callers that later WaitForReady will silently time
 	// out after 30s with no diagnostic. Surface the error so SpawnSession's
 	// layoutErr cleanup path (KillSidecar + cleanupHalfAliveSession +
-	// tmux.KillSession + spawn_failed event) runs instead. Previously this
-	// call discarded its error, which is the reason issue #2510 presents as
-	// a bare "not ready within 30s" timeout rather than a clear message —
-	// whatever the underlying trigger turns out to be, the discarded error
-	// is what hides it.
+	// tmux.KillSession + spawn_failed event) runs instead. A discarded error
+	// here hides the real failure behind a bare "not ready within 30s"
+	// timeout.
 	if err := tmux.NewWindow(name, 1, "agent", directory, agentCmd, agentPaneEnvVars(opts)); err != nil {
 		return fmt.Errorf("setupFullLayout: create agent window for %q: %w", name, err)
 	}
@@ -1035,7 +1012,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 
 // buildReadinessWaitCmd builds a shell command that polls for the sidecar
 // readiness file and, once found, runs the given attach command.
-// If the wait times out (120s), it prints an error and exits (AC-20).
+// If the wait times out (120s), it prints an error and exits.
 func buildReadinessWaitCmd(readyPath, attachCmd string) string {
 	// Poll every 0.5s for up to 120s (240 iterations).
 	// On success, exec the attach command directly.
