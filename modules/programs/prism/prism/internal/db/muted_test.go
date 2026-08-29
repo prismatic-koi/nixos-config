@@ -1,6 +1,6 @@
 package db
 
-// DB-layer tests for the muted flag on agent_status (#2013). These exercise
+// DB-layer tests for the muted flag on agent_status. These exercise
 // the SetMuted / IsMuted helpers and the persistence-across-Open contract
 // asserted by the issue ACs:
 //

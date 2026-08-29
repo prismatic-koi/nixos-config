@@ -1,35 +1,32 @@
-// Active-account resolution for the event-write path (issue #2714, parent
-// #2699).
+// Active-account resolution for the event-write path.
 //
 // Why this exists
 // ---------------
 //
-// prism.db held no account identifier at all, so #2704 could not attribute
-// spend to a subscription. The active account lives only on disk, in
-// ~/.config/prism/accounts/current. This file records the account NAME on
+// The active account lives only on disk, in ~/.config/prism/accounts/current.
+// To attribute spend to a subscription, this path records the account NAME on
 // every agent_events row (and on the spawn_inputs row) AT WRITE TIME.
 //
 // Write time, not scrape time — the trap
 // ---------------------------------------
 //
-// The counters #2704 builds accumulate across account switches. Resolving the
-// account at scrape time would retroactively attribute earlier spend to
-// whichever account happens to be active at the scrape. The account must be
-// pinned to the row the moment the row is written, which is what
-// DB.resolveAccountName does from inside WriteEvent / InsertSpawnInputs. The
-// operator switches accounts when a rate-limit window exhausts, so mid-session
-// switches are common; a per-event capture is the only shape that stays
-// accurate across them.
+// The spend counters accumulate across account switches. A scrape-time
+// resolution attributes earlier spend to whichever account is active at the
+// scrape, which is the wrong account. The account must be pinned to the row
+// the moment the row is written, which is what DB.resolveAccountName does from
+// inside WriteEvent / InsertSpawnInputs. The operator switches accounts when a
+// rate-limit window exhausts, so mid-session switches are common. A per-event
+// capture is the only shape that stays accurate across them.
 //
 // mtime-cached, not stat-and-read per event
 // ------------------------------------------
 //
-// The event-write path is hot. Reading accounts/current on every event would
-// add a file read to every write. Instead the resolver stats the pointer file
-// for its mtime and reads the CONTENT only when the mtime changes (or on the
-// first resolution). This mirrors the mtime-invalidation approach pi's
-// credential cache uses (#2283). A single account switch therefore costs at
-// most one extra content read, no matter how many events follow it.
+// The event-write path is hot. A read of accounts/current on every event adds
+// a file read to every write. Instead the resolver stats the pointer file for
+// its mtime and reads the CONTENT only when the mtime changes (or on the first
+// resolution). This mirrors the mtime-invalidation approach pi's credential
+// cache uses. A single account switch therefore costs at most one extra
+// content read, no matter how many events follow it.
 //
 // Security
 // --------

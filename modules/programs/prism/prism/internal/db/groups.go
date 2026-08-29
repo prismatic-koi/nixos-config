@@ -20,7 +20,7 @@ import (
 //
 // Note: this deliberately EXCLUDES "interrupted". An interrupted session may
 // resume — the user can redirect it via `prism prompt <agent-session>` and the
-// agent will continue toward a terminal state (#1495). Treating "interrupted"
+// agent will continue toward a terminal state. Treating "interrupted"
 // as terminal here would close out a review group the moment the user reaches
 // for Esc to redirect a review agent, contaminating the review-complete prompt
 // with a false-error verdict before the redirection has a chance to take
@@ -47,9 +47,9 @@ func isTerminalState(state string) bool {
 // the worker running `prism review`).
 //
 // Use RegisterGroupWithPR when you have the PR number and round; the
-// worker-sidecar recovery watcher (#1709 reopen) reads those columns to
-// reconstruct enough context to deliver the review-complete prompt when the
-// detached monitor subprocess dies. RegisterGroup remains the back-compat
+// worker-sidecar recovery watcher reads those columns to reconstruct enough
+// context to deliver the review-complete prompt when the detached monitor
+// subprocess dies. RegisterGroup remains the back-compat
 // entry point for callers that do not have the PR/round (unit-test setup).
 func (d *DB) RegisterGroup(parentSession string) (string, error) {
 	return d.RegisterGroupWithPR(parentSession, "", 0)
@@ -77,8 +77,8 @@ func (d *DB) RegisterGroupWithPR(parentSession, prNumber string, round int) (str
 }
 
 // GroupInfo captures the session_groups metadata used by the worker-sidecar
-// recovery watcher (#1709 reopen). PRNumber and Round are empty/zero for
-// groups registered via the legacy RegisterGroup helper.
+// recovery watcher. PRNumber and Round are empty/zero for groups registered
+// via the legacy RegisterGroup helper.
 type GroupInfo struct {
 	GroupID       string
 	ParentSession string
@@ -86,14 +86,14 @@ type GroupInfo struct {
 	Round         int
 	CreatedAt     time.Time
 	// DeliveredAt is the time the review-complete prompt was accepted for
-	// this group (#2259), or nil when the round has not been delivered.
+	// this group, or nil when the round has not been delivered.
 	DeliveredAt *time.Time
 }
 
 // LatestGroupForParent returns the most recently created session_groups row
 // whose parent_session matches parentSession, or (nil, nil) when no group
-// exists for the parent. Used by the worker-sidecar recovery watcher
-// (#1709 reopen) to identify the in-flight review group while
+// exists for the parent. Used by the worker-sidecar recovery watcher to
+// identify the in-flight review group while
 // reviewingInFlight is set; ActiveReviewGroupForParent's "has any
 // non-terminal member" criterion is the wrong question here, because the
 // stuck-but-complete case the watcher exists to handle has ZERO non-terminal
@@ -159,12 +159,12 @@ func (d *DB) GetGroup(groupID string) (*GroupInfo, error) {
 
 // GroupsForParent returns every session_groups row whose parent_session
 // matches parentSession, ordered by round ascending (ties broken by
-// created_at ascending) — the natural review-cycle order (issue #2584).
-// Returns an empty, non-nil slice when parentSession has no review groups.
+// created_at ascending) — the natural review-cycle order. Returns an empty,
+// non-nil slice when parentSession has no review groups.
 //
 // round is a native session_groups column; callers must group and order
 // review cycles by it directly rather than parsing a round number out of a
-// session name (docs/retro.md section 3).
+// session name (docs/retro.md).
 func (d *DB) GroupsForParent(parentSession string) ([]GroupInfo, error) {
 	const q = `SELECT group_id, parent_session, pr_number, round, created_at, delivered_at
 	            FROM session_groups
@@ -206,12 +206,12 @@ func (d *DB) GroupsForParent(parentSession string) ([]GroupInfo, error) {
 // GroupCompleted reports whether the review group has reached a terminal
 // state. A group is considered terminal when EITHER:
 //
-//   - its session_groups.delivered_at is non-NULL (#2259) — the
+//   - its session_groups.delivered_at is non-NULL — the
 //     review-complete prompt was successfully accepted by `prism prompt`
 //     for this group, either via the happy-path `review.MonitorFunc` or via
 //     the recovery primitive `review.DeliverGroupResults`. This is the
-//     authoritative end-of-life signal and short-circuits the predicate;
-//     any subsequent mutation of agent_status (including the per-process
+//     authoritative end-of-life signal and short-circuits the predicate.
+//     Any subsequent mutation of agent_status (including the per-process
 //     sidecar-restart anti-pattern in cmd/sidecar.go that overwrites a
 //     terminal state with `idle`) cannot move the group back to in-progress;
 //     OR
@@ -230,8 +230,8 @@ func (d *DB) GroupsForParent(parentSession string) ([]GroupInfo, error) {
 //  2. Calls SetEnded(session), which sets ended_at but leaves state alone.
 //
 // Without the `ended_at` arm here, an interrupted-then-cleaned-up agent's
-// row would have state="interrupted" forever, which is no longer terminal
-// per terminalStates (#1495), and GroupCompleted would never return true.
+// row would have state="interrupted" forever, which is not terminal per
+// terminalStates, and GroupCompleted would never return true.
 // The review monitor would then spin until its overall safety timeout.
 // Treating `ended_at IS NOT NULL` as terminal closes that gap for any path
 // that ends a session row without rewriting state — not just `prism cleanup`,
@@ -245,7 +245,7 @@ func (d *DB) GroupsForParent(parentSession string) ([]GroupInfo, error) {
 // Returns (false, err) on a database error.
 func (d *DB) GroupCompleted(groupID string) (bool, error) {
 	// Short-circuit: a group whose delivered_at has been written is
-	// terminal regardless of any subsequent agent_status mutation (#2259).
+	// terminal regardless of any subsequent agent_status mutation.
 	var deliveredAt sql.NullInt64
 	if err := d.conn.QueryRow(
 		`SELECT delivered_at FROM session_groups WHERE group_id = ?`, groupID,
@@ -283,7 +283,7 @@ func (d *DB) GroupCompleted(groupID string) (bool, error) {
 
 // SetGroupDeliveredAt records the epoch-ms timestamp at which the review-
 // complete prompt was successfully accepted by `prism prompt` for this
-// group (#2259). This is the authoritative end-of-life signal read by
+// group. This is the authoritative end-of-life signal read by
 // GroupCompleted, ReviewGroupsList, and the in-progress guard in
 // review.ActiveReviewGroupForParent.
 //
@@ -313,7 +313,7 @@ func (d *DB) SetGroupDeliveredAt(groupID string) error {
 }
 
 // DeliveredGroupIDsForParent returns the set of group_ids belonging to
-// parentSession whose delivered_at is non-NULL (#2259). Used by
+// parentSession whose delivered_at is non-NULL. Used by
 // review.ActiveReviewGroupForParent to short-circuit the in-progress guard
 // for groups that have already had their review-complete prompt delivered.
 func (d *DB) DeliveredGroupIDsForParent(parentSession string) (map[string]struct{}, error) {
@@ -361,8 +361,8 @@ type ReapCandidate struct {
 }
 
 // ReapableReviewAgents returns every agent_status row that is safe for an
-// automated reaper to release (issue #2649). Pass groupID to scope the query
-// to one review round; pass "" to scan every group.
+// automated reaper to release. Pass groupID to scope the query to one review
+// round; pass "" to scan every group.
 //
 // deliveredBefore is an epoch-millisecond cut-off: only groups whose
 // delivered_at is at or before it are returned. Callers pass
@@ -381,11 +381,11 @@ type ReapCandidate struct {
 //     may still redirect an interrupted agent with `prism prompt`.
 //  3. `session_groups.delivered_at IS NOT NULL` — the round's review-complete
 //     prompt was already delivered to the parent worker. This is the
-//     authoritative end-of-life signal for a group (#2259). While a round is
+//     authoritative end-of-life signal for a group. While a round is
 //     running, delivered_at is NULL for that group, so NO member of a running
 //     round is reapable — not even a member that has already finished and is
 //     waiting for its four siblings. That is what makes reaping a live agent
-//     structurally impossible rather than merely unlikely (#2613).
+//     structurally impossible rather than merely unlikely.
 //  4. `session_groups.delivered_at <= ?` — the grace period has elapsed.
 //
 // The join to session_groups also restricts the result to review agents:
@@ -444,7 +444,7 @@ WHERE s.ended_at IS NULL
 //
 // Note: this function is the verdict-aggregation read; it is called once
 // (per delivery) before the group's authoritative end-of-life signal
-// (session_groups.delivered_at, #2259) is written. The delivered_at column
+// (session_groups.delivered_at) is written. The delivered_at column
 // is the locking signal for "do not re-aggregate" — callers downstream of
 // the recovery watcher rely on GroupCompleted's delivered_at short-circuit
 // to avoid calling this function a second time once a group has been
@@ -454,7 +454,7 @@ WHERE s.ended_at IS NULL
 //
 // Rows whose `ended_at` is non-NULL are intentionally EXCLUDED from the
 // returned map. This is what makes the user's escape hatch flow correctly
-// through `buildMonitorResults`'s missing-session branch (#1495): when the
+// through `buildMonitorResults`'s missing-session branch: when the
 // user runs `prism cleanup --yes --session <interrupted-agent>` to abandon
 // an interrupted review agent, the cleanup path sets ended_at without
 // rewriting state. By dropping ended rows here, the cleaned-up agent
@@ -474,21 +474,19 @@ func (d *DB) GroupResults(groupID string) (map[string]GroupMemberResult, error) 
 // GroupResultsAll is GroupResults without the `ended_at IS NULL` filter — it
 // includes every member of the group, whether or not its agent_status row has
 // been closed. Live callers must use GroupResults (see its doc comment for
-// why the #1495 cleanup escape hatch depends on excluding ended rows). This
+// why the cleanup escape hatch depends on excluding ended rows). This
 // variant exists for a historical read where exclusion would be wrong: by the
 // time `prism retro` runs, every review-agent row for a completed round is
-// closed (ended_at IS NOT NULL) — measured on the live DB, 100% of historical
-// review agent_status rows are closed. Calling GroupResults on a historical
-// group_id would therefore return an empty map and mislabel every agent as
-// having no verdict, which is false for most of them (issue #2584 / #2594).
+// closed (ended_at IS NOT NULL). Calling GroupResults on a historical
+// group_id therefore returns an empty map and mislabels every agent as
+// having no verdict, which is false for most of them.
 //
-// The automatic release of finished review agents (#2649) makes that reasoning
-// bite sooner and adds a second caller. A round's rows used to close only when
-// the parent worker was cleaned up; they now close 15 minutes after the round
-// is delivered. `CompletedReviewCyclesForParent` therefore reads through here
-// too — through GroupResults it counted zero past cycles once the release had
-// run, and the LOOP-LIMIT footer that tells a worker to stop and escalate at
-// three cycles stopped firing.
+// The automatic release of finished review agents adds a second caller. A
+// round's rows close 15 minutes after the round is delivered, not only when
+// the parent worker is cleaned up. `CompletedReviewCyclesForParent` therefore
+// reads through here too. Through GroupResults it counts zero past cycles once
+// the release has run, so the LOOP-LIMIT footer that tells a worker to stop
+// and escalate at three cycles fails to fire.
 func (d *DB) GroupResultsAll(groupID string) (map[string]GroupMemberResult, error) {
 	return d.groupResults(groupID, true)
 }
@@ -531,8 +529,7 @@ WHERE group_id = ?`
 	// Batched event fetch: pull every msg_assistant, startup_error, and
 	// stall_error event for the entire member set in a single query, ordered
 	// so that the most recent row per (session_name, type) comes first. The
-	// Go-side reduction below keeps only that first row per pair (#1868 F7 —
-	// replaces the previous N+1 shape of 2 QueryRow calls per member).
+	// Go-side reduction below keeps only that first row per pair.
 	names := make([]string, 0, len(results))
 	for name := range results {
 		names = append(names, name)
@@ -582,9 +579,9 @@ ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 			// Decode the JSON envelope and store the message text, mirroring
 			// the startup_error / stall_error cases below. The raw payload is
 			// {"messageId":"…","text":"…"}, and encoding/json escapes '<' and
-			// '>' as \u003c / \u003e — so storing it raw hid every <verdict>
+			// '>' as \u003c / \u003e. Stored raw, that hides every <verdict>
 			// marker from the substring rule the dashboard and the
-			// ComputeSpawnOutcome roll-up apply to LastMessage (#2862).
+			// ComputeSpawnOutcome roll-up apply to LastMessage.
 			if payload != "" {
 				var p struct {
 					Text string `json:"text"`
@@ -599,7 +596,7 @@ ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 			// Extract the "reason" field from the JSON payload. This is
 			// written by writeStartupError in the sidecar when WaitHealthy
 			// or CreateSession fails, allowing the review monitor to
-			// distinguish a no-start failure from a mid-run crash (#1222).
+			// distinguish a no-start failure from a mid-run crash.
 			if payload != "" {
 				var p struct {
 					Reason string `json:"reason"`
@@ -613,9 +610,9 @@ ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 		case "stall_error":
 			// Extract the "reason" field from the JSON payload. This is
 			// written by the sidecar's inactivity watchdog when it fires
-			// after one or more inbound frames were received (#2239),
-			// allowing the review monitor to report a mid-run stall instead
-			// of mislabelling it as a no-start failure.
+			// after one or more inbound frames were received, allowing the
+			// review monitor to report a mid-run stall instead of
+			// mislabelling it as a no-start failure.
 			if payload != "" {
 				var p struct {
 					Reason string `json:"reason"`
@@ -657,7 +654,7 @@ func (d *DB) IsGroupMember(sessionName string) (bool, error) {
 // The answer is strictly DB-backed: it comes from the
 // agent_status.group_id → session_groups.parent_session join and from nothing
 // else. Unlike ParentSessionFor, this helper has NO name-heuristic fallback.
-// The /checkin worker-scope check (issue #2587) is the caller that needs that
+// The /checkin worker-scope check is the caller that needs that
 // property. A review agent whose session_groups row was deleted must fail the
 // scope check, and a name heuristic would admit it on the strength of its
 // name alone.
@@ -730,10 +727,10 @@ func (d *DB) AllGroupParents() (map[string]string, error) {
 // AllProfileNames returns a map from instance_id to spawn_inputs.profile_name
 // for every spawn_inputs row that has a non-NULL profile_name. Instance IDs
 // with no spawn_inputs row, or a NULL profile_name (spawned without
-// --profile, or predating the spawn_inputs write path — #2092 / #2093), are
-// simply absent from the returned map; callers treat a missing key the same
-// as an explicit "no profile recorded". Used by the dashboard to batch-fetch
-// profile tiers for all displayed sessions in a single query (issue #2640).
+// --profile, or predating the spawn_inputs write path), are simply absent
+// from the returned map; callers treat a missing key the same as an explicit
+// "no profile recorded". Used by the dashboard to batch-fetch profile tiers
+// for all displayed sessions in a single query.
 func (d *DB) AllProfileNames() (map[string]string, error) {
 	const q = `SELECT instance_id, profile_name FROM spawn_inputs WHERE profile_name IS NOT NULL`
 	rows, err := d.conn.Query(q)
@@ -850,7 +847,7 @@ type ReviewGroupSummary struct {
 // and a rolled-up GroupState, ordered by created_at DESC (newest first).
 // limit ≤ 0 returns all rows.
 //
-// Used by `prism reviews list` (issue #1500) as a dedicated review-group
+// Used by `prism reviews list` as a dedicated review-group
 // ledger. The list is unfiltered — all groups for all parents are returned;
 // the caller filters by parent or repo if desired.
 func (d *DB) ReviewGroupsList(limit int) ([]ReviewGroupSummary, error) {
@@ -865,9 +862,9 @@ func (d *DB) ReviewGroupsList(limit int) ([]ReviewGroupSummary, error) {
 	}
 	defer rows.Close()
 
-	// deliveredByGroup records which group_ids have a non-NULL delivered_at
-	// (#2259). The roll-up below maps these to GroupState="completed"
-	// regardless of member state.
+	// deliveredByGroup records which group_ids have a non-NULL delivered_at.
+	// The roll-up below maps these to GroupState="completed" regardless of
+	// member state.
 	deliveredByGroup := make(map[string]bool)
 	var out []ReviewGroupSummary
 	for rows.Next() {
@@ -886,7 +883,7 @@ func (d *DB) ReviewGroupsList(limit int) ([]ReviewGroupSummary, error) {
 	}
 
 	// Initialise per-group slices so groups with zero members still produce
-	// non-nil empty Members / AgentStates (preserving the prior shape).
+	// non-nil empty Members / AgentStates.
 	for i := range out {
 		out[i].Members = []string{}
 		out[i].AgentStates = []string{}
@@ -897,11 +894,9 @@ func (d *DB) ReviewGroupsList(limit int) ([]ReviewGroupSummary, error) {
 	}
 
 	// Batched member fetch: pull every agent_status row for the full group
-	// set in one query (#1868 F8 — replaces the previous per-group
-	// GroupMembersForGroup loop). The IN-list approach is used in lieu of
-	// a JOIN so the row-construction logic in queryStatuses is reusable
-	// unchanged. Ordered by group_id, session_name so the per-group slices
-	// below are stable.
+	// set in one query. The IN-list approach is used in lieu of a JOIN so the
+	// row-construction logic in queryStatuses is reusable unchanged. Ordered
+	// by group_id, session_name so the per-group slices below are stable.
 	idxByGroup := make(map[string]int, len(out))
 	nonTerminalByGroup := make(map[string]int, len(out))
 	groupIDs := make([]any, 0, len(out))
@@ -937,9 +932,9 @@ ORDER BY group_id ASC, session_name ASC`
 	for i := range out {
 		switch {
 		case deliveredByGroup[out[i].GroupID]:
-			// delivered_at is the authoritative end-of-life signal (#2259);
-			// a group whose review-complete prompt was delivered is
-			// classified as completed regardless of member state.
+			// delivered_at is the authoritative end-of-life signal; a group
+			// whose review-complete prompt was delivered is classified as
+			// completed regardless of member state.
 			out[i].GroupState = "completed"
 		case len(out[i].Members) == 0:
 			out[i].GroupState = "empty"

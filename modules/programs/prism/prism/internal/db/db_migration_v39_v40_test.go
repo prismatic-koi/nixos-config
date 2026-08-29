@@ -2,7 +2,7 @@ package db_test
 
 // Tests for the v39→v40 migration that adds title provenance and the
 // issue/ticket reference to agent_status, and clears every title whose
-// provenance cannot be established (#2683).
+// provenance cannot be established.
 //
 // The migration follows the muted-column template (v33→v34): idempotent
 // ALTER TABLE statements, each guarded by a pragma_table_info check, plus
@@ -323,10 +323,9 @@ func TestMigration_V39ToV40_ExistingRowReadsCorrectly(t *testing.T) {
 }
 
 // TestMigration_V39ToV40_ClearsUnattributableTitles covers the AC that the
-// stale opencode titles are cleared. The seeded row reproduces the measured
-// case from the issue: `home-ops@main` carrying "Renovate PR #2887
-// app-template v5 upgrade review", a title describing work that finished two
-// days before pi's earliest retained event.
+// stale opencode titles are cleared. The seeded row is an example:
+// `home-ops@main` carrying "Renovate PR #2887 app-template v5 upgrade
+// review", a stale opencode title with no provenance.
 func TestMigration_V39ToV40_ClearsUnattributableTitles(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "v39_stale_titles.db")
 	seedV39DB(t, dbPath, false, false)

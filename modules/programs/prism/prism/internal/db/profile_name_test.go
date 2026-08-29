@@ -1,7 +1,7 @@
 package db
 
 // Tests for the active-profile write path and its mtime-cached resolver
-// (issue #2768). Internal-package tests so they can reach
+// Internal-package tests so they can reach
 // newProfileResolverForTest and the unexported ProfileResolver.reads counter.
 
 import (
@@ -56,7 +56,7 @@ func TestWriteEvent_RecordsActiveProfile_StateFile(t *testing.T) {
 }
 
 // AC [functional]: with no state file, an event records the nix default — the
-// coordinator case that used to fold to "default".
+// coordinator case that would otherwise fold to "default".
 func TestWriteEvent_RecordsNixDefault_NoStateFile(t *testing.T) {
 	d := openAccountTestDB(t)
 	statePath := filepath.Join(t.TempDir(), "prism", "active-profile") // never created

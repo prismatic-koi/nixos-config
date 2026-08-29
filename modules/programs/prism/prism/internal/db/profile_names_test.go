@@ -1,7 +1,7 @@
 package db_test
 
 // profile_names_test.go — tests for AllProfileNames, the dashboard's batch
-// lookup of spawn_inputs.profile_name keyed by instance_id (issue #2640).
+// lookup of spawn_inputs.profile_name keyed by instance_id.
 
 import (
 	"testing"
@@ -26,7 +26,7 @@ func TestAllProfileNames_ReturnsOnlyNonNullProfiles(t *testing.T) {
 	iidNullProfile := uuid.New().String()
 	insertAbtestSessionForTest(t, d, "repo@no-profile", iidNullProfile, "", "", now)
 
-	// A session with no spawn_inputs row at all (pre-#2087, or the fixture
+	// A session with no spawn_inputs row at all (the fixture
 	// simply never inserts one).
 	iidNoRow := uuid.New().String()
 	if err := d.UpsertStatus("repo@no-spawn-inputs-row", "repo", "/wt/no-row", "active", nil, nil); err != nil {

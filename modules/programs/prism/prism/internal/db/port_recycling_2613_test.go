@@ -1,12 +1,10 @@
 package db_test
 
-// port_recycling_2613_test.go — evidence that closes the leading hypothesis of
-// issue #2613.
+// Evidence that closes the leading port-recycling hypothesis.
 //
-// #2613 proposed that the harness port allocator can hand out a port that is
-// still held, and that a review agent which draws a recently released port
-// then fails its readiness gate. Round 4's review-qa drew 14006, a port a
-// torn-down session had released shortly before; round 3 drew a fresh 14028.
+// The hypothesis: the harness port allocator can hand out a port that is still
+// held, and a review agent that draws a recently released port then fails its
+// readiness gate.
 //
 // These tests measure the two ways a port can be "still held" and pin the
 // result, so the hypothesis is closed by measurement rather than by argument:
@@ -68,7 +66,7 @@ func TestAllocatePort_LiveListenerOnRecycledPort_IsNotHandedOut(t *testing.T) {
 
 	// The holder's process keeps the socket open while the DB row releases
 	// the port — exactly the "released shortly before by a torn-down
-	// session" shape #2613 describes.
+	// session" shape the hypothesis describes.
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		t.Fatalf("listen on %d: %v", port, err)
@@ -95,7 +93,7 @@ func TestAllocatePort_LiveListenerOnRecycledPort_IsNotHandedOut(t *testing.T) {
 }
 
 // TestAllocatePort_RecycledPortInTimeWait_StaysUsable is hypothesis (2), and
-// the one #2613 named first. It drives a real connection on an allocated port,
+// the one named first. It drives a real connection on an allocated port,
 // closes it from the listening side so the local end enters TIME_WAIT, then
 // asserts that the allocator still offers the port AND that the address the
 // sidecar binds is still bindable.

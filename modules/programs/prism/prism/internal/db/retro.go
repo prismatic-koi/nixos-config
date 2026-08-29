@@ -1,27 +1,25 @@
 package db
 
-// retro.go — canonical data-assembly for `prism retro` (issue #2583, part 2/4
-// of the tracking issue #2529). AssembleRetro is the single source of truth
-// for the window totals, the trains table, and the waste signals the command
-// renders. Both the CLI direct-DB path (cmd/retro.go) and the host-API proxy
-// path (internal/sidecar host_api.go GET /retro) call it, so the bytes the CLI
-// renders are identical on the host path and the sandbox path — the same
-// contract `prism stats compare` and `prism stats <session>` hold (issues
-// #2098, #2582). Keeping the assembly here, not on the sidecar side, is what
-// guarantees that contract.
+// retro.go — canonical data-assembly for `prism retro`. AssembleRetro is the
+// single source of truth for the window totals, the trains table, and the
+// waste signals the command renders. Both the CLI direct-DB path
+// (cmd/retro.go) and the host-API proxy path (internal/sidecar host_api.go GET
+// /retro) call it, so the bytes the CLI renders are identical on the host path
+// and the sandbox path — the same contract `prism stats compare` and `prism
+// stats <session>` hold. Keeping the assembly here, not on the sidecar side,
+// is what guarantees that contract.
 //
-// Data sources and the corrections that shaped them (see docs/retro.md and the
-// CORRECTIONS block on issue #2583):
+// Data sources (see docs/retro.md):
 //
 //   - Per-session token/cost/waste data comes from CompareRunOutcome, which
 //     returns the persisted spawn_outcome row, or — for a terminal session
 //     with no row yet — an on-the-fly ComputeSpawnOutcome aggregation over
 //     agent_events. That fallback is what makes review-agent sessions countable
 //     even before `prism cleanup` writes their rows and for historical rows
-//     that predate the WriteSpawnOutcomeCascade change (#2591): ComputeSpawnOutcome
-//     reads the same agent_events the corrections require, with COALESCE on
-//     every token field, so a NULL cache-read/-write field counts as zero
-//     rather than voiding the whole SUM.
+//     that have no spawn_outcome row: ComputeSpawnOutcome reads the same
+//     agent_events the aggregation requires, with COALESCE on every token
+//     field, so a NULL cache-read/-write field counts as zero rather than
+//     voiding the whole SUM.
 //   - A live session (no terminal transition, no row) yields a nil outcome. It
 //     is counted as a member of its train but contributes no tokens and no
 //     waste signal — the difference between "not yet recorded" and "recorded
@@ -44,10 +42,9 @@ import (
 // computed directly from agent_events, for the sessions named in
 // SessionEventAggregates. It is the review-agent counterpart of
 // spawn_outcome's aggregate columns, used where spawn_outcome coverage does
-// not reach: review-agent sessions almost never get a spawn_outcome row
-// (measured coverage before #2591: 41 of 3,384, 1.2%), so section 3 of
-// `prism retro` (issue #2584) reads agent_events directly rather than relying
-// on spawn_outcome or the WriteSpawnOutcomeCascade backfill.
+// not reach: review-agent sessions almost never get a spawn_outcome row, so
+// `prism retro` reads agent_events directly rather than relying on
+// spawn_outcome or the WriteSpawnOutcomeCascade backfill.
 type SessionEventAggregate struct {
 	Turns            int64
 	OutputTokens     int64
@@ -110,9 +107,8 @@ GROUP BY session_name`
 
 // RetroReport is the assembled, render-ready shape for one `prism retro` run.
 // It is the wire shape of the host-API GET /retro response and the value the
-// CLI marshals for `--json`; the JSON tags are the snake_case contract the AC
-// requires. Empty collections marshal as `[]`, not null (Trains is always a
-// non-nil slice).
+// CLI marshals for `--json`. The JSON tags are the snake_case contract. Empty
+// collections marshal as `[]`, not null (Trains is always a non-nil slice).
 type RetroReport struct {
 	Repo string `json:"repo"`
 	// Since and Until bound the window as RFC 3339 timestamps (UTC). Since is

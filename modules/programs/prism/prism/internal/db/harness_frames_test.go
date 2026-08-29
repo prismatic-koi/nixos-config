@@ -1,6 +1,6 @@
 package db_test
 
-// Tests for the harness_frames table (P5.LOGS / #1218).
+// Tests for the harness_frames table.
 //
 // Coverage:
 //   - WriteHarnessFrame round-trips through QueryHarnessFrames.

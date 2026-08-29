@@ -125,7 +125,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // UpdateSessionEnded sets ended_at and end_state on the sessions row for
 // instanceID. Called during prism cleanup to record when and how the session
-// ended. archive_path remains NULL in this PR (populated in #997).
+// ended. archive_path is not set here; UpdateSessionArchivePath sets it later.
 //
 // It is a no-op when no row exists for instanceID (returns nil).
 func (d *DB) UpdateSessionEnded(instanceID, endState string) error {
@@ -280,14 +280,14 @@ SELECT COALESCE(JSON_EXTRACT(payload, '$.model'), ''),
 //
 //   - WriteSpawnOutcome (the persist path called from `prism cleanup`)
 //   - prism stats compare (the read path that needs the same data shape
-//     between terminal-state transition and cleanup, issue #2102)
+//     between terminal-state transition and cleanup)
 //
 // Returns (nil, nil) when the sessions row does not exist (pre-migration
 // or unknown instance) so callers can treat the result as a silent no-op.
 //
 // Both call sites must use this helper to guarantee byte-for-byte
-// identical aggregates — the AC for issue #2102 requires that the
-// on-the-fly compute path and the cleanup write path agree.
+// identical aggregates: the on-the-fly compute path and the cleanup write
+// path must agree.
 func (d *DB) ComputeSpawnOutcome(instanceID string) (*SpawnOutcome, error) {
 	// Fetch the sessions row; skip if not found.
 	sess, err := d.SessionByInstanceID(instanceID)
@@ -384,27 +384,25 @@ SELECT group_id FROM session_groups
 
 		// Roll up verdicts from group members.
 		//
-		// GroupResultsAll, not GroupResults (#2649): this is a historical read.
-		// It runs at parent-cleanup time and from `prism stats compare`, both
-		// after the round is over, and review agents are released 15 minutes
-		// after their round is delivered — which stamps ended_at, the column
-		// GroupResults filters on. Through the narrow read this roll-up saw an
-		// empty map and left ReviewVerdict / ReviewPassCount / ReviewFailCount
-		// nil for every round older than that window.
+		// GroupResultsAll, not GroupResults: this is a historical read. It runs
+		// at parent-cleanup time and from `prism stats compare`, both after the
+		// round is over, and review agents are released 15 minutes after their
+		// round is delivered — which stamps ended_at, the column GroupResults
+		// filters on. Through the narrow read this roll-up sees an empty map and
+		// leaves ReviewVerdict / ReviewPassCount / ReviewFailCount nil for every
+		// round older than that window.
 		//
-		// The roll-up is a fallback — the #2110 dedicated write path persists
-		// the verdict at review-complete time and the agent-level merge below
-		// prefers it — so the loss was invisible wherever that path fired, and
-		// total for exactly the sessions the fallback exists to serve.
+		// The roll-up is a fallback: the dedicated write path persists the
+		// verdict at review-complete time and the agent-level merge below
+		// prefers it. The fallback matters only for sessions whose write path
+		// never fired.
 		members, revErr := d.GroupResultsAll(reviewGroupID)
 		if revErr == nil && len(members) > 0 {
 			var passCount, failCount, noneCount int
 			for _, m := range members {
 				// The verdict-marker rule lives in internal/verdict, the one
-				// stdlib-only leaf both this package and the dashboard share
-				// (#2862). PASS_WITH_DISAGREEMENT keeps its pre-existing
-				// treatment here: it falls to noneCount, exactly as the old
-				// inline check did, so this historical roll-up is unchanged.
+				// stdlib-only leaf both this package and the dashboard share.
+				// PASS_WITH_DISAGREEMENT falls to noneCount.
 				switch verdict.Parse(m.LastMessage) {
 				case verdict.Pass:
 					passCount++
@@ -435,14 +433,13 @@ SELECT group_id FROM session_groups
 
 	// --- Agent-level: prefer persisted spawn_outcome values when present ---
 	//
-	// Issue #2110 added dedicated write paths for the agent-level columns
-	// (pr_number from the worker's `gh pr create`, pr_merged_at from the
-	// merge-queue watcher, review_verdict/review_pass_count/review_fail_count
-	// from the review-complete handler). When a write path has already fired,
-	// the persisted value is the authoritative one for the latest-round-wins
-	// semantics required by the AC. The pending_merges and GroupResults
-	// fallbacks above remain in place for sessions whose write paths never
-	// fired (historical sessions completed before #2110 landed).
+	// Dedicated write paths exist for the agent-level columns (pr_number from
+	// the worker's `gh pr create`, pr_merged_at from the merge-queue watcher,
+	// review_verdict/review_pass_count/review_fail_count from the
+	// review-complete handler). When a write path has already fired, the
+	// persisted value is the authoritative one for the latest-round-wins
+	// semantics. The pending_merges and GroupResults fallbacks above remain in
+	// place for sessions whose write paths never fired.
 	if existing, exErr := d.SpawnOutcomeByInstanceID(instanceID); exErr == nil && existing != nil {
 		if existing.PRNumber != nil {
 			out.PRNumber = existing.PRNumber
@@ -472,14 +469,14 @@ SELECT group_id FROM session_groups
 //
 // Review-group verdict is rolled up from GroupResultsAll when a review group
 // exists for the session — the wide read, because by the time this runs the
-// round is over and its member rows are closed (#2649). PR number and merge
+// round is over and its member rows are closed. PR number and merge
 // timestamp come from pending_merges (merge-queue path only).
 //
 // Implementation note: this function delegates to ComputeSpawnOutcome to
 // produce the in-memory aggregate, then performs the INSERT OR REPLACE.
 // The two call sites (write-time via cleanup, read-time via
 // `prism stats compare` for terminal-but-not-cleaned-up sessions) share the
-// aggregation pass so the produced rows agree byte-for-byte (issue #2102).
+// aggregation pass so the produced rows agree byte-for-byte.
 func (d *DB) WriteSpawnOutcome(instanceID string) error {
 	out, err := d.ComputeSpawnOutcome(instanceID)
 	if err != nil {
@@ -543,10 +540,10 @@ INSERT OR REPLACE INTO spawn_outcome (
 
 // WriteSpawnOutcomeCascade writes a spawn_outcome row for sessionName and for
 // every review-agent child session whose session_name matches the pattern
-// "<sessionName>~review-%" (issue #2591). WriteSpawnOutcome is called from
-// four sites in cmd/cleanup.go, and until this cascade existed each call only
-// ever wrote a row for the parent named on the command line — review-agent
-// children never got one (measured coverage: 1.2% of ~review-% sessions).
+// "<sessionName>~review-%". WriteSpawnOutcome is called from four sites in
+// cmd/cleanup.go. Each call writes a row only for the parent named on the
+// command line. This cascade adds the review-agent children, so they also get
+// a spawn_outcome row.
 //
 // This mirrors the cascade SetEnded already performs for ended_at: it
 // resolves every distinct instance_id among rows where
@@ -602,10 +599,9 @@ WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
 }
 
 // UpdateSpawnOutcomePR records the PR number opened by the worker session
-// identified by instanceID. Issue #2110: pr_number was previously read by the
-// `prism stats compare` renderer but never written by any code path. This is
-// the worker-side capture write trigger: the sidecar calls it the moment it
-// observes a successful `gh pr create` invocation in its event stream.
+// identified by instanceID. This is the worker-side capture write trigger for
+// pr_number: the sidecar calls it the moment it observes a successful
+// `gh pr create` invocation in its event stream.
 //
 // The write is a partial UPSERT — it inserts a minimal row with pr_number set
 // when no spawn_outcome row yet exists for instanceID, and updates only
@@ -641,8 +637,8 @@ ON CONFLICT(instance_id) DO UPDATE SET
 }
 
 // UpdateSpawnOutcomePRMergedAt records the wall-clock time the worker
-// session's PR was merged. Issue #2110: this is the merge-queue watcher's
-// write trigger — the watcher calls it from succeedAndNotify, persisting the
+// session's PR was merged. This is the merge-queue watcher's write trigger —
+// the watcher calls it from succeedAndNotify, persisting the
 // same timestamp it already passes to TerminateMerge on the pending_merges
 // row. The persistence happens BEFORE the merge notification fires so a write
 // error cannot delay or skip the notification.
@@ -676,8 +672,8 @@ ON CONFLICT(instance_id) DO UPDATE SET
 }
 
 // UpdateSpawnOutcomeReviewResult records the latest-round verdict and per-
-// agent counts for the worker session's review. Issue #2110: this is the
-// review-complete handler's write trigger — the monitor calls it the moment
+// agent counts for the worker session's review. This is the review-complete
+// handler's write trigger — the monitor calls it the moment
 // it has the aggregated verdicts in hand (same site that builds the prompt
 // body), persisting all three columns in a single transaction.
 //
@@ -724,8 +720,8 @@ ON CONFLICT(instance_id) DO UPDATE SET
 
 // InstanceIDForPRNumber returns the instance_id of the worker session whose
 // spawn_outcome row carries the given pr_number, or ("", nil) when none is
-// found. Used by the merge-queue watcher (issue #2110) to locate the worker
-// session that opened the PR, so it can persist pr_merged_at on the same row
+// found. Used by the merge-queue watcher to locate the worker session that
+// opened the PR, so it can persist pr_merged_at on the same row
 // whose pr_number it sees.
 //
 // When multiple rows match (shouldn't happen in practice — PR numbers are

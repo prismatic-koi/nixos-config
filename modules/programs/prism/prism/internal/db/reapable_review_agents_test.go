@@ -1,6 +1,6 @@
 package db_test
 
-// reapable_review_agents_test.go — issue #2649.
+// Tests for ReapableReviewAgents.
 //
 // ReapableReviewAgents is the candidate query behind the automatic release of
 // finished review-agent sessions. It is the layer that makes the release safe,
@@ -59,7 +59,7 @@ func candidateNames(cs []db.ReapCandidate) []string {
 // TestReapableReviewAgents_RequiresDeliveredGroup is the load-bearing safety
 // property. A group whose review-complete prompt has NOT been delivered yields
 // no candidates, however terminal its members are. This is what makes it
-// impossible to release an agent while its round is still running (#2613).
+// impossible to release an agent while its round is still running.
 func TestReapableReviewAgents_RequiresDeliveredGroup(t *testing.T) {
 	d := openTestDB(t)
 
@@ -78,7 +78,7 @@ func TestReapableReviewAgents_RequiresDeliveredGroup(t *testing.T) {
 // TestReapableReviewAgents_TerminalStatesOnly pins the per-session arm: only
 // finished / error / deleted are returned. `interrupted` is excluded on
 // purpose — an interrupted agent can still be redirected with `prism prompt`
-// (#1495), so it is no more terminal here than it is for GroupCompleted.
+// so it is no more terminal here than it is for GroupCompleted.
 func TestReapableReviewAgents_TerminalStatesOnly(t *testing.T) {
 	reapable := map[string]bool{
 		"finished": true, "error": true, "deleted": true,

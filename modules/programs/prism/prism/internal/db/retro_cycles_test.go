@@ -1,7 +1,7 @@
 package db_test
 
 // retro_cycles_test.go — tests for the DB primitives behind section 3 of
-// `prism retro <train-session>` (issue #2584): GroupsForParent,
+// `prism retro <train-session>`: GroupsForParent,
 // GroupResultsAll, and SessionEventAggregates.
 
 import (
@@ -87,7 +87,7 @@ func TestGetGroup_CarriesDeliveredAt(t *testing.T) {
 	}
 }
 
-// TestGroupResultsAll_IncludesEndedRows verifies the core #2584/#2594 fix:
+// TestGroupResultsAll_IncludesEndedRows verifies the core fix:
 // unlike GroupResults, GroupResultsAll does NOT drop rows whose ended_at is
 // set — which is every historical review row (measured: 100% of review
 // agent_status rows are closed by the time an operator looks at history).

@@ -25,9 +25,9 @@ func isMergeTerminal(status string) bool {
 //
 // repo is the short repo slug this PR belongs to. It is stored on the row
 // and used together with pr as the composite primary key, so that PR
-// numbers can safely collide across repos sharing one prism.db (issue
-// #2354). title is the PR title stored for display in `prism merges list`;
-// pass nil if the title is not known at enqueue time.
+// numbers can safely collide across repos sharing one prism.db. title is the
+// PR title stored for display in `prism merges list`; pass nil if the title
+// is not known at enqueue time.
 //
 // Returns the resulting row (existing or newly inserted).
 func (d *DB) EnqueueMerge(pr int, repo, sessionName, instanceID string, title *string) (*PendingMerge, error) {
@@ -67,12 +67,11 @@ ON CONFLICT(repo, pr) DO UPDATE SET
 }
 
 // PendingMergeByPR returns the pending_merges row for the given (pr, repo),
-// or nil if not found. The composite primary key was introduced in
-// migration v37→v38 (issue #2354) so callers MUST pass the caller's repo
-// to avoid cross-repo PR-number collisions. Passing an empty repo will
-// only ever match rows that failed the migration backfill (session_name
-// contained no '@' at the time of migration); production callers should
-// always pass a non-empty repo.
+// or nil if not found. The composite primary key is (repo, pr), so callers
+// MUST pass the caller's repo to avoid cross-repo PR-number collisions.
+// Passing an empty repo only ever matches rows that failed the migration
+// backfill (session_name contained no '@' at migration time). Production
+// callers must always pass a non-empty repo.
 func (d *DB) PendingMergeByPR(pr int, repo string) (*PendingMerge, error) {
 	const q = `
 SELECT repo, pr, session_name, instance_id, queue_position, status, title, error,
@@ -124,8 +123,7 @@ SELECT repo, pr, session_name, instance_id, queue_position, status, title, error
 
 // UpdateMergeLastChecked sets last_checked_at to now for the given
 // (pr, repo). repo is required so that the watcher's per-tick heartbeat
-// only ever touches the row belonging to its own coordinator (issue
-// #2354).
+// only ever touches the row belonging to its own coordinator.
 func (d *DB) UpdateMergeLastChecked(pr int, repo string) error {
 	now := time.Now().UnixMilli()
 	_, err := d.conn.Exec(
@@ -145,7 +143,7 @@ func (d *DB) UpdateMergeLastChecked(pr int, repo string) error {
 // ended_at is always set.
 //
 // repo is required so that the watcher's terminal write only ever touches
-// the row belonging to its own coordinator (issue #2354).
+// the row belonging to its own coordinator.
 func (d *DB) TerminateMerge(pr int, repo, status, errMsg string) error {
 	now := time.Now().UnixMilli()
 	var errPtr *string
@@ -197,7 +195,7 @@ UPDATE pending_merges
 // does not exist, is already terminal, or is owned by a different instanceID.
 //
 // Scoping is (pr, repo, instance_id) so that a coordinator can only cancel
-// rows in its own repo AND its own incarnation (issue #2354).
+// rows in its own repo AND its own incarnation.
 func (d *DB) CancelMerge(pr int, repo, instanceID string) (bool, error) {
 	now := time.Now().UnixMilli()
 	const q = `
@@ -253,9 +251,7 @@ func (d *DB) MergeQueueForInstance(instanceID, sessionName, filter string) ([]Pe
 		args = []any{sessionName, instanceID}
 	case "all":
 		// Include all terminal states (merged, cancelled, failed, abandoned) plus
-		// watching, from the last 7 days, scoped to this instanceID. Per AC:
-		// "includes terminal states (merged, cancelled, failed, abandoned) from
-		// the last 7 days."
+		// watching, from the last 7 days, scoped to this instanceID.
 		q = `SELECT repo, pr, session_name, instance_id, queue_position, status, title, error,
 		            queued_at, last_checked_at, merged_at, ended_at
 		       FROM pending_merges

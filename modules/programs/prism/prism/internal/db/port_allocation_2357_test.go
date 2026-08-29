@@ -1,17 +1,16 @@
 package db_test
 
-// port_allocation_2357_test.go — regression tests for the harness_port
-// double-allocation race (issue #2357).
+// Regression tests for the harness_port double-allocation race.
 //
-// Pre-#2357, allocatePortOnce's used-port query did not exclude the
-// requesting session's own agent_status row, so a second AllocatePort call
-// for the same session (the sidecar's startup allocation, or a sidecar
-// restart) was guaranteed to pick a DIFFERENT port. For sandbox-exec pi
-// sessions that drift was fatal: `prism agent-run` does a one-shot read of
-// harness_port and bakes PRISM_HARNESS_PIPE into PI's immutable env, so a
-// later overwrite left PI pointed at a port nobody binds.
+// Without the own-row exclusion, allocatePortOnce's used-port query would not
+// exclude the requesting session's own agent_status row, so a second
+// AllocatePort call for the same session (the sidecar's startup allocation, or
+// a sidecar restart) would pick a DIFFERENT port. For sandbox-exec pi sessions
+// that drift is fatal: `prism agent-run` does a one-shot read of harness_port
+// and bakes PRISM_HARNESS_PIPE into PI's immutable env, so a later overwrite
+// leaves PI pointed at a port nobody binds.
 //
-// Post-#2357, AllocatePort is idempotent per session: the session's own row
+// AllocatePort is idempotent per session: the session's own row
 // is excluded from the used-port set AND the previously-recorded port is
 // preferred over lower free ports, so repeated calls return the same port
 // while it stays free.
@@ -24,7 +23,7 @@ import (
 
 // TestAllocatePort_Idempotent_SameSessionReacquiresPort verifies that a
 // repeated AllocatePort call for the same session returns the session's
-// already-recorded port instead of drifting to a new one (issue #2357 AC:
+// already-recorded port instead of drifting to a new one:
 // "a sidecar restart for a live session re-acquires the session's previous
 // port when that port is otherwise free").
 func TestAllocatePort_Idempotent_SameSessionReacquiresPort(t *testing.T) {
@@ -40,8 +39,8 @@ func TestAllocatePort_Idempotent_SameSessionReacquiresPort(t *testing.T) {
 		t.Fatalf("AllocatePort (first): %v", err)
 	}
 
-	// Second allocation for the same session — pre-#2357 this always
-	// returned a different port because the session's own row was counted
+	// Second allocation for the same session. Without the own-row exclusion
+	// this returns a different port because the session's own row is counted
 	// as "in use".
 	p2, err := d.AllocatePort(session)
 	if err != nil {
@@ -105,8 +104,8 @@ func TestAllocatePort_Sticky_PrefersRecordedPortOverLowerFreePort(t *testing.T) 
 // TestAllocatePort_RecordedPortHeldByOS_AllocatesDifferentPort verifies that
 // the OS-level availability probe still applies to the sticky own-port
 // candidate: when a non-prism OS process holds the session's recorded port,
-// re-allocation must skip it and move to a free port (issue #2357 edge-case
-// AC — existing OS-level probe behaviour preserved).
+// re-allocation must skip it and move to a free port (edge-case: existing
+// OS-level probe behaviour preserved).
 func TestAllocatePort_RecordedPortHeldByOS_AllocatesDifferentPort(t *testing.T) {
 	d := openTestDB(t)
 

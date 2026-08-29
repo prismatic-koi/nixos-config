@@ -7,7 +7,7 @@ import (
 )
 
 // TestPendingReplayDeliveries_InsertLoadDelete exercises the full happy path
-// of the pending-replay durable buffer (issue #2359 Gap B): insert three
+// of the pending-replay durable buffer: insert three
 // rows in one session's queue, load them back in FIFO order, delete one,
 // and verify the remaining set. This is the persistence half of the
 // contract the sidecar's bufferPendingReplay/flushPendingReplay pair
@@ -69,8 +69,8 @@ func TestPendingReplayDeliveries_InsertLoadDelete(t *testing.T) {
 // TestPendingReplayDeliveries_DedupOnRepeatInsert verifies that inserting
 // the same (session_name, delivery_id) twice is a no-op on the second
 // insert — the existing row is preserved. This mirrors the in-memory dedup
-// semantics from #1685 that the durable buffer must preserve across a
-// sidecar restart (issue #2359 AC: exactly-once delivery is preserved).
+// semantics that the durable buffer must preserve across a
+// sidecar restart (exactly-once delivery is preserved).
 func TestPendingReplayDeliveries_DedupOnRepeatInsert(t *testing.T) {
 	t.Parallel()
 	d, err := Open(filepath.Join(t.TempDir(), "prism.db"))

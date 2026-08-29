@@ -7,10 +7,9 @@ package db
 // comparison engine. Both the CLI direct-DB path (cmd/stats_compare.go) and
 // the host-API proxy path (internal/sidecar host_api.go GET /stats?view=…)
 // call them, so the bytes rendered are identical regardless of whether the
-// query was served from the local DB or proxied to the host sidecar
-// (issue #2098). Keeping resolution + aggregation here — rather than
-// duplicating it on the sidecar side — is what guarantees the byte-identical
-// output contract.
+// query was served from the local DB or proxied to the host sidecar. Keeping
+// resolution + aggregation here — rather than duplicating it on the sidecar
+// side — is what guarantees the byte-identical output contract.
 
 import (
 	"fmt"
@@ -46,32 +45,32 @@ type CompareRunData struct {
 // intentionally excluded so they never cross the all-roles host-API /stats
 // boundary.
 //
-// /stats is the "aggregate counts" surface; row-level conversation content
+// /stats is the "aggregate counts" surface. Row-level conversation content
 // stays behind the coordinator-only /db/query and /checkin endpoints (see the
 // privilege boundary documented in internal/sidecar/host_api.go). This mirrors
 // the view=detail precedent, which returns only *Session and never the spawn
-// prompt (issue #2098, round-1 security review).
+// prompt.
 type CompareInputs struct {
 	ProfileName *string `json:"profile_name"`
 	HarnessFlag *string `json:"harness_flag"`
 	// IsolationFlag is the raw --isolation CLI value (nil = flag omitted).
-	// Preserved as the audit trail; consumers that want the actual mode the
-	// session ran under should read IsolationMode instead. Issue #2105.
+	// It is the audit trail. To read the actual mode the session ran under,
+	// read IsolationMode instead.
 	IsolationFlag *string `json:"isolation_flag"`
 	// IsolationMode is the resolved effective isolation mode the session
 	// actually ran under (bwrap/sandbox-exec/host), captured at
-	// spawn time post profile/config/Nix-default resolution. Always
-	// populated for sessions spawned post-#2105; nil only on pre-#2105 rows
-	// (the renderer falls back to IsolationFlag for those).
+	// spawn time post profile/config/Nix-default resolution. nil on rows
+	// written before isolation_mode was captured (the renderer falls back to
+	// IsolationFlag for those).
 	IsolationMode *string `json:"isolation_mode"`
 	AgentFlag     *string `json:"agent_flag"`
 	BranchFlag    *string `json:"branch_flag"`
 	AbtestPairID  *string `json:"abtest_pair_id"`
 	// ContainersFlag mirrors spawn_inputs.containers_flag — the raw
-	// --containers CLI flag captured at spawn time (#2317 / #2323).
-	// false when the flag was omitted (default); true when the user passed
-	// --containers. Audit-only; the live runtime gate is
-	// agent_status.containers_enabled (Status.ContainersEnabled).
+	// --containers CLI flag captured at spawn time. false when the flag was
+	// omitted (default), true when the user passed --containers. Audit-only:
+	// the live runtime gate is agent_status.containers_enabled
+	// (Status.ContainersEnabled).
 	ContainersFlag bool `json:"containers_flag"`
 }
 
@@ -81,9 +80,9 @@ type CompareInputs struct {
 // treated as an instance_id regardless of length.
 //
 // This is the shared resolver behind both `prism stats <id>` and
-// `prism stats compare <id>…`; the sidecar proxy path calls it directly so
+// `prism stats compare <id>…`. The sidecar proxy path calls it directly so
 // session-name / prefix resolution is byte-for-byte identical to the host
-// path (issue #2098).
+// path.
 func (d *DB) ResolveSessionArg(arg string, forceInstance bool) (*Session, error) {
 	// Step 1: full UUID (36 chars) or --instance flag.
 	if forceInstance || len(arg) == 36 {
@@ -130,12 +129,12 @@ func (d *DB) ResolveSessionArg(arg string, forceInstance bool) (*Session, error)
 // (finished / error / interrupted / deleted) — the gate for computing
 // spawn_outcome on the fly when no persisted row exists yet.
 //
-// agent_status is the live source of truth while the row still exists; it
+// agent_status is the live source of truth while the row still exists. It
 // falls back to sessions.end_state for sessions whose agent_status row has
 // already been cleaned away but whose sessions row still records a terminal
 // end_state. The "reset" marker is deliberately excluded — it can be set
-// before the more-specific UpdateSessionEnded call, when the aggregates may
-// not yet be stable (issue #2102).
+// before the more-specific UpdateSessionEnded call, when the aggregates are
+// not yet stable.
 func (d *DB) SessionIsTerminal(sess *Session) bool {
 	if sess == nil {
 		return false
@@ -159,7 +158,7 @@ func (d *DB) SessionIsTerminal(sess *Session) bool {
 // ComputeSpawnOutcome. ComputeSpawnOutcome is the same aggregation
 // WriteSpawnOutcome uses internally, so the value agrees byte-for-byte with
 // the row cleanup will later persist. Returns nil for live sessions (the
-// renderer shows "—"). Issue #2102.
+// renderer shows "—").
 func (d *DB) CompareRunOutcome(sess *Session) *SpawnOutcome {
 	if sess == nil {
 		return nil
@@ -177,8 +176,8 @@ func (d *DB) CompareRunOutcome(sess *Session) *SpawnOutcome {
 
 // AssembleCompareRun gathers the per-run data the comparison renderer needs
 // for a single resolved session: the persisted-or-computed spawn_outcome and
-// the slim spawn_inputs projection. spawn_inputs is best-effort — pre-#2087
-// sessions may have no row, in which case Inputs stays nil and the renderer
+// the slim spawn_inputs projection. spawn_inputs is best-effort — some older
+// sessions have no row, in which case Inputs stays nil and the renderer
 // surfaces what it can from the sessions row instead. The full row is
 // projected down to CompareInputs here so the sensitive conversation columns
 // never leave the DB layer (see CompareInputs).
@@ -203,16 +202,17 @@ func (d *DB) AssembleCompareRun(sess *Session) CompareRunData {
 // AbtestGroupSessions resolves all members of a session group to their most
 // recent sessions rows, sorted by session_name for deterministic output.
 // Shared by `prism stats abtest <group_id>` on both the direct and proxy
-// paths so the resolved member set and ordering are identical (issue #2098).
+// paths so the resolved member set and ordering are identical.
 //
-// GroupResultsAll, not GroupResults (#2649): this is a historical read.
-// `prism stats abtest` is retrospective by definition, and session_groups rows
-// are written only by `prism review` (RegisterGroupWithPR is its sole caller),
-// so the members resolved here are review agents. Those are released 15
-// minutes after their round is delivered, which stamps the ended_at that
-// GroupResults filters on — through the narrow read this function returned an
-// empty map and then hard-errored with "no members found" for a round that had
-// completed normally.
+// It uses GroupResultsAll, not GroupResults, because this is a historical
+// read. `prism stats abtest` is retrospective by definition, and
+// session_groups rows are written only by `prism review` (RegisterGroupWithPR
+// is its sole caller), so the members resolved here are review agents. Those
+// are released 15 minutes after their round is delivered, which stamps the
+// ended_at that GroupResults filters on. Through that narrow read this
+// function returns an empty map and then hard-errors with "no members found"
+// for a round that completed normally. GroupResultsAll includes the released
+// members.
 func (d *DB) AbtestGroupSessions(groupID string) ([]*Session, error) {
 	members, err := d.GroupResultsAll(groupID)
 	if err != nil {

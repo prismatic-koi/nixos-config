@@ -1,6 +1,6 @@
 package db_test
 
-// Tests for the shared comparison-data helpers added in #2098:
+// Tests for the shared comparison-data helpers:
 // ResolveSessionArg, SessionIsTerminal, CompareRunOutcome, AssembleCompareRun,
 // and AbtestGroupSessions. These back both the CLI direct path and the
 // host-API proxy path, so their behaviour is the single source of truth for

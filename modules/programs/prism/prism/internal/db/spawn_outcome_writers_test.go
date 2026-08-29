@@ -1,4 +1,4 @@
-// Package db_test — issue #2110 write-path coverage for spawn_outcome's
+// Package db_test — write-path coverage for spawn_outcome's
 // agent-level columns (pr_number, pr_merged_at, review_verdict,
 // review_pass_count, review_fail_count).
 //
@@ -34,7 +34,7 @@ import (
 // seedSession is a tiny helper for the writers tests: it inserts a sessions
 // row (the FK target of spawn_outcome.instance_id) and returns the
 // instance_id. The session_name uses the `prism-test@` prefix per the
-// AGENTS.md test-isolation convention (#1608) so any accidental host-side
+// AGENTS.md test-isolation convention so any accidental host-side
 // notification cannot collide with a real coordinator slug.
 func seedSession(t *testing.T, d *db.DB, suffix string) string {
 	t.Helper()
@@ -93,7 +93,7 @@ func TestUpdateSpawnOutcomePR_CreatesPartialRow(t *testing.T) {
 // "no regression in adjacent paths" guard. When WriteSpawnOutcome has
 // already persisted a fully-populated row (the cleanup case), a subsequent
 // partial UpdateSpawnOutcomePR must only touch pr_number — the rolling
-// aggregates fixed by #2103 must stay intact.
+// aggregates must stay intact.
 func TestUpdateSpawnOutcomePR_PreservesOtherColumns(t *testing.T) {
 	d := openTestDB(t)
 	iid := seedSession(t, d, "writer-pr-preserve")
@@ -124,7 +124,7 @@ func TestUpdateSpawnOutcomePR_PreservesOtherColumns(t *testing.T) {
 	if after.PRNumber == nil || *after.PRNumber != 99 {
 		t.Errorf("PRNumber: got %v, want 99", after.PRNumber)
 	}
-	// EndState (the canonical rolling-aggregation marker fixed by #2103)
+	// EndState (the canonical rolling-aggregation marker)
 	// must still equal what WriteSpawnOutcome put down.
 	if after.EndState == nil || *after.EndState != "finished" {
 		t.Errorf("EndState: got %v, want finished (preserved across PR write)", after.EndState)

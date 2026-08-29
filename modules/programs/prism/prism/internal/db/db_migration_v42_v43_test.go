@@ -1,7 +1,7 @@
 package db_test
 
-// Tests for the v42→v43 migration that adds spawn_inputs.provider_flag
-// (issue #2852). The new column records the raw `prism spawn --provider`
+// Tests for the v42→v43 migration that adds spawn_inputs.provider_flag.
+// The new column records the raw `prism spawn --provider`
 // value, so an alternative routing provider is auditable alongside
 // model_flag and variant_flag.
 //

@@ -9,10 +9,10 @@ import (
 // error. These errors indicate that a concurrent writer holds the write lock
 // and the caller should retry after a short backoff.
 //
-// The check is performed by string-matching the error message rather than
-// importing modernc.org/sqlite directly, avoiding a package-level dependency
-// on the driver in higher-level code. The modernc driver formats these errors
-// as:
+// This function matches the error message as a string rather than importing
+// modernc.org/sqlite directly. That keeps higher-level code free of a
+// package-level dependency on the driver. The modernc driver formats these
+// errors as:
 //
 //	"db: upsert status: database is locked (5) (SQLITE_BUSY)"
 //	"db: upsert status: database is locked (6) (SQLITE_LOCKED)"

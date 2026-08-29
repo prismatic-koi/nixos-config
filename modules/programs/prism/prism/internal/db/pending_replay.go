@@ -11,7 +11,7 @@ import (
 // the on-disk twin of the sidecar's in-memory pendingReplayDelivery struct
 // (internal/sidecar/delivery_dedup.go): a /prompt frame that arrived while
 // the PI extension was disconnected and could not be enqueued on the
-// outbound writer. See issue #2359 Gap B.
+// outbound writer.
 //
 // The sidecar buffers deliveries here from its /prompt handler and drains
 // them on the next successful pipe handshake (flushPendingReplay). Persisting
@@ -30,7 +30,7 @@ type PendingReplayRow struct {
 // uses ON CONFLICT DO NOTHING keyed by (session_name, delivery_id) so a
 // caller that re-queues the same delivery_id (e.g. the flushPendingReplay
 // re-buffer path when the outbound channel is not yet live) does not create
-// a duplicate row. This mirrors the in-memory dedup semantics from #1685.
+// a duplicate row. This mirrors the in-memory dedup semantics.
 //
 // When row.DeliveryID is empty (legacy caller shape with no minted UUID),
 // a synthetic key of the form "no-id:<nanoseconds>" is used so that
@@ -136,17 +136,17 @@ func (d *DB) DeletePendingReplayDelivery(sessionName, deliveryID string) error {
 // DeletePendingReplayDeliveriesForSession removes every pending-replay entry
 // for sessionName. Called from two lifecycle boundaries so a fresh session
 // incarnation on the same name cannot resurrect a previous incarnation's
-// stale coordinator directives (issue #2359 review-context follow-up):
+// stale coordinator directives:
 //
 //   - `prism cleanup` (severPiResumeLinkage) ends the session and severs the
-//     pi resume linkage; the pending-replay buffer is the CLI-visibility
+//     pi resume linkage. The pending-replay buffer is the CLI-visibility
 //     twin of that linkage and must be wiped at the same time.
 //   - `event tmux-session-start` re-seeds a previously-ended row back to
-//     `idle` when a spawn reuses the branch name (#2094 respawn-after-cleanup
-//     path). The re-seed clears `ended_at` but the pending-replay rows would
-//     otherwise still be scoped to `session_name`, so
-//     `restorePendingReplayFromDB` on the fresh incarnation would drain them
-//     into the new agent — a stale directive from the previous incarnation.
+//     `idle` when a spawn reuses the branch name (the respawn-after-cleanup
+//     path). The re-seed clears `ended_at`, but the pending-replay rows stay
+//     scoped to `session_name`. Without this clear,
+//     `restorePendingReplayFromDB` on the fresh incarnation drains them into
+//     the new agent — a stale directive from the previous incarnation.
 //     Clearing here on re-seed is the load-bearing fix for that hazard.
 //
 // Returns nil when no rows match (idempotent).

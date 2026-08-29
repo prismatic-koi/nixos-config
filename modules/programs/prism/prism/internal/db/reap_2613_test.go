@@ -1,13 +1,12 @@
 package db_test
 
-// reap_2613_test.go — the recorded close cause for an agent_status row
-// (issue #2613).
+// Tests for the recorded close cause of an agent_status row.
 //
-// Before #2613 a row that a lifecycle path had closed carried exactly two
-// readable facts: the state string and the closing time. Several paths leave
-// state="error" behind, so the review report had to name more than one of them
-// for the same row and could confirm none. These tests pin the record and the
-// read-back that make one cause nameable.
+// Without a recorded cause, a row that a lifecycle path closes carries exactly
+// two readable facts: the state string and the closing time. Several paths
+// leave state="error" behind, so the review report has to name more than one
+// of them for the same row and can confirm none. These tests pin the record
+// and the read-back that make one cause nameable.
 
 import (
 	"strings"
@@ -87,7 +86,7 @@ func TestRecordSessionReap_RoundTrip(t *testing.T) {
 }
 
 // TestSessionReapCauseDescriptions_NameOneCauseEach is the guard for the
-// defect that opened #2613: the report named "the session was force-terminated,
+// defect this guards against: the report named "the session was force-terminated,
 // or its readiness gate failed" for a single row. A Description that contains a
 // disjunction reintroduces exactly that.
 func TestSessionReapCauseDescriptions_NameOneCauseEach(t *testing.T) {
@@ -148,7 +147,7 @@ func TestSessionEndCauses_LatestReapWins(t *testing.T) {
 
 // TestSessionEndCauses_ReadsSidecarFailureEvents verifies that the reader also
 // surfaces the sidecar's own failure events. This is the branch that fixes the
-// #2610 shape: the inactivity watchdog writes stall_error and leaves ended_at
+// shape: the inactivity watchdog writes stall_error and leaves ended_at
 // NULL; the tmux session-closed hook then stamps ended_at without rewriting
 // state. The row is dropped from GroupResults and the recorded stall must not
 // be lost with it.

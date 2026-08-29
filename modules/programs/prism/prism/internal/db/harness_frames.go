@@ -44,9 +44,8 @@ func (d *DB) WriteHarnessFrame(f HarnessFrame) error {
 	if f.CreatedAt.IsZero() {
 		f.CreatedAt = time.Now()
 	}
-	// Second redaction control (issue #2589). harness_frames stores the raw
-	// wire bytes, so it carries the same credential exposure as
-	// agent_events. See redact.go.
+	// Second redaction control. harness_frames stores the raw wire bytes, so
+	// it carries the same credential exposure as agent_events. See redact.go.
 	f.Payload = d.redactPayload(f.Payload)
 	const q = `
 INSERT INTO harness_frames (id, session_name, instance_id, direction, type, payload, created_at)
@@ -130,8 +129,8 @@ func (d *DB) QueryHarnessFrames(sessionName, direction string, types []string, a
 
 // CountHarnessFrames returns the total number of harness frames for the
 // session. Used by `prism logs --harness-events` to distinguish "no frames
-// recorded — this is a non-PI session" from "PI session that just hasn't
-// produced any frames yet" (the latter is a legitimate empty result).
+// recorded — this is a non-PI session" from "PI session that has not yet
+// produced any frames" (the latter is a legitimate empty result).
 func (d *DB) CountHarnessFrames(sessionName string) (int, error) {
 	var n int
 	if err := d.conn.QueryRow(
@@ -147,14 +146,14 @@ func (d *DB) CountHarnessFrames(sessionName string) (int, error) {
 // session has no inbound frame on record.
 //
 // The monitor's group-wide safety-deadline sweep uses this to tell a live
-// review agent from a dead-watchdog row (#2729). The sidecar's inactivity
-// watchdog resets on inbound frames only (internal/sidecar/events.go), so a
-// member with a recent inbound frame has a watchdog that has not yet fired
-// and still owns the session; a member whose newest inbound frame is older
-// than that watchdog window, yet is still non-terminal, has a dead watchdog
-// — the case the monitor sweep is the backstop for. Inbound is therefore the
-// correct direction to read: an outbound frame the sidecar sent does not
-// reset the watchdog and does not prove the agent is alive.
+// review agent from a dead-watchdog row. The sidecar's inactivity watchdog
+// resets on inbound frames only (internal/sidecar/events.go). A member with a
+// recent inbound frame has a watchdog that has not yet fired and still owns
+// the session. A member whose newest inbound frame is older than that
+// watchdog window, yet is still non-terminal, has a dead watchdog — the case
+// the monitor sweep is the backstop for. Inbound is therefore the correct
+// direction to read: an outbound frame the sidecar sent does not reset the
+// watchdog and does not prove the agent is alive.
 func (d *DB) LastInboundFrameAt(sessionName string) (time.Time, bool, error) {
 	var ms sql.NullInt64
 	err := d.conn.QueryRow(
@@ -175,7 +174,7 @@ func (d *DB) LastInboundFrameAt(sessionName string) (time.Time, bool, error) {
 // IMPORTANT: this only touches the harness_frames table. agent_events and
 // sessions are unaffected — the goal is to retire raw wire-protocol bytes
 // (which are voluminous on a busy session) while preserving the structured
-// agent_events derived from them. See P5.LOGS retention AC.
+// agent_events derived from them.
 func (d *DB) PruneHarnessFrames(olderThan time.Duration) error {
 	threshold := time.Now().Add(-olderThan).UnixMilli()
 	if _, err := d.conn.Exec(

@@ -1,10 +1,10 @@
 package db_test
 
-// Tests for the db.Open pre-flight probe added in #2361.
+// Tests for the db.Open pre-flight probe.
 //
-// The probe converts what used to surface as the misleading modernc.org/sqlite
-// text "unable to open database file: out of memory (14)" into a clear
-// filesystem error naming the exact DB path and the underlying OS error.
+// The probe converts the misleading modernc.org/sqlite text "unable to open
+// database file: out of memory (14)" into a clear filesystem error naming the
+// exact DB path and the underlying OS error.
 //
 // The read-only entry point OpenReadOnly() must remain unaffected: a read-only
 // open of an existing DB in an unwritable directory is a legitimate use case
@@ -106,7 +106,7 @@ func TestOpen_UncreatableStateDir_ClearError(t *testing.T) {
 
 // TestOpenReadOnly_UnwritableDir_ProbeNotOnPath verifies that OpenReadOnly
 // against an existing DB in an unwritable directory does NOT surface the
-// probe's error text. The probe added in #2361 lives in Open() only — it
+// probe's error text. The probe lives in Open() only — it
 // must NOT be gated onto the read-only path.
 //
 // SQLite's WAL journal mode requires SHM writability, so the actual query

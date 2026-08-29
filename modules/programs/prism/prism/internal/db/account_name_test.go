@@ -1,7 +1,7 @@
 package db
 
-// Tests for the account-name write path and its mtime-cached resolver
-// (issue #2714). Internal-package tests so they can reach
+// Tests for the account-name write path and its mtime-cached resolver.
+// Internal-package tests so they can reach
 // newAccountResolverForPaths and the unexported AccountResolver.reads counter.
 
 import (
