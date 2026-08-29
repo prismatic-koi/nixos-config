@@ -735,7 +735,7 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 	if len(hc.DeviceCgroupRules) > 0 {
 		return denyDecision(http.StatusForbidden,
 			"device_cgroup_rules_nonempty",
-			"HostConfig.DeviceCgroupRules is not permitted (mirrors the Devices denial; the rule mechanism is equivalent")
+			"HostConfig.DeviceCgroupRules is not permitted (mirrors the Devices denial; the rule mechanism is equivalent)")
 	}
 
 	// DeviceRequests: GPU / nvidia-container-runtime style device
