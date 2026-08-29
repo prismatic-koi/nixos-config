@@ -1,6 +1,6 @@
 package sidecar
 
-// Integration tests for the harness frame archive (P5.LOGS / #1218).
+// Integration tests for the harness frame archive.
 //
 // These tests piggyback on the socket-pipe test harness defined in
 // sidecar_socketpipe_test.go: a fake PI extension dials the sidecar, performs

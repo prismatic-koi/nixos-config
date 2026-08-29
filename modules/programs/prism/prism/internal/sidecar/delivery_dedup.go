@@ -2,15 +2,15 @@ package sidecar
 
 // delivery_dedup.go — bounded in-memory dedup set for /prompt deliveries.
 //
-// Background: issue #1685 — a single `prism escalate` invocation was observed
-// to deliver the same prompt body to the coordinator's harness four times.
-// The Go-side delivery path is single-shot end-to-end, so the duplication
-// arises further down (PI runtime's followUp queue, an upstream retry layer,
-// or some future change that adds replay-on-reconnect). Rather than relying
-// on every downstream consumer behaving correctly, the sidecar's /prompt
-// handler is now idempotent at the bus boundary: each delivery carries a
-// `delivery_id` (a UUID minted by the sender), and the receiving sidecar
-// drops repeats whose ID it has seen recently.
+// A single `prism escalate` invocation can deliver the same prompt body to
+// the coordinator's harness several times. The Go-side delivery path is
+// single-shot end-to-end, so the duplication arises further down (the PI
+// runtime followUp queue, an upstream retry layer, or a future change that
+// adds replay-on-reconnect). The sidecar's /prompt handler does not rely on
+// every downstream consumer behaving correctly. It is idempotent at the bus
+// boundary: each delivery carries a `delivery_id` (a UUID minted by the
+// sender), and the receiving sidecar drops repeats whose ID it has seen
+// recently.
 //
 // Capacity is bounded so the dedup set cannot grow without limit. The bound
 // is generous (256) — 256 distinct deliveries per session within the dedup
@@ -47,7 +47,7 @@ func newDeliveryDedup(capacity int) *deliveryDedup {
 }
 
 // markSeen records id as seen and returns true if it had already been seen
-// (i.e. this is a repeat delivery). An empty id is treated as "do not
+// (that is, a repeat delivery). An empty id is treated as "do not
 // dedup" — markSeen returns false and the set is not modified.
 //
 // When the set is at capacity and id is new, the oldest entry is evicted
@@ -111,21 +111,21 @@ const pendingReplayCapacity = 16
 // extension was disconnected. On the next successful handshake, the
 // reconnect loop drains the slice in arrival order and enqueues each entry
 // with `replay: true` set on the prompt frame so the receiver can identify
-// it as a replayed (not fresh) delivery. Issue #1685 AC #7.
+// it as a replayed (not fresh) delivery.
 //
 // Source carries the originating /prompt request's `source` field through
 // the buffer so the flush path can run source-specific bookkeeping after a
 // successful re-enqueue. In particular, source=="review-complete" is the
 // signal for flushPendingReplay to clear reviewingInFlight (the same flag
-// the synchronous-delivery branch clears post-DeliverPrompt). Issue #1843.
+// the synchronous-delivery branch clears post-DeliverPrompt).
 //
 // PersistKey is the key under which this entry is stored in the durable
-// pending_replay_deliveries DB row (issue #2359 Gap B). For entries with a
+// pending_replay_deliveries DB row. For entries with a
 // real minted delivery_id, PersistKey == DeliveryID. For legacy no-ID
 // callers, PersistKey is the synthetic key that DB.InsertPendingReplayDelivery
 // generated so that DB.DeletePendingReplayDelivery can remove the exact row
-// after successful flush. Empty when the entry is not durably backed (e.g.
-// tests that bypass the DB or the DB is nil).
+// after successful flush. Empty when the entry is not durably backed (for
+// example, tests that bypass the DB, or the DB is nil).
 type pendingReplayDelivery struct {
 	DeliveryID string
 	Text       string

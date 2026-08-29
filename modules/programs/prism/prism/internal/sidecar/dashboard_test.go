@@ -29,7 +29,7 @@ func (c *countingDashboardSink) TouchSentinel() {
 // TestNew_DefaultDashboardSink_IsProduction verifies the regression AC:
 // production behaviour is unchanged when no DashboardSink is configured. When
 // the test-mode guard is not set, New() must install productionDashboardSink
-// so the historical pushDashboardEvent+touchDashboardSentinel pair fires from
+// so the pushDashboardEvent+touchDashboardSentinel pair fires from
 // writeStateChangeWithSID exactly as before.
 //
 // We do not exercise the production sink against the real filesystem here
@@ -112,8 +112,8 @@ func TestNew_ExplicitDashboardSink_Preserved(t *testing.T) {
 	}
 }
 
-// TestWriteStateChange_NoopSink_NoFilesystemEffects is the headline AC for
-// issue #1851. It simulates the homeless-shelter sandbox by setting
+// TestWriteStateChange_NoopSink_NoFilesystemEffects is the headline test for
+// the homeless-shelter isolation. It simulates the homeless-shelter sandbox by setting
 // HOME=/homeless-shelter via t.Setenv and constructs a Sidecar via
 // sidecartest.NewIsolated. It then forces a state change through the public
 // writeStateChange path and asserts that:
@@ -200,7 +200,7 @@ func TestWriteStateChange_NoopSink_NoFilesystemEffects(t *testing.T) {
 //
 // This is the structural twin of TestWriteStateChange_NoopSink_NoFilesystemEffects:
 // together they assert that wiring through the sink preserves call ordering
-// and call counts compared to the pre-#1851 inline code.
+// and call counts.
 func TestWriteStateChange_ProductionSink_FiresBothHooks(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
@@ -248,8 +248,8 @@ func TestWriteStateChange_ProductionSink_FiresBothHooks(t *testing.T) {
 
 // TestProductionDashboardSink_PushEvent_IsNonBlocking verifies that the
 // production sink's PushEvent returns promptly even when the dashboard socket
-// is absent. The historical pre-#1851 code dispatched a goroutine and
-// returned immediately; the post-#1851 wrapper must preserve that contract.
+// is absent. The production sink dispatches a goroutine and returns
+// immediately. The wrapper must preserve that non-blocking contract.
 func TestProductionDashboardSink_PushEvent_IsNonBlocking(t *testing.T) {
 	// Point XDG_STATE_HOME at a tempdir with no socket; PushEvent's
 	// goroutine will dial and fail in 500ms, but the caller must return

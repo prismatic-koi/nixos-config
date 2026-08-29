@@ -1,13 +1,13 @@
 package sidecar
 
 // pending_replay_durable_test.go — tests for the durable pending-replay
-// buffer introduced in issue #2359 Gap B.
+// buffer.
 //
-// Before this change the pending-replay buffer was in-memory only: if the
-// sidecar exited between accepting a /prompt delivery (200 {"buffered":
-// true}) and the next successful pipe handshake, the delivery was
-// destroyed. The coordinator saw a 0.0-second success from `prism prompt`
-// and had no signal that the directive had vanished.
+// Without a durable buffer the pending-replay buffer is in-memory only: if the
+// sidecar exits between accepting a /prompt delivery (200 {"buffered":
+// true}) and the next successful pipe handshake, the delivery is
+// destroyed. The coordinator then sees a 0.0-second success from `prism prompt`
+// and has no signal that the directive vanished.
 //
 // These tests exercise the full durable round trip:
 //
@@ -17,7 +17,7 @@ package sidecar
 //   - A second reconstruct sees an empty buffer (no duplicate replay).
 //
 // Isolation: openTestDB gives us a per-test DB tempdir; session names use
-// the prism-test@ prefix per #1608.
+// the prism-test@ prefix.
 
 import (
 	"net/http"
@@ -27,9 +27,9 @@ import (
 	"time"
 )
 
-// TestPendingReplayDurable_SurvivesSidecarRestart is the AC for
-// #2359 Gap B: a buffered /prompt delivery MUST survive sidecar exit and
-// flush on the next successful handshake after restart.
+// TestPendingReplayDurable_SurvivesSidecarRestart verifies that a buffered
+// /prompt delivery MUST survive sidecar exit and flush on the next successful
+// handshake after restart.
 //
 // The test simulates a sidecar restart by discarding the first Sidecar
 // (never calling flushPendingReplay on it) and constructing a fresh Sidecar
@@ -191,9 +191,9 @@ func TestPendingReplayDurable_DedupAcrossRestart(t *testing.T) {
 	}
 }
 
-// TestPendingReplayDurable_RespawnClearsStaleDirectives verifies the
-// review-context follow-up on issue #2359: respawning on the same branch
-// name (a supported flow via #2094) must NOT resurrect coordinator
+// TestPendingReplayDurable_RespawnClearsStaleDirectives verifies that
+// respawning on the same branch
+// name (a supported flow) must NOT resurrect coordinator
 // directives buffered against a previous incarnation. The primary
 // lifecycle hook — the tmux-session-start event — calls
 // DeletePendingReplayDeliveriesForSession before restorePendingReplayFromDB

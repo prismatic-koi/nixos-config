@@ -6,7 +6,7 @@ import "fmt"
 // extension directory has diverged from the value config.json holds now, and
 // returns a loud, named diagnostic when it has.
 //
-// Background (issue #2739). config.Load() memoises its result for the life of
+// config.Load() memoises its result for the life of
 // the process (sync.Once). The sidecar is a long-running process, so the
 // pi_extension_dir it read at startup is frozen for its lifetime. A
 // `nixos-rebuild switch` that changes the prism PI extension rewrites

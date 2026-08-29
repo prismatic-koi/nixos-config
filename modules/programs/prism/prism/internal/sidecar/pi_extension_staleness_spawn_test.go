@@ -1,7 +1,7 @@
 package sidecar
 
 // Handler-level tests for the pi_extension_dir staleness diagnostic wired into
-// the host-API /spawn handler (issue #2739).
+// the host-API /spawn handler.
 //
 // These prove three things the pure-function test in
 // pi_extension_staleness_test.go cannot:

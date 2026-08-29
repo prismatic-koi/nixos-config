@@ -36,7 +36,7 @@ type testTimer struct {
 	// stoppedCh is closed exactly once when the timer transitions to the
 	// stopped state (via Stop or Fire). Tests can use this to synchronise on
 	// timer cancellation deterministically rather than polling the Stopped()
-	// accessor with a wall-clock delay. See issue #1515.
+	// accessor with a wall-clock delay..
 	stoppedCh chan struct{}
 }
 
@@ -54,7 +54,7 @@ func (t *testTimer) Stop() bool {
 // Stopped reports whether Stop or Fire has run on this timer. Safe for
 // concurrent use — mirrors the lock acquisition in Stop/Fire so that test
 // assertions on the stopped state do not race with the sidecar goroutine
-// that may call cancelIdleTimer (and thus Stop) concurrently. See #1483.
+// that may call cancelIdleTimer (and thus Stop) concurrently..
 func (t *testTimer) Stopped() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -110,9 +110,8 @@ type testClock struct {
 	sleeps []time.Duration
 	// timerCreatedCh is closed and replaced on every AfterFunc call so that
 	// WaitForTimerCount can block on the next timer creation without polling.
-	// See issue #1515 — the previous "sleep 50ms then call LastTimer" pattern
-	// flaked under load because 50ms was not always enough for the sidecar
-	// goroutine to reach AfterFunc.
+	// A "sleep 50ms then call LastTimer" pattern flakes under load because
+	// 50ms is not always enough for the sidecar goroutine to reach AfterFunc.
 	timerCreatedCh chan struct{}
 }
 
@@ -180,10 +179,10 @@ func (c *testClock) TimerCount() int {
 }
 
 // WaitForTimerCount blocks until the clock has registered at least n timers,
-// or until timeout elapses. Returns the timer at index n-1 on success (i.e.
-// the n-th timer in registration order) or nil on timeout. This is the
+// or until timeout elapses. Returns the timer at index n-1 on success (that
+// is, the n-th timer in registration order) or nil on timeout. This is the
 // deterministic alternative to "sleep 50ms then call LastTimer" — it observes
-// the actual creation event and is independent of scheduler load. See #1515.
+// the actual creation event and is independent of scheduler load..
 func (c *testClock) WaitForTimerCount(n int, timeout time.Duration) *testTimer {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -261,7 +260,6 @@ func (c *testClock) WaitForTimerWithDuration(d, timeout time.Duration) *testTime
 // which there is no observable channel — the alternative is a fixed sleep,
 // which flakes under contended scheduling. The polling interval is small (1ms)
 // so the helper still completes promptly when the condition is met quickly.
-// See issue #1515.
 func waitForCondition(t *testing.T, fn func() bool, timeout time.Duration, msg string) bool {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -283,7 +281,7 @@ func waitForCondition(t *testing.T, fn func() bool, timeout time.Duration, msg s
 // until timeout elapses. Returns the observed state on success or the empty
 // string on timeout. Use this in place of "sleep 50ms then call getState" —
 // the previous pattern flaked under load because the sidecar handler had not
-// yet committed the state change to the DB. See issue #1515.
+// yet committed the state change to the DB..
 func waitForState(t *testing.T, d *db.DB, session, want string, timeout time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -331,9 +329,9 @@ func openTestDB(t *testing.T) *db.DB {
 	})
 
 	// sidecartest.OpenDB stamps a pre-migrated template instead of re-running
-	// the schema and every migration, so the open costs no fsync. Before #2612,
-	// this package opened ~700 test databases per run and paid ~73 fsyncs each
-	// (#2598).
+	// the schema and every migration, so the open costs no fsync. Opening a
+	// fresh database per test otherwise pays a per-commit fsync, which is
+	// costly on a CI runner's real disk.
 	d := sidecartest.OpenDB(t, filepath.Join(dir, "test.db"))
 	t.Cleanup(func() { d.Close() })
 	return d
@@ -462,8 +460,7 @@ func getEvents(t *testing.T, d *db.DB, session string) []db.Event {
 // alternative to "check getStartupErrorMessage immediately after asserting
 // state==error": writeStartupError writes the state transition before the
 // startup_error event, so the two are observable at slightly different
-// moments — a same-instant read between the two writes returns "". See
-// issue #1515.
+// moments — a same-instant read between the two writes returns "".
 func waitForStartupErrorMessage(t *testing.T, d *db.DB, session string, timeout time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -483,8 +480,8 @@ func waitForStartupErrorMessage(t *testing.T, d *db.DB, session string, timeout 
 // startup_error event for session, or "" if none has been written. The
 // startup_error event is emitted by writeStartupError (state.go) when the
 // sidecar transitions a session to StateError during startup; its payload is
-// {"reason":"<error.Error()>"}. See #1222 for the producer side and #1493 for
-// the consumer side that motivated this helper.
+// {"reason":"<error.Error()>"}. This helper reads that payload for the
+// consumer side.
 func getStartupErrorMessage(t *testing.T, d *db.DB, session string) string {
 	t.Helper()
 	events, err := d.AllSessionEvents(session)
@@ -1230,7 +1227,7 @@ func TestIsHighImpactCommand(t *testing.T) {
 		{"prism spawn nixos-config@feature", true},
 		{"prism cleanup nixos-config@feature", true},
 		{"prism prompt nixos-config@feature --prompt done", true},
-		// prism investigate / pr / review added in #2364 so audit surfaces
+		// prism investigate / pr / review are audited so audit surfaces
 		// the full set of spawn-shaped commands.
 		{"prism investigate --prompt 'root cause X'", true},
 		{"prism pr 1234", true},
@@ -2452,7 +2449,7 @@ func TestNotifyCoordinator_EndedCoordinatorSkipped(t *testing.T) {
 // worker discovers the state change via DB polling (pollAgents); propagating
 // it as a coordinator notification would be noise.
 //
-// This is the primary regression test for issue #817.
+// This is the primary regression test for review-agent notification suppression.
 func TestNotifyCoordinator_ReviewAgentSuppressed(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
@@ -2817,7 +2814,7 @@ func TestNotifyCoordinator_ParentWorkerStillNotifies(t *testing.T) {
 }
 
 // TestOnReady_NotCalledAfterShutdown verifies that the shuttingDown guard
-// (AC-16) prevents OnReady from firing when Shutdown() races a successful
+// prevents OnReady from firing when Shutdown() races a successful
 // health probe.
 //
 // The race: WaitHealthy returns a genuine 200 during the container-stop grace
@@ -2890,7 +2887,7 @@ func TestOnReady_CalledWhenNotShuttingDown(t *testing.T) {
 	}
 }
 
-// TestMessageUpdated_AssistantWritesRootModelID verifies AC-6: after the first
+// TestMessageUpdated_AssistantWritesRootModelID verifies that after the first
 // completed assistant message from the root agent, root_model_id in the DB
 // reflects that message's model. A subagent message that follows must not
 // overwrite root_model_id.
@@ -2975,7 +2972,7 @@ func TestMessageUpdated_AssistantWritesRootModelID(t *testing.T) {
 	}
 }
 
-// TestMessageUpdated_SecondSessionUpdatesRootModelID verifies AC-7: when a
+// TestMessageUpdated_SecondSessionUpdatesRootModelID verifies that when a
 // second session starts with a different model, root_model_id is updated to the
 // new value (the stale-model scenario is explicitly covered).
 func TestMessageUpdated_SecondSessionUpdatesRootModelID(t *testing.T) {
@@ -3055,9 +3052,9 @@ func TestMessageUpdated_SecondSessionUpdatesRootModelID(t *testing.T) {
 	}
 }
 
-// ── user-message root_model_id tests (AC-7, AC-8, AC-9) ─────────────────────
+// ── user-message root_model_id tests ─────────────────────
 
-// TestMessageUpdated_UserMessage_UpdatesRootModelID verifies AC-7: a user
+// TestMessageUpdated_UserMessage_UpdatesRootModelID verifies that a user
 // message.updated event with info.Model set causes root_model_id to be written
 // to the DB immediately (before any assistant turn), so that worker prompts
 // delivered during the response window read the correct model.
@@ -3103,7 +3100,7 @@ func TestMessageUpdated_UserMessage_UpdatesRootModelID(t *testing.T) {
 	}
 }
 
-// TestMessageUpdated_UserMessage_RootAgentGate verifies AC-8: a user message
+// TestMessageUpdated_UserMessage_RootAgentGate verifies that a user message
 // from a non-root agent does NOT update root_model_id. The root agent's model
 // must not be overwritten by a subagent user message.
 func TestMessageUpdated_UserMessage_RootAgentGate(t *testing.T) {
@@ -3177,7 +3174,7 @@ func TestMessageUpdated_UserMessage_RootAgentGate(t *testing.T) {
 	}
 }
 
-// TestMessageUpdated_UserMessage_EmptyModel verifies AC-9: a user message with
+// TestMessageUpdated_UserMessage_EmptyModel verifies that a user message with
 // no model (info.Model == nil) does NOT write root_model_id — the existing
 // value is preserved and not cleared.
 func TestMessageUpdated_UserMessage_EmptyModel(t *testing.T) {
@@ -3320,7 +3317,7 @@ func TestServerConnected_InitialConnection_NoTimer(t *testing.T) {
 
 // TestServerConnected_WhileActive_StartsRecoveryTimer verifies that
 // server.connected while in active state starts the reconnect recovery timer
-// (AC-5: recovery timer fires only when sidecar reconnects and last state is active).
+// (recovery timer fires only when sidecar reconnects and last state is active).
 func TestServerConnected_WhileActive_StartsRecoveryTimer(t *testing.T) {
 	sc, clk := newTestSidecar(t)
 
@@ -3340,7 +3337,7 @@ func TestServerConnected_WhileActive_StartsRecoveryTimer(t *testing.T) {
 
 // TestServerConnected_RecoveryTimer_FiresFinished verifies that when the
 // recovery timer fires with no subsequent events, the sidecar writes finished
-// (AC-5: writes finished and calls notifyCoordinator after recovery window).
+// (writes finished and calls notifyCoordinator after recovery window).
 func TestServerConnected_RecoveryTimer_FiresFinished(t *testing.T) {
 	sc, clk := newTestSidecar(t)
 
@@ -3578,7 +3575,7 @@ func TestServerConnected_RecoveryTimer_CancelledByCompaction(t *testing.T) {
 }
 
 // TestServerConnected_RecoveryTimer_CancelledByShutdown verifies that
-// Shutdown() cancels any in-flight recovery timer (AC-5: must not fire after
+// Shutdown() cancels any in-flight recovery timer (must not fire after
 // sidecar shutdown).
 func TestServerConnected_RecoveryTimer_CancelledByShutdown(t *testing.T) {
 	sc, clk := newTestSidecar(t)
@@ -3610,10 +3607,10 @@ func TestServerConnected_RecoveryTimer_CancelledByShutdown(t *testing.T) {
 	}
 }
 
-// ── subagent-finish fix tests (#538) ─────────────────────────────────────────
+// ── subagent-finish fix tests ─────────────────────────────────────────
 
 // TestSubagentFinish_NoSecondIdle_TransitionsToFinished is the primary regression
-// test for #538. It reproduces the exact scenario from the bug report: the worker's
+// test for the subagent-finish path. It reproduces the exact scenario: the worker's
 // final action is invoking a @review subagent, so the agent emits one session.idle
 // (after the subagent returns, before the root agent writes its final message). The
 // root agent then appends its handoff message but no second session.idle arrives.
@@ -3973,11 +3970,11 @@ func TestSubagentFinish_NoRootAgent_NoSpuriousFinished(t *testing.T) {
 	}
 }
 
-// ── rootAgent pre-set from config tests (#555) ──────────────────────────────
+// ── rootAgent pre-set from config tests ──────────────────────────────
 
 // newWorkerSidecarWithRole creates a worker sidecar with AgentRole set, so
 // rootAgent is pre-set from config rather than inferred from the first user
-// message. This is the fix for #555.
+// message.
 func newWorkerSidecarWithRole(t *testing.T, d *db.DB, httpClient *http.Client, role string) (*Sidecar, *testClock) {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -3997,7 +3994,7 @@ func newWorkerSidecarWithRole(t *testing.T, d *db.DB, httpClient *http.Client, r
 	return New(cfg), clk
 }
 
-// TestRootAgentPreset_FromConfig verifies AC-1: rootAgent is pre-set from
+// TestRootAgentPreset_FromConfig verifies that rootAgent is pre-set from
 // Config.AgentRole in New(), before any SSE events are processed.
 func TestRootAgentPreset_FromConfig(t *testing.T) {
 	d := openTestDB(t)
@@ -4012,7 +4009,7 @@ func TestRootAgentPreset_FromConfig(t *testing.T) {
 	}
 }
 
-// TestRootAgentPreset_SubagentUserMessageDoesNotOverwrite verifies AC-2:
+// TestRootAgentPreset_SubagentUserMessageDoesNotOverwrite verifies that
 // when rootAgent is pre-set to "worker" and the review subagent's user message
 // arrives (with agent="review"), rootAgent must NOT be overwritten.
 func TestRootAgentPreset_SubagentUserMessageDoesNotOverwrite(t *testing.T) {
@@ -4041,14 +4038,14 @@ func TestRootAgentPreset_SubagentUserMessageDoesNotOverwrite(t *testing.T) {
 }
 
 // TestRootAgentPreset_IdleAfterSubagentNotSuppressedByWorkerFinal verifies
-// AC-3, AC-5: after a subagent cycle (worker → @review → worker final message),
+// After a subagent cycle (worker → @review → worker final message),
 // session.idle is NOT suppressed — the idle debounce starts and the session
 // transitions to finished.
 //
-// This is the primary regression test for #555: previously rootAgent was set
-// to "review" (wrong), so the worker's final message triggered the debounce
-// correctly but then session.idle was suppressed because lastAssistantAgent
-// ("worker") != rootAgent ("review"). With the fix, rootAgent="worker" from
+// This is the primary regression test for rootAgent pre-set: without it,
+// rootAgent is inferred as "review" (wrong), so the worker's final message
+// triggers the debounce correctly but then session.idle is suppressed because
+// lastAssistantAgent ("worker") != rootAgent ("review"). With rootAgent="worker" from
 // config, so idle proceeds normally.
 func TestRootAgentPreset_IdleAfterSubagentNotSuppressed(t *testing.T) {
 	d := openTestDB(t)
@@ -4097,7 +4094,7 @@ func TestRootAgentPreset_IdleAfterSubagentNotSuppressed(t *testing.T) {
 	}
 }
 
-// TestRootAgentPreset_MultipleReviewRounds verifies AC-8, AC-12: multi-round
+// TestRootAgentPreset_MultipleReviewRounds verifies that multi-round
 // subagent cycles (worker → review → worker → review → worker final) produce a
 // single finished transition after the worker's last completed message, with no
 // intermediate false finishes.
@@ -4164,7 +4161,7 @@ func TestRootAgentPreset_MultipleReviewRounds(t *testing.T) {
 	}
 }
 
-// TestRootAgentPreset_CoordinatorSession verifies AC-10: a coordinator session
+// TestRootAgentPreset_CoordinatorSession verifies that a coordinator session
 // (rootAgent="coordinator") that invokes subagents transitions to finished
 // correctly when the coordinator writes its final message.
 func TestRootAgentPreset_CoordinatorSession(t *testing.T) {
@@ -4225,7 +4222,7 @@ func TestRootAgentPreset_CoordinatorSession(t *testing.T) {
 	}
 }
 
-// TestRootAgentPreset_FallbackWhenAgentRoleEmpty verifies AC-6, AC-13: when
+// TestRootAgentPreset_FallbackWhenAgentRoleEmpty verifies that when
 // Config.AgentRole is empty (host-mode sessions without --agent-role), the
 // existing fallback behaviour is preserved: the first user message with a
 // non-empty agent name sets rootAgent.
@@ -4254,10 +4251,10 @@ func TestRootAgentPreset_FallbackWhenAgentRoleEmpty(t *testing.T) {
 	}
 }
 
-// TestRootAgentPreset_EmptyAgentNameInUserMessage verifies AC-6 edge case:
+// TestRootAgentPreset_EmptyAgentNameInUserMessage verifies the edge case:
 // when AgentRole is empty and user messages have empty agent names (the actual
 // bug scenario), rootAgent stays empty until a non-empty agent name is seen.
-// When rootAgent is empty, session.idle proceeds to debounce normally (AC-7).
+// When rootAgent is empty, session.idle proceeds to debounce normally.
 func TestRootAgentPreset_EmptyAgentNameInUserMessage(t *testing.T) {
 	sc, clk := newTestSidecar(t) // AgentRole is empty
 
@@ -4273,7 +4270,7 @@ func TestRootAgentPreset_EmptyAgentNameInUserMessage(t *testing.T) {
 		t.Errorf("rootAgent = %q after empty-agent user message, want empty (must not set rootAgent from empty name)", rootAgent)
 	}
 
-	// With rootAgent empty, session.idle should proceed to debounce (AC-7).
+	// With rootAgent empty, session.idle should proceed to debounce.
 	timersBefore := clk.TimerCount()
 	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
 	if clk.TimerCount() != timersBefore+1 {
@@ -4287,7 +4284,7 @@ func TestRootAgentPreset_EmptyAgentNameInUserMessage(t *testing.T) {
 	}
 }
 
-// TestRootAgentPreset_NotifyCoordinatorAfterSubagentCycle verifies AC-4:
+// TestRootAgentPreset_NotifyCoordinatorAfterSubagentCycle verifies that
 // after a subagent cycle, the coordinator receives the "has finished"
 // notification when the worker writes its final message.
 func TestRootAgentPreset_NotifyCoordinatorAfterSubagentCycle(t *testing.T) {
@@ -4410,7 +4407,7 @@ func TestSubagentFinish_ToolOnlyFinalTurn_IdlePathStillWorks(t *testing.T) {
 
 // TestRootAgentName_SeededFromAgentRole verifies that root_agent_name and
 // root_model_id in the DB are seeded from Config.AgentRole and Config.AgentModel
-// on the first state transition (AC-1, AC-3, AC-4, AC-5 from #557). It also
+// on the first state transition. It also
 // verifies COALESCE semantics: subsequent state transitions must not overwrite
 // the already-set values.
 func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
@@ -4554,9 +4551,9 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 }
 
 // TestRootAgentName_SelfCorrectedFromSSEInference verifies the edge-case AC from
-// issue #776: a host-mode session that was created before the fix (with
-// root_agent_name = "worker" already in the DB) self-corrects on the next
-// upsertState call after SSE inference sets s.rootAgent.
+// A host-mode session that already has root_agent_name = "worker" in the DB
+// self-corrects on the next upsertState call after SSE inference sets
+// s.rootAgent.
 //
 // Before the fix the --agent-role default was "worker", so every host-mode
 // sidecar pre-set rootAgent="worker" and every upsertState call called
@@ -5032,7 +5029,7 @@ func TestHostAPI_ListSessions_CoordinatorAll(t *testing.T) {
 }
 
 // TestHostAPI_ListSessions_DefaultScope_HidesOtherRepoWorkers verifies the
-// full four-session scenario from issue #1830:
+// full four-session scenario:
 //
 //	repoA@main (coordinator)  → visible from repoA
 //	repoA@feature (worker)    → visible from repoA
@@ -5109,8 +5106,8 @@ func TestHostAPI_ListSessions_PreMigrationCoordinator(t *testing.T) {
 // ── /checkin ──────────────────────────────────────────────────────────────────
 
 // TestHostAPI_Checkin_WorkerForbidden covers the coordinator target: a worker
-// cannot read its own coordinator's session. Since #2587 a worker CAN read the
-// review agents of its own session, and only those; the full tier-1 scope,
+// cannot read its own coordinator's session. A worker CAN read the
+// review agents of its own session, and only those. The full tier-1 scope,
 // including this case, is pinned in checkin_permission_test.go.
 func TestHostAPI_Checkin_WorkerForbidden(t *testing.T) {
 	d := openTestDB(t)
@@ -5340,7 +5337,7 @@ func TestHostAPI_SessionNameNoAt_NoCheckinPanic(t *testing.T) {
 	// the handler returns 500 with a "cannot derive repo" error rather than
 	// panicking. This is the panic-safety guarantee — the @-less-with-row
 	// happy path is exercised by TestHostAPI_AtlessSession_Checkin_Resolves
-	// in host_api_atless_session_test.go (issue #2112).
+	// in host_api_atless_session_test.go.
 	if err := d.UpsertStatusSeedRootAgentName("no-at-sign", "", "/tmp/no-at-sign", "active", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("seed DB: %v", err)
 	}
@@ -5358,9 +5355,9 @@ func TestHostAPI_Prompt_InvalidTargetNoAt(t *testing.T) {
 	d := openTestDB(t)
 	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 	// Target session has no "@" AND no DB row — the handler should now return
-	// 404 ("session not found") instead of the old 400 ("contains no '@'")
-	// because the canonical not-found shape is the new error surface introduced
-	// in issue #2112. The CLI surfaces this verbatim to the operator.
+	// 404 ("session not found") because the canonical not-found shape is the
+	// error surface for an unknown @-less target. The CLI surfaces this
+	// verbatim to the operator.
 	rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
 		`{"session":"nosession","prompt":"hello"}`)
 	if rr.Code != http.StatusNotFound {
@@ -5374,8 +5371,8 @@ func TestHostAPI_Prompt_InvalidTargetNoAt(t *testing.T) {
 }
 
 func TestHostAPI_RepoFromSession(t *testing.T) {
-	// Pure name-parse fallback (nil DB) — preserves the historical behaviour
-	// of the helper for the @-bearing dominant case. The @-less DB-fallback
+	// Pure name-parse fallback (nil DB) — the helper's behaviour for the
+	// @-bearing dominant case. The @-less DB-fallback
 	// path is covered by TestHostAPI_RepoFromSession_DBFallback below.
 	tests := []struct {
 		session string
@@ -5494,10 +5491,10 @@ func TestHostAPI_Checkin_LastParamParsed(t *testing.T) {
 	}
 }
 
-// ── Bug fix tests: /spawn repo substitution (issue #616) ────────────────────
+// ── Bug fix tests: /spawn repo substitution ────────────────────
 
 // TestHostAPI_Spawn_ClientRepoIsIgnoredServerUsesOwnRepo verifies the fix for
-// issue #616: when a client sends an arbitrary "repo" value (e.g. a container
+// When a client sends an arbitrary "repo" value (for example, a container
 // mount-path name like "prism-git"), the server ignores it and substitutes its
 // own repo derived from its session name ("test-repo").
 //
@@ -5590,10 +5587,9 @@ echo "session \"${last}@new-branch\" created"
 	}
 }
 
-// TestHostAPI_Spawn_EmptyBranchReturns400 verifies AC: a request with a
-// missing or empty "branch" (and no "pr") field still returns 400 (issue
-// #2432 updated the wording to "branch or pr is required" once the pr field
-// was added as an alternative).
+// TestHostAPI_Spawn_EmptyBranchReturns400 verifies that a request with a
+// missing or empty "branch" (and no "pr") field still returns 400. The error
+// wording is "branch or pr is required" because the pr field is an alternative.
 func TestHostAPI_Spawn_EmptyBranchReturns400(t *testing.T) {
 	d := openTestDB(t)
 	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
@@ -5610,7 +5606,7 @@ func TestHostAPI_Spawn_EmptyBranchReturns400(t *testing.T) {
 }
 
 // TestHostAPI_Spawn_EmptyPromptReturns400 verifies the layer-3 defence in
-// depth from issue #1891: a /spawn request with an empty or missing "prompt"
+// depth: a /spawn request with an empty or missing "prompt"
 // field is rejected with HTTP 400. The CLI proxy (proxySpawn) already
 // rejects empty prompts at layers 1+2, but a malformed or alternate client
 // that POSTs {"prompt":""} (or omits the field entirely) would otherwise
@@ -5643,14 +5639,14 @@ func TestHostAPI_Spawn_EmptyPromptReturns400(t *testing.T) {
 }
 
 // TestHostAPI_Spawn_FromKeybind_EmptyPromptAccepted verifies the
-// #2063/#2073 carve-out: when the request carries
+// Carve-out: when the request carries
 // {"from_keybind":true}, an empty prompt must NOT be rejected at layer
 // 3 — the proxy has signalled that this is a tmux Prefix+a invocation
 // and the operator will type the initial prompt to the live agent
 // after the popup attaches.
 //
 // The stub records its env so we can assert that both PRISM_KEYBIND_SPAWN
-// (the dedicated discriminator post-#2073) AND PRISM_SPAWN_PATH (the
+// (the dedicated discriminator) AND PRISM_SPAWN_PATH (the
 // cwd hint) are propagated to the host-side prism spawn child. The
 // sentinel is what runSpawn checks for its own carve-out — if the
 // sidecar failed to set it, the host-side child would still reject the
@@ -5712,7 +5708,7 @@ echo "session \"test-repo@keybind-branch\" created"
 	}
 }
 
-// TestHostAPI_Spawn_SetsInvokerSessionName verifies the fix for issue #2622:
+// TestHostAPI_Spawn_SetsInvokerSessionName verifies that:
 // the /spawn handler must set PRISM_SESSION_NAME on the host-side child to
 // the requesting session (this sidecar's own session, since the client
 // posts to its own local sidecar), not whatever value the sidecar process
@@ -5768,7 +5764,7 @@ echo "session \"test-repo@some-branch\" created"
 }
 
 // TestHostAPI_Spawn_InheritedSessionNameDoesNotLeak verifies the edge-case
-// AC for issue #2622: filterEnv must strip whatever PRISM_SESSION_NAME the
+// filterEnv must strip whatever PRISM_SESSION_NAME the
 // sidecar process itself inherited before appending the correct value, so
 // a spurious ancestor value in the sidecar's own environment cannot survive
 // onto the host-side child.
@@ -5788,7 +5784,7 @@ echo "session \"test-repo@some-branch\" created"
 	}
 
 	// Simulate the sidecar process itself having inherited a stray
-	// PRISM_SESSION_NAME from an ancestor process — e.g. an operator
+	// PRISM_SESSION_NAME from an ancestor process — for example, an operator
 	// launching the sidecar manually from a shell where the var was
 	// already set to some other session.
 	t.Setenv("PRISM_SESSION_NAME", "some-ancestor@stale")
@@ -5827,10 +5823,10 @@ echo "session \"test-repo@some-branch\" created"
 
 // TestHostAPI_Spawn_FromKeybind_NonEmptyPrompt_DoesNotSetEnv verifies the
 // narrowing fix surfaced by review-context on the first review round of
-// #2063, preserved post-#2073: when from_keybind:true arrives alongside
+// When from_keybind:true arrives alongside
 // a NON-empty prompt, the sidecar must NOT set PRISM_KEYBIND_SPAWN (or
 // PRISM_SPAWN_PATH) on the host-side prism spawn child. Setting the
-// keybind sentinel would flip the child's
+// keybind sentinel flips the child's
 // `headless := !fromKeybind && !attachFlag` from true to false and
 // cause it to call session.Attach against whatever tmux client the
 // sidecar inherited — a behavioural change for ordinary worker-spawn
@@ -5892,7 +5888,7 @@ echo "session \"test-repo@some-branch\" created"
 }
 
 // TestHostAPI_Spawn_NoFromKeybind_EmptyPromptStillRejected verifies the
-// security AC for issue #2063: the layer-3 empty-prompt guard still fires
+// The layer-3 empty-prompt guard still fires
 // for arbitrary HTTP callers that do NOT carry from_keybind:true. The
 // relaxation lives in the prism CLI proxy path only — not in the public
 // /spawn handler for everyone else.
@@ -5920,7 +5916,7 @@ func TestHostAPI_Spawn_NoFromKeybind_EmptyPromptStillRejected(t *testing.T) {
 }
 
 // TestHostAPI_Spawn_UnresolvableInvokerSession_SetsEmptyEnv verifies the
-// edge-case AC for issue #2622: when the requesting session has no
+// When the requesting session has no
 // resolvable name (empty string, admitted here via a DB row that marks it
 // coordinator so requireCoordinator passes), the handler still sets
 // PRISM_SESSION_NAME on the host-side child — to the empty string — rather
@@ -5986,7 +5982,7 @@ echo "session \"test-repo@some-branch\" created"
 // /spawn returns 500 with a message indicating the repo cannot be derived
 // and no spawn is attempted. The @-less-with-valid-repo happy path is
 // covered by TestHostAPI_AtlessSession_Spawn_Resolves in
-// host_api_atless_session_test.go (issue #2112).
+// host_api_atless_session_test.go.
 func TestHostAPI_Spawn_SidecarNoAtSign_Returns500(t *testing.T) {
 	d := openTestDB(t)
 	if err := d.UpsertStatusSeedRootAgentName("no-at-sign", "", "/tmp/no-at-sign", "active", nil, nil, "coordinator", "", ""); err != nil {
@@ -6056,7 +6052,7 @@ echo "session \"${last}@cross-branch\" created"
 
 // TestHostAPI_Spawn_HostModeProduces400 verifies that sending {"host_mode":true}
 // in a /spawn request produces a 400 error, since the host_mode field has been
-// removed (Phase D-2 of the deprecation cycle; issue #1147).
+// removed.
 func TestHostAPI_Spawn_HostModeProduces400(t *testing.T) {
 	d := openTestDB(t)
 
@@ -6129,10 +6125,11 @@ echo "session \"${last}@cap-branch\" created"
 // TestHostAPI_Spawn_IsolationForwarded verifies that when a /spawn request
 // carries {"isolation":"<mode>"} for each of the four valid modes, the sidecar
 // includes "--isolation <mode>" in the args passed to the prism binary.
-// This is the regression test for issue #1059: previously the /spawn handler
-// did not read the isolation field at all, so a coordinator inside a container
-// running `prism spawn --isolation host` saw the value silently dropped and
-// the spawned session landed in the configured default mode (typically bwrap).
+// This is the regression test for isolation forwarding: without it, the
+// /spawn handler does not read the isolation field, so a coordinator inside a
+// container running `prism spawn --isolation host` sees the value silently
+// dropped and the spawned session lands in the configured default mode
+// (typically bwrap).
 func TestHostAPI_Spawn_IsolationForwarded(t *testing.T) {
 	for _, mode := range []string{"bwrap", "sandbox-exec", "host"} {
 		t.Run(mode, func(t *testing.T) {
@@ -6183,7 +6180,7 @@ echo "session \"${last}@iso-branch\" created"
 }
 
 // TestHostAPI_Spawn_PRForwardedInsteadOfBranch is the regression test for
-// issue #2432: when a /spawn request carries {"pr":"<n>"}, the sidecar must
+// When a /spawn request carries {"pr":"<n>"}, the sidecar must
 // forward "--pr <n>" to the host-side prism spawn — NOT a client-resolved
 // --branch value. Forwarding only a sanitised branch name silently forked a
 // new branch from the default branch whenever the real PR head ref contained
@@ -6276,8 +6273,7 @@ func TestHostAPI_Spawn_PRAndBranchMutuallyExclusive(t *testing.T) {
 
 // TestHostAPI_Spawn_PRNonNumericRejected verifies that a non-numeric "pr"
 // value is rejected with HTTP 400 server-side, so a malformed value cannot
-// inject CLI flags into the host-side prism spawn invocation (issue #2432
-// security AC).
+// inject CLI flags into the host-side prism spawn invocation.
 func TestHostAPI_Spawn_PRNonNumericRejected(t *testing.T) {
 	d := openTestDB(t)
 	// Stub should never be invoked — the API must reject before exec.
@@ -6468,15 +6464,15 @@ exit 1
 	}
 }
 
-// ── /spawn model-override forwarding (C2.PROXY, issue #1263) ─────────────────
+// ── /spawn model-override forwarding ─────────────────
 
 // TestHostAPI_Spawn_ModelOverrideForwarded verifies that when the request body
 // contains model_variant_overrides (a JSON-encoded map[string]string as produced
 // by proxySpawn), the handler decodes it and forwards each entry as a
 // --model-override role=model flag to the prism spawn subprocess.
-// This is the regression test for issue #1263: previously the /spawn handler
-// did not decode model_variant_overrides, so --model-override from a coordinator
-// running inside a container was silently dropped.
+// This is the regression test for model-override forwarding: without it, the
+// /spawn handler does not decode model_variant_overrides, so --model-override
+// from a coordinator running inside a container is silently dropped.
 func TestHostAPI_Spawn_ModelOverrideForwarded(t *testing.T) {
 	d := openTestDB(t)
 
@@ -6525,7 +6521,7 @@ echo "session \"${last}@override-branch\" created"
 }
 
 // TestHostAPI_Spawn_ModelOverrideAbsentBehavesAsToday verifies the edge-case
-// AC for issue #1263: a /spawn request with no model_variant_overrides field
+// A /spawn request with no model_variant_overrides field
 // behaves identically to before the fix — no --model-override flags are added.
 func TestHostAPI_Spawn_ModelOverrideAbsentBehavesAsToday(t *testing.T) {
 	d := openTestDB(t)
@@ -6571,7 +6567,7 @@ echo "session \"${last}@no-override-branch\" created"
 }
 
 // TestHostAPI_Spawn_ModelOverrideMalformedReturns400 verifies the edge-case
-// AC for issue #1263: a /spawn request with a malformed model_variant_overrides
+// A /spawn request with a malformed model_variant_overrides
 // value (not valid JSON) returns HTTP 400 rather than silently ignoring it.
 func TestHostAPI_Spawn_ModelOverrideMalformedReturns400(t *testing.T) {
 	d := openTestDB(t)
@@ -7052,7 +7048,7 @@ echo "session \"${last}@harness-branch\" created"
 // TestHostAPI_Spawn_MissingHarnessNotForwarded verifies that when the harness
 // field is absent from the request, the server does NOT pass --harness to the
 // host-side spawn. This allows the host-side spawn to derive the harness from
-// the profile slot as designed (#1421).
+// the profile slot as designed.
 func TestHostAPI_Spawn_MissingHarnessNotForwarded(t *testing.T) {
 	d := openTestDB(t)
 
@@ -7093,7 +7089,7 @@ echo "session \"${last}@no-harness-branch\" created"
 		t.Fatalf("read captured args: %v", err)
 	}
 	// When harness is absent from the proxy request, --harness must NOT be forwarded
-	// so the host-side spawn can derive it from the profile slot (#1421).
+	// so the host-side spawn can derive it from the profile slot.
 	if strings.Contains(string(capturedArgs), "--harness") {
 		t.Errorf("captured args %q contain '--harness' but harness was not sent in the proxy request body", string(capturedArgs))
 	}
@@ -7259,7 +7255,7 @@ exit 0
 // TestHostAPI_Review_RebaseForwarded verifies that when {"rebase": true} is
 // supplied in the /review request body, --rebase is appended to the prism
 // review subprocess argv. This is the container-routed path of the rebase
-// gate (issue #1518): the gate itself runs in the host subprocess, but the
+// gate: the gate itself runs in the host subprocess, but the
 // rebase opt-in must thread through from the container worker.
 func TestHostAPI_Review_RebaseForwarded(t *testing.T) {
 	d := openTestDB(t)
@@ -7462,7 +7458,7 @@ func TestHostAPI_Review_InfraFailureStreamsSentinelFailed(t *testing.T) {
 // TestHostAPI_Review_StderrForwardedBeforeSentinel verifies that when the
 // subprocess writes to stderr and exits non-zero, the stderr lines appear in
 // the response body before the ReviewSentinelFailed sentinel. This is the
-// critical behaviour for issue #1541: the worker must see the preflight rebase
+// critical behaviour: the worker must see the preflight rebase
 // gate error message, not just __PRISM_REVIEW_FAILED__ with no context.
 func TestHostAPI_Review_StderrForwardedBeforeSentinel(t *testing.T) {
 	d := openTestDB(t)
@@ -7696,7 +7692,7 @@ exit 0
 // TestHostAPI_Review_StreamsLinesAsEmitted verifies that the /review endpoint
 // streams subprocess stdout line-by-line to the HTTP response body, with the
 // ReviewSentinelPassed appended after a successful exit. This is the core
-// behaviour required by issue #815: each progress line must appear in the
+// required behaviour: each progress line must appear in the
 // response as it is emitted, not buffered until the subprocess exits.
 //
 // The stub writes two lines then exits 0. The test reads the full response
@@ -7815,7 +7811,7 @@ exit 1
 // cmd.Dir to the calling session's worktree path (from agent_status.worktree).
 // This anchors `prism review` to the correct git repository so that gh and git
 // commands succeed and PR metadata is injected into review-agent prompts
-// (rather than falling back to degraded per-agent discovery). See issue #1021.
+// (rather than falling back to degraded per-agent discovery)..
 func TestHostAPI_Review_CWDSetToWorktree(t *testing.T) {
 	d := openTestDB(t)
 
@@ -7867,7 +7863,7 @@ exit 0
 	// Resolve symlinks on both sides before comparing so the assertion is
 	// symlink-agnostic on Darwin, where /tmp → /private/tmp and the
 	// subprocess's pwd resolves to the canonical /private/tmp/… form while
-	// t.TempDir() returns the /tmp/… form. See #1489.
+	// t.TempDir() returns the /tmp/… form..
 	gotResolved, err := filepath.EvalSymlinks(strings.TrimSpace(string(capturedCWD)))
 	if err != nil {
 		t.Fatalf("EvalSymlinks(captured CWD): %v", err)
@@ -7883,12 +7879,11 @@ exit 0
 }
 
 // TestHostAPI_Review_CWDFallbackWhenWorktreeMissing verifies that when the
-// calling session has a worktree path in the DB that no longer exists on disk,
+// calling session has a worktree path in the DB that does not exist on disk,
 // the /review handler logs a warning and proceeds with the default CWD rather
 // than returning an error. The fallback path must still produce a valid
 // response (sentinel present), and must NOT set cmd.Dir to the missing path
 // (which would cause exec.Command to fail with "no such file or directory").
-// See issue #1021 (edge-case AC).
 func TestHostAPI_Review_CWDFallbackWhenWorktreeMissing(t *testing.T) {
 	d := openTestDB(t)
 
@@ -7970,7 +7965,7 @@ func TestIsSQLiteBusy(t *testing.T) {
 // TestHostAPI_Review_ReviewingWriteFailureReturns500 verifies AC [edge-case]:
 // if the pre-emptive reviewing state write fails after all retries, the /review
 // handler returns HTTP 500 (rather than silently proceeding) so that the agent
-// receives a clear failure it can retry. See issue #1355.
+// receives a clear failure it can retry..
 //
 // We trigger the failure by closing the DB before the request, which causes
 // the UpsertStatus call to fail. A non-SQLITE_BUSY error is not retried but
@@ -8034,7 +8029,7 @@ func TestHostAPI_Review_ReviewingWriteFailureReturns500(t *testing.T) {
 
 // TestHostAPI_Review_ReviewingWriteSucceeds verifies AC [functional]:
 // after the pre-emptive reviewing state write succeeds, the session is in
-// the "reviewing" state before the subprocess output is streamed. See #1355.
+// the "reviewing" state before the subprocess output is streamed..
 func TestHostAPI_Review_ReviewingWriteSucceeds(t *testing.T) {
 	d := openTestDB(t)
 
@@ -8085,17 +8080,17 @@ func TestHostAPI_Review_ReviewingWriteSucceeds(t *testing.T) {
 	}
 }
 
-// ── buildNotifyPromptBody tests (issues #848, #1203) ────────────────────────
+// ── buildNotifyPromptBody tests ────────────────────────
 
 // TestBuildNotifyPromptBody_AgentField verifies that the outgoing notification
 // body includes the "agent" field when the receiving session has a non-nil,
 // non-empty RootAgentName, and omits it otherwise.
 //
-// Background: issue #848 flagged setting "agent" as dangerous because it could
-// switch a subagent's context. The status passed to buildNotifyPromptBody is
-// the *receiving* session's own status; re-asserting root_agent_name is safe
-// and necessary to prevent the agent from defaulting to its last-active (wrong)
-// agent in host mode — see issue #1203.
+// Background: setting "agent" can switch a subagent's context, which is
+// dangerous. The status passed to buildNotifyPromptBody is the *receiving*
+// session's own status. Re-asserting root_agent_name is safe and necessary to
+// prevent the agent from defaulting to its last-active (wrong) agent in host
+// mode.
 func TestBuildNotifyPromptBody_AgentField(t *testing.T) {
 	coordinatorAgent := "coordinator"
 	workerAgent := "worker"
@@ -8150,7 +8145,7 @@ func TestBuildNotifyPromptBody_AgentField(t *testing.T) {
 	})
 }
 
-// ── error-state debounce tests (issue #923) ─────────────────────────────────
+// ── error-state debounce tests ─────────────────────────────────
 
 // TestSessionError_NonAbort_CancelsIdleTimer verifies Fix 1: when session.error
 // fires with a non-MessageAbortedError name, any in-flight idle timer is
@@ -8191,7 +8186,7 @@ func TestSessionError_NonAbort_CancelsIdleTimer(t *testing.T) {
 // TestSessionError_ImmediateSessionUpdated_DoesNotResume verifies Fix 2
 // (debounce window): when session.updated arrives within ErrorResumeDebounce
 // after session.error, the session must NOT transition from error to active.
-// This is the core regression test for the bug described in issue #923.
+// This is the core regression test for the error-resume debounce.
 func TestSessionError_ImmediateSessionUpdated_DoesNotResume(t *testing.T) {
 	sc, _ := newTestSidecar(t)
 
@@ -8329,7 +8324,7 @@ func TestSessionError_MessageAbortedError_PathUnchanged(t *testing.T) {
 	}
 }
 
-// ── Gap 3: finish-cause annotation ──────────────────────────────────────────
+// ── finish-cause annotation ──────────────────────────────────────────
 
 // captureLog installs a per-sidecar logger backed by an isolated buffer,
 // replacing the sidecar's current logger. It returns a function that reads
@@ -8345,7 +8340,7 @@ func TestSessionError_MessageAbortedError_PathUnchanged(t *testing.T) {
 // buffer so that any in-flight notify goroutines launched from a synchronous
 // transition path (HandleEvent / testTimer.Fire) have committed their log
 // writes before the test inspects the buffer. This closes the race class
-// reported in #1713 and #1716 — production notify goroutines outliving the
+// of production notify goroutines outliving the
 // test entrypoint and racing the test's buf.String() read. Without this,
 // the strings.Builder Write/String pair is observable under -race and the
 // test flakes intermittently.
@@ -8499,7 +8494,7 @@ func TestTransitionCause_RecoveryTimer(t *testing.T) {
 	}
 }
 
-// ── Gap 5: tool_error DB event ───────────────────────────────────────────────
+// ── tool_error DB event ───────────────────────────────────────────────
 
 // TestToolCallFailed_WritesToolErrorEvent verifies that a tool part with
 // status=error writes a tool_error event to the DB and logs the failure.
@@ -8599,7 +8594,7 @@ func TestToolCallFailed_ErrTruncated(t *testing.T) {
 	}
 }
 
-// ── Gap 6: unknown event type deduplication ──────────────────────────────────
+// ── unknown event type deduplication ──────────────────────────────────
 
 // TestUnknownEventType_LoggedOnce verifies that an unknown event type is
 // logged exactly once, not on every occurrence.
@@ -8802,7 +8797,7 @@ func TestBuildNotifyPromptBody_IncludesTextAndModel(t *testing.T) {
 	})
 }
 
-// ── Startup failure tests (issue #994) ──────────────────────────────────────
+// ── Startup failure tests ──────────────────────────────────────
 
 // newReviewAgentSidecar creates a review-agent sidecar whose session name
 // follows the <parent>~review-<N>-<role> convention. It shares the given DB
@@ -8861,7 +8856,7 @@ func waitForHTTPPromptCalls(t *testing.T, counter *int, mu *sync.Mutex, want int
 	return false
 }
 
-// TestWriteStartupError_WritesErrorState verifies Gap 1: when writeStartupError
+// TestWriteStartupError_WritesErrorState verifies that when writeStartupError
 // is called (simulating WaitHealthy or CreateSession failure), the DB row
 // transitions directly to "error" state — not via the pane-died tmux hook.
 func TestWriteStartupError_WritesErrorState(t *testing.T) {
@@ -8942,7 +8937,7 @@ func TestWriteStartupError_NonReviewAgent_NoParentNotification(t *testing.T) {
 	}
 }
 
-// TestWriteStartupError_ReviewAgent_NotifiesParentWorker verifies Gap 2:
+// TestWriteStartupError_ReviewAgent_NotifiesParentWorker verifies that:
 // when a review-agent container fails to start, the parent worker session
 // receives a notification via HTTP POST to its harness port.
 func TestWriteStartupError_ReviewAgent_NotifiesParentWorker(t *testing.T) {
@@ -8998,12 +8993,12 @@ func TestWriteStartupError_ReviewAgent_NotifiesParentWorker(t *testing.T) {
 	startupErrMsg := "container health check: context deadline exceeded (120s)"
 	reviewAgent.writeStartupError(fmt.Errorf("%s", startupErrMsg))
 
-	// Gap 1: DB state must be "error".
+	// DB state must be "error".
 	if state := getState(t, d, reviewAgent.cfg.SessionName); state != string(agent.StateError) {
 		t.Errorf("state = %q after startup failure, want %q (Gap 1 fix)", state, agent.StateError)
 	}
 
-	// Gap 2: wait for the parent worker notification to arrive.
+	// Wait for the parent worker notification to arrive.
 	if !waitForHTTPPromptCalls(t, &promptCallCount, &promptMu, 1) {
 		t.Fatal("timed out waiting for parent worker notification (Gap 2 fix) — expected HTTP POST to parent's harness port")
 	}
@@ -9185,7 +9180,7 @@ func TestReviewAgentParentSession(t *testing.T) {
 	}
 }
 
-// ── Startup-connect timeout tests (#1022) ────────────────────────────────────
+// ── Startup-connect timeout tests ────────────────────────────────────
 
 // blockingHarness is a test harness whose Subscribe() blocks forever
 // (never delivers events and never closes the channel). Used to simulate a
@@ -9397,9 +9392,8 @@ func TestStartupConnectTimeout_ConfigurableViaField(t *testing.T) {
 // TestStartupConnectTimeout_BwrapModeFiresWhenContainerNil verifies that the
 // startup-connect timeout goroutine IS started when Container == nil (bwrap
 // mode). In the legacy container mode (Container != nil),
-// WaitHealthy/CreateSession already provided startup-failure protection
-// (#1011); the SSE timeout would have been redundant and might have fired
-// during container startup.
+// WaitHealthy/CreateSession already provided startup-failure protection.
+// The SSE timeout is redundant there and can fire during container startup.
 //
 // Container is a *container.Config. Setting it non-nil was the container-mode
 // gate. This test verifies the bwrap path is the one that fires by using the
@@ -9475,7 +9469,7 @@ func TestStartupConnectTimeout_ReviewAgentNotifiesParent(t *testing.T) {
 }
 
 // TestStartupConnectTimeout_ErrorNotOverwrittenByShutdown verifies the
-// symmetric protection from #1011: once StateError is written by the startup
+// symmetric protection: once StateError is written by the startup
 // timeout, a subsequent Shutdown() call must NOT overwrite it with
 // StateInterrupted. This test exercises the shuttingDown check in Shutdown().
 func TestStartupConnectTimeout_ErrorNotOverwrittenByShutdown(t *testing.T) {
@@ -9500,7 +9494,7 @@ func TestStartupConnectTimeout_ErrorNotOverwrittenByShutdown(t *testing.T) {
 // TestStartupConnectTimeout_WorkerSessionNotifiesCoordinator verifies that when
 // a non-review-agent (worker) session hits the startup-connect timeout, the
 // coordinator receives a notification — satisfying the "worker agents notify the
-// coordinator" routing requirement from #1022. (Review-agent notification is
+// coordinator" routing requirement. (Review-agent notification is
 // already covered by TestStartupConnectTimeout_ReviewAgentNotifiesParent.)
 func TestStartupConnectTimeout_WorkerSessionNotifiesCoordinator(t *testing.T) {
 	const timeout = 20 * time.Millisecond
@@ -9571,7 +9565,7 @@ func TestStartupConnectTimeout_WorkerSessionNotifiesCoordinator(t *testing.T) {
 
 // TestReviewing_IdleDebounceSuppressed verifies that the idle debounce does NOT
 // transition a worker session to "finished" when the DB state is "reviewing".
-// This is the primary regression test for issue #1033: the worker called
+// This is the primary regression test for reviewing-window suppression: the worker called
 // `prism review` (which set the DB state to "reviewing"), went idle waiting for
 // the review-complete prompt, and must not emit a premature "has finished"
 // notification to the coordinator.
@@ -9648,15 +9642,15 @@ func TestReviewing_IdleDebounceSuppressed(t *testing.T) {
 
 // TestReviewing_NotClobberedByBusyTurn verifies that a session.status{busy}
 // event fired while the worker is in "reviewing" does NOT overwrite that state
-// with "active". This is the regression test for issue #1049: prior to the
-// fix, the busy branch of handleSessionStatus wrote `active` unconditionally
-// (only excepting `compacting`), so any incidental assistant turn the worker
-// emitted between `prism review` returning and the review-complete prompt
-// arriving would clobber `reviewing`. The subsequent idle debounce then saw
-// `active` (not `reviewing`), the suppression path was skipped, and the
-// coordinator received a spurious "has finished" notification.
+// with "active". This is the regression test for busy-event suppression
+// while reviewing: without the guard, the busy branch of handleSessionStatus
+// writes `active` unconditionally (only excepting `compacting`), so any
+// incidental assistant turn the worker emits between `prism review` returning
+// and the review-complete prompt arriving clobbers `reviewing`. The idle
+// debounce then sees `active` (not `reviewing`), skips the suppression path,
+// and the coordinator receives a spurious "has finished" notification.
 //
-// The fix adds a `reviewing` exception parallel to the existing `compacting`
+// The `reviewing` exception is parallel to the existing `compacting`
 // exception. With it, the state must remain `reviewing` across one or more
 // busy + idle cycles, and no coordinator notification must fire.
 func TestReviewing_NotClobberedByBusyTurn(t *testing.T) {
@@ -9746,7 +9740,7 @@ func TestReviewing_NotClobberedByBusyTurn(t *testing.T) {
 // just before delivering the review-complete prompt → busy event → idle
 // debounce → finished → coordinator notified.
 //
-// Per the option-1 fix for #1049, the reviewing→active flip is driven by the
+// The reviewing→active flip is driven by the
 // review monitor writing `active` to the DB before delivering the prompt, NOT
 // by an arbitrary busy event (which is suppressed while in `reviewing`). This
 // test mirrors that contract: the test seeds `reviewing`, then simulates the
@@ -9829,7 +9823,7 @@ func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 }
 
 // TestReviewing_OpencodeHarness_IdleDebounceNotSuppressedAfterMonitorWrite
-// verifies the fix for #1384: on pi-harness sessions the monitor writes
+// verifies that on pi-harness sessions the monitor writes
 // "active" to the DB just before delivering the review-complete prompt via
 // deliverViaHTTP (bypassing the sidecar's /prompt handler, so
 // reviewingInFlight is never cleared by the socket-pipe path). The idle
@@ -9897,7 +9891,7 @@ func TestReviewing_OpencodeHarness_IdleDebounceNotSuppressedAfterMonitorWrite(t 
 }
 
 // TestReviewing_OpencodeHarness_BusyNotSuppressedAfterMonitorWrite verifies
-// the fix for #1384 specifically for the busy-event suppress site: when
+// the busy-event suppress site: when
 // reviewingInFlight is true but the DB state is "active" (monitor pre-delivery
 // write has landed), busy must proceed normally and write "active".
 func TestReviewing_OpencodeHarness_BusyNotSuppressedAfterMonitorWrite(t *testing.T) {
@@ -10000,7 +9994,7 @@ func TestReviewing_OpencodeHarness_StillSuppressedBeforeMonitorWrite(t *testing.
 }
 
 // TestHostAPI_Review_PreEmptiveReviewingWriteBeforeStreamCompletes verifies
-// the entry-point write fix for #1068: the sidecar's /review HTTP handler
+// the entry-point write: the sidecar's /review HTTP handler
 // must mark the calling session as `reviewing` in the DB before its response
 // stream completes, so that any worker idle that races with the
 // `prism review` subprocess startup observes `reviewing` (not `active`) and
@@ -10128,8 +10122,8 @@ exit 0
 	}
 }
 
-// TestHostAPI_Review_PreEmptiveWriteBestEffortOnMissingRow verifies AC #4
-// from #1068: when no agent_status row exists for the session (so the
+// TestHostAPI_Review_PreEmptiveWriteBestEffortOnMissingRow verifies that
+// when no agent_status row exists for the session (so the
 // pre-emptive write has nothing to update), the /review handler logs a
 // warning and proceeds normally — the subprocess still runs and the
 // response is streamed back as before. The fix is best-effort: a missing
@@ -10179,11 +10173,11 @@ func TestHostAPI_Review_PreEmptiveWriteBestEffortOnMissingRow(t *testing.T) {
 	}
 }
 
-// ── [timing] markers — bwrap path (#1052) ───────────────────────────────────
+// ── [timing] markers — bwrap path ───────────────────────────────────
 
 // TestBwrapTimingMarkers_FirstEvent verifies that on the bwrap path
 // (Container == nil), the sidecar emits both `[timing] harness listening`
-// and `[timing] ready` lines on the first SSE event. AC #2 and #3 (#1052):
+// and `[timing] ready` lines on the first SSE event:
 // the markers must be sourced from "whatever signal the bwrap sidecar uses
 // to detect opencode readiness" — for bwrap that is the first SSE event.
 func TestBwrapTimingMarkers_FirstEvent(t *testing.T) {
@@ -10222,7 +10216,7 @@ func TestBwrapTimingMarkers_FirstEvent(t *testing.T) {
 // TestBwrapTimingMarkers_PromptDelivered verifies that when InitialPrompt is
 // non-empty (a prism prompt was supplied at agent-run launch via --prompt),
 // the sidecar emits a `[timing] prompt delivered: <d> from start` marker on
-// the first SSE event. AC #4 (#1052): mirrors the legacy container-path
+// the first SSE event: mirrors the legacy container-path
 // marker so all timelines have the same shape.
 func TestBwrapTimingMarkers_PromptDelivered(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -10323,7 +10317,7 @@ func TestBwrapTimingMarkers_OnlyOnFirstEvent(t *testing.T) {
 
 // TestStartupConnectTimeout_EmitsTimingMarker verifies AC: "When opencode
 // never reaches the listening state and the sidecar times out, the timing
-// line emitted records the timeout duration, not silence." (#1052)
+// line emitted records the timeout duration, not silence."
 //
 // We use the existing blockingHarness fixture and a tight timeout so the
 // timeout goroutine fires deterministically; Run() exits when the SSE context
@@ -10354,9 +10348,9 @@ func TestStartupConnectTimeout_EmitsTimingMarker(t *testing.T) {
 	}
 }
 
-// ── #1690 invariant test ────────────────────────────────────────────────
+// ── write-ordering invariant test ────────────────────────────────────────────────
 //
-// Asserts the write-ordering invariant introduced by the fix for issue #1690:
+// Asserts the write-ordering invariant:
 // when the bwrap startup-connect timeout fires, the `[timing] harness
 // listening: ... (timed out)` log marker must be emitted AFTER all other
 // log writes from the startup-error path — specifically: after
@@ -10365,13 +10359,12 @@ func TestStartupConnectTimeout_EmitsTimingMarker(t *testing.T) {
 // parent row exists, logs "sidecar: notifyParentWorker: parent session ...
 // not found in DB"). With the marker as the LAST log line written by the
 // timeout goroutine, a reader that observes the marker is guaranteed not
-// to race with any further concurrent writes from this path — the bug
-// reported in #1690.
+// to race with any further concurrent writes from this path.
 //
-// This mirrors the polling-target-is-last-write pattern from PR #1657's
+// This mirrors the polling-target-is-last-write pattern in
 // TestSocketPipe_SessionStatus_EventBeforeStatus: there the test polled
 // the DB target and asserted the prior DB write was already committed;
-// here we wait for Run() to return (which happens immediately after the
+// here the test waits for Run() to return (which happens immediately after the
 // marker is logged) and assert the marker appears AFTER the prior log
 // writes in the buffer. If a future refactor regresses the ordering (e.g.
 // moves the marker before writeStartupError, or moves the notify back to
@@ -10414,7 +10407,7 @@ func TestStartupConnectTimeout_TimingMarkerOrdering(t *testing.T) {
 
 	// Invariant #1 (ordering): "sidecar: startup failure — writing error
 	// state:" must appear BEFORE the marker. This proves writeStartupError
-	// ran first — i.e. the DB state transition and startup_error event were
+	// ran first — that is, the DB state transition and startup_error event were
 	// committed before the marker was emitted.
 	const startupFailLog = "sidecar: startup failure"
 	startupFailIdx := strings.Index(out, startupFailLog)
@@ -10427,7 +10420,7 @@ func TestStartupConnectTimeout_TimingMarkerOrdering(t *testing.T) {
 	}
 
 	// Invariant #2 (ordering): the synchronous parent-notify log line must
-	// appear BEFORE the marker. This is the key #1690 fix: the notify ran
+	// appear BEFORE the marker. This is the key ordering guarantee: the notify ran
 	// inline (via writeStartupErrorSync), not on a background goroutine
 	// that could outlive the marker emission. The bwrap session created by
 	// newBwrapSidecarWithTimeout is a review-agent session whose parent

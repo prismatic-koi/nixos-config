@@ -1,6 +1,6 @@
 package sidecar
 
-// Issue #2110: worker-side capture of pr_number from the `gh pr create`
+// Worker-side capture of pr_number from the `gh pr create`
 // bash-tool output, persisted on the worker's spawn_outcome row.
 //
 // This is the option-(a) write trigger from the AC: at the moment the worker
@@ -192,7 +192,7 @@ func newWorkerSidecarWithInstance(t *testing.T, d *db.DB, sessionName, instanceI
 //
 // Negative-mutation guard: this test is the assertion that catches a future
 // revert of the events.go write call. To validate the test is not a no-op,
-// running it against the unmodified pre-#2110 events.go must produce a nil
+// running it against events.go without the capture call must produce a nil
 // PRNumber → test failure.
 func TestMessagePartUpdated_GhPRCreate_PersistsPRNumber(t *testing.T) {
 	d := openTestDB(t)

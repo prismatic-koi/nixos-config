@@ -1,6 +1,6 @@
 package sidecar
 
-// Regression tests for issue #2255 — sidecar coordination-channel death at
+// Regression tests for sidecar coordination-channel death at
 // `prism escalate`.
 //
 // Incident shape (2026-06-13, session nixos-config@chromium-iokit-rootdomain):
@@ -19,16 +19,16 @@ package sidecar
 // pre-existing escalate tests omitted — and assert the post-escalate health
 // contract from the issue's acceptance criteria:
 //
-//   - the escalated state survives the rest of the escalating turn (AC #4),
-//   - the "has finished" notification stays suppressed while it holds (AC #4),
-//   - agent events continue to be recorded after the escalate (AC #2),
-//   - /prompt to the session succeeds in both steer and followUp modes (AC #3),
+//   - the escalated state survives the rest of the escalating turn,
+//   - the "has finished" notification stays suppressed while it holds,
+//   - agent events continue to be recorded after the escalate,
+//   - /prompt to the session succeeds in both steer and followUp modes,
 //   - an incoming prompt resumes the session: the next turn_start transitions
 //     escalated→active per the documented contract,
-//   - the no-coordinator (AC #6) and dedup-replay (AC #7) variants leave the
+//   - the no-coordinator and dedup-replay variants leave the
 //     sidecar equally healthy.
 //
-// Isolation per #1608: every test calls sidecartest.NewIsolated, which
+// Isolation: every test calls sidecartest.NewIsolated, which
 // redirects XDG_STATE_HOME to a tempdir, opens an isolated DB, and arms
 // PRISM_TEST_MODE_RESTRICT_HOSTAPI so no host socket can be dialled.
 
@@ -55,7 +55,7 @@ const (
 )
 
 // notifyRecorder records notifyCoordinator delivery attempts via the
-// notifyCoordinatorDeliverFn seam (#1856).
+// notifyCoordinatorDeliverFn seam.
 type notifyRecorder struct {
 	mu    sync.Mutex
 	calls []string // delivered text, in order
@@ -171,7 +171,7 @@ func waitForEventPayload(t *testing.T, d *db.DB, session, substr string) {
 }
 
 // sendBarrier sends a uniquely-tagged tool_call frame and waits for its
-// agent_events row, guaranteeing all previously-sent frames are processed.
+// agent_events row, guaranteeing all already-sent frames are processed.
 func sendBarrier(t *testing.T, conn net.Conn, sc *Sidecar, tag string) {
 	t.Helper()
 	sendJSON(t, conn, map[string]any{"type": "tool_call", "id": tag, "name": "bash", "args": map[string]any{"command": tag}})
@@ -200,7 +200,7 @@ func fireFinishedDebounce(t *testing.T, conn net.Conn, clk *testClock) {
 
 // postPromptAndReadFrame POSTs /prompt to the sidecar's own session with the
 // given deliver_as mode and asserts (a) HTTP 200 and (b) the prompt frame
-// arrives on the pipe connection with the right mode — the full AC #3
+// arrives on the pipe connection with the right mode — the full
 // "prompt delivery succeeds" signal.
 func postPromptAndReadFrame(t *testing.T, sc *Sidecar, conn net.Conn, deliverAs, text string) {
 	t.Helper()
@@ -221,8 +221,8 @@ func postPromptAndReadFrame(t *testing.T, sc *Sidecar, conn net.Conn, deliverAs,
 	}
 }
 
-// TestEscalate_SameTurnFramesDoNotClobberEscalatedState is the core #2255
-// regression test (AC #5). It reproduces the live incident's frame sequence:
+// TestEscalate_SameTurnFramesDoNotClobberEscalatedState is the core escalate
+// regression test. It reproduces the live incident's frame sequence:
 //
 //	turn_start → [bash: prism escalate] → turn_end(toolUse) → turn_start
 //	→ msg_assistant → turn_end(stop) → state_change{finished}
@@ -271,10 +271,10 @@ func TestEscalate_SameTurnFramesDoNotClobberEscalatedState(t *testing.T) {
 		t.Errorf("coordinator received %d notification(s) while escalated, want 0 (escalate contract: session.escalated is the notification)", n)
 	}
 
-	// AC #2: agent events continue to be recorded after the escalate.
+	// Agent events continue to be recorded after the escalate.
 	sendBarrier(t, conn, sc, "barrier-events-still-recorded")
 
-	// AC #3: prompt delivery to the escalated session succeeds in both modes.
+	// Prompt delivery to the escalated session succeeds in both modes.
 	postPromptAndReadFrame(t, sc, conn, "steer", "coordinator guidance: proceed with option A")
 	postPromptAndReadFrame(t, sc, conn, "followUp", "second instruction")
 
@@ -329,7 +329,7 @@ func TestEscalate_SessionShutdownWhileEscalated_SuppressesFinishNotification(t *
 	}
 }
 
-// TestEscalate_NoCoordinator_SidecarHealthyAfterEscalate covers AC #6: an
+// TestEscalate_NoCoordinator_SidecarHealthyAfterEscalate covers that an
 // escalate that finds no coordinator candidate still transitions the session
 // to escalated (host-side child exits 0) and must leave the sidecar healthy —
 // events recorded, prompt delivery functional, escalated state preserved.
@@ -374,7 +374,7 @@ func TestEscalate_NoCoordinator_SidecarHealthyAfterEscalate(t *testing.T) {
 	}
 }
 
-// TestEscalate_DedupReplay_SidecarHealthy covers AC #7: a second escalate
+// TestEscalate_DedupReplay_SidecarHealthy covers that a second escalate
 // invocation within the dedup window (the host-side child short-circuits as a
 // replay and exits 0) re-arms the same-turn guard idempotently and leaves the
 // sidecar healthy.

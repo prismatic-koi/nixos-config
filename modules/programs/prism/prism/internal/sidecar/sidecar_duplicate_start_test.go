@@ -1,6 +1,6 @@
 package sidecar
 
-// Tests for the duplicate-start guard (#1936).
+// Tests for the duplicate-start guard.
 //
 // Scenario: two sidecar processes start concurrently for the same session.
 // The second sidecar must refuse to start when it detects a live listener on
@@ -183,7 +183,7 @@ func TestCheckSocketLiveness_Live(t *testing.T) {
 // ── end-to-end: full Run() with another sidecar already alive ────────────────
 
 // TestSidecarRun_RefusesWhenHostAPISockIsLive is the primary AC test for
-// #1936: starting a second sidecar process whose hostapi.sock is currently
+// Starting a second sidecar process whose hostapi.sock is currently
 // responsive must refuse to start, exit non-zero with a clear error naming
 // the session and the responsive path, AND leave the live sidecar's listener
 // fully functional.
@@ -421,7 +421,7 @@ func TestSidecarRun_TombstoneHostAPISockProceeds(t *testing.T) {
 		runDone <- sc.Run(ctx)
 	}()
 
-	// Wait for the sidecar to actually bind on the (formerly tombstoned)
+	// Wait for the sidecar to actually bind on the (tombstoned)
 	// path. If the duplicate-start guard incorrectly classified the
 	// tombstone as live, Run() would have returned a duplicateStartError
 	// already.

@@ -1,18 +1,18 @@
 package sidecar
 
 // prompt_dedup_test.go — integration tests for the /prompt idempotency
-// contract introduced in issue #1685.
+// contract.
 //
-// The bug fixed by this work: a single `prism escalate` invocation was
-// delivering the escalation prompt to the coordinator's harness four times.
+// The problem: a single `prism escalate` invocation can deliver the
+// escalation prompt to the coordinator's harness several times.
 // The Go-side delivery path is single-shot end-to-end, so the duplication
 // arises further down. To make the bus boundary robust regardless of the
-// upstream cause, /prompt is now idempotent: each delivery carries a
-// `delivery_id` (UUID minted by the sender); repeats are dropped before any
+// upstream cause, /prompt is idempotent: each delivery carries a
+// `delivery_id` (UUID minted by the sender). Repeats are dropped before any
 // frame is enqueued and the response carries {"replayed":true} so the
 // sender can observe.
 //
-// Tests in this file follow the issue #1608 isolation contract: each test
+// Tests in this file follow the isolation contract: each test
 // redirects $XDG_STATE_HOME to a t.TempDir() (via openTestDB / the sidecar
 // test scaffolding here doesn't dial any real socket, but the convention is
 // applied so future test additions inherit it). Session names use the
@@ -31,7 +31,7 @@ import (
 
 // newDedupTestSidecar constructs a pi-harness sidecar suitable for driving
 // the /prompt handler directly via doHostAPI. The session name uses the
-// prism-test prefix per the issue #1608 isolation contract.
+// prism-test prefix per the isolation contract.
 func newDedupTestSidecar(t *testing.T, sessionName string, d *db.DB) *Sidecar {
 	t.Helper()
 	if !strings.HasPrefix(sessionName, "prism-test@") {
@@ -70,7 +70,7 @@ func drainFrames(ch <-chan []byte) [][]byte {
 }
 
 // TestPromptDedup_SingleDeliveryEnqueuesExactlyOneFrame is the core
-// regression test for the issue #1685 observed bug: one /prompt call →
+// regression test: one /prompt call →
 // exactly one prompt frame on the pipe channel. Without dedup this test
 // would pass even before the fix; the value of having it is to lock the
 // invariant against future regressions and to anchor the duplicate-delivery
@@ -105,7 +105,7 @@ func TestPromptDedup_SingleDeliveryEnqueuesExactlyOneFrame(t *testing.T) {
 // TestPromptDedup_RepeatedDeliveryIDIsDropped is the central exactly-once
 // contract: four /prompt calls with the same delivery_id (simulating the
 // observed four-copies failure) must result in exactly one frame on the
-// pipe channel and {"replayed":true} on responses 2–4. AC #2, #4, #8.
+// pipe channel and {"replayed":true} on responses 2–4.
 func TestPromptDedup_RepeatedDeliveryIDIsDropped(t *testing.T) {
 	d := openTestDB(t)
 	sc := newDedupTestSidecar(t, "prism-test@coord-dup", d)
@@ -149,7 +149,7 @@ func TestPromptDedup_RepeatedDeliveryIDIsDropped(t *testing.T) {
 
 // TestPromptDedup_DifferentDeliveryIDsEachEnqueue verifies that genuinely
 // distinct deliveries (different delivery_ids) still each produce a frame.
-// Without this we'd be over-deduping. AC #2 negative case.
+// This is the negative case that guards against over-deduping.
 func TestPromptDedup_DifferentDeliveryIDsEachEnqueue(t *testing.T) {
 	d := openTestDB(t)
 	sc := newDedupTestSidecar(t, "prism-test@coord-distinct", d)
@@ -177,7 +177,7 @@ func TestPromptDedup_DifferentDeliveryIDsEachEnqueue(t *testing.T) {
 }
 
 // TestPromptDedup_EmptyDeliveryIDDisablesDedup verifies that callers that
-// omit delivery_id (legacy / pre-#1685 senders) keep the old behaviour:
+// omit delivery_id (legacy senders) keep the old behaviour:
 // every POST produces a frame. This is the backward-compatibility contract.
 func TestPromptDedup_EmptyDeliveryIDDisablesDedup(t *testing.T) {
 	d := openTestDB(t)
@@ -205,7 +205,7 @@ func TestPromptDedup_EmptyDeliveryIDDisablesDedup(t *testing.T) {
 	}
 }
 
-// TestPromptDedup_SlowAckDoesNotInduceDuplicates simulates AC #4: the
+// TestPromptDedup_SlowAckDoesNotInduceDuplicates simulates the slow-ack case: the
 // coordinator is artificially slow to drain frames (sleeping before reading).
 // Even under a slow drain, a single delivery_id must still produce exactly
 // one frame, because dedup happens at the /prompt handler before enqueue —
@@ -242,7 +242,7 @@ func TestPromptDedup_SlowAckDoesNotInduceDuplicates(t *testing.T) {
 	}()
 
 	// Fire 4 deliveries with the same delivery_id, back-to-back, while the
-	// drainer is still sleeping. This is the slow-ack repro for issue #1685.
+	// drainer is still sleeping. This is the slow-ack repro.
 	body := `{"session":"prism-test@coord-slow","prompt":"escalation","delivery_id":"slow-001"}`
 	for i := 0; i < 4; i++ {
 		rr := doHostAPI(t, sc, http.MethodPost, "/prompt", body)
@@ -261,7 +261,7 @@ func TestPromptDedup_SlowAckDoesNotInduceDuplicates(t *testing.T) {
 	}
 }
 
-// TestPromptDedup_BufferedReplayOnReconnect verifies AC #5/#7: when /prompt
+// TestPromptDedup_BufferedReplayOnReconnect verifies that when /prompt
 // arrives while the PI pipe is disconnected, the delivery is buffered and
 // replayed on the next handshake with `replay=true` set on the prompt frame.
 // The combined contract is exactly-once with a replay marker.
@@ -319,7 +319,7 @@ func TestPromptDedup_BufferedReplayOnReconnect(t *testing.T) {
 	}
 }
 
-// TestPromptDedup_PartitionDoesNotProduceDuplicateReplayMarkers covers AC #6:
+// TestPromptDedup_PartitionDoesNotProduceDuplicateReplayMarkers covers that
 // after a partition heals, the coordinator must see AT MOST ONE replay
 // marker. Concretely: a sender retrying with the same delivery_id while the
 // PI is disconnected must not cause two buffered entries to flush.
@@ -375,9 +375,9 @@ func TestPromptDedup_PartitionDoesNotProduceDuplicateReplayMarkers(t *testing.T)
 // TestPromptDedup_ReplayedFrameStillDedups verifies that flushPendingReplay
 // uses a per-pass dedup set to prevent forwarding the same delivery_id twice
 // in a single flush. If the buffer somehow contains two entries with the same
-// delivery_id (a defensive invariant — the /prompt handler's dedup should
-// prevent this, but if a bug allows it the flush must still produce exactly
-// one frame). Issue #1885 F6.
+// delivery_id (a defensive invariant — the /prompt handler's dedup prevents
+// this, but if a bug allows it the flush must still produce exactly one
+// frame).
 //
 // Implementation note: flushPendingReplay uses a local pass-level set (not
 // the global promptDedup) so that legitimate buffered entries are not
@@ -419,7 +419,7 @@ func TestPromptDedup_ReplayedFrameStillDedups(t *testing.T) {
 }
 
 // TestFlushPendingReplay_DuplicateDeliveryIDDropsSecond buffers two pending
-// replay entries with the same delivery_id (the F6/#1885 scenario: both
+// replay entries with the same delivery_id (the scenario: both
 // monitor and recovery watcher buffered an entry during a PI disconnect).
 // After flushPendingReplay, only the first entry is forwarded; the second
 // is dropped by the per-flush dedup check.
@@ -451,7 +451,7 @@ func TestFlushPendingReplay_DuplicateDeliveryIDDropsSecond(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	allFrames := drainFrames(pipeCh)
-	// Filter to prompt frames only. The post-#2050 sidecar may also emit a
+	// Filter to prompt frames only. The sidecar may also emit a
 	// reviewing_state frame on the reviewingInFlight flip after the
 	// review-complete entry is enqueued; that is orthogonal to the dedup
 	// behaviour under test.

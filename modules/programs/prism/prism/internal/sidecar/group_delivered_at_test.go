@@ -1,6 +1,6 @@
 package sidecar
 
-// group_delivered_at_test.go — integration coverage for the #2259
+// group_delivered_at_test.go — integration coverage for the
 // delivered_at column.
 //
 // The unit tests under internal/db/ verify that GroupCompleted short-
@@ -15,7 +15,7 @@ package sidecar
 //     unreachable), delivered_at must remain NULL so the verdict-rerun
 //     path remains available.
 //
-// Both scenarios use sidecartest.NewIsolated per the #1608 convention so
+// Both scenarios use sidecartest.NewIsolated per the isolation convention so
 // no host-side prism state is touched.
 
 import (
@@ -35,7 +35,7 @@ import (
 // setupDeliveredAtFixture seeds a worker session, registers a review group
 // with 5 active/idle members (no terminal states), and returns the DB and
 // fixture details. Crucially, members are NOT in terminal states — so the
-// pre-#2259 GroupCompleted predicate would return false. The test asserts
+// GroupCompleted predicate returns false on member states alone. The test asserts
 // that delivered_at flips the predicate to true regardless.
 func setupDeliveredAtFixture(t *testing.T, scenarioTag string) (d *db.DB, workerSession, groupID string, sockPath string) {
 	t.Helper()
@@ -62,7 +62,7 @@ func setupDeliveredAtFixture(t *testing.T, scenarioTag string) (d *db.DB, worker
 	}
 
 	// Seed 5 members in NON-terminal states (idle + active). The whole
-	// point of the #2259 fix is that delivered_at must work as a terminal
+	// point is that delivered_at must work as a terminal
 	// signal even when the agent_status rollup says the group is still
 	// in-progress (that is the wedged-at-idle reproducer from the issue).
 	memberStates := []struct {
@@ -94,7 +94,7 @@ func setupDeliveredAtFixture(t *testing.T, scenarioTag string) (d *db.DB, worker
 	}
 	// Sanity check: ActiveReviewGroupForParent must return groupID
 	// because at least one member is non-terminal and delivered_at is
-	// NULL — i.e. the in-progress guard is active.
+	// NULL — that is, the in-progress guard is active.
 	if active, err := review.ActiveReviewGroupForParent(d, workerSession); err != nil {
 		t.Fatalf("ActiveReviewGroupForParent pre-delivery: %v", err)
 	} else if active != groupID {
@@ -109,7 +109,7 @@ func setupDeliveredAtFixture(t *testing.T, scenarioTag string) (d *db.DB, worker
 }
 
 // TestDeliverGroupResults_SetsDeliveredAt_UnblocksGuard is the positive
-// integration test for #2259. It mounts a fake /prompt server on the
+// integration test. It mounts a fake /prompt server on the
 // worker's host-API Unix socket that returns 200, calls
 // DeliverGroupResults, and verifies:
 //
@@ -118,7 +118,7 @@ func setupDeliveredAtFixture(t *testing.T, scenarioTag string) (d *db.DB, worker
 //     even though the 5 agent_status members are still idle/active.
 //   - GroupCompleted returns true via the short-circuit.
 //
-// This is the wedged-at-idle reproducer turned green by #2259.
+// This is the wedged-at-idle reproducer.
 func TestDeliverGroupResults_SetsDeliveredAt_UnblocksGuard(t *testing.T) {
 	d, workerSession, groupID, sockPath := setupDeliveredAtFixture(t, "delivered-at-positive")
 
@@ -178,7 +178,7 @@ func TestDeliverGroupResults_SetsDeliveredAt_UnblocksGuard(t *testing.T) {
 }
 
 // TestDeliverGroupResults_FailedDelivery_LeavesDeliveredAtNULL is the
-// negative integration test for #2259. When the /prompt server returns
+// negative integration test. When the /prompt server returns
 // 500 (delivery rejected), DeliverGroupResults must NOT write
 // delivered_at — the verdict-rerun path remains available because
 // GroupCompleted still derives from the agent_status predicate.
@@ -209,7 +209,7 @@ func TestDeliverGroupResults_FailedDelivery_LeavesDeliveredAtNULL(t *testing.T) 
 		t.Errorf("delivered_at = %d after failed DeliverGroupResults; want NULL so the verdict-rerun path remains available", *deliveredAt)
 	}
 
-	// The in-progress guard must STILL be active (i.e. the agent_status-
+	// The in-progress guard must STILL be active (that is, the agent_status-
 	// based predicate is consulted normally for the unblocked path).
 	active, err := review.ActiveReviewGroupForParent(d, workerSession)
 	if err != nil {

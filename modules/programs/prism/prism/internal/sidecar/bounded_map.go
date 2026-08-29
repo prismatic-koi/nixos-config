@@ -1,15 +1,15 @@
 package sidecar
 
-// bounded_map.go — bounded insertion-order LRU map used to cap the
+// bounded_map.go — bounded insertion-order LRU map that caps the
 // per-message tracking structures on Sidecar (writtenMessages,
-// textByMessage, msgCreatedAtMs, ttftByMessage). Issue #1846.
+// textByMessage, msgCreatedAtMs, ttftByMessage).
 //
-// Background: coordinator sidecars run for days or weeks. The four
-// message-tracking maps above were previously unbounded `map[string]T`
-// values that grew for every message ID observed for the lifetime of the
-// process. Abandoned messages (tool-only turns, agent interruptions) were
-// never cleaned up, so on a busy coordinator the maps accreted hundreds of
-// entries per day — linear growth on a long-lived process.
+// Coordinator sidecars run for days or weeks. Without a bound, the four
+// message-tracking maps grow for every message ID observed, for the
+// lifetime of the process. Abandoned messages (tool-only turns, agent
+// interruptions) are never cleaned up, so on a busy coordinator the maps
+// accrete hundreds of entries per day — linear growth on a long-lived
+// process.
 //
 // The pattern mirrors `deliveryDedup` (delivery_dedup.go): a `map` for O(1)
 // lookup combined with a doubly-linked `list` recording insertion order so
@@ -17,13 +17,13 @@ package sidecar
 // `deliveryDedup`, callers may overwrite an existing key with a new value
 // without refreshing its position — `set` on an existing key keeps the
 // original insertion-order slot. This matches the call-site semantics: a
-// streaming `textByMessage` update for an in-flight message should not
+// streaming `textByMessage` update for an in-flight message must not
 // prolong the entry's lifetime relative to other in-flight messages.
 //
 // boundedMap is NOT safe for concurrent use. All call sites in this
 // package access the message-tracking maps under `Sidecar.mu`, so the
-// outer lock is sufficient — adding a second mutex would only complicate
-// the code without buying anything.
+// outer lock is sufficient — a second mutex only complicates the code
+// without buying anything.
 
 import "container/list"
 
@@ -78,7 +78,7 @@ func (b *boundedMap[V]) has(key string) bool {
 	return ok
 }
 
-// set inserts or updates key. On a fresh insert that would exceed the
+// set inserts or updates key. On a fresh insert that exceeds the
 // capacity, the oldest key is evicted first. On an update to an existing
 // key, the value is replaced in place — position in the eviction order is
 // not refreshed.
@@ -117,5 +117,5 @@ func (b *boundedMap[V]) len() int {
 // ttftByMessage). Sized generously at 4096 — well above any realistic
 // short-conversation working set, so eviction does not perturb normal
 // behaviour, while keeping the worst-case footprint bounded to a few MiB
-// per map even with full-text payloads. Issue #1846.
+// per map even with full-text payloads.
 const messageTrackingCap = 4096

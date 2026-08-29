@@ -1,7 +1,7 @@
 package sidecar
 
 // Handler-level tests for the prism-binary staleness diagnostic wired into
-// the host-API /spawn handler (issue #2742).
+// the host-API /spawn handler.
 //
 // These prove what the pure-function test in prism_binary_staleness_test.go
 // cannot:

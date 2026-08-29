@@ -1,6 +1,6 @@
 package sidecartest
 
-// templatedb.go — a fast opener for isolated test databases (issue #2598).
+// templatedb.go — a fast opener for isolated test databases.
 //
 // # Why this exists
 //
@@ -9,24 +9,17 @@ package sidecartest
 // SQLite's default synchronous=FULL stays in force, so every commit costs one
 // fsync of the WAL.
 //
-// Before #2612 each of those statements committed in autocommit mode, and a
-// single db.Open on a fresh file cost 73 fsyncs. Since #2612 the sequence runs
-// in one transaction and the same open costs 7 fsyncs. The numbers in the
-// paragraph below describe the pre-#2612 cost, which is the cost this helper
-// was built to remove.
-//
-// That cost was irrelevant on a developer host where the test tempdir is a
-// tmpfs (fsync latency is near zero) but not irrelevant on a CI runner, where
-// the tempdir is on a real disk. internal/sidecar alone opened ~700 test
-// databases per run, so the package paid ~51,000 fsyncs before it ran a
-// single assertion. Package wall time was therefore
+// That cost is irrelevant on a developer host where the test tempdir is a
+// tmpfs (fsync latency is near zero) but not on a CI runner, where the
+// tempdir is on a real disk. internal/sidecar alone opens hundreds of test
+// databases per run, so the package pays thousands of fsyncs before it runs a
+// single assertion. Package wall time is therefore
 // (CPU work) + (fsync count x per-fsync latency), and the second term is set
 // by runner IO health rather than by anything in the code under test. When a
-// hosted runner degraded, every SQLite-backed package inflated about 4x
-// (cmd 137s -> 494s, internal/db 124s -> 491s, internal/session 26s -> 86s)
-// while packages with no database were flat. internal/sidecar is the longest
-// of them, so it was the first to cross the default 10-minute `go test`
-// timeout and fail the go-tests job. See issue #2598.
+// hosted runner degrades, every SQLite-backed package inflates several-fold
+// while packages with no database stay flat. internal/sidecar is the longest
+// of them, so it is the first to cross the default 10-minute `go test`
+// timeout and fail the go-tests job.
 //
 // # What this does
 //

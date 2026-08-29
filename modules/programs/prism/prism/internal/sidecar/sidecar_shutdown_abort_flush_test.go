@@ -1,6 +1,6 @@
 package sidecar
 
-// Tests for the Shutdown abort-frame flush path (issue #1849).
+// Tests for the Shutdown abort-frame flush path.
 //
 // Background: the socket-pipe transport's clean-shutdown path enqueues a final
 // {"type":"abort"} frame onto harnessPipeOutCh so the PI extension can flush
@@ -37,9 +37,9 @@ import (
 // TestShutdown_AbortFlush_HealthyPath_FastAck verifies that on a healthy
 // connection (writer goroutine responsive, conn able to accept writes),
 // Shutdown returns because the writer acked the abort-frame flush — NOT
-// because the drain timeout expired. Issue #1849 AC: "On a healthy
-// connection, Shutdown returns within ~10ms of the abort frame being
-// flushed" — i.e. the old unconditional 100ms hard sleep is gone.
+// because the drain timeout expired. On a healthy connection, Shutdown
+// returns within about 10ms of the abort frame being flushed. There is no
+// unconditional hard sleep.
 //
 // The assertion is behavioural, on the fake clock, rather than a wall-clock
 // latency budget: the sidecar's drain timer is registered on the injected
@@ -108,9 +108,9 @@ func TestShutdown_AbortFlush_HealthyPath_FastAck(t *testing.T) {
 // TestShutdown_AbortFlush_UnhealthyPath_BoundedByDrainTimeout verifies that
 // when the writer goroutine cannot flush the abort frame (because a prior
 // frame is wedged on a stalled conn), Shutdown blocks until the drain timer
-// fires and then returns. Issue #1849 AC: "On an unhealthy connection (writer
-// goroutine blocked, conn stalled), Shutdown returns within a bounded wait
-// time (≤ 250ms, or the documented ShutdownDrainTimeout)".
+// fires and then returns. On an unhealthy connection (writer goroutine
+// blocked, conn stalled), Shutdown returns within a bounded wait time
+// (≤ 250ms, or the documented ShutdownDrainTimeout).
 //
 // The bound is asserted behaviourally on the fake clock: Shutdown must (a)
 // arm a drain timer with the configured ShutdownDrainTimeout, (b) NOT return
@@ -140,7 +140,7 @@ func TestShutdown_AbortFlush_UnhealthyPath_BoundedByDrainTimeout(t *testing.T) {
 	// Artificially stall the writer goroutine by filling the outbound channel
 	// with a large frame that the writer will block trying to write. The
 	// kernel send buffer for a Unix socket is bounded (typically 208KB on
-	// Linux); we don't read from the peer side, so once the buffer fills the
+	// Linux); the test does not read from the peer side, so once the buffer fills the
 	// writer's c.Write blocks indefinitely.
 	//
 	// Direct enqueue via enqueueHarnessPipeFrame ensures we exercise the same
@@ -321,7 +321,7 @@ func TestShutdown_AbortFlush_AckArrivesAfterFlush(t *testing.T) {
 }
 
 // waitForOutChNonNil polls s.harnessPipeOutCh under the lock until it becomes
-// non-nil (i.e. runStartupSocketPipe has installed the writer goroutine) or
+// non-nil (that is, runStartupSocketPipe has installed the writer goroutine) or
 // the deadline elapses. Fails the test on timeout.
 func waitForOutChNonNil(t *testing.T, s *Sidecar, timeout time.Duration) {
 	t.Helper()

@@ -1,15 +1,13 @@
 package sidecar
 
-// Tests for issue #2341: the pipe-listener error path in
-// runStartupSocketPipe must be diagnostically distinct from a genuine accept
-// timeout.
+// Tests for the pipe-listener error path in runStartupSocketPipe: it must be
+// diagnostically distinct from a genuine accept timeout.
 //
-// Before the fix, acceptTimedOut and acceptListenerErr shared one case in
-// the main reconnect loop. Both produced the same log line ("timed out
+// Without the split, acceptTimedOut and acceptListenerErr share one case in
+// the main reconnect loop. Both produce the same log line ("timed out
 // waiting for extension to (re)connect (timeout=...)") and the same
 // state_change note ("reconnect timeout"), so a SIGTERM-triggered listener
-// close read as a timeout misconfiguration in the sidecar log — the
-// diagnostic problem described in #2340.
+// close reads as a timeout misconfiguration in the sidecar log.
 //
 // The two tests below assert that the two paths are now distinguishable:
 //
@@ -20,12 +18,13 @@ package sidecar
 //   - TestSocketPipe_GenuineTimeout_LogAndNote lets acceptTimeout elapse
 //     without a connection and asserts that the log names the configured
 //     timeout duration and that the state_change note is "reconnect
-//     timeout" (unchanged from pre-#2341 behaviour).
+//     timeout".
 //
 // Both tests also verify that the state=error write lands in the DB before
-// the function returns — the #1760 invariant, preserved on both paths.
+// the function returns — the state-write-before-ctx invariant, preserved on
+// both paths.
 //
-// Isolation follows the #1608 convention: the sidecars are constructed via
+// Isolation follows the isolation convention: the sidecars are constructed via
 // newSocketPipeSidecarWithClock, which sets $XDG_STATE_HOME to a t.TempDir()
 // and PRISM_TEST_MODE_RESTRICT_HOSTAPI=1 before calling sidecar.New.
 
@@ -129,14 +128,14 @@ func assertNoStateChangeNote(t *testing.T, d *db.DB, session, note string) {
 //   - the state_change agent_events row carries the new "pipe listener
 //     error" note (and NOT the "reconnect timeout" note);
 //   - the state=error write is durable in the DB by the time
-//     runStartupSocketPipe returns (the #1760 invariant, applied to the
-//     listener-error branch).
+//     runStartupSocketPipe returns (the state-write-before-ctx invariant,
+//     applied to the listener-error branch).
 func TestSocketPipe_ListenerError_LogAndNote(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, _ := newSocketPipeSidecarWithClock(t, sockPath)
 
 	// Use a long startup timeout so any "timeout" log line in the captured
-	// buffer could only come from the wrong (pre-#2341) code path. If the
+	// buffer could only come from the wrong code path. If the
 	// listener-error branch mistakenly rendered the timeout log line, the
 	// value would still be visible here.
 	sc.cfg.StartupConnectTimeout = 30 * time.Second
@@ -177,7 +176,7 @@ func TestSocketPipe_ListenerError_LogAndNote(t *testing.T) {
 	}
 
 	// Close the listener — this is the shape SIGTERM -> Shutdown() takes on
-	// the real path (#2340). Accept() should return promptly with a
+	// the real path. Accept() should return promptly with a
 	// "use of closed network connection" error, driving the
 	// acceptListenerErr branch.
 	if err := ln.Close(); err != nil {
@@ -203,7 +202,7 @@ func TestSocketPipe_ListenerError_LogAndNote(t *testing.T) {
 
 	logs := getLogs()
 
-	// AC #1: log names the underlying Accept error and does not claim a
+	// The log names the underlying Accept error and does not claim a
 	// timeout fired.
 	if !strings.Contains(logs, "pipe listener error:") {
 		t.Errorf("log missing \"pipe listener error:\" prefix; got:\n%s", logs)
@@ -218,13 +217,13 @@ func TestSocketPipe_ListenerError_LogAndNote(t *testing.T) {
 		t.Errorf("log claimed a timeout fired on a listener-error path; got:\n%s", logs)
 	}
 
-	// AC #2: state_change note distinguishes the two paths.
+	// The state_change note distinguishes the two paths.
 	waitForStateChangeNote(t, sc.cfg.DB, sc.cfg.SessionName, "pipe listener error")
 	assertNoStateChangeNote(t, sc.cfg.DB, sc.cfg.SessionName, "reconnect timeout")
 
-	// AC #4 (part 1): the state=error write lands in agent_status by the
-	// time the function returns — the #1760 invariant is preserved on the
-	// listener-error branch.
+	// The state=error write lands in agent_status by the
+	// time the function returns — the state-write-before-ctx invariant is
+	// preserved on the listener-error branch.
 	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateError) {
 		t.Errorf("agent_status.state = %q after listener error, want %q", state, agent.StateError)
 	}
@@ -232,7 +231,7 @@ func TestSocketPipe_ListenerError_LogAndNote(t *testing.T) {
 
 // TestSocketPipe_GenuineTimeout_LogAndNote drives the acceptTimedOut path by
 // starting the sidecar with a short StartupConnectTimeout and never dialling.
-// It asserts that the pre-#2341 timeout behaviour is unchanged: log names the
+// It asserts the genuine-timeout behaviour: log names the
 // configured timeout duration, and the state_change note remains
 // "reconnect timeout".
 func TestSocketPipe_GenuineTimeout_LogAndNote(t *testing.T) {
@@ -277,7 +276,7 @@ func TestSocketPipe_GenuineTimeout_LogAndNote(t *testing.T) {
 
 	logs := getLogs()
 
-	// AC #3: log line names the configured timeout duration.
+	// The log line names the configured timeout duration.
 	if !strings.Contains(logs, "timed out waiting for extension to (re)connect (timeout=150ms)") {
 		t.Errorf("log missing timeout line with configured duration; got:\n%s", logs)
 	}
@@ -286,12 +285,12 @@ func TestSocketPipe_GenuineTimeout_LogAndNote(t *testing.T) {
 		t.Errorf("log carried a \"pipe listener error:\" line on a genuine-timeout path; got:\n%s", logs)
 	}
 
-	// AC #2 (mirror): the "reconnect timeout" note is unchanged, and the
+	// The "reconnect timeout" note is used, and the
 	// listener-error note MUST NOT appear on this path.
 	waitForStateChangeNote(t, sc.cfg.DB, sc.cfg.SessionName, "reconnect timeout")
 	assertNoStateChangeNote(t, sc.cfg.DB, sc.cfg.SessionName, "pipe listener error")
 
-	// AC #4 (part 2): the state=error write lands in agent_status by the
+	// The state=error write lands in agent_status by the
 	// time the function returns.
 	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateError) {
 		t.Errorf("agent_status.state = %q after genuine timeout, want %q", state, agent.StateError)

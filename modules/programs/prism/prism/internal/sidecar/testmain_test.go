@@ -1,16 +1,15 @@
 package sidecar
 
-// TestMain re-exec stub interception (#2237, residual from #2230).
+// TestMain re-exec stub interception.
 //
 // The host-API handlers in this package re-exec prismBinary() (host_api.go),
 // which falls back to os.Executable() — in tests, THIS test binary — when
 // Config.PrismBinaryPath is unset. Every current test injects the
 // PrismBinaryPath seam, so no test reaches the fallback today; but one
 // forgotten seam would re-exec the sidecar test binary as a full detached
-// suite run — the #2230 landmine class (93 detached test processes observed
-// after a single internal/review run before its TestMain gained the same
-// defence in #2236; this package's binary demonstrably did the same when
-// invoked as `<self> prompt …`: a 47-second full suite run).
+// suite run — the detached-test-process landmine class. This package's binary
+// does the same when invoked as `<self> prompt …`: a full suite run of tens
+// of seconds.
 //
 // Interception, per the convention shared by internal/review,
 // internal/session, internal/integration, and cmd:
@@ -54,8 +53,8 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	if len(os.Args) > 1 && hostAPIReExecSubcommands[os.Args[1]] {
-		// Re-invoked as a prism subcommand without the stub env var (#2230
-		// recursion class, swept in #2237). Exit instead of recursively
+		// Re-invoked as a prism subcommand without the stub env var. Exit
+		// instead of recursively
 		// running the suite.
 		os.Exit(0)
 	}

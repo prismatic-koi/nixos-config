@@ -7,7 +7,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 )
 
-// TestSocketPipe_TurnStartClearsEscalated verifies AC #6: an incoming
+// TestSocketPipe_TurnStartClearsEscalated verifies that an incoming
 // turn_start frame transitions a session out of the "escalated" state back
 // into "active". The state machine must permit escalated→active and the
 // sidecar's PI turn_start handler must perform the upsert unconditionally
@@ -63,7 +63,7 @@ func TestSocketPipe_TurnStartClearsEscalated(t *testing.T) {
 	}
 }
 
-// TestSocketPipe_FinishedDebounceSuppressedWhileEscalated verifies AC #3:
+// TestSocketPipe_FinishedDebounceSuppressedWhileEscalated verifies that
 // while a session is in the escalated state, the sidecar must NOT transition
 // it to finished even when the harness fires state_change{finished}. The
 // session.escalated bus event already informed the coordinator; a finished
