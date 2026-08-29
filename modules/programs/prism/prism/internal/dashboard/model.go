@@ -132,7 +132,7 @@ type Shared struct {
 //   - non-empty    → normal update; replace the list.
 //
 // FilterAgentSessions is responsible for upholding the empty-slice half of
-// the contract: it always returns a non-nil slice. See issue #1859.
+// the contract: it always returns a non-nil slice.
 func (d Shared) ApplySessionsMsg(msg SessionsMsg, snapSession string) (Shared, bool) {
 	d.Loading = false
 	if msg.Sessions != nil {
@@ -344,10 +344,10 @@ var CurrentClientFunc = tmux.CurrentClient
 // which is sound from the pane-resident dashboard process - unlike
 // CurrentClientFunc (display-message), which can leak a client attached to a
 // different session or return an empty string. It is a package var so tests can
-// inject a known client. See issue #2522 (defect 2).
+// inject a known client.
 var resolveDashClientFunc = func() (string, error) { return tmux.ClientForSession(DashSession) }
 
 // switchSessionFunc ensures the named session exists and switches the given
 // client to it. It defaults to ensureSessionAndSwitch and is a package var so
-// tests can intercept the switch without invoking real tmux. See issue #2522.
+// tests can intercept the switch without invoking real tmux.
 var switchSessionFunc = ensureSessionAndSwitch

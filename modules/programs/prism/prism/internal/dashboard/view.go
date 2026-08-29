@@ -16,12 +16,12 @@ import (
 // verdict labels ("code:P  context:·  goal:P  qa:◌  sec:F") after the state
 // column, in alphabetical order by short label. If the available width budget
 // cannot accommodate the labels, they are suppressed entirely and the row
-// falls back to session + state only. See #1802.
+// falls back to session + state only.
 // profileW is the rendered width of the profile column (0 = hidden by the
 // narrow-terminal fallback, see DashView). Review group rows are virtual
 // (not a real spawned session), so the profile cell, when shown, is always
 // blank — the profile tier belongs to the per-agent child sessions, which
-// render via RenderSessionRow and show their own profile there (issue #2640).
+// render via RenderSessionRow and show their own profile there.
 func RenderReviewGroupRow(
 	d Shared,
 	s AgentSession,
@@ -140,7 +140,7 @@ func RenderReviewGroupRow(
 // Width().Render would interact poorly with per-letter colours. The `mode`
 // argument selects which rendering tier to emit — it must match the mode
 // chosen by RenderReviewSummary so the plain mirror has the same width
-// footprint as the coloured form on the unselected render. See #1812.
+// footprint as the coloured form on the unselected render.
 func plainSummaryForBudget(summaries []ReviewChildSummary, mode summaryMode) string {
 	if len(summaries) == 0 || mode == summaryNone {
 		return ""
@@ -201,9 +201,9 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	// valid tier name ("standard", 8 runes). Unlike stateW, profileW is NOT
 	// part of fixedCore: it competes with titleW for the leftover width after
 	// session+state, and is dropped first (see showProfile below) so that a
-	// narrow terminal degrades to session+state only, same as it did before
-	// this column existed (issue #2640) — the fallback the title column
-	// already relied on. stateW stays in fixedCore and is never truncated.
+	// narrow terminal degrades to session+state only — the fallback the title
+	// column already relies on. stateW stays in fixedCore and is never
+	// truncated.
 	const profileW = 8
 
 	// fixedCore is the non-negotiable fixed overhead: leading space + dot +
@@ -218,7 +218,7 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	// available is the width left after session+state; profile takes a fixed
 	// slice of it (dropped when there isn't room), and titleW absorbs
 	// whatever remains — so the profile column takes its width from title,
-	// not from the fixed core (see the design-tension note in the PR body).
+	// not from the fixed core: the profile column is elastic, not fixed-width.
 	available := d.Width - fixedCore - sessionW - 2
 	if available < 0 {
 		available = 0

@@ -1,6 +1,6 @@
 package session
 
-// Agent readiness gate (#1051 Piece A).
+// Agent readiness gate.
 //
 // SpawnSession returns success as soon as it has created the tmux session and
 // kicked off the sidecar. That is "spawned", not "ready": the agent itself runs
@@ -20,10 +20,10 @@ package session
 // agent_status.harness_session_id to a non-NULL value. Either signal is
 // sufficient evidence that the agent is up.
 //
-// The default readiness window is 30 seconds — comfortably longer than the
-// healthy-startup latency observed on real-world hardware (sub-second to ~9s,
-// see #1051 widening comment) but short enough that a never-coming-up agent
-// is surfaced quickly instead of after the 20-minute review monitor timeout.
+// The default readiness window is 30 seconds. This is comfortably longer than
+// the healthy-startup latency observed on real-world hardware (sub-second to
+// ~9s) but short enough that a never-coming-up agent is surfaced quickly
+// instead of after the 20-minute review monitor timeout.
 //
 // This primitive is shared between single-worker `prism spawn` (via
 // SpawnOpts.ReadinessTimeout) and the parallel review fan-out
@@ -45,9 +45,9 @@ import (
 // want the documented default.
 //
 // 30 seconds covers the observed slow-but-eventually-successful startup
-// (~8.5s in the worst case captured in #1051) with a comfortable margin
-// while still surfacing never-coming-up agents quickly relative to the
-// 20-minute review-monitor timeout.
+// (~8.5s in the worst case) with a comfortable margin, while still surfacing
+// never-coming-up agents quickly relative to the 20-minute review-monitor
+// timeout.
 const DefaultReadinessTimeout = 30 * time.Second
 
 // readinessPollInterval is how often WaitForReady samples the DB. 250ms is
@@ -68,10 +68,10 @@ type ReadinessTimeoutError struct {
 	Timeout     time.Duration
 	// Hint, when non-empty, is appended to the error message after the
 	// standard "not ready within <timeout>" prefix. SpawnSession sets this
-	// in #1064's enrichment path (host mode + unusually large launch
-	// command) so the operator sees the prompt-size suspicion alongside
-	// the bare timeout message instead of having to grep through logs to
-	// discover it. Other call sites leave Hint empty and the message stays
+	// on the host-mode enrichment path (host mode plus an unusually large
+	// launch command) so the operator sees the prompt-size suspicion
+	// alongside the bare timeout message, instead of grepping through logs
+	// to find it. Other call sites leave Hint empty and the message stays
 	// unchanged.
 	Hint string
 }
@@ -92,9 +92,8 @@ func IsReadinessTimeout(err error) bool {
 	return errors.As(err, &rte)
 }
 
-// formatTimeout renders a duration the same way the AC text says it should
-// appear: "30s", "1m30s", etc. We never round to nanoseconds in user-facing
-// strings.
+// formatTimeout renders a duration as "30s", "1m30s", and so on. It never
+// rounds to nanoseconds in user-facing strings.
 func formatTimeout(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Round(time.Second).Seconds()))
@@ -107,9 +106,8 @@ func formatTimeout(d time.Duration) string {
 	return fmt.Sprintf("%dm%ds", m, s)
 }
 
-// ReadinessOpts tunes WaitForReadyWithOpts. The zero value reproduces the
-// pre-#1507 behaviour (any state_change or harness_session_id signal
-// satisfies the gate).
+// ReadinessOpts tunes WaitForReadyWithOpts. The zero value selects the loose
+// gate: any state_change or harness_session_id signal satisfies it.
 type ReadinessOpts struct {
 	// Timeout is the deadline for the gate. ≤ 0 falls back to
 	// DefaultReadinessTimeout.
@@ -120,8 +118,8 @@ type ReadinessOpts struct {
 	// that the spawn succeeded, because the agent may transition to
 	// active on harness-handshake completion and then sit idle if the
 	// initial prompt was lost between the spawn driver and the agent's
-	// input queue (issue #1507 Symptom 2 — the "silently broken" mode
-	// where the spawn returns success but the prompt never arrives).
+	// input queue — the "silently broken" mode where the spawn returns
+	// success but the prompt never arrives.
 	//
 	// When true, the gate additionally requires evidence that the
 	// agent is actually processing the prompt:
@@ -138,14 +136,14 @@ type ReadinessOpts struct {
 	RequirePromptDelivered bool
 }
 
-// WaitForReady is the legacy entry point for the readiness gate. It is
-// equivalent to WaitForReadyWithOpts(d, sessionName, ReadinessOpts{Timeout: timeout})
-// — the pre-#1507 "any state_change satisfies the gate" semantics.
+// WaitForReady is the loose entry point for the readiness gate. It is
+// equivalent to WaitForReadyWithOpts(d, sessionName, ReadinessOpts{Timeout: timeout}):
+// any state_change satisfies the gate.
 //
-// New call sites that have an initial prompt should call WaitForReadyWithOpts
-// with RequirePromptDelivered: true so the lost-prompt failure mode
-// (#1507 Symptom 2) surfaces as a *ReadinessTimeoutError instead of a
-// silently-broken "session created" success.
+// New call sites that have an initial prompt must call WaitForReadyWithOpts
+// with RequirePromptDelivered: true, so the lost-prompt failure mode surfaces
+// as a *ReadinessTimeoutError instead of a silently-broken "session created"
+// success.
 //
 // On success returns nil. On timeout returns *ReadinessTimeoutError; check
 // with IsReadinessTimeout. DB-error returns from CurrentStatus / QueryEvents
@@ -239,10 +237,10 @@ func promptReadinessSatisfied(d *db.DB, sessionName string, requirePromptDeliver
 	}
 
 	if !requirePromptDelivered {
-		// Loose path: any state_change is sufficient. This is the legacy
-		// behaviour and the path used by callers that have no prompt to
-		// deliver (or that defer the prompt-delivery question to a later
-		// stage, e.g. the review-monitor's per-agent state poll).
+		// Loose path: any state_change is sufficient. This path serves
+		// callers that have no prompt to deliver, or that defer the
+		// prompt-delivery question to a later stage (for example the
+		// review-monitor's per-agent state poll).
 		evts, evtErr := d.QueryEvents(sessionName, 1, nil, nil, []string{"state_change"})
 		if evtErr == nil && len(evts) > 0 {
 			return true
@@ -284,7 +282,7 @@ func promptReadinessSatisfied(d *db.DB, sessionName string, requirePromptDeliver
 // through to the deadline-based timeout rather than declaring premature
 // success. The deadline at WaitForReadyWithOpts already prevents indefinite
 // hangs, so returning true here is the correct conservative choice for the
-// failure class strict mode was added to catch (lost/corrupted prompts).
+// failure class strict mode catches (lost/corrupted prompts).
 func payloadIsBareActive(payload string) bool {
 	var p struct {
 		State string `json:"state"`

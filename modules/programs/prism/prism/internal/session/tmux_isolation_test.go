@@ -1,7 +1,6 @@
 package session
 
-// Suite-wide tmux isolation for the session package (#2230, pattern from
-// #2214/#2224).
+// Suite-wide tmux isolation for the session package.
 //
 // Production code in this package talks to tmux on nearly every path:
 // Create/setupFullLayout (NewSessionDetached, NewWindow, RenameWindow,
@@ -12,12 +11,11 @@ package session
 // Crucially, every one of those reaches the LIVE host tmux server when no
 // per-test stub is installed: the tmux client falls back to the default
 // socket ($TMUX_TMPDIR/tmux-<uid>/default, /tmp/tmux-<uid>/default when
-// TMUX_TMPDIR is unset) even with $TMUX unset or empty. Historically this
-// package relied on per-test opt-in stubs (spyTmuxBin / failTmuxBin
-// rewriting tmux.TmuxBin) as the ONLY line of defence — the same posture
-// that produced the #1732 leak in internal/review (5 real review-agent
-// sessions on the live server). The suite-wide neutralisation below,
-// applied by TestMain before m.Run():
+// TMUX_TMPDIR is unset) even with $TMUX unset or empty. Per-test opt-in stubs
+// (spyTmuxBin / failTmuxBin rewriting tmux.TmuxBin) alone are not enough: the
+// same posture produced a real session leak in internal/review (5 real
+// review-agent sessions on the live server). The suite-wide neutralisation
+// below, applied by TestMain before m.Run():
 //
 //   1. clears $TMUX, so a socket path inherited from an enclosing live pane
 //      is never used; and
@@ -30,9 +28,10 @@ package session
 //
 // One test in this package intentionally runs a REAL tmux session on the
 // default socket: TestCreate_LayoutFull_FailsFastOnEmptyPIExtensionDir's
-// LayoutBare subtest (session_test.go). Before #2230 that session was
-// created on the LIVE host server; under the redirect, tmux auto-starts a
-// private throwaway server inside the redirected $TMUX_TMPDIR instead, and
+// LayoutBare subtest (session_test.go). Without the redirect that session
+// would be created on the LIVE host server; under the redirect, tmux
+// auto-starts a private throwaway server inside the redirected $TMUX_TMPDIR
+// instead, and
 // the server exits when the subtest's KillSession removes its only session.
 // That is why the redirected directory must have a SHORT path: tmux sockets
 // are Unix domain sockets and sun_path is ~104 bytes on Darwin, and
@@ -98,7 +97,7 @@ func isolateSuiteFromHostTmux() (restore func()) {
 }
 
 // TestSuiteTmuxIsolation_HostServerUnreachable is the deterministic
-// regression guard for the #1732 leak class (#2230). It asserts that, under
+// regression guard for the tmux session-leak class. It asserts that, under
 // the TestMain-level neutralisation:
 //
 //   - the env redirect is actually in effect ($TMUX cleared, $TMUX_TMPDIR
@@ -117,8 +116,7 @@ func isolateSuiteFromHostTmux() (restore func()) {
 // socket.
 //
 // Verified non-vacuous by no-opping the isolateSuiteFromHostTmux call in
-// TestMain and observing this test fail against a live host server (see PR
-// for #2230).
+// TestMain and observing this test fail against a live host server.
 func TestSuiteTmuxIsolation_HostServerUnreachable(t *testing.T) {
 	if isoTmuxTmpdir == "" {
 		t.Fatal("isoTmuxTmpdir is empty — TestMain did not apply isolateSuiteFromHostTmux before m.Run() (#2230)")

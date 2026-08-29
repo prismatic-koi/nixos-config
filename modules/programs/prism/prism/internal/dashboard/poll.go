@@ -41,7 +41,7 @@ func FetchSessionsFromDB() tea.Msg {
 	// Fetch profile tiers (instance_id → spawn_inputs.profile_name) in a
 	// single batch query so the profile column doesn't cost an extra
 	// per-session round-trip. Best-effort: nil map on error just renders the
-	// NULL-profile placeholder for every row (issue #2640).
+	// NULL-profile placeholder for every row.
 	profileNames, _ := d.AllProfileNames()
 
 	// Get client counts from tmux for the attachment dot indicator.
@@ -56,7 +56,7 @@ func FetchSessionsFromDB() tea.Msg {
 	sessions = FilterAgentSessions(sessions)
 
 	// Attach last-assistant messages for per-agent review sessions so the
-	// virtual review-group row can derive per-child verdicts (#1795). We
+	// virtual review-group row can derive per-child verdicts. We
 	// fetch GroupResultsAll once per unique review group_id — review groups
 	// are bounded in number, so this is a small fixed cost per refresh.
 	attachReviewLastMessages(d, sessions)
@@ -73,10 +73,9 @@ func FetchSessionsFromDB() tea.Msg {
 // GroupResultsAll, not GroupResults: this is a display read, so it must keep
 // showing an agent's verdict for the whole time the round is on the dashboard,
 // including after its agent_status row is closed (ended_at IS NOT NULL) by the
-// 15-minute release (#2649). The narrow GroupResults read drops closed rows —
-// its escape-hatch semantics exist for the monitor's verdict aggregation, not
-// for the dashboard — so it blanked the glyph to pending once a round aged out
-// (#2862, the third instance of this class after #2584/#2594 and #2649).
+// 15-minute release. The narrow GroupResults read drops closed rows — its
+// escape-hatch semantics exist for the monitor's verdict aggregation, not for
+// the dashboard — so it would blank the glyph to pending once a round aged out.
 //
 // One GroupResultsAll() call per unique review group_id. Review groups are
 // bounded in number, so this is a small fixed cost per FetchSessionsFromDB
@@ -117,7 +116,7 @@ func attachReviewLastMessages(d *db.DB, sessions []AgentSession) {
 // FetchGitHubStats calls gh api via GraphQL to get the viewer's open PR count.
 // Runs as a tea.Cmd so it never blocks the render loop.
 func FetchGitHubStats() tea.Msg {
-	// GitLab guardrail (#2669): this poll queries the gh-authenticated
+	// GitLab guardrail: this poll queries the gh-authenticated
 	// GitHub viewer, which is meaningless (and can shell gh against a repo
 	// it cannot resolve) when the current directory's origin is gitlab.com.
 	// Skip cleanly with a log line rather than surfacing a false GitHub
@@ -208,7 +207,7 @@ func DashSocketPath() string {
 //
 // Both dashboard modes use this watcher: the popup calls it directly, and the
 // persistent dashboard calls it via StartPersistentWatchers alongside the
-// push-event socket listener (issue #2522, defect 3).
+// push-event socket listener.
 func WatchDashboardSentinel(ctx context.Context, p *tea.Program) {
 	sentinelPath := DashSentinelPath()
 	var lastMod time.Time
@@ -300,8 +299,8 @@ func StartSocketListener(ctx context.Context, p *tea.Program) (net.Listener, err
 //     the next SessionSyncTick.
 //
 // Push events cannot add or remove rows, so the sentinel watcher is required
-// for the persistent dashboard to keep pace with the popup (issue #2522,
-// defect 3). It returns the socket listener for teardown; on socket-creation
+// for the persistent dashboard to keep pace with the popup. It returns the
+// socket listener for teardown; on socket-creation
 // error the sentinel watcher is still started and the error is returned for the
 // caller to log.
 func StartPersistentWatchers(ctx context.Context, p *tea.Program) (net.Listener, error) {

@@ -46,19 +46,18 @@ type AgentSession struct {
 	// session, when available. It is populated only for per-agent review
 	// sessions (i.e. those with a non-empty ReviewRoundKey) so that
 	// BuildDisplayRows can derive per-child verdicts when constructing the
-	// virtual review-group row. Empty for all other rows. See #1795.
+	// virtual review-group row. Empty for all other rows.
 	LastMessage string
 	// ReviewChildSummaries is populated on virtual IsReviewGroup rows. One
 	// entry per canonical review agent in the order returned by
 	// review.Agents(). Empty on non-group rows. See review_summary.go for
-	// the rendering helpers. See #1795.
+	// the rendering helpers.
 	ReviewChildSummaries []ReviewChildSummary
 	// ProfileName is the prism spawn profile tier (light/standard/heavy/max)
 	// this session was spawned with, read from spawn_inputs.profile_name via
 	// the instance_id join. Empty when no spawn_inputs row exists, the
 	// column is NULL (spawned without --profile, or predating the
-	// spawn_inputs write path — #2092 / #2093), or the row is a virtual
-	// review-group row. See issue #2640.
+	// spawn_inputs write path), or the row is a virtual review-group row.
 	ProfileName string
 }
 
@@ -71,7 +70,7 @@ type AgentSession struct {
 // pre-date the profile-column wiring, or the value is not needed).
 func StatusToAgentSession(s db.Status, clientCounts map[string]int, groupParents map[string]string, profileNames map[string]string) AgentSession {
 	// DisplayTitle folds agent_status.issue_ref in front of the title so the
-	// reference is visible on the dashboard rather than write-only (#2683).
+	// reference is visible on the dashboard rather than write-only.
 	title := s.DisplayTitle()
 	agentName := ""
 	if s.AgentName != nil {
@@ -402,11 +401,10 @@ func SortDisplayed(ss []AgentSession) {
 	//   - Depth-2 child of @branch: "repo\x01<parent-branch>\x00<label>"
 	//     — sorts immediately after the parent branch (in the \x01 band)
 	//
-	// The critical fix: depth-2 children of @main previously used
-	// "repo\x01@main\x00<label>", which sorted them after ALL depth-1
-	// branch sessions (because \x01@main > \x01@anything-earlier). They now
-	// use the parent's own sort key (the \x00 band) with the label appended,
-	// so they appear directly after @main in the display list.
+	// Depth-2 children of @main must use the parent's own sort key (the \x00
+	// band) with the label appended, so they appear directly after @main in the
+	// display list. A key of "repo\x01@main\x00<label>" would sort them after
+	// ALL depth-1 branch sessions (because \x01@main > \x01@anything-earlier).
 	//
 	// Parent attribution uses s.ParentSession (DB-backed, the single source of
 	// truth) when available, falling back to Depth2ParentBranch (name heuristic)
@@ -571,7 +569,7 @@ func SessionColumnWidth(sessions []AgentSession) int {
 // distinguish "DB error, preserve last-known sessions" (nil, set by
 // FetchSessionsFromDB on error) from "successful fetch returned zero
 // non-meta sessions" (empty non-nil, which must clear the displayed list).
-// See issue #1859 and the nil-guard in Shared.ApplySessionsMsg.
+// See the nil-guard in Shared.ApplySessionsMsg.
 func FilterAgentSessions(all []AgentSession) []AgentSession {
 	out := make([]AgentSession, 0, len(all))
 	for _, s := range all {
@@ -609,7 +607,7 @@ func TmuxClientCounts() map[string]int {
 // The row layout is session, state, profile, title — separated by two-space
 // gaps. profileW and titleW may be 0, in which case that slot is omitted
 // entirely (profileW==0 and titleW==0 together is the narrow-terminal
-// fallback: session + state only; see DashView, issue #2640).
+// fallback: session + state only; see DashView).
 func RenderSessionRow(
 	d Shared,
 	s AgentSession,
@@ -676,7 +674,7 @@ func RenderSessionRow(
 	title := s.AgentTitle
 	// For an expanded per-agent review child, agent_status.title is the first
 	// heading of the spawn prompt ("## Context for your review"), which carries
-	// no information on the dashboard. Show the agent's verdict instead (#2862).
+	// no information on the dashboard. Show the agent's verdict instead.
 	if trailingReviewAgent(s.Name) != "" {
 		title = reviewChildVerdictLabel(classifyVerdict(s.AgentState, s.LastMessage))
 	}
@@ -685,8 +683,9 @@ func RenderSessionRow(
 	}
 
 	// Profile tier the session was spawned with. An explicit "-" placeholder
-	// stands in for a NULL profile_name (spawned without --profile, or a
-	// pre-#2092/#2093 row) so the cell never reads as an empty-string bug.
+	// stands in for a NULL profile_name (spawned without --profile, or a row
+	// predating the spawn_inputs write path) so the cell never reads as an
+	// empty-string bug.
 	profile := s.ProfileName
 	if profile == "" {
 		profile = "-"

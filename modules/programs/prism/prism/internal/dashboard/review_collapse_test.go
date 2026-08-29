@@ -685,8 +685,7 @@ func TestDashView_CollapseStateDoesNotPersistAcrossInvocations(t *testing.T) {
 
 // TestRenderReviewGroupRow_TreeConnectorStyleSplit verifies that in the
 // non-selected path the tree connector uses styleFg and the indicator+label
-// uses styleDim. This exercises the fix for issue #837 (the tree connector was
-// previously rendered entirely in styleDim/blue).
+// uses styleDim. The tree connector must use styleFg, not styleDim/blue.
 //
 // Strategy: force lipgloss to TrueColor mode so we can observe ANSI escape
 // sequences, then supply distinct placeholder colours for styleFg and styleDim.

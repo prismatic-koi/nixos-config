@@ -13,8 +13,8 @@ package dashboard
 //
 // The canonical five-agent set is read from review.Agents() in
 // internal/review/agents.go — never duplicated here. The display order of
-// the rendered labels is alphabetical by short label (see #1802); the
-// canonical agent list is unchanged.
+// the rendered labels is alphabetical by short label; the canonical agent
+// list is unchanged.
 
 import (
 	"sort"
@@ -35,7 +35,7 @@ const (
 	// VerdictPassWithDisagreement is review-goal's PASS_WITH_DISAGREEMENT
 	// marker: the round passes but the reviewer records an unresolved concern
 	// for the coordinator (agents/review-goal.md). Rendered distinctly from a
-	// plain pass and from pending (#2862).
+	// plain pass and from pending.
 	VerdictPassWithDisagreement = "pass_with_disagreement"
 )
 
@@ -95,7 +95,7 @@ func ShortAgentName(fullName string) string {
 // contains `<verdict>fail</verdict>`, and "" otherwise.
 //
 // The marker rule itself lives in internal/verdict — the single stdlib-only
-// leaf shared with internal/db and internal/review (#2862). This function only
+// leaf shared with internal/db and internal/review. This function only
 // maps verdict.Kind onto the dashboard's Verdict* value space.
 func ParseVerdict(lastMessage string) string {
 	switch verdict.Parse(lastMessage) {
@@ -123,7 +123,7 @@ func ParseVerdict(lastMessage string) string {
 // message has no <verdict> marker is treated as VerdictPending — the rollup
 // only commits to PASS/FAIL when the marker is present.
 //
-// An `interrupted` agent is a fault, not an empty slot (#2868): it never
+// An `interrupted` agent is a fault, not an empty slot: it never
 // reaches the marker-parsing step and is mapped to VerdictError alongside
 // `error`.
 func classifyVerdict(state, lastMessage string) string {
@@ -191,7 +191,7 @@ func BuildReviewChildSummaries(children []AgentSession) []ReviewChildSummary {
 
 	// Sort alphabetically by short label for display. The canonical agent
 	// set is unchanged (still review.Agents()); only the display order is
-	// derived. See AC #1802.
+	// derived.
 	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].AgentShortName < out[j].AgentShortName
 	})
@@ -221,7 +221,7 @@ func trailingReviewAgent(sessionName string) string {
 // trailing per-agent verdict segment on a collapsed review-group row. The
 // caller (RenderReviewGroupRow) and the plain-text mirror used inside the
 // selected-row bar must agree on the mode so their width footprints stay
-// in sync. See #1812.
+// in sync.
 type summaryMode int
 
 const (
@@ -241,7 +241,7 @@ const (
 // draws these Nerd Font codicons wider than one cell needs a free following
 // cell to render the glyph at full size; every icon except the last already
 // gets that room from the two-space separator that follows it, but the last
-// icon sits at end of line with nothing after it (#2882). This is the only
+// icon sits at end of line with nothing after it. This is the only
 // place the trailing column count is written -- reviewSummaryLabelsWidth,
 // reviewSummaryCompactWidth, renderLabels, renderCompact, and
 // plainSummaryForBudget (view.go) all reference this constant rather than a
@@ -254,7 +254,7 @@ const reviewSummaryTrailingPad = " "
 // RenderReviewSummary to decide whether the labels fit in the remaining
 // width budget.
 //
-// Each verdict renders as a two-column codicon (#2868), so the icon's
+// Each verdict renders as a two-column codicon, so the icon's
 // contribution to the width is measured with lipgloss.Width on the rendered
 // icon cell rather than assumed to be a single rune/column.
 func reviewSummaryLabelsWidth(summaries []ReviewChildSummary) int {
@@ -276,8 +276,7 @@ func reviewSummaryLabelsWidth(summaries []ReviewChildSummary) int {
 // icon-only segment for the given summaries (e.g. "        ").
 // Each verdict icon is measured with lipgloss.Width on its rendered
 // two-column cell, and adjacent icons are separated by two spaces, matching
-// the wide form's separator. Peer of reviewSummaryLabelsWidth. See #1812,
-// #2868.
+// the wide form's separator. Peer of reviewSummaryLabelsWidth.
 func reviewSummaryCompactWidth(summaries []ReviewChildSummary) int {
 	if len(summaries) == 0 {
 		return 0
@@ -294,7 +293,7 @@ func reviewSummaryCompactWidth(summaries []ReviewChildSummary) int {
 }
 
 // reviewChildVerdictLabel returns the full-word verdict label shown in the
-// title column of an expanded per-agent review child row (#2862). Unlike the
+// title column of an expanded per-agent review child row. Unlike the
 // icon form on the collapsed group row, this is spelled out because
 // the title column has the width for it and the row has no other verdict cue.
 func reviewChildVerdictLabel(v string) string {
@@ -315,10 +314,8 @@ func reviewChildVerdictLabel(v string) string {
 }
 
 // letterForVerdict returns the per-agent codicon for a verdict, as a Nerd
-// Font glyph (#2868). Written as a Go Unicode escape — never a literal
-// Private Use Area character, which does not survive a copy through most
-// tools. See the Required mapping table in issue #2868 for the source of
-// each codepoint.
+// Font glyph. Write each as a Go Unicode escape — never a literal Private Use
+// Area character, which does not survive a copy through most tools.
 func letterForVerdict(v string) string {
 	switch v {
 	case VerdictPass:
@@ -357,8 +354,8 @@ func colorForVerdict(v string) string {
 
 // renderIconCell renders the verdict icon for v as a two-column cell: the
 // codicon in its verdict colour, padded to a fixed display width of 2 so it
-// renders at full size instead of being scaled down into a single column
-// (#2868). Callers measure the cell's contribution to the width budget with
+// renders at full size instead of being scaled down into a single column.
+// Callers measure the cell's contribution to the width budget with
 // lipgloss.Width on this rendered string rather than assuming a column
 // count, so the padding width is the only place a "2" is written.
 func renderIconCell(v string) string {
@@ -369,7 +366,7 @@ func renderIconCell(v string) string {
 // plainIconCell renders the verdict icon for v padded to the same two-column
 // cell as renderIconCell, without colour. Used by the plain-text mirror in
 // view.go (plainSummaryForBudget) so its width matches the coloured render's
-// width exactly, per #1812 / #2868.
+// width exactly.
 func plainIconCell(v string) string {
 	return lipgloss.NewStyle().Width(2).Render(letterForVerdict(v))
 }
@@ -379,7 +376,7 @@ func plainIconCell(v string) string {
 // width, and the rendering mode chosen for the given budget so the caller
 // can keep its selected-row mirror in sync.
 //
-// Width-budget tiers (see #1812):
+// Width-budget tiers:
 //
 //   - `budget >= labelsW` → summaryFull: the alphabetical labels form
 //     (agent short name + ":" + verdict icon, for every agent).
@@ -426,7 +423,7 @@ func renderLabels(summaries []ReviewChildSummary) string {
 // ANSI-coloured string: each verdict icon is rendered in its colorForVerdict
 // colour (matching the wide form's palette), with two-space separators
 // between icons. The alphabetical short-label order of `summaries`
-// (produced by BuildReviewChildSummaries) is preserved. See #1812.
+// (produced by BuildReviewChildSummaries) is preserved.
 func renderCompact(summaries []ReviewChildSummary) string {
 	var b strings.Builder
 	for i, s := range summaries {
