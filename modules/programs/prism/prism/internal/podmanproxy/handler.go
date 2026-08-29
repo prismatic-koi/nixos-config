@@ -93,12 +93,11 @@ func (p *Proxy) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// inspectCreate may have rewritten the body and/or the URL query
-	// when the cycle-7 Name-prefix policy injected an auto-prefixed
-	// Name. The injection branch writes the same name into BOTH
-	// channels so the upstream sees a consistent name no matter
-	// which channel (libpod body Name vs docker-compat ?name=) its
-	// handler reads. When either rewritten field is empty the
-	// original is forwarded unchanged.
+	// when the Name-prefix policy injected an auto-prefixed Name. The
+	// injection branch writes the same name into BOTH channels so the
+	// upstream sees a consistent name no matter which channel (libpod
+	// body Name vs docker-compat ?name=) its handler reads. When either
+	// rewritten field is empty the original is forwarded unchanged.
 	forwardBody := body
 	if res.rewrittenBody != nil {
 		forwardBody = res.rewrittenBody

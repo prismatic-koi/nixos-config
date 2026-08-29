@@ -30,8 +30,9 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 }
 
 // writeUnavailable writes the friendly upstream-unavailable envelope.
-// The body shape is locked by the parent issue's AC; do not reword it
-// without updating both #2317 and #2318.
+// The tests in proxy_security_test.go assert that the message names the
+// platform recovery commands. Keep the "podman machine start" and
+// "systemctl --user status podman.socket" substrings when you edit it.
 func writeUnavailable(w http.ResponseWriter, reason string) {
 	msg := "podman socket unavailable: " + reason +
 		"; on macOS run 'podman machine start', on Linux check 'systemctl --user status podman.socket'"

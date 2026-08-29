@@ -11,9 +11,8 @@ import (
 // encoding/json's struct-field iteration order, which gives a stable
 // shape for downstream log consumers.
 //
-// AC reference (#2318): "Every accepted and rejected request emits
-// exactly one line to the configured audit io.Writer with fields
-// timestamp, method, endpoint, decision, reason as JSON."
+// Every accepted or rejected request emits exactly one line with the
+// fields timestamp, method, endpoint, decision, and reason.
 type auditLine struct {
 	Timestamp string `json:"timestamp"`
 	Method    string `json:"method"`
@@ -24,7 +23,7 @@ type auditLine struct {
 
 // auditDecision* constants name the values the `decision` audit field
 // may take. There are exactly two: every request is either an allow or
-// a deny — upstream availability is NOT a separate decision; an allowed
+// a deny. Upstream availability is not a separate decision. An allowed
 // request whose upstream is unreachable still audits as "allow".
 const (
 	auditAllow = "allow"
@@ -36,10 +35,10 @@ const (
 // goroutines: writes are serialised by p.auditMu so two simultaneous
 // audit lines never interleave on the wire.
 //
-// emitAudit is called exactly once per request. The placement of those
-// calls in serveHTTP is the source of truth for the "exactly one line
-// per request" AC — do not add additional call sites from inside the
-// upstream-error handler or any downstream policy helper.
+// emitAudit must be called exactly once per request. The call sites in
+// serveHTTP are the source of truth for the "exactly one line per
+// request" rule. Do not add call sites from inside the upstream-error
+// handler or any downstream policy helper.
 func (p *Proxy) emitAudit(r *http.Request, decision, reason string) {
 	if p.cfg.AuditWriter == nil {
 		return

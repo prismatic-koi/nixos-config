@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Tests for the non-security ACs in #2318:
+// Tests for the non-security behaviour:
 //
 //   - NewProxy returns nil + non-nil error on missing required Config.
 //   - NewProxy returns *Proxy + nil error on a valid Config.
@@ -280,10 +280,10 @@ func TestIsVersionSegment(t *testing.T) {
 
 // ─────────────────────── isAllowedBindSource ───────────────────────────
 
-// As of cycle 4, these tests use REAL paths because isAllowedBindSource
-// now calls filepath.EvalSymlinks (which errors on paths that do not
-// exist). The scaffold creates a /tmp/<rand>/ tree with sibling
-// directories so each behavioural case maps to a real on-disk layout.
+// These tests use REAL paths because isAllowedBindSource calls
+// filepath.EvalSymlinks, which errors on paths that do not exist. The
+// scaffold creates a /tmp/<rand>/ tree with sibling directories so
+// each behavioural case maps to a real on-disk layout.
 func TestIsAllowedBindSource(t *testing.T) {
 	base, err := os.MkdirTemp("/tmp", "iabs")
 	if err != nil {

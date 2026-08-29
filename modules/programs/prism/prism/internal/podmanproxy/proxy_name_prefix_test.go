@@ -1,9 +1,9 @@
 package podmanproxy
 
-// Cycle-7 / #2324 tests for the container-name auto-prefix policy.
+// Tests for the container-name auto-prefix policy.
 //
 // The policy lives in policy.go::applyContainerNamePolicy and is gated
-// on Config.ContainerNamePrefix. These tests cover the four documented
+// on Config.ContainerNamePrefix. These tests cover the documented
 // branches:
 //
 //   1. Prefix empty (back-compat) — body forwards unchanged.
@@ -16,11 +16,10 @@ package podmanproxy
 // The injection tests verify the rewritten body on the UPSTREAM side
 // (via fakeUpstream.lastBody) so the round-trip from policy decision
 // through handler body-restore to upstream forward is end-to-end
-// covered. Per the cycle-6 schema-inversion discipline (see
-// policy.go top-of-file comment), value-level checks added to an
-// already-admitted schema field need a revert-and-watch-fail test:
-// the matching "explicit Name without prefix" deny case is the
-// load-bearing assertion for that discipline.
+// covered. A value-level check on an already-admitted schema field
+// needs a revert-and-watch-fail test: the matching "explicit Name
+// without prefix" deny case is the load-bearing assertion for that
+// discipline.
 
 import (
 	"bytes"
@@ -38,7 +37,7 @@ import (
 // startProxyWithPrefix stands up a proxy harness identical to
 // startProxy but with the supplied ContainerNamePrefix wired in.
 // Other policy fields are left at their defaults; bind sources are
-// empty because the cycle-7 tests do not exercise HostConfig at all
+// empty because the tests here do not exercise HostConfig at all
 // (every test body is `{"Image": "alpine"}` only).
 func startProxyWithPrefix(t *testing.T, fu *fakeUpstream, prefix string) *proxyHarness {
 	t.Helper()
@@ -60,7 +59,7 @@ func startProxyWithPrefix(t *testing.T, fu *fakeUpstream, prefix string) *proxyH
 
 // postCreateRaw posts an arbitrary JSON body to /containers/create.
 // Unlike postCreate (which fabricates an Image+HostConfig shape), this
-// helper lets the cycle-7 tests express body shape directly so
+// helper lets these tests express body shape directly so
 // "Name absent" vs "Name empty string" vs "Name with value" are
 // expressible as plain maps.
 func postCreateRaw(t *testing.T, sock string, body any) *http.Response {
@@ -142,7 +141,7 @@ func TestNamePrefix_MissingName_Injects(t *testing.T) {
 	}
 	// The injected suffix must be exactly 8 hex chars from crypto/rand
 	// so the cleanup sweep can target the strict form
-	// ^prism-<session>-[a-f0-9]{8}$. (Step 7 of #2317.)
+	// ^prism-<session>-[a-f0-9]{8}$.
 	suffix := strings.TrimPrefix(got, prefix)
 	if len(suffix) != 8 {
 		t.Errorf("injected suffix %q has length %d, want 8", suffix, len(suffix))
@@ -242,11 +241,11 @@ func TestNamePrefix_Injects_UniqueAcrossCalls(t *testing.T) {
 // configured prefix is rejected with 403 and the audit log records
 // the reason "name_prefix_mismatch".
 //
-// This is the load-bearing test for the cycle-7 value-level check.
-// Per the cycle-6 discipline (see policy.go), value-level checks on
-// already-admitted fields must be paired with a test that fails when
-// the production check is removed — see the matching revert-watch
-// exercise in TestNamePrefix_NonMatchingName_Denied_RevertGuard.
+// This is the load-bearing test for the value-level check. A
+// value-level check on an already-admitted field is paired with a
+// test that fails when the production check is removed — see the
+// matching revert-watch exercise in
+// TestNamePrefix_NonMatchingName_Denied_RevertGuard.
 func TestNamePrefix_NonMatchingName_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	prefix := "prism-prism-test@deny-"
@@ -269,10 +268,10 @@ func TestNamePrefix_NonMatchingName_Denied(t *testing.T) {
 
 	// Audit log must record the structured reason. The audit
 	// envelope is one JSON line per request — we read the last line
-	// and check its `reason` field. The cycle-7 v2 implementation
-	// distinguishes body-side from query-side mismatches in the
-	// audit so an operator can tell which channel the agent used;
-	// the body-side reason is `name_prefix_mismatch_body`.
+	// and check its `reason` field. The implementation distinguishes
+	// body-side from query-side mismatches in the audit so an operator
+	// can tell which channel the agent used; the body-side reason is
+	// `name_prefix_mismatch_body`.
 	if got := lastAuditReason(t, h.audit); got != "name_prefix_mismatch_body" {
 		t.Errorf("audit reason: got %q, want \"name_prefix_mismatch_body\"", got)
 	}
@@ -302,7 +301,7 @@ func TestNamePrefix_MatchingName_Forwarded(t *testing.T) {
 }
 
 // TestNamePrefix_NonMatchingName_Denied_RevertGuard is the
-// revert-and-watch-fail discipline check for the cycle-7 name-prefix
+// revert-and-watch-fail discipline check for the name-prefix
 // policy. The test temporarily replaces randomHexSuffix with a panic
 // stub so the inject branch CANNOT silently accept a non-matching
 // Name; if the production prefix check is ever removed, the body
@@ -333,20 +332,18 @@ func TestNamePrefix_NonMatchingName_Denied_RevertGuard(t *testing.T) {
 	}
 }
 
-// ── round-2 fixes: ?name= query parameter on /containers/create ──────────
+// ── ?name= query parameter on /containers/create ──────────
 //
-// review-security and review-context both flagged that
-// applyContainerNamePolicy on round 1 inspected only the body Name,
-// not the URL query. Docker-compat clients (and `docker run --name`
-// against DOCKER_HOST=podman.sock, which Step 4 of #2317 wires into
-// the bwrap sandbox) set the name via `?name=` with NO body Name. The
-// fix inspects both channels, and on the inject branch writes the
-// auto-generated name into BOTH the body Name AND the URL query so
-// the upstream sees a consistent name regardless of which it reads.
+// applyContainerNamePolicy inspects both the body Name and the URL
+// query. Docker-compat clients (and `docker run --name` against
+// DOCKER_HOST=podman.sock) set the name via `?name=` with NO body
+// Name. On the inject branch the proxy writes the auto-generated name
+// into BOTH the body Name AND the URL query so the upstream sees a
+// consistent name regardless of which it reads.
 
 // postCreateRawWithQuery is the same as postCreateRaw but lets the
 // test set arbitrary URL-query parameters on the request — used by
-// the round-2 query-name tests. body=nil sends `{}` so the upstream
+// the query-name tests. body=nil sends `{}` so the upstream
 // (when reached) gets a valid empty JSON object.
 func postCreateRawWithQuery(t *testing.T, sock string, query url.Values, body any) *http.Response {
 	t.Helper()
@@ -383,13 +380,13 @@ func readUpstreamRequest(t *testing.T, fu *fakeUpstream) (rawQuery string, body 
 	return rawQuery, body
 }
 
-// TestNamePrefix_QueryName_NonMatching_Denied verifies the round-2
-// security fix: a request with `?name=<not-prefixed>` is rejected
+// TestNamePrefix_QueryName_NonMatching_Denied verifies the query-name
+// security check: a request with `?name=<not-prefixed>` is rejected
 // with 403 + audit reason `name_prefix_mismatch_query`. The body has
 // no Name field — only the query carries a (mismatching) value, so
-// without the round-2 fix this case would silently fall through into
-// the inject branch and end up with a docker-compat container named
-// after the query value instead of the injected body Name.
+// without the query-name check this case would silently fall through
+// into the inject branch and end up with a docker-compat container
+// named after the query value instead of the injected body Name.
 func TestNamePrefix_QueryName_NonMatching_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
 	prefix := "prism-prism-test@query-deny-"
@@ -441,8 +438,8 @@ func TestNamePrefix_QueryName_Matching_Allowed(t *testing.T) {
 // URL query. The upstream test stub captures both channels and the
 // assertion is that they carry the SAME injected value.
 //
-// This is the cycle-7 round-2 fix for the docker-compat path:
-// without the query-side injection, docker-compat would either pick
+// This closes the docker-compat path: without the query-side
+// injection, docker-compat would either pick
 // the empty query (and generate a random name like
 // "interesting_curie") or honour the query over the body and end up
 // with the agent's empty name. Either way the cleanup sweep filter
@@ -538,7 +535,7 @@ func TestNamePrefix_QueryName_BodyName_Both_Allowed(t *testing.T) {
 }
 
 // TestNamePrefix_QueryName_NonMatching_Denied_RevertGuard is the
-// revert-and-watch-fail discipline check for the round-2 query-name
+// revert-and-watch-fail discipline check for the query-name
 // inspection. Replaces randomHexSuffix with a panic stub so if the
 // production code stops inspecting `?name=` and falls into the
 // inject branch on a non-matching query value, the panic surfaces.
@@ -559,13 +556,12 @@ func TestNamePrefix_QueryName_NonMatching_Denied_RevertGuard(t *testing.T) {
 	}
 }
 
-// ── round-2 fixes: POST /containers/{id}/rename inspected ────────────────
+// ── POST /containers/{id}/rename inspected ────────────────
 //
-// review-security flagged that POST /containers/{id}/rename was
-// classified as endpointAllow with no inspection — a one-call escape
-// from the auto-prefix policy. The fix reclassifies it as
-// endpointPolicyRename and validates the `?name=` query against the
-// configured ContainerNamePrefix.
+// POST /containers/{id}/rename is classified as endpointPolicyRename
+// and validates the `?name=` query against the configured
+// ContainerNamePrefix. Without inspection it would be a one-call
+// escape from the auto-prefix policy.
 
 // postRename is a tiny helper for the rename endpoint. The endpoint
 // has no body per docker spec, so the request body is empty.
@@ -672,20 +668,17 @@ func TestRename_NonMatching_Denied_RevertGuard(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
-// ── round-3 fix: case-variant body "name" bypass (review-security) ────────
+// ── case-variant body "name" bypass ────────
 //
-// review-security on PR #2332 round 2 found a third-channel bypass
-// in injectNameIntoBody: the function added a canonical "Name" key
-// but did not strip case-variants like lowercase "name". Go's
-// encoding/json struct decoder matches keys case-INsensitively with
-// last-wins, and json.Marshal sorts map keys alphabetically with
-// uppercase before lowercase — so a lowercase "name":"" survived in
-// the re-marshalled body and overwrote the canonical Name on the
-// upstream side, leaving the container with a random podman-
-// generated name that the cleanup sweep regex cannot match.
-//
-// The fix strips every case-variant of "Name" from the map before
-// adding the canonical key.
+// injectNameIntoBody strips every case-variant of "Name" from the
+// map before adding the canonical key. Without the strip there is a
+// third-channel bypass: Go's encoding/json struct decoder matches
+// keys case-INsensitively with last-wins, and json.Marshal sorts map
+// keys alphabetically with uppercase before lowercase — so a
+// lowercase "name":"" would survive in the re-marshalled body and
+// overwrite the canonical Name on the upstream side, leaving the
+// container with a random podman-generated name that the cleanup
+// sweep regex cannot match.
 
 // readUpstreamBodyMap parses the most-recent upstream-side body as
 // a generic map and returns it. Used by the case-variant tests to
@@ -707,9 +700,9 @@ func readUpstreamBodyMap(t *testing.T, fu *fakeUpstream) map[string]any {
 // readUpstreamName_StructDecode parses the upstream body using the
 // SAME case-insensitive last-wins discipline podman's struct
 // decoders use, returning the value the upstream would see for the
-// container Name. This is the load-bearing assertion for the round-3
-// fix: it must equal the injected prefix, NOT the empty case-variant
-// value the agent supplied.
+// container Name. This is the load-bearing assertion for the
+// case-variant strip: it must equal the injected prefix, NOT the
+// empty case-variant value the agent supplied.
 func readUpstreamName_StructDecode(t *testing.T, fu *fakeUpstream) string {
 	t.Helper()
 	raw, _ := fu.lastBody.Load().([]byte)
@@ -726,7 +719,7 @@ func readUpstreamName_StructDecode(t *testing.T, fu *fakeUpstream) string {
 }
 
 // TestNamePrefix_LowercaseName_Inject_NoLeftoverCaseVariant verifies
-// the round-3 fix: a body with lowercase `"name":""` triggers the
+// the case-variant strip: a body with lowercase `"name":""` triggers the
 // inject branch (the struct decoder normalises case-insensitively
 // and sees empty). After rewrite, the upstream body must:
 //
@@ -821,7 +814,7 @@ func TestNamePrefix_MixedCaseName_Inject_NoLeftoverCaseVariant(t *testing.T) {
 }
 
 // TestNamePrefix_CaseVariantBodyName_StructDecodeRevertGuard is the
-// revert-and-watch-fail discipline check for the round-3 fix.
+// revert-and-watch-fail discipline check for the case-variant strip.
 // Validates that struct-decoding the upstream-side body lands on
 // the injected prefix and NOT on the empty case-variant value — if
 // the case-variant strip in injectNameIntoBody is removed, the
