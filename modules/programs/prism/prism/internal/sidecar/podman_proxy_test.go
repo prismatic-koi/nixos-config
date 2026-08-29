@@ -9,8 +9,8 @@ package sidecar
 //
 //   - a non-existent path, exercising the friendly 503 envelope from the
 //     proxy package without a real podman dependency, OR
-//   - an httptest-style upstream stub (not exercised here yet -- Step 3 only
-//     needs to prove that the sidecar STARTS the proxy and forwards the
+//   - an httptest-style upstream stub (not exercised here -- these tests only
+//     need to prove that the sidecar STARTS the proxy and forwards the
 //     dial-failure case correctly; deeper request-shape tests live in the
 //     podmanproxy package).
 //
