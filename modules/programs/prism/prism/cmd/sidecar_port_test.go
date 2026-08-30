@@ -1,17 +1,17 @@
 package cmd
 
 // sidecar_port_test.go — regression tests for the harness_port
-// double-allocation race (issue #2357).
+// double-allocation race.
 //
-// Pre-#2357, the sidecar's useTCP startup branch (sandbox-exec pi sessions)
-// called db.AllocatePort a second time — after the spawn/restore path had
-// already allocated a port and written it to agent_status.harness_port. The
-// used-port query did not exclude the session's own row, so the second
-// allocation always picked a different port and overwrote the column. `prism
+// If the sidecar's useTCP startup branch (sandbox-exec pi sessions) calls
+// db.AllocatePort a second time — after the spawn/restore path has already
+// allocated a port and written it to agent_status.harness_port — and the
+// used-port query does not exclude the session's own row, the second
+// allocation picks a different port and overwrites the column. `prism
 // agent-run` does a one-shot read of harness_port and bakes
-// PRISM_HARNESS_PIPE into PI's immutable env; when that read landed before
-// the sidecar's overwrite, PI was left dialling a port nobody binds — the
-// session ran headless (aws-kubernetes@main incident).
+// PRISM_HARNESS_PIPE into PI's immutable env; when that read lands before
+// the sidecar's overwrite, PI is left dialling a port nobody binds — the
+// session runs headless.
 //
 // These tests drive the same DB-level sequence the production paths execute
 // and assert the invariant: the port agent-run injects equals the port the
@@ -51,12 +51,11 @@ func readHarnessPort(t *testing.T, d *db.DB, session string) int {
 }
 
 // TestResolveHarnessPipeTCPPort_SpawnPath_AgentRunReadsBeforeSidecar is the
-// core #2357 regression: the spawn path allocates a port, agent-run's
+// core regression: the spawn path allocates a port, agent-run's
 // one-shot read executes BEFORE the sidecar's startup port resolution would
 // have run, and the sidecar must still end up binding the exact port
-// agent-run read. Pre-fix, resolveHarnessPipeTCPPort's predecessor
-// (an unconditional d.AllocatePort) returned a different port and overwrote
-// the column, breaking the invariant.
+// agent-run read. An unconditional d.AllocatePort here would return a
+// different port and overwrite the column, breaking the invariant.
 func TestResolveHarnessPipeTCPPort_SpawnPath_AgentRunReadsBeforeSidecar(t *testing.T) {
 	d := openSidecarPortTestDB(t)
 	const session = "prism-test@2357-spawn"
@@ -92,7 +91,7 @@ func TestResolveHarnessPipeTCPPort_SpawnPath_AgentRunReadsBeforeSidecar(t *testi
 	}
 
 	// The column must not have been overwritten with a different value after
-	// the pane launched (issue #2357 AC).
+	// the pane launched.
 	if after := readHarnessPort(t, d, session); after != envPort {
 		t.Errorf("harness_port overwritten after pane launch: got %d, want %d", after, envPort)
 	}

@@ -1,11 +1,11 @@
 package cmd
 
-// Tests for --agent-role flag default change (issue #776).
+// Tests for the --agent-role flag default.
 //
-// Before the fix, --agent-role defaulted to "worker", which caused every
-// host-mode session to be labelled agent: worker in the DB regardless of the
-// actual agent that ran. The fix changes the default to "" so that host-mode
-// sessions defer to SSE-based inference.
+// The --agent-role flag defaults to "" so that host-mode sessions defer to
+// SSE-based inference. A non-empty default ("worker") would label every
+// host-mode session agent: worker in the DB regardless of the actual agent
+// that ran.
 
 import (
 	"testing"
@@ -15,7 +15,7 @@ import (
 // on sidecarCmd defaults to "" (empty string) after the fix. A non-empty
 // default ("worker") would cause every host-mode session to be labelled
 // "worker" in the DB, regardless of the actual agent name emitted by the agent
-// SSE events (issue #776).
+// SSE events.
 func TestSidecarFlag_AgentRoleDefaultIsEmpty(t *testing.T) {
 	flag := sidecarCmd.Flags().Lookup("agent-role")
 	if flag == nil {

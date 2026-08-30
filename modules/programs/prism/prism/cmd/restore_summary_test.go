@@ -1,5 +1,5 @@
 // Tests for the aggregate "restore complete: ..." summary line emitted at
-// the end of `prism restore` (issue #1527). The line must always be printed,
+// the end of `prism restore`. The line must always be printed,
 // even when there are zero sessions to restore, so callers can grep for the
 // totals reliably.
 

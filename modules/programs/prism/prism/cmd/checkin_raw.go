@@ -2,7 +2,7 @@ package cmd
 
 // checkin_raw.go — raw event rendering paths:
 //   - renderCheckinEventsRaw: used when --types is explicitly set
-//   - renderChildEvent: single child event in legacy raw style
+//   - renderChildEvent: single child event in raw style
 //   - renderChildEventVerbose: single child event with full args/results
 //   - renderChildEventsDefault: paired tool one-liners in default mode
 //   - renderProxiedCheckin: renders checkin data returned by the host-API /checkin endpoint
@@ -157,11 +157,11 @@ func renderCheckinEventsRaw(session string, d *db.DB, events []db.Event, verbose
 }
 
 // displayArgs returns a human-readable string for a tool_call's
-// args field. Post-#1783 Args is a json.RawMessage; when it's a
-// JSON string literal we unwrap the quotes (so `"echo hi"` displays
-// as `echo hi`), otherwise we echo the raw JSON. Empty / null
-// inputs degrade to an empty string. Pure-string fallback preserves
-// pre-#1783 forensic output for unrecognised tool shapes.
+// args field. Args is a json.RawMessage; when it is a JSON string
+// literal we unwrap the quotes (so `"echo hi"` displays as `echo hi`),
+// otherwise we echo the raw JSON. Empty / null inputs degrade to an
+// empty string. The pure-string fallback preserves forensic output
+// for unrecognised tool shapes.
 func displayArgs(args json.RawMessage) string {
 	if len(args) == 0 {
 		return ""
@@ -177,7 +177,7 @@ func displayArgs(args json.RawMessage) string {
 	return s
 }
 
-// renderChildEvent prints a single child event using the legacy raw-event style.
+// renderChildEvent prints a single child event using the raw-event style.
 // Used by renderCheckinEventsRaw (--types path) and renderProxiedCheckin.
 // prefix is prepended before the leading spaces (used for subagent indentation).
 func renderChildEvent(eventType, rawPayload string, verbose bool, prefix string) {
@@ -321,16 +321,15 @@ func renderChildEventVerbose(eventType, rawPayload string, prefix string) {
 //   - todowrite: (dim or omit key arg) | ✓
 //
 // Tool results are matched positionally to tool calls of the same tool name
-// within the message. Permission and thinking events are rendered as before.
+// within the message. Permission and thinking events are rendered separately.
 func renderChildEventsDefault(children []childEventItem, prefix string) {
 	// Split children into tool_calls, tool_results (by id for pairing),
 	// and other events (permission_ask, permission_denied, thinking).
 	//
-	// Post-#1783 pairing strategy: payload.ToolCall and ToolResult
-	// share an `id` field (the extension's toolCallId). Pair on id.
-	// A tool_result whose id has no matching tool_call (e.g. parent
-	// scrolled out) is rendered as an orphan line beneath the tool
-	// calls, preserving the previous unpaired-result rendering.
+	// Pairing strategy: payload.ToolCall and ToolResult share an `id`
+	// field (the extension's toolCallId). Pair on id. A tool_result
+	// whose id has no matching tool_call (e.g. parent scrolled out) is
+	// rendered as an orphan line beneath the tool calls.
 	type toolCallEntry struct {
 		id      string
 		tool    string
@@ -429,13 +428,12 @@ func renderChildEventsDefault(children []childEventItem, prefix string) {
 //
 //	{"session":"<name>", "state":"<state>", "events":[...db.Event...]}
 //
-// NOTE: This function uses the legacy raw-event rendering (separate tool_call
+// NOTE: This function uses the raw-event rendering (separate tool_call
 // and tool_result lines) rather than the rich default one-liner format. The
 // sidecar /checkin endpoint returns flat raw events, and the assistant-turn-centric
 // pairing logic used by renderCheckinTurns requires either a live DB connection
 // or a secondary query to resolve children by messageId — both of which are
-// unavailable in the proxy context. Upgrading this path to match the rich default
-// is tracked as future work.
+// unavailable in the proxy context.
 func renderProxiedCheckin(raw []byte, verbose bool) error {
 	var resp struct {
 		Session string     `json:"session"`

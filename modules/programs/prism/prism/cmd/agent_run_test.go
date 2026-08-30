@@ -69,17 +69,17 @@ func TestApplyInitialPromptEnvVar_SpecialChars(t *testing.T) {
 	}
 }
 
-// TestApplyInitialPromptEnvVar_FilePath verifies the post-#1092 file-based
-// delivery path: when PRISM_INITIAL_PROMPT_FILE points to a readable file,
+// TestApplyInitialPromptEnvVar_FilePath verifies the file-based delivery
+// path: when PRISM_INITIAL_PROMPT_FILE points to a readable file,
 // applyInitialPromptEnvVar reads the file and assigns its contents to
-// InitialPrompt. This is the regression test for the launch-command size
-// failure on review fan-outs — the role prompt is now delivered via a file
-// instead of inlined into the tmux pane env.
+// InitialPrompt. The role prompt is delivered via a file instead of inlined
+// into the tmux pane env, which avoids the launch-command size failure on
+// review fan-outs.
 func TestApplyInitialPromptEnvVar_FilePath(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "initial-prompt.txt")
 	// A 24 KB body to demonstrate that the file path carries arbitrary
-	// content sizes — the same shape that tripped #1092 when inlined.
+	// content sizes — the shape that fails when inlined.
 	body := strings.Repeat("review-context system prompt body ", 720)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -124,7 +124,7 @@ func TestApplyInitialPromptEnvVar_FilePathMissing(t *testing.T) {
 	t.Setenv("PRISM_INITIAL_PROMPT_FILE", "/nonexistent/path/initial-prompt.txt")
 	// The inline fallback should NOT kick in here either — the explicit
 	// file path takes precedence even when the read fails. This matches
-	// the contract: `…_FILE` is the post-#1092 shape; if it is set the
+	// the contract: `…_FILE` is the file-path shape; if it is set the
 	// caller has chosen the file path and a stale inline value would not
 	// be the right substitute.
 	t.Setenv("PRISM_INITIAL_PROMPT", "should not be used as fallback")
@@ -279,8 +279,8 @@ func TestAgentRunLogFileCreation_LogDirCreated(t *testing.T) {
 // session package to resolve the log path, exercising the same code path as
 // runAgentRun without requiring a real DB or bwrap binary. Delegating to the
 // real session.AgentRunLogPath ensures this helper stays in sync with the
-// production scheme (e.g. the SessionDirName-based hashed directory from
-// #1050) — re-implementing the path construction here would silently mask
+// production scheme (e.g. the SessionDirName-based hashed directory) —
+// re-implementing the path construction here would silently mask
 // regressions in the production path layout.
 func agentRunLogPathFromEnv(sessionName string) (string, error) {
 	return prismsession.AgentRunLogPath(sessionName)
@@ -303,8 +303,8 @@ func TestAgentRunLog_TeeCapture(t *testing.T) {
 
 	// Resolve the per-session log path via the same helper agent-run uses,
 	// so this test exercises the production path layout (hashed per-session
-	// directory after #1050) rather than re-asserting an old layout that no
-	// longer matches production.
+	// directory) rather than re-asserting a layout that does not match
+	// production.
 	logPath, err := prismsession.AgentRunLogPath("myrepo@feat")
 	if err != nil {
 		t.Fatalf("AgentRunLogPath: %v", err)
@@ -443,23 +443,22 @@ func containsAt(s, substr string) bool {
 // present.
 func TestValidateSandboxExecArgs_OK(t *testing.T) {
 	// PrepareSandboxExec creates the per-session work dir and writes the
-	// ssh-config / gitconfig / allowed_signers files into it. Since PR #2277,
+	// ssh-config / gitconfig / allowed_signers files into it.
 	// sessionWorkDirPath honours $XDG_STATE_HOME first and falls back to
 	// $HOME/.local/state — so on a developer machine whose shell exports
 	// XDG_STATE_HOME=$HOME/.local/state, setting HOME alone does not
-	// redirect the work dir off the host's real state tree (issue #2295).
+	// redirect the work dir off the host's real state tree.
 	// Redirect both: XDG_STATE_HOME so the session work dir lands in a
 	// tempdir, and HOME so home-derived MkdirAlls (e.g. ~/.local/share/pi/
 	// prism-sessions/<name>) succeed inside the homeless-shelter nix-build
-	// sandbox (AGENTS.md § "the homeless-shelter failure class" + issue
-	// #2168).
+	// sandbox (AGENTS.md § "the homeless-shelter failure class").
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	m := container.New(container.Config{
 		SessionName:   "repo@feat",
 		AllocatedPort: 14010,
-		// Required since #1960: writeGitconfig refuses to start a session
-		// without [user] in the gitconfig (otherwise git falls back to
+		// Required: writeGitconfig refuses to start a session without [user]
+		// in the gitconfig (otherwise git falls back to
 		// `<sandbox-user>@<sandbox-host>` inside the sandbox).
 		GitUserName:  "test-user",
 		GitUserEmail: "test@example.com",
@@ -480,19 +479,19 @@ func TestValidateSandboxExecArgs_OK(t *testing.T) {
 	}
 }
 
-// TestValidateSandboxExecArgs_MissingProfile verifies the edge-case AC:
-// when the profile-temp file is missing or unreadable, validation returns a
-// clear error containing the path and the underlying stat error.
+// TestValidateSandboxExecArgs_MissingProfile verifies that when the
+// profile-temp file is missing or unreadable, validation returns a clear
+// error containing the path and the underlying stat error.
 func TestValidateSandboxExecArgs_MissingProfile(t *testing.T) {
 	// Redirect $XDG_STATE_HOME and $HOME so PrepareSandboxExec writes into
 	// tempdirs rather than the host's real state tree. See
-	// TestValidateSandboxExecArgs_OK for the rationale (issue #2295).
+	// TestValidateSandboxExecArgs_OK for the rationale.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	m := container.New(container.Config{
 		SessionName:   "repo@gone",
 		AllocatedPort: 14011,
-		// Required since #1960 — see TestValidateSandboxExecArgs_OK.
+		// Required — see TestValidateSandboxExecArgs_OK.
 		GitUserName:  "test-user",
 		GitUserEmail: "test@example.com",
 	})
@@ -541,11 +540,11 @@ func TestValidateSandboxExecArgs_BadShape(t *testing.T) {
 	}
 }
 
-// ── [timing] markers (#1052) ────────────────────────────────────────────────
+// ── [timing] markers ────────────────────────────────────────────────────────
 
 // TestLogTimingTo_WritesToLogFile verifies that logTimingTo writes a single
 // `[timing] <phase>: <duration>` line to the supplied log file (with a
-// trailing newline). This is the core invariant for AC #1: the bwrap and
+// trailing newline). This is the core invariant: the bwrap and
 // sandbox-exec dispatch paths must leave at least pre-exec / args-build
 // markers in the agent-run log even when the launch later fails.
 func TestLogTimingTo_WritesToLogFile(t *testing.T) {

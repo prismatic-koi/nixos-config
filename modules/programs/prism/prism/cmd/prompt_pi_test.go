@@ -1,7 +1,6 @@
 package cmd
 
-// prompt_pi_test.go — tests for the PI socket-pipe routing in `prism prompt`
-// (P2.SPAWN, #1212).
+// prompt_pi_test.go — tests for the PI socket-pipe routing in `prism prompt`.
 //
 // The host-side `prism prompt <pi-session>` CLI cannot use the harness HTTP
 // API path (PI sessions have no harness_port). Instead it must dial the

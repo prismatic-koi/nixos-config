@@ -1,8 +1,8 @@
 package cmd
 
 // checkin_review.go — review-round summary paths:
-//   - runCheckinReviewRoundsByGroup: DB-backed path (post-migration sessions)
-//   - runCheckinReviewRounds: legacy name-prefix scan (pre-migration fallback)
+//   - runCheckinReviewRoundsByGroup: DB-backed path (sessions with a session_groups row)
+//   - runCheckinReviewRounds: name-prefix scan (fallback for sessions with no group row)
 
 import (
 	"encoding/json"
@@ -14,15 +14,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// runCheckinReviewRoundsByGroup is the DB-backed replacement for
-// runCheckinReviewRounds. Instead of using a name-prefix scan, it queries
+// runCheckinReviewRoundsByGroup is the DB-backed path. It queries
 // session_groups.parent_session to find all review agent sessions belonging to
 // groups owned by parentSession.
 //
-// This is the authoritative path for post-migration sessions where group_id is
-// populated. Falls back to the name-prefix path when no group members are found.
+// This is the authoritative path when group_id is populated. Falls back to the
+// name-prefix path when no group members are found.
 func runCheckinReviewRoundsByGroup(parentSession string, verbose bool) error {
-	// Non-verbose summary: gate the aggregate read (issue #2628). Inside a
+	// Non-verbose summary: gate the aggregate read. Inside a
 	// sandbox, the direct openDB() below fails, so proxy through the
 	// host-API sidecar, which applies the same predicate server-side.
 	if !verbose {
@@ -43,7 +42,7 @@ func runCheckinReviewRoundsByGroup(parentSession string, verbose bool) error {
 	}
 
 	if len(members) == 0 {
-		// No group members — fall back to the legacy name-prefix scan.
+		// No group members — fall back to the name-prefix scan.
 		fmt.Fprintf(os.Stderr, "[deprecation] checkin: no group members found for %q via DB — falling back to name-prefix scan\n", parentSession)
 		return runCheckinReviewRounds(parentSession+"~review", verbose)
 	}
@@ -113,11 +112,11 @@ func runCheckinReviewRoundsByGroup(parentSession string, verbose bool) error {
 // runCheckinReviewRounds handles `prism checkin <parent>~review` — a prefix
 // match that lists all review agent sessions for the parent, grouped by round.
 //
-// Supports both the new per-agent session shape (PR-C):
+// Supports both the per-agent session shape:
 //
 //	<parent>~review-<N>-<agent>
 //
-// and old-shape round sessions (pre-PR-C):
+// and the older round-session shapes:
 //
 //	<parent>~review-<N>          (pure integer suffix — old round session)
 //	<parent>~review-<N>~<agent>  (old agent sub-session)
@@ -129,8 +128,8 @@ func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
 	// are "nixos-config@feature~review-1-review-goal", etc.
 	roundPrefix := reviewPrefix + "-"
 
-	// Non-verbose summary: gate the aggregate read (issue #2628), same as
-	// the DB-backed path above. This is the pre-migration name-prefix
+	// Non-verbose summary: gate the aggregate read, same as
+	// the DB-backed path above. This is the name-prefix
 	// fallback, reached only when the DB-backed path found no group members
 	// for the parent, so it is deliberately direct-route only — a session
 	// with no session_groups rows has nothing for the host-API endpoint to
@@ -297,7 +296,7 @@ func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
 
 // renderCheckinReviewSummaryProxied renders the non-verbose
 // `prism checkin <parent>~review` aggregate summary via the host-API
-// GET /checkin/review-summary endpoint (issue #2628). Used on the proxy route
+// GET /checkin/review-summary endpoint. Used on the proxy route
 // (PRISM_HOST_API set) in place of the direct-DB rendering in
 // runCheckinReviewRoundsByGroup, since the sidecar applies
 // authz.AuthorizeCheckinReviewAggregate before returning any member data.

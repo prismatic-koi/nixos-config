@@ -108,8 +108,8 @@ func userPayload(msgID, text string) string {
 	return fmt.Sprintf(`{"messageId":%q,"text":%q}`, msgID, text)
 }
 
-// toolCallPayload returns a tool_call JSON payload in the post-#1787
-// pi-extension wire shape: {name, id, parentMessageId, args}.
+// toolCallPayload returns a tool_call JSON payload in the pi-extension wire
+// shape: {name, id, parentMessageId, args}.
 //
 // `id` is the tool-call id (the per-invocation UUID the pi extension
 // emits, used to pair this tool_call with its tool_result). For
@@ -167,9 +167,8 @@ func isJSONValueLiteral(s string) bool {
 }
 
 // toolResultPayload returns a tool_result JSON payload in the
-// post-#1787 pi-extension wire shape: {id, parentMessageId,
-// success, output}. See `toolCallPayload` for the rationale on
-// the shared msgID stand-in.
+// pi-extension wire shape: {id, parentMessageId, success, output}. See
+// `toolCallPayload` for the rationale on the shared msgID stand-in.
 // `tool` is accepted for backward-compat with existing call sites
 // but is no longer part of the wire format; it is silently dropped.
 func toolResultPayload(msgID, tool, result string) string {
@@ -187,8 +186,8 @@ func permDeniedPayload(msgID, tool string) string {
 	return fmt.Sprintf(`{"messageId":%q,"tool":%q}`, msgID, tool)
 }
 
-// TestRenderCheckinTurns_AllAssistantTurnsShown verifies AC-1:
-// given 1 msg_user and 5 msg_assistant events, all 5 assistant turns appear.
+// TestRenderCheckinTurns_AllAssistantTurnsShown verifies that given 1
+// msg_user and 5 msg_assistant events, all 5 assistant turns appear.
 func TestRenderCheckinTurns_AllAssistantTurnsShown(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -227,8 +226,8 @@ func TestRenderCheckinTurns_AllAssistantTurnsShown(t *testing.T) {
 	}
 }
 
-// TestRenderCheckinTurns_ToolChildrenIndented verifies AC-2:
-// each assistant turn is followed by its own indented tool one-liner children.
+// TestRenderCheckinTurns_ToolChildrenIndented verifies that each assistant
+// turn is followed by its own indented tool one-liner children.
 // In default mode, tool_call and tool_result are paired into a single line.
 func TestRenderCheckinTurns_ToolChildrenIndented(t *testing.T) {
 	d := openCheckinTestDB(t)
@@ -290,8 +289,8 @@ func TestRenderCheckinTurns_ToolChildrenIndented(t *testing.T) {
 	}
 }
 
-// TestRenderCheckinTurns_LastN verifies AC-3:
-// passing last=3 returns exactly 3 most-recent assistant turns.
+// TestRenderCheckinTurns_LastN verifies that passing last=3 returns exactly
+// 3 most-recent assistant turns.
 func TestRenderCheckinTurns_LastN(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -333,8 +332,8 @@ func TestRenderCheckinTurns_LastN(t *testing.T) {
 	}
 }
 
-// TestRenderCheckinTurns_DefaultLast10 verifies AC-4:
-// no --last flag shows the last 10 assistant turns when >10 exist.
+// TestRenderCheckinTurns_DefaultLast10 verifies that no --last flag shows the
+// last 10 assistant turns when >10 exist.
 func TestRenderCheckinTurns_DefaultLast10(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -378,9 +377,9 @@ func TestRenderCheckinTurns_DefaultLast10(t *testing.T) {
 	}
 }
 
-// TestRenderCheckinTurns_UserEventsInWindow verifies AC-5 and AC-6:
-// msg_user events within the assistant-turn time window are included;
-// those outside the window are not.
+// TestRenderCheckinTurns_UserEventsInWindow verifies that msg_user events
+// within the assistant-turn time window are included; those outside the
+// window are not.
 func TestRenderCheckinTurns_UserEventsInWindow(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -435,8 +434,8 @@ func TestRenderCheckinTurns_UserEventsInWindow(t *testing.T) {
 	}
 }
 
-// TestRenderCheckinTurns_StateHeader verifies AC-7:
-// state header is rendered first.
+// TestRenderCheckinTurns_StateHeader verifies that the state header is
+// rendered first.
 func TestRenderCheckinTurns_StateHeader(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -470,9 +469,9 @@ func TestRenderCheckinTurns_StateHeader(t *testing.T) {
 	}
 }
 
-// TestRenderCheckinTurns_MultipleUserTurns verifies AC-8:
-// sessions with multiple user turns each followed by multiple assistant turns
-// render correctly.
+// TestRenderCheckinTurns_MultipleUserTurns verifies that sessions with
+// multiple user turns each followed by multiple assistant turns render
+// correctly.
 func TestRenderCheckinTurns_MultipleUserTurns(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -528,8 +527,8 @@ func TestRenderCheckinTurns_MultipleUserTurns(t *testing.T) {
 	}
 }
 
-// TestRenderCheckinTurns_PermissionEvents verifies AC-9:
-// permission_ask and permission_denied rendered under their assistant turn.
+// TestRenderCheckinTurns_PermissionEvents verifies that permission_ask and
+// permission_denied are rendered under their assistant turn.
 func TestRenderCheckinTurns_PermissionEvents(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -558,8 +557,8 @@ func TestRenderCheckinTurns_PermissionEvents(t *testing.T) {
 	}
 }
 
-// TestRenderCheckinTurns_NoToolChildren verifies AC-15:
-// an assistant turn with no tool children renders without indented lines.
+// TestRenderCheckinTurns_NoToolChildren verifies that an assistant turn with
+// no tool children renders without indented lines.
 func TestRenderCheckinTurns_NoToolChildren(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -583,8 +582,8 @@ func TestRenderCheckinTurns_NoToolChildren(t *testing.T) {
 	}
 }
 
-// TestRenderCheckinTurns_VerboseNoTruncation verifies AC-17:
-// --verbose disables truncation of tool args/results.
+// TestRenderCheckinTurns_VerboseNoTruncation verifies that --verbose disables
+// truncation of tool args/results.
 func TestRenderCheckinTurns_VerboseNoTruncation(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -622,8 +621,9 @@ func TestRenderCheckinTurns_VerboseNoTruncation(t *testing.T) {
 	}
 }
 
-// TestRunCheckinSession_NoAssistantEventsButHasUserEvents verifies AC-14:
-// session with msg_user but zero msg_assistant shows only header + footer, exits 0.
+// TestRunCheckinSession_NoAssistantEventsButHasUserEvents verifies that a
+// session with msg_user but zero msg_assistant shows only header + footer and
+// exits 0.
 func TestRunCheckinSession_NoAssistantEventsButHasUserEvents(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -655,9 +655,8 @@ func TestRunCheckinSession_NoAssistantEventsButHasUserEvents(t *testing.T) {
 	}
 }
 
-// TestRunCheckinSession_TypesRoutesToRaw verifies AC-10:
-// --types routes to the raw event path (runCheckinSessionRaw), not the
-// assistant-anchored path.
+// TestRunCheckinSession_TypesRoutesToRaw verifies that --types routes to the
+// raw event path (runCheckinSessionRaw), not the assistant-anchored path.
 func TestRunCheckinSession_TypesRoutesToRaw(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -905,15 +904,14 @@ func TestFormatDuration(t *testing.T) {
 }
 
 // TestRenderCheckinTurns_PreMigrationNoRootAgent verifies that when no
-// root_agent_name is set (pre-migration rows), all turns render inline
-// without collapsing.
+// root_agent_name is set, all turns render inline without collapsing.
 func TestRenderCheckinTurns_PreMigrationNoRootAgent(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
 	base := time.Now().Truncate(time.Second)
 
-	// Do NOT call setRootAgent — simulate a pre-migration session with
-	// no root_agent_name in agent_status.
+	// Do NOT call setRootAgent — simulate a session with no root_agent_name
+	// in agent_status.
 
 	// Two turns that have different agent fields in payload.
 	msg1ID := "msg-1"
@@ -1007,8 +1005,8 @@ func TestRenderCheckinTurns_SubagentUserEventsCollapsed(t *testing.T) {
 	}
 }
 
-// TestRunCheckinSession_LegacyFallbackNoAssistantNoUser verifies AC-13:
-// when no DB rows exist at all for the session, falls back to legacy
+// TestRunCheckinSession_LegacyFallbackNoAssistantNoUser verifies that when no
+// DB rows exist at all for the session, checkin falls back to legacy
 // (which will error because tmux is unavailable in tests — that's acceptable;
 // we just verify it doesn't panic and the error is from the legacy path).
 func TestRunCheckinSession_LegacyFallbackNoRows(t *testing.T) {

@@ -21,10 +21,9 @@ package cmd
 //
 //   - Proxy route (PRISM_HOST_API set — a sandboxed caller):
 //     requireCoordinator on the host-API /investigate endpoint, which
-//     answers HTTP 403 (issue #2588, PR #2596).
+//     answers HTTP 403.
 //   - Direct route (PRISM_HOST_API unset — a host-isolation caller):
-//     requireInvestigateCoordinator below, which returns a non-zero exit
-//     (issue #2597).
+//     requireInvestigateCoordinator below, which returns a non-zero exit.
 //
 // Both routes must stay gated. When you change either one, change the other
 // in the same edit.
@@ -144,9 +143,9 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 }
 
 // requireInvestigateCoordinator is the direct-CLI half of the
-// coordinator-only gate on `prism investigate` (issue #2597).
+// coordinator-only gate on `prism investigate`.
 //
-// PR #2596 gated the host-API `/investigate` endpoint with
+// The host-API `/investigate` endpoint is gated with
 // requireCoordinator, so a sandboxed caller (bwrap, sandbox-exec) is refused
 // with HTTP 403 — every sandboxed session carries PRISM_HOST_API, so every
 // call from one routes through that endpoint. A session in `host` isolation
@@ -183,13 +182,13 @@ See: modules/programs/prism/agents/coordinator.md`, invokerSession)
 }
 
 // spawnInvestigateSessionWithDB is the DB-injected core of
-// spawnInvestigateSession, extracted in #2113 so tests can drive the
-// SpawnOpts construction against an isolated DB (sidecartest.NewIsolated)
-// without going through openDB() / a real prism.db.
+// spawnInvestigateSession, so tests can drive the SpawnOpts construction
+// against an isolated DB (sidecartest.NewIsolated) without going through
+// openDB() / a real prism.db.
 func spawnInvestigateSessionWithDB(database *db.DB, invokerSession, promptText, suppliedName string) error {
 	// Guard: coordinator-only. This is the sole chokepoint on the direct CLI
 	// path — runInvestigate returns early when PRISM_HOST_API is set, so the
-	// proxy path is untouched and keeps its own HTTP 403 gate (#2597).
+	// proxy path is untouched and keeps its own HTTP 403 gate.
 	if err := requireInvestigateCoordinator(invokerSession, database); err != nil {
 		return err
 	}
@@ -204,7 +203,7 @@ func spawnInvestigateSessionWithDB(database *db.DB, invokerSession, promptText, 
 	// into the tmux pane. bwrap and sandbox-exec set PRISM_HARNESS_PIPE via
 	// their own paths (bwrap.go --setenv, sandbox-exec profile, podman --env);
 	// only inject here for host mode. Mirrors the same block in spawn.go,
-	// switch.go, and restore.go (issue #2111).
+	// switch.go, and restore.go.
 	if hShape, hShapeOK := harness.ShapeOf(harnessName); hShapeOK && hShape == harness.TransportSocketPipe && string(isoMode) == "host" {
 		if pipePath, pipeErr := session.SidecarHarnessPipePath(spawnOpts.SessionName); pipeErr == nil {
 			spawnOpts.HarnessPipeSockPath = pipePath
@@ -224,17 +223,17 @@ func spawnInvestigateSessionWithDB(database *db.DB, invokerSession, promptText, 
 // buildInvestigateSpawnOpts resolves everything spawnInvestigateSessionWithDB
 // needs to know about the child session BEFORE the heavyweight
 // session.SpawnSession call (which touches tmux, sidecar, and port
-// allocation). Extracted from spawnInvestigateSessionWithDB in #2097 so the
-// profile-inheritance path can be unit-tested without spinning up the real
-// spawn machinery — the test calls this helper with a seeded DB and asserts
-// on the returned SpawnOpts.ProfileName.
+// allocation). This helper isolates the profile-inheritance path so it can be
+// unit-tested without spinning up the real spawn machinery — the test calls
+// this helper with a seeded DB and asserts on the returned
+// SpawnOpts.ProfileName.
 //
 // The returned SpawnOpts.ProfileName carries the resolved profile from the
 // invoker session via profile.InheritFromParent — see the inline comment
 // block below for the precedence rationale.
 //
 // isolation mode and harness name are returned alongside the SpawnOpts so
-// the #2111 HarnessPipeSockPath pre-computation step (which keys off both)
+// the HarnessPipeSockPath pre-computation step (which keys off both)
 // stays in spawnInvestigateSessionWithDB without re-resolving them.
 func buildInvestigateSpawnOpts(database *db.DB, invokerSession, promptText, suppliedName string) (session.SpawnOpts, config.IsolationMode, string, error) {
 	status, err := database.CurrentStatus(invokerSession)
@@ -265,8 +264,8 @@ func buildInvestigateSpawnOpts(database *db.DB, invokerSession, promptText, supp
 	}
 
 	// Resolve the profile the child investigate session should inherit
-	// from its invoker (issue #2097). The precedence is identical to the
-	// worker layer's #2092 chain:
+	// from its invoker. The precedence is identical to the
+	// worker layer's chain:
 	//
 	//   1. Invoker's `spawn_inputs.profile_name` (highest, e.g. an
 	//      `--abtest` leg's per-leg profile).
@@ -302,22 +301,22 @@ func buildInvestigateSpawnOpts(database *db.DB, invokerSession, promptText, supp
 		// name is validated up front). Feeding it into SpawnOpts lets the
 		// spawn_intent / spawn_failed events written by SpawnSession name
 		// the invoker in their payload and lets the failure path address a
-		// bus_messages audit row back to them (#2364).
+		// bus_messages audit row back to them.
 		InvokerSession: invokerSession,
-		// spawn_inputs audit (#2087): record the agent role on the audit row
+		// spawn_inputs audit: record the agent role on the audit row
 		// so investigate spawns show up in `prism stats` group-by queries
 		// alongside `prism spawn` / `prism pr` rows.
 		AgentFlag:   "investigate",
 		HarnessFlag: harnessName,
 		// ProfileName carries the inherited profile through to the child's
-		// `spawn_inputs.profile_name` row (issue #2097). The child's
-		// runtime populatePIConfig reads that column via the #2092 chain
+		// `spawn_inputs.profile_name` row. The child's
+		// runtime populatePIConfig reads that column via the profile chain
 		// and resolves to the same models the invoker was spawned with,
 		// instead of the host default.
 		ProfileName: resolvedProfile,
 		// spawn_inputs.isolation_flag: record the resolved isolation mode
 		// so investigate spawns surface alongside `prism spawn` rows in the
-		// stats compare "Spawn Inputs" block (issue #2102 Layer 2).
+		// stats compare "Spawn Inputs" block.
 		IsolationFlag:    string(isoMode),
 		Layout:           session.LayoutAgentOnly,
 		IsolationMode:    string(isoMode),
@@ -326,7 +325,7 @@ func buildInvestigateSpawnOpts(database *db.DB, invokerSession, promptText, supp
 		HarnessName:      harnessName,
 		ForceFresh:       true,
 		WorktreeReadOnly: true,
-		// PIExtensionDir for host-mode pi launches (#2065).
+		// PIExtensionDir for host-mode pi launches.
 		PIExtensionDir: cfg.PIExtensionDir,
 		// ReadinessTimeout=DefaultReadinessTimeout gates SpawnSession's return
 		// on the child agent's handshake AND (because Prompt is always set for
@@ -337,11 +336,9 @@ func buildInvestigateSpawnOpts(database *db.DB, invokerSession, promptText, supp
 		// reports success even when the sidecar dies instantly or the agent
 		// never handshakes. On timeout SpawnSession takes its existing unwind
 		// path: agent_status row ended, port released, tmux session killed.
-		// See issue #2360 (finding B4 of #2356) — the 07:48 2026-07-06 incident
-		// where /investigate returned 200 with no live session afterwards.
 		//
 		// Aside — half-created session unwind on client disconnect mid-spawn
-		// is deliberately out of scope for #2360: with the readiness gate in
+		// is deliberately out of scope here: with the readiness gate in
 		// place a dead sidecar is caught here, and the adjacent client-timeout
 		// alignment (see cmd/hostapi.go investigateClientTimeout) removes the
 		// worker-side abort path that made the disconnect race observable.
@@ -429,11 +426,11 @@ func proxyInvestigate(apiURL, promptText, suppliedName string) error {
 	}
 	// investigateClientTimeout aligns the worker-side client timeout with the
 	// host-side /investigate handler budget (10 min). The default 60 s in
-	// proxyToHostAPI was strictly shorter than the handler budget, so a slow-
-	// but-successful spawn (>60 s — real with the #2360 readiness gate now in
+	// proxyToHostAPI is shorter than the handler budget, so a slow-
+	// but-successful spawn (>60 s — real with the readiness gate in
 	// place, which blocks the handler on the child's handshake and initial
 	// prompt delivery) would trip client.Timeout, cancel r.Context() on the
-	// server, and SIGKILL the host child mid-spawn with no unwind (#2360).
+	// server, and SIGKILL the host child mid-spawn with no unwind.
 	if err := proxyToHostAPIWithTimeout(apiURL, "/investigate", body, &resp, investigateClientTimeout); err != nil {
 		return err
 	}

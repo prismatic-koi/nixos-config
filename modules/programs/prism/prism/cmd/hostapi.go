@@ -1,14 +1,14 @@
 package cmd
 
-// proxyToHostAPI — shared helper for container-aware proxy mode (A-3).
+// proxyToHostAPI — shared helper for container-aware proxy mode.
 //
 // When PRISM_HOST_API is set, prism commands running inside a container
 // cannot reach tmux directly. Instead they POST their operation to the host
 // sidecar over the Unix socket accessible inside the container at
 // /var/run/prism-host/<sockfilename> (the session's own per-session directory
-// is bind-mounted by A-2, providing socket isolation between sessions — #960).
+// is bind-mounted, providing socket isolation between sessions).
 //
-// The host sidecar (A-1) listens on that socket and executes the real tmux
+// The host sidecar listens on that socket and executes the real tmux
 // operations on the host side.
 
 import (
@@ -40,7 +40,7 @@ import (
 // removing the socket. In that case we surface a clearer diagnostic so the
 // user sees "sidecar has exited" rather than the raw "connection refused" with
 // no additional context. This is the client-side branch of the tombstone
-// hygiene described in issue #1486.
+// hygiene.
 func newHostAPIClient(sockPath string) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
@@ -131,9 +131,9 @@ func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
 // r.Context() cancel and translates into a SIGKILL of the child process
 // mid-work, with no unwind of any partially-created state).
 //
-// The specific case that motivated this seam is /investigate (issue #2360):
-// the host-side handler carries a 10-minute budget (internal/sidecar/host_api.go
-// /investigate handler) and the pre-fix 60 s client timeout could fire on a
+// The specific case that motivates this seam is /investigate: the host-side
+// handler carries a 10-minute budget (internal/sidecar/host_api.go
+// /investigate handler) and a 60 s client timeout can fire on a
 // slow-but-successful spawn, cancelling r.Context() and SIGKILLing the
 // host-side `prism investigate` mid-spawn. See investigateClientTimeout below
 // for the specific alignment.
@@ -141,7 +141,7 @@ func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
 // Note on half-created-session unwind: even with client and server timeouts
 // aligned, a caller that Ctrl-Cs mid-spawn will still cancel r.Context() and
 // SIGKILL the child. Unwinding a session that was partially created at that
-// point is deliberately out of scope for #2360 — the aligned timeouts remove
+// point is deliberately out of scope here — the aligned timeouts remove
 // the observed accidental trigger; genuine user-initiated cancellation is
 // rare and left for follow-up.
 func proxyToHostAPIWithTimeout(apiURL, endpoint string, body any, respDst any, clientTimeout time.Duration) error {
@@ -187,8 +187,8 @@ func proxyToHostAPIWithTimeout(apiURL, endpoint string, body any, respDst any, c
 
 // investigateClientTimeout is the worker-side (container-side) client
 // timeout for POST /investigate. The host-side /investigate handler carries
-// a 10-minute budget (internal/sidecar/host_api.go); with the readiness gate
-// added in #2360 the handler now blocks on the child agent's handshake and
+// a 10-minute budget (internal/sidecar/host_api.go); the readiness gate makes
+// the handler block on the child agent's handshake and
 // initial prompt delivery, which can plausibly consume most of that budget
 // on a cold host. The worker-side client must therefore be at least as
 // generous as the handler, otherwise a slow-but-successful spawn is aborted
@@ -264,7 +264,7 @@ func proxyGetValuesFromHostAPI(apiURL, endpoint string, query url.Values, respDs
 // read paths — callers do not repeat the env-var check or the GET plumbing.
 //
 // On connection failure the error message includes the socket path and the
-// underlying error (per the edge-case AC: clear error, not silent fallback).
+// underlying error (a clear error, not a silent fallback).
 func proxyReadToHostAPI(apiURL, endpoint string, params map[string]string) ([]byte, error) {
 	var raw json.RawMessage
 	if err := proxyGetFromHostAPI(apiURL, endpoint, params, &raw); err != nil {
@@ -301,7 +301,7 @@ func proxyStats(apiURL, view, sessionFilter string, days int, repoFilter string,
 // sinceMs is the window cut-off in Unix milliseconds. Returns the raw
 // db.RetroReport JSON for the caller to render or print. The GET /retro
 // endpoint runs the same db.AssembleRetro the direct CLI path uses, so the
-// rendered output is identical on the host and sandbox paths (issue #2583).
+// rendered output is identical on the host and sandbox paths.
 func proxyRetro(apiURL, repo string, sinceMs int64, train string) ([]byte, error) {
 	params := map[string]string{}
 	if repo != "" {
@@ -356,7 +356,7 @@ func proxyCheckin(apiURL, session string, limit int, before, after *string, type
 }
 
 // reviewSummaryMember mirrors the JSON shape written by the host-API
-// GET /checkin/review-summary handler (issue #2628). Field names match
+// GET /checkin/review-summary handler. Field names match
 // exactly so json.Unmarshal needs no tags beyond the struct definition here.
 type reviewSummaryMember struct {
 	Session   string `json:"session"`
@@ -375,7 +375,7 @@ type reviewSummaryResponse struct {
 }
 
 // proxyCheckinReviewSummary proxies the non-verbose `prism checkin
-// <parent>~review` aggregate to the host-API sidecar (issue #2628). apiURL is
+// <parent>~review` aggregate to the host-API sidecar. apiURL is
 // the value of PRISM_HOST_API. parentSession is the review group's parent
 // session name. The sidecar applies authz.AuthorizeCheckinReviewAggregate
 // before returning any member data.
@@ -393,7 +393,7 @@ func proxyCheckinReviewSummary(apiURL, parentSession string) (*reviewSummaryResp
 // the byte content is identical to a host invocation (modulo trailing
 // whitespace from the buffer). On success Error is empty; on failure the
 // host-API still returns stdout/stderr alongside Error so the caller can
-// surface the underlying cause. See issue #1527.
+// surface the underlying cause.
 type cleanupResponse struct {
 	Stdout string `json:"stdout"`
 	Stderr string `json:"stderr"`
@@ -404,13 +404,12 @@ type cleanupResponse struct {
 // forwards the host-side stdout and stderr to the caller's stdout/stderr.
 //
 // This makes the container-path output of `prism cleanup` byte-equivalent to
-// the host-path output (modulo trailing whitespace), per issue #1527 AC #1.
-// Without this forwarding, the container path was silent on success because
-// the previous handler discarded the captured CombinedOutput.
+// the host-path output (modulo trailing whitespace). Without this forwarding,
+// the container path is silent on success.
 //
 // `keepWorktree`, when true, forwards `keep_worktree:true` to the host so the
-// host-side `prism cleanup` runs with --keep-worktree (issue #2179). Passing
-// false preserves the pre-#2179 destructive default.
+// host-side `prism cleanup` runs with --keep-worktree. Passing false uses the
+// destructive default.
 func proxyCleanupToHostAPI(apiURL, session string, yes, jsonMode, keepWorktree bool) error {
 	return proxyCleanupToHostAPIWithWriters(apiURL, session, yes, jsonMode, keepWorktree, os.Stdout, os.Stderr)
 }
@@ -473,8 +472,7 @@ func proxyCleanupToHostAPIWithWriters(apiURL, session string, yes, jsonMode, kee
 	// Forward the host-side streams unconditionally — even on error — so the
 	// caller can see partial-success progress lines and stderr warnings
 	// (e.g. archive collision). This addresses both the silent-success defect
-	// and the error-message-names-the-wrong-layer issue noted in the comment
-	// on issue #1527.
+	// and the error-message-names-the-wrong-layer issue.
 	if parsed.Stdout != "" {
 		_, _ = io.WriteString(stdout, parsed.Stdout)
 	}
@@ -492,8 +490,8 @@ func proxyCleanupToHostAPIWithWriters(apiURL, session string, yes, jsonMode, kee
 }
 
 // proxyCloseToHostAPI sends a `prism close` request to the host-API sidecar
-// and forwards the host-side stdout and stderr to the caller's stdout/stderr
-// (issue #2179). Mirrors proxyCleanupToHostAPI but targets the /close endpoint
+// and forwards the host-side stdout and stderr to the caller's stdout/stderr.
+// Mirrors proxyCleanupToHostAPI but targets the /close endpoint
 // so the host runs `prism close` (with its smart-decide logic) rather than
 // `prism cleanup` (always destructive).
 func proxyCloseToHostAPI(apiURL, session string, yes, jsonMode, keepWorktree, removeWorktree bool) error {
@@ -586,8 +584,8 @@ func proxyPrompt(apiURL, session, prompt, deliverAs string) error {
 	}, nil)
 }
 
-// proxyPromptWithOutcome is the outcome-aware variant of proxyPrompt (issue
-// #2359 Gap B). It parses the sidecar's response envelope ({"buffered": true}
+// proxyPromptWithOutcome is the outcome-aware variant of proxyPrompt. It
+// parses the sidecar's response envelope ({"buffered": true}
 // / {"replayed": true}) and forwards the same human-readable / --json
 // output as the non-proxied path, so a container-side `prism prompt` call
 // carries the buffered outcome all the way back to the operator.
@@ -636,7 +634,7 @@ func promptdeliveryOutcomeForProxy(buffered, replayed bool) promptdelivery.Deliv
 // prNumber is the PR number to review (e.g. "123"). agents is an optional
 // list of agent names for --only filtering. timeout is an optional duration
 // string (e.g. "10m"). rebase requests an inline rebase onto origin/main
-// before the review (issue #1518). Returns an error if the host-side
+// before the review. Returns an error if the host-side
 // subprocess failed or the connection was lost mid-stream.
 //
 // The response from the sidecar /review endpoint is a plain-text chunked stream
@@ -650,7 +648,7 @@ func promptdeliveryOutcomeForProxy(buffered, replayed bool) promptdelivery.Deliv
 // quietStdout suppresses the per-line streaming print to os.Stdout while
 // still buffering the output for the caller's return value. It is used by
 // the in-sandbox `prism review --wait --json` path to honour the
-// JSON-exclusive contract (#1500): otherwise the streamed Ack lines would
+// JSON-exclusive contract: otherwise the streamed Ack lines would
 // land on stdout before waitForReviewTerminal emits its JSON object.
 func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, rebase bool, quietStdout bool) (string, error) {
 	// Build request body.

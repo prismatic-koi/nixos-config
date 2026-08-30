@@ -1,7 +1,6 @@
 package cmd
 
-// wait_probe.go — sandbox-aware probe sources for the --wait poll loops
-// (issue #1500).
+// wait_probe.go — sandbox-aware probe sources for the --wait poll loops.
 //
 // Background. The merge / review / spawn wait loops poll prism DB rows for a
 // terminal state. When prism runs on the host, openDB() is the right path —
@@ -10,13 +9,10 @@ package cmd
 // openDB() opens a shadow tmpfs DB the host watcher never writes to, so the
 // poll never observes a terminal and --wait silently hangs until timeout.
 //
-// review-code on PR #1533 caught this for `prism review --wait` and
-// `prism spawn --wait` (the proxy paths returned before reaching the wait
-// block); the merge case had the same latent bug. The fix is the abstraction
-// in this file: each wait loop talks to a "probe source" that hides whether
-// the underlying lookup is a direct DB call (host) or an HTTP GET to the
-// sidecar's /merges/by-pr, /sessions/status, or /groups/poll endpoints
-// (sandbox).
+// The abstraction in this file corrects that: each wait loop talks to a
+// "probe source" that hides whether the underlying lookup is a direct DB
+// call (host) or an HTTP GET to the sidecar's /merges/by-pr,
+// /sessions/status, or /groups/poll endpoints (sandbox).
 //
 // A single newWaitProbe() resolves the right source from
 // sandboxenv.HostAPISocket() — host vs sandbox — so the call sites in
@@ -38,7 +34,7 @@ type waitProbe interface {
 	// when no row exists. err is reserved for transient failures (the
 	// wait loop retries on err). repo is required so the lookup cannot
 	// return a row belonging to a different repo that happens to share
-	// the PR number (issue #2354).
+	// the PR number.
 	Merge(pr int, repo string) (*db.PendingMerge, error)
 
 	// SessionStatus returns the agent_status row for sessionName, or

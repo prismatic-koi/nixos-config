@@ -1,6 +1,6 @@
 package cmd
 
-// prism switch — context switcher (replaces cli.tmux.contextSwitcher)
+// prism switch — context switcher.
 //
 // Project layout is read at runtime from ~/.config/prism/config.json
 // (or $PRISM_CONFIG_FILE) via the internal/config package.
@@ -97,7 +97,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	d, dbErr := openDB()
 	if dbErr != nil {
 		// Non-fatal: log and continue without a DB. The startup guard will fall
-		// back to the simple HasSession check (legacy no-op behaviour).
+		// back to the simple HasSession check.
 		fmt.Fprintf(os.Stderr, "warning: could not open DB for startup guard: %v\n", dbErr)
 	} else {
 		defer d.Close()
@@ -122,7 +122,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	//     Falls through to normal create path (or legacy no-op if d==nil).
 	if !opts.ForceFresh && tmux.HasSession(sessionName) {
 		if d == nil {
-			// No DB — can't determine liveness. Treat as live (legacy no-op):
+			// No DB — can't determine liveness. Treat as live:
 			// attach without touching anything.
 			if opts.Headless {
 				return nil
@@ -137,7 +137,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 			// reviewing awaiting verdicts) freeze last_seen for arbitrarily
 			// long while the session is perfectly healthy — killing the
 			// sidecar here would sever prompt delivery, finish notifications,
-			// and event recording for the session (issue #2255). Treat a
+			// and event recording for the session. Treat a
 			// responsive sidecar as live and attach instead.
 			lastSeenAge := "no DB row"
 			if st != nil {
@@ -164,7 +164,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		// keeps owning its host-API Unix socket and the new sidecar's
 		// duplicate-start guard (checkNoLiveSidecar) fires, causing the new
 		// sidecar to refuse to start and the PI extension to exhaust its
-		// connect-retry budget. See issue #1998.
+		// connect-retry budget.
 		//
 		// KillSidecarAndWait sends SIGTERM and polls until the process exits
 		// (or the 2-second budget is exhausted). Errors are logged but do not
@@ -253,10 +253,10 @@ func allocatePortForSession(sessionName, directory, harnessName string) (int, er
 	// DB row from the first moment — prism restore reads it from here.
 	repo := repoFromWorktreePath(directory)
 	if repo == "" {
-		// Not inside a project worktree — derive from the session name. The
-		// private copy that used to live here split on "@" alone, so a
-		// descendant of a non-worktree parent (`obsidian~investigate-v2`) was
-		// attributed to a repo of its own rather than to `obsidian` (#2658).
+		// Not inside a project worktree — derive from the session name via
+		// sessionname.Repo. A local copy that split on "@" alone would attribute
+		// a descendant of a non-worktree parent (`obsidian~investigate-v2`) to a
+		// repo of its own rather than to `obsidian`.
 		repo = sessionname.Repo(sessionName)
 	}
 	if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, directory, "idle", nil, nil, "", harnessName, ""); err != nil {
@@ -326,31 +326,23 @@ var switchCmd = &cobra.Command{
 				switchHarnessName, strings.Join(harness.Names(), ", "))
 		}
 
-		// Validate the active profile before any session state is created
-		// (#2854).
+		// Validate the active profile before any session state is created.
 		//
-		// Before the harness-config transport was retired, these same two
-		// checks ran per path inside injectContainerConfig, which resolved the
-		// active profile and rejected an unknown name on its way to building
-		// the (now removed) config blob. Both read only the profiles file and
-		// the active-profile state file, so neither depends on the path: they
-		// are hoisted here and run once.
+		// Both checks read only the profiles file and the active-profile state
+		// file, so neither depends on the path: they run once here.
 		//
 		// Without this gate a corrupt active-profile state file — or one
 		// naming a profile that profiles.json no longer defines, e.g. a stale
-		// "ox-alpha" after #2857 dropped it — surfaces inside the agent pane
-		// at `prism agent-run` (populatePIConfig → RequireSlot), after the DB
-		// row, the harness port, the tmux session, and the sidecar all exist.
+		// "ox-alpha" — surfaces inside the agent pane at `prism agent-run`
+		// (populatePIConfig → RequireSlot), after the DB row, the harness port,
+		// the tmux session, and the sidecar all exist.
 		//
-		// Known divergence from the pre-#2854 gate: that one keyed off the
-		// effective capabilities AFTER the per-path isolation override, this
-		// one keys off the command-level mode. The override changes only
-		// whether the check runs, never its result, so the difference is
-		// confined to a path that overrides across the host/sandbox boundary.
-		// Slot presence is deliberately NOT checked here: the old gate did not
-		// check it either (BuildConfigContent left the model empty on a slot
-		// miss rather than erroring), and the role is not known until the path
-		// is resolved.
+		// This gate keys off the command-level mode, not the effective
+		// capabilities after the per-path isolation override. The override
+		// changes only whether the check runs, never its result, so any
+		// difference is confined to a path that overrides across the
+		// host/sandbox boundary. Slot presence is deliberately NOT checked
+		// here: the role is not known until the path is resolved.
 		if isoCaps.RequiresProfilesFile && pf != nil {
 			switchProfile, _, switchProfErr := config.ResolveActiveProfile(pf, "")
 			if switchProfErr != nil {
@@ -373,7 +365,7 @@ var switchCmd = &cobra.Command{
 			PluginHostPath: cfg.SidecarPluginPath,
 			RuntimeEnvVars: switchHarness.RuntimeEnv(),
 			HarnessName:    switchHarnessName,
-			// PIExtensionDir for host-mode pi launches (#2065). The container
+			// PIExtensionDir for host-mode pi launches. The container
 			// path appends --extension via container.PIInvocation, so this is
 			// load-bearing only for isolation=host — buildDirectAgentCmd skips
 			// the flag when PIExtensionDir is empty.

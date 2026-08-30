@@ -104,7 +104,7 @@ func printSessionTable(ss []db.Status) error {
 		}
 		// DisplayTitle folds agent_status.issue_ref in front of the title, so
 		// this table agrees with `prism sessions list` and the tmux dashboard
-		// for the same row (#2683). The rows reaching here from the DB path
+		// for the same row. The rows reaching here from the DB path
 		// come from AllActiveStatus / AllActiveStatusForRepo, both of which
 		// select issue_ref; the tmux fallback path above builds a Status with
 		// no reference, so DisplayTitle returns the bare title there.

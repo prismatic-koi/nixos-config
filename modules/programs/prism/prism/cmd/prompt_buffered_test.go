@@ -1,13 +1,12 @@
 package cmd
 
 // prompt_buffered_test.go — regression tests for the buffered-outcome
-// surfacing added by issue #2359 Gap B.
+// surfacing.
 //
-// Before this change, the `prism prompt` CLI silently reported success
-// even when the sidecar's host-API /prompt handler responded
-// {"buffered": true}. The coordinator then had no way to distinguish
-// "delivered on the wire" from "parked awaiting reconnect", which was
-// half the reason the incident in #2359 went undetected.
+// Without it, the `prism prompt` CLI silently reports success even when the
+// sidecar's host-API /prompt handler responds {"buffered": true}. The
+// coordinator then has no way to distinguish "delivered on the wire" from
+// "parked awaiting reconnect".
 
 import (
 	"bytes"
@@ -18,8 +17,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
 )
 
-// TestEmitPromptOutcome_HumanBufferedNamesTheOutcome verifies the AC:
-// "prism prompt's human-readable output names the buffered outcome".
+// TestEmitPromptOutcome_HumanBufferedNamesTheOutcome verifies that
+// `prism prompt`'s human-readable output names the buffered outcome.
 func TestEmitPromptOutcome_HumanBufferedNamesTheOutcome(t *testing.T) {
 	var out bytes.Buffer
 	err := emitPromptOutcome(&out, false, "myrepo@worker", "socket-pipe", promptdelivery.DeliveryOutcome{
@@ -48,8 +47,8 @@ func TestEmitPromptOutcome_HumanBufferedNamesTheOutcome(t *testing.T) {
 	}
 }
 
-// TestEmitPromptOutcome_JSONCarriesBufferedField verifies the AC:
-// "--json output carries a buffered: true field".
+// TestEmitPromptOutcome_JSONCarriesBufferedField verifies that
+// --json output carries a buffered: true field.
 func TestEmitPromptOutcome_JSONCarriesBufferedField(t *testing.T) {
 	var out bytes.Buffer
 	err := emitPromptOutcome(&out, true, "myrepo@worker", "socket-pipe", promptdelivery.DeliveryOutcome{
@@ -85,8 +84,8 @@ func TestEmitPromptOutcome_JSONCarriesBufferedField(t *testing.T) {
 	}
 }
 
-// TestEmitPromptOutcome_HumanSynchronousUnchanged verifies the pre-#2359
-// behaviour is preserved: a synchronous delivery still prints the classic
+// TestEmitPromptOutcome_HumanSynchronousUnchanged verifies that a synchronous
+// delivery still prints the classic
 // "prompt delivered to <session> via <transport>" line so existing callers
 // (grep / eyeball) keep working.
 func TestEmitPromptOutcome_HumanSynchronousUnchanged(t *testing.T) {

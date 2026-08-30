@@ -1,11 +1,10 @@
 package cmd
 
-// checkin_permission_test.go — issue #2619.
+// checkin_permission_test.go — direct-route permission gate on `prism checkin`.
 //
 // The DIRECT CLI route of `prism checkin`, which a `host`-mode session takes
-// because it has no host-API socket. Before #2619 that route had no role
-// check, no repo scope, and wrote no audit event; the three tiers of #2587
-// gated the host-API route alone.
+// because it has no host-API socket. This route enforces the same three tiers
+// as the host-API route: a role check, a repo scope, and a tier-3 audit event.
 //
 // These tests pin the direct route against the same tier table the host-API
 // tests in internal/sidecar/checkin_permission_test.go pin the proxy route
@@ -153,11 +152,11 @@ func (f *directCheckinFixture) auditEvents(session string) []payload.Audit {
 // ── helper for the rendering tests ───────────────────────────────────────────
 
 // grantCheckinCallerIdentity gives the calling test a caller identity that the
-// #2619 gate admits for targetSession: the coordinator of the target's own
-// repo, which tier 2 allows.
+// gate admits for targetSession: the coordinator of the target's own repo,
+// which tier 2 allows.
 //
 // Tests that exercise checkin RENDERING rather than checkin PERMISSION need
-// this. runCheckinSession now gates the direct route, so a test that calls it
+// this. runCheckinSession gates the direct route, so a test that calls it
 // with no caller identity is refused before any rendering happens. That
 // refusal is the gate working, not a rendering regression — the fix is to give
 // the test a caller, not to weaken the gate.
@@ -176,9 +175,9 @@ func grantCheckinCallerIdentity(t *testing.T, targetSession string) {
 
 // ── tier 1: worker ───────────────────────────────────────────────────────────
 
-// TestDirectCheckin_Worker_AllowsOwnReviewAgent is the motivating case of
-// #2587, now on the route a host-mode worker actually takes: the worker reads
-// the review agent it spawned for its own PR.
+// TestDirectCheckin_Worker_AllowsOwnReviewAgent is the motivating case, on the
+// route a host-mode worker actually takes: the worker reads the review agent
+// it spawned for its own PR.
 func TestDirectCheckin_Worker_AllowsOwnReviewAgent(t *testing.T) {
 	f := newDirectCheckinFixture(t)
 	f.seedSession(cliWorker, cliRepo, "worker")
@@ -189,8 +188,8 @@ func TestDirectCheckin_Worker_AllowsOwnReviewAgent(t *testing.T) {
 	}
 }
 
-// TestDirectCheckin_Worker_DeniesEverythingElse is the headline defect of
-// #2619: before the fix, every one of these reads succeeded on this route.
+// TestDirectCheckin_Worker_DeniesEverythingElse pins the tier-1 scope: every
+// one of these reads must be refused on this route.
 func TestDirectCheckin_Worker_DeniesEverythingElse(t *testing.T) {
 	f := newDirectCheckinFixture(t)
 	f.seedSession(cliWorker, cliRepo, "worker")
@@ -308,9 +307,9 @@ func TestDirectCheckin_PrivilegedCoordinator_ReachesAnySession(t *testing.T) {
 	}
 }
 
-// TestDirectCheckin_PrivilegedCoordinator_WritesAuditEvent is the audit-
-// completeness AC of #2619: a tier-3 read through the CLI route leaves the same
-// record as one through the host-API route, carrying the shared grant label.
+// TestDirectCheckin_PrivilegedCoordinator_WritesAuditEvent checks audit
+// completeness: a tier-3 read through the CLI route leaves the same record as
+// one through the host-API route, carrying the shared grant label.
 func TestDirectCheckin_PrivilegedCoordinator_WritesAuditEvent(t *testing.T) {
 	f := newDirectCheckinFixture(t)
 	f.privilege(cliRepo)
@@ -343,9 +342,8 @@ func TestDirectCheckin_PrivilegedCoordinator_WritesAuditEvent(t *testing.T) {
 	}
 }
 
-// TestDirectCheckin_Privilege_RequiresDBBackedCoordinatorRole pins the
-// condition #2587 recorded as the answer to its own caution: the tier-3 grant
-// does not rest on the "@main" name suffix.
+// TestDirectCheckin_Privilege_RequiresDBBackedCoordinatorRole pins that the
+// tier-3 grant does not rest on the "@main" name suffix.
 func TestDirectCheckin_Privilege_RequiresDBBackedCoordinatorRole(t *testing.T) {
 	f := newDirectCheckinFixture(t)
 	f.privilege(cliRepo)
@@ -365,9 +363,9 @@ func TestDirectCheckin_Privilege_RequiresDBBackedCoordinatorRole(t *testing.T) {
 
 // ── caller identity ──────────────────────────────────────────────────────────
 
-// TestDirectCheckin_UnresolvableCaller_FailsClosed pins the decision recorded
-// on #2619: a caller whose session cannot be determined is refused, and the
-// error names PRISM_SESSION_NAME, matching requireMergesCoordinator. Bare-shell
+// TestDirectCheckin_UnresolvableCaller_FailsClosed pins that a caller whose
+// session cannot be determined is refused, and the error names
+// PRISM_SESSION_NAME, matching requireMergesCoordinator. Bare-shell
 // `prism checkin` from a plain terminal outside tmux is refused. No carve-out.
 func TestDirectCheckin_UnresolvableCaller_FailsClosed(t *testing.T) {
 	f := newDirectCheckinFixture(t)
@@ -411,10 +409,9 @@ func TestDirectCheckin_ResolvesCallerFromEnvironment(t *testing.T) {
 // member. The non-verbose summary branch reads d.QueryEvents inline and never
 // reaches the gate.
 //
-// Round 1 of the review of PR #2625 caught this: the original scope claim said
-// the aggregate was ungated, and no test covered verbose=true. These tests
-// exist so the claim in prism/docs/invariants/session-lifecycle.md is
-// falsifiable rather than asserted.
+// These tests keep the claim in prism/docs/invariants/session-lifecycle.md
+// falsifiable: the aggregate's verbose branch is gated per member, and a test
+// covers verbose=true.
 
 // TestCheckinReviewAggregate_VerboseIsGatedPerMember covers both directions of
 // the per-member gate, including the degradation contract: a refused member
@@ -512,8 +509,8 @@ func TestCheckinReviewAggregate_VerboseAuditsEachMember(t *testing.T) {
 // ── route wiring ─────────────────────────────────────────────────────────────
 
 // TestRunCheckinSession_DirectRouteIsGated proves the gate is wired into the
-// command path, not merely present as a function. A predicate nothing calls is
-// exactly the state #2619 found this route in.
+// command path, not merely present as a function. A predicate nothing calls
+// leaves the route ungated.
 func TestRunCheckinSession_DirectRouteIsGated(t *testing.T) {
 	f := newDirectCheckinFixture(t)
 	f.seedSession(cliWorker, cliRepo, "worker")
