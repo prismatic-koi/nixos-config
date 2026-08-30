@@ -3,15 +3,14 @@
 package integration_test
 
 // sandbox_exec_session_work_dir_xdg_state_home_darwin_test.go — Darwin
-// integration coverage for the XDG_STATE_HOME branch added to
-// container.SessionWorkDirPath in issue #2263.
+// integration coverage for the XDG_STATE_HOME branch of
+// container.SessionWorkDirPath.
 //
 // Why this test exists. Inside the nix-build homeless-shelter sandbox
-// $HOME=/homeless-shelter is read-only; any path derived from it (the
-// pre-#2263 SessionWorkDirPath shape) fails on os.MkdirAll. The fix:
-// SessionWorkDirPath now honours $XDG_STATE_HOME first (XDG Base Directory
-// Specification) and falls back to $HOME/.local/state only when it is
-// unset. Integration test helpers in sandbox_exec_helpers_darwin_test.go
+// $HOME=/homeless-shelter is read-only. A path derived from it fails on
+// os.MkdirAll. SessionWorkDirPath honours $XDG_STATE_HOME first (XDG Base
+// Directory Specification) and falls back to $HOME/.local/state only when it
+// is unset. Integration test helpers in sandbox_exec_helpers_darwin_test.go
 // redirect XDG_STATE_HOME to a t.TempDir() so the work dir is writable
 // regardless of $HOME.
 //
@@ -29,13 +28,13 @@ package integration_test
 // write fails — proving the rule under test is what grants access to the
 // XDG_STATE_HOME-derived path, not a side effect of some unrelated allow.
 //
-// This is a focused complement to TestSandboxExecSessionWorkDir_* which
-// covers the work-dir RW rule at the API level. After the #2263 helper
-// change, those tests already exercise the XDG_STATE_HOME-derived path
-// (because newProfileManager sets XDG_STATE_HOME); this test pins the
-// path-derivation contract explicitly so a future regression that, say,
-// reverted SessionWorkDirPath to HOME-only would fail with a precise
-// error message rather than an opaque homeless-shelter mkdir failure.
+// This is a focused complement to TestSandboxExecSessionWorkDir_*, which
+// covers the work-dir RW rule at the API level. Those tests already exercise
+// the XDG_STATE_HOME-derived path (because newProfileManager sets
+// XDG_STATE_HOME). This test pins the path-derivation contract explicitly.
+// If a future change reverts SessionWorkDirPath to HOME-only, this test
+// fails with a precise error message rather than an opaque homeless-shelter
+// mkdir failure.
 
 import (
 	"os"
@@ -47,7 +46,7 @@ import (
 )
 
 // TestSandboxExecSessionWorkDir_XDGStateHomeBranch_GrantsWrites is the
-// positive half of the #2263 XDG_STATE_HOME-branch coverage. It asserts
+// positive half of the XDG_STATE_HOME-branch coverage. It asserts
 // that the sessionDir derived from XDG_STATE_HOME (set by
 // newProfileManager) is covered by the (subpath "<sessionDir>") rule in
 // the generated profile, and that a write into it from inside the sandbox
@@ -59,7 +58,7 @@ func TestSandboxExecSessionWorkDir_XDGStateHomeBranch_GrantsWrites(t *testing.T)
 	requireSandboxExec(t)
 	nixBash := requireNixBash(t)
 
-	// newProfileManager sets XDG_STATE_HOME=t.TempDir() (#2263). Capture it
+	// newProfileManager sets XDG_STATE_HOME=t.TempDir(). Capture it
 	// here so we can assert sessionDir is rooted under it, not under $HOME.
 	m := newProfileManager(t)
 	xdgStateHome := os.Getenv("XDG_STATE_HOME")
@@ -69,8 +68,8 @@ func TestSandboxExecSessionWorkDir_XDGStateHomeBranch_GrantsWrites(t *testing.T)
 
 	sessionDir, prepared := sessionWorkDirFixture(t, m)
 
-	// AC 1: sessionDir must live under XDG_STATE_HOME, not under $HOME.
-	// This pins the branch in SessionWorkDirPath.
+	// sessionDir must live under XDG_STATE_HOME, not under $HOME. This pins
+	// the branch in SessionWorkDirPath.
 	if !strings.HasPrefix(sessionDir, xdgStateHome) {
 		t.Fatalf("sessionDir %q is not rooted at XDG_STATE_HOME %q — the XDG_STATE_HOME branch in SessionWorkDirPath is not active",
 			sessionDir, xdgStateHome)
@@ -81,7 +80,7 @@ func TestSandboxExecSessionWorkDir_XDGStateHomeBranch_GrantsWrites(t *testing.T)
 			sessionDir, filepath.Join(homeDir, ".local", "state"))
 	}
 
-	// AC 2: the generated profile must contain the (subpath ...) rule for
+	// The generated profile must contain the (subpath ...) rule for
 	// the XDG_STATE_HOME-derived sessionDir. sessionWorkDirFixture already
 	// asserts this; the re-check here is the explicit precondition for the
 	// write test below.
@@ -91,7 +90,7 @@ func TestSandboxExecSessionWorkDir_XDGStateHomeBranch_GrantsWrites(t *testing.T)
 			want, prepared.content)
 	}
 
-	// AC 3: a write into sessionDir from inside sandbox-exec must succeed.
+	// A write into sessionDir from inside sandbox-exec must succeed.
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 	probe := filepath.Join(sessionDir, "prism-2263-xdg-write-probe.tmp")
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,

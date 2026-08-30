@@ -40,7 +40,7 @@ var sessionsCmd = &cobra.Command{
 
 // sessionsListCmd is the canonical form of prism list-sessions.
 // It lists active agent sessions with their state and title.
-// prism list-sessions is kept as a hidden top-level alias.
+// prism list-sessions is a hidden top-level alias.
 var sessionsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List agent sessions with their state and title",
@@ -49,7 +49,7 @@ var sessionsListCmd = &cobra.Command{
 
 // sessionsStatusCmd is the canonical form of prism status.
 // It prints agent session counts by state.
-// prism status is kept as a hidden top-level alias.
+// prism status is a hidden top-level alias.
 var sessionsStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Print agent session counts",
@@ -65,9 +65,9 @@ JSON object keyed by state with integer counts.
 	RunE: runStatus,
 }
 
-// sessionsSessionStatusCmd renders a per-session tmux status segment. Today
-// it only encodes the muted flag; the surface is designed to grow with
-// additional per-session indicators without changing the tmux-side wiring.
+// sessionsSessionStatusCmd renders a per-session tmux status segment. It
+// encodes the muted flag. The surface is designed to grow with additional
+// per-session indicators without changing the tmux-side wiring.
 var sessionsSessionStatusCmd = &cobra.Command{
 	Use:   "session-status [session]",
 	Short: "Emit a per-session tmux status segment",

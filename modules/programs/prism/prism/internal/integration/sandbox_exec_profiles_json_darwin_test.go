@@ -3,20 +3,19 @@
 package integration_test
 
 // sandbox_exec_profiles_json_darwin_test.go — integration coverage for the
-// single-file read-only allow on ~/.config/prism/profiles.json (issue #2286).
+// single-file read-only allow on ~/.config/prism/profiles.json.
 //
 // The prism CLI's `prism profile list`, `prism profile show`, and the
 // `available_profiles` section of `prism agent-context` open this file
-// directly via internal/config/profiles.go::LoadProfiles. Under deny-default
-// the read failed EPERM and the user saw a misleading "profiles: <path>
+// directly via internal/config/profiles.go::LoadProfiles. Without this allow
+// the read fails EPERM and the user sees a misleading "profiles: <path>
 // not found — run the system rebuild" message from inside any sandbox-exec
-// session, even though the file existed on the host (the mutation surface
-// `prism profile use` routes through the host API instead and was
+// session, even though the file exists on the host (the mutation surface
+// `prism profile use` routes through the host API instead and is
 // unaffected).
 //
-// Per docs/sandbox-exec-testing.md (issue #1192) the coverage is a
-// positive/negative pair plus a write-denied negative for the RO/security
-// AC:
+// Per docs/sandbox-exec-testing.md the coverage is a positive/negative pair
+// plus a write-denied negative for the RO/security guarantee:
 //
 //   - TestSandboxExecProfile_PrismProfilesJSONReadable proves the generated
 //     profile permits opening the file for reading. The test NEVER creates
@@ -26,14 +25,14 @@ package integration_test
 //     open must be attempted and fail with ENOENT ("No such file or
 //     directory") — NOT EPERM ("Operation not permitted"). Both branches
 //     prove the sandbox allowed the open. The ENOENT branch also covers
-//     the issue #2286 edge-case AC: a missing host file follows
-//     LoadProfiles' normal missing-file path (preserving the existing
-//     error message) instead of failing for sandbox reasons.
+//     the missing-file case: a missing host file follows LoadProfiles'
+//     normal missing-file path (preserving the existing error message)
+//     instead of failing for sandbox reasons.
 //
 //   - TestSandboxExecProfile_PrismProfilesJSONDeniedWithoutRule mutates the
 //     profile to remove the section-5h allow block and asserts the same
 //     read fails with "Operation not permitted" — proving the positive
-//     test is not green by accident (e.g. via some broader allow).
+//     test is not green by accident (for example, via some broader allow).
 //
 //   - TestSandboxExecProfile_PrismProfilesJSONWriteDenied proves the
 //     security AC: under the PRODUCTION profile, writing to profiles.json
@@ -110,8 +109,8 @@ func TestSandboxExecProfile_PrismProfilesJSONReadable(t *testing.T) {
 	} else if os.IsNotExist(statErr) {
 		// File absent on the host: the open must have been attempted and
 		// failed with ENOENT — the sane missing-file path LoadProfiles
-		// tolerates (the issue #2286 edge-case AC: the existing host
-		// error message must be preserved on a fresh install).
+		// tolerates (the missing-file case: the existing host error message
+		// must be preserved on a fresh install).
 		if runErr == nil {
 			t.Errorf("cat of missing file %s exited 0 — test environment is inconsistent.\nOutput: %s",
 				target, string(out))
@@ -128,8 +127,8 @@ func TestSandboxExecProfile_PrismProfilesJSONReadable(t *testing.T) {
 // TestSandboxExecProfile_PrismProfilesJSONDeniedWithoutRule is the paired
 // negative test: with the section-5h allow block removed from the generated
 // profile, the same read must fail with EPERM. This proves the positive
-// test exercises the rule itself rather than passing by accident (e.g. via
-// some broader allow).
+// test exercises the rule itself rather than passing by accident (for
+// example, via some broader allow).
 func TestSandboxExecProfile_PrismProfilesJSONDeniedWithoutRule(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -163,19 +162,19 @@ func TestSandboxExecProfile_PrismProfilesJSONDeniedWithoutRule(t *testing.T) {
 	}
 }
 
-// TestSandboxExecProfile_PrismProfilesJSONWriteDenied is the security AC
-// for issue #2286: under the PRODUCTION profile, writing to profiles.json
+// TestSandboxExecProfile_PrismProfilesJSONWriteDenied is the security
+// guarantee: under the PRODUCTION profile, writing to profiles.json
 // from inside the sandbox fails — RO must not silently become RW. This
-// guards against future regressions that might widen the (literal ...) RO
-// rule into a (subpath ...) RW grant or accidentally promote the allow to
-// include file-write*.
+// guards against a future change that widens the (literal ...) RO rule
+// into a (subpath ...) RW grant or promotes the allow to include
+// file-write*.
 //
 // The test does not need to (and must not) actually overwrite the user's
 // real profiles.json: the sandbox deny must fire BEFORE any host-side
 // write. We attempt to append a sentinel byte and assert the append fails;
 // then we double-check the file is unchanged. Skipped when the file is
-// absent on the host (no target to write against; the bwrap-side
-// fresh-install AC is covered separately by the OptionalIfMissing
+// absent on the host (no target to write against. The bwrap-side
+// fresh-install case is covered separately by the OptionalIfMissing
 // unit-test pair in bwrap_test.go).
 func TestSandboxExecProfile_PrismProfilesJSONWriteDenied(t *testing.T) {
 	if runtime.GOOS != "darwin" {

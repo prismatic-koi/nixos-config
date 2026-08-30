@@ -1,11 +1,11 @@
 package integration_test
 
-// rlimit_bwrap_test.go — Layer 1 FD isolation (#2190): integration coverage
+// rlimit_bwrap_test.go — Layer 1 FD isolation: integration coverage
 // for the bwrap exec path's RLIMIT_NOFILE cap.
 //
 // The production path (cmd/agent_run.go runAgentRunBwrapHandler) calls
 // container.ApplyAgentRlimitNofile immediately before bwrapCmd.Start() and
-// restores immediately after; the spawned sandbox inherits the resolved
+// restores immediately after. The spawned sandbox inherits the resolved
 // (soft, hard) pair at fork time. These tests exercise the same helper
 // against a real bwrap spawn and observe the limits from *inside* the
 // sandbox via the shell's ulimit builtin (equivalent to reading
@@ -17,14 +17,14 @@ package integration_test
 // enforcement under test is rlimit inheritance, not a sandbox profile rule,
 // so the "mutation" is applying a *different* configured pair and asserting
 // the observed limits track it. Two runs with different configured values
-// must observe different limits — a vacuous observer (e.g. one that reported
-// the host limits regardless) would fail that cross-check. The security AC
-// (`ulimit -n <above hard>` fails with EPERM inside the sandbox) is covered
-// by its own subtest.
+// must observe different limits. A vacuous observer that reports the host
+// limits regardless fails that cross-check. The security check (`ulimit -n
+// <above hard>` fails with EPERM inside the sandbox) is covered by its own
+// subtest.
 //
 // Linux-only in practice: requireBwrap skips when bwrap is unavailable
 // (always on Darwin) and on GitHub Actions runners where unprivileged userns
-// is blocked (#1510). requireUsableBwrap additionally probes an actual spawn
+// is blocked. requireUsableBwrap additionally probes an actual spawn
 // so the test skips rather than fails inside environments (e.g. the Nix
 // build sandbox) where bwrap is present but cannot create namespaces.
 
@@ -41,8 +41,8 @@ import (
 
 // requireUsableBwrap extends requireBwrap (stdio_test.go) with a live spawn
 // probe. bwrap can be present on PATH but unable to create user namespaces
-// (Nix build sandbox, locked-down kernels); in that case every test here
-// would fail for environmental reasons unrelated to the rlimit cap, so skip.
+// (Nix build sandbox, locked-down kernels). In that case every test here
+// fails for environmental reasons unrelated to the rlimit cap, so skip.
 func requireUsableBwrap(t *testing.T) string {
 	t.Helper()
 	bin := requireBwrap(t)
@@ -90,12 +90,12 @@ func bwrapObservedNofile(t *testing.T, bwrapBin string) (soft, hard uint64) {
 	return soft, hard
 }
 
-// TestBwrapAgentRlimitNofile covers the #2190 bwrap-path ACs:
+// TestBwrapAgentRlimitNofile covers the bwrap-path guarantees:
 //
 //   - the spawned sandbox's RLIMIT_NOFILE matches the resolved (soft, hard)
-//     config values;
-//   - the observation tracks the configured values (no-op proof);
-//   - the sandbox cannot raise its limit above the configured hard cap.
+//     config values
+//   - the observation tracks the configured values (no-op proof)
+//   - the sandbox cannot raise its limit above the configured hard cap
 //
 // Subtests run sequentially and use descending hard values: an unprivileged
 // process cannot raise its hard limit back after the best-effort restore, so

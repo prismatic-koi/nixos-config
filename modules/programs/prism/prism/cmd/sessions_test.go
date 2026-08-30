@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for prism sessions list (issue #999 ACs):
+// Tests for prism sessions list:
 //   - prism sessions list → tabular listing of all rows
 //   - prism sessions list --repo <name> → filter by repo
 //   - prism sessions list --since <date> → filter by started_at
@@ -130,7 +130,7 @@ func TestRunSessionsList_SinceFilter(t *testing.T) {
 }
 
 // TestRunSessionsList_JSONOutput verifies that --json emits a JSON object
-// with a sessions array and truncated bool (issue #1502).
+// with a sessions array and truncated bool.
 func TestRunSessionsList_JSONOutput(t *testing.T) {
 	d := openIncarnationTestDB(t)
 	base := time.Now().Truncate(time.Second)

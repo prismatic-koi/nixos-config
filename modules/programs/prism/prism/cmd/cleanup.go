@@ -1,6 +1,6 @@
 package cmd
 
-// prism cleanup — session teardown (replaces cli.tmux.worktreeCleanup)
+// prism cleanup — session teardown
 //
 // There are three distinct cases:
 //
@@ -111,9 +111,9 @@ type cleanupModel struct {
 	worktreeName string
 	// branchName is the actual git branch name resolved from worktreePath's
 	// HEAD (see resolveBranchName), as opposed to worktreeName which is the
-	// sanitised session component ('/' mapped to '--', not reversible — see
-	// issue #2501). All git branch operations must use effectiveBranchName(),
-	// not worktreeName, so branches containing '/' resolve correctly.
+	// sanitised session component ('/' mapped to '--', not reversible). All
+	// git branch operations must use effectiveBranchName(), not worktreeName,
+	// so branches containing '/' resolve correctly.
 	branchName   string
 	worktreePath string
 	bareRoot     string
@@ -164,9 +164,7 @@ func (m cleanupModel) effectiveBranchName() string {
 // "a--b" and a branch named "a/b" both sanitise to the session component
 // "a--b". For any branch containing '/', reconstructing the name from the
 // session component yields a name that does not exist, so downstream
-// git.BranchExists / git.ForceDeleteBranch calls silently no-op. This was
-// the root cause of issue #2501's silent branch leak (24 `quick/pr-*`
-// branches accumulated over ~2.5 months).
+// git.BranchExists / git.ForceDeleteBranch calls silently no-op.
 //
 // Callers MUST invoke this before the worktree is removed: SymbolicRef reads
 // worktreePath's on-disk .git file, which `git worktree remove` deletes.
@@ -261,13 +259,12 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			proglog.Warnf("[prism] warning: could not resolve actual branch name for worktree %s — falling back to %q, which is wrong for branches containing '/' (issue #2501)\n", m.worktreePath, branchName)
 		}
 
-		// Issue #2638: a descendant session (name contains '~', e.g.
+		// A descendant session (name contains '~', e.g.
 		// "<parent>~review-1-review-code" or "<parent>~investigate-<slug>")
 		// inherits the parent's worktree by design and owns neither the
 		// worktree nor the branch resolved from it. Skip both git operations
 		// unconditionally here — do not rely on m.deleteBranch/m.forceDelete
-		// reflecting this, since those are set by earlier prompts that ran
-		// before this guard existed.
+		// reflecting this, since those are set by earlier prompts.
 		isDescendant := strings.Contains(m.session, "~")
 
 		// Remove worktree first (while still in the session).
@@ -310,10 +307,10 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		}
 		_ = tmux.KillSession(m.session)
 		prismSession.KillSidecar(m.session)
-		// Orphan-sidecar safety net (issue #1751): SIGTERM any sidecar
-		// processes still alive for review-group or investigator-group
-		// children of this worker. Runs before the DB-backed cleanup so
-		// processes whose DB rows were already purged are still caught.
+		// Orphan-sidecar safety net: SIGTERM any sidecar processes still alive
+		// for review-group or investigator-group children of this worker. Runs
+		// before the DB-backed cleanup so processes whose DB rows were already
+		// purged are still caught.
 		killOrphanReviewSidecars(m.session)
 		if d, err := openDB(); err == nil {
 			// Stop and remove child review-agent containers BEFORE removing their
@@ -325,10 +322,10 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			if isolationModeFromDB(d, m.session) != "host" {
 				removeContainerIfExists(m.session)
 			}
-			// Orphan-container sweep (#2324 Step 7). The interactive TUI
-			// path does not surface a JSON envelope — the count goes into
-			// the warning log only. Passing result=nil keeps the helper
-			// safe even though there is nothing to record.
+			// Orphan-container sweep. The interactive TUI path does not
+			// surface a JSON envelope — the count goes into the warning log
+			// only. Passing result=nil keeps the helper safe even though
+			// there is nothing to record.
 			applyOrphanContainerSweep(m.session, nil)
 			if releaseErr := d.ReleasePort(m.session); releaseErr != nil {
 				proglog.Errorf("[prism] doCleanup: release port: %v\n", releaseErr)
@@ -342,19 +339,17 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 				}
 			}
 			// Write spawn_outcome for m.session and cascade to every
-			// <m.session>~review-% child (issue #2591) — mirrors the SetEnded
-			// cascade above.
+			// <m.session>~review-% child — mirrors the SetEnded cascade above.
 			if outcomeErr := d.WriteSpawnOutcomeCascade(m.session); outcomeErr != nil {
 				proglog.Errorf("[prism] doCleanup: write spawn outcome cascade: %v\n", outcomeErr)
 			}
-			// Archive the session storage, then sever the pi resume linkage
-			// (issue #2219): the archive copies the same transcript JSONL the
-			// hard-mode sever deletes, so the sever runs second — and is
-			// skipped when the archive fails so the transcript is not lost.
-			// doCleanup destroys the worktree and branch, so the sever is
-			// hard: the transcript is removed from the pi sessions root
-			// (issue #2371 mode split). The TUI path does not surface the
-			// per-update outcome — failures are logged via proglog inside
+			// Archive the session storage, then sever the pi resume linkage:
+			// the archive copies the same transcript JSONL the hard-mode sever
+			// deletes, so the sever runs second — and is skipped when the
+			// archive fails so the transcript is not lost. doCleanup destroys
+			// the worktree and branch, so the sever is hard: the transcript is
+			// removed from the pi sessions root. The TUI path does not surface
+			// the per-update outcome — failures are logged via proglog inside
 			// the helper.
 			archiveErr, _ := archiveThenSeverPiResume(d, m.session, instanceIDForSessions, isolationMode, severModeHard)
 			if errors.Is(archiveErr, archive.ErrAlreadyExists) {
@@ -364,9 +359,9 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			}
 			// Other archive errors are non-fatal — cleanup continues.
 			if instanceIDForSessions != "" {
-				// Remove the per-session work dir for this session instance
-				// (issue #2213; also covers staging-HOME remnants from
-				// pre-Step-5-of-#2132 sessions nested at <sessionDir>/home/).
+				// Remove the per-session work dir for this session instance.
+				// Also covers staging-HOME remnants that legacy sessions left
+				// nested at <sessionDir>/home/.
 				container.RemoveSessionWorkDir(instanceIDForSessions)
 			}
 			_ = d.PurgeBusMessages(m.session)
@@ -452,7 +447,7 @@ var cleanupCmd = &cobra.Command{
 		// The proxy handles both --yes (headless) and any future interactive paths.
 		// stdout and stderr from the host-side subprocess are forwarded verbatim,
 		// so the container caller sees the same per-resource progress lines as a
-		// host invocation (issue #1527).
+		// host invocation.
 		if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 			target := sessionFlag
 			if target == "" {
@@ -581,10 +576,10 @@ var cleanupCmd = &cobra.Command{
 
 		// Non-interactive path: --yes skips all prompts and runs headlessly.
 		if yesFlag {
-			// --keep-worktree forces a soft close on this worker session
-			// (issue #2179): preserve the worktree and branch instead of
-			// removing them. Coordinator and non-worktree sessions already
-			// soft-close above, so this branch only affects worker sessions.
+			// --keep-worktree forces a soft close on this worker session:
+			// preserve the worktree and branch instead of removing them.
+			// Coordinator and non-worktree sessions already soft-close above,
+			// so this branch only affects worker sessions.
 			if keepWorktreeFlag {
 				return headlessCloseSessionWithJSON(session, jsonFlag)
 			}
@@ -610,8 +605,8 @@ var cleanupCmd = &cobra.Command{
 // worktreeRemoved=nil for the JSON encoding).
 //
 // The three lifecycle-bookkeeping fields (EndedAtStamped, HarnessPortReleased,
-// HarnessSessionIDCleared) carry a heterogeneous value per the issue #2134
-// contract: `true` on success (or idempotent no-op — the row is in the
+// HarnessSessionIDCleared) carry a heterogeneous value: `true` on success
+// (or idempotent no-op — the row is in the
 // cleaned-up state), a string describing the failure on error, or null when
 // the DB block was never reached (e.g. the function returned early via the
 // PRISM_HOST_API proxy short-circuit at the top of the function). The `any`
@@ -627,7 +622,7 @@ type cleanupResult struct {
 	// ContainersSwept reports the number of orphan containers
 	// (matching prism-<session>-<8 hex> on the host) removed by the
 	// containers_enabled=1 sweep. nil omits the field entirely from
-	// the JSON envelope per the #2324 contract: when containers_enabled=0,
+	// the JSON envelope: when containers_enabled=0,
 	// the cleanup path issues NO podman commands AND emits no
 	// containers_swept key. *int (not int + omitempty) is used so a
 	// run that produces zero matches still emits "containers_swept": 0.
@@ -640,21 +635,15 @@ type cleanupResult struct {
 // (including idempotent no-ops where the column is already in the cleaned-up
 // state) or a string describing the failure.
 //
-// Issue #2134: prior to this helper, errors from these calls were either
-// silently discarded (`_ = d.SetEnded(...)`) or only logged via proglog. The
-// JSON envelope had no fields for them, so operators had no way to verify
-// whether the bookkeeping actually ran.
-//
 // The harness_session_id clear (severPiResumeLinkage) is intentionally NOT
 // part of this helper: on hard-cleanup paths the sever deletes the pi
 // transcript JSONL that the session archive copies, so it must run after
-// runSessionArchive — see archiveThenSeverPiResume (issue #2219). On
-// soft-close paths the sever is DB-only and the transcript is preserved
-// (issue #2371), but the same helper still owns the sequencing so both
-// modes route through one code path. Callers populate
-// result.HarnessSessionIDCleared from that helper's outcome.
+// runSessionArchive — see archiveThenSeverPiResume. On soft-close paths the
+// sever is DB-only and the transcript is preserved, but the same helper still
+// owns the sequencing so both modes route through one code path. Callers
+// populate result.HarnessSessionIDCleared from that helper's outcome.
 func applyDBLifecycleClears(d *db.DB, sessionName string, result *cleanupResult) {
-	// 0. Record WHY this row is about to close (#2613). A closed row in
+	// 0. Record WHY this row is about to close. A closed row in
 	//    state "error" is otherwise indistinguishable from one a review
 	//    readiness gate or the monitor's safety sweep closed, and the review
 	//    report then has to name several paths for one row.
@@ -697,9 +686,8 @@ func applyDBLifecycleClears(d *db.DB, sessionName string, result *cleanupResult)
 // markDBLifecycleSkipped populates the three lifecycle fields with the same
 // error description so the JSON envelope clearly tells the operator that the
 // bookkeeping was NOT attempted (DB couldn't be opened). Without this, those
-// fields would marshal as `null` and the operator could not distinguish
-// "not attempted" from "silently skipped without explanation" — exactly the
-// silent-failure mode issue #2134 calls out.
+// fields marshal as `null` and the operator cannot distinguish
+// "not attempted" from "silently skipped without explanation".
 func markDBLifecycleSkipped(result *cleanupResult, reason string) {
 	result.HarnessPortReleased = reason
 	result.HarnessSessionIDCleared = reason
@@ -748,7 +736,7 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 // headlessCleanupWithJSON is the JSON-aware form of headlessCleanup. When
 // jsonMode is true, per-step textual progress lines are suppressed and a
 // single JSON object is emitted on success. Stderr warnings (e.g. branch
-// delete failure, archive collision) are preserved in both modes per AC.
+// delete failure, archive collision) are preserved in both modes.
 func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot string, jsonMode bool) error {
 	return headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot, jsonMode, os.Stdout)
 }
@@ -777,8 +765,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	// worktree is removed below — see resolveBranchName's doc comment.
 	// worktreeName (the sanitised session component) is used only as a
 	// fallback and for the "worktree path unknown" message, since it is not
-	// reversible to the real branch name for branches containing '/'
-	// (issue #2501).
+	// reversible to the real branch name for branches containing '/'.
 	branchName := worktreeName
 	if resolved, ok := resolveBranchName(worktreePath); ok {
 		branchName = resolved
@@ -786,7 +773,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		proglog.Warnf("[prism] warning: could not resolve actual branch name for worktree %s — falling back to session-derived name %q, which is wrong for branches containing '/' (issue #2501)\n", worktreePath, worktreeName)
 	}
 
-	// Issue #2638: a session whose name contains '~' is a descendant
+	// A session whose name contains '~' is a descendant
 	// (review or investigator sub-session, e.g. "<parent>~review-1-review-code"
 	// or "<parent>~investigate-<slug>"). Descendants inherit the parent's
 	// worktree path by design and own neither the worktree nor the branch
@@ -803,7 +790,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	if isDescendant {
 		printLine("session %s is a descendant session — it owns no worktree or branch of its own; skipping worktree removal and branch deletion\n", session)
 	} else if worktreePath == "" {
-		// AC (#2506): name both the session and the path we tried, rather than
+		// Name both the session and the path we tried, rather than
 		// a bare "worktree path unknown". worktreeName is the branch component
 		// of the session name — the best available stand-in for "the path it
 		// tried" at this call site, since both the tmux and DB (agent_status)
@@ -834,9 +821,9 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 				result.BranchDeleted = &bn
 			}
 		} else {
-			// AC (#2501): name the branch that was looked for rather than
-			// silently skipping — the same treatment #2509 gave the
-			// worktree-path-unknown case above.
+			// Name the branch that was looked for rather than silently
+			// skipping — the same treatment the worktree-path-unknown case
+			// above gets.
 			proglog.Warnf("[prism] warning: branch %q not found — skipping branch delete for session %s\n", branchName, session)
 		}
 	}
@@ -861,10 +848,10 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	printLine("killing session %s\n", session)
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
-	// Orphan-sidecar safety net (issue #1751): SIGTERM any sidecar
-	// processes still alive for review-group or investigator-group
-	// children of this worker. Done before DB cleanup so processes
-	// whose DB rows have already been purged are still caught.
+	// Orphan-sidecar safety net: SIGTERM any sidecar processes still alive
+	// for review-group or investigator-group children of this worker. Done
+	// before DB cleanup so processes whose DB rows have already been purged
+	// are still caught.
 	killOrphanReviewSidecars(session)
 	// session_killed reflects the post-condition (tmux session is gone),
 	// which is true whether the session was alive or already-dead before this
@@ -874,9 +861,9 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	result.SessionKilled = true
 	// archiveCollisionWarning records a non-fatal archive-already-exists
 	// outcome so it can be surfaced as a stderr warning at the end of cleanup
-	// rather than aborting (per the issue-comment AC: archive.ErrAlreadyExists
-	// is a benign collision once worktree/branch/session are already torn
-	// down). Other steps continue as normal.
+	// rather than aborting (archive.ErrAlreadyExists is a benign collision once
+	// worktree/branch/session are already torn down). Other steps continue as
+	// normal.
 	var archiveCollisionWarning string
 	if d, err := openDB(); err == nil {
 		// Stop and remove child review-agent containers BEFORE removing their
@@ -888,9 +875,9 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
-		// Orphan-container sweep (#2324 Step 7). Gated on the
-		// session's agent_status.containers_enabled column inside
-		// sweepOrphanContainersForSession; when the flag is 0 this
+		// Orphan-container sweep. Gated on the session's
+		// agent_status.containers_enabled column inside
+		// sweepOrphanContainersForSession. When the flag is 0 this
 		// is a fast DB read and no podman commands are issued. Runs
 		// after removeContainerIfExists so the session's own
 		// runtime container has already been torn down — the sweep
@@ -904,9 +891,8 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
 		// Apply the lifecycle clears — release harness_port and stamp
-		// ended_at — and capture per-update outcomes for the JSON envelope
-		// (issue #2134). The harness_session_id clear runs later, after the
-		// archive (issue #2219).
+		// ended_at — and capture per-update outcomes for the JSON envelope. The
+		// harness_session_id clear runs later, after the archive.
 		applyDBLifecycleClears(d, session, &result)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
@@ -914,18 +900,17 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 			}
 		}
 		// Write spawn_outcome for session and cascade to every
-		// <session>~review-% child (issue #2591) — mirrors the SetEnded cascade
-		// applied inside applyDBLifecycleClears above.
+		// <session>~review-% child — mirrors the SetEnded cascade applied
+		// inside applyDBLifecycleClears above.
 		if outcomeErr := d.WriteSpawnOutcomeCascade(session); outcomeErr != nil {
 			proglog.Errorf("[prism] headlessCleanup: write spawn outcome cascade: %v\n", outcomeErr)
 		}
-		// Archive the session storage, then sever the pi resume linkage
-		// (issue #2219): the archive copies the same transcript JSONL the
-		// hard-mode sever deletes, so the sever runs second — and is skipped
-		// when the archive fails so the transcript is not lost. This is the
-		// hard-cleanup path (worktree and branch destroyed), so the sever is
-		// hard: the transcript is removed from the pi sessions root (issue
-		// #2371 mode split).
+		// Archive the session storage, then sever the pi resume linkage:
+		// the archive copies the same transcript JSONL the hard-mode sever
+		// deletes, so the sever runs second — and is skipped when the archive
+		// fails so the transcript is not lost. This is the hard-cleanup path
+		// (worktree and branch destroyed), so the sever is hard: the transcript
+		// is removed from the pi sessions root.
 		archiveErr, severOutcome := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode, severModeHard)
 		result.HarnessSessionIDCleared = severOutcome
 		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
@@ -933,17 +918,15 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 			// session, and DB rows are already torn down. The collision
 			// just means a previous cleanup attempt for the same
 			// instance_id already wrote the archive directory. Surface
-			// it as a stderr warning instead of aborting (issue #1527
-			// follow-up).
+			// it as a stderr warning instead of aborting.
 			archiveCollisionWarning = archiveErr.Error()
 		}
 		// Other archive errors are non-fatal — cleanup continues.
 		if instanceIDForSessions != "" {
-			// Remove the per-session work dir for this session instance
-			// (issue #2213; also covers staging-HOME remnants from
-			// pre-Step-5-of-#2132 sessions). Non-fatal and idempotent —
-			// silently skips when the directory does not exist (e.g.
-			// non-sandbox-exec sessions).
+			// Remove the per-session work dir for this session instance.
+			// Also covers staging-HOME remnants that legacy sessions left.
+			// Non-fatal and idempotent — silently skips when the directory
+			// does not exist (e.g. non-sandbox-exec sessions).
 			container.RemoveSessionWorkDir(instanceIDForSessions)
 		}
 		_ = d.PurgeBusMessages(session)
@@ -951,17 +934,16 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	} else {
 		// DB unavailable — still attempt container removal conservatively.
 		// Also try to kill review sessions via tmux even without DB cleanup.
-		// Issue #2134: report the skip in the JSON envelope so operators can
-		// distinguish "DB bookkeeping ran successfully" from "DB was
-		// unavailable and the bookkeeping never ran".
+		// Report the skip in the JSON envelope so operators can distinguish
+		// "DB bookkeeping ran successfully" from "DB was unavailable and the
+		// bookkeeping never ran".
 		markDBLifecycleSkipped(&result, fmt.Sprintf("db open failed: %v", err))
 		proglog.Errorf("[prism] headlessCleanup: open db: %v\n", err)
 		review.KillReviewSessionsForParent(session)
 		removeContainerIfExists(session)
 		// No sweep here: containers_enabled is unreadable without the
-		// DB. Skipping the sweep matches the AC "containers_enabled=0
-		// → no podman commands" in spirit: when we cannot prove the
-		// flag was on, default to off.
+		// DB. When we cannot prove the flag was on, default to off
+		// (no podman commands).
 	}
 	if archiveCollisionWarning != "" {
 		proglog.Warnf("[prism] warning: archive: %s — continuing cleanup\n", archiveCollisionWarning)
@@ -974,14 +956,14 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	return nil
 }
 
-// applyOrphanContainerSweep runs the #2324 orphan-container sweep for
+// applyOrphanContainerSweep runs the orphan-container sweep for
 // session and, when the sweep actually ran (containers_enabled=1),
 // records the count on result.ContainersSwept so it surfaces in the
 // --json envelope. When containers_enabled=0 the field stays nil and
 // the JSON encoder omits it entirely (json:"containers_swept,omitempty").
 //
 // Errors inside the sweep are non-fatal and logged at warning level by
-// the sweep itself; the helper has no error path of its own.
+// the sweep itself. The helper has no error path of its own.
 func applyOrphanContainerSweep(session string, result *cleanupResult) {
 	count, ran := sweepOrphanContainersForSession(session)
 	if !ran {
@@ -1021,9 +1003,9 @@ func closeSession(session string) error {
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
-		// Orphan-container sweep (#2324 Step 7). closeSession is the
-		// interactive @main / non-worktree path and does not surface a
-		// JSON envelope; the helper records the count into the log only.
+		// Orphan-container sweep. closeSession is the interactive @main /
+		// non-worktree path and does not surface a JSON envelope — the helper
+		// records the count into the log only.
 		applyOrphanContainerSweep(session, nil)
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			proglog.Errorf("[prism] closeSession: release port: %v\n", releaseErr)
@@ -1037,20 +1019,18 @@ func closeSession(session string) error {
 			}
 		}
 		// Write spawn_outcome for session and cascade to every
-		// <session>~review-% child (issue #2591) — mirrors the SetEnded cascade
-		// above.
+		// <session>~review-% child — mirrors the SetEnded cascade above.
 		if outcomeErr := d.WriteSpawnOutcomeCascade(session); outcomeErr != nil {
 			proglog.Errorf("[prism] closeSession: write spawn outcome cascade: %v\n", outcomeErr)
 		}
-		// Archive the session storage, then sever the pi resume linkage
-		// (issue #2219): the archive runs first so the transcript is
-		// preserved in the archive even before the sever. closeSession is a
-		// SOFT-close path (the worktree and branch survive), so the sever is
-		// soft: the transcript JSONL stays in the pi sessions root — pi's
-		// /resume keeps working — and only the DB resume pointer is cleared
-		// (issue #2371). closeSession is the interactive @main path and does
-		// not surface a JSON envelope — the per-update outcome is captured
-		// by the proglog warnings inside the helper.
+		// Archive the session storage, then sever the pi resume linkage:
+		// the archive runs first so the transcript is preserved in the archive
+		// even before the sever. closeSession is a SOFT-close path (the worktree
+		// and branch survive), so the sever is soft: the transcript JSONL stays
+		// in the pi sessions root — pi's /resume keeps working — and only the DB
+		// resume pointer is cleared. closeSession is the interactive @main path
+		// and does not surface a JSON envelope — the per-update outcome is
+		// captured by the proglog warnings inside the helper.
 		archiveErr, _ := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode, severModeSoft)
 		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 			_ = d.PurgeBusMessages(session)
@@ -1059,9 +1039,8 @@ func closeSession(session string) error {
 		}
 		// Other archive errors are non-fatal — cleanup continues.
 		if instanceIDForSessions != "" {
-			// Remove the per-session work dir for this session instance
-			// (issue #2213; also covers staging-HOME remnants from
-			// pre-Step-5-of-#2132 sessions).
+			// Remove the per-session work dir for this session instance.
+			// Also covers staging-HOME remnants that legacy sessions left.
 			container.RemoveSessionWorkDir(instanceIDForSessions)
 		}
 		_ = d.PurgeBusMessages(session)
@@ -1132,10 +1111,10 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 	result.SessionKilled = true
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
-	// Orphan-sidecar safety net (issue #1751): SIGTERM any sidecar
-	// processes still alive for review-group or investigator-group
-	// children of this session. Done before DB cleanup so processes
-	// whose DB rows have already been purged are still caught.
+	// Orphan-sidecar safety net: SIGTERM any sidecar processes still alive
+	// for review-group or investigator-group children of this session. Done
+	// before DB cleanup so processes whose DB rows have already been purged
+	// are still caught.
 	killOrphanReviewSidecars(session)
 	var archiveCollisionWarning string
 	if d, err := openDB(); err == nil {
@@ -1148,18 +1127,16 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
-		// Orphan-container sweep (#2324 Step 7). See headlessCleanupWithJSONTo
-		// for the placement rationale — the gate is in
-		// sweepOrphanContainersForSession, so calling it on a non-container
-		// session (containers_enabled=0) is a fast DB read with no podman
-		// commands issued.
+		// Orphan-container sweep. See headlessCleanupWithJSONTo for the
+		// placement rationale — the gate is in sweepOrphanContainersForSession,
+		// so calling it on a non-container session (containers_enabled=0) is a
+		// fast DB read with no podman commands issued.
 		applyOrphanContainerSweep(session, &result)
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
 		// Apply the lifecycle clears — release harness_port and stamp
-		// ended_at — and capture per-update outcomes for the JSON envelope
-		// (issue #2134). The harness_session_id clear runs later, after the
-		// archive (issue #2219).
+		// ended_at — and capture per-update outcomes for the JSON envelope. The
+		// harness_session_id clear runs later, after the archive.
 		applyDBLifecycleClears(d, session, &result)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
@@ -1167,18 +1144,17 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 			}
 		}
 		// Write spawn_outcome for session and cascade to every
-		// <session>~review-% child (issue #2591) — mirrors the SetEnded cascade
-		// applied inside applyDBLifecycleClears above.
+		// <session>~review-% child — mirrors the SetEnded cascade applied
+		// inside applyDBLifecycleClears above.
 		if outcomeErr := d.WriteSpawnOutcomeCascade(session); outcomeErr != nil {
 			proglog.Errorf("[prism] headlessCloseSession: write spawn outcome cascade: %v\n", outcomeErr)
 		}
-		// Archive the session storage, then sever the pi resume linkage
-		// (issue #2219): the archive runs first so the transcript is
-		// preserved in the archive even before the sever. This is a
-		// SOFT-close path (coordinator/@main, non-@ sessions, open-PR
-		// workers, --keep-worktree), so the sever is soft: the transcript
-		// JSONL stays in the pi sessions root — pi's /resume keeps working —
-		// and only the DB resume pointer is cleared (issue #2371).
+		// Archive the session storage, then sever the pi resume linkage:
+		// the archive runs first so the transcript is preserved in the archive
+		// even before the sever. This is a SOFT-close path (coordinator/@main,
+		// non-@ sessions, open-PR workers, --keep-worktree), so the sever is
+		// soft: the transcript JSONL stays in the pi sessions root — pi's
+		// /resume keeps working — and only the DB resume pointer is cleared.
 		archiveErr, severOutcome := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode, severModeSoft)
 		result.HarnessSessionIDCleared = severOutcome
 		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
@@ -1187,9 +1163,8 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		}
 		// Other archive errors are non-fatal — cleanup continues.
 		if instanceIDForSessions != "" {
-			// Remove the per-session work dir for this session instance
-			// (issue #2213; also covers staging-HOME remnants from
-			// pre-Step-5-of-#2132 sessions).
+			// Remove the per-session work dir for this session instance.
+			// Also covers staging-HOME remnants that legacy sessions left.
 			container.RemoveSessionWorkDir(instanceIDForSessions)
 		}
 		_ = d.PurgeBusMessages(session)
@@ -1197,7 +1172,7 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 	} else {
 		// DB unavailable — still attempt container removal conservatively.
 		// Also try to kill review sessions via tmux even without DB cleanup.
-		// Issue #2134: report the skip in the JSON envelope.
+		// Report the skip in the JSON envelope.
 		markDBLifecycleSkipped(&result, fmt.Sprintf("db open failed: %v", err))
 		proglog.Errorf("[prism] headlessCloseSession: open db: %v\n", err)
 		review.KillReviewSessionsForParent(session)
@@ -1265,18 +1240,16 @@ func worktreePathFromSession(session string) string {
 	if err != nil || status == nil {
 		return ""
 	}
-	// Trust the stored path unconditionally (issue #2506). This used to be
-	// gated on an os.Stat existence check ("a stale path would produce a
-	// confusing git error later rather than a clear 'not found' here"), but
-	// that gate was the actual cause of the DB fallback silently returning ""
-	// for a perfectly healthy row whose worktree directory is real and on
-	// disk (e.g. an orphaned worktree from a session whose tmux pane died —
-	// the exact case this fallback exists to handle). git.BareRoot walks the
-	// path string upward looking for a .bare marker and does not require the
-	// leaf directory to exist, and both git.RemoveWorktree and
-	// git.ForceDeleteBranch already treat their own failures as non-fatal
-	// warnings — so a genuinely-stale DB path degrades gracefully downstream
-	// rather than needing to be pre-filtered here.
+	// Trust the stored path unconditionally. Do NOT gate this on an os.Stat
+	// existence check: such a gate silently returns "" for a perfectly healthy
+	// row whose worktree directory is real and on disk (e.g. an orphaned
+	// worktree from a session whose tmux pane died — the exact case this
+	// fallback exists to handle). git.BareRoot walks the path string upward
+	// looking for a .bare marker and does not require the leaf directory to
+	// exist, and both git.RemoveWorktree and git.ForceDeleteBranch already
+	// treat their own failures as non-fatal warnings — so a genuinely-stale DB
+	// path degrades gracefully downstream rather than needing to be
+	// pre-filtered here.
 	return status.Worktree
 }
 
@@ -1292,7 +1265,7 @@ func worktreePathFromSession(session string) string {
 // re-created at the conventional sibling location). The upward walk is
 // depth-agnostic, so it correctly resolves the bare root for worktrees nested
 // more than one level below it (e.g. a branch name containing "/", such as
-// "feat/my-thing" — see issue #2510).
+// "feat/my-thing").
 //
 // Return values:
 //   - (probed, bareRoot) where probed is non-empty when a worktree was found at
@@ -1316,13 +1289,12 @@ func probeConventionalWorktreePath(session, worktreeName string) (worktreePath, 
 	// name containing "/") such as "/code/nixos-config/feat/my-thing", a
 	// single filepath.Dir call would wrongly yield "/code/nixos-config/feat"
 	// instead of "/code/nixos-config" — git.BareRoot walks upward until it
-	// finds the .bare marker, so it is depth-agnostic (issue #2510).
+	// finds the .bare marker, so it is depth-agnostic.
 	candidateBareRoot := git.BareRoot(status.Worktree)
 	if candidateBareRoot == "" {
 		// Fall back to the immediate parent when no ancestor has a .bare
 		// marker (e.g. the stored path itself no longer exists on disk, so
-		// git.BareRoot's os.Stat-based walk cannot find anything). This
-		// preserves the pre-existing behaviour for that degraded case.
+		// git.BareRoot's os.Stat-based walk cannot find anything).
 		candidateBareRoot = filepath.Dir(status.Worktree)
 	}
 	candidate := filepath.Join(candidateBareRoot, worktreeName)
@@ -1340,17 +1312,17 @@ func probeConventionalWorktreePath(session, worktreeName string) (worktreePath, 
 // On success it calls UpdateSessionArchivePath to record the archive directory
 // path in the DB.
 //
-// Return values (issue #2336): (copied, err). err is the archive.Run error
-// (nil on success). copied reports whether the harness adapter actually
-// wrote a transcript file into the archive directory — (false, nil) is the
+// Return values: (copied, err). err is the archive.Run error (nil on
+// success). copied reports whether the harness adapter actually wrote a
+// transcript file into the archive directory — (false, nil) is the
 // "nothing to copy" outcome (manifest-only archive), (true, nil) means the
 // transcript survived the archive step. The caller (archiveThenSeverPiResume)
-// uses copied to gate the sever step: severing when copied == false would
-// delete the same source file the archive step failed to preserve.
+// uses copied to gate the sever step: severing when copied == false deletes
+// the same source file the archive step failed to preserve.
 //
 // The caller is responsible for deciding whether an error should be fatal:
-//   - archive.ErrAlreadyExists should be propagated — the AC requires cleanup
-//     to exit non-zero when the archive directory already exists on a re-run.
+//   - archive.ErrAlreadyExists should be propagated — cleanup must exit
+//     non-zero when the archive directory already exists on a re-run.
 //   - Other errors are treated as non-fatal (logged + cleanup continues).
 //
 // Skip paths that return (false, nil) — archive was not attempted and no
@@ -1402,11 +1374,10 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	}
 
 	// Build srcParams. Fully resolve HarnessSessionID BEFORE calling
-	// SourcePath (issue #2336): the old code did the sessions-NULL fallback
-	// after SourcePath had already been invoked with the empty value, so the
-	// pi adapter's file-scan fell through to the sessions-root branch and
-	// Archive no-op'd on the directory. Doing the fallback here ensures
-	// SourcePath sees the resolved value the first time.
+	// SourcePath. If the sessions-NULL fallback runs after SourcePath is
+	// invoked with the empty value, the pi adapter's file-scan falls through
+	// to the sessions-root branch and Archive no-ops on the directory.
+	// Resolving here ensures SourcePath sees the resolved value the first time.
 	srcParams := harnessarchive.SourceParams{
 		SessionName:   sessionName,
 		InstanceID:    instanceID,
@@ -1416,10 +1387,8 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	if sess.HarnessSessionID != nil {
 		srcParams.HarnessSessionID = *sess.HarnessSessionID
 	} else {
-		// sessions.harness_session_id is NULL — this can happen for sessions
-		// started before UpdateHarnessSessionID was fixed to write to both
-		// tables. Fall back to agent_status, which is where the sidecar
-		// historically wrote the value.
+		// sessions.harness_session_id is NULL for some rows. Fall back to
+		// agent_status, where the sidecar also records the value.
 		if sid, fallbackErr := d.HarnessSessionIDForInstance(instanceID); fallbackErr != nil {
 			proglog.Warnf("[prism] archive: harness_session_id fallback for %q: %v\n", instanceID, fallbackErr)
 		} else if sid != "" {
@@ -1453,14 +1422,13 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		HarnessVersion:   harnessVersion,
 		// Copier delegates the harness-specific file-copy to the adapter's Archive
 		// method, allowing any registered harness to provide its own copy logic.
-		// archiveDir is the per-session archive directory itself; the adapter
+		// archiveDir is the per-session archive directory itself. The adapter
 		// writes its final-layout artifacts (e.g. session.jsonl for pi) directly
-		// there — there is no longer a `raw/` subdirectory indirection.
+		// there.
 		//
 		// The Copier captures the outer `copied` variable so runSessionArchive
 		// can propagate the adapter's copied/not-copied signal back up to
-		// archiveThenSeverPiResume without changing archive.Run's signature
-		// (issue #2336).
+		// archiveThenSeverPiResume without changing archive.Run's signature.
 		Copier: func(copyCtx context.Context, archiveDir string) error {
 			c, cErr := archiveAdapter.Archive(copyCtx, srcPath, archiveDir)
 			if c {
@@ -1489,9 +1457,9 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	}
 
 	// Pre-resolve extra files (e.g. agent-run.log for bwrap/sandbox-exec) via
-	// the container isolator registry. This path pre-dates #1142 and is kept
-	// as-is: the isolator's ExtraFiles are harness-agnostic filesystem paths
-	// that complement the harness adapter's storage root resolution.
+	// the container isolator registry. The isolator's ExtraFiles are
+	// harness-agnostic filesystem paths that complement the harness adapter's
+	// storage root resolution.
 	if statusIsolationMode != "" {
 		if home, homeErr := os.UserHomeDir(); homeErr == nil {
 			if iso, isoErr := container.For(config.IsolationMode(statusIsolationMode), container.ConstructorOpts{Name: sessionName}); isoErr == nil {
@@ -1502,7 +1470,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 			}
 		}
 	}
-	// Fallback: include the agent-run log via the legacy lookup when the
+	// Fallback: include the agent-run log via the direct lookup when the
 	// registry path did not populate it (e.g. statusIsolationMode == "" on
 	// pre-migration rows). Non-fatal if the path cannot be resolved — non-
 	// bwrap sessions never create this file.
@@ -1522,10 +1490,8 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		proglog.Warnf("[prism] archive: update archive_path for %q: %v\n", instanceID, updErr)
 	}
 
-	// The pre-fix two-stage flow ran a separate adapter.Export here that
-	// byte-copied raw/session.jsonl to session.jsonl. With pi as the only
-	// remaining harness, Archive writes the final layout in one step — no
-	// post-process Export is needed.
+	// Archive writes the final layout in one step, so no post-process Export
+	// step is needed here.
 	return copied, nil
 }
 
@@ -1538,32 +1504,30 @@ func init() {
 }
 
 // severMode selects how much of the pi conversation-resume linkage the
-// cleanup pipeline tears down after the archive step (issue #2371).
+// cleanup pipeline tears down after the archive step.
 //
 // The linkage has two halves (see severPiResumeLinkage): the on-disk
 // transcript JSONL in the pi sessions root — the exact file pi's interactive
 // /resume picker reads — and the agent_status.harness_session_id DB pointer
 // that makes the NEXT spawn on the same session name auto-resume. Only the
-// DB pointer is load-bearing for the #2035 defence: spawn appends
+// DB pointer is load-bearing for the auto-resume defence: spawn appends
 // `--session <id>` only when the DB value is non-empty (see
 // internal/container/pi_invocation.go::PIInvocation), so clearing the column
 // alone guarantees a fresh conversation.
 //
-// That is not just theory — it is empirically confirmed by pi's transcript
-// rollover behaviour (issue #2371 forensics): pi rolls to a new UUID/file
-// mid-session, so a long-lived session accumulates MULTIPLE conversation
-// JSONLs under the encoded-cwd dir, and the sever only ever deleted the one
-// matching the DB's latest harness_session_id. The earlier rollover files
-// have survived every close for months and have never caused a #2035 dud
-// auto-resume. Deleting the latest transcript on a soft close therefore
-// bought nothing — and permanently destroyed the operator's /resume history
-// for the cwd on every Prefix-q (issue #2371).
+// The on-disk transcript is NOT load-bearing for that defence. pi rolls to a
+// new UUID/file mid-session, so a long-lived session accumulates MULTIPLE
+// conversation JSONLs under the encoded-cwd dir, and the sever only ever
+// deletes the one matching the DB's latest harness_session_id. The earlier
+// rollover files survive every close and never cause a dud auto-resume.
+// Deleting the latest transcript on a soft close therefore gains nothing and
+// destroys the operator's /resume history for the cwd.
 type severMode int
 
 const (
 	// severModeHard — after the archive, remove the transcript JSONL from
 	// the pi sessions root AND clear the DB pointer (gated on the archive
-	// actually preserving the transcript — issue #2336). Used by the
+	// actually preserving the transcript). Used by the
 	// hard-cleanup paths (doCleanup, headlessCleanupWithJSONTo), where the
 	// worktree and branch are destroyed and the conversation has no future
 	// outside the archive.
@@ -1572,7 +1536,7 @@ const (
 	// severModeSoft — after the archive, clear the DB pointer and purge
 	// pending_replay_deliveries WITHOUT touching the transcript JSONL in
 	// the pi sessions root, so pi's /resume keeps working on the preserved
-	// worktree (issue #2371). Used by the soft-close paths (closeSession,
+	// worktree. Used by the soft-close paths (closeSession,
 	// headlessCloseSessionWithJSONTo — i.e. coordinator/@main sessions,
 	// non-@ sessions, open-PR workers, and --keep-worktree).
 	severModeSoft
@@ -1581,18 +1545,18 @@ const (
 // severPiResumeLinkage breaks the pi conversation-resume linkage for
 // sessionName so that a future spawn on the same branch name (and therefore
 // the same agent_status row) does NOT silently resume the now-defunct
-// pi conversation (issue #2035). The mode selects whether the on-disk
-// transcript is also removed (severModeHard) or preserved for pi's
-// interactive /resume (severModeSoft — issue #2371).
+// pi conversation. The mode selects whether the on-disk transcript is also
+// removed (severModeHard) or preserved for pi's interactive /resume
+// (severModeSoft).
 //
 // Two surfaces survive a plain `prism cleanup` otherwise:
 //
-//  1. agent_status.harness_session_id — db.SetEnded only stamps ended_at;
-//     the harness_session_id column persists. cmd/agent_run.go reads it back
+//  1. agent_status.harness_session_id — db.SetEnded only stamps ended_at.
+//     The harness_session_id column persists. cmd/agent_run.go reads it back
 //     on the next spawn and threads it into container.Config, where
 //     PIInvocation appends `--session <id>` to pi when a matching JSONL is
-//     found on disk. Clearing this column is the load-bearing #2035 defence
-//     and runs in BOTH sever modes.
+//     found on disk. Clearing this column is the load-bearing auto-resume
+//     defence and runs in BOTH sever modes.
 //
 //  2. <piSessionsRoot>/<encodePiCWD(worktree)>/*_<harness_session_id>.jsonl
 //     where <piSessionsRoot> is $PI_CODING_AGENT_DIR/sessions when the env
@@ -1601,17 +1565,16 @@ const (
 //     resolution. The on-disk JSONL transcript. The encoded-cwd directory is keyed off
 //     cfg.Worktree, which is stable across a reused branch name (the worktree
 //     path is derived deterministically from the branch). The same host root
-//     applies to sandbox-exec sessions (#2210): pi writes there because the
+//     applies to sandbox-exec sessions: pi writes there because the
 //     dispatcher injects PI_CODING_AGENT_DIR into the sandbox env, so this
 //     removal is the only step that deletes the transcript — the per-session
 //     work-dir wipe in RemoveSessionWorkDir never touches it. The transcript
 //     is what pi's interactive /resume reads, and it is NOT load-bearing for
-//     the #2035 defence (surface 1 is — confirmed empirically by the
-//     rollover files described on the severMode doc comment, which retain
-//     stale conversation JSONLs across every close without ever causing a
-//     dud auto-resume). It is therefore removed ONLY in severModeHard — on
-//     soft-close paths the removal was pure data loss (issue #2371) and is
-//     skipped.
+//     the auto-resume defence (surface 1 is — confirmed by the rollover files
+//     described on the severMode doc comment, which retain stale conversation
+//     JSONLs across every close without ever causing a dud auto-resume). It
+//     is therefore removed ONLY in severModeHard — on soft-close paths the
+//     removal is pure data loss and is skipped.
 //
 // Order:
 //
@@ -1627,11 +1590,11 @@ const (
 // name resumes a defunct conversation, which is recoverable by the operator,
 // whereas a half-cleaned worktree/branch is not.
 //
-// Return value (issue #2134): the error from d.ClearHarnessSessionID (the
-// load-bearing DB clear), or nil on success / when the row is absent. The
-// hard-mode on-disk JSONL removal's failure is logged but not propagated.
-// All four cleanup paths reach this function via archiveThenSeverPiResume
-// (issue #2219), which converts the return value into the JSON-envelope
+// Return value: the error from d.ClearHarnessSessionID (the load-bearing DB
+// clear), or nil on success / when the row is absent. The hard-mode on-disk
+// JSONL removal's failure is logged but not propagated.
+// All four cleanup paths reach this function via archiveThenSeverPiResume,
+// which converts the return value into the JSON-envelope
 // outcome for the headless paths; the interactive paths (doCleanup,
 // closeSession) rely on the proglog warning to surface failures.
 func severPiResumeLinkage(d *db.DB, sessionName string, mode severMode) error {
@@ -1657,8 +1620,8 @@ func severPiResumeLinkage(d *db.DB, sessionName string, mode severMode) error {
 		proglog.Errorf("[prism] severPiResumeLinkage: clear harness_session_id for %s: %v\n", sessionName, clearErr)
 		return clearErr
 	}
-	// Wipe the durable pending-replay buffer for this session (issue #2359
-	// review-context follow-up). This is the CLI-visibility twin of the
+	// Wipe the durable pending-replay buffer for this session. This is the
+	// CLI-visibility twin of the
 	// pi resume linkage: the harness_session_id we just cleared points at
 	// the on-disk transcript, and pending_replay_deliveries points at
 	// undelivered coordinator directives for that same conversation. A
@@ -1674,33 +1637,32 @@ func severPiResumeLinkage(d *db.DB, sessionName string, mode severMode) error {
 // archiveThenSeverPiResume runs the session archive for sessionName and then
 // severs the pi resume linkage in the requested mode.
 //
-// Ordering is load-bearing (issue #2219): runSessionArchive copies the pi
-// transcript JSONL (<piSessionsRoot>/<encodePiCWD(worktree)>/*_<id>.jsonl)
-// into the archive, and in severModeHard severPiResumeLinkage deletes that
-// same file. Post #2210 both resolve the same host-root path in every
-// isolation mode, so severing first produced manifest-only archives: lossy
-// cleanup. All four cleanup paths route through this helper so the ordering
-// — and, post issue #2371, the per-path sever mode — cannot silently
-// diverge again:
+// Ordering is load-bearing: runSessionArchive copies the pi transcript JSONL
+// (<piSessionsRoot>/<encodePiCWD(worktree)>/*_<id>.jsonl) into the archive,
+// and in severModeHard severPiResumeLinkage deletes that same file. Both
+// resolve the same host-root path in every isolation mode, so severing first
+// produces manifest-only archives: lossy cleanup. All four cleanup paths
+// route through this helper so the ordering — and the per-path sever mode —
+// cannot silently diverge:
 //
 //   - doCleanup, headlessCleanupWithJSONTo → severModeHard
 //   - closeSession, headlessCloseSessionWithJSONTo → severModeSoft
 //     (`prism cleanup --keep-worktree` also routes through
 //     headlessCloseSessionWithJSONTo, so it is soft by construction)
 //
-// Gate refinement (issue #2336) — severModeHard only: the previous gate was
-// "archiveErr == nil", which permitted a manifest-only archive (no
-// session.jsonl) to trigger a sever that then deleted the transcript from
-// the live pi sessions dir without preserving a copy. The hard-mode gate is
-// (archiveErr == nil AND the adapter reported copied == true).
+// Hard-mode gate (severModeHard only): the sever runs only when
+// (archiveErr == nil AND the adapter reported copied == true). A
+// manifest-only archive (no session.jsonl) must NOT trigger a sever: the
+// sever would then delete the transcript from the live pi sessions dir
+// without preserving a copy.
 // runSessionArchive plumbs the copied bool up from the
 // ArchiveAdapter.Archive return value, so both the six pre-copy skip paths
 // and the manifest-only in-copier case route through the same not-copied
 // guard.
 //
 // In severModeSoft the sever runs UNCONDITIONALLY — not gated on the
-// archive outcome at all (documented choice per issue #2371 forensics).
-// Both hard-mode gates exist solely to protect the FS delete: they keep the
+// archive outcome at all. Both hard-mode gates exist solely to protect the
+// FS delete: they keep the
 // sever from destroying a transcript the archive step failed to preserve.
 // Soft mode never deletes anything, so there is nothing for either gate to
 // protect — and gating the soft-mode DB clear would be actively harmful:
@@ -1709,7 +1671,7 @@ func severPiResumeLinkage(d *db.DB, sessionName string, mode severMode) error {
 // failure or on the runSessionArchive skip paths would leave
 // agent_status.harness_session_id populated next to a deliberately
 // preserved transcript — precisely the combination that silently
-// auto-resumes a defunct conversation on the next spawn (#2035). Soft mode
+// auto-resumes a defunct conversation on the next spawn. Soft mode
 // therefore always clears the DB pointer and purges
 // pending_replay_deliveries, and reports the archive error (if any)
 // separately via the returned archiveErr.
@@ -1722,7 +1684,7 @@ func severPiResumeLinkage(d *db.DB, sessionName string, mode severMode) error {
 // the transcript, whereas clearing the DB pointer while keeping the file
 // would orphan the transcript (the hard-mode sever scopes its FS removal to
 // the stored id). The trade-off is that a re-spawn on the same branch name
-// could resume the defunct pi conversation (#2035) until a cleanup succeeds
+// could resume the defunct pi conversation until a cleanup succeeds
 // — recoverable by the operator, unlike a deleted transcript.
 //
 // Transcript-missing semantic (severModeHard only): when runSessionArchive
@@ -1758,7 +1720,7 @@ func archiveThenSeverPiResume(d *db.DB, sessionName, instanceID, isolationMode s
 		}
 	}
 	// severModeSoft reaches here regardless of the archive outcome: the
-	// DB-only sever is the load-bearing #2035 defence and must run even
+	// DB-only sever is the load-bearing auto-resume defence and must run even
 	// when the archive step failed — see the doc comment above.
 	if severErr := severPiResumeLinkage(d, sessionName, mode); severErr != nil {
 		return archiveErr, severErr.Error()
@@ -1769,13 +1731,12 @@ func archiveThenSeverPiResume(d *db.DB, sessionName, instanceID, isolationMode s
 // severGateForceAlwaysSever is a test-only knob used by the revert-and-watch-
 // fail tests in cleanup_sever_gate_test.go to prove the copied-gate in
 // archiveThenSeverPiResume is not a no-op. The copied-gate applies to
-// severModeHard only (soft mode bypasses it by design — issue #2371), so
-// the knob is only meaningful on hard-cleanup paths. Production code never
-// mutates it.
+// severModeHard only (soft mode bypasses it by design), so the knob is only
+// meaningful on hard-cleanup paths. Production code never mutates it.
 // The variable is package-scoped rather than a `testing.T` argument because
 // the gate is checked inside archiveThenSeverPiResume, which sits several
 // call frames deep and is not reachable from tests without either a knob or
-// substantial refactoring. See issue #2336 test discipline for the pattern.
+// substantial refactoring.
 var severGateForceAlwaysSever bool
 
 // instanceIDFromStatus returns the instance_id from the agent_status row for
@@ -1868,9 +1829,8 @@ func stopAndRemoveChildContainers(d *db.DB, parentSession string) {
 			}
 		}
 
-		// 30-second budget collapses the previous 15s stop + 15s rm split.
-		// The podman isolator internally issues stop (10s grace) followed
-		// by rm --force.
+		// 30-second budget for the child container's stop+rm. The podman
+		// isolator internally issues stop (10s grace) followed by rm --force.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		iso.EnsureRemoved(ctx, nil)
 		cancel()
@@ -1884,12 +1844,11 @@ func stopAndRemoveChildContainers(d *db.DB, parentSession string) {
 // For host-mode (non-container) sessions, the podman calls return "no such
 // container" which is silently ignored.
 //
-// Post A1.L1 (issue #1140): the per-mode stop/rm + temp-file cleanup logic
-// moved into the registered Isolator's EnsureRemoved method. This function
-// resolves the session's persisted isolation mode (with podman as the
-// fallback for pre-migration rows) and dispatches via
-// registry.For(mode).EnsureRemoved. Both contexts (20s for stop, 15s for rm)
-// are kept by collapsing into a single 35s budget consumed by the isolator.
+// The per-mode stop/rm + temp-file cleanup logic lives in the registered
+// Isolator's EnsureRemoved method. This function resolves the session's
+// persisted isolation mode (falling back to bwrap for rows with a missing or
+// empty mode) and dispatches via registry.For(mode).EnsureRemoved with a
+// single 35s budget consumed by the isolator.
 func removeContainerIfExists(sessionName string) {
 	name := container.NameForSession(sessionName)
 
@@ -1916,10 +1875,9 @@ func removeContainerIfExists(sessionName string) {
 		}
 	}
 
-	// Single 35s budget for the per-mode EnsureRemoved (was: 20s stop + 15s
-	// rm in two independent contexts). The isolator's EnsureRemoved owns the
-	// internal split; for podman it issues the same stop+rm sequence with
-	// the same 10s grace.
+	// Single 35s budget for the per-mode EnsureRemoved. The isolator's
+	// EnsureRemoved owns the internal split. For podman it issues the same
+	// stop+rm sequence with the same 10s grace.
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	iso.EnsureRemoved(ctx, nil)
@@ -1928,8 +1886,8 @@ func removeContainerIfExists(sessionName string) {
 	// per-session directory. The sidecar's own shutdown path would normally
 	// remove the socket, but cleanup runs after KillSidecar so we cannot rely
 	// on that — remove them directly.
-	// The per-session directory (run/<session>/) was introduced by security fix
-	// #960 to isolate sockets; removing it here prevents accumulated empty dirs.
+	// The per-session directory (run/<session>/) isolates sockets. Removing it
+	// here prevents accumulated empty dirs.
 	if sockPath, err := prismSession.SidecarHostAPIPath(sessionName); err == nil {
 		_ = os.Remove(sockPath)
 		// Also remove the agent-run log from the same per-session directory so

@@ -1,31 +1,28 @@
 package cmd
 
-// spawn_wait.go — `prism spawn --wait` blocking poll loop (#1500).
+// spawn_wait.go — the `prism spawn --wait` blocking poll loop.
 //
-// Terminal definition (documented and verified by tests):
+// Terminal definition:
 //
 //   --wait blocks until the spawned agent reaches a terminal state for its
-//   FIRST TURN — that is, the initial prompt has been processed to
-//   completion (state == "finished") or has failed (state == "error" /
-//   "deleted"). It does NOT wait for the entire session to end (which would
-//   be hours / days for an interactive coordinator session).
+//   FIRST TURN — the initial prompt has been processed to completion
+//   (state == "finished") or has failed (state == "error" / "deleted").
+//   It does NOT wait for the entire session to end, which can be hours or
+//   days for an interactive coordinator session.
 //
-// Concretely, the wait succeeds as soon as the session's state transitions
-// from "active"/"idle"/"reviewing" to "finished" — the agent's signal that
-// the initial prompt's turn loop has completed and the agent is awaiting
-// further input. This matches the issue guidance ("wait for the spawned
-// agent to finish its initial prompt").
+// The wait succeeds as soon as the session's state transitions from
+// "active"/"idle"/"reviewing" to "finished" — the agent's signal that the
+// initial prompt's turn loop is complete and the agent awaits further input.
 //
-// Falls back to "error" / "deleted" as the failure terminals, plus a
-// readiness-style guard: if the session never transitions past "active"
-// AND no msg_assistant / msg_user / turn_start event is ever recorded
-// AND the timeout elapses, we report timeout (the agent is still running;
-// the wait simply gave up).
+// "error" and "deleted" are the failure terminals. A readiness-style guard
+// also applies: if the session never transitions past "active", no
+// msg_assistant / msg_user / turn_start event is ever recorded, and the
+// timeout elapses, the command reports timeout — the agent is still running;
+// the wait gave up.
 //
-// Killing this command does NOT cancel the spawned session — the agent
-// continues in its tmux session and (eventually) reaches a terminal state
-// of its own. The user can inspect via `prism checkin <session>` or
-// `prism sessions list`.
+// Killing this command does NOT cancel the spawned session. The agent
+// continues in its tmux session and eventually reaches a terminal state of
+// its own. Inspect it via `prism checkin <session>` or `prism sessions list`.
 
 import (
 	"context"
@@ -67,8 +64,8 @@ var spawnWaitTerminals = map[string]bool{
 //
 // Sandbox-aware via newWaitProbe(): in-sandbox callers route reads through
 // the sidecar's /sessions/status endpoint so the host's agent_status table
-// is visible. Without this, --wait inside a sandbox would poll a tmpfs
-// shadow DB and never observe a terminal (issue #1500 review-code feedback).
+// is visible. Without this, --wait inside a sandbox polls a tmpfs shadow DB
+// and never observes a terminal.
 func waitForSpawnTerminal(sessionName string, jsonMode bool, timeout time.Duration) error {
 	probe, err := newWaitProbe()
 	if err != nil {
@@ -113,9 +110,9 @@ func waitForSpawnTerminal(sessionName string, jsonMode bool, timeout time.Durati
 	return emitSpawnWaitTerminalRow(sessionName, finalState, jsonMode)
 }
 
-// emitSpawnWaitTerminal is kept as a thin wrapper for tests that pre-date
-// the probe abstraction. Production code calls emitSpawnWaitTerminalRow
-// with a pre-fetched *db.Status.
+// emitSpawnWaitTerminal is a thin wrapper for tests that call it with a
+// *db.DB rather than a pre-fetched *db.Status. Production code calls
+// emitSpawnWaitTerminalRow with a pre-fetched *db.Status.
 func emitSpawnWaitTerminal(sessionName string, d *db.DB, jsonMode bool) error {
 	st, _ := d.CurrentStatus(sessionName)
 	return emitSpawnWaitTerminalRow(sessionName, st, jsonMode)

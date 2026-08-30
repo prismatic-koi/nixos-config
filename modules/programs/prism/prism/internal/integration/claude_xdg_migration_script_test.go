@@ -1,7 +1,7 @@
 package integration_test
 
 // claude_xdg_migration_script_test.go — unit coverage for the one-time
-// claude-code state migration script (issue #2243, Step 3c of #2132):
+// claude-code state migration script:
 // modules/programs/prism/claude-xdg-migrate.sh, invoked by the home-manager
 // activation script in claude-code.nix.
 //
@@ -129,8 +129,7 @@ func TestClaudeXdgMigrate_MovesAllState(t *testing.T) {
 }
 
 // TestClaudeXdgMigrate_SecondRunIsNoOp verifies idempotency: running the
-// script twice leaves the destination identical and exits 0 (issue #2243
-// AC: second run is a no-op).
+// script twice leaves the destination identical and exits 0.
 func TestClaudeXdgMigrate_SecondRunIsNoOp(t *testing.T) {
 	script := requireClaudeMigrateScript(t)
 	srcDir, srcJSON, dstDir := migrationFixture(t)
@@ -152,8 +151,7 @@ func TestClaudeXdgMigrate_SecondRunIsNoOp(t *testing.T) {
 }
 
 // TestClaudeXdgMigrate_AbsentSourceIsNoOp verifies that a host with no old
-// claude state exits 0 without creating the destination dir (issue #2243
-// AC: absent ~/.claude is a no-op).
+// claude state exits 0 without creating the destination dir.
 func TestClaudeXdgMigrate_AbsentSourceIsNoOp(t *testing.T) {
 	script := requireClaudeMigrateScript(t)
 	root := t.TempDir()
@@ -173,7 +171,7 @@ func TestClaudeXdgMigrate_AbsentSourceIsNoOp(t *testing.T) {
 // TestClaudeXdgMigrate_NeverClobbersDestination verifies the skip-and-warn
 // behaviour: a pre-existing destination entry is never overwritten, the
 // warning names the skipped entry, the source entry stays in place, and the
-// other entries still migrate (issue #2243 AC).
+// other entries still migrate.
 func TestClaudeXdgMigrate_NeverClobbersDestination(t *testing.T) {
 	script := requireClaudeMigrateScript(t)
 	srcDir, srcJSON, dstDir := migrationFixture(t)
@@ -230,7 +228,7 @@ func TestClaudeXdgMigrate_NeverClobbersDestination(t *testing.T) {
 // TestClaudeXdgMigrate_JsonOnlyMigrates covers the partial-state case: only
 // ~/.claude.json exists (no ~/.claude dir). The json must still relocate —
 // CLAUDE_CONFIG_DIR moves .claude.json into the config dir too (claude-code
-// 2.1.161 behaviour, the #2243 edge-case AC).
+// 2.1.161 behaviour).
 func TestClaudeXdgMigrate_JsonOnlyMigrates(t *testing.T) {
 	script := requireClaudeMigrateScript(t)
 	root := t.TempDir()

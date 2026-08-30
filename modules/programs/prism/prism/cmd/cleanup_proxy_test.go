@@ -5,7 +5,7 @@
 // stdout/stderr returned by the host are forwarded byte-for-byte to the
 // caller's writers. This is the inverse direction of the host-side test in
 // internal/sidecar/host_api_cleanup_test.go: together they cover both ends
-// of the wire (issue #1527 AC #1).
+// of the wire.
 
 package cmd
 
@@ -74,10 +74,8 @@ func TestProxyCleanupToHostAPI_ForwardsStdoutAndStderr(t *testing.T) {
 // TestProxyCleanupToHostAPI_ForwardsErrorWithStdoutStderr verifies that on a
 // non-2xx response carrying stdout/stderr alongside an error, the proxy
 // forwards both streams to the caller's writers AND returns an error
-// containing the underlying message. This addresses the
-// "error message names the wrong layer" observation in the comment on
-// issue #1527: the agent must see the underlying cause, not just the outer
-// transport's exit shape.
+// containing the underlying message. The agent must see the underlying
+// cause, not just the outer transport's exit shape.
 func TestProxyCleanupToHostAPI_ForwardsErrorWithStdoutStderr(t *testing.T) {
 	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

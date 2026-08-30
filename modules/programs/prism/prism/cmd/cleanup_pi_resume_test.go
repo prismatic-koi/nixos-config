@@ -1,6 +1,7 @@
 package cmd
 
-// cleanup_pi_resume_test.go — regression tests for issue #2035.
+// cleanup_pi_resume_test.go — regression tests for the pi conversation-resume
+// severance during cleanup.
 //
 // `prism cleanup` must sever the pi conversation-resume linkage so that a
 // re-spawn on the SAME branch name does not silently resume the cleaned
@@ -27,8 +28,8 @@ import (
 // clearPICodingAgentDir clears PI_CODING_AGENT_DIR for the duration of the
 // test. Required by tests that exercise the host-fallback branch of
 // piResumeSessionsRoot / piSessionsRoot — the developer host sets the env
-// var system-wide (post-#2185 the resolver honours it), and without
-// clearing it tests that set up a temp HOME would silently fall through to
+// var system-wide (the resolver honours it), and without clearing it tests
+// that set up a temp HOME would silently fall through to
 // /run/prism/pi-agent/sessions/ and fail.
 func clearPICodingAgentDir(t *testing.T) {
 	t.Helper()
@@ -60,14 +61,13 @@ func writeFakePiResumeJSONL(t *testing.T, home, worktree, harnessSessionID strin
 }
 
 // TestHeadlessCleanup_ClearsHarnessSessionID is the regression test for the
-// DB-side half of issue #2035. After headlessCleanup runs against a session
-// row carrying a harness_session_id, the column must be NULL — otherwise the
-// next spawn on the same branch name would read the stale id back and pi
-// would resume the dead conversation.
+// DB-side half of the resume severance. After headlessCleanup runs against a
+// session row carrying a harness_session_id, the column must be NULL —
+// otherwise the next spawn on the same branch name would read the stale id
+// back and pi would resume the dead conversation.
 //
-// Post-#2336 the sever is gated on the archive step actually copying a
-// transcript, so this test seeds a full archivable pi session via
-// seedRowWithLifecycleFields.
+// The sever is gated on the archive step actually copying a transcript, so
+// this test seeds a full archivable pi session via seedRowWithLifecycleFields.
 func TestHeadlessCleanup_ClearsHarnessSessionID(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
@@ -107,11 +107,11 @@ func TestHeadlessCleanup_ClearsHarnessSessionID(t *testing.T) {
 }
 
 // TestHeadlessCleanup_RemovesPiResumeJSONL is the regression test for the
-// FS-side half of issue #2035. After headlessCleanup runs against a session
-// whose pi transcript is on disk, the *_<id>.jsonl file under the worktree's
-// encoded-cwd directory must be removed.
+// FS-side half of the resume severance. After headlessCleanup runs against a
+// session whose pi transcript is on disk, the *_<id>.jsonl file under the
+// worktree's encoded-cwd directory must be removed.
 //
-// Post-#2336 the sever runs only after the archive step reports
+// The sever runs only after the archive step reports
 // copied == true, so the seed is a full archivable pi session via
 // seedRowWithLifecycleFields (which plants the transcript inside a
 // test-owned HOME so the sever path can locate and remove it).
@@ -153,7 +153,7 @@ func TestHeadlessCleanup_RemovesPiResumeJSONL(t *testing.T) {
 // harness_session_id nulled. This mirrors SetEnded's behaviour so that the
 // resume linkage is severed for review children too.
 //
-// Post-#2336 the sever runs only when the archive step actually copied the
+// The sever runs only when the archive step actually copied the
 // parent's transcript, so seedRowWithLifecycleFields is used for the parent.
 // The review children (which do not require their own archive gate to be
 // unlocked — severPiResumeLinkage's LIKE cascade nulls them from the same
@@ -217,11 +217,10 @@ func TestHeadlessCleanup_ClearsHarnessSessionIDForReviewChildren(t *testing.T) {
 // cleanup is invoked on a session whose pi resume JSONL never existed
 // (fresh session, no transcript yet). Cleanup must still succeed.
 //
-// Post-#2336 semantics: when the transcript is missing, sever is SKIPPED —
+// Semantics: when the transcript is missing, sever is SKIPPED —
 // harness_session_id is retained so a subsequent cleanup can archive-then-
 // sever if the transcript reappears (and the pi sessions dir is not
-// modified). Pre-#2336 this test asserted the DB column was cleared, which
-// was exactly the manifest-only silent-loss codepath the issue documents.
+// modified).
 func TestHeadlessCleanup_PiResumeAbsentSucceeds(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
@@ -281,7 +280,7 @@ func TestHeadlessCleanup_PiResumeAbsentSucceeds(t *testing.T) {
 	if st == nil {
 		t.Fatal("row missing")
 	}
-	// Post-#2336: transcript missing → sever skipped → harness_session_id
+	// Transcript missing → sever skipped → harness_session_id
 	// retained so a follow-up cleanup can archive-then-sever if the file
 	// reappears.
 	if st.HarnessSessionID == nil || *st.HarnessSessionID != sid {

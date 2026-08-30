@@ -3,16 +3,16 @@
 package integration_test
 
 // sandbox_exec_grafana_config_darwin_test.go — integration coverage for the
-// pi grafana MCP config-bundle secrets.d carve-out (issue #2746).
+// pi grafana MCP config-bundle secrets.d carve-out.
 //
-// #2211 denies the whole sops secrets.d subtree and re-allows exactly the
-// secret NAMES an in-sandbox consumer reads. #2746 adds one name — the
-// grafana config bundle — derived from Config.GrafanaConfigPath, which the
-// sandbox-exec spawn path copies off the role-filtered GRAFANA_MCP_CONFIG_PATH
-// agent env var. The in-sandbox read matters more here than in the #2668
-// gitlab case: the pi grafana extension calls readFileSync on that path from
-// inside the sandbox, so the read IS the delivery mechanism, and the deny is
-// exactly what kept grafana off Darwin sandbox-exec hosts before this change.
+// The secrets.d deny covers the whole sops secrets.d subtree and re-allows
+// exactly the secret NAMES an in-sandbox consumer reads. This carve-out adds
+// one name — the grafana config bundle — derived from Config.GrafanaConfigPath,
+// which the sandbox-exec spawn path copies off the role-filtered
+// GRAFANA_MCP_CONFIG_PATH agent env var. The in-sandbox read matters more here
+// than in the gitlab case: the pi grafana extension calls readFileSync on that
+// path from inside the sandbox, so the read IS the delivery mechanism. Without
+// the carve-out, the deny keeps grafana off Darwin sandbox-exec hosts.
 //
 // This file proves, with a real /usr/bin/sandbox-exec run, that:
 //
@@ -26,9 +26,9 @@ package integration_test
 //  3. TestSandboxExecGrafanaConfig_DeniedWhenNotConfigured — a Manager with
 //     no GrafanaConfigPath (the default on a host without
 //     nx.programs.prism.pi.grafana.enable, and on every review role, whose
-//     GRAFANA_MCP_CONFIG_PATH is stripped by #2533) cannot read the same
-//     file. Existence of the secret never admits it; only a configured
-//     consumer does.
+//     GRAFANA_MCP_CONFIG_PATH is stripped) cannot read the same file.
+//     Existence of the secret never admits it. Only a configured consumer
+//     does.
 //
 // The tests run against a FAKE secrets.d tree under the per-user TMPDIR, so
 // they need no real Grafana credential on the host and never read one. The
@@ -39,7 +39,7 @@ package integration_test
 // Secret hygiene: the fake bundle carries sentinel content only. No test in
 // this file reads a real credential.
 //
-// See docs/sandbox-exec-testing.md for the convention (#1192).
+// See docs/sandbox-exec-testing.md for the convention.
 
 import (
 	"os"
@@ -119,7 +119,7 @@ func setupFakeGrafanaSecret(t *testing.T, counter string) (stablePath, deniedPat
 // newGrafanaProfileManager is newProfileManagerWithBareRoot plus a configured
 // GrafanaConfigPath. BareRoot is required for the positive read: following
 // the stable symlink needs the ancestor block's metadata allow (same reason
-// the #2211 stable-chain test uses that variant).
+// the stable-chain test uses that variant).
 func newGrafanaProfileManager(t *testing.T, grafanaConfigPath string) *container.Manager {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -229,8 +229,8 @@ func TestSandboxExecGrafanaConfig_ExceptionIsLoadBearing(t *testing.T) {
 // posture is unchanged: with no GrafanaConfigPath configured, the same file
 // is unreadable in-sandbox. A secret that merely EXISTS on the host is never
 // admitted — only a configured in-sandbox consumer admits it. This is also
-// the review-role posture, since #2533 strips GRAFANA_MCP_CONFIG_PATH for
-// those roles and the field is sourced from that same filtered map.
+// the review-role posture: GRAFANA_MCP_CONFIG_PATH is stripped for those
+// roles, and the field is sourced from that same filtered map.
 func TestSandboxExecGrafanaConfig_DeniedWhenNotConfigured(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")

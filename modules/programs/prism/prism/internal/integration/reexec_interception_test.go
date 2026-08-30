@@ -1,23 +1,19 @@
 package integration_test
 
-// Regression guard for TestMain's re-exec stub interception (#2237, residual
-// from #2230).
+// Regression guard for TestMain's re-exec stub interception.
 //
 // Production code reachable from this package re-execs os.Executable() — in
 // tests, THIS test binary — as a prism subcommand: session.StartSidecarWithOpts
 // launches `<self> sidecar --session …` and setupFullLayout's status seed runs
 // `<self> event tmux-session-start …`. Without the TestMain interception
 // (testmain_test.go) such a re-invocation runs the ENTIRE test suite as a
-// detached child, which can spawn further children — the #2230 landmine class
-// (93 detached test processes observed after a single internal/review run
-// before its TestMain gained the same defence in #2236).
+// detached child, which can spawn further detached children in a fork storm.
 //
 // This guard execs the test binary the way the production re-exec would —
 // the same argv shapes, no stub env var — and asserts it exits 0 immediately
 // with no output. A suite run instead prints test/log output and at minimum
-// a trailing "PASS"/"FAIL", so the empty-output assertion fails if the
-// interception is ever removed (verified non-vacuous against the pre-#2237
-// binary: the `event …` re-invocation ran the full suite and printed PASS).
+// a trailing "PASS"/"FAIL". If the interception is ever removed, the
+// empty-output assertion fails.
 
 import (
 	"context"

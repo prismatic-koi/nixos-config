@@ -10,7 +10,7 @@ package integration_test
 //
 // All test entry points live in sandbox_exec_*_darwin_test.go siblings. See
 // docs/sandbox-exec-testing.md for the convention these helpers exist to
-// support (issue #1192).
+// support.
 
 import (
 	"os"
@@ -26,7 +26,7 @@ import (
 // sandboxExecPath is the absolute path of Apple's sandbox-exec binary. The
 // integration tests invoke it directly rather than via PATH so the tests are
 // pinned to the Apple-shipped version (third-party shims under PATH are
-// rejected by SIP and would skew the test signal anyway).
+// rejected by SIP and skew the test signal anyway).
 const sandboxExecPath = sandboxexectest.Path
 
 // requireSandboxExec skips the test when /usr/bin/sandbox-exec is not present,
@@ -36,7 +36,7 @@ const sandboxExecPath = sandboxexectest.Path
 // nest, producing "sandbox_apply: Operation not permitted").
 //
 // The actual capability probe is shared with internal/container's
-// integration tests — see sandboxexectest.Require (issue #2203).
+// integration tests — see sandboxexectest.Require.
 func requireSandboxExec(t *testing.T) {
 	t.Helper()
 	sandboxexectest.Require(t)
@@ -48,7 +48,7 @@ func requireSandboxExec(t *testing.T) {
 //
 // We use a Nix-built binary rather than an Apple-signed system binary
 // (/bin/bash) because Apple-signed binaries SIGABRT in dyld4::CacheFinder
-// under a deny-default SBPL profile — a separate issue tracked in #1190.
+// under a deny-default SBPL profile.
 func requireNixBash(t *testing.T) string {
 	t.Helper()
 
@@ -86,9 +86,9 @@ func requireNixBash(t *testing.T) string {
 // keeps test state confined to t.TempDir() and — critically — makes the
 // integration suite tractable inside the nix-build homeless-shelter
 // sandbox, where $HOME=/homeless-shelter is read-only and any path
-// derived from it fails on os.MkdirAll (issue #2263). Per AGENTS.md
-// "Test-suite isolation (#1608)", this matches the sidecar tests'
-// XDG_STATE_HOME redirection pattern.
+// derived from it fails on os.MkdirAll. This matches the sidecar tests'
+// XDG_STATE_HOME redirection pattern (the AGENTS.md "Test-suite
+// isolation" convention).
 //
 // Note: container.New() initialises the Manager with a hostIsolator by
 // default, but Manager.PrepareSandboxExec() creates its own
@@ -103,11 +103,10 @@ func newProfileManager(t *testing.T) *container.Manager {
 		SessionName: "integ-sandbox-exec-profile-test",
 		InstanceID:  instanceID,
 		Worktree:    t.TempDir(),
-		// Required since #1960: writeGitconfig refuses to start a
-		// session without [user] in the gitconfig. The integration
-		// suite does not care about identity, so we inject a sentinel
-		// matching the default used by newSandboxExecManager in the
-		// container package's own tests.
+		// writeGitconfig refuses to start a session without [user] in
+		// the gitconfig. The integration suite does not care about
+		// identity, so we inject a sentinel matching the default used by
+		// newSandboxExecManager in the container package's own tests.
 		GitUserName:  "test-user",
 		GitUserEmail: "test@example.com",
 	}
@@ -160,7 +159,7 @@ func newProfileManagerWithBareRoot(t *testing.T) *container.Manager {
 		InstanceID:  instanceID,
 		Worktree:    t.TempDir(),
 		BareRoot:    bareRoot,
-		// Required since #1960 — see newProfileManager.
+		// writeGitconfig requires [user] identity. See newProfileManager.
 		GitUserName:  "test-user",
 		GitUserEmail: "test@example.com",
 	}
@@ -217,7 +216,7 @@ func newProfileManagerWithBareRootAndPi(t *testing.T) *container.Manager {
 //   - (subpath "/private/tmp") with file-write* — bash needs a writable temp
 //     dir.
 //
-// These additions are testing infrastructure only; they are NOT added to the
+// These additions are testing infrastructure only. They are NOT added to the
 // production profile. They do not affect whether the rule under test is
 // active — that is determined solely by the rule (or its absence) in the
 // generated profile.
@@ -266,9 +265,9 @@ func preparePositiveProfile(t *testing.T, m *container.Manager) (preparedProfile
 
 	args, err := m.PrepareSandboxExec()
 	t.Cleanup(func() {
-		// PrepareSandboxExec creates the per-session work dir (issue #2213)
-		// with the generated git/ssh configs; remove it so test instance
-		// dirs don't accumulate under the real ~/.local/state/prism/sessions/.
+		// PrepareSandboxExec creates the per-session work dir with the
+		// generated git/ssh configs. Remove it so test instance dirs do not
+		// accumulate under the real ~/.local/state/prism/sessions/.
 		if sessionDir, dirErr := m.SessionWorkDir(); dirErr == nil {
 			_ = os.RemoveAll(sessionDir)
 		}
@@ -310,8 +309,9 @@ func writeAugmentedPositiveProfile(t *testing.T, p preparedProfile) string {
 }
 
 // withMutatedProfile generates the SBPL profile via
-// Manager.PrepareSandboxExec(), applies mutate to the profile content (e.g.
-// remove a specific allow rule), augments it with the test-harness extras
+// Manager.PrepareSandboxExec(), applies mutate to the profile content (for
+// example, remove a specific allow rule), augments it with the test-harness
+// extras
 // (so a Nix-built binary can still start under the sandbox), writes the
 // mutated profile to a temp file alongside the generated profile, and
 // returns the absolute path to the mutated profile.
@@ -325,7 +325,7 @@ func writeAugmentedPositiveProfile(t *testing.T, p preparedProfile) string {
 // failure — proving the positive test is not green by accident.
 //
 // mutate must be deterministic and must not modify shared state. If mutate
-// returns a string that does not differ from the input (i.e. the
+// returns a string that does not differ from the input (that is, the
 // substitution targeted a rule that is not present), withMutatedProfile
 // fails the test with t.Fatalf — silent no-op mutations are a common source
 // of bogus passes.

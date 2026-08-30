@@ -3,11 +3,12 @@
 package integration_test
 
 // sandbox_exec_gitlab_token_darwin_test.go — integration coverage for the
-// gitlab_token secrets.d carve-out (issue #2668).
+// gitlab_token secrets.d carve-out.
 //
-// #2211 denies the whole sops secrets.d subtree and re-allows exactly the
-// secret NAMES an in-sandbox consumer reads. #2668 adds one name,
-// `gitlab_token`, derived from Config.GitLabTokenPath. This file proves, with
+// The secrets.d deny covers the whole sops secrets.d subtree and re-allows
+// exactly the secret NAMES an in-sandbox consumer reads. This carve-out adds
+// one name, `gitlab_token`, derived from Config.GitLabTokenPath. This file
+// proves, with
 // a real /usr/bin/sandbox-exec run, that:
 //
 //  1. TestSandboxExecGitLabToken_ReadableWhenConfigured — the configured
@@ -20,7 +21,7 @@ package integration_test
 //  3. TestSandboxExecGitLabToken_DeniedWhenNotConfigured — a Manager with no
 //     GitLabTokenPath (the default on a host without
 //     nx.programs.gitlab-cli.enable) cannot read the same file. Existence of
-//     the secret never admits it; only a configured consumer does.
+//     the secret never admits it. Only a configured consumer does.
 //
 // The tests run against a FAKE secrets.d tree under the per-user TMPDIR, so
 // they need no real GitLab secret on the host and never read one. The
@@ -31,7 +32,7 @@ package integration_test
 // Secret hygiene: the fake secrets carry sentinel content only. No test in
 // this file reads a real credential.
 //
-// See docs/sandbox-exec-testing.md for the convention (#1192).
+// See docs/sandbox-exec-testing.md for the convention.
 
 import (
 	"os"
@@ -108,7 +109,7 @@ func setupFakeGitLabSecret(t *testing.T, counter string) (stablePath, deniedPath
 // newGitLabProfileManager is newProfileManagerWithBareRoot plus a configured
 // GitLabTokenPath. BareRoot is required for the positive read: following the
 // stable symlink needs the ancestor block's metadata allow (same reason the
-// #2211 stable-chain test uses that variant).
+// stable-chain test uses that variant).
 func newGitLabProfileManager(t *testing.T, gitlabTokenPath string) *container.Manager {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

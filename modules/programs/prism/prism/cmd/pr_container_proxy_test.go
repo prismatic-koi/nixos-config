@@ -1,13 +1,12 @@
 package cmd
 
-// Regression test for issue #2432: `prism pr <n>` in container mode
-// (PRISM_HOST_API set) must forward the raw PR number as "pr" to the
-// host-API /spawn endpoint, NOT resolve it to a (possibly sanitised) branch
-// name client-side. Resolving client-side silently forked a new branch from
-// the default branch whenever the real PR head ref contained a slash,
-// because the host-side resolveBranch ran the forwarded branch name through
-// git.SanitiseBranch ("/" -> "-") and found no matching local or origin
-// branch.
+// Regression test: `prism pr <n>` in container mode (PRISM_HOST_API set) must
+// forward the raw PR number as "pr" to the host-API /spawn endpoint, NOT
+// resolve it to a (possibly sanitised) branch name client-side. Resolving
+// client-side forks a new branch from the default branch whenever the real PR
+// head ref contains a slash, because the host-side resolveBranch runs the
+// forwarded branch name through git.SanitiseBranch ("/" -> "-") and finds no
+// matching local or origin branch.
 
 import (
 	"encoding/json"
