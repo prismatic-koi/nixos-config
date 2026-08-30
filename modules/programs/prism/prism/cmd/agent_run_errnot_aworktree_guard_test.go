@@ -1,18 +1,16 @@
 package cmd
 
 // agent_run_errnot_aworktree_guard_test.go — wiring guard for the
-// ErrNotAWorktree handling at both agent-run call sites (issue #2551).
+// ErrNotAWorktree handling at both agent-run call sites.
 //
-// PR #2550 fixed the pane-death regression (#2549) by adding
-// git.ErrNotAWorktree and checking it with errors.Is at two call sites:
+// git.ErrNotAWorktree is checked with errors.Is at two call sites:
 //
 //   - cmd/agent_run.go
 //   - cmd/agent_run_sandbox_exec_darwin.go
 //
-// All three tests added by that PR sit at the internal/git level and test the
-// sentinel itself. None test the wiring: deleting the errors.Is branch from
-// either call site leaves every other test green while the #2549 regression
-// returns (dead pane for a normal clone).
+// The internal/git tests exercise the sentinel itself, not the wiring.
+// Deleting the errors.Is branch from either call site leaves every other test
+// green while the regression returns (dead pane for a normal clone).
 //
 // The Darwin call site is the more exposed of the two because it is not built
 // or exercised on the Linux CI path.
@@ -27,7 +25,7 @@ package cmd
 // edits all pass the guard. Reading the Darwin file as text to the parser
 // (build constraints are not evaluated) keeps the guard effective on Linux CI.
 // This follows the precedent set by internal/db/schema-version-guard_test.go
-// (issue #1869) and agent_env_roles_guard_test.go (issue #2533).
+// and agent_env_roles_guard_test.go.
 
 import (
 	"go/ast"

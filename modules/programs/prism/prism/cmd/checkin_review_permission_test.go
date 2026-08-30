@@ -1,12 +1,12 @@
 package cmd
 
-// checkin_review_permission_test.go — issue #2628.
+// checkin_review_permission_test.go — direct-route gate on the review aggregate.
 //
 // `prism checkin <parent>~review` WITHOUT --verbose reads d.QueryEvents
-// inline for every review-group member and never reached the direct-route
-// permission gate that #2619/#2625 placed on runCheckinSession. These tests
-// pin authorizeDirectCheckinReviewAggregate (the direct-route half) against
-// the same tier table as the individual-session gate, using the same fixture
+// inline for every review-group member, so it does not pass through the
+// direct-route permission gate on runCheckinSession. These tests pin
+// authorizeDirectCheckinReviewAggregate (the direct-route half) against the
+// same tier table as the individual-session gate, using the same fixture
 // helpers in checkin_permission_test.go.
 
 import (

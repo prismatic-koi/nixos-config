@@ -1,9 +1,9 @@
 package cmd
 
-// event_pending_replay_purge_test.go — regression tests for the round-2
-// review-context finding on PR #2365: respawning on the same branch name
-// (a supported flow via #2094) must not resurrect coordinator directives
-// buffered against a previous incarnation.
+// event_pending_replay_purge_test.go — regression tests for
+// respawn-on-same-branch-name safety: respawning on the same branch name
+// (a supported flow) must not resurrect coordinator directives buffered
+// against a previous incarnation.
 //
 // The load-bearing hook lives in cmd/event.go's tmux-session-start
 // handler, which calls DeletePendingReplayDeliveriesForSession after
@@ -18,7 +18,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
-// TestEventTmuxSessionStart_PurgesStalePendingReplay is the AC:
+// TestEventTmuxSessionStart_PurgesStalePendingReplay checks that
 // after a previous incarnation buffered pending-replay rows, a
 // tmux-session-start event on the same session name must purge them
 // so restorePendingReplayFromDB on the fresh sidecar sees an empty

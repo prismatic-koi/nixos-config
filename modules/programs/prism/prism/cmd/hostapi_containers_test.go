@@ -1,10 +1,10 @@
 package cmd
 
 // hostapi_containers_test.go — proxy-path tests for the --containers flag
-// forwarding contract (#2317 / #2323). Mirrors the existing --isolation
-// proxy tests so the cross-spawn-boundary AC is locked in at this layer
-// too: a containerised session running `prism spawn --containers ...` for
-// a child must reach the host sidecar with body["containers"]=true.
+// forwarding contract. Mirrors the existing --isolation proxy tests so the
+// cross-spawn-boundary behaviour is locked in at this layer too: a
+// containerised session running `prism spawn --containers ...` for a child
+// must reach the host sidecar with body["containers"]=true.
 
 import (
 	"encoding/json"
@@ -17,8 +17,8 @@ import (
 
 // TestProxySpawn_ContainersForwardedWhenSet verifies that --containers on
 // the proxy path (PRISM_HOST_API set) is forwarded as the "containers" JSON
-// field with value true. This is the inverse of #2323's cross-spawn
-// forwarding AC at the proxy boundary: a coordinator inside a sandbox who
+// field with value true. This is the inverse of the cross-spawn
+// forwarding behaviour at the proxy boundary: a coordinator inside a sandbox who
 // passes `prism spawn --containers` must have that flag reach the host
 // sidecar, otherwise the child session's spawn_inputs.containers_flag and
 // agent_status.containers_enabled stay at 0 and the child's proxy is never

@@ -1,15 +1,14 @@
 package cmd
 
-// Tests for the two-signal shutdown contract (issue #1873).
+// Tests for the two-signal shutdown contract.
 //
-// The signal handler in runSidecar previously drained exactly one signal then
-// ran sc.Shutdown() synchronously.  A second SIGINT/SIGTERM during shutdown
-// was silently dropped — the user had no force-exit path.
-//
-// The fix extracts runSignalHandler which implements the two-signal contract:
+// runSignalHandler implements the two-signal contract:
 //   - First signal: invoke shutdownFn() (in a goroutine) and call cancelFn().
 //   - Second signal: reset to the runtime default handler and re-raise, giving
 //     an immediate-exit path without requiring kill -9.
+//
+// Without it, a second SIGINT/SIGTERM during shutdown is silently dropped and
+// the user has no force-exit path.
 //
 // These tests exercise runSignalHandler directly, using channels and stubs
 // instead of a real Sidecar or OS process, so they run fast and in-process.

@@ -3,14 +3,12 @@
 package cmd
 
 // agent_run_sandbox_exec_darwin_test.go — unit tests for the Darwin
-// sandbox-exec env-construction path (issues #1482, #2247).
+// sandbox-exec env-construction path.
 //
 // These tests verify that PRISM_HARNESS_PIPE is injected with 127.0.0.1
-// (not host.containers.internal) when HarnessPipeTCPPort is non-zero,
-// covering the env-construction AC from issue #1482, and that
-// buildSandboxExecHomeEnv carries CFFIXED_USER_HOME=<sessionDir> (the
-// per-session work dir) with the former staging-HOME value gone, covering
-// the env-construction AC from issue #2247 (Step 4 of #2132).
+// (not host.containers.internal) when HarnessPipeTCPPort is non-zero, and
+// that buildSandboxExecHomeEnv carries CFFIXED_USER_HOME=<sessionDir> (the
+// per-session work dir) with the former staging-HOME value gone.
 
 import (
 	"fmt"
@@ -24,9 +22,9 @@ import (
 // TestSandboxExecEnv_HarnessPipeTCPPort_Uses127001 verifies that when
 // HarnessPipeTCPPort is non-zero, the env slice produced for sandbox-exec
 // contains PRISM_HARNESS_PIPE=tcp://127.0.0.1:<port> and does NOT contain
-// host.containers.internal (issue #1482).
+// host.containers.internal.
 //
-// This is the primary AC for the env-construction side of the fix: the
+// This is the primary check for the env-construction side of the fix: the
 // sandboxed PI extension must dial 127.0.0.1, not an unresolvable synthetic
 // hostname.
 func TestSandboxExecEnv_HarnessPipeTCPPort_Uses127001(t *testing.T) {
@@ -94,9 +92,9 @@ func TestSandboxExecEnv_HarnessPipeTCPPort_Zero_NoHarnessPipeVar(t *testing.T) {
 // buildSandboxExecHomeEnv: a base env that already carries host-derived
 // HOME / XDG / CFFIXED_USER_HOME entries (all of which must be stripped
 // and re-set deterministically), plus the session work dir and real home
-// paths in their production layout. legacyStagingHome is the path the
-// pre-Step-5-of-#2132 staging HOME would have occupied — returned so tests
-// can assert nothing points there any more.
+// paths in their production layout. legacyStagingHome is the path the former
+// staging HOME would have occupied — returned so tests can assert nothing
+// points there any more.
 func sandboxExecHomeEnvFixture() (env []string, sessionDir, realHome, legacyStagingHome string) {
 	realHome = "/Users/u"
 	sessionDir = realHome + "/.local/state/prism/sessions/inst-2247"
@@ -116,10 +114,10 @@ func sandboxExecHomeEnvFixture() (env []string, sessionDir, realHome, legacyStag
 	return env, sessionDir, realHome, legacyStagingHome
 }
 
-// TestBuildSandboxExecHomeEnv_CFFixedUserHomePointsAtSessionWorkDir is the
-// env-construction AC for issue #2247 (Step 4 of #2132): the sandbox-exec
-// session env carries CFFIXED_USER_HOME=<sessionDir> (the per-session work
-// dir, #2213) and the former staging-HOME value is gone. Chromium resolves
+// TestBuildSandboxExecHomeEnv_CFFixedUserHomePointsAtSessionWorkDir checks
+// the env construction: the sandbox-exec session env carries
+// CFFIXED_USER_HOME=<sessionDir> (the per-session work dir) and the former
+// staging-HOME value is gone. Chromium resolves
 // its user-data root via CoreFoundation's NSHomeDirectory(), which honours
 // CFFIXED_USER_HOME — pointing it at the work dir lands chromium's writes
 // under <sessionDir>/Library/... (covered by the profile's existing
@@ -160,9 +158,8 @@ func TestBuildSandboxExecHomeEnv_CFFixedUserHomePointsAtSessionWorkDir(t *testin
 	}
 }
 
-// TestBuildSandboxExecHomeEnv_PlaywrightDirsPointAtWorkDir is the
-// env-construction AC for the playwright POSIX-$HOME redirects (issue
-// #2249): the sandbox-exec session env carries
+// TestBuildSandboxExecHomeEnv_PlaywrightDirsPointAtWorkDir checks the
+// playwright POSIX-$HOME redirects: the sandbox-exec session env carries
 // PLAYWRIGHT_DAEMON_SESSION_DIR=<sessionDir>/Library/Caches/ms-playwright/daemon
 // (daemon registry + logs) and
 // PLAYWRIGHT_SERVER_REGISTRY=<sessionDir>/Library/Caches/ms-playwright/b
@@ -170,7 +167,7 @@ func TestBuildSandboxExecHomeEnv_CFFixedUserHomePointsAtSessionWorkDir(t *testin
 // host-inherited values stripped. Without the overrides, playwright-core
 // on Darwin derives both dirs from POSIX $HOME
 // (os.homedir()/Library/Caches — it ignores XDG_CACHE_HOME on darwin),
-// landing them in the staging HOME's Library/ and violating the #2247
+// landing them in the staging HOME's Library/ and violating the
 // no-staging-Library invariant.
 func TestBuildSandboxExecHomeEnv_PlaywrightDirsPointAtWorkDir(t *testing.T) {
 	cases := []struct {
@@ -214,11 +211,11 @@ func TestBuildSandboxExecHomeEnv_PlaywrightDirsPointAtWorkDir(t *testing.T) {
 	}
 }
 
-// TestBuildSandboxExecHomeEnv_HomeAndXDGLayerRealHost is the Step 5 of
-// #2132 (issue #2250) env-layer AC: HOME and every XDG var point at the
-// REAL host paths — the staging HOME is gone. XDG_DATA_HOME/XDG_STATE_HOME
-// staying real-host is additionally the #2205 hard constraint (the nix
-// trusted-settings SBPL grant depends on it). Each key appears exactly
+// TestBuildSandboxExecHomeEnv_HomeAndXDGLayerRealHost checks the env layer:
+// HOME and every XDG var point at the REAL host paths — the staging HOME is
+// gone. XDG_DATA_HOME/XDG_STATE_HOME staying real-host is additionally a hard
+// constraint (the nix trusted-settings SBPL grant depends on it). Each key
+// appears exactly
 // once, including when the inherited env carried stale staging-HOME
 // values.
 func TestBuildSandboxExecHomeEnv_HomeAndXDGLayerRealHost(t *testing.T) {
@@ -266,8 +263,8 @@ func TestBuildSandboxExecHomeEnv_HomeAndXDGLayerRealHost(t *testing.T) {
 		}
 	}
 
-	// Nothing in the rewritten layer may reference the legacy staging-HOME
-	// path — the mechanism is deleted (issue #2250).
+	// Nothing in the rewritten layer may reference the former staging-HOME
+	// path — the mechanism is deleted.
 	for _, kv := range got {
 		if strings.HasPrefix(kv, "PATH=") || strings.HasPrefix(kv, "TERM=") {
 			continue // fixture passthroughs, not part of the rewritten layer

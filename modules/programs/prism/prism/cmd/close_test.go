@@ -1,10 +1,10 @@
-// Unit tests for `prism close` (issue #2179).
+// Unit tests for `prism close`.
 //
 // The tests fall into three groups:
 //
 //  1. decideClose — pure decision-tree tests that swap prProbe for a stub.
 //  2. probePRStateExec — exercises the probe against the ghExecOutput exec
-//     seam with canned outputs (issue #2217), so the JSON-parse and
+//     seam with canned outputs, so the JSON-parse and
 //     state-reduction branches run in-process with no subprocess, no $PATH
 //     dependence, and no network.
 //  3. runCloseCmd — flag validation (mutually-exclusive force flags, --json
@@ -176,7 +176,7 @@ func TestDecideClose_WorkerWithNoPR(t *testing.T) {
 }
 
 // TestDecideClose_WorkerProbeError verifies any probe error fails safe to
-// soft close. This is the load-bearing AC: "fail safe to soft close" means
+// soft close. This is load-bearing: "fail safe to soft close" means
 // destructive paths never fire when gh is unavailable.
 func TestDecideClose_WorkerProbeError(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
@@ -229,13 +229,12 @@ func TestDecideClose_WorkerUnknownState(t *testing.T) {
 
 // ── probePRStateExec ─────────────────────────────────────────────────────────
 //
-// These tests inject the gh exec seam (ghExecOutput, issue #2217) with canned
-// outputs so the probe's argv construction, JSON parsing, and state reduction
-// are exercised in-process: no subprocess, no $PATH lookup, no network, and
-// no dependence on a gh binary existing in the environment. The previous
-// PATH-injected fake-gh fixture proved environment-fragile — in some worker
-// sandboxes the probe reached the real gh and failed at its 5s network
-// timeout (issue #2217).
+// These tests inject the gh exec seam (ghExecOutput) with canned outputs so
+// the probe's argv construction, JSON parsing, and state reduction are
+// exercised in-process: no subprocess, no $PATH lookup, no network, and no
+// dependence on a gh binary existing in the environment. A PATH-injected
+// fake-gh fixture is environment-fragile — in some worker sandboxes the probe
+// reaches the real gh and fails at its 5s network timeout.
 
 // withGhExecStub swaps the ghExecOutput exec seam for the duration of the
 // test.
@@ -257,7 +256,7 @@ func cannedGhOutput(t *testing.T, stdout string) {
 
 // withGhProbeTimeout shrinks the probe's context deadline for the duration of
 // the test, so timeout behaviour is covered without the production 5-second
-// wall-clock wait (issue #2217 AC: edge-case).
+// wall-clock wait.
 func withGhProbeTimeout(t *testing.T, d time.Duration) {
 	t.Helper()
 	orig := ghProbeTimeout
@@ -305,8 +304,8 @@ func TestProbePRStateExec_NoPR(t *testing.T) {
 	}
 }
 
-// TestProbePRStateExec_MultiPROpenWins verifies the AC: when multiple PRs
-// exist for the same head branch and any is OPEN, the probe returns OPEN.
+// TestProbePRStateExec_MultiPROpenWins verifies that when multiple PRs exist
+// for the same head branch and any is OPEN, the probe returns OPEN.
 func TestProbePRStateExec_MultiPROpenWins(t *testing.T) {
 	// Two PRs: one MERGED, one OPEN. OPEN must win regardless of order.
 	cannedGhOutput(t, `[{"number":1,"state":"MERGED"},{"number":2,"state":"OPEN"}]`)
@@ -375,8 +374,8 @@ func TestProbePRStateExec_EmptyBranch(t *testing.T) {
 
 // TestProbePRStateExec_PassesArgv verifies the exact argv shape handed to the
 // gh runner: `pr list --head <branch> --state all --json state,number
-// --limit 10`, plus workdir passthrough. This is a regression guard on the
-// AC: multi-PR support requires `gh pr list --head`, not `gh pr view`.
+// --limit 10`, plus workdir passthrough. This is a regression guard:
+// multi-PR support requires `gh pr list --head`, not `gh pr view`.
 func TestProbePRStateExec_PassesArgv(t *testing.T) {
 	var gotWorkdir string
 	var gotArgs []string
@@ -402,9 +401,9 @@ func TestProbePRStateExec_PassesArgv(t *testing.T) {
 // TestProbePRStateExec_TimeoutFailsSafe verifies the probe applies the
 // ghProbeTimeout deadline to the context it hands the gh runner and
 // propagates the cancellation error — the input decideClose relies on for its
-// fail-safe-to-soft-close path (#2179). The deadline is shrunk to 50ms via
-// the ghProbeTimeout seam so real cancellation behaviour is asserted without
-// the production 5-second wall-clock wait (issue #2217 AC: edge-case).
+// fail-safe-to-soft-close path. The deadline is shrunk to 50ms via the
+// ghProbeTimeout seam so real cancellation behaviour is asserted without the
+// production 5-second wall-clock wait.
 func TestProbePRStateExec_TimeoutFailsSafe(t *testing.T) {
 	withGhProbeTimeout(t, 50*time.Millisecond)
 	withGhExecStub(t, func(ctx context.Context, workdir string, args ...string) ([]byte, error) {
@@ -441,7 +440,7 @@ func TestProbePRStateExec_TimeoutFailsSafe(t *testing.T) {
 // is no 5-second wall-clock wait, and $PATH is set to ONLY the fake's dir so
 // the real gh is unreachable in every environment — if the fake cannot be
 // executed at all, exec fails fast instead, and either way the probe must
-// return an error well inside the bound (issue #2217).
+// return an error well inside the bound.
 //
 // The fake holds the stdout pipe itself (a shell busy-loop, no children) so
 // SIGKILL on the process closes the pipe and unblocks cmd.Output; it needs
@@ -472,9 +471,8 @@ func TestProbePRStateExec_HangingSubprocessKilledAtDeadline(t *testing.T) {
 
 // TestDecideClose_ProbeTimeoutFailsSafeToSoftClose wires the real
 // probePRStateExec (hung runner, shrunk deadline) into decideClose and
-// asserts the probe timeout routes to soft close — the #2179 fail-safe —
-// without any wall-clock wait near the production 5s (issue #2217 AC:
-// edge-case).
+// asserts the probe timeout routes to soft close — the fail-safe —
+// without any wall-clock wait near the production 5s.
 func TestDecideClose_ProbeTimeoutFailsSafeToSoftClose(t *testing.T) {
 	// Empty DB — no coordinator rows; decideClose must consult the probe.
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
@@ -546,7 +544,7 @@ func TestCloseCmd_JSONRequiresYes(t *testing.T) {
 }
 
 // TestCloseCmd_UnknownSessionEnumerates verifies the "must be one of" error
-// shape matches `prism cleanup` exactly (AC: edge-case parity).
+// shape matches `prism cleanup` exactly.
 func TestCloseCmd_UnknownSessionEnumerates(t *testing.T) {
 	// Seed DB with one active session so the error lists it.
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
@@ -582,7 +580,7 @@ func TestCloseCmd_UnknownSessionEnumerates(t *testing.T) {
 }
 
 // TestCloseCmd_NoTmuxWithoutSessionFails verifies the tmux-required error
-// matches `prism cleanup` for parity (AC: edge-case).
+// matches `prism cleanup` for parity.
 func TestCloseCmd_NoTmuxWithoutSessionFails(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("PRISM_HOST_API", "")
@@ -601,7 +599,7 @@ func TestCloseCmd_NoTmuxWithoutSessionFails(t *testing.T) {
 
 // TestCloseCmd_ContainerProxyRequiresSession verifies that running inside a
 // container (PRISM_HOST_API set) without --session is rejected client-side,
-// matching `prism cleanup` (AC: edge-case parity).
+// matching `prism cleanup`.
 func TestCloseCmd_ContainerProxyRequiresSession(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "unix:///tmp/never-reached.sock")
 	cmd := freshCloseCmd()
@@ -797,8 +795,8 @@ func TestCloseCmd_JSONOnSoftCloseEmitsEnvelope(t *testing.T) {
 }
 
 // TestCloseCmd_ForcedKeepWorktreeNeverProbesGh verifies that --keep-worktree
-// short-circuits the gh probe entirely. This is an end-to-end check on the
-// AC's "force soft regardless of PR state".
+// short-circuits the gh probe entirely. This is an end-to-end check on
+// "force soft regardless of PR state".
 func TestCloseCmd_ForcedKeepWorktreeNeverProbesGh(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
@@ -890,7 +888,7 @@ func TestProxyCloseToHostAPI_ForwardsAllFlags(t *testing.T) {
 // TestProxyCloseToHostAPI_ForwardsErrorWithStdoutStderr verifies that on a
 // non-2xx response the proxy forwards stdout/stderr to the caller's writers
 // and returns an error containing the underlying message (parity with
-// proxyCleanupToHostAPI; issue #1527 contract carried over).
+// proxyCleanupToHostAPI).
 func TestProxyCloseToHostAPI_ForwardsErrorWithStdoutStderr(t *testing.T) {
 	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

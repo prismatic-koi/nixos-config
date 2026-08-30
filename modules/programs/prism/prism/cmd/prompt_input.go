@@ -87,7 +87,7 @@ func emptyPromptError(cmd *cobra.Command, verb string) error {
 }
 
 // resolvePromptWithSource reads the prompt text from whichever source was
-// provided and also returns the prompt_source discriminator for C.4.SRC:
+// provided and also returns the prompt_source discriminator:
 //
 //   - --prompt-file <path>  → (text, "cli-positional", nil)
 //   - --prompt -            → (text, "cli-stdin", nil)

@@ -1,7 +1,7 @@
 package cmd
 
 // sidecar_titlegen.go — builds the once-per-session title generator the
-// sidecar uses (issue #2683).
+// sidecar uses.
 //
 // The sidecar runs HOST-SIDE, which is what makes this possible at all:
 // ~/.config/prism/accounts/ and pi's auth.json are not visible inside an

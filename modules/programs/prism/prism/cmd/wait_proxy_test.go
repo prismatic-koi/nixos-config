@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for the sandbox-aware wait-probe routing (#1500 review-code feedback).
+// Tests for the sandbox-aware wait-probe routing.
 //
 // When PRISM_HOST_API is set, the wait probes for merge / review / spawn
 // must talk to the sidecar's read-only wait-probe endpoints rather than
@@ -163,8 +163,8 @@ func TestObserveAlreadyTerminal_RoutesViaHostAPI(t *testing.T) {
 	if !strings.Contains(server.requests[0], "/merges/by-pr") {
 		t.Errorf("first request was %q, expected /merges/by-pr", server.requests[0])
 	}
-	// The proxy path must forward the caller's repo as a query parameter
-	// (issue #2354). Without repo scoping in the request the sidecar
+	// The proxy path must forward the caller's repo as a query parameter.
+	// Without repo scoping in the request the sidecar
 	// substitutes its own repo, which can be different when the caller's
 	// session has been reassigned mid-flight.
 	if !strings.Contains(server.requests[0], "repo=myrepo") {
@@ -250,11 +250,11 @@ func TestWaitForReviewTerminal_RoutesViaHostAPI(t *testing.T) {
 	}
 }
 
-// TestRunReviewsList_RoutesViaHostAPIInSandbox is the regression test for
-// the round-2 review-context blocker: `prism reviews list` must not open
-// the local (shadow) DB when running inside a sandbox — doing so silently
-// returns [] and replicates the original #1043 bug for review groups.
-// The fixed path proxies through the sidecar's /groups/list endpoint.
+// TestRunReviewsList_RoutesViaHostAPIInSandbox is the regression test for the
+// shadow-DB read: `prism reviews list` must not open the local (shadow) DB
+// when running inside a sandbox — doing so silently returns [] for review
+// groups. The correct path proxies through the sidecar's /groups/list
+// endpoint.
 func TestRunReviewsList_RoutesViaHostAPIInSandbox(t *testing.T) {
 	openMergeTestDB(t) // clears PRISM_HOST_API; we set it next.
 

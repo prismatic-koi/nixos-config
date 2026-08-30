@@ -79,7 +79,7 @@ func Restore(dryRun bool) error {
 		fmt.Fprintf(os.Stderr, "prism restore: prune: %v\n", err)
 		// Non-fatal — continue with restore.
 	}
-	// Shorter retention for the raw harness wire archive (P5.LOGS / #1218).
+	// Shorter retention for the raw harness wire archive.
 	if err := d.PruneHarnessFrames(7 * 24 * time.Hour); err != nil {
 		fmt.Fprintf(os.Stderr, "prism restore: prune harness_frames: %v\n", err)
 	}
@@ -108,7 +108,7 @@ func Restore(dryRun bool) error {
 	// *pendingStagger is true, then resets it to false.
 	pendingStagger := false
 
-	// Aggregate counts for the final summary line (issue #1527 AC).
+	// Aggregate counts for the final summary line.
 	// restored:  outcome == restoreOutcomeCreated
 	// skipped:   outcome == restoreOutcomeSkipped
 	// failed:    restErr != nil (per-session error from restoreSession)
@@ -153,7 +153,7 @@ func Restore(dryRun bool) error {
 		}
 	}
 
-	// Final aggregate summary line (issue #1527 AC). Emitted on stdout after
+	// Final aggregate summary line. Emitted on stdout after
 	// all per-session lines so callers can grep for the totals reliably. Also
 	// emitted in dry-run mode so dry-run output is non-empty when there are
 	// no sessions.
@@ -232,7 +232,7 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	// manage agent_status directly below via the open DB handle.
 	//
 	// IsolationMode is read directly from the DB row (s.IsolationMode).
-	// All rows have isolation_mode set (guaranteed by v22→v23 backfill, #1129).
+	// All rows have isolation_mode set (guaranteed by v22→v23 backfill).
 	cfg := loadRestoreConfig()
 
 	var isoMode config.IsolationMode
@@ -287,11 +287,11 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 		IsolationMode:  string(isoMode),
 		RuntimeEnvVars: restoreHarness.RuntimeEnv(),
 		HarnessName:    restoreHarnessName,
-		// PIExtensionDir for host-mode pi launches (#2065).
+		// PIExtensionDir for host-mode pi launches.
 		PIExtensionDir: cfg.PIExtensionDir,
 	}
 	// Propagate the persisted harness session ID so the sandbox launcher can
-	// ask pi to resume the prior conversation (issue #1838). Empty pointer
+	// ask pi to resume the prior conversation. Empty pointer
 	// or empty string both mean "start fresh" — PIInvocation treats an empty
 	// HarnessSessionID as a silent no-op.
 	if s.HarnessSessionID != nil && *s.HarnessSessionID != "" {
@@ -348,7 +348,7 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	// RefreshWorktree is used instead of UpsertStatus because UpsertStatus only
 	// writes repo/worktree on the initial INSERT (ON CONFLICT does not update
 	// them). If the row was previously corrupted by the session-created hook
-	// race (issue #380), UpsertStatus would silently leave the stale path.
+	// race, UpsertStatus would silently leave the stale path.
 	// RefreshWorktree corrects repo and worktree unconditionally.
 	if s.Repo != "" {
 		if err := d.RefreshWorktree(s.SessionName, s.Repo, directory); err != nil {

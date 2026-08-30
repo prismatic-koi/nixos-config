@@ -1,14 +1,15 @@
 package cmd
 
-// Regression tests for issue #2111 — `prism investigate` must pre-compute
-// SpawnOpts.HarnessPipeSockPath for host-mode pi invokers, mirroring the
-// same gate that lives in cmd/spawn.go, cmd/switch.go, and cmd/restore.go.
+// Regression tests for the harness-pipe pre-computation — `prism investigate`
+// must pre-compute SpawnOpts.HarnessPipeSockPath for host-mode pi invokers,
+// mirroring the same gate that lives in cmd/spawn.go, cmd/switch.go, and
+// cmd/restore.go.
 //
 // For host-mode invokers, the PI extension only learns where to reach the
 // sidecar via PRISM_HARNESS_PIPE in the tmux pane env. That env var is only
-// emitted by agentPaneEnvVars when opts.HarnessPipeSockPath != "". Before
-// the fix, cmd/investigate.go::spawnInvestigateSession built SpawnOpts with
-// HarnessPipeSockPath left empty unconditionally, which made the PI extension
+// emitted by agentPaneEnvVars when opts.HarnessPipeSockPath != "". Without
+// this, cmd/investigate.go::spawnInvestigateSession builds SpawnOpts with
+// HarnessPipeSockPath left empty unconditionally, which makes the PI extension
 // no-op out, the `--agent` flag never register, and pi reject
 // `--agent investigate --prompt "..."` as `Unknown options`.
 //
@@ -23,7 +24,7 @@ package cmd
 //     injection paths (bwrap --setenv, sandbox-exec profile)
 //     remain responsible for PRISM_HARNESS_PIPE.
 //
-// Test-suite isolation contract (AGENTS.md, issue #1608):
+// Test-suite isolation contract (AGENTS.md):
 //   - sidecartest.NewIsolated redirects $XDG_STATE_HOME to a t.TempDir() and
 //     sets the PRISM_TEST_MODE_RESTRICT_HOSTAPI guard.
 //   - Session names use the "prism-test@" prefix.
@@ -58,13 +59,13 @@ func seedInvestigateInvoker(t *testing.T, d *db.DB, sessionName, isolationMode s
 }
 
 // TestSpawnInvestigateSession_HostMode_PopulatesHarnessPipeSockPath verifies
-// AC: when the invoker's resolved isolation mode is "host" and the harness
+// when the invoker's resolved isolation mode is "host" and the harness
 // is "pi" (socket-pipe transport), spawnOpts.HarnessPipeSockPath equals
 // session.SidecarHarnessPipePath(<new-session-name>).
 //
-// This is the failure case in #2111: before the fix HarnessPipeSockPath was
-// left empty for host-mode invokers, the PI extension no-op'd, and pi
-// rejected --agent/--prompt as unknown flags.
+// This is the failure case: without the fix HarnessPipeSockPath is left empty
+// for host-mode invokers, the PI extension no-ops, and pi rejects
+// --agent/--prompt as unknown flags.
 func TestSpawnInvestigateSession_HostMode_PopulatesHarnessPipeSockPath(t *testing.T) {
 	bus := sidecartest.NewIsolated(t, "")
 

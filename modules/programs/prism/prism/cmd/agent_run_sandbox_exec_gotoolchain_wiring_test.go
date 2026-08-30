@@ -1,7 +1,7 @@
 package cmd
 
 // agent_run_sandbox_exec_gotoolchain_wiring_test.go — source-level wiring
-// guard for the GOTOOLCHAIN pin (issue #2621).
+// guard for the GOTOOLCHAIN pin.
 //
 // The dispatcher that assembles the sandbox environment,
 // agent_run_sandbox_exec_darwin.go, is behind a darwin build tag, so its
@@ -9,10 +9,9 @@ package cmd
 // itself is not reachable from a unit test either: it ends in syscall.Exec of
 // /usr/bin/sandbox-exec.
 //
-// That leaves the call site unpinned by anything runnable, which is exactly
-// how this class of defect reached a host run twice already on this branch. A
-// source-level assertion is cheap, runs on every platform including CI, and
-// fails the moment the wiring is deleted or renamed.
+// That leaves the call site unpinned by anything runnable. A source-level
+// assertion is cheap, runs on every platform including CI, and fails the
+// moment the wiring is deleted or renamed.
 //
 // This deliberately does NOT re-test what GoToolchainEnv returns — that is
 // container.TestGoToolchainEnv_PinsLocal's job. This test asserts only that
