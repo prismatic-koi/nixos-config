@@ -1,12 +1,12 @@
 // Package forge classifies a git remote as GitHub or GitLab.
 //
-// This is deliberately a single small helper, not a multi-forge interface
-// (see issue #2667). GitHub remains prism's primary, fully-supported forge.
-// GitLab (gitlab.com only) gets a minimal support/error/degrade split:
-//   - prism review / prism pr: supported (#2670, C2)
-//   - prism merge: errors with a glab pointer (#2669, C3)
+// This is deliberately a single small helper, not a multi-forge interface.
+// GitHub remains prism's primary, fully-supported forge. GitLab (gitlab.com
+// only) gets a minimal support/error/degrade split:
+//   - prism review / prism pr: supported.
+//   - prism merge: errors with a glab pointer.
 //   - branch-protection probe, merge-queue watcher, dashboard gh-graphql
-//     poll: degrade cleanly — detect and skip (#2669, C3)
+//     poll: degrade cleanly — detect and skip.
 package forge
 
 import (
@@ -18,9 +18,9 @@ import (
 type Forge int
 
 const (
-	// GitHub is the default forge, used for github.com remotes and for any
-	// remote this package does not recognise — preserving today's
-	// behaviour for every remote prism has ever supported.
+	// GitHub is the default forge: github.com remotes, and any remote this
+	// package does not recognise, both classify as GitHub — unknown remotes
+	// fall back to the primary forge.
 	GitHub Forge = iota
 	// GitLab identifies a gitlab.com remote.
 	GitLab

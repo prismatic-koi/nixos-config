@@ -1,7 +1,7 @@
 package git
 
 // worktree_rollback_test.go — tests for the CreateWorktree fork-info fields
-// and RollbackCreatedWorktree (#2363).
+// and RollbackCreatedWorktree.
 //
 // Coverage:
 //   - CreateWorktree classification: fresh fork vs pre-existing local branch

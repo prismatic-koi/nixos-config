@@ -19,7 +19,7 @@ func testColors() Colors {
 	}
 }
 
-// TestFormatSessionStatus_MutedRendersInvertedPurple asserts the AC: a muted
+// TestFormatSessionStatus_MutedRendersInvertedPurple asserts a muted
 // session's status segment includes a prominent inverted-purple MUTED token
 // (bg=palette.Purple, fg=palette.bg0) with no emoji.
 func TestFormatSessionStatus_MutedRendersInvertedPurple(t *testing.T) {
@@ -34,10 +34,9 @@ func TestFormatSessionStatus_MutedRendersInvertedPurple(t *testing.T) {
 			t.Errorf("muted session output must contain %q:\n  full: %q", want, got)
 		}
 	}
-	// AC: no emoji. The MUTED indicator is plain-text + inverted colour.
-	// A simple proof-of-concept guard: reject the common emoji codepoint range
-	// used by status-bar bells / mute glyphs (U+1F500–U+1F5FF, U+1F300–U+1F3FF,
-	// U+1F400–U+1F4FF). We just ensure no rune above the BMP makes it through.
+	// No emoji: the MUTED indicator is plain-text + inverted colour. Reject the
+	// common emoji codepoint range used by status-bar bells / mute glyphs
+	// (U+1F300–U+1F5FF) by ensuring no rune above the BMP makes it through.
 	for _, r := range got {
 		if r > 0xFFFF {
 			t.Errorf("MUTED indicator must not contain emoji-range codepoints, got rune U+%X in %q", r, got)
@@ -46,7 +45,7 @@ func TestFormatSessionStatus_MutedRendersInvertedPurple(t *testing.T) {
 	}
 }
 
-// TestFormatSessionStatus_UnmutedIsEmpty asserts the AC: unmuted sessions
+// TestFormatSessionStatus_UnmutedIsEmpty asserts unmuted sessions
 // render the empty string so the status bar does not waste real estate on a
 // "not muted" indicator.
 func TestFormatSessionStatus_UnmutedIsEmpty(t *testing.T) {
@@ -64,7 +63,7 @@ func TestFormatSessionStatus_EmptyNameIsEmpty(t *testing.T) {
 	}
 }
 
-// TestFormatWaiting_ZeroIsEmpty asserts the AC: zero-waiting → empty string.
+// TestFormatWaiting_ZeroIsEmpty asserts zero-waiting → empty string.
 // The status bar must not render a stray separator when there's nothing to say.
 func TestFormatWaiting_ZeroIsEmpty(t *testing.T) {
 	if got := FormatWaiting(Counts{}, testColors()); got != "" {

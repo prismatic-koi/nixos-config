@@ -5,8 +5,7 @@ import "testing"
 // TestMostRecentClient exercises the pure selection logic behind
 // ClientForSession without needing a live tmux server. It covers the empty
 // case (no client attached -> ""), the single-client case, the multi-client
-// tiebreak (most recent activity wins), and malformed input. See issue #2522
-// (defect 2).
+// tiebreak (most recent activity wins), and malformed input.
 func TestMostRecentClient(t *testing.T) {
 	cases := []struct {
 		name string

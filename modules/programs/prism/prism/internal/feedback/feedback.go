@@ -1,5 +1,5 @@
 // Package feedback implements the local-first JSONL store used by
-// `prism feedback` (issue #1505 / principle 10 of #1497).
+// `prism feedback`.
 //
 // Each entry is one JSON object on its own line; the file is append-only.
 // The default location is $XDG_STATE_HOME/prism/feedback.jsonl, falling
@@ -8,7 +8,7 @@
 // test suite uses to keep the nix sandbox (HOME=/homeless-shelter) happy.
 //
 // The store deliberately does not depend on the prism DB: feedback is a
-// local-first record by design (principle 10), and avoiding the DB means
+// local-first record by design, and avoiding the DB means
 // a corrupted DB or a missing schema migration cannot prevent an operator
 // from recording friction.
 package feedback
@@ -27,7 +27,7 @@ import (
 
 // Entry is a single feedback record, written one-per-line in feedback.jsonl.
 //
-// Required fields (per AC): Timestamp, Text, Session (may be ""), PrismVersion.
+// Required fields: Timestamp, Text, Session (may be ""), PrismVersion.
 // Optional fields are kept omitempty so older readers see only the fields
 // they expect, and so a future schema bump can add fields without breaking
 // existing files.

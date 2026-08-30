@@ -39,12 +39,12 @@ func addWorktree(t *testing.T, barePath, worktreePath, branch, base string) {
 	}
 }
 
-// TestResolveWorktreeGitDir_CollidingBasenames is the core regression case
-// for issue #2518: two worktrees whose path basenames collide ("feat/dupe"
-// and "bugfix/dupe" both basename to "dupe") must each resolve to their OWN
-// distinct git-state directory, not both to the same one.
+// TestResolveWorktreeGitDir_CollidingBasenames covers two worktrees whose
+// path basenames collide ("feat/dupe" and "bugfix/dupe" both basename to
+// "dupe"): each must resolve to its OWN distinct git-state directory, not
+// both to the same one.
 //
-// This test must FAIL against the pre-fix derivation
+// This test must FAIL against a basename derivation
 // (filepath.Join(bareRoot, ".bare", "worktrees", filepath.Base(worktree)))
 // because git deduplicates colliding registry entry names with a numeric
 // suffix ("dupe", "dupe1"), while the derivation computes "dupe" for both.
@@ -134,8 +134,8 @@ func TestResolveWorktreeGitDir_MalformedGitFile(t *testing.T) {
 // TestResolveWorktreeGitDir_CorruptWorktreePointer asserts that a worktree
 // whose .git pointer FILE exists but is corrupt (no "gitdir: " line) still
 // fails loudly, even though the directory otherwise looks like a real
-// worktree (this pins the AC that distinguishes "not a worktree" from "a
-// broken worktree" — only the former is tolerated by ErrNotAWorktree).
+// worktree. This distinguishes "not a worktree" from "a broken worktree" —
+// only the former is tolerated by ErrNotAWorktree.
 func TestResolveWorktreeGitDir_CorruptWorktreePointer(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("garbage\n"), 0o644); err != nil {

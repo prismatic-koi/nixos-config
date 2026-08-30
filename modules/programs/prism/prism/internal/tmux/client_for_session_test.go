@@ -7,7 +7,7 @@ import (
 )
 
 // TestClientForSession_API verifies the deterministic client resolution that
-// replaces display-message in the persistent dashboard (issue #2522, defect 2).
+// replaces display-message in the persistent dashboard.
 //
 // It reproduces the exact failure the probe found: with a client attached to a
 // DIFFERENT session and none on the dashboard session, display-message can leak
