@@ -9,7 +9,7 @@ package cmd
 // the aggregated results to the worker session via prism prompt.
 //
 // Agent sessions are released 15 minutes after the review-complete prompt is
-// delivered (review.ReapGracePeriod, issue #2649): the tmux session is killed
+// delivered (review.ReapGracePeriod): the tmux session is killed
 // and the harness port is returned to the pool. Their DB rows survive, so
 // `prism checkin <parent>~review-<N>-<agent>` still renders the full agent
 // reasoning afterwards, and `prism retro` still reads the round.
@@ -18,7 +18,7 @@ package cmd
 //
 //	--harness <name>    Runtime harness (default: "pi")
 //	--timeout <dur>     Per-agent timeout (default: 10m)
-//	--only <csv>        Run only the named agents (e.g. review-goal,review-code)
+//	--only <csv>        Run only the named agents (for example, review-goal,review-code)
 //	--rebase            Inline-rebase onto the PR's base ref (fetch + rebase + force-push) before review
 
 import (
@@ -161,9 +161,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 		// proxyReviewAsync streams each output line to os.Stdout as it
 		// arrives — no further printing is needed here. The returned string
 		// is the buffered Ack copy; we parse the group_id from it so that
-		// --wait can poll the group via the host-API probe (issue #1500
-		// review-code feedback: --wait was silently dropped on this proxy
-		// path before this fix).
+		// --wait can poll the group via the host-API probe. Without parsing
+		// the group_id here, --wait is silently dropped on this proxy path.
 		waitFlag, _ := cmd.Flags().GetBool("wait")
 		jsonFlag, _ := cmd.Flags().GetBool("json")
 		waitTimeout, _ := cmd.Flags().GetDuration("wait-timeout")
@@ -210,7 +209,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	reviewForge := forge.DetectFromDir(worktree)
 	repoURL := forge.OriginRemoteURL(worktree)
 
-	// Pre-flight PR-existence/state gate (#2040). Runs FIRST — before the
+	// Pre-flight PR-existence/state gate. Runs FIRST — before the
 	// rebase gate — because it is cheaper (one `gh pr view`, no fetch) and
 	// more fundamental (no point rebasing onto a PR that does not exist).
 	// On any non-OPEN outcome (missing / CLOSED / MERGED / transient gh
@@ -224,7 +223,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return prStateErr
 	}
 
-	// Pre-flight rebase gate (#1518, #2304). Runs BEFORE any review-agent
+	// Pre-flight rebase gate. Runs BEFORE any review-agent
 	// sessions are spawned and BEFORE any DB rows are written for this round,
 	// so a gate failure (refusal, fetch failure, conflict abort, missing
 	// upstream) cannot increment the review-cycle counter — that counter is
@@ -233,12 +232,12 @@ func runReview(cmd *cobra.Command, args []string) error {
 	//
 	// Strict ancestor check: `git merge-base --is-ancestor <remote>/<base> HEAD`.
 	// The PR's actual base ref is discovered via `gh pr view --json baseRefName`
-	// (issue #2304) so PRs targeting non-main bases (long-lived integration
+	// so PRs targeting non-main bases (long-lived integration
 	// branches, release branches, environment branches) are checked against
 	// the correct upstream. On any lookup failure (gh missing, unauthenticated,
 	// network error, no PR for branch, empty baseRefName) we fall back
-	// silently to "main" — preserving today's behaviour for invocations not
-	// tied to a discoverable PR.
+	// silently to "main" — the default for invocations not tied to a
+	// discoverable PR.
 	//
 	// On --rebase, the gate also performs fetch + rebase + force-push inline;
 	// on rebase conflict it aborts the rebase and restores HEAD before
@@ -253,7 +252,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return gateErr
 	}
 
-	// Pre-flight formatter gate (#2556). Runs AFTER the rebase gate — it
+	// Pre-flight formatter gate. Runs AFTER the rebase gate — it
 	// diffs against the same <remote>/<branch> ref the rebase gate just
 	// fetched and verified as an ancestor, so the file list reflects only
 	// this branch's own changes. Like the rebase gate, it runs BEFORE any
@@ -296,7 +295,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// below reads from isoCaps rather than comparing against raw mode constants.
 	isoCaps := container.CapabilitiesFor(isoMode)
 
-	// Backstop reap sweep (#2649). Runs immediately BEFORE the cap check, so
+	// Backstop reap sweep. Runs immediately BEFORE the cap check, so
 	// the cap is measured against live work rather than against finished
 	// rounds that nothing has released yet.
 	//
@@ -330,7 +329,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// default. The PRISM_HOST_API proxy-out branch above already returned, so
 	// by this point we are guaranteed to be on the host.
 	//
-	// A.3 (#1134): unified cap via iso.Cap(ctx, dbPath).Check(ignoreCap).
+	// Unified cap via iso.Cap(ctx, dbPath).Check(ignoreCap).
 	if err := checkConcurrencyCap(cmd, "review", isoMode); err != nil {
 		return err
 	}
@@ -473,7 +472,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 }
 
 // reviewGroupIDInAck matches the "(group: <uuid>)" segment in the Ack
-// header line emitted by review.RunAsync, e.g.:
+// header line emitted by review.RunAsync, for example:
 //
 //	Review in progress — PR #1533, round 1 (group: 5103f218-...-2448dac6ab26)
 //
@@ -564,8 +563,8 @@ func resolveParentIsolationMode(parentSession string) string {
 		return ""
 	}
 	if status.IsolationMode == "" || status.IsolationMode == "podman" {
-		// Pre-v10 rows have no isolation_mode; legacy rows with "podman" fall
-		// back to bwrap since podman isolation has been removed.
+		// Rows with no isolation_mode, and legacy rows with "podman", fall
+		// back to bwrap. podman is not a valid isolation mode.
 		return "bwrap"
 	}
 	return status.IsolationMode

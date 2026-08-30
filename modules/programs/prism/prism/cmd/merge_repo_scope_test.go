@@ -1,21 +1,20 @@
 package cmd
 
-// Tests for the cmd-layer repo scoping added in issue #2354.
+// Tests for the cmd-layer repo scoping.
 //
-// These tests exercise the runMerge command path: the incident of
-// 2026-07-06 was caused by observeExistingMergeRow short-circuiting on a
-// terminal row from another repo. The regression test seeds the incident
-// shape at the DB level, calls runMerge from the "victim" repo, and
-// asserts:
+// These tests exercise the runMerge command path. If observeExistingMergeRow
+// short-circuits on a terminal row from another repo, the cross-repo
+// collision returns. The regression test seeds that shape at the DB level,
+// calls runMerge from the "victim" repo, and asserts:
 //
 //   - fresh "PR #N enqueued ..." line on stdout (not a terminal
 //     short-circuit),
 //   - a new `watching` row for the caller's repo,
 //   - the foreign repo's terminal row is untouched.
 //
-// AC #6 (already-merged output includes PR title) is tested via
-// emitMergeWaitTerminal directly \u2014 that function is shared between the
-// #1875 re-entry short-circuit and the --wait terminal path.
+// The already-merged output (includes PR title) is tested via
+// emitMergeWaitTerminal directly — that function is shared between the
+// re-entry short-circuit and the --wait terminal path.
 
 import (
 	"encoding/json"
@@ -27,17 +26,16 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
-// TestRunMerge_CrossRepoCollision_EnqueuesFreshRow reproduces the incident
-// of 2026-07-06: a terminal `merged` row for PR N exists under repo A,
-// and repo B calls `prism merge N`. The short-circuit must NOT fire on
-// repo A's row; instead, repo B's coordinator must enqueue its own
-// watching row and print the fresh-enqueue line.
+// TestRunMerge_CrossRepoCollision_EnqueuesFreshRow covers the cross-repo
+// collision: a terminal `merged` row for PR N exists under repo A, and repo B
+// calls `prism merge N`. The short-circuit must NOT fire on repo A's row.
+// Instead, repo B's coordinator must enqueue its own watching row and print
+// the fresh-enqueue line.
 func TestRunMerge_CrossRepoCollision_EnqueuesFreshRow(t *testing.T) {
 	openMergeTestDB(t)
 
-	// Repo A: seed a terminal `merged` row. This is the foreign row
-	// that used to trip the observeExistingMergeRow short-circuit
-	// (issue #2354).
+	// Repo A: seed a terminal `merged` row. This foreign row must not trip
+	// the observeExistingMergeRow short-circuit for repo B.
 	d, err := openDB()
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
@@ -87,7 +85,7 @@ func TestRunMerge_CrossRepoCollision_EnqueuesFreshRow(t *testing.T) {
 	// gh MUST have run: preflight fires exactly once. If a foreign-repo
 	// terminal row short-circuited the enqueue, gh would not run.
 	if n := countGhCalls(t, counterPath); n != 2 {
-		// #2420 initial-state probe = pr view + branch protection.
+		// Initial-state probe = pr view + branch protection.
 		t.Errorf("gh call count = %d, want 2 (foreign-repo terminal row must not short-circuit the #2420 initial-state probe \u2014 the incident of 2026-07-06 has regressed)", n)
 	}
 
@@ -206,16 +204,14 @@ func TestWaitForMergeTerminal_ObservesOnlyOwnRepoRow(t *testing.T) {
 	}
 }
 
-// TestEmitMergeWaitTerminal_IncludesPRTitleOnMerged verifies AC #6:
+// TestEmitMergeWaitTerminal_IncludesPRTitleOnMerged verifies that the
+// already-merged short-circuit output includes the stored PR title.
 //
-//	"The already-merged short-circuit output includes the stored PR title."
-//
-// The rationale is defence-in-depth: if a cross-repo mismatch does somehow
-// re-appear (a new bypass path we haven't foreseen), including the PR
-// title in the "PR #N merged" line makes the mismatch visually
-// detectable by the caller \u2014 the incident of 2026-07-06 printed a bare
-// "PR #47 merged." that gave the coordinator no signal that the merged
-// row belonged to a different repo's PR.
+// The rationale is defence-in-depth: if a cross-repo mismatch reappears
+// through a new bypass path, the PR title in the "PR #N merged" line makes
+// the mismatch visually detectable by the caller. A bare "PR #47 merged."
+// gives the coordinator no signal that the merged row belongs to a
+// different repo's PR.
 func TestEmitMergeWaitTerminal_IncludesPRTitleOnMerged(t *testing.T) {
 	title := "feat: something specific"
 	row := &db.PendingMerge{

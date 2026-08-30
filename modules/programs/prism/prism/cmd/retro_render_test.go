@@ -97,8 +97,8 @@ func TestRenderRetroReviewCycles_NoReviewCycles(t *testing.T) {
 	}
 }
 
-// TestRenderRetroReviewCycles_NonCountingRoundIsLabelled verifies a round
-// #2573 classifies as non-counting is labelled as such in the output, and
+// TestRenderRetroReviewCycles_NonCountingRoundIsLabelled verifies that a
+// round classified as non-counting is labelled as such in the output, and
 // that a missing verdict renders distinctly from PASS/FAIL.
 func TestRenderRetroReviewCycles_NonCountingRoundIsLabelled(t *testing.T) {
 	cycles := []review.ReviewCycle{

@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for the per-incarnation stats rework (issue #999):
+// Tests for the per-incarnation stats rework:
 //   - prism stats (no args) → runStatsIncarnations
 //   - prism stats <instance-id|session-name> → runStatsDetail / resolveSessionArg
 //   - prism stats --repo / --since filtering
@@ -76,7 +76,7 @@ func openIncarnationTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	// Wipe any rootCmd flag values left behind by a previous test (or a
 	// previous iteration under `go test -count=N`) before this test drives
-	// the cobra tree via rootCmd.SetArgs / rootCmd.Execute. See #1521.
+	// the cobra tree via rootCmd.SetArgs / rootCmd.Execute.
 	resetRootCmdFlags(t)
 	// Unset PRISM_HOST_API so stats commands use the direct-DB path.
 	t.Setenv("PRISM_HOST_API", "")
@@ -379,7 +379,7 @@ func TestRunStatsDetail_NotYetArchived(t *testing.T) {
 // --- --aggregate-by-name flag: must be removed ---
 
 // TestRunStats_AggregateByNameFlagRemoved verifies that --aggregate-by-name is NOT
-// registered on statsCmd (flag is explicitly removed per issue #999).
+// registered on statsCmd (flag is explicitly removed).
 func TestRunStats_AggregateByNameFlagRemoved(t *testing.T) {
 	f := statsCmd.Flags().Lookup("aggregate-by-name")
 	if f != nil {

@@ -1,7 +1,6 @@
 package cmd
 
-// prism logs --harness-events <session> — raw PI JSONL frame archive viewer
-// (P5.LOGS / #1218).
+// prism logs --harness-events <session> — raw PI JSONL frame archive viewer.
 //
 // The PI sidecar persists every inbound and outbound JSONL frame on a
 // socket-pipe session into the harness_frames DB table (see

@@ -4,8 +4,7 @@ package cmd
 //
 // This command is intentionally hidden from --help, cobra completion, and any
 // agent-facing documentation. It is an operator escape hatch for the human at
-// the keyboard, not a tool for AI coordinators to discover. See issue #2013
-// for the design rationale.
+// the keyboard, not a tool for AI coordinators to discover.
 //
 // Surface:
 //

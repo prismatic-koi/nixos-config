@@ -33,10 +33,10 @@ func runStatsDetail(arg string, forceInstance bool, jsonMode bool) error {
 		out := map[string]any{"session": sess}
 		// Surface the spawn_inputs audit columns alongside the sessions
 		// row so callers scripting against `prism stats <id> --json` can
-		// read containers_flag (#2317 / #2323) without a second query.
-		// Missing rows (pre-#2087 sessions) omit the key entirely —
-		// downstream consumers must use "in" rather than truthy checks
-		// to distinguish "unknown" from "false".
+		// read containers_flag without a second query.
+		// Missing rows (sessions with no spawn_inputs row) omit the key
+		// entirely — downstream consumers must use "in" rather than truthy
+		// checks to distinguish "unknown" from "false".
 		if si, siErr := d.SpawnInputsByInstanceID(sess.InstanceID); siErr == nil && si != nil {
 			out["spawn_inputs"] = spawnInputsJSON(si)
 		}
@@ -53,8 +53,8 @@ func runStatsDetail(arg string, forceInstance bool, jsonMode bool) error {
 }
 
 // spawnInputsJSON projects db.SpawnInputs onto the audit-only subset surfaced
-// by `prism stats <instance-id> --json` (#2317 / #2323). Conversation-bearing
-// columns (prompt_text, prompt_source, model_variant_overrides, extras) are
+// by `prism stats <instance-id> --json`. Conversation-bearing columns
+// (prompt_text, prompt_source, model_variant_overrides, extras) are
 // intentionally omitted — the same boundary that CompareInputs enforces for
 // the host-API /stats endpoint applies here.
 func spawnInputsJSON(si *db.SpawnInputs) map[string]any {
@@ -92,7 +92,7 @@ func spawnInputsJSON(si *db.SpawnInputs) map[string]any {
 
 // renderIncarnationDetailFromSession renders the session detail for the proxy
 // path. outcome is the spawn_outcome row proxied alongside the session by
-// the host-API view=detail response (issue #2582) — nil means the session
+// the host-API view=detail response — nil means the session
 // has not yet computed one (still live), which the renderer surfaces as
 // "not yet available", not as zero.
 func renderIncarnationDetailFromSession(sess *db.Session, outcome *db.SpawnOutcome) {
@@ -144,13 +144,12 @@ func renderIncarnationDetailFromSession(sess *db.Session, outcome *db.SpawnOutco
 }
 
 // renderTokenUsageBlock renders the "Token Usage" block shared by the
-// host-direct and sandbox-proxy detail renderers, from a *db.SpawnOutcome
-// (issue #2582). outcome nil means the session has not yet had a
-// spawn_outcome row computed — typically because the session is still
-// active — and is rendered as an explicit "not yet available" message
-// rather than as zero values presented as real data. A cost of exactly 0 is
-// expected under subscription profiles (e.g. anthropic-pi) and is not
-// treated as missing data.
+// host-direct and sandbox-proxy detail renderers, from a *db.SpawnOutcome.
+// outcome nil means the session has not yet had a spawn_outcome row
+// computed — typically because the session is still active — and is rendered
+// as an explicit "not yet available" message rather than as zero values
+// presented as real data. A cost of exactly 0 is expected under subscription
+// profiles (for example, anthropic-pi) and is not treated as missing data.
 func renderTokenUsageBlock(styleHeader, styleLabel, styleDim lipgloss.Style, outcome *db.SpawnOutcome) {
 	fmt.Println(styleHeader.Render("Token Usage"))
 	if outcome == nil {
@@ -188,14 +187,14 @@ func renderTokenUsageBlock(styleHeader, styleLabel, styleDim lipgloss.Style, out
 }
 
 // resolveSessionArg resolves an argument to a single sessions row.
-// Disambiguation rules (from issue #999):
+// Disambiguation rules:
 //  1. Full 36-char UUID (or --instance flag) → SessionByInstanceID
 //  2. Exact match in sessions.session_name → MostRecentSessionForName
 //  3. UUID prefix → SessionsByInstanceIDPrefix (must be unambiguous)
 //  4. Not found → error
 func resolveSessionArg(d *db.DB, arg string, forceInstance bool) (*db.Session, error) {
 	// Delegates to db.ResolveSessionArg so the host-API proxy path resolves
-	// session names / instance-id prefixes byte-for-byte identically (#2098).
+	// session names / instance-id prefixes byte-for-byte identically.
 	return d.ResolveSessionArg(arg, forceInstance)
 }
 
@@ -245,12 +244,12 @@ func renderIncarnationDetail(d *db.DB, sess *db.Session) {
 	}
 	fmt.Println()
 
-	// Spawn Inputs block — surfaces the audit columns written at spawn time
-	// (#2087 / #2317 / #2323). When no spawn_inputs row exists (pre-#2087
-	// sessions, or rows created outside the SpawnSession chokepoint) the
-	// whole block is omitted rather than rendering a sea of "—" labels.
-	// Mirrors the field set surfaced by `prism stats compare`'s Spawn Inputs
-	// block; new audit columns added in future PRs land here too.
+	// Spawn Inputs block — surfaces the audit columns written at spawn time.
+	// When no spawn_inputs row exists (sessions with no spawn_inputs row, or
+	// rows created outside the SpawnSession chokepoint) the whole block is
+	// omitted rather than rendering a sea of "—" labels. Mirrors the field
+	// set surfaced by `prism stats compare`'s Spawn Inputs block. New audit
+	// columns land here too.
 	if si, siErr := d.SpawnInputsByInstanceID(sess.InstanceID); siErr == nil && si != nil {
 		fmt.Println(styleHeader.Render("Spawn Inputs"))
 		if si.ProfileName != nil && *si.ProfileName != "" {
@@ -280,8 +279,8 @@ func renderIncarnationDetail(d *db.DB, sess *db.Session) {
 	}
 
 	// Token/cost totals: the persisted-or-computed spawn_outcome row, the
-	// same source used by the sandbox proxy path (issue #2582) so the two
-	// paths render byte-identical output.
+	// same source used by the sandbox proxy path so the two paths render
+	// byte-identical output.
 	outcome := d.CompareRunOutcome(sess)
 	renderTokenUsageBlock(styleHeader, styleLabel, styleDim, outcome)
 }

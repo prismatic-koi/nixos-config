@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for --json flag on prism merges (#1499).
+// Tests for --json flag on prism merges.
 
 import (
 	"encoding/json"

@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for --json flag on prism audit (#1499).
+// Tests for --json flag on prism audit.
 
 import (
 	"encoding/json"

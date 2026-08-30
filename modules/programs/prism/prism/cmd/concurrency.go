@@ -7,7 +7,7 @@ package cmd
 // replaces the per-mode helpers (checkConcurrencyCap, checkBwrapConcurrencyCap,
 // checkSandboxExecConcurrencyCap) and their inline message-rendering blocks.
 //
-// A.3 (#1134): unified cap via Isolator.Cap().
+// Unified cap via Isolator.Cap().
 
 import (
 	"context"

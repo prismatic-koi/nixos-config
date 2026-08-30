@@ -1,14 +1,14 @@
 package cmd
 
 // Tests for the direct-CLI coordinator guard on `prism merges list` and
-// `prism merges cancel` (issue #2608).
+// `prism merges cancel`.
 //
 // The host API gates both verbs — `/merges` and `/merges/cancel` each call
 // requireCoordinator — which covers every sandboxed caller, because a bwrap or
 // sandbox-exec session always carries the host-API socket. A session in `host`
 // isolation mode has no socket, so runMergesList / runMergesCancel skip the
-// proxy branch and reach the direct DB path. Before #2608 that path had no
-// role check at all, so a host-mode worker reached d.CancelMerge.
+// proxy branch and reach the direct DB path. Without a role check there, a
+// host-mode worker reaches d.CancelMerge.
 //
 // These tests pin the guard on that path: refusal for every non-coordinator
 // role, admission for a coordinator, explicit fail-closed behaviour on an
@@ -99,19 +99,16 @@ func assertMergeStatus(t *testing.T, pr int, want string) {
 // ── refusal on the direct path ────────────────────────────────────────────────
 
 // TestRunMergesCancel_HostModeWorker_Refused is the headline security
-// assertion of #2608: a worker in host isolation mode — the exact session
-// shape that carries no host-API socket and therefore never meets the
-// host-API gate — is refused on the direct path.
+// assertion: a worker in host isolation mode — the exact session shape that
+// carries no host-API socket and therefore never meets the host-API gate —
+// is refused on the direct path.
 //
 // The queued row is deliberately owned by the WORKER's own instance_id, not
-// the coordinator's. #2608 records instance scoping as the reason the
-// severity is low: CancelMerge filters on instance_id, so a foreign session's
-// cancel is normally a no-op. Seeding the row under the caller's own
-// instance_id removes that mitigation, so the surviving `watching` status
-// proves the guard runs before d.CancelMerge rather than relying on the
-// scope filter to absorb the call.
-//
-// Before the fix this call returned nil and cancelled the row.
+// the coordinator's. Instance scoping keeps the severity low: CancelMerge
+// filters on instance_id, so a foreign session's cancel is normally a no-op.
+// Seeding the row under the caller's own instance_id removes that mitigation,
+// so the surviving `watching` status proves the guard runs before
+// d.CancelMerge rather than relying on the scope filter to absorb the call.
 func TestRunMergesCancel_HostModeWorker_Refused(t *testing.T) {
 	openMergeTestDB(t)
 
@@ -140,8 +137,6 @@ func TestRunMergesCancel_HostModeWorker_Refused(t *testing.T) {
 // read-only verb. The direct path is guarded there too so the role boundary of
 // the verb does not depend on the caller's isolation mode — a bwrap worker
 // already receives HTTP 403 from `/merges`.
-//
-// Before the fix this call returned nil and printed the queue table.
 func TestRunMergesList_HostModeWorker_Refused(t *testing.T) {
 	openMergeTestDB(t)
 
@@ -213,7 +208,7 @@ func TestRunMergesGuard_NonCoordinatorRoles_Refused(t *testing.T) {
 
 // TestRunMergesList_HostModeCoordinator_Admitted is the other half of the
 // gate: a coordinator in host isolation mode still lists the queue. This is
-// what stops the fix from being "deny everyone".
+// what stops the guard from being "deny everyone".
 func TestRunMergesList_HostModeCoordinator_Admitted(t *testing.T) {
 	openMergeTestDB(t)
 
@@ -292,15 +287,14 @@ func TestRunMergesGuard_CoordinatorByRoleAlone_Admitted(t *testing.T) {
 // ── unresolvable caller ───────────────────────────────────────────────────────
 
 // TestRunMergesGuard_UnresolvableCaller_FailsClosed makes the unresolvable-
-// caller behaviour explicit for each guarded verb, per the #2608 acceptance
-// criteria and the caution in the issue that the cmd/merge.go shape fails
-// closed on an unknown caller.
+// caller behaviour explicit for each guarded verb: the cmd/merge.go shape
+// fails closed on an unknown caller.
 //
 // Both verbs fail closed with a non-zero exit and no DB write. The message is
 // the identity error, not the role error: "run from inside a prism session" is
 // the actionable instruction for an operator with no session, and it is the
-// message both verbs already returned from resolveCallerIdentity before the
-// guard existed, so no caller sees a changed error for this case.
+// message both verbs return from resolveCallerIdentity, so the guard does not
+// change the error for this case.
 //
 // PRISM_SESSION_NAME is empty and the suite-wide tmux neutralisation makes
 // tmux.CurrentSession() fail, so review.LookupParentSession returns "".
@@ -346,7 +340,7 @@ func TestRunMergesGuard_UnresolvableCaller_FailsClosed(t *testing.T) {
 // ── the proxy route stays unchanged ───────────────────────────────────────────
 
 // TestRunMergesGuard_SandboxedWorker_StillProxies is the edge case that keeps
-// the fix from changing the sandboxed contract: when the host-API socket is
+// the guard from changing the sandboxed contract: when the host-API socket is
 // set, both verbs must still route to `/merges` and `/merges/cancel` rather
 // than being refused locally by the new guard. The caller here is a worker —
 // exactly the role the guard refuses on the direct path — so a guard placed

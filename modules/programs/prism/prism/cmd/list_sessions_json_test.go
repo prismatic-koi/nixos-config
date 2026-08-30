@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for --json flag on prism list-sessions (#1463).
+// Tests for --json flag on prism list-sessions.
 //
 // Both the direct-DB path and the proxy path are exercised.
 

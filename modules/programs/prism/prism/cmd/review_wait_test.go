@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for `prism review --wait` (#1500). We test the wait-and-aggregate
+// Tests for `prism review --wait`. We test the wait-and-aggregate
 // path directly (waitForReviewTerminal / emitReviewWaitTerminal) — runReview
 // itself is exercised by review_test.go and its full wiring is out of scope
 // here. The wait loop's contract is "given a registered group and seeded

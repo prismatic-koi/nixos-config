@@ -1,7 +1,7 @@
 package cmd
 
 // retro_cycles_cli_test.go — end-to-end CLI coverage for `prism retro
-// <train-session>` (issue #2584): the positional argument wires through
+// <train-session>`: the positional argument wires through
 // ResolveSessionArg and review.AssembleReviewCycles to render section 3.
 
 import (

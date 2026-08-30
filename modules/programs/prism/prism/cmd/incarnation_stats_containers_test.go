@@ -1,21 +1,18 @@
 package cmd
 
 // incarnation_stats_containers_test.go — per-incarnation detail view
-// coverage for the new containers_flag audit column (#2317 / #2323).
+// coverage for the containers_flag audit column.
 //
-// AC #7 of #2323 requires both surfaces to carry containers_flag:
+// Both surfaces must carry containers_flag:
 //
 //   - `prism stats <instance-id>` (human-readable) shows a containers_flag
 //     row in the Spawn Inputs block.
 //   - `prism stats <instance-id> --json` includes "containers_flag": true
 //     in the spawn_inputs object.
 //
-// AC #8 (security) requires that a session row created BEFORE this PR
-// landed sees no behavioural change. For the per-incarnation detail view
-// that translates to: a session with NO spawn_inputs row (the pre-#2087
-// shape) renders identically to its pre-#2323 baseline — no Spawn Inputs
-// header line, no containers_flag row, no spawn_inputs key in the JSON
-// output.
+// A session with NO spawn_inputs row must render with no behavioural change:
+// no Spawn Inputs header line, no containers_flag row, and no spawn_inputs
+// key in the JSON output.
 
 import (
 	"encoding/json"
@@ -31,7 +28,7 @@ import (
 // TestRunStatsDetail_ContainersFlag_HumanReadable verifies that the per-
 // incarnation detail human-readable output surfaces containers_flag in the
 // Spawn Inputs block when --containers was recorded on the spawn_inputs
-// row (AC #7 of #2323).
+// row.
 func TestRunStatsDetail_ContainersFlag_HumanReadable(t *testing.T) {
 	d := openIncarnationTestDB(t)
 	base := time.Now().Truncate(time.Second)
@@ -72,7 +69,7 @@ func TestRunStatsDetail_ContainersFlag_HumanReadable(t *testing.T) {
 
 // TestRunStatsDetail_ContainersFlag_JSON verifies that --json emits a
 // spawn_inputs object that includes "containers_flag": true when the
-// spawn_inputs row recorded the flag (AC #7).
+// spawn_inputs row recorded the flag.
 func TestRunStatsDetail_ContainersFlag_JSON(t *testing.T) {
 	d := openIncarnationTestDB(t)
 	base := time.Now().Truncate(time.Second)
@@ -124,7 +121,7 @@ func TestRunStatsDetail_ContainersFlag_JSON(t *testing.T) {
 // TestRunStatsDetail_ContainersFlag_DefaultFalse verifies that a row whose
 // spawn_inputs.containers_flag=false (the default) surfaces as "false" in
 // the human-readable output and false in the JSON spawn_inputs object.
-// This is AC #3's render-side guarantee: an unset --containers spawn shows
+// This is the render-side guarantee: an unset --containers spawn shows
 // up as "false" everywhere, never as missing.
 func TestRunStatsDetail_ContainersFlag_DefaultFalse(t *testing.T) {
 	d := openIncarnationTestDB(t)
@@ -182,14 +179,14 @@ func TestRunStatsDetail_ContainersFlag_DefaultFalse(t *testing.T) {
 	}
 }
 
-// TestRunStatsDetail_PreExistingRowNoSpawnInputs verifies AC #8 of #2323:
-// a session created BEFORE this PR landed (no spawn_inputs row) sees no
-// behavioural change in the detail view — no Spawn Inputs header, no
-// containers_flag row, no spawn_inputs key in the JSON output.
+// TestRunStatsDetail_PreExistingRowNoSpawnInputs verifies that a session
+// with no spawn_inputs row sees no behavioural change in the detail view:
+// no Spawn Inputs header, no containers_flag row, no spawn_inputs key in
+// the JSON output.
 //
 // This is the "old data does not regress" guarantee. The renderer must
-// gracefully degrade for pre-#2087 sessions rather than printing a sea of
-// "—" lines or crashing on nil.
+// degrade cleanly for sessions with no spawn_inputs row rather than printing
+// a sea of "—" lines or crashing on nil.
 func TestRunStatsDetail_PreExistingRowNoSpawnInputs(t *testing.T) {
 	d := openIncarnationTestDB(t)
 	base := time.Now().Truncate(time.Second)
@@ -197,7 +194,8 @@ func TestRunStatsDetail_PreExistingRowNoSpawnInputs(t *testing.T) {
 	iid := uuid.New().String()
 	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
-	// Deliberately NO InsertSpawnInputs call — simulating a pre-#2087 row.
+	// Deliberately NO InsertSpawnInputs call — simulating a row with no
+	// spawn_inputs.
 
 	// Human-readable: no Spawn Inputs block.
 	textOut := captureStdout(t, func() {

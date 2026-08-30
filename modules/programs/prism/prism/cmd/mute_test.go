@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for `prism mute` (#2013).
+// Tests for `prism mute`.
 //
 // The command is intentionally hidden; these tests exercise the RunE surface
 // directly without going through `prism --help`. The discoverability AC is

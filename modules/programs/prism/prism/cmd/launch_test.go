@@ -1,4 +1,4 @@
-// Tests for `prism launch` (issue #2521).
+// Tests for `prism launch`.
 //
 // runLaunch has three branches, chosen by whether the caller is inside tmux
 // (TMUX env var) and whether --in-terminal was passed:
@@ -13,14 +13,14 @@
 //     so the test exercises tmux's actual command-list-abort-on-error
 //     semantics rather than only inspecting argv).
 //
-// Issue #2521: the default branch used to chain scratchpad creation, dashboard
-// creation, and the final attach into a single tmux command list run inside
-// the new kitty window. If prism-dashboard already existed, the chained
-// "new-session -ds prism-dashboard" command failed, which aborted the rest of
-// the command list (including the trailing switch-client/attach), so the new
-// client landed on scratchpad instead of the dashboard. The fix ensures both
-// sessions from the Go side first (mirroring the other two branches) and then
-// issues a single, un-chainable "attach-session" command.
+// The default branch must ensure both sessions from the Go side first
+// (mirroring the other two branches) and then issue a single, un-chainable
+// "attach-session" command. If it instead chains scratchpad creation,
+// dashboard creation, and the final attach into a single tmux command list
+// run inside the new kitty window, then when prism-dashboard already exists
+// the chained "new-session -ds prism-dashboard" command fails, which aborts
+// the rest of the command list (including the trailing switch-client/attach),
+// so the new client lands on scratchpad instead of the dashboard.
 package cmd
 
 import (
@@ -277,13 +277,12 @@ func TestRunLaunchDefault_KittyAttachesToDashboard(t *testing.T) {
 	}
 }
 
-// TestRunLaunchDefault_PreexistingDashboardStillSucceeds is the direct
-// regression test for issue #2521's reported failure mode: prism-dashboard
-// already exists (e.g. from a previous prism launch) when the default branch
-// runs again. Before the fix, the chained "new-session -ds prism-dashboard"
-// command failed because the session already existed, which aborted the rest
-// of the tmux command list — including the trailing attach — so the client
-// landed on scratchpad instead.
+// TestRunLaunchDefault_PreexistingDashboardStillSucceeds covers the failure
+// mode where prism-dashboard already exists (for example, from a previous
+// prism launch) when the default branch runs again. If the chained
+// "new-session -ds prism-dashboard" command fails because the session already
+// exists, it aborts the rest of the tmux command list — including the
+// trailing attach — so the client lands on scratchpad instead.
 func TestRunLaunchDefault_PreexistingDashboardStillSucceeds(t *testing.T) {
 	skipIfSandboxPTY(t)
 	s := newCmdTestServer(t)

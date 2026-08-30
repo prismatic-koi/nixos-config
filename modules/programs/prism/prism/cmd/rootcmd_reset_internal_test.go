@@ -19,7 +19,7 @@ import (
 // declared default after resetRootCmdFlags runs.
 func TestResetRootCmdFlags_ScalarFlagRestored(t *testing.T) {
 	// promptCmd's --deliver-as has a non-empty declared default ("steer").
-	// This is the exact flag whose bleed produced the #1521 flake.
+	// This is the exact flag whose bleed produces the flake.
 	flag := promptCmd.Flags().Lookup("deliver-as")
 	if flag == nil {
 		t.Fatal("--deliver-as flag not found on promptCmd")
