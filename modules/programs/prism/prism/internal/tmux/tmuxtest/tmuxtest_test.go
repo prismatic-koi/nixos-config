@@ -3,7 +3,7 @@ package tmuxtest
 import "testing"
 
 // TestIsSandboxForkDenial verifies the fork-denial classifier matches the
-// exact in-sandbox signature (issue #2204) and nothing broader — the guard
+// exact in-sandbox signature and nothing broader — the guard
 // must not skip on unrelated tmux failures (no over-skip).
 func TestIsSandboxForkDenial(t *testing.T) {
 	t.Parallel()

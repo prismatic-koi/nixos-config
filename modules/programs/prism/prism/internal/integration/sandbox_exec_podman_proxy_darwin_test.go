@@ -4,11 +4,10 @@ package integration_test
 
 // sandbox_exec_podman_proxy_darwin_test.go — Darwin integration tests for
 // the conditional SBPL allow that exposes the per-session filtering podman
-// API socket inside the sandbox-exec sandbox (issue #2317 §3c / #2322,
-// Step 5).
+// API socket inside the sandbox-exec sandbox.
 //
 // Per the AGENTS.md sandbox-exec testing convention
-// (modules/programs/prism/prism/docs/sandbox-exec-testing.md, issue #1192),
+// (modules/programs/prism/prism/docs/sandbox-exec-testing.md),
 // every change to generateProfile / Manager.PrepareSandboxExec must be
 // paired with:
 //
@@ -22,9 +21,9 @@ package integration_test
 //     withMutatedProfile) to OMIT the literal allow clause, runs the same
 //     probe, and asserts it FAILS with the documented denial. This is what
 //     proves the positive test is not a no-op — substring assertions on
-//     profile content are necessary but not sufficient (see #1192 closure).
+//     profile content are necessary but not sufficient.
 //
-// The greppable security AC from #2322 ("the real upstream podman socket
+// The greppable security guarantee ("the real upstream podman socket
 // path does NOT appear in the rendered SBPL for ANY value of
 // ContainersEnabled") is covered by the unit-test sibling under
 // internal/container/sandbox_exec_podman_proxy_test.go — it does not need
@@ -104,8 +103,8 @@ func startStubPodmanProxyListener(t *testing.T, sockPath string) *atomic.Int32 {
 // or python3) because:
 //
 //   - /usr/bin/nc and /usr/bin/curl are Apple-signed binaries that SIGABRT
-//     in dyld4::CacheFinder under a deny-default SBPL profile (issue #1190
-//     — same reason the bash integration tests use Nix bash).
+//     in dyld4::CacheFinder under a deny-default SBPL profile (same reason
+//     the bash integration tests use Nix bash).
 //   - Homebrew Python is not guaranteed to be present on every Darwin dev
 //     machine; socat is a stable home-manager package on this codebase.
 //   - socat's one-liner `UNIX-CONNECT:<path>` is the most direct probe of
@@ -214,7 +213,7 @@ func newPodmanProxyProfileManager(t *testing.T, proxyPath string) *container.Man
 		BareRoot:            bareRoot,
 		ContainersEnabled:   true,
 		PodmanProxySockPath: proxyPath,
-		// Required since #1960 — see newProfileManager
+		// writeGitconfig requires [user] identity — see newProfileManager
 		// (sandbox_exec_helpers_darwin_test.go).
 		GitUserName:  "test-user",
 		GitUserEmail: "test@example.com",

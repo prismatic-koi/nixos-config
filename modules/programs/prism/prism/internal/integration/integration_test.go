@@ -55,8 +55,8 @@ func openTestDB(t *testing.T) *db.DB {
 
 // requireTmux skips the test when tmux is not available in PATH, or when
 // tmux server creation is blocked by the sandbox (fork EPERM inside prism
-// sandbox-exec worker sessions — issue #2204). Its only caller is
-// newTmuxServer, so server-start capability is exactly what it must verify.
+// sandbox-exec worker sessions). Its only caller is newTmuxServer, so
+// server-start capability is exactly what it must verify.
 func requireTmux(t *testing.T) string {
 	t.Helper()
 	return tmuxtest.RequireServer(t)
@@ -323,7 +323,7 @@ func TestPaneDiedHook_NonAgentWindow(t *testing.T) {
 // TestPaneDiedHook_OverridesFinished verifies that pane-died with exit code 1
 // overrides a "finished" state with "interrupted". This is the key fix for the
 // race where the plugin writes "finished" via the idle debounce before
-// pane-died fires (issue #386 and related).
+// pane-died fires.
 func TestPaneDiedHook_OverridesFinished(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
@@ -773,8 +773,8 @@ func TestSessionCreate_Cleanup(t *testing.T) {
 // with ForceFresh=false is a no-op when the session already exists in tmux and
 // its DB row's last_seen is recent (< 60s). The live session must not be killed.
 //
-// This is the regression test for issue #792: prism switch/launch must not
-// destroy an existing live coordinator session.
+// This is a regression test: prism switch/launch must not destroy an
+// existing live coordinator session.
 //
 // NOTE: This test uses withTmuxServer() and must NOT call t.Parallel().
 func TestSessionCreate_ForceFresh_False_LiveSession(t *testing.T) {

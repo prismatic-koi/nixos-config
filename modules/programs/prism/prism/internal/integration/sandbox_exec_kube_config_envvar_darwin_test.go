@@ -3,19 +3,18 @@
 package integration_test
 
 // sandbox_exec_kube_config_envvar_darwin_test.go — integration coverage for
-// the env-var delivery of the kube config (issue #2235, Step 3b of #2132).
+// the env-var delivery of the kube config.
 //
 // The staging-HOME .kube/config symlink is gone. kubectl resolves the config
 // via KUBECONFIG pointing at the host XDG path
 // (~/.config/kube/agents-config) and writes its discovery/http cache to
 // <sessionDir>/kube-cache via KUBECACHEDIR (kubectl defaults to
-// $HOME/.kube/cache, which exists on the host and would EPERM under
-// deny-default post-removal). Per the #2132 §2 mechanism note, no literal
-// SBPL grant exists on the XDG symlink path (it would be inert — SBPL
-// evaluates resolved targets): the in-sandbox read of the resolved sops
-// target rides the broad (subpath "/private/var/folders") allow narrowed by
-// the #2211 secrets.d allowlist, whose kube agents-config exception is
-// derived from the same stable XDG source path.
+// $HOME/.kube/cache, which exists on the host and EPERMs under
+// deny-default). No literal SBPL grant exists on the XDG symlink path (it is
+// inert — SBPL evaluates resolved targets): the in-sandbox read of the
+// resolved sops target rides the broad (subpath "/private/var/folders")
+// allow narrowed by the secrets.d allowlist, whose kube agents-config
+// exception is derived from the same stable XDG source path.
 //
 // This file tests:
 //
@@ -32,9 +31,9 @@ package integration_test
 //     covered at unit level by env_test.go and the dispatcher tests.)
 //
 //  2. Negative: stripping the kube agents-config require-not exception from
-//     the #2211 secrets.d deny makes the same invocation fail — proving the
+//     the secrets.d deny makes the same invocation fail — proving the
 //     allowlist exception is the load-bearing grant for the env-var route
-//     (sandbox-exec testing convention, #1192).
+//     (sandbox-exec testing convention).
 //
 //  4. Cache: a discovery round-trip against a test-local fake API server
 //     (`kubectl api-resources` with KUBECACHEDIR=<sessionDir>/kube-cache)
@@ -44,9 +43,9 @@ package integration_test
 //
 // The kube-specific sops-rotation coverage lives in
 // sandbox_exec_sops_rotation_darwin_test.go (the fake-secrets-tree entries).
-// Capability-probe gating (#2207) applies via requireSandboxExec. Shared
-// helpers live in sandbox_exec_helpers_darwin_test.go; the allowlist parse
-// helpers live in sandbox_exec_secrets_deny_darwin_test.go and
+// Capability-probe gating applies via requireSandboxExec. Shared helpers
+// live in sandbox_exec_helpers_darwin_test.go. The allowlist parse helpers
+// live in sandbox_exec_secrets_deny_darwin_test.go and
 // sandbox_exec_aws_config_envvar_darwin_test.go.
 
 import (
@@ -68,8 +67,8 @@ import (
 // requireNixKubectl resolves the kubectl binary via PATH → symlink chain and
 // returns the PATH-resolved path. Skips the test when kubectl is not found
 // or does not resolve into /nix/store (an Apple-signed or homebrew binary
-// would SIGABRT or skew the signal under the deny-default profile — same
-// rationale as requireNixBash, #1190).
+// SIGABRTs or skews the signal under the deny-default profile — same
+// rationale as requireNixBash).
 func requireNixKubectl(t *testing.T) string {
 	t.Helper()
 
@@ -131,8 +130,8 @@ func kubeHostConfigForTest(t *testing.T) (configPath, currentContext string) {
 }
 
 // kubectlConfigViewCmd builds the in-sandbox `kubectl config view`
-// invocation with the production env-var shape: HOME at the real host home
-// (Step 5 of #2132), KUBECONFIG at the host XDG path, KUBECACHEDIR at the
+// invocation with the production env-var shape: HOME at the real host home,
+// KUBECONFIG at the host XDG path, KUBECACHEDIR at the
 // session work dir, and the Step 3a AWS pair at the host XDG paths
 // (production parity — config view does not invoke the exec plugin, so the
 // pair is inert here).
@@ -151,7 +150,7 @@ func kubectlConfigViewCmd(t *testing.T, profilePath, sessionDir, kubectlBin, nix
 }
 
 // TestSandboxExecKubeConfig_EnvVarResolution is the positive integration
-// test for the env-var delivery route (issue #2235 functional AC). It runs
+// test for the env-var delivery route. It runs
 // a real config-resolving kubectl invocation inside sandbox-exec under the
 // production profile, with KUBECONFIG pointing at the host XDG path, and
 // asserts the current-context from the host config appears in the output
@@ -168,14 +167,14 @@ func TestSandboxExecKubeConfig_EnvVarResolution(t *testing.T) {
 	configPath, currentContext := kubeHostConfigForTest(t)
 
 	// BareRoot variant: traversing the XDG symlink under the real HOME needs
-	// the ancestor block's file-read-metadata allow (same as the #2211
+	// the ancestor block's file-read-metadata allow (same as the
 	// stable-chain tests and the aws env-var tests).
 	m := newProfileManagerWithBareRoot(t)
 
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The profile must carry the kube agents-config allowlist exception —
-	// the grant the env-var route rides on (issue #2211 / #2235).
+	// the grant the env-var route rides on.
 	resolvedName := secretsDNameForTest(t, configPath)
 	found := false
 	for _, name := range parseSecretsDAllowlist(prepared.content) {
@@ -212,9 +211,9 @@ func TestSandboxExecKubeConfig_EnvVarResolution(t *testing.T) {
 }
 
 // TestSandboxExecKubeConfig_EnvVarResolutionDeniedWithoutAllowlistException
-// is the paired negative test (sandbox-exec testing convention, #1192). It
-// strips the kube agents-config require-not exception from the #2211
-// secrets.d deny and asserts the same kubectl invocation fails — proving
+// is the paired negative test (sandbox-exec testing convention). It strips
+// the kube agents-config require-not exception from the secrets.d deny and
+// asserts the same kubectl invocation fails — proving
 // the positive is not green by accident: the allowlist exception is the
 // load-bearing grant for the env-var config read.
 func TestSandboxExecKubeConfig_EnvVarResolutionDeniedWithoutAllowlistException(t *testing.T) {
@@ -354,8 +353,8 @@ func countRegularFilesUnder(t *testing.T, root string) int {
 	return count
 }
 
-// TestSandboxExecKubeConfig_CacheWritesLandInSessionWorkDir is the cache AC
-// for issue #2235: a kubectl discovery round-trip (against a test-local
+// TestSandboxExecKubeConfig_CacheWritesLandInSessionWorkDir is the cache
+// test: a kubectl discovery round-trip (against a test-local
 // fake API server) writes its cache under <sessionDir>/kube-cache — the
 // KUBECACHEDIR redirect riding the existing (subpath <sessionDir>) RW grant
 // — and writes NOTHING under the host ~/.kube/cache.
@@ -428,8 +427,8 @@ func TestSandboxExecKubeConfig_CacheWritesLandInSessionWorkDir(t *testing.T) {
 }
 
 // TestSandboxExecKubeConfig_CacheWriteDeniedWithoutSessionWorkDirGrant is
-// the paired negative for the cache AC (sandbox-exec testing convention,
-// #1192): with the (subpath <sessionDir>) line stripped from the profile,
+// the paired negative for the cache test (sandbox-exec testing convention):
+// with the (subpath <sessionDir>) line stripped from the profile,
 // the same discovery round-trip lands no cache files under
 // <sessionDir>/kube-cache — proving the session-work-dir grant is what
 // permits the cache writes in the positive test. kubectl treats cache-write

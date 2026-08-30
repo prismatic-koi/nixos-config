@@ -385,7 +385,7 @@ func TestMergeQueueForInstance_Filters(t *testing.T) {
 		t.Errorf("failed filter: got %d rows, want 1 (PR 2)", len(failed))
 	}
 
-	// All filter includes all terminal states including abandoned (per AC).
+	// All filter includes all terminal states including abandoned.
 	// merged(1) + failed(2) + cancelled(3) + abandoned(4) = 4 rows.
 	all, err := d.MergeQueueForInstance(instanceID, session, "all")
 	if err != nil {
@@ -464,11 +464,11 @@ type fakeWatcher struct {
 	mergeFn               func(ctx context.Context, pr int) ([]byte, error)
 	updateFn              func(ctx context.Context, pr int) error
 	fetchRequiredChecksFn func(ctx context.Context) ([]string, error)
-	// fetchProtectionFn injects a branch-protection snapshot for the #2420
-	// tick path. When nil, protection defaults to configured=true with
+	// fetchProtectionFn injects a branch-protection snapshot for the tick
+	// path. When nil, protection defaults to configured=true with
 	// requiredChecks derived from fetchRequiredChecksFn (or empty if that is
-	// also nil) so existing tests that predate the branch-protection gate
-	// keep exercising the merge path.
+	// also nil) so tests without a protection stub keep exercising the
+	// merge path.
 	fetchProtectionFn func(ctx context.Context) (protectionCache, error)
 	// checkMergedStateFn is called on the error path of tryMerge to reconcile
 	// PR state. When nil, returns "" (unknown / fall-through to keyword check).
@@ -476,8 +476,8 @@ type fakeWatcher struct {
 }
 
 // processHead is a test-friendly version of tick() that uses injected functions
-// instead of the real gh CLI. Mirrors the #2420 async-poll state machine as
-// amended by #2525: a coordinator notification is produced only by a
+// instead of the real gh CLI. It mirrors the async-poll state machine: a
+// coordinator notification is produced only by a
 // prism-driven merge, an out-of-band merge, a close without merge, a genuine
 // merge mutation failure, or a BLOCKED PR whose required checks have all
 // concluded with at least one failure. All other states stay watching
@@ -509,7 +509,7 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 		return
 	}
 
-	// Branch-protection gate (#2420): NEVER auto-merge without protection.
+	// Branch-protection gate: NEVER auto-merge without protection.
 	prot, protErr := fw.resolveProtection(ctx)
 	if protErr != nil {
 		return // stay watching
@@ -533,7 +533,7 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 		_ = fw.updateFn(ctx, head.PR)
 
 	case "BLOCKED":
-		// #2525: terminal only when the required set is fully accounted for
+		// Terminal only when the required set is fully accounted for
 		// and a real failure conclusion is present; otherwise silent.
 		if failed := failedRequiredChecks(prInfoVal.StatusCheckRollup, prot.requiredChecks); len(failed) > 0 {
 			fw.watcher.notifyRequiredChecksFailed(ctx, head, failed)
@@ -541,7 +541,7 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 		}
 
 	case "DIRTY", "UNKNOWN", "HAS_HOOKS", "DRAFT":
-		// #2420: stay watching silently — no coordinator notification.
+		// Stay watching silently — no coordinator notification.
 
 	}
 }
@@ -846,7 +846,7 @@ func TestWatcher_BranchMovedRaceRetries(t *testing.T) {
 
 // TestWatcher_ClosedExternallyTransitionsToFailed verifies that during polling,
 // a PR observed as CLOSED (without merge) terminates the row as failed and
-// delivers the #2420 closed-without-merge notification: text contains
+// delivers the closed-without-merge notification: text contains
 // "closed without merge" plus "Please clean up the branch and worktree" and
 // does not imply prism performed the cleanup.
 func TestWatcher_ClosedExternallyTransitionsToFailed(t *testing.T) {
@@ -947,9 +947,9 @@ func TestWatcher_NextPRPromotedAfterTerminal(t *testing.T) {
 	seedCoordinator(t, d, session, instanceID, port, "sid-promote")
 
 	// First tick: head is PR 10 — report as CLOSED so it terminates via
-	// notifyClosedNotMerged. Using CLOSED (a #2420-terminal state) rather
-	// than DIRTY (which now stays watching silently mid-poll) is the way
-	// to drive a promotion transition in the new state machine.
+	// notifyClosedNotMerged. Using CLOSED (a terminal state) rather
+	// than DIRTY (which stays watching silently mid-poll) is the way
+	// to drive a promotion transition in the state machine.
 	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
 		func(_ context.Context, pr int) (*prInfo, error) {
 			return &prInfo{State: "CLOSED", MergedAt: nil}, nil
@@ -1023,7 +1023,7 @@ func TestMigration_V19ToV20_CreatesSessionIndex(t *testing.T) {
 		t.Fatalf("idx_pending_merges_status_session not found after v19→v20 migration: %v", err)
 	}
 
-	// The old instance-keyed index must still exist (used by AbandonWatchingMerges / CancelMerge).
+	// The instance-keyed index must still exist (used by AbandonWatchingMerges / CancelMerge).
 	var iname2 string
 	if err := d.QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_pending_merges_status_instance'").Scan(&iname2); err != nil {
 		t.Fatalf("idx_pending_merges_status_instance missing after v19→v20 — should be preserved: %v", err)
@@ -1134,9 +1134,9 @@ func TestWatcher_NotificationBodyContainsPR(t *testing.T) {
 
 // TestPRInfoJSONFields_NoMergedField guards against regressing to the
 // (invalid) "merged" field. `gh pr view` rejects unknown JSON fields with a
-// non-zero exit, which silently broke the entire merge-queue watcher between
-// #1014 and the fix for this regression. The canonical merge-detection field
-// is `mergedAt` (a nullable timestamp string).
+// non-zero exit, which would silently break the entire merge-queue watcher.
+// The canonical merge-detection field is `mergedAt` (a nullable timestamp
+// string).
 func TestPRInfoJSONFields_NoMergedField(t *testing.T) {
 	fields := strings.Split(prInfoJSONFields, ",")
 	for _, f := range fields {
@@ -1212,7 +1212,7 @@ func TestPRInfo_IsMerged(t *testing.T) {
 	}
 }
 
-// TestWatcher_RunGHPassesRepoFlag verifies the #1055 fix: every gh invocation
+// TestWatcher_RunGHPassesRepoFlag verifies that every gh invocation
 // from the watcher includes "--repo <owner/name>" as the first two argv tokens
 // so calls succeed regardless of the sidecar's CWD. Exercises the real
 // fetchPRInfo / tryMerge / updateBranch methods with an injected runGHFunc
@@ -1307,7 +1307,7 @@ func TestWatcher_RunGHPassesRepoFlag(t *testing.T) {
 	}
 }
 
-// TestWatcher_RunExitsWhenRepoUnresolved verifies AC #5: when owner/name
+// TestWatcher_RunExitsWhenRepoUnresolved verifies that when owner/name
 // resolution fails at startup (Watcher.repo == ""), Run() returns immediately
 // without entering the poll loop.
 func TestWatcher_RunExitsWhenRepoUnresolved(t *testing.T) {
@@ -1343,7 +1343,7 @@ func TestWatcher_RunExitsWhenRepoUnresolved(t *testing.T) {
 // returns no row for the session, New() leaves Watcher.repo == "" rather than
 // shelling out to gh from a possibly-bogus directory. Together with
 // TestWatcher_RunExitsWhenRepoUnresolved this gives end-to-end coverage of the
-// AC #5 startup-failure path.
+// startup-failure path.
 func TestNew_NoAgentStatusRow_LeavesRepoEmpty(t *testing.T) {
 	d := openTestDB(t)
 	// No seedCoordinator call → CurrentStatus("ghost-session@main") returns nil.
@@ -1778,7 +1778,7 @@ func TestFetchRequiredChecks_CacheTTL(t *testing.T) {
 	}
 }
 
-// ── tryMerge reconciliation tests (issue #1645) ─────────────────────────────
+// ── tryMerge reconciliation tests ─────────────────────────────
 
 // TestWatcher_MergeAlreadyInProgress_PRIsMerged verifies AC: when gh pr merge
 // returns an error and checkPRMergedState returns "MERGED", the watcher
@@ -1976,7 +1976,7 @@ func TestWatcher_GenuineFailure_NoRegression(t *testing.T) {
 	}
 }
 
-// ── succeedAndNotify variant rendering tests (issue #2298) ──────────────────
+// ── succeedAndNotify variant rendering tests ──────────────────
 
 // extractNotifyText pulls the parts[0].text string out of the most recent
 // JSON body the capturing server received. Test-only helper.
@@ -1996,7 +1996,7 @@ func extractNotifyText(t *testing.T, body []byte) string {
 }
 
 // TestWatcher_ExternalMerge_NotifyTextDistinguishedAndNamesByLogin verifies
-// AC1 (#2298): when the pre-poll early-return fires (prInfo.State == "MERGED"
+// that when the pre-poll early-return fires (prInfo.State == "MERGED"
 // or prInfo.isMerged()), the notification text identifies the PR as merged
 // externally, names the merger by GitHub login, includes the merge
 // timestamp, and does NOT instruct the coordinator to run `prism cleanup`.
@@ -2065,8 +2065,8 @@ func TestWatcher_ExternalMerge_NotifyTextDistinguishedAndNamesByLogin(t *testing
 	}
 }
 
-// TestWatcher_ExternalMerge_MergedByNullDegradesGracefully verifies AC4
-// (#2298): when gh returns mergedBy=null (or an empty login), the
+// TestWatcher_ExternalMerge_MergedByNullDegradesGracefully verifies that
+// when gh returns mergedBy=null (or an empty login), the
 // external-merge notification still emits successfully — the merger field
 // degrades gracefully rather than blocking the notification.
 func TestWatcher_ExternalMerge_MergedByNullDegradesGracefully(t *testing.T) {
@@ -2120,9 +2120,9 @@ func TestWatcher_ExternalMerge_MergedByNullDegradesGracefully(t *testing.T) {
 	}
 }
 
-// TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_NoArchive verifies AC2
-// (#2298): when tryMerge succeeds via `gh pr merge --squash` and no worker
-// archive_path is recorded, the notification text matches the existing
+// TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_NoArchive verifies that
+// when tryMerge succeeds via `gh pr merge --squash` and no worker
+// archive_path is recorded, the notification text matches the canonical
 // `PR #N merged. Run \`git pull\` ...` form byte-for-byte. Non-regression
 // for the canonical case.
 func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_NoArchive(t *testing.T) {
@@ -2159,9 +2159,9 @@ func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_NoArchive(t *testing.T) {
 	}
 }
 
-// TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_WithArchive verifies AC2
-// (#2298): when tryMerge succeeds and a worker archive_path is recorded, the
-// notification text matches the existing
+// TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_WithArchive verifies that
+// when tryMerge succeeds and a worker archive_path is recorded, the
+// notification text matches the canonical
 // `PR #N merged. Archive: <path>. Run \`git pull\` ...` form byte-for-byte.
 func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_WithArchive(t *testing.T) {
 	d := openTestDB(t)
@@ -2217,8 +2217,8 @@ func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_WithArchive(t *testing.T) 
 	}
 }
 
-// TestWatcher_Reconciled_NotifyTextIncludesReconciledNote verifies AC3
-// (#2298): when tryMerge errors but checkPRMergedState returns MERGED, the
+// TestWatcher_Reconciled_NotifyTextIncludesReconciledNote verifies that
+// when tryMerge errors but checkPRMergedState returns MERGED, the
 // notification text indicates the merge was reconciled from an errored
 // mutation AND still instructs `git pull` + `prism cleanup` (this IS a
 // prism-driven merge, just with a recovery breadcrumb). The text is distinct
@@ -2505,9 +2505,9 @@ func TestFetchRequiredChecks_ErrorStaysWatching(t *testing.T) {
 	}
 }
 
-// ── #2420 async-poll state-machine tests ──────────────────────────────────────
+// ── async-poll state-machine tests ──────────────────────────────────────
 
-// TestWatcher_Unprotected_NeverAutoMerges is the core #2420 rule: when the
+// TestWatcher_Unprotected_NeverAutoMerges is the core rule: when the
 // branch-protection API returns HTTP 404, the watcher does NOT auto-merge,
 // even when GitHub reports the PR as CLEAN. The row stays watching so a
 // human can either merge/close the PR or configure branch protection. No
@@ -2536,7 +2536,7 @@ func TestWatcher_Unprotected_NeverAutoMerges(t *testing.T) {
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			// gh pr ... calls go through runGH, so args[0..1] are "--repo
 			// <slug>" (prepended there). gh api ... calls go through
-			// runGHNoRepo (#2438: gh api rejects --repo), so those args
+			// runGHNoRepo (gh api rejects --repo), so those args
 			// start directly with "api".
 			switch {
 			case len(args) >= 4 && args[2] == "pr" && args[3] == "view":
@@ -2549,7 +2549,7 @@ func TestWatcher_Unprotected_NeverAutoMerges(t *testing.T) {
 				// stdout+stderr — replicate that shape here.
 				return []byte(`HTTP 404: Branch not protected`), fmt.Errorf("exit status 1")
 			case len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "rules/branches/main"):
-				// #2436: the ruleset-fallback probe also 404s — genuinely
+				// The ruleset-fallback probe also 404s — genuinely
 				// unprotected, neither classic protection nor any ruleset.
 				return []byte(`HTTP 404: Not Found`), fmt.Errorf("exit status 1")
 			case len(args) >= 4 && args[2] == "pr" && args[3] == "merge":
@@ -2637,14 +2637,13 @@ func TestWatcher_Unprotected_ExternalMergeStillNotifies(t *testing.T) {
 
 // TestWatcher_BLOCKED_StaysWatchingSilently verifies that during polling,
 // a BLOCKED PR awaiting a human stays watching with no coordinator
-// notification. This is the #2420 replacement for the pre-#2420 failAndNotify
-// paths for BLOCKED-empty-decision, REVIEW_REQUIRED and CHANGES_REQUESTED —
-// all of which now defer to a human via the initial-invocation message rather
-// than firing terminal coordinator alerts mid-poll.
+// notification. BLOCKED-empty-decision, REVIEW_REQUIRED and CHANGES_REQUESTED
+// all defer to a human via the initial-invocation message rather than firing
+// terminal coordinator alerts mid-poll.
 //
-// #2525 carved one sub-state back out of this rule: a BLOCKED PR whose
-// required checks have all concluded with at least one failure IS terminal,
-// because nothing resolves it without a new push. That case moved to
+// One sub-state is an exception: a BLOCKED PR whose required checks have all
+// concluded with at least one failure IS terminal, because nothing resolves
+// it without a new push. That case is covered by
 // TestWatcher_BLOCKED_RequiredCheckFailed_TerminatesAndNotifies. The
 // optional_check_failure case below pins the boundary — a failing check
 // outside the required set is still silent.
@@ -2688,7 +2687,7 @@ func TestWatcher_BLOCKED_StaysWatchingSilently(t *testing.T) {
 		},
 		{
 			// A failing check that branch protection does not require must
-			// not trigger the #2525 transition.
+			// not trigger the required-check failure transition.
 			name: "optional_check_failure",
 			info: &prInfo{
 				State:            "OPEN",
@@ -2760,7 +2759,7 @@ func TestWatcher_BLOCKED_StaysWatchingSilently(t *testing.T) {
 // mid-poll (worker pushed a bad rebase) stays watching silently. At
 // invocation time DIRTY exits with a "worker needs to rebase" message
 // (handled in cmd/merge.go); mid-poll a DIRTY state is transient — the
-// worker may fix it — and the poller keeps polling silently per #2420.
+// worker may fix it — and the poller keeps polling silently.
 func TestWatcher_DIRTY_StaysWatchingSilently(t *testing.T) {
 	d := openTestDB(t)
 	instanceID := "inst-dirty-silent"
@@ -2886,7 +2885,7 @@ func TestWatcher_NewCommits_KeepsPollingSilently(t *testing.T) {
 // TestWatcher_ApprovalDetected_MergesAndNotifies is the "approval + green → merge"
 // AC: a protected repo where reviewDecision transitions to APPROVED and all
 // required checks are green causes the watcher to squash-merge and fire the
-// prism-driven success notification (with the #2420 completion discipline).
+// prism-driven success notification (with the completion discipline).
 func TestWatcher_ApprovalDetected_MergesAndNotifies(t *testing.T) {
 	d := openTestDB(t)
 	instanceID := "inst-approval"
@@ -3006,7 +3005,7 @@ func TestFetchProtection_CachesUnconfigured(t *testing.T) {
 	if _, err := w.fetchProtection(context.Background()); err != nil {
 		t.Fatalf("second fetch: %v", err)
 	}
-	// Since #2436, a classic 404 triggers one ruleset-fallback call before
+	// A classic 404 triggers one ruleset-fallback call before
 	// concluding "unconfigured", so the first fetch costs 2 calls; the
 	// second fetch within the TTL must still be a pure cache hit (0 more).
 	if calls != 2 {
@@ -3014,14 +3013,14 @@ func TestFetchProtection_CachesUnconfigured(t *testing.T) {
 	}
 }
 
-// TestFetchProtection_ProbeCallsOmitRepoFlag is the #2438 regression test.
+// TestFetchProtection_ProbeCallsOmitRepoFlag guards the probe's argv.
 //
-// #2437 wired the watcher's branch-protection probe through w.runGH, which
-// unconditionally prepends "--repo <owner/name>" to every gh invocation
-// (the #1055 CWD-independence fix for `gh pr ...`). But `gh api` REJECTS
-// "--repo" outright ("unknown flag: --repo"), so every real-world probe on
-// this ruleset-protected repo failed with a non-404 error, and the watcher
-// stayed "watching" forever.
+// The watcher's `gh pr ...` calls go through w.runGH, which unconditionally
+// prepends "--repo <owner/name>" for CWD-independence. But `gh api` REJECTS
+// "--repo" outright ("unknown flag: --repo"), so the branch-protection probe
+// must route through runGHNoRepo. If it carried "--repo", every probe on a
+// ruleset-protected repo would fail with a non-404 error and the watcher
+// would stay "watching" forever.
 //
 // This test captures the exact argv handed to the stubbed gh runner and
 // asserts:
@@ -3029,11 +3028,11 @@ func TestFetchProtection_CachesUnconfigured(t *testing.T) {
 //     flag and target the fully-qualified "repos/<owner>/<repo>/..." path
 //     (both the classic and, on 404, the ruleset-fallback path); and
 //   - a sibling `gh pr view` call (routed through w.runGH, not the probe)
-//     still DOES carry "--repo" -- proving the fix is scoped to the `gh
-//     api` call sites and does not regress #1055.
+//     still DOES carry "--repo" -- proving the behaviour is scoped to the `gh
+//     api` call sites and keeps CWD-independence for `gh pr ...`.
 //
-// Provenance: reverting the fetchProtection routing back to w.runGH makes
-// this test fail because argv[0] is "--repo" instead of "api" --
+// Negative-mutation check: routing the fetchProtection probe back through
+// w.runGH makes this test fail because argv[0] is "--repo" instead of "api" --
 // confirming the assertion is not a no-op.
 func TestFetchProtection_ProbeCallsOmitRepoFlag(t *testing.T) {
 	d := openTestDB(t)
@@ -3053,7 +3052,7 @@ func TestFetchProtection_ProbeCallsOmitRepoFlag(t *testing.T) {
 			switch {
 			case len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "branches/main/protection"):
 				// Classic endpoint 404s -- this repo is ruleset-protected,
-				// not classic-protected (mirrors the live #2435 scenario).
+				// not classic-protected (mirrors a ruleset-protected repo).
 				return []byte(`HTTP 404: Branch not protected`), fmt.Errorf("exit status 1")
 			case len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "rules/branches/main"):
 				return []byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-gate"}]}}]`), nil
@@ -3106,16 +3105,15 @@ func TestFetchProtection_ProbeCallsOmitRepoFlag(t *testing.T) {
 	}
 
 	// Call 2 is `gh pr view`, routed through w.runGH: --repo IS required
-	// (#1055 CWD-independence).
+	// (CWD-independence).
 	prViewArgv := calls[2]
 	if len(prViewArgv) < 2 || prViewArgv[0] != "--repo" || prViewArgv[1] != repoSlug {
 		t.Errorf("gh pr view call argv: got %v, want [--repo %q ...]", prViewArgv, repoSlug)
 	}
 }
 
-// TestPollInterval_Is30Seconds pins the #2420 poll cadence: reducing from
-// 45s to 30s so coordinators see merge outcomes more quickly after a human
-// approves the PR.
+// TestPollInterval_Is30Seconds pins the 30s poll cadence so coordinators see
+// merge outcomes quickly after a human approves the PR.
 func TestPollInterval_Is30Seconds(t *testing.T) {
 	if PollInterval != 30*time.Second {
 		t.Errorf("PollInterval: got %v, want 30s (#2420)", PollInterval)

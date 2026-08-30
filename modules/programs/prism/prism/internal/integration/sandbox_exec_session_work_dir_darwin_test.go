@@ -3,7 +3,7 @@
 package integration_test
 
 // sandbox_exec_session_work_dir_darwin_test.go — integration coverage for
-// the per-session work dir introduced by issue #2213 (Step 2 of #2132):
+// the per-session work dir:
 //
 //   - Work-dir RW + config readability: the sandbox can read the generated
 //     <sessionDir>/gitconfig and write files under <sessionDir> via the
@@ -16,8 +16,8 @@ package integration_test
 //     (subpath "<HOME>/.ssh").
 //
 // Each positive test has a paired profile-mutation negative test proving the
-// positive is not green by accident (docs/sandbox-exec-testing.md, #1192).
-// The #2207 capability-probe gating applies via requireSandboxExec.
+// positive is not green by accident (docs/sandbox-exec-testing.md). The
+// capability-probe gating applies via requireSandboxExec.
 //
 // Shared helpers:
 //   - requireSandboxExec, requireNixBash, newProfileManager,
@@ -61,8 +61,7 @@ func requireNixGit(t *testing.T) string {
 // sessionWorkDirFixture prepares the production profile for m and returns
 // the session work dir path plus the prepared profile. It asserts the
 // work-dir configs were generated and contain no forbidden path classes
-// (staging-HOME paths, secrets.d/<N> paths) — the content half of the
-// #2213 AC — before any sandbox is launched.
+// (staging-HOME paths, secrets.d/<N> paths) before any sandbox is launched.
 func sessionWorkDirFixture(t *testing.T, m *container.Manager) (string, preparedProfile) {
 	t.Helper()
 
@@ -72,8 +71,8 @@ func sessionWorkDirFixture(t *testing.T, m *container.Manager) (string, prepared
 	if err != nil {
 		t.Fatalf("SessionWorkDir: %v", err)
 	}
-	// The legacy staging-HOME path (deleted in Step 5 of #2132) — generated
-	// configs must never reference anything under it.
+	// The legacy staging-HOME path — generated configs must never reference
+	// anything under it.
 	legacyStagingHome := filepath.Join(sessionDir, "home")
 
 	for _, name := range []string{"ssh-config", "gitconfig"} {
@@ -98,7 +97,7 @@ func sessionWorkDirFixture(t *testing.T, m *container.Manager) (string, prepared
 }
 
 // TestSandboxExecSessionWorkDir_ConfigsReadableAndWritable is the positive
-// integration test for the (subpath "<sessionDir>") rule (#2213). From
+// integration test for the (subpath "<sessionDir>") rule. From
 // inside sandbox-exec it reads the generated gitconfig and writes a probe
 // file into the work dir, asserting exit 0.
 func TestSandboxExecSessionWorkDir_ConfigsReadableAndWritable(t *testing.T) {
@@ -183,7 +182,7 @@ func TestSandboxExecSessionWorkDir_DeniedWithoutSubpath(t *testing.T) {
 }
 
 // TestSandboxExecSessionWorkDir_GitConfigGlobalUsable verifies the env-wiring
-// half of the #2213 AC end-to-end: a Nix-built git inside the sandbox, with
+// half end-to-end: a Nix-built git inside the sandbox, with
 // GIT_CONFIG_GLOBAL pointing at the work-dir gitconfig, resolves the
 // configured identity from it. The read rides the same (subpath
 // "<sessionDir>") rule negatively covered by DeniedWithoutSubpath above.
@@ -192,10 +191,7 @@ func TestSandboxExecSessionWorkDir_DeniedWithoutSubpath(t *testing.T) {
 // directory") when the sandboxed CWD is unresolvable, so the launch must
 // use cmd.Dir = sessionDir (a granted directory, mirroring production
 // where the agent's CWD is the granted worktree) plus the getcwd ancestor
-// extras — see sandbox_exec_launch_dir_darwin_test.go. With the old
-// fixture shape (CWD inherited from the go-test binary, ungranted) this
-// test could never have passed a host run — a pre-existing hole from
-// #2221, surfaced by the first host run that exercised it (#2247).
+// extras — see sandbox_exec_launch_dir_darwin_test.go.
 func TestSandboxExecSessionWorkDir_GitConfigGlobalUsable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -213,8 +209,8 @@ func TestSandboxExecSessionWorkDir_GitConfigGlobalUsable(t *testing.T) {
 	// .git at each level, and the stat of <parent>/.git (sessions/.git)
 	// lands on a CHILD of an ancestor node — which the launch-dir extras
 	// deliberately do not grant — so it returns EPERM, which git treats as
-	// fatal ("fatal: error reading .../sessions/.git", observed on the
-	// round-2 host run). With the ceiling set to the parent, git checks
+	// fatal ("fatal: error reading .../sessions/.git"). With the ceiling set
+	// to the parent, git checks
 	// <sessionDir>/.git (granted subtree → clean ENOENT) and stops without
 	// touching the parent. The leading empty entry (":") tells git the
 	// entry needs no symlink resolution (git(1)), avoiding realpath
@@ -261,7 +257,7 @@ func knownHostsFixture(t *testing.T) string {
 }
 
 // TestSandboxExecKnownHosts_ReadableViaLiteral is the positive test for the
-// explicit read-only (literal "~/.ssh/known_hosts") grant (#2213): ssh's
+// explicit read-only (literal "~/.ssh/known_hosts") grant: ssh's
 // default UserKnownHostsFile resolves against the real home (getpwuid →
 // pw_dir), so the real file must be readable in-sandbox without the
 // staging-HOME symlink walk.
@@ -302,7 +298,7 @@ func TestSandboxExecKnownHosts_ReadableViaLiteral(t *testing.T) {
 
 // TestSandboxExecKnownHosts_DeniedWithoutLiteral is the paired negative
 // test. It re-targets every rule referencing the known_hosts path (the
-// explicit #2213 literal) at a non-existent path, then asserts the read
+// explicit literal) at a non-existent path, then asserts the read
 // fails.
 //
 // Re-targeting (ReplaceAll on the quoted path) rather than line deletion

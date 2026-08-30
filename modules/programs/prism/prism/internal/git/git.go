@@ -235,7 +235,7 @@ func Worktrees(projectPath string) []string {
 
 // CreatedWorktree describes the result of a successful CreateWorktree call,
 // carrying what RollbackCreatedWorktree needs to undo the creation when a
-// later spawn step fails (#2363).
+// later spawn step fails.
 type CreatedWorktree struct {
 	// Path is the filesystem path of the created worktree.
 	Path string
@@ -257,7 +257,7 @@ type CreatedWorktree struct {
 
 // CreateWorktree creates a new git worktree for a bare-layout repo.
 // branchName must already be sanitised. Returns a CreatedWorktree describing
-// what was created so callers can register a rollback (#2363).
+// what was created so callers can register a rollback.
 func CreateWorktree(projectPath, branchName string) (CreatedWorktree, error) {
 	bare := gitDir(projectPath)
 	worktreePath := filepath.Join(projectPath, branchName)
@@ -281,7 +281,7 @@ func CreateWorktree(projectPath, branchName string) (CreatedWorktree, error) {
 	if remoteErr == nil {
 		// Track the remote branch. The local ref is created here (via -b),
 		// but it checks out a pre-existing remote branch — a rollback must
-		// not delete it (#2363: a failed `prism pr` keeps the PR branch and
+		// not delete it (a failed `prism pr` keeps the PR branch and
 		// loses only the worktree).
 		if out, err := exec.Command("git", "--git-dir", bare, "worktree", "add",
 			worktreePath, "-b", branchName, "origin/"+branchName).CombinedOutput(); err != nil {
@@ -316,7 +316,7 @@ func CreateWorktree(projectPath, branchName string) (CreatedWorktree, error) {
 }
 
 // RollbackCreatedWorktree undoes a CreateWorktree call after a later step of
-// a spawn fails (#2363). It removes the created worktree and then deletes
+// a spawn fails. It removes the created worktree and then deletes
 // the branch — but only when the branch was freshly forked by that
 // CreateWorktree call AND its tip is still at the fork point (no commits
 // were made on it). Branches that pre-existed locally, were checked out
@@ -919,7 +919,7 @@ func FetchGitLabMRBranch(projectPath, iid string, resolveSourceBranch func(iid s
 // and "bugfix/login" both basename to "login"), git deduplicates with a
 // numeric suffix ("login", "login1", ...). Deriving the name by basename
 // therefore silently resolves to the WRONG worktree's git-state directory
-// for every colliding worktree after the first (issue #2518).
+// for every colliding worktree after the first.
 //
 // The worktree's .git file is always the single authoritative source: it
 // contains a line "gitdir: <path>", where <path> may be absolute or relative
@@ -928,9 +928,9 @@ func FetchGitLabMRBranch(projectPath, iid string, resolveSourceBranch func(iid s
 //
 // Returns an error if worktreePath's .git file is missing, unreadable, or
 // malformed (no "gitdir: " line) — callers must treat that as a real error,
-// not silently skip the resolution (see bwrap.go's os.Stat guard, which used
-// to mask exactly this class of bug when combined with a derived-and-wrong
-// path).
+// not silently skip the resolution. Skipping on error (for example behind an
+// os.Stat guard) masks this class of bug when combined with a derived-and-wrong
+// path.
 //
 // If worktreePath is not a git worktree at all — i.e. its .git entry is a
 // directory, as in a normal (non-bare+worktree) clone — this returns

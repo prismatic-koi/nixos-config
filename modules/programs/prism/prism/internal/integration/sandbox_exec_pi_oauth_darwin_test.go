@@ -3,7 +3,7 @@
 package integration_test
 
 // sandbox_exec_pi_oauth_darwin_test.go — integration tests for the PI OAuth
-// token-refresh lockfile allow in the SBPL profile (issue #1556).
+// token-refresh lockfile allow in the SBPL profile.
 //
 // Background:
 //
@@ -13,10 +13,9 @@ package integration_test
 //	mkdir(<resolved>.lock) to acquire the lock. That mkdir requires write
 //	permission on the parent directory ~/.pi/agent/, not just on auth.json.
 //
-//	The previous (literal ~/.pi/agent/auth.json) SBPL rule was insufficient:
-//	the sandbox denied the mkdir (EPERM) and the refresh silently failed
-//	after ~30 s of retries. The fix widens the rule to
-//	(subpath ~/.pi/agent) for pi sessions.
+//	A (literal ~/.pi/agent/auth.json) rule is insufficient: the sandbox
+//	denies the mkdir (EPERM) and the refresh silently fails after ~30 s of
+//	retries. The rule is therefore (subpath ~/.pi/agent) for pi sessions.
 //
 // These tests verify:
 //
@@ -28,7 +27,7 @@ package integration_test
 //     no-op.
 //
 // Each positive test is paired with a negative test per the convention in
-// docs/sandbox-exec-testing.md (issue #1192).
+// docs/sandbox-exec-testing.md.
 
 import (
 	"os"
@@ -52,7 +51,7 @@ func newPIOAuthProfileManager(t *testing.T) *container.Manager {
 		InstanceID:  instanceID,
 		Worktree:    t.TempDir(),
 		Harness:     "pi",
-		// Required since #1960 — see newProfileManager
+		// writeGitconfig requires [user] identity — see newProfileManager
 		// (sandbox_exec_helpers_darwin_test.go).
 		GitUserName:  "test-user",
 		GitUserEmail: "test@example.com",
@@ -116,9 +115,9 @@ func TestSandboxExecPIOAuth_LockDirCreatable(t *testing.T) {
 
 // TestSandboxExecPIOAuth_LockDirDeniedWithLiteralOnlyRule is the paired
 // negative test. It mutates the profile to replace the (subpath ~/.pi/agent)
-// rule with a (literal auth.json) rule — the previous behaviour that caused
-// the OAuth refresh regression. The same mkdir that the positive test asserts
-// succeeds must fail with the regressed profile.
+// rule with a (literal auth.json) rule — the narrower rule that causes the
+// OAuth refresh to fail. The same mkdir that the positive test asserts
+// succeeds must fail with the narrower profile.
 //
 // This proves that the positive test is not green by accident: the subpath
 // rule is the specific mechanism that allows the mkdir.
@@ -142,8 +141,8 @@ func TestSandboxExecPIOAuth_LockDirDeniedWithLiteralOnlyRule(t *testing.T) {
 	m := newPIOAuthProfileManager(t)
 
 	// Mutate: replace the (subpath ~/.pi/agent) rule with a (literal
-	// auth.json) rule to replicate the pre-fix profile behaviour. This is
-	// the exact configuration that caused the OAuth refresh regression.
+	// auth.json) rule — the narrower rule that causes the OAuth refresh to
+	// fail.
 	piAgentDir2 := piAgentDir // capture for closure
 	authJSONLiteral := filepath.Join(piAgentDir2, "auth.json")
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
@@ -154,8 +153,8 @@ func TestSandboxExecPIOAuth_LockDirDeniedWithLiteralOnlyRule(t *testing.T) {
 		// Note the double closing paren on the subpath line: the first closes
 		// (subpath ...) and the second closes the surrounding (allow ...) block.
 		// Replace the indented (subpath ...)) line with a (literal auth.json))
-		// line, replicating the old behaviour. The surrounding (allow ...) line
-		// is left intact so the profile remains syntactically valid SBPL.
+		// line. The surrounding (allow ...) line is left intact so the profile
+		// remains syntactically valid SBPL.
 		subpathLine := "  (subpath " + sbplQuoteForTest(piAgentDir2) + "))\n"
 		literalLine := "  (literal " + sbplQuoteForTest(authJSONLiteral) + "))\n"
 		return strings.ReplaceAll(p, subpathLine, literalLine)

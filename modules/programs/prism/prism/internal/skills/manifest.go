@@ -22,23 +22,18 @@ package skills
 //     write NULL to spawn_inputs.skills_manifest_hash rather than an empty
 //     string, so that NULL unambiguously signals "not captured".
 //
-// # Opencode skill-loading lifecycle
+// # Skill-loading lifecycle
 //
-// Skills are loaded once at session initialisation by the agent's Skill.state
-// Ref (Effect-TS q.make call in the Skill service layer). The scan runs
-// Z2() which walks the skills directories synchronously before the session
+// The agent loads skills once at session initialisation, before the session
 // event loop starts. After that point the skills set is frozen for the
 // lifetime of the session — there is no watcher or per-invocation re-scan.
 //
 // Consequence: the spawn-time hash captured here is a complete manifest of
 // "what skills the agent could have loaded during this session". A
-// skills_manifest_hash_end column on sessions is NOT needed; the spawn-time
-// value is authoritative for the full session.
-//
-// (This conclusion was reached by reading the agent JS bundle.
-// If a future agent version adds dynamic re-scanning, add
-// skills_manifest_hash_end TEXT on the sessions table to capture session-end
-// state, and file a TODO here.)
+// skills_manifest_hash_end column on sessions is not needed; the spawn-time
+// value is authoritative for the full session. This holds while the agent
+// loads skills once per session; an agent version that re-scans dynamically
+// would need a session-end hash to capture the full picture.
 
 import (
 	"crypto/sha256"

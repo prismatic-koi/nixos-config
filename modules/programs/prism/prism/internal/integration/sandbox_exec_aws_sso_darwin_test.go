@@ -3,8 +3,7 @@
 package integration_test
 
 // sandbox_exec_aws_sso_darwin_test.go — integration coverage for the
-// ~/.aws/sso and ~/.aws/cli carve-outs in the SBPL profile (issue #1380;
-// real-path-only since #2245, Step 3e of #2132).
+// ~/.aws/sso and ~/.aws/cli carve-outs in the SBPL profile.
 //
 // The SBPL profile contains a broad (deny file-read* file-write* (subpath
 // ~/.aws)) to prevent host credential leakage. generateProfile emits
@@ -12,8 +11,8 @@ package integration_test
 // ~/.aws/cli)) rules after the broad deny. In SBPL, more-specific rules
 // override broader ones, so these carve-outs let the sandbox access exactly
 // those two subdirs AT THEIR REAL HOST PATHS while the rest of ~/.aws
-// remains denied. Since #2245 the staging HOME no longer symlinks the two
-// dirs — the carve-outs are the sole in-sandbox capability for them.
+// remains denied. The staging HOME does not symlink the two dirs. The
+// carve-outs are the sole in-sandbox capability for them.
 //
 // This file tests:
 //
@@ -149,7 +148,7 @@ func prepareCLISentinel(t *testing.T) (cliDir, sentinelPath string) {
 }
 
 // TestSandboxExecProfile_AWSSSOReadable is the positive integration test for
-// the ~/.aws/sso carve-out (issue #1380). It:
+// the ~/.aws/sso carve-out. It:
 //
 //  1. Creates ~/.aws/sso and plants a sentinel file inside it.
 //  2. Generates the production profile (which emits the carve-out rule).
@@ -239,7 +238,7 @@ func TestSandboxExecProfile_AWSSSODeniedWithoutCarveout(t *testing.T) {
 }
 
 // TestSandboxExecProfile_AWSCLIReadable is the positive integration test for
-// the ~/.aws/cli carve-out (issue #1380), symmetric to AWSSSOReadable.
+// the ~/.aws/cli carve-out, symmetric to AWSSSOReadable.
 func TestSandboxExecProfile_AWSCLIReadable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")

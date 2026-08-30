@@ -65,8 +65,8 @@ func clientsPerSession() map[string]int {
 
 // Sessions returns all current tmux sessions.
 // It uses two bulk tmux calls (list-sessions + list-windows -a + list-clients)
-// regardless of the number of sessions, avoiding the previous O(N) per-session
-// list-windows subprocesses that caused slowdowns with many sessions.
+// regardless of the number of sessions, so the subprocess cost does not grow
+// per session.
 func Sessions() ([]Session, error) {
 	// Single call: all sessions.
 	sessOut, err := run("list-sessions", "-F", "#{session_name}")
@@ -183,8 +183,7 @@ func CurrentClient() (string, error) {
 // A pane-resident process (such as the persistent prism-dashboard) has no
 // invoking client, so display-message -p '#{client_name}' is unsound from it:
 // tmux resolves the "current client" indirectly and can return a client that
-// is attached to a different session, or an empty string. This was verified
-// against a throwaway tmux server (issue #2522). list-clients -t <session>
+// is attached to a different session, or an empty string. list-clients -t <session>
 // lists only the clients that actually view that session, which is the correct
 // switch-client target.
 //

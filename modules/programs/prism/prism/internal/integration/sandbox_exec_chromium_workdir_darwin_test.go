@@ -3,8 +3,7 @@
 package integration_test
 
 // sandbox_exec_chromium_workdir_darwin_test.go — integration coverage for
-// the chromium Library skeleton in the per-session work dir (issue #2247,
-// Step 4 of the #2132 staging-HOME elimination train):
+// the chromium Library skeleton in the per-session work dir:
 //
 //   - Work-dir Library writable: an in-sandbox write under
 //     <sessionDir>/Library/Application Support/Google/ succeeds under the
@@ -16,7 +15,7 @@ package integration_test
 //     entry makes the same write fail — proving the positive rides that
 //     grant and is not green by accident. Re-targeting the quoted path
 //     (rather than deleting the whole §6 block) follows the established
-//     #2213 sibling convention for this rule
+//     sibling convention for this rule
 //     (TestSandboxExecSessionWorkDir_DeniedWithoutSubpath): the sessionDir
 //     entry shares its allow block with the worktree/bare-root/host-API
 //     rules, and the skeleton has no block of its own to strip — the
@@ -28,8 +27,8 @@ package integration_test
 //     unreachable). Paired with the no-host-Library profile assertion at
 //     unit level (TestGenerateProfile_NoHostLibraryRulesForChromium).
 //
-// The #2207 capability-probe gating applies via requireSandboxExec; see
-// docs/sandbox-exec-testing.md (#1192) for the helper conventions.
+// The capability-probe gating applies via requireSandboxExec. See
+// docs/sandbox-exec-testing.md for the helper conventions.
 //
 // Shared helpers:
 //   - requireSandboxExec, requireNixBash, newProfileManager,
@@ -52,8 +51,8 @@ import (
 )
 
 // chromiumWorkDirFixture prepares the production profile for m and returns
-// the session work dir plus the prepared profile. It asserts the #2247
-// layout before any sandbox is launched: the two Google skeleton dirs
+// the session work dir plus the prepared profile. It asserts the layout
+// before any sandbox is launched: the two Google skeleton dirs
 // exist inside the work dir, and the profile contains the
 // (subpath "<sessionDir>") rule the skeleton rides but no rule referencing
 // the host ~/Library.
@@ -91,14 +90,14 @@ func chromiumWorkDirFixture(t *testing.T, m *container.Manager) (string, prepare
 	// internal/container/session_work_dir_test.go — keep the two exception
 	// lists in step. A new host-Library grant must be added to BOTH.
 	//
-	// The exceptions, each a leaf and each traceable to its issue:
+	// The exceptions, each a leaf:
 	//
-	//   - ~/Library/Keychains/login.keychain-db — single-file grant restored
-	//     in issue #2293 (§5i of generateProfile), emitted unconditionally.
-	//   - ~/Library/Caches/go-build — GOCACHE, granted in issue #2621 (§5k)
-	//     so the AGENTS.md go build/test quality gate runs in a Darwin
-	//     worker. The grant is on the go-build LEAF, never on
-	//     ~/Library/Caches; the scan below is what pins that.
+	//   - ~/Library/Keychains/login.keychain-db — single-file grant (§5i of
+	//     generateProfile), emitted unconditionally.
+	//   - ~/Library/Caches/go-build — GOCACHE, granted (§5k) so the AGENTS.md
+	//     go build/test quality gate runs in a Darwin worker. The grant is on
+	//     the go-build LEAF, never on ~/Library/Caches. The scan below is what
+	//     pins that.
 	//
 	// Adding an entry here must be a deliberate decision with its own
 	// justification in generateProfile — do not widen the list to silence a
@@ -127,8 +126,8 @@ func chromiumWorkDirFixture(t *testing.T, m *container.Manager) (string, prepare
 }
 
 // TestSandboxExecChromiumWorkDir_LibraryWritable is the positive
-// integration test for the #2247 AC: an in-sandbox write under
-// <sessionDir>/Library/... succeeds under the production profile. It
+// integration test: an in-sandbox write under <sessionDir>/Library/...
+// succeeds under the production profile. It
 // mimics chromium's first write shape (mkdir "Chrome for Testing" under the
 // Application Support skeleton, then create a file inside it) and asserts
 // the bytes are visible on the host afterwards.
@@ -151,8 +150,8 @@ func TestSandboxExecChromiumWorkDir_LibraryWritable(t *testing.T) {
 	// single mkdir(2) syscall against the granted subtree suffices. A deep
 	// absolute `mkdir -p` issues a mkdir(2) per path component — and under
 	// deny-default each EXISTING but ungranted ancestor (/Users, ...)
-	// returns EPERM rather than EEXIST, which mkdir -p treats as fatal
-	// (observed on the first host run of this test). Launch CWD is the
+	// returns EPERM rather than EEXIST, which mkdir -p treats as fatal.
+	// Launch CWD is the
 	// session work dir so the in-sandbox process starts in a granted
 	// directory, mirroring production (agent CWD = granted worktree).
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
@@ -180,7 +179,7 @@ func TestSandboxExecChromiumWorkDir_LibraryWritable(t *testing.T) {
 // Mutation strategy: ReplaceAll on the quoted path rather than deleting the
 // line — this keeps the SBPL syntactically valid regardless of where the
 // entry sits in its allow block, and sandbox-exec silently ignores rules
-// for non-existent paths (the established #2213 convention for this rule).
+// for non-existent paths (the established convention for this rule).
 func TestSandboxExecChromiumWorkDir_DeniedWithoutSessionDirSubpath(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -205,10 +204,10 @@ func TestSandboxExecChromiumWorkDir_DeniedWithoutSessionDirSubpath(t *testing.T)
 
 	// Same command shape as the positive (leaf-only mkdir, CWD =
 	// sessionDir). Under the mutated profile the launch dir's own grant is
-	// gone, so bash starts with an unresolvable CWD — bash tolerates that
-	// (warns and continues; node/git would not, which is why this negative
-	// must stay bash-based) and the assertion lands on the leaf operations
-	// being denied.
+	// gone, so bash starts with an unresolvable CWD. bash tolerates that and
+	// warns and continues. node and git do not, which is why this negative
+	// must stay bash-based. The assertion lands on the leaf operations being
+	// denied.
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
 		nixBash, "-c", "mkdir "+shQuote(probeDir)+" && echo prism-2247 > "+shQuote(probe))
 	cmd.Dir = sessionDir
@@ -223,8 +222,8 @@ func TestSandboxExecChromiumWorkDir_DeniedWithoutSessionDirSubpath(t *testing.T)
 }
 
 // TestSandboxExecChromiumHostLibrary_WriteDenied pins option B's security
-// property (issue #2247, design #2132 §4 Step 4): an in-sandbox write to
-// the REAL ~/Library/Application Support/Google — the daily-driver Chrome
+// property: an in-sandbox write to the REAL ~/Library/Application
+// Support/Google — the daily-driver Chrome
 // profile's parent — is denied under the production profile. No
 // host-Library grant exists; chromium state is confined to the per-session
 // work dir.

@@ -3,12 +3,12 @@
 package integration_test
 
 // sandbox_exec_rw_real_paths_darwin_test.go — integration coverage for the
-// section-5e RW grant block on the real host paths (Step 3e of #2132, issue
-// #2245): ~/.cache/nix, ~/.cache/bun, ~/.npm, ~/.mcp-auth.
+// section-5e RW grant block on the real host paths: ~/.cache/nix,
+// ~/.cache/bun, ~/.npm, ~/.mcp-auth.
 //
-// The RW staging symlinks for these dirs are gone; the explicit (subpath ...)
-// RW grants emitted by generateProfile are the sole in-sandbox capability
-// (none of the paths is sops-backed, so the #2211 allowlist plays no part).
+// The explicit (subpath ...) RW grants emitted by generateProfile are the
+// sole in-sandbox capability (none of the paths is sops-backed, so the
+// allowlist plays no part).
 //
 // This file tests:
 //
@@ -17,19 +17,19 @@ package integration_test
 //     dir (skipping dirs absent on this host). The staging HOME is asserted
 //     to contain no 3e entries.
 //
-//  2. Negative (whole-block strip, per the #2243 lesson): removing the
-//     ENTIRE section-5e allow block makes the same writes fail — proving
-//     the block is load-bearing for every path in the set (stripping only a
-//     single (subpath ...) line would leave the others granted and, in the
-//     single-filter case, risk a filter-less allow-everything clause).
+//  2. Negative (whole-block strip): removing the ENTIRE section-5e allow
+//     block makes the same writes fail — proving the block is load-bearing
+//     for every path in the set (stripping only a single (subpath ...) line
+//     leaves the others granted and, in the single-filter case, risks a
+//     filter-less allow-everything clause).
 //
 // The ~/.aws/{sso,cli} half of Step 3e is covered by the carve-out tests in
 // sandbox_exec_aws_sso_darwin_test.go and
 // sandbox_exec_aws_cache_writable_darwin_test.go (the §5 carve-outs are the
 // capability there, not the 5e block).
 //
-// Per docs/sandbox-exec-testing.md (issue #1192); #2207 capability-probe
-// gating via requireSandboxExec.
+// Per docs/sandbox-exec-testing.md. Capability-probe gating via
+// requireSandboxExec.
 
 import (
 	"os"

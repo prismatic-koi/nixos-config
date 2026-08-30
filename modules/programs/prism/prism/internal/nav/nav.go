@@ -46,9 +46,8 @@ func ParseDirection(s string) (Direction, error) {
 //   - virtual review-group rows (IsReviewGroup == true), and
 //   - depth-2 review-agent children (matching dashboard.IsDepth2Session).
 //
-// This is broader than the original `IsTopLevel` predicate (which only
-// admitted plain or `@main` names) and matches the actual spine the
-// dashboard renders — see issue #1800.
+// The spine is broader than plain or `@main` names; it matches the actual
+// spine the dashboard renders.
 func IsSpineRow(s dashboard.AgentSession) bool {
 	if s.IsReviewGroup {
 		return false
@@ -68,7 +67,7 @@ func IsSpineRow(s dashboard.AgentSession) bool {
 // "finished"` means the current turn is finished and the agent is idle
 // waiting for input — it does not mean the session has ended. True session
 // termination is gated by `ended_at IS NOT NULL` at the DB layer
-// (`db.AllActiveStatus`) and by tmux liveness at runtime; see issue #1839.
+// (`db.AllActiveStatus`) and by tmux liveness at runtime.
 func IsNavigableSpine(s dashboard.AgentSession, liveCheck func(string) bool) bool {
 	if !IsSpineRow(s) {
 		return false

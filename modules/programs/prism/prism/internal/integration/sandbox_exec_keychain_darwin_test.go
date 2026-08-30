@@ -3,39 +3,32 @@
 package integration_test
 
 // sandbox_exec_keychain_darwin_test.go — integration coverage for the
-// ~/Library/Keychains/login.keychain-db file-read literal grant restored in
-// issue #2293 (section §5i of generateProfile). The grant restores the
-// in-sandbox Keychain capability the keyring-crate path needs — Datadog's
-// `pup` CLI is the canonical consumer; any Rust binary built on the
-// keyring crate shares the code path on macOS.
+// ~/Library/Keychains/login.keychain-db file-read literal grant (section
+// §5i of generateProfile). The grant provides the in-sandbox Keychain
+// capability the keyring-crate path needs — Datadog's `pup` CLI is the
+// canonical consumer, and any Rust binary built on the keyring crate
+// shares the code path on macOS.
 //
-// History context: the original grant was added in PR #1488 (issue #1487)
-// for opencode-claude-auth's `security dump-keychain` use; PR #2130
-// (issue #2126) correctly removed it when that consumer was retired; PR
-// #2267 then introduced `pup` as a new in-sandbox Keychain consumer eight
-// days later, outside the #2126 verification window — see the issue body
-// for the full timeline.
-//
-// Per docs/sandbox-exec-testing.md (issue #1192), the coverage is a
-// positive/negative pair on the rule, plus profile-shape assertions for
-// the security narrowing the grant relies on:
+// Per docs/sandbox-exec-testing.md, the coverage is a positive/negative
+// pair on the rule, plus profile-shape assertions for the security
+// narrowing the grant relies on:
 //
 //   - TestSandboxExecProfile_LoginKeychainLiteralPresent verifies the
 //     generated profile carries an allow rule on the exact literal path
-//     and that the rule is emitted unconditionally (no os.Stat gate). AC
-//     #1 + the AC #5 edge case (fresh machines without a user keychain
-//     remain unaffected — sandbox-exec silently ignores literal rules for
-//     non-existent paths; the production rule shape pins that behaviour).
+//     and that the rule is emitted unconditionally (no os.Stat gate).
+//     Fresh machines without a user keychain remain unaffected —
+//     sandbox-exec silently ignores literal rules for non-existent paths,
+//     and the production rule shape pins that behaviour.
 //
 //   - TestSandboxExecProfile_LoginKeychainGrantIsLiteralNotSubpath
 //     enforces the load-bearing narrowing: the profile must contain NO
 //     (subpath ...) rule referencing ~/Library/Keychains or any directory
-//     under it. AC #2 — the modern UUID-keyed databases (keychain-2.db,
-//     user.kb) and the TrustedPeersHelper sibling files MUST remain
-//     unreadable from inside the sandbox.
+//     under it. The modern UUID-keyed databases (keychain-2.db, user.kb)
+//     and the TrustedPeersHelper sibling files MUST remain unreadable from
+//     inside the sandbox.
 //
 //   - TestSandboxExecProfile_KeychainLookupAllowed is the functional
-//     positive (AC #3). It compiles a tiny C probe that calls
+//     positive. It compiles a tiny C probe that calls
 //     SecKeychainFindGenericPassword — the same Security-Framework entry
 //     point keyring-rs wraps on macOS, NOT /usr/bin/security (which
 //     depends on $HOME, a different code path the issue body explicitly
@@ -45,7 +38,7 @@ package integration_test
 //     without a sandbox-EPERM detour".
 //
 //   - TestSandboxExecProfile_KeychainLookupDeniedWithoutGrant is the
-//     paired negative (AC #4). It uses withMutatedProfile per the testing
+//     paired negative. It uses withMutatedProfile per the testing
 //     convention to re-target the (literal ...) at a non-existent sibling
 //     path, runs the same probe, and asserts the observable result
 //     differs from the positive — proving the grant is load-bearing. The
@@ -56,10 +49,9 @@ package integration_test
 //     absent under the production profile and present under the mutated
 //     profile.
 //
-// AC #6 (the existing deny set on ~/.aws, /private/etc/ssh,
-// /private/etc/wireguard, sops secrets.d, …) is covered by the existing
-// sandbox_exec_denies_darwin_test.go and sandbox_exec_secrets_deny_darwin_test.go
-// suites running unchanged on this PR.
+// The existing deny set on ~/.aws, /private/etc/ssh, /private/etc/wireguard,
+// and sops secrets.d is covered by the sandbox_exec_denies_darwin_test.go
+// and sandbox_exec_secrets_deny_darwin_test.go suites.
 
 import (
 	"os"
@@ -80,8 +72,8 @@ import (
 // to /usr/bin/security: that CLI uses $HOME to find the keychain search list
 // and is a different code path the issue body explicitly calls out.
 //
-// The deprecation-warning suppression is load-bearing for the build: clang
-// would otherwise turn the deprecation into a warning that adds noise to the
+// The deprecation-warning suppression is load-bearing for the build: without
+// it clang turns the deprecation into a warning that adds noise to the
 // integration test output. The deprecations themselves are surfaced by Apple
 // as documentation hints for new code; the legacy API remains the path the
 // keyring crate uses on production macOS today.
@@ -149,7 +141,7 @@ int main(int argc, char **argv) {
 // binary. The binary is ad-hoc-signed by clang at link time — see
 // `codesign -dv` on the output (Format=Mach-O, Signature=adhoc) — so it
 // can run under the v3 deny-default sandbox profile (unlike Apple-signed
-// system binaries, which SIGABRT in dyld; see #1190 / requireNixBash).
+// system binaries, which SIGABRT in dyld — see requireNixBash).
 //
 // The Nix-built `cc` cannot be used: the gcc-wrapper does not expose the
 // macOS SDK framework headers, so the build fails with
@@ -210,9 +202,9 @@ func expectedKeychainLiteralBlock(t *testing.T) string {
 }
 
 // TestSandboxExecProfile_LoginKeychainLiteralPresent verifies that the
-// production-shaped profile carries the §5i Keychain literal grant — AC #1.
+// production-shaped profile carries the §5i Keychain literal grant.
 //
-// Edge case AC #5: the rule is emitted unconditionally (no os.Stat gate on
+// Edge case: the rule is emitted unconditionally (no os.Stat gate on
 // the host file), so a fresh machine without ~/Library/Keychains/login.keychain-db
 // gets the same syntactically-valid profile. sandbox-exec silently ignores
 // (literal ...) rules for non-existent paths, so the sandbox still launches
@@ -236,7 +228,7 @@ func TestSandboxExecProfile_LoginKeychainLiteralPresent(t *testing.T) {
 }
 
 // TestSandboxExecProfile_LoginKeychainGrantIsLiteralNotSubpath enforces the
-// load-bearing security narrowing in AC #2: the profile must contain no
+// load-bearing security narrowing: the profile must contain no
 // (subpath ...) rule referencing ~/Library/Keychains or any directory under
 // it. The Keychain grant MUST be single-file via (literal ...) so that
 // keychain-2.db, user.kb, and other sibling files in the same directory
@@ -265,7 +257,7 @@ func TestSandboxExecProfile_LoginKeychainGrantIsLiteralNotSubpath(t *testing.T) 
 	scrubbed := strings.ReplaceAll(prepared.content, expectedKeychainLiteralBlock(t), "<keychain-literal-block-elided>\n")
 
 	// Any subpath quoting ~/Library/Keychains in the scrubbed profile is
-	// a security-narrowing regression (AC #2 violation).
+	// a security-narrowing regression.
 	subpathProbe := "(subpath " + sbplQuoteForTest(keychainsDir)
 	if strings.Contains(scrubbed, subpathProbe) {
 		t.Errorf("profile contains a (subpath ...) grant on ~/Library/Keychains — AC #2 of issue #2293 prohibits this; only the single-file (literal …/login.keychain-db) is permitted.\nFull profile:\n%s", prepared.content)
@@ -344,7 +336,7 @@ func queryLogShowForKeychainDeny(t *testing.T, since time.Time) string {
 	return string(out)
 }
 
-// TestSandboxExecProfile_KeychainLookupAllowed is the AC #3 positive: a
+// TestSandboxExecProfile_KeychainLookupAllowed is the positive test: a
 // keyring-crate-shaped Keychain probe under the production-shaped SBPL
 // profile completes without a sandbox-EPERM detour. The probe exercises
 // SecKeychainFindGenericPassword — the same Security-Framework function
@@ -404,8 +396,8 @@ func TestSandboxExecProfile_KeychainLookupAllowed(t *testing.T) {
 	t.Logf("ka pai — Keychain probe under production profile produced %s (exit 0)", strings.TrimSpace(out))
 }
 
-// TestSandboxExecProfile_KeychainLookupDeniedWithoutGrant is the AC #4
-// paired negative: in a profile identical to production EXCEPT with the
+// TestSandboxExecProfile_KeychainLookupDeniedWithoutGrant is the paired
+// negative: in a profile identical to production EXCEPT with the
 // §5i Keychain literal re-targeted at a non-existent sibling path, the
 // same probe MUST surface a different observable than the positive — the
 // kernel will log a sandbox deny on login.keychain-db (whether or not the

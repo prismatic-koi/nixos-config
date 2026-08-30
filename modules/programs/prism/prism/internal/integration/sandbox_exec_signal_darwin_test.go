@@ -4,23 +4,18 @@ package integration_test
 
 // sandbox_exec_signal_darwin_test.go — deterministic integration coverage
 // for the signal (target self) (target children) allow in the production
-// SBPL profile (issues #2021, #2249).
+// SBPL profile.
 //
-// History: the (target children) widening was added in #2021 so the
-// playwright-cli node launcher could clean up its chromium child, and was
-// originally covered by a playwright-based negative asserting a
-// `kill EPERM` launcher warning. That negative's premise broke with the
-// #2249 iokit-open-service fix: pre-fix, the SEGVd browser forced the
-// launcher down the force-kill path; post-fix the browser runs healthily
-// and `playwright-cli close` tears the session down gracefully over CDP —
-// no signal is ever sent, so the EPERM fingerprint cannot manifest without
-// contriving a SEGV (and the 2026-06-12 host capture suggests a contrived
-// SEGV would not isolate the rule either: kill EPERM was observed on the
-// SEGV path even WITH (target children) present — the daemon → launcher →
-// chromium grandchild depth observation in #2249).
+// The (target children) widening lets the playwright-cli node launcher clean
+// up its chromium child. A playwright-based negative cannot isolate the rule:
+// `playwright-cli close` tears the session down gracefully over CDP and
+// sends no signal, so a `kill EPERM` fingerprint cannot manifest without
+// contriving a SEGV — and even a contrived SEGV does not isolate the rule,
+// because the daemon → launcher → chromium grandchild depth means kill
+// EPERM appears on the SEGV path even WITH (target children) present.
 //
-// This file replaces it with a direct probe of the rule's semantics using
-// bash: a parent process spawning a child and signalling it. This is
+// This file probes the rule's semantics directly using bash: a parent
+// process spawning a child and signalling it. This is
 // deterministic (no browser failure modes), fast (no chromium launch), and
 // isolates exactly the clause under test:
 //
@@ -42,8 +37,7 @@ package integration_test
 // launch-dir profile variants — otherwise bash inherits the go-test
 // binary's ungranted CWD and emits shell-init getcwd noise
 // ("Operation not permitted") that is indistinguishable from a kill
-// denial by naive substring matching. That exact false positive surfaced
-// on the 2026-06-13 round-2 host run. Belt and braces, the assertions
+// denial by naive substring matching. Belt and braces, the assertions
 // additionally key on the kill-specific denial fingerprint (bash's kill
 // builtin reports `kill: (<pid>) - Operation not permitted`), not on any
 // bare EPERM substring.

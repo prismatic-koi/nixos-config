@@ -51,7 +51,7 @@ import (
 //
 //  3. GitHub Actions ubuntu-latest runner: detects via $GITHUB_ACTIONS == "true".
 //     Actions runner steps lack the controlling-terminal semantics script(1)
-//     needs for tmux client attachment. See issue #1510.
+//     needs for tmux client attachment.
 //
 // Callers should only skip PTY-attach tests on this basis, not all tmux tests.
 func insideSandbox() bool {
@@ -86,7 +86,7 @@ func insideSandbox() bool {
 // Tests needing only non-PTY tmux operations (session creation, window listing,
 // option setting) do not need this guard and will run in all environments.
 //
-// The skip message is loud and named per issue #1510 — reviewers should see
+// The skip message is loud and detailed — reviewers should see
 // the specific environment and reason in test output rather than a vague
 // "skipping in a sandbox" string.
 func skipIfSandboxPTY(t *testing.T) {
@@ -115,7 +115,7 @@ type server struct {
 //
 // Skips (via tmuxtest.RequireServer) when tmux is absent from PATH or when
 // tmux server creation is blocked by the sandbox (fork EPERM inside prism
-// sandbox-exec worker sessions — issue #2204).
+// sandbox-exec worker sessions).
 func newServer(t *testing.T) *server {
 	t.Helper()
 

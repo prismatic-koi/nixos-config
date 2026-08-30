@@ -2,7 +2,7 @@
 // from a gitlab.com merge request: the target (base) branch, the source
 // branch, the MR state, and the diff.
 //
-// This is deliberately a thin, single-forge helper (see issue #2667). GitHub
+// This is deliberately a thin, single-forge helper. GitHub
 // stays prism's primary forge and keeps its own `gh`-based read path; this
 // package exists so GitLab JSON is parsed by GitLab code only, never mixed
 // with the GitHub `gh pr view` shapes in internal/review. It is read-only:

@@ -1,6 +1,6 @@
 package promptdelivery_test
 
-// unreachable_test.go — regression tests for issue #2359 AC:
+// unreachable_test.go — regression tests for the contract:
 // "prism prompt to a session whose sidecar host endpoint is unreachable
 // exits non-zero with an actionable error, not a silent success."
 //
@@ -8,8 +8,8 @@ package promptdelivery_test
 // promptdelivery.DeliverToSession, which for pi (socket-pipe) sessions
 // calls deliverViaSidecarSocket. That function must return a distinct,
 // actionable error when the socket does not exist or the dial fails —
-// callers that swallow the error would produce the silent success the AC
-// forbids.
+// callers that swallow the error would produce the silent success this
+// contract forbids.
 
 import (
 	"os"
@@ -21,8 +21,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
 )
 
-// TestDeliverToSession_UnreachableSocketReturnsActionableError verifies the
-// AC: a dead socket must not be silently absorbed. The error must name the
+// TestDeliverToSession_UnreachableSocketReturnsActionableError verifies that
+// a dead socket must not be silently absorbed. The error must name the
 // path so an operator can locate the missing sidecar and mention the
 // session-may-have-ended possibility.
 func TestDeliverToSession_UnreachableSocketReturnsActionableError(t *testing.T) {
@@ -102,7 +102,7 @@ func TestDeliverToSession_StaleTombstoneSocketReturnsActionableError(t *testing.
 	// session name — the file I created above will not match. The point
 	// of this test is that ANY misalignment (missing file OR unreachable
 	// listener) surfaces as an error rather than silent success. So a
-	// non-nil err is the AC signal here.
+	// non-nil err is the required error signal here.
 	err := promptdelivery.DeliverToSession("prism-test@invoker-tombstone", status, "hello", nil, "", "steer")
 	if err == nil {
 		t.Fatal("DeliverToSession returned nil error for unreachable-and-unlistened socket; want non-nil (AC #8: silent success is forbidden)")

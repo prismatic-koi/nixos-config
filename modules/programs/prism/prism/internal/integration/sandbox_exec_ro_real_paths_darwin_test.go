@@ -3,7 +3,7 @@
 package integration_test
 
 // sandbox_exec_ro_real_paths_darwin_test.go — integration coverage for the
-// read-only real-path grants of Step 3f of #2132 (issue #2245):
+// read-only real-path grants:
 //
 //   - section 5f: ~/.cache/prism/clipboard (images staged by
 //     `prism clipboard paste-image`, read by the agent at the absolute host
@@ -28,8 +28,8 @@ package integration_test
 // (TestGenerateProfile_NixProfileROGrant) and the security property (no
 // writes) is integration-tested here.
 //
-// Per docs/sandbox-exec-testing.md (issue #1192); #2207 capability-probe
-// gating via requireSandboxExec.
+// Per docs/sandbox-exec-testing.md. Capability-probe gating via
+// requireSandboxExec.
 
 import (
 	"os"
@@ -119,9 +119,8 @@ func TestSandboxExecClipboard_RealPathReadable(t *testing.T) {
 
 // TestSandboxExecClipboard_DeniedWithoutGrantBlock is the strip negative for
 // section 5f: with the ENTIRE block removed, the same clipboard read fails —
-// proving the 5f block is load-bearing (whole-block strip per the #2243
-// lesson: stripping only one (subpath ...) line would leave the other path
-// granted).
+// proving the 5f block is load-bearing (whole-block strip: stripping only
+// one (subpath ...) line leaves the other path granted).
 func TestSandboxExecClipboard_DeniedWithoutGrantBlock(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")

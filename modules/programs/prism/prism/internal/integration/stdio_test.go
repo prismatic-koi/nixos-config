@@ -38,10 +38,10 @@ import (
 //   - GitHub Actions ubuntu-latest runner: bwrap is in PATH (we apt-install
 //     it in the workflow) but unprivileged user-namespace uid-map setup is
 //     blocked by the runner's apparmor profile, so any actual bwrap exec
-//     fails with "setting up uid map: Permission denied". See issue #1510.
+//     fails with "setting up uid map: Permission denied".
 //
-// The skip messages are loud and named per #1510 — reviewers should see the
-// specific reason in test output rather than a vague "skipping" string.
+// The skip messages are loud and name the exact reason, so reviewers see it
+// in test output rather than a vague "skipping" string.
 func requireBwrap(t *testing.T) string {
 	t.Helper()
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
@@ -83,8 +83,7 @@ func testBinaryPath(t *testing.T) string {
 // agent_events.instance_id REFERENCES sessions(instance_id) fails when
 // runStartupStdio writes state_change / startup_error / msg_assistant events,
 // and those events are silently dropped (logged as WriteEvent errors) — which
-// causes the downstream assertions to fail. See #1503 (and the same fix
-// shape in #1496).
+// causes the downstream assertions to fail.
 func newStdioSidecar(t *testing.T, d *db.DB, bwrapBin, harnessBinPath string) *sidecar.Sidecar {
 	t.Helper()
 

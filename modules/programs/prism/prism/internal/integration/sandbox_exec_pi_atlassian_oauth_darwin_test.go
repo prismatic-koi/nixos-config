@@ -3,18 +3,15 @@
 package integration_test
 
 // sandbox_exec_pi_atlassian_oauth_darwin_test.go — integration tests for the
-// PI Atlassian MCP OAuth token capability at its REAL host path (Step 3d of
-// #2132, issue #2245; original staging mechanism: issue #1597).
+// PI Atlassian MCP OAuth token capability at its REAL host path.
 //
 // Background:
 //
 //	The Atlassian MCP extension stores OAuth tokens at
-//	homedir()/.pi/agent/atlassian-mcp-oauth.json. A former staging step
-//	touch-and-symlinked the file into the per-session staging HOME; #2245
-//	removed it (and Step 5 of #2132 deleted the staging HOME wholesale).
-//	The capability collapses into the pi-gated RW (subpath ~/.pi/agent)
-//	grant (sandbox_exec.go section 6a): reads and writes of the token file
-//	at the REAL host path succeed in-sandbox.
+//	homedir()/.pi/agent/atlassian-mcp-oauth.json. The capability rides the
+//	pi-gated RW (subpath ~/.pi/agent) grant (sandbox_exec.go section 6a):
+//	reads and writes of the token file at the REAL host path succeed
+//	in-sandbox.
 //
 // These tests verify:
 //
@@ -24,12 +21,12 @@ package integration_test
 //     them back; the bytes are visible on the host after sandbox-exec
 //     exits.
 //
-//  2. Negative (whole-block strip, per the #2243 lesson): removing the
-//     entire section-6a allow block makes the same write fail and nothing
-//     appears at the host path — proving the 6a grant is the load-bearing
-//     capability for the token file, not some broader rule.
+//  2. Negative (whole-block strip): removing the entire section-6a allow
+//     block makes the same write fail and nothing appears at the host path
+//     — proving the 6a grant is the load-bearing capability for the token
+//     file, not some broader rule.
 //
-// Per docs/sandbox-exec-testing.md (issue #1192).
+// Per docs/sandbox-exec-testing.md.
 
 import (
 	"os"
@@ -54,7 +51,7 @@ func newPIOAuthPersistenceManager(t *testing.T) *container.Manager {
 		Worktree:    t.TempDir(),
 		Harness:     "pi",
 		BareRoot:    t.TempDir(), // needed for the BareRoot-ancestor allow block
-		// Required since #1960 — see newProfileManager
+		// writeGitconfig requires [user] identity — see newProfileManager
 		// (sandbox_exec_helpers_darwin_test.go).
 		GitUserName:  "test-user",
 		GitUserEmail: "test@example.com",
@@ -112,9 +109,9 @@ func piAgentSubpathBlock(t *testing.T) string {
 }
 
 // TestSandboxExecPIAtlassianOAuth_RealPathReadWrite is the positive
-// integration test for Step 3d of #2132: the oauth token file is read-write
-// in-sandbox at its REAL host path via the section-6a (subpath ~/.pi/agent)
-// grant, with no staging symlink involved.
+// integration test: the oauth token file is read-write in-sandbox at its
+// REAL host path via the section-6a (subpath ~/.pi/agent) grant, with no
+// staging symlink involved.
 func TestSandboxExecPIAtlassianOAuth_RealPathReadWrite(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -165,9 +162,9 @@ func TestSandboxExecPIAtlassianOAuth_RealPathReadWrite(t *testing.T) {
 }
 
 // TestSandboxExecPIAtlassianOAuth_DeniedWithoutPiAgentGrant is the paired
-// negative test. It strips the ENTIRE section-6a allow block (whole-block
-// strip per the #2243 lesson — removing only the (subpath ...) line would
-// leave a filter-less allow-everything clause) and asserts the same write
+// negative test. It strips the ENTIRE section-6a allow block (removing only
+// the (subpath ...) line leaves a filter-less allow-everything clause) and
+// asserts the same write
 // fails and nothing lands at the host path — proving the 6a grant is
 // load-bearing for the token file.
 func TestSandboxExecPIAtlassianOAuth_DeniedWithoutPiAgentGrant(t *testing.T) {
