@@ -3,7 +3,7 @@
 package integration_test
 
 // sandbox_exec_pi_darwin_test.go — integration tests for PI harness paths in
-// the SBPL profile (issue #1213, P2.DARWIN).
+// the SBPL profile.
 //
 // These tests verify that:
 //  1. The per-session run directory (which hosts both hostapi.sock and the PI
@@ -13,13 +13,12 @@ package integration_test
 //     sandbox — the existing /nix subpath allow covers it (no new rule needed).
 //
 // The tests confirm that these paths do NOT need new SBPL rules by verifying
-// the existing rules already grant access (issue #1213: "no new SBPL rules
-// expected"). Each positive test is paired with a negative test that removes
-// the covering rule and asserts failure — proving the positive test is not a
-// no-op.
+// the existing rules already grant access (no new SBPL rules expected). Each
+// positive test is paired with a negative test that removes the covering
+// rule and asserts failure — proving the positive test is not a no-op.
 //
 // See docs/sandbox-exec-testing.md for the testing convention these tests
-// support (issue #1192).
+// support.
 
 import (
 	"fmt"
@@ -45,10 +44,9 @@ func newPIProfileManager(t *testing.T, sockPath string) *container.Manager {
 		InstanceID:      instanceID,
 		Worktree:        t.TempDir(),
 		HostAPISockPath: sockPath,
-		// Required since #1960: writeGitconfig refuses to start a
-		// session without [user] in the gitconfig. See
-		// newProfileManager (sandbox_exec_helpers_darwin_test.go) for
-		// the full rationale.
+		// writeGitconfig refuses to start a session without [user] in the
+		// gitconfig. See newProfileManager
+		// (sandbox_exec_helpers_darwin_test.go) for the full rationale.
 		GitUserName:  "test-user",
 		GitUserEmail: "test@example.com",
 	}
@@ -83,8 +81,8 @@ func piRunDirUnderHome(t *testing.T) string {
 
 // TestSandboxExecPI_SystemPromptFileReadable verifies the positive path for
 // PI's system-prompt file: the per-session run directory is accessible inside
-// the sandbox via the existing host-API socket dir rule. This covers issue
-// #1213 AC: "No new SBPL rules are needed (confirm and document)".
+// the sandbox via the existing host-API socket dir rule. This confirms that
+// no new SBPL rules are needed.
 //
 // The test creates a stand-in file under HOME (mirroring the production
 // run-dir location at $XDG_STATE_HOME/prism/run/<sessionDirHash>/, NOT
@@ -187,8 +185,8 @@ func TestSandboxExecPI_SystemPromptFileDeniedWithoutRunDirRule(t *testing.T) {
 
 // TestSandboxExecPI_NixExtensionDirReadable verifies that a Nix store path
 // (standing in for the PI extension dir) is readable inside the sandbox via
-// the existing (subpath "/nix") rule. This covers issue #1213 AC: "No new
-// SBPL rules are needed" for the extension directory.
+// the existing (subpath "/nix") rule. This confirms that no new SBPL rules
+// are needed for the extension directory.
 func TestSandboxExecPI_NixExtensionDirReadable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")

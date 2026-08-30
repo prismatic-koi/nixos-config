@@ -3,7 +3,7 @@
 package integration_test
 
 // lifecycle_darwin_test.go — integration tests for the sandbox-exec parent-death
-// lifecycle hardening (issue #1018, AC: lifecycle).
+// lifecycle hardening.
 //
 // These tests verify that:
 //   - The kqueue-based watcher kills the child within 5 seconds of parent death.
@@ -200,7 +200,7 @@ func TestSandboxExecLifecycle_KqueueParentDeath(t *testing.T) {
 	// Assert the child exits within 5 seconds.
 	select {
 	case <-childExited:
-		// ka pai — child exited as expected.
+		// Child exited as expected.
 	case <-time.After(5 * time.Second):
 		t.Errorf("child process did not exit within 5 seconds after parent death (kqueue path)")
 	}
@@ -261,7 +261,7 @@ func TestSandboxExecLifecycle_HeartbeatParentDeath(t *testing.T) {
 	// Worst case: heartbeat fires 1s after parent death + 3s grace = 4s.
 	select {
 	case <-childExited:
-		// ka pai — child exited as expected.
+		// Child exited as expected.
 	case <-time.After(5 * time.Second):
 		t.Errorf("child process did not exit within 5 seconds after parent death (heartbeat fallback path)")
 	}
@@ -312,7 +312,7 @@ func TestSandboxExecLifecycle_ChildExitsFirst(t *testing.T) {
 
 	select {
 	case <-done:
-		// ka pai — watcher returned cleanly.
+		// Watcher returned cleanly.
 	case <-time.After(2 * time.Second):
 		t.Errorf("watchParentKqueue did not return within 2s when child had already exited")
 	}

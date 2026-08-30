@@ -3,7 +3,7 @@
 package integration_test
 
 // sandbox_exec_denies_darwin_test.go — integration coverage for the explicit
-// deny rules in the SBPL profile (issue #1192 AC #4):
+// deny rules in the SBPL profile:
 //
 //   - (deny file-read* file-write* (subpath "<HOME>/.aws"))
 //   - (deny file-read* file-write* (subpath "/etc/wireguard"))
@@ -52,9 +52,9 @@ package integration_test
 // This is more precise than testing ~/.aws or wireguard directly: it
 // isolates the deny mechanism (allow + deny → deny wins) from the
 // orthogonal question of whether the production allow set covers a given
-// path. The production deny rules guard against future regressions where
-// such an allow IS introduced; the mechanism test confirms that, when
-// such a regression occurs, the deny rule will catch it.
+// path. The production deny rules guard against a future change where
+// such an allow IS introduced. The mechanism test confirms that, when
+// such a regression occurs, the deny rule catches it.
 
 import (
 	"os"
@@ -123,7 +123,7 @@ const denyMechanismMarker = ";; --- prism-1192 deny-mechanism test rules ---"
 // injectDenyMechanismRules appends an `(allow file-read* (subpath dir))`
 // followed by `(deny file-read* file-write* (subpath dir))` for the given
 // directory. SBPL evaluates rules top-to-bottom with later rules winning
-// for overlapping path scope; appending the deny after the allow at the
+// for overlapping path scope. Appending the deny after the allow at the
 // end of the profile means the deny is the most-specific applicable rule
 // for the dir subtree.
 //
@@ -154,8 +154,8 @@ func injectAllowOnly(profile, dir string) string {
 // We use a controlled host directory under HOME (not a path the production
 // profile already covers) so the only rules affecting it are the synthetic
 // allow + deny pair we inject. The ancestor block from BareRoot grants
-// traversal access to HOME so path resolution succeeds; the synthetic
-// allow grants data reads on the dir subtree; the synthetic deny then
+// traversal access to HOME so path resolution succeeds. The synthetic
+// allow grants data reads on the dir subtree. The synthetic deny then
 // overrides and blocks the read. Asserts cat exits non-zero.
 //
 // This is the positive half of the deny-mechanism convention check. The
@@ -269,7 +269,7 @@ func TestSandboxExecProfile_DenyOverridesAllow_NegationAllowsReads(t *testing.T)
 }
 
 // TestSandboxExecProfile_EtcSSHDenied_BlocksReads is the positive half of the
-// /etc/ssh deny coverage (issue #1260). /private/etc/ssh exists on macOS and
+// /etc/ssh deny coverage. /private/etc/ssh exists on macOS and
 // is covered by the broad (allow file-read* (subpath "/private/etc")) rule in
 // section 2 of the profile. The deny rule for /private/etc/ssh must override
 // it so that reads of files under /private/etc/ssh (e.g. ssh_config, host

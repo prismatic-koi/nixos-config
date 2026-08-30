@@ -3,7 +3,7 @@
 package integration_test
 
 // sandbox_exec_network_darwin_test.go — integration coverage for the
-// network egress allow rule (issue #1192 AC #4):
+// network egress allow rule:
 //
 //   (allow network*)
 //
@@ -18,7 +18,7 @@ package integration_test
 //   - sandbox-exec's network rule is host-namespace shared on Darwin
 //     (the sandbox does NOT have a separate network namespace), so
 //     connecting to a loopback listener exercises the same kernel path
-//     a real outbound connection would.
+//     as a real outbound connection.
 
 import (
 	"net"

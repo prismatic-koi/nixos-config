@@ -2,12 +2,12 @@
 
 package integration_test
 
-// sandbox_exec_rlimit_darwin_test.go — Layer 1 FD isolation (#2190):
+// sandbox_exec_rlimit_darwin_test.go — Layer 1 FD isolation:
 // integration coverage for the sandbox-exec exec path's RLIMIT_NOFILE cap.
 //
 // The production path (cmd/agent_run_sandbox_exec_darwin.go
 // runAgentRunSandboxExec) calls container.ApplyAgentRlimitNofile immediately
-// before sandboxCmd.Start() and restores immediately after; the spawned
+// before sandboxCmd.Start() and restores immediately after. The spawned
 // sandbox inherits the resolved (soft, hard) pair at fork time. These tests
 // exercise the same helper against a real /usr/bin/sandbox-exec spawn under
 // the production-generated SBPL profile (per docs/sandbox-exec-testing.md:
@@ -21,9 +21,9 @@ package integration_test
 // — RLIMIT_NOFILE is invisible to the sandbox profile, so withMutatedProfile
 // cannot exercise it. The no-op proof is instead applying a *different*
 // configured pair and asserting the observed limits track it: two runs with
-// different configured values must observe different limits, which a vacuous
-// observer (e.g. one reporting host limits regardless) would fail. The
-// security AC (`ulimit -n <above hard>` fails inside the sandbox) has its
+// different configured values must observe different limits. A vacuous
+// observer that reports host limits regardless fails that check. The
+// security check (`ulimit -n <above hard>` fails inside the sandbox) has its
 // own subtest.
 //
 // This file does not modify generateProfile / PrepareSandboxExec —
@@ -52,8 +52,8 @@ import (
 // granted CWD, bash inherits the go-test binary's CWD (the integration
 // package directory, ungranted) and emits a `shell-init: error retrieving
 // current directory` line to stderr before the actual ulimit output,
-// breaking the two-field parse. See docs/sandbox-exec-testing.md § Launch
-// CWD for the full rationale.
+// breaking the two-field parse. See docs/sandbox-exec-testing.md, "Launch
+// CWD" for the full rationale.
 func sandboxExecObservedNofile(t *testing.T, profilePath, nixBash, launchDir string) (soft, hard uint64) {
 	t.Helper()
 	cmd := exec.Command(sandboxExecPath, "-f", profilePath,
@@ -75,13 +75,13 @@ func sandboxExecObservedNofile(t *testing.T, profilePath, nixBash, launchDir str
 	return soft, hard
 }
 
-// TestSandboxExecAgentRlimitNofile covers the #2190 sandbox-exec-path ACs:
+// TestSandboxExecAgentRlimitNofile covers the sandbox-exec-path guarantees:
 //
 //   - the spawned sandbox's RLIMIT_NOFILE matches the resolved (soft, hard)
-//     config values;
-//   - the observation tracks the configured values (no-op proof);
+//     config values
+//   - the observation tracks the configured values (no-op proof)
 //   - the sandbox cannot raise its limit above the configured hard cap
-//     (`ulimit -n <higher>` fails).
+//     (`ulimit -n <higher>` fails)
 //
 // Subtests run sequentially and use descending hard values: an unprivileged
 // process cannot raise its hard limit back after the best-effort restore, so

@@ -3,7 +3,7 @@
 package integration_test
 
 // sandbox_exec_secrets_deny_darwin_test.go — integration coverage for the
-// sops secrets.d narrowing (issue #2211):
+// sops secrets.d narrowing:
 //
 //	(deny file-write* (regex #"^/var/folders/.*/secrets\.d/") …)
 //	(deny file-read*  (require-all (require-any (regex …)) (require-not …)…))
@@ -12,7 +12,7 @@ package integration_test
 // home-manager sops-nix secrets tree to the sandbox. The narrowing denies the
 // secrets.d subtree and carves out require-not exceptions for exactly the
 // inventoried agent-needed secret NAMES, counter-independent ([0-9]+) so the
-// #1410/#1573 rotation property is preserved.
+// rotation property is preserved.
 //
 // Coverage:
 //
@@ -41,7 +41,7 @@ package integration_test
 // real secrets redirect stdout to /dev/null and assert on exit status and
 // stderr only. Only the fake rotation tree uses readable sentinel content.
 //
-// See docs/sandbox-exec-testing.md for the convention (#1192).
+// See docs/sandbox-exec-testing.md for the convention.
 
 import (
 	"os"
@@ -54,9 +54,9 @@ import (
 	"testing"
 )
 
-// secretsDeniedCandidates are the secrets.d-relative names the issue #2211
-// ACs name explicitly: the daily-driver GitHub PAT and the daily-driver
-// (non-prism) SSH private key. Neither may ever appear in the allowlist.
+// secretsDeniedCandidates are the secrets.d-relative names that must stay
+// denied: the daily-driver GitHub PAT and the daily-driver (non-prism) SSH
+// private key. Neither may ever appear in the allowlist.
 var secretsDeniedCandidates = []string{
 	"github_token",
 	"ssh/prismatic-koi-rsa",
@@ -77,8 +77,8 @@ func realSecretsDRoot(t *testing.T) string {
 
 // currentSecretsCounterDir returns the path of the highest numeric
 // generation dir under the secrets.d root, skipping when none is found or
-// the root is unreadable (e.g. the test process itself is already inside a
-// post-#2211 sandbox).
+// the root is unreadable (for example, the test process itself is already
+// inside a sandbox).
 func currentSecretsCounterDir(t *testing.T, root string) string {
 	t.Helper()
 	entries, err := os.ReadDir(root)
@@ -143,8 +143,7 @@ func sandboxCatDiscard(profilePath, nixBash, path string) (error, string) {
 
 // TestSandboxExecSecretsDeny_DeniedNamesUnreadable asserts that reading the
 // real non-allowlisted secrets (github_token and the daily-driver RSA key)
-// inside the sandbox fails with EPERM under the production profile
-// (issue #2211 AC #1).
+// inside the sandbox fails with EPERM under the production profile.
 func TestSandboxExecSecretsDeny_DeniedNamesUnreadable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -158,7 +157,7 @@ func TestSandboxExecSecretsDeny_DeniedNamesUnreadable(t *testing.T) {
 	m := newProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
 
-	// Guard: the AC-named denied candidates must never be allowlisted.
+	// Guard: the denied candidates must never be allowlisted.
 	allowNames := parseSecretsDAllowlist(prepared.content)
 	for _, denied := range secretsDeniedCandidates {
 		for _, allowed := range allowNames {
@@ -208,11 +207,11 @@ func disableSecretsDDeny(p string) string {
 	return strings.ReplaceAll(p, `secrets\.d/`, `prism-2211-disabled\.d/`)
 }
 
-// TestSandboxExecSecretsDeny_NegationAllowsReads is the paired negative test
-// demanded by the issue #2211 ACs: a profile mutation that removes the
-// secrets.d deny must make the denied reads succeed — proving
+// TestSandboxExecSecretsDeny_NegationAllowsReads is the paired negative
+// test: a profile mutation that removes the secrets.d deny must make the
+// denied reads succeed — proving
 // TestSandboxExecSecretsDeny_DeniedNamesUnreadable is not green by accident
-// (the broad /private/var/folders allow would otherwise permit the read).
+// (the broad /private/var/folders allow otherwise permits the read).
 func TestSandboxExecSecretsDeny_NegationAllowsReads(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -253,7 +252,7 @@ func TestSandboxExecSecretsDeny_NegationAllowsReads(t *testing.T) {
 
 // TestSandboxExecSecretsDeny_AllowlistedStableChainsReadable asserts that
 // the agent-needed secrets remain readable through their stable host symlink
-// chains under the production profile (issue #2211 functional AC). The
+// chains under the production profile. The
 // stable paths are the ones embedded in the generated ssh-config/gitconfig
 // and staged into the sandbox HOME.
 func TestSandboxExecSecretsDeny_AllowlistedStableChainsReadable(t *testing.T) {
@@ -360,9 +359,9 @@ func writeFakeSecretsCounter(t *testing.T, base, counter, allowedName string) {
 
 const fakeAllowedSentinel = "prism-2211-rotation-sentinel"
 
-// TestSandboxExecSecretsDeny_RotationSimulation proves the #1410/#1573
-// rotation property of the narrowing (issue #2211 edge-case AC): after a
-// secrets.d counter increment, allowlisted reads continue to work and denied
+// TestSandboxExecSecretsDeny_RotationSimulation proves the rotation
+// property of the narrowing: after a secrets.d counter increment,
+// allowlisted reads continue to work and denied
 // reads remain denied. The fake counters (100, 101) carry no per-symlink
 // (literal …) allows in the profile, so the require-not exceptions are the
 // only mechanism that can permit the allowlisted read — this is the
