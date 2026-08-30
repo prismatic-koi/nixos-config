@@ -385,7 +385,7 @@ func init() {
 	spawnCmd.Flags().String("provider", "", "Routing provider override for all agents (e.g. anthropic, openrouter); overrides the profile slot's provider. Pi harness only; mutually exclusive with --abtest. When --model also carries a provider prefix, make the two agree — pi only strips a matching prefix.")
 	spawnCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
-	spawnCmd.Flags().Bool("containers", false, "Enable the per-session filtering podman API socket proxy (containers feature, #2317). Default: off. Combine with bwrap or sandbox-exec isolation; host mode bypasses the proxy.")
+	spawnCmd.Flags().Bool("containers", false, "Enable the per-session filtering podman API socket proxy. Default: off. Combine with bwrap or sandbox-exec isolation; host mode bypasses the proxy.")
 	spawnCmd.Flags().String("harness", "pi", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, config.IgnoreConcurrencyCapHelp)
 	spawnCmd.Flags().Bool("wait", false, "Block until the spawned agent finishes its initial prompt. Without --wait, returns immediately.")
