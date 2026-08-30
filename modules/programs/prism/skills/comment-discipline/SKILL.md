@@ -21,7 +21,11 @@ and give reviewers a clear pass/fail test.
    "changed from Y", "removed Z". Git owns the history.
 3. **No ghosts.** Do not write a comment about a thing that is gone or a
    thing that does not exist yet. A comment describes the code next to it,
-   not a past version or a planned version.
+   not a past version or a planned version. Exception: a comment about a
+   dead thing that guards against its return is not a ghost. State the
+   guard as a present-tense condition, not as history. Example: write "If
+   the handler writes the raw name, this test fails", not "Before #1234
+   the handler wrote the raw name; this test caught it".
 4. **No restatement.** Do not narrate what the code plainly does. If a
    reader can see the fact from the code itself, the comment adds no
    information.
