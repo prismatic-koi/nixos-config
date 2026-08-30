@@ -9,7 +9,7 @@ package cmd
 // has been set, that value persists on the global object until something
 // explicitly resets it.
 //
-// This is the source of a real, reproducible test-bleed flake (#1521):
+// This is the source of a real, reproducible test-bleed flake:
 //
 //   - TestRunPrompt_DeliverAs_InvalidValueRejected runs `prompt ... --deliver-as bogus`.
 //     After Execute() returns, the persistent --deliver-as flag value on the
@@ -20,7 +20,7 @@ package cmd
 //     specifying --deliver-as inherits "bogus" and fails the client-side
 //     validation.
 //
-// The fix is purely structural: snapshot every flag's default value once,
+// The approach is purely structural: snapshot every flag's default value once,
 // and reset all `Changed` flags back to their declared default at the start
 // of each test that drives the cobra tree via rootCmd.SetArgs / rootCmd.Execute.
 // No production code changes — this is a test-only helper.

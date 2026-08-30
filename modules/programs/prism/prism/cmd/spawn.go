@@ -57,16 +57,15 @@ import (
 // The "repo" field is intentionally omitted from the request: the sidecar
 // derives the repo from its own session name, so a client running inside a
 // container where PRISM_BARE_ROOT is a mount-path name (e.g. "/prism-git")
-// does not need to supply the correct repo name. See issue #616.
+// does not need to supply the correct repo name.
 //
 // The "isolation" field forwards the --isolation flag value when explicitly
 // set. Validation of unknown values happens client-side here so the error
 // surfaces immediately at the proxy boundary with the same error message
-// shape as the direct (host-shell) path; see issue #1059. Without this, a
-// coordinator running inside a container could silently drop --isolation host
-// (or any other valid value) because the proxy never read the flag — the
-// sidecar fell back to its default mode and the user only noticed by reading
-// the sidecar log line.
+// shape as the direct (host-shell) path. Without this, a coordinator running
+// inside a container silently drops --isolation host (or any other valid
+// value) because the proxy never reads the flag — the sidecar falls back to
+// its default mode and the user only notices by reading the sidecar log line.
 func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	branchFlag, _ := cmd.Flags().GetString("branch")
 	prFlag, _ := cmd.Flags().GetString("pr")
@@ -111,10 +110,10 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	if len(abtestFlag) > 0 && cmd.Flags().Changed("profile") {
 		return fmt.Errorf("--abtest and --profile are mutually exclusive")
 	}
-	// --provider carries the same restrictions as on the direct path (issue
-	// #2852). Both are validated client-side so the error surfaces at the
-	// proxy boundary with the same wording as the host-shell path, matching
-	// the --isolation precedent above.
+	// --provider carries the same restrictions as on the direct path. Both
+	// are validated client-side so the error surfaces at the proxy boundary
+	// with the same wording as the host-shell path, matching the --isolation
+	// precedent above.
 	if err := validateProviderFlag(providerFlag, harnessFlag, len(abtestFlag) > 0); err != nil {
 		return err
 	}
@@ -123,16 +122,15 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		return fmt.Errorf("--abtest requires exactly two profile names (got %d)", len(abtestFlag))
 	}
 
-	// --pr and --branch are mutually exclusive. Unlike the pre-#2432 code,
-	// --pr is NOT resolved to a branch client-side here — the raw PR number
-	// is forwarded as "pr" to the host API, and the host-side prism spawn
-	// resolves it via its own resolveBranch/PRBranch path (FetchRemote +
-	// CreateWorktree tracking origin/<real-head>). Resolving client-side and
-	// forwarding only a branch name lost the PR's real head ref the moment
-	// it contained a slash: the host-side resolveBranch would then run it
-	// through git.SanitiseBranch ("/" → "-"), find no matching local or
-	// origin branch, and fork a new branch from the default branch instead
-	// of checking out the PR's commits (issue #2432).
+	// --pr and --branch are mutually exclusive. --pr is NOT resolved to a
+	// branch client-side here — the raw PR number is forwarded as "pr" to the
+	// host API, and the host-side prism spawn resolves it via its own
+	// resolveBranch/PRBranch path (FetchRemote + CreateWorktree tracking
+	// origin/<real-head>). Resolving client-side and forwarding only a branch
+	// name loses the PR's real head ref whenever it contains a slash: the
+	// host-side resolveBranch runs it through git.SanitiseBranch ("/" → "-"),
+	// finds no matching local or origin branch, and forks a new branch from
+	// the default branch instead of checking out the PR's commits.
 	if prFlag != "" && branchFlag != "" {
 		return fmt.Errorf("--pr and --branch are mutually exclusive")
 	}
@@ -141,36 +139,28 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	// Keybind carve-out (issues #2063, #2073). The tmux Prefix+a keybind
-	// invokes `prism spawn --attach` with no --prompt because the operator
-	// types the initial prompt to the live agent after the popup attaches.
+	// Keybind carve-out. The tmux Prefix+a keybind invokes `prism spawn
+	// --attach` with no --prompt because the operator types the initial
+	// prompt to the live agent after the popup attaches.
 	//
-	// History: the original carve-out (#2063) reused PRISM_SPAWN_PATH as the
-	// discriminator, but that env var is set UNCONDITIONALLY by every
-	// sandbox (bwrap.go:~500, cmd/agent_run_sandbox_exec_darwin.go:~284) as
-	// a working-directory hint (see internal/sandboxenv/sandboxenv.go). To
-	// stop ordinary container worker-spawn flows from being misclassified
-	// as keybind spawns, the proxy check had to be narrowed to
-	// `PRISM_SPAWN_PATH != "" && promptFlag == ""`, with an extra layer of
-	// narrowing in the sidecar's /spawn handler. That conflation is finally
-	// retired by #2073: the keybind sets a dedicated sentinel
-	// PRISM_KEYBIND_SPAWN=1 that no sandbox injects, so the discriminator
-	// can be a single env-var check on both the host and proxy paths — no
-	// `promptFlag == ""` narrowing needed, no risk of leakage from sandbox
-	// env-injection. PRISM_SPAWN_PATH keeps its working-directory-hint job
-	// and nothing else.
+	// The keybind sets a dedicated sentinel PRISM_KEYBIND_SPAWN=1 that no
+	// sandbox injects, so the discriminator is a single env-var check on both
+	// the host and proxy paths. PRISM_SPAWN_PATH must NOT be used for this:
+	// every sandbox sets it unconditionally as a working-directory hint (see
+	// internal/sandboxenv/sandboxenv.go), so it cannot distinguish a keybind
+	// spawn from an ordinary container worker spawn.
 	fromKeybind := os.Getenv("PRISM_KEYBIND_SPAWN") != ""
-	// Reject an empty prompt at the operator boundary (layers 1+2 of issue
-	// #1891). Without this, an empty --prompt-file, --prompt "", or empty
-	// stdin produces a session that is created successfully on every
-	// observable surface but never receives a prompt and sits idle forever.
-	// The host-API /spawn handler has a defence-in-depth check too (layer 3);
-	// this surfaces the error in the caller's stderr instead of an HTTP 400.
-	// PR carve-out (issue #2633): an empty prompt is also legitimate when
-	// --pr is set — the host-side runSpawn injects read-only guidance into
-	// the prompt itself (see the withPRReadOnlyGuidance call site below), so
-	// this client-side check must not reject it. The host-API layer-3 check
-	// carries the matching carve-out.
+	// Reject an empty prompt at the operator boundary. Without this, an empty
+	// --prompt-file, --prompt "", or empty stdin produces a session that is
+	// created successfully on every observable surface but never receives a
+	// prompt and sits idle forever. The host-API /spawn handler has a
+	// defence-in-depth check too, so this surfaces the error in the caller's
+	// stderr instead of an HTTP 400.
+	// PR carve-out: an empty prompt is also legitimate when --pr is set — the
+	// host-side runSpawn injects read-only guidance into the prompt itself
+	// (see the withPRReadOnlyGuidance call site below), so this client-side
+	// check must not reject it. The host-API check carries the matching
+	// carve-out.
 	if promptFlag == "" && !fromKeybind && prFlag == "" {
 		return emptyPromptError(cmd, "prism spawn")
 	}
@@ -181,10 +171,10 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	if len(abtestFlag) == 2 {
 		var resp struct {
 			SessionNames []string `json:"session_names"`
-			// Warning carries the sidecar's prism-binary staleness diagnostic
-			// (issue #2742), set only when the sidecar that handled this spawn
-			// launched from a binary a switch has since replaced. Empty in the
-			// common case; the field is simply absent from the JSON then.
+			// Warning carries the sidecar's prism-binary staleness diagnostic,
+			// set only when the sidecar that handled this spawn launched from a
+			// binary a switch has since replaced. Empty in the common case —
+			// the field is simply absent from the JSON then.
 			Warning string `json:"warning"`
 		}
 		body := map[string]any{
@@ -202,21 +192,20 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 			body["provider"] = providerFlag
 		}
 		// See the non-abtest body construction below for why --pr is forwarded
-		// as "pr" rather than resolved to a branch client-side (issue #2432).
+		// as "pr" rather than resolved to a branch client-side.
 		if prFlag != "" {
 			body["pr"] = prFlag
 		} else {
 			body["branch"] = branchFlag
 		}
 		// Forward the keybind discriminator so the host-side /spawn handler
-		// permits an empty prompt on this request. The layer-3 handler still
-		// rejects empty prompts from arbitrary HTTP callers that omit this
-		// field — see issue #2063.
+		// permits an empty prompt on this request. The handler still rejects
+		// empty prompts from arbitrary HTTP callers that omit this field.
 		if fromKeybind {
 			body["from_keybind"] = true
 		}
 		// Only forward "harness" when explicitly set. When absent, the host-side
-		// spawn derives the harness from the profile slot as designed (#1421).
+		// spawn derives the harness from the profile slot as designed.
 		if harnessChanged {
 			body["harness"] = harnessFlag
 		}
@@ -248,7 +237,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		}
 		// --wait on the abtest path is not supported — there are two
 		// sessions and no single terminal definition. Surface this rather
-		// than silently dropping the flag (issue #1500 review-code feedback).
+		// than silently dropping the flag.
 		if waitFlag, _ := cmd.Flags().GetBool("wait"); waitFlag {
 			fmt.Fprintln(os.Stderr, "prism spawn --wait: not supported with --abtest (two sessions, no single terminal); skipping wait")
 		}
@@ -257,10 +246,10 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 
 	var resp struct {
 		SessionName string `json:"session_name"`
-		// Warning carries the sidecar's prism-binary staleness diagnostic
-		// (issue #2742), set only when the sidecar that handled this spawn
-		// launched from a binary a switch has since replaced. Empty in the
-		// common case; the field is simply absent from the JSON then.
+		// Warning carries the sidecar's prism-binary staleness diagnostic,
+		// set only when the sidecar that handled this spawn launched from a
+		// binary a switch has since replaced. Empty in the common case —
+		// the field is simply absent from the JSON then.
 		Warning string `json:"warning"`
 	}
 	body := map[string]any{
@@ -274,22 +263,21 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	}
 	// Only forward "provider" when the user actually passed a value. An empty
 	// string must never reach the host-side spawn as an explicit override —
-	// the slot provider has to stay in effect (issue #2852).
+	// the slot provider has to stay in effect.
 	if providerFlag != "" {
 		body["provider"] = providerFlag
 	}
-	// Forward --pr as "pr" (preserving PR identity end-to-end, issue #2432)
-	// rather than resolving it to a branch client-side. Otherwise forward the
-	// (possibly empty, meaning "host picks a timestamped default") branch.
+	// Forward --pr as "pr" (preserving PR identity end-to-end) rather than
+	// resolving it to a branch client-side. Otherwise forward the (possibly
+	// empty, meaning "host picks a timestamped default") branch.
 	if prFlag != "" {
 		body["pr"] = prFlag
 	} else {
 		body["branch"] = branchFlag
 	}
 	// Forward the keybind discriminator so the host-side /spawn handler
-	// permits an empty prompt on this request. The layer-3 handler still
-	// rejects empty prompts from arbitrary HTTP callers that omit this
-	// field — see issue #2063.
+	// permits an empty prompt on this request. The handler still rejects
+	// empty prompts from arbitrary HTTP callers that omit this field.
 	if fromKeybind {
 		body["from_keybind"] = true
 	}
@@ -305,20 +293,20 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		}
 	}
 	// Only forward "harness" when explicitly set. When absent, the host-side
-	// spawn derives the harness from the profile slot as designed (#1421).
+	// spawn derives the harness from the profile slot as designed.
 	if harnessChanged {
 		body["harness"] = harnessFlag
 	}
-	// Only forward "isolation" when explicitly set. An empty value would tell
-	// the host-side spawn to fall back to config.json, which is correct only
-	// when the user really did not pass the flag — we must distinguish the
+	// Only forward "isolation" when explicitly set. An empty value tells the
+	// host-side spawn to fall back to config.json, which is correct only when
+	// the user really did not pass the flag — so we must distinguish the
 	// "absent" and "empty" cases here.
 	if isolationChanged {
 		body["isolation"] = isolationFlag
 	}
 	// Only forward "containers" when explicitly set. Mirroring the
 	// isolationChanged pattern above: an unset child does not inherit a
-	// parent's enabled state by accident (#2323 cross-spawn forwarding AC).
+	// parent's enabled state by accident.
 	if containersChanged {
 		body["containers"] = containersFlag
 	}
@@ -326,9 +314,8 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		return err
 	}
 	// --wait: route through waitForSpawnTerminal using the sandbox-aware
-	// probe. Without this the proxy path silently dropped --wait and
-	// returned immediately even though the caller asked for synchronous
-	// behaviour (issue #1500 review-code feedback).
+	// probe. Without this the proxy path silently drops --wait and returns
+	// immediately even though the caller asked for synchronous behaviour.
 	waitFlag, _ := cmd.Flags().GetBool("wait")
 	if waitFlag {
 		jsonFlag, _ := cmd.Flags().GetBool("json")
@@ -349,14 +336,14 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 }
 
 // validateProviderFlag enforces the two restrictions on `prism spawn
-// --provider <name>` (issue #2852). Both the direct (host-shell) path and the
+// --provider <name>`. Both the direct (host-shell) path and the
 // proxy path call it before any session state is created, so a rejected
 // combination leaves no worktree, no tmux session, and no DB row behind.
 //
 //  1. A non-pi --harness is rejected, and the error names both flags. This is
 //     a deliberate deviation from --model / --variant, which are silently
 //     scoped to pi: provider decides routing and billing, so silently
-//     ignoring it would produce a confidently wrong user.
+//     ignoring it produces a confidently wrong user.
 //  2. --abtest is rejected, matching the existing --profile rule. Each abtest
 //     arm draws its provider from its own profile slot by design.
 //
@@ -398,7 +385,7 @@ func init() {
 	spawnCmd.Flags().String("provider", "", "Routing provider override for all agents (e.g. anthropic, openrouter); overrides the profile slot's provider. Pi harness only; mutually exclusive with --abtest. When --model also carries a provider prefix, make the two agree — pi only strips a matching prefix.")
 	spawnCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
-	spawnCmd.Flags().Bool("containers", false, "Enable the per-session filtering podman API socket proxy (containers feature, #2317). Default: off. Combine with bwrap or sandbox-exec isolation; host mode bypasses the proxy.")
+	spawnCmd.Flags().Bool("containers", false, "Enable the per-session filtering podman API socket proxy. Default: off. Combine with bwrap or sandbox-exec isolation; host mode bypasses the proxy.")
 	spawnCmd.Flags().String("harness", "pi", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, config.IgnoreConcurrencyCapHelp)
 	spawnCmd.Flags().Bool("wait", false, "Block until the spawned agent finishes its initial prompt. Without --wait, returns immediately.")
@@ -406,7 +393,7 @@ func init() {
 	spawnCmd.Flags().Bool("json", false, "Emit the terminal status as a JSON object on stdout (only useful with --wait). Suppresses textual output.")
 	spawnCmd.Flags().Bool("reuse", false, "If a healthy session already exists on the requested branch, return its details and exit 0 instead of failing")
 	// --prompt-source is an internal flag used by the host-API /spawn handler
-	// to override the auto-detected prompt source (C.4.SRC, issue #1148).
+	// to override the auto-detected prompt source.
 	// It is hidden from --help because end users should never pass it directly.
 	spawnCmd.Flags().String("prompt-source", "", "")
 	_ = spawnCmd.Flags().MarkHidden("prompt-source")
@@ -421,7 +408,7 @@ func init() {
 // spawn_inputs.containers_flag audit trail. Host-mode agents already have
 // direct podman access via the host's CONTAINER_HOST / DOCKER_HOST, so the
 // filtering socket proxy adds no value at runtime — the warning makes that
-// trade-off explicit (#2317 / #2323).
+// trade-off explicit.
 //
 // The check fires on the *resolved* isolation mode rather than just
 // `--isolation host`, so the message is consistent whether the user named
@@ -448,11 +435,10 @@ func warnContainersWithHostMode(w io.Writer, containers bool, isolation string) 
 // mode is "bwrap" on a non-Linux platform, or if the resolved mode is
 // "sandbox-exec" on a non-Darwin platform.
 //
-// D1 (issue #1133): platform availability is checked via the registered
-// Isolator's Available() method — but only for non-container modes. The
-// container availability checks live in the runSpawn caller (gated by
-// isoCaps.IsContainer, always false today) so resolveIsolationMode keeps its
-// pre-refactor surface.
+// Platform availability is checked via the registered Isolator's Available()
+// method, but only for non-container modes. The container availability checks
+// live in the runSpawn caller (gated by isoCaps.IsContainer, always false in
+// current code).
 func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.IsolationMode, error) {
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
 
@@ -481,8 +467,8 @@ func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.Isolati
 }
 
 func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
-	// Note: rootCmd sets SilenceUsage + SilenceErrors globally; RunE errors
-	// no longer dump the usage block or double-print (issue #2362).
+	// rootCmd sets SilenceUsage + SilenceErrors globally, so RunE errors do
+	// not dump the usage block or double-print.
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		return proxySpawn(apiURL, cmd)
 	}
@@ -494,7 +480,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	if len(abtestProfiles) > 0 && cmd.Flags().Changed("profile") {
 		return fmt.Errorf("--abtest and --profile are mutually exclusive")
 	}
-	// --provider validation (issue #2852). Both checks run here, before any
+	// --provider validation. Both checks run here, before any
 	// side effect, so a rejected combination creates no worktree, no tmux
 	// session, and no DB row. The harness check deliberately precedes the
 	// harness-registry lookup further down so the error names BOTH flags
@@ -542,13 +528,13 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	}
 	// --prompt-source is a hidden internal flag set by the host-API /spawn
 	// handler so that proxy-spawned sessions carry "proxy-spawn" instead of
-	// the auto-detected "cli-positional" (C.4.SRC, issue #1148).
+	// the auto-detected "cli-positional".
 	if overrideSource, _ := cmd.Flags().GetString("prompt-source"); overrideSource != "" {
 		promptSource = overrideSource
 	}
 	// `prism spawn --pr <number>` always targets a pre-existing PR (Case 1 in
 	// agents/coordinator.md), so it never authored the PR. This is the single
-	// host-side injection point for the read-only guidance (issue #2633): the
+	// host-side injection point for the read-only guidance: the
 	// host-API /spawn handler always shells out to `prism spawn --pr <n>` for
 	// a sandboxed caller, whether the caller ran `prism pr <number>` or
 	// `prism spawn --pr <number>` — both funnel through here. A direct
@@ -563,18 +549,18 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// headless when invoked from a shell/agent rather than the tmux keybinding.
 	// The keybinding sets PRISM_KEYBIND_SPAWN=1; --attach overrides to force a switch.
 	fromKeybind := os.Getenv("PRISM_KEYBIND_SPAWN") != ""
-	// Reject an empty prompt at the operator boundary (issue #1891). When the
-	// hidden --prompt-source flag is set we are running as the child of the
-	// host-API /spawn handler, which has already validated that req.Prompt is
-	// non-empty (layer 3); skipping the check there keeps the proxy's own
-	// 400 surface as the source of truth for that path.
+	// Reject an empty prompt at the operator boundary. When the hidden
+	// --prompt-source flag is set we are running as the child of the host-API
+	// /spawn handler, which has already validated that req.Prompt is non-empty.
+	// Skipping the check there keeps the proxy's own 400 surface as the source
+	// of truth for that path.
 	//
-	// Keybind carve-out (issues #2012, #2073): the tmux Prefix+a keybind
-	// invokes `prism spawn --attach` with no --prompt because the operator
-	// types the initial prompt to the live agent after the popup attaches.
-	// The keybind sets PRISM_KEYBIND_SPAWN=1 (the `fromKeybind`
-	// discriminator — a dedicated sentinel that no sandbox injects), so an
-	// empty prompt on that path is legitimate and must be allowed through.
+	// Keybind carve-out: the tmux Prefix+a keybind invokes `prism spawn
+	// --attach` with no --prompt because the operator types the initial prompt
+	// to the live agent after the popup attaches. The keybind sets
+	// PRISM_KEYBIND_SPAWN=1 (the `fromKeybind` discriminator — a dedicated
+	// sentinel that no sandbox injects), so an empty prompt on that path is
+	// legitimate and must be allowed through.
 	if promptText == "" && promptSource != "proxy-spawn" && !fromKeybind {
 		return emptyPromptError(cmd, "prism spawn")
 	}
@@ -588,16 +574,13 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// prism spawn creates a new worktree in a git repo and should respect the
 	// explicit --isolation flag and machine default only. The per-path override
 	// is applied by prism switch (opening an existing path) and prism restore
-	// (re-creating a session for a stored path). This matches the edge-case AC
-	// in issue #1404: "prism spawn from inside a session does not consult
-	// project_isolation_overrides — it uses the caller's isolation mode
-	// resolution path unchanged."
+	// (re-creating a session for a stored path).
 	isolationMode, err := resolveIsolationMode(cmd, cfg)
 	if err != nil {
 		return err
 	}
 
-	// --containers + host isolation: informational warning (#2317 / #2323).
+	// --containers + host isolation: informational warning.
 	// See warnContainersWithHostMode for the rationale.
 	containersFlag, _ := cmd.Flags().GetBool("containers")
 	warnContainersWithHostMode(os.Stderr, containersFlag, string(isolationMode))
@@ -608,10 +591,9 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Container availability check: when container mode is active (never, in
 	// current code) verify the runtime is available before touching anything.
-	// resolveIsolationMode
-	// has already validated platform availability for bwrap / sandbox-exec
-	// (D1: iso.Available()); this branch remains
-	// because it fires only when isoCaps.IsContainer.
+	// resolveIsolationMode has already validated platform availability for
+	// bwrap / sandbox-exec via iso.Available(). This branch fires only when
+	// isoCaps.IsContainer.
 	if isoCaps.IsContainer {
 		iso, isoErr := container.For(isolationMode, container.ConstructorOpts{})
 		if isoErr != nil {
@@ -627,8 +609,6 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// The bwrap cap guards against process-count exhaustion from uncapped
 	// bwrap sessions (each is a host process with no per-session memory ceil).
 	// The sandbox-exec cap mirrors the bwrap cap for Darwin sessions.
-	//
-	// A.3 (#1134): unified cap via iso.Cap(ctx, dbPath).Check(ignoreCap).
 	if err := checkConcurrencyCap(cmd, "spawn", isolationMode); err != nil {
 		return err
 	}
@@ -651,8 +631,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 			pf = nil
 		}
 	}
-	// Resolve the active profile applying the runtime-state file precedence
-	// from #1207:
+	// Resolve the active profile applying the runtime-state file precedence:
 	//
 	//   1. Explicit --profile flag (highest)
 	//   2. Runtime state file at $XDG_STATE_HOME/prism/active-profile
@@ -664,7 +643,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	if err != nil {
 		return err
 	}
-	_ = profileSource // intentionally unused — kept for future debug logging
+	_ = profileSource // intentionally unused
 
 	// Resolve the bare repo root from the current pane path (or --repo flag).
 	bareRoot, err := resolveBareRoot(repoFlag)
@@ -684,7 +663,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// recovery options. The check is a single DB query — no worktree, no tmux
 	// session, no DB row is created before this point.
 	//
-	// mainCoordinatorReuse (#2352): `prism spawn --branch main` defaults to
+	// mainCoordinatorReuse: `prism spawn --branch main` defaults to
 	// reuse semantics. The bare+worktree layout means the main worktree
 	// already exists at `<bareRoot>/main/`, and there is at most one
 	// coordinator per repo (invariant relied on by `prism escalate`
@@ -705,10 +684,8 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 			// writers store in `agent_status.worktree` (SpawnOpts.Worktree =
 			// worktreePath at cmd/spawn.go's SpawnSession call site, and
 			// `event tmux-session-start --worktree <dir>` from every pane).
-			// Pre-#2352 this call passed the branch name and coincidentally
-			// tested-passed on rows seeded with worktree="main", but never
-			// matched a real DB row — so the reuse dedupe silently didn't fire
-			// and the caller fell through to a duplicate-tmux-session failure.
+			// The branch name alone never matches a real DB row, so the reuse
+			// dedupe must use the full path.
 			existing, lookupErr := d.ActiveStatusForRepoWorktree(repoName, filepath.Join(bareRoot, branch))
 			// ActiveStatusForRepoWorktree filters by ended_at IS NULL, so a
 			// session whose row was just `prism cleanup`’d (ended_at
@@ -716,9 +693,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 			// proceeds and the state-machine table allows the row to be
 			// re-seeded from any non-deleted terminal state (error /
 			// finished / interrupted) back to idle. That is why both
-			// recovery messages below truthfully point at `prism cleanup`
-			// (issue #2094 — prerequisite for any future tightening of
-			// checkTransition raised by #2081).
+			// recovery messages below truthfully point at `prism cleanup`.
 			if lookupErr == nil && existing != nil {
 				// There is an active session for this branch.
 				// Healthy = state not "error" and not "deleted".
@@ -733,14 +708,14 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 					// --branch main reuse with --prompt: deliver the prompt to
 					// the running coordinator so `prism spawn --repo <x>
 					// --branch main --prompt '...'` is a one-shot "ensure
-					// coordinator, then tell it" (#2352 AC4). The waiting-state
-					// guard mirrors `prism prompt` (#2352 AC5): a paused
-					// coordinator is expecting direct human input, so a
-					// programmatic prompt would corrupt the input field.
+					// coordinator, then tell it". The waiting-state guard
+					// mirrors `prism prompt`: a paused coordinator is expecting
+					// direct human input, so a programmatic prompt corrupts the
+					// input field.
 					//
 					// The guard is scoped to mainCoordinatorReuse so the
-					// legacy `--reuse` (feature-branch) path stays a pure
-					// details-print no-op, unchanged.
+					// `--reuse` (feature-branch) path stays a pure
+					// details-print no-op.
 					if mainCoordinatorReuse && promptText != "" {
 						if existing.State == "waiting" {
 							return waitingStateError(existing.SessionName)
@@ -773,32 +748,26 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	}
 
 	// Validate the active profile defines a slot for the session's role
-	// before spending I/O on worktree creation (#1206 edge case AC). The
-	// active profile here is whatever ResolveActiveProfile returned above —
-	// flag → state file → nix default — so a stale runtime state file
-	// pointing at an invalid profile is rejected here with the same shape
-	// of error as a bad --profile flag (#1207 edge-case AC).
+	// before spending I/O on worktree creation. The active profile here is
+	// whatever ResolveActiveProfile returned above — flag → state file → nix
+	// default — so a stale runtime state file pointing at an invalid profile
+	// is rejected here with the same shape of error as a bad --profile flag.
 	//
 	// The session role is the explicit --agent flag when set, otherwise
 	// inferred from the branch name (main → coordinator, anything else →
 	// worker, mirroring session.DefaultAgent).
 	//
 	// Keyed on resolvedProfile alone, NOT on `pf != nil && resolvedProfile
-	// != ""` (#2854 review round 2). A nil pf paired with a non-empty
-	// profile name is reachable — profiles.json fails to load (non-fatal in
-	// host mode with no --profile), while the active-profile state file still
-	// names a profile, which ResolveActiveProfile returns unchanged. Before
-	// #2854 the second config.BuildConfigContent call below this block
-	// rejected that state, so `prism spawn` failed. Letting RequireSlot's
-	// nil-pf branch fire preserves the rejection and keeps `prism spawn` and
-	// `prism pr` (cmd/pr.go) deciding the same misconfiguration the same way.
+	// != ""`. A nil pf paired with a non-empty profile name is reachable:
+	// profiles.json fails to load (non-fatal in host mode with no --profile),
+	// while the active-profile state file still names a profile, which
+	// ResolveActiveProfile returns unchanged. Letting RequireSlot's nil-pf
+	// branch fire rejects that state and keeps `prism spawn` and `prism pr`
+	// (cmd/pr.go) deciding the same misconfiguration the same way.
 	//
-	// One deliberate widening: the old rejection only fired when --model,
-	// --variant, or --provider was passed, because that is what gated the
-	// block that produced it. This gate does not check those flags. A state
-	// file naming a profile that cannot be read is broken whether or not an
-	// override accompanies it, and the narrower form would leave the two
-	// commands disagreeing again.
+	// The gate does not check --model / --variant / --provider: a state file
+	// naming a profile that cannot be read is broken whether or not an
+	// override accompanies it.
 	if resolvedProfile != "" {
 		plannedRole := agentFlag
 		if plannedRole == "" {
@@ -811,7 +780,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		if err := config.RequireSlot(pf, resolvedProfile, plannedRole); err != nil {
 			// When the failure stems from the state file (not the flag),
 			// add a hint pointing at `prism profile use` so users have a
-			// clear recovery path (#1207 edge-case AC).
+			// clear recovery path.
 			if profileFlag == "" && profileSource == "state-file" {
 				return fmt.Errorf("%w\nhint: the active profile is set via the runtime state file ($XDG_STATE_HOME/prism/active-profile). Run `prism profile use <name>` to switch to a valid profile",
 					err)
@@ -828,19 +797,18 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Create the worktree (handles local, remote-tracking, and new branches).
 	//
-	// mainCoordinatorReuse path (#2352): `prism spawn --branch main` on a
-	// repo whose main worktree already exists at `<bareRoot>/main/` (the
-	// bare+worktree default) skips `git.CreateWorktree` — which would
-	// otherwise fail with a git "already checked out" error — and starts
-	// the coordinator on the existing worktree. When no main worktree is
-	// registered (e.g. repo default branch is not "main" or the repo has
-	// not been converted), we fall through to CreateWorktree so pre-#2352
-	// behaviour is preserved.
+	// mainCoordinatorReuse path: `prism spawn --branch main` on a repo whose
+	// main worktree already exists at `<bareRoot>/main/` (the bare+worktree
+	// default) skips `git.CreateWorktree` — which fails with a git "already
+	// checked out" error on an existing worktree — and starts the coordinator
+	// on the existing worktree. When no main worktree is registered (e.g. repo
+	// default branch is not "main" or the repo has not been converted), fall
+	// through to CreateWorktree.
 	var worktreePath string
 	// createdWorktree is non-nil only when THIS spawn created the worktree
-	// — never on the mainCoordinatorReuse fast path (#2352), which reuses
-	// the existing main worktree. It arms the deferred caller-level
-	// rollback below and is disarmed once SpawnSession succeeds.
+	// — never on the mainCoordinatorReuse fast path, which reuses the
+	// existing main worktree. It arms the deferred caller-level rollback
+	// below and is disarmed once SpawnSession succeeds.
 	var createdWorktree *git.CreatedWorktree
 	if mainCoordinatorReuse {
 		if wt, ok := existingWorktreeForBranch(bareRoot, branch); ok {
@@ -855,7 +823,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		worktreePath = created.Path
 		createdWorktree = &created
 	}
-	// Caller-level rollback (#2363): a failure in any step between worktree
+	// Caller-level rollback: a failure in any step between worktree
 	// creation and SpawnSession success removes the freshly created worktree
 	// (and deletes the branch only when it was freshly forked by this spawn
 	// and still has no commits beyond its fork point). Rollback failures are
@@ -869,7 +837,6 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// Build SpawnOpts and call session.SpawnSession — the single shared
 	// primitive for creating a prism session end-to-end (port allocation,
 	// DB seed with root_agent_name, tmux session creation, sidecar startup).
-	// See #849 §3.1 and #859.
 	sessionName := session.NameFor(worktreePath, bareRoot)
 	// DefaultAgent (not DefaultAgentForSession) is intentional here: at spawn
 	// time the session does not yet have a DB row, so there is no root_agent_name
@@ -885,19 +852,17 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// harness-specific string literals appear in the session package.
 	// harnessFlag was already validated above, so the error is unreachable.
 	h, _ := harness.New(harnessFlag, "", nil, "", "")
-	// Keybind carve-out (issue #2012): when the spawn was initiated by the
-	// tmux Prefix+a keybind and no prompt was supplied, opt out of the layer-4
-	// empty-prompt guard in SpawnSession. The operator types the initial
-	// prompt to the live agent after the popup attaches. Any other combination
-	// (non-keybind, or keybind with an explicit --prompt) keeps the original
-	// #1891 guard active.
+	// Keybind carve-out: when the spawn was initiated by the tmux Prefix+a
+	// keybind and no prompt was supplied, opt out of the empty-prompt guard
+	// in SpawnSession. The operator types the initial prompt to the live agent
+	// after the popup attaches. Any other combination (non-keybind, or keybind
+	// with an explicit --prompt) keeps the guard active.
 	allowEmptyPrompt := fromKeybind && promptText == ""
 
-	// C4.SK / C4.AP: compute the skills manifest hash and the agent role file
-	// hash before building SpawnOpts so they land on the spawn_inputs row
-	// written by SpawnSession (issue #2087 centralisation). Errors are
-	// non-fatal: a missing or unreadable input produces an empty hash (which
-	// SpawnSession then writes as NULL).
+	// Compute the skills manifest hash and the agent role file hash before
+	// building SpawnOpts so they land on the spawn_inputs row written by
+	// SpawnSession. Errors are non-fatal: a missing or unreadable input
+	// produces an empty hash (which SpawnSession then writes as NULL).
 	skillsDir := prismSkillsDir()
 	skillsManifestHash, skillsHashErr := skills.ComputeManifest(skillsDir)
 	if skillsHashErr != nil {
@@ -911,9 +876,9 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		agentPromptHash = ""
 	}
 
-	// spawn_inputs audit fields (issue #2087): collected here, written by
-	// SpawnSession via SpawnOpts. Raw user-passed flag values — isolationMode
-	// above is the *resolved* value; this is the raw --isolation flag.
+	// spawn_inputs audit fields: collected here, written by SpawnSession via
+	// SpawnOpts. Raw user-passed flag values — isolationMode above is the
+	// *resolved* value; this is the raw --isolation flag.
 	isolationFlagRaw, _ := cmd.Flags().GetString("isolation")
 	prNumber := 0
 	if prFlag != "" {
@@ -931,7 +896,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		PromptSource: promptSource,
 		// InvokerSession populates the from_session field of the durable
 		// session.spawn_intent / session.spawn_failed events written by
-		// SpawnSession (#2364). Sourced from PRISM_SESSION_NAME so both
+		// SpawnSession. Sourced from PRISM_SESSION_NAME so both
 		// tmux-attached spawns (coordinator running `prism spawn`) and
 		// host-API-shelled spawns (sidecar sets PRISM_SESSION_NAME to the
 		// invoker) carry it. Bare CLI spawns run outside a session and
@@ -945,15 +910,15 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		HarnessName:      harnessFlag,
 		ModelsByRole:     modelsByRole,
 		AllowEmptyPrompt: allowEmptyPrompt,
-		// CLI overrides (issue #2086) flow through to the tmux pane command
+		// CLI overrides flow through to the tmux pane command
 		// so `prism agent-run` (bwrap / sandbox-exec) and direct pi (host)
 		// receive --model / --variant on the final argv.
 		Model:   modelFlag,
 		Variant: variantFlag,
-		// Provider override (issue #2852). Validated above as pi-only, so
-		// every downstream emit site sees a pi harness when it is non-empty.
+		// Provider override. Validated above as pi-only, so every downstream
+		// emit site sees a pi harness when it is non-empty.
 		Provider: providerFlag,
-		// ── spawn_inputs audit fields (#2087) ─────────────────────────
+		// ── spawn_inputs audit fields ─────────────────────────
 		ProfileName:          resolvedProfile,
 		ModelFlag:            modelFlag,
 		VariantFlag:          variantFlag,
@@ -970,7 +935,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		// ────────────────────────────────────────────────────────
 		// PIExtensionDir is the host-side prism PI extension directory
 		// (populated by Nix into config.json). Forwarded so that host-mode
-		// pi launches pass --extension <dir>/prism.ts (#2065).
+		// pi launches pass --extension <dir>/prism.ts.
 		PIExtensionDir: cfg.PIExtensionDir,
 		// ForceFresh=true: spawn always wants a new instance. If a session
 		// with the same name already exists it is a stale zombie and should
@@ -982,7 +947,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		// read-only mount ensures even a denylist gap cannot modify the repo).
 		WorktreeReadOnly: agentRole == "investigate",
 		// ReadinessTimeout=DefaultReadinessTimeout (30s) gates SpawnSession's
-		// return on the agent actually binding its port (#1051 AC-14).
+		// return on the agent actually binding its port.
 		// Single-worker spawns benefit from the same readiness check that
 		// review fan-outs do: an operator running `prism spawn --branch foo`
 		// sees a clear "failed to start: not ready within 30s" instead of
@@ -1001,10 +966,10 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 			proglog.Warnf("[prism spawn] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
 		}
 	}
-	// AgentEnvVars only applies to host-mode sessions; sandboxed sessions
+	// AgentEnvVars only applies to host-mode sessions. Sandboxed sessions
 	// receive env vars via their own injection paths. The map is filtered by
-	// role before the SpawnOpts are constructed (issue #2533) — the same
-	// filter the sandboxed dispatch paths apply in cmd/agent_run.go.
+	// role before the SpawnOpts are constructed — the same filter the
+	// sandboxed dispatch paths apply in cmd/agent_run.go.
 	if pf != nil && !isoCaps.IsContainer {
 		spawnOpts.AgentEnvVars = config.FilterAgentEnvVarsForRole(agentRole, pf.AgentEnvVars)
 	}
@@ -1015,7 +980,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	}
 	defer d.Close()
 
-	// SpawnSession is the canonical spawn_inputs writer (#2087): it builds
+	// SpawnSession is the canonical spawn_inputs writer: it builds
 	// the row from SpawnOpts fields populated above and inserts it after the
 	// sessions row exists. No post-spawn writer is needed here.
 	if err := session.SpawnSession(d, spawnOpts); err != nil {
@@ -1047,7 +1012,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 
 // existingWorktreeForBranch returns the path of a worktree that is already
 // registered for branch under bareRoot, or ("", false) when no such worktree
-// exists. Used by the `prism spawn --branch main` reuse path (#2352) so a
+// exists. Used by the `prism spawn --branch main` reuse path so a
 // headless coordinator can start on the existing main worktree instead of
 // failing at `git.CreateWorktree`.
 //
@@ -1111,7 +1076,7 @@ func prismAgentRolePath(role string) string {
 // ignoreConcurrencyCapFlagFromCmd reads --ignore-concurrency-cap if present.
 // Safe to call on commands that do not register the flag (returns false).
 // Used to populate SpawnOpts.IgnoreConcurrencyCap for the spawn_inputs audit
-// row written by SpawnSession (issue #2087).
+// row written by SpawnSession.
 func ignoreConcurrencyCapFlagFromCmd(cmd *cobra.Command) bool {
 	if cmd == nil {
 		return false
@@ -1122,7 +1087,7 @@ func ignoreConcurrencyCapFlagFromCmd(cmd *cobra.Command) bool {
 
 // resolveBareRoot returns the bare repo root to operate on.
 // If repoFlag is set, it is resolved as a shorthand name under ~/code or as a
-// full path. If not set, the current pane path is used (existing behaviour).
+// full path. If not set, the current pane path is used.
 func resolveBareRoot(repoFlag string) (string, error) {
 	if repoFlag != "" {
 		return resolveRepo(repoFlag)
@@ -1198,8 +1163,8 @@ func resolveBranch(bareRoot, branchFlag, prFlag string) (string, error) {
 	if prFlag != "" {
 		// On a gitlab.com remote, resolve and fetch the MR source branch via
 		// the GitLab head ref instead of the GitHub gh path. Detection is by
-		// origin remote URL; any non-gitlab.com remote keeps the unchanged
-		// GitHub flow below.
+		// origin remote URL; any non-gitlab.com remote keeps the GitHub flow
+		// below.
 		if remoteURL, _ := git.OriginRemoteURL(bareRoot); forge.IsGitLab(remoteURL) {
 			fmt.Printf("fetching gitlab.com MR !%s source branch for %s...\n", prFlag, filepath.Base(bareRoot))
 			branch, err := git.FetchGitLabMRBranch(bareRoot, prFlag, func(iid string) (string, error) {
@@ -1310,7 +1275,7 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 	if overrideSource, _ := cmd.Flags().GetString("prompt-source"); overrideSource != "" {
 		promptSource = overrideSource
 	}
-	// Reject an empty prompt at the operator boundary (issue #1891). See
+	// Reject an empty prompt at the operator boundary. See
 	// the matching check in runSpawn for the proxy-spawn carve-out.
 	if promptText == "" && promptSource != "proxy-spawn" {
 		return emptyPromptError(cmd, "prism spawn")
@@ -1323,10 +1288,10 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 		return err
 	}
 
-	// --containers + host isolation: informational warning, mirroring runSpawn
-	// (#2317 / #2323). Both legs of an abtest pair share the same resolved
-	// isolation mode, so a single warning covers both. The flag is recorded in
-	// each leg's spawn_inputs.containers_flag for audit symmetry.
+	// --containers + host isolation: informational warning, mirroring runSpawn.
+	// Both legs of an abtest pair share the same resolved isolation mode, so a
+	// single warning covers both. The flag is recorded in each leg's
+	// spawn_inputs.containers_flag for audit symmetry.
 	warnContainersWithHostMode(os.Stderr, containersFlag, string(isolationMode))
 
 	isoCaps := container.CapabilitiesFor(isolationMode)
@@ -1374,8 +1339,8 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 
 	// Validate both profiles exist and have the required slot BEFORE any
 	// side effects (no worktree, no tmux session, no DB row on failure).
-	// Also resolve per-leg harness from each profile's slot (#1328):
-	// --harness flag overrides; when absent, the slot's harness is used.
+	// Also resolve per-leg harness from each profile's slot:
+	// --harness flag overrides. When absent, the slot's harness is used.
 	type abtestLeg struct {
 		profileName string
 		branch      string
@@ -1525,7 +1490,7 @@ type spawnOneAbtestArgs struct {
 	prFlag             string
 	// containersFlag mirrors `prism spawn --containers` and is threaded to
 	// each abtest leg so both sibling sessions opt into the proxy
-	// symmetrically (#2317 / #2323).
+	// symmetrically.
 	containersFlag bool
 	d              *db.DB
 }
@@ -1544,7 +1509,7 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 	// No profile validation here: runAbtestSpawn already ran
 	// config.RequireSlot(pf, profileName, plannedRole) for BOTH legs before
 	// any side effect, and plannedRole is assigned unconditionally upstream.
-	// A second check on this path could never fire (#2854 review round 1).
+	// A second check on this path could never fire.
 
 	sessionName = session.NameFor(worktreePath, a.bareRoot)
 	agentRole := session.DefaultAgent(worktreePath, a.agentFlag)
@@ -1565,8 +1530,8 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		Prompt:       a.promptText,
 		PromptSource: a.promptSource,
 		// InvokerSession for the durable spawn_intent / spawn_failed events
-		// SpawnSession writes at the chokepoint (#2364). See the main
-		// spawn path above for the full rationale.
+		// SpawnSession writes at the chokepoint. See the main spawn path above
+		// for the full rationale.
 		InvokerSession: os.Getenv("PRISM_SESSION_NAME"),
 		Layout:         session.LayoutFull,
 		IsolationMode:  string(a.isolationMode),
@@ -1574,17 +1539,17 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		RuntimeEnvVars: h.RuntimeEnv(),
 		HarnessName:    a.harnessFlag,
 		ModelsByRole:   a.modelsByRole,
-		// CLI overrides flow through to the tmux pane command (issue #2086).
+		// CLI overrides flow through to the tmux pane command.
 		Model:      a.modelFlag,
 		Variant:    a.variantFlag,
 		ForceFresh: true,
 		Headless:   true,
 		// WorktreeReadOnly: mount the worktree read-only for investigate sessions.
 		WorktreeReadOnly: agentRole == "investigate",
-		// PIExtensionDir for host-mode pi launches (#2065).
+		// PIExtensionDir for host-mode pi launches.
 		PIExtensionDir:   a.cfg.PIExtensionDir,
 		ReadinessTimeout: session.DefaultReadinessTimeout,
-		// ── spawn_inputs audit fields (#2087) ─────────────────────────
+		// ── spawn_inputs audit fields ─────────────────────────
 		ProfileName:          a.profileName,
 		ModelFlag:            a.modelFlag,
 		VariantFlag:          a.variantFlag,
@@ -1600,7 +1565,7 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		ContainersFlag:       a.containersFlag,
 		// ────────────────────────────────────────────────────────
 	}
-	// Role-filtered before the SpawnOpts are constructed (issue #2533).
+	// Role-filtered before the SpawnOpts are constructed.
 	if a.pf != nil && !a.isoCaps.IsContainer {
 		spawnOpts.AgentEnvVars = config.FilterAgentEnvVarsForRole(agentRole, a.pf.AgentEnvVars)
 	}
@@ -1612,7 +1577,7 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		}
 	}
 
-	// SpawnSession is the canonical spawn_inputs writer (#2087) and includes
+	// SpawnSession is the canonical spawn_inputs writer and includes
 	// the abtest_pair_id from SpawnOpts.AbtestPairID. Both legs of the abtest
 	// pair share the same a.pairID minted by the caller.
 	if err := session.SpawnSession(a.d, spawnOpts); err != nil {

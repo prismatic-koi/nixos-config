@@ -1,5 +1,5 @@
 // Package cmd tests for runNav — specifically the tmux switch-client call-site
-// pattern introduced by the fix for issue #1806.
+// pattern.
 //
 // runNav must call `tmux switch-client -c <client> -t <target>` (the explicit
 // -c form) whenever tmux.CurrentClient() returns a non-empty name.  When it
@@ -131,8 +131,8 @@ func parseNavSpyLog(t *testing.T, logFile string) [][]string {
 // -c <client> -t <target> to tmux switch-client when CurrentClient() returns
 // a non-empty client name.
 //
-// This test FAILS against the pre-fix code (which called SwitchClientCurrent,
-// producing switch-client -t <target> without a -c flag).
+// If runNav calls SwitchClientCurrent instead, it produces
+// switch-client -t <target> without a -c flag, and this test fails.
 func TestRunNav_SwitchClientUsesExplicitClientFlag(t *testing.T) {
 	// Mutates TmuxBin and openNavDB — must not be parallel.
 	const (
@@ -156,10 +156,10 @@ func TestRunNav_SwitchClientUsesExplicitClientFlag(t *testing.T) {
 
 	args := invocations[0]
 	// Assert the explicit -c flag is present with the correct client name.
-	// This assertion FAILS against the pre-fix code which produced:
-	//   switch-client -t <target>
-	// and PASSES against the fix which produces:
+	// The correct invocation is:
 	//   switch-client -c <client> -t <target>
+	// An invocation without -c is:
+	//   switch-client -t <target>
 	if len(args) < 4 || args[0] != "-c" || args[1] != clientName || args[2] != "-t" || args[3] != targetSession {
 		t.Errorf("switch-client args = %v\nwant: [-c %q -t %q]", args, clientName, targetSession)
 	}

@@ -1,7 +1,7 @@
 package cmd
 
 // supervise.go — shared signal/PTY supervisor for bwrap and sandbox-exec
-// agent-run paths (issue #1149 A2.SUP; design proposal A2 §3.6).
+// agent-run paths.
 //
 // The bwrap path (Linux) and the sandbox-exec path (Darwin) both run the
 // sandbox launcher as a supervised child of agent-run, which itself is the
@@ -13,11 +13,9 @@ package cmd
 //     process group while the child is alive.
 //  3. cmd.Wait() and surface the exit code.
 //
-// Pre-A2.SUP these steps were inlined in each per-mode dispatch path with
-// minor variations (bwrap forwards SIGWINCH; sandbox-exec does not). This
-// helper unifies them behind one entry point with a small options struct
-// that captures the per-mode-specific knobs without losing the existing
-// behaviour of either path.
+// This helper unifies the two paths behind one entry point with a small
+// options struct that captures the per-mode-specific knobs (bwrap forwards
+// SIGWINCH; sandbox-exec does not).
 //
 // Note on platform: tcsetpgrpForeground/tcsetpgrpRestore use TIOCGPGRP/
 // TIOCSPGRP via syscall.SYS_IOCTL, which is identical on Linux and Darwin.
@@ -35,15 +33,13 @@ import (
 // SuperviseOpts carries the per-call inputs that SuperviseChild consumes.
 //
 // ForwardWinch controls whether SIGWINCH is forwarded to the child's process
-// group. The bwrap path sets this to true (matching the pre-A2.SUP
-// signal-forwarder behaviour, which subscribed SIGWINCH and forwarded
-// it to the child pgid). The sandbox-exec path sets it to false (matching
-// the pre-A2.SUP behaviour, which did not subscribe SIGWINCH at all — the
-// kernel still delivers it directly to the foreground process group). The
-// audit (A2 §3.6) flags this divergence as `[uncertain]` — sandbox-exec on
-// Darwin may need SIGWINCH forwarding for Bubble Tea's TIOCGWINSZ-on-stdout
-// requirement; until that is observed in practice we preserve each path's
-// pre-A2.SUP behaviour.
+// group. The bwrap path sets this to true: it subscribes SIGWINCH and
+// forwards it to the child pgid. The sandbox-exec path sets it to false: it
+// does not subscribe SIGWINCH at all — the kernel still delivers it directly
+// to the foreground process group. This divergence is uncertain —
+// sandbox-exec on Darwin may need SIGWINCH forwarding for Bubble Tea's
+// TIOCGWINSZ-on-stdout requirement; until that is observed in practice each
+// path keeps its own behaviour.
 //
 // OnWinch, when non-nil, is invoked on each SIGWINCH the supervisor receives.
 // Currently both call sites pass nil; the field is wired through so a future
@@ -86,8 +82,7 @@ type SuperviseOpts struct {
 //
 // On platforms where tcsetpgrpForeground returns 0 (non-TTY stdinFd, or
 // non-interactive contexts such as tests), the foreground-restoration step
-// is silently skipped — matching the pre-A2.SUP behaviour at the bwrap call
-// site.
+// is silently skipped.
 func SuperviseChild(cmd *exec.Cmd, stdinFd int, opts SuperviseOpts) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil

@@ -1,6 +1,7 @@
 package sidecar
 
-// Tests for issue #2633's second gap: a sandboxed `prism spawn --pr <number>`
+// Tests for the sandboxed empty-prompt PR-spawn path: a sandboxed
+// `prism spawn --pr <number>`
 // (routed through the host-API /spawn handler) must reach the host-side
 // `prism spawn --pr` subprocess even when the caller supplied no prompt —
 // the read-only guidance injected there (withPRReadOnlyGuidance in

@@ -1,6 +1,6 @@
 package sidecar
 
-// Tests for the host-API GET /stats endpoint added in #1463.
+// Tests for the host-API GET /stats endpoint.
 //
 // These tests exercise the hostAPIHandler() method directly without spinning
 // up a real Unix socket server. The shape mirrors the existing /merge, /merges
@@ -272,7 +272,7 @@ func TestHostAPI_Stats_Detail_HappyPath(t *testing.T) {
 	}
 	// The session has no agent_status row and is not terminal, so no
 	// spawn_outcome exists yet — the response must say so explicitly (nil),
-	// never fabricate zero values (issue #2582).
+	// never fabricate zero values.
 	if resp.Outcome != nil {
 		t.Errorf("outcome = %+v, want nil for a non-terminal session with no spawn_outcome row", resp.Outcome)
 	}
@@ -282,7 +282,7 @@ func TestHostAPI_Stats_Detail_HappyPath(t *testing.T) {
 // /stats?view=detail&session=<name> proxies the spawn_outcome token/cost
 // fields for a terminal session, so the sandbox proxy path
 // (renderIncarnationDetailFromSession) can render the same Token Usage block
-// as the host-direct path (issue #2582).
+// as the host-direct path.
 func TestHostAPI_Stats_Detail_IncludesOutcome(t *testing.T) {
 	d := openTestDB(t)
 
@@ -435,7 +435,7 @@ func TestHostAPI_Stats_Doomloops_JSONSchema(t *testing.T) {
 	}
 }
 
-// ── GET /stats?view=compare / abtest / abtest_list (#2098) ────────────────────
+// ── GET /stats?view=compare / abtest / abtest_list ────────────────────
 //
 // These exercise the host-API views that back `prism stats compare`,
 // `prism stats abtest <group>`, and `prism stats --abtest` from sandboxed
@@ -701,7 +701,7 @@ func seedCompareSessionWithPrompt(t *testing.T, d *db.DB, sessionName, instanceI
 
 // assertNoPromptLeak fails if the response body carries the secret prompt
 // content or any of the sensitive spawn_inputs column names — the
-// privilege-boundary guard for issue #2098: /stats is the all-roles
+// privilege-boundary guard: /stats is the all-roles
 // "aggregate counts" surface and must never ship row-level conversation
 // content (prompt_text et al).
 func assertNoPromptLeak(t *testing.T, body, secret string) {

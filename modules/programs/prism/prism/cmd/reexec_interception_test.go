@@ -1,7 +1,6 @@
 package cmd
 
-// Regression guard for TestMain's re-exec stub interception (#2237, extended
-// in #2280).
+// Regression guard for TestMain's re-exec stub interception.
 //
 // Production code reachable from this package re-execs os.Executable() — in
 // tests, THIS test binary — as `<self> sidecar …` /  `<self> event …`
@@ -15,15 +14,14 @@ package cmd
 // of the argv check, the subprocess ran the real cmd/agent_run.go path which
 // calls openAgentRunLog and creates `$XDG_STATE_HOME/prism/run/<hash>/
 // agent-run.log` AFTER the test body has returned — racing t.TempDir's
-// RemoveAll and surfacing as `unlinkat …/prism: directory not empty`
-// (#2280, the third instance of the flake class after #1477 and #1705).
+// RemoveAll and surfacing as `unlinkat …/prism: directory not empty`.
 //
 // This guard execs the test binary the way the production re-exec would —
 // the same argv shapes, no stub env var — and asserts it exits 0
 // immediately with no output. A suite run instead prints test/log output and
 // at minimum a trailing "PASS"/"FAIL", so the empty-output assertion fails
-// if the interception is ever removed (verified non-vacuous against the
-// pre-#2280 binary: the `agent-run …` re-invocation ran the full suite).
+// if the interception is ever removed. Without it, the `agent-run …`
+// re-invocation runs the full suite.
 
 import (
 	"context"
@@ -42,7 +40,7 @@ import (
 const cmdReexecGuardChildEnv = "PRISM_CMD_REEXEC_GUARD_CHILD"
 
 // TestReExecInterception_ProductionArgvShapes mirrors the same-named guards
-// in internal/integration and internal/sidecar (#2237). Each case is one
+// in internal/integration and internal/sidecar. Each case is one
 // production re-exec argv shape that this test binary can be invoked with;
 // the TestMain argv defence in killsidecar_test.go must intercept all of
 // them and exit 0 immediately. Adding a new re-exec target in production
@@ -70,7 +68,7 @@ func TestReExecInterception_ProductionArgvShapes(t *testing.T) {
 		// setupFullLayout's tmux-launched agent pane: bwrap / sandbox-exec
 		// AgentPaneCmd renders `<self> agent-run --session <name>` and hands
 		// it to tmux.NewWindow. tmux invokes the binary outside Go's
-		// process tree (#2280).
+		// process tree.
 		{"agent-run", []string{"agent-run", "--session", "prism-test@reexec-guard"}},
 	}
 	for _, tc := range cases {

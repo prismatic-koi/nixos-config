@@ -4,12 +4,6 @@
 // `pi` binary (with the anthropic-oauth extension for auth), then creates
 // a branch, commits, pushes, and opens a GitHub PR — all from main.
 // On success it switches back to main and opens the PR in the system browser.
-//
-// History (#2118): this used to call a third-party HTTP API directly with
-// google/gemini-3.1-flash-lite and an API-key env var. The HTTP path
-// produced inconsistent output and bypassed pi's prompt scaffolding. It
-// now shells out to `pi --print --mode json` with claude-sonnet-4-6 via
-// pi's anthropic-oauth extension. No API key plumbing remains.
 package quick
 
 import (
@@ -30,8 +24,7 @@ import (
 // piExecTimeout bounds how long the `pi` subprocess invoked by
 // realPiExec is allowed to run before it is killed. `pi` is the only
 // subprocess in the quick pr path with no natural completion signal from
-// the caller's side, so it is also the only one that previously had no
-// deadline at all (issue #2777).
+// the caller's side, so it is the only one that needs an explicit deadline.
 //
 // This is a package-level var, not a const, solely so tests can shorten
 // it to exercise the real timeout path (context.DeadlineExceeded, process
@@ -43,7 +36,7 @@ var piExecTimeout = 3 * time.Minute
 // subprocess's environment. These are set by prism when the CURRENT
 // process is itself running as an agent session under prism, and if
 // forwarded unchanged to a nested `pi` invocation, they make the nested
-// process believe it IS that session (issue #2777): it would try to
+// process believe it IS that session: it would try to
 // attach to the calling session's harness pipe and session file, and its
 // stdin is /dev/null, so any prompt it renders as a result can never be
 // answered.
@@ -83,9 +76,9 @@ const titleMaxLen = 72
 
 // ── Test seams ─────────────────────────────────────────────────────────────
 //
-// The package-level function vars below mirror the pattern from PR #2113's
-// investigateSpawnSessionFn seam (cmd/investigate.go). Tests override these
-// to drive Run() without actually exec'ing pi / git / gh / a browser.
+// The package-level function vars below follow the investigateSpawnSessionFn
+// seam pattern (cmd/investigate.go). Tests override these to drive Run()
+// without actually exec'ing pi / git / gh / a browser.
 //
 // piLookPathFn   — pre-flight check that `pi` is on PATH.
 // piExecFn       — runs `pi <args>` with the given stdin and returns the
@@ -130,7 +123,7 @@ func realPiExec(args []string, stdin string) piResult {
 
 	// Explicit environment: strip the PI_*/PRISM_HARNESS_PIPE vars that
 	// would otherwise be inherited from a calling prism agent session
-	// (issue #2777) and keep everything else.
+	// and keep everything else.
 	cmd.Env = filteredEnv()
 
 	var stdout, stderr bytes.Buffer
@@ -196,9 +189,8 @@ func realOpenBrowser(url string) error {
 
 // ── System prompt ──────────────────────────────────────────────────────────
 //
-// Materially expanded vs the previous 5-line template (issue #2118). Defines
-// the role, codifies the output structure, includes worked examples for the
-// "quick pr" tactical use case (NOT long-form worker-agent PRs), and
+// Defines the role, codifies the output structure, includes worked examples
+// for the "quick pr" tactical use case (NOT long-form worker-agent PRs), and
 // emphasises "why" over diff-recital.
 
 const quickPRSystemPrompt = `You are writing a tactical pull request title and body for a single-commit change.
@@ -452,7 +444,7 @@ func stagedDiff() (string, error) {
 // path with `--no-tools --no-skills`, leaving AGENTS.md auto-discovery
 // enabled (no `--no-context-files`) for repo-style awareness.
 //
-// Output extraction strategy (chosen for issue #2118): JSON-in-JSON.
+// Output extraction strategy: JSON-in-JSON.
 //
 //  1. Pi emits NDJSON (one JSON object per line) when --mode json is set.
 //  2. We scan for the final `agent_end` event; its `messages` array contains
@@ -465,8 +457,7 @@ func stagedDiff() (string, error) {
 // and the parse path is unambiguous (no regex on free-form text).
 func generateDescription(qp config.QuickProfile, diff string) (title, body string, err error) {
 	fmt.Println("Generating PR description with pi...")
-	// Pi's `--print --mode json` non-interactive path. Flags chosen per
-	// the issue ACs:
+	// Pi's `--print --mode json` non-interactive path. Flags:
 	//   --print           one-shot completion
 	//   --mode json       NDJSON output for structured parse
 	//   --no-tools        no tool calls

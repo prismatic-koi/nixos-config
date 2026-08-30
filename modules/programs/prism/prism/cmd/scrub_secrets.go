@@ -1,7 +1,7 @@
 package cmd
 
 // prism scrub-secrets — remediation for credential values captured into
-// prism.db before the capture path redacted anything (issue #2589).
+// prism.db before the capture path redacted anything.
 //
 // Usage:
 //

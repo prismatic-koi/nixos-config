@@ -38,8 +38,8 @@ import (
 // budgets on every platform: with the default state dir
 // "$HOME/.local/state/prism/run/" + 12 hex + "/hostapi.sock", the path is
 // roughly 58 bytes — comfortably under Darwin's 104-byte limit and Linux's
-// 108-byte limit even when $HOME is unusually long. See issue #1050 for the
-// full path arithmetic and the regression test in this package.
+// 108-byte limit even when $HOME is unusually long. A regression test in
+// this package pins the path arithmetic.
 const sessionDirHashLen = 12
 
 // SessionDirName returns the deterministic per-session directory name used
@@ -48,7 +48,7 @@ const sessionDirHashLen = 12
 //
 // The directory name is the first 12 hex characters of SHA-256(sessionName).
 // This keeps the resulting socket path under sun_path budgets on every
-// platform regardless of how long the session name itself is — see #1050.
+// platform regardless of how long the session name itself is.
 //
 // The mapping is pure and deterministic, so cleanup, debugging
 // (`prism logs <session>`), and sandbox bind-mount construction can all
@@ -81,9 +81,8 @@ func SidecarLogPath(sessionName string) (string, error) {
 }
 
 // SidecarReadyPath returns the readiness signal file path for the named session.
-// The sidecar's OnReady callback created this file in the removed container
-// isolation mode. No current isolation mode writes or polls it; the path
-// helper is retained so cleanup can remove stale files.
+// No current isolation mode writes or polls this file. The path helper is
+// retained so cleanup can remove stale files.
 //
 // Ready file: $XDG_STATE_HOME/prism/run/<session>-sidecar.ready
 func SidecarReadyPath(sessionName string) (string, error) {
@@ -106,17 +105,17 @@ func SidecarPIDPath(sessionName string) (string, error) {
 // SidecarHostAPIPath returns the Unix socket path for the session's host-API server.
 // Each session gets its own subdirectory under run/ so that the sandbox can
 // bind-mount only that directory — providing socket isolation without exposing
-// other sessions' sockets (security fix #960). The subdirectory is pre-created
+// other sessions' sockets — socket isolation. The subdirectory is pre-created
 // by container.prepareVolumeDirs, so the directory already exists when the
 // sandbox evaluates the bind-mount, even though the socket file inside it is
 // created later by the sidecar.
 //
 // The directory name is a 12-hex-char SHA-256 prefix of the session name (see
 // SessionDirName) rather than the session name itself. This keeps the resulting
-// socket path under the platform sun_path limits — historically the full session
-// name (e.g. "<repo>@<long-branch>~review-N-review-<role>") could push the path
-// past Linux's 108-byte and Darwin's 104-byte budgets, causing bind(2) to fail
-// with EINVAL. See #1050 for the path arithmetic and regression test.
+// socket path under the platform sun_path limits. The full session name
+// (e.g. "<repo>@<long-branch>~review-N-review-<role>") can push the path past
+// Linux's 108-byte and Darwin's 104-byte budgets, causing bind(2) to fail
+// with EINVAL.
 //
 // Socket path: $XDG_STATE_HOME/prism/run/<12-hex-of-sha256(session)>/hostapi.sock
 func SidecarHostAPIPath(sessionName string) (string, error) {
@@ -128,7 +127,7 @@ func SidecarHostAPIPath(sessionName string) (string, error) {
 }
 
 // SidecarPodmanProxyPath returns the Unix socket path for the session's
-// filtering podman API socket proxy listener (#2317 §3b / #2320).
+// filtering podman API socket proxy listener.
 //
 // The socket lives in the same per-session directory as the host-API socket
 // (hostapi.sock) and the harness-pipe socket (pipe.sock), so the existing
@@ -137,7 +136,7 @@ func SidecarHostAPIPath(sessionName string) (string, error) {
 //
 // The directory name is the same SessionDirName-derived 12-hex prefix used
 // by SidecarHostAPIPath, keeping the socket path well under sun_path limits
-// on both Linux (108 bytes) and Darwin (104 bytes) — see #1050.
+// on both Linux (108 bytes) and Darwin (104 bytes).
 //
 // Socket path: $XDG_STATE_HOME/prism/run/<12-hex-of-sha256(session)>/podman.sock
 func SidecarPodmanProxyPath(sessionName string) (string, error) {
@@ -150,7 +149,7 @@ func SidecarPodmanProxyPath(sessionName string) (string, error) {
 
 // SidecarHarnessPipePath returns the Unix socket path for the session's
 // PI harness pipe socket. This socket is the sidecar-side end of the
-// bidirectional JSONL protocol defined in P2.WIRE (#1208).
+// bidirectional JSONL protocol defined in P2.WIRE.
 //
 // The socket lives in the same per-session directory as the host-API socket
 // (hostapi.sock), so the existing bind-mount entry in bwrap (which exposes
@@ -161,7 +160,7 @@ func SidecarPodmanProxyPath(sessionName string) (string, error) {
 //
 // The directory name is the same SessionDirName-derived 12-hex prefix used
 // by SidecarHostAPIPath, keeping the socket path well under sun_path limits
-// on both Linux (108 bytes) and Darwin (104 bytes) — see #1050.
+// on both Linux (108 bytes) and Darwin (104 bytes).
 //
 // Socket path: $XDG_STATE_HOME/prism/run/<12-hex-of-sha256(session)>/pipe.sock
 func SidecarHarnessPipePath(sessionName string) (string, error) {
@@ -233,11 +232,10 @@ func KillSidecar(sessionName string) {
 	//   <binary> sidecar --session <name> ...
 	//
 	// We require both "sidecar" and "--session" to appear in the cmdline.
-	// A previous implementation checked for "prism" in the binary path, but
-	// that produced false negatives under `go test`, where the sidecar is
-	// spawned by re-invoking the test binary (e.g. "cmd.test sidecar …") —
-	// the cmdline does not contain "prism" at all, so KillSidecar skipped
-	// the kill and sidecars leaked after every test run.
+	// Do not match on "prism" in the binary path: under `go test` the sidecar
+	// is spawned by re-invoking the test binary (e.g. "cmd.test sidecar …"),
+	// whose cmdline does not contain "prism" at all, so KillSidecar would skip
+	// the kill and sidecars would leak after every test run.
 	if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
 		cmdlineStr := string(cmdline)
 		if !strings.Contains(cmdlineStr, "sidecar") || !strings.Contains(cmdlineStr, "--session") {
@@ -274,8 +272,7 @@ func KillSidecar(sessionName string) {
 // task as zombie *before* the listener Unix socket has been fully released
 // from the kernel's unix_socket_table — a connect(2) to the bound path can
 // still succeed for a brief window after /proc/<pid>/status reports
-// State:Z. To close this race (issue #2047 / #1998 regression), once the
-// process is gone we:
+// State:Z. To close this race, once the process is gone we:
 //
 //  1. Best-effort unlink the host-API and harness pipe socket paths so any
 //     subsequent path-based dial gets ENOENT regardless of the kernel's
@@ -327,14 +324,13 @@ func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 	// is gone (may block on zombies owned by another process, but sidecars
 	// are always child-of-init after Setsid so that case does not arise).
 	//
-	// Critical ordering note (#2047): the per-session socket files are NOT
-	// unlinked here — only after the process is confirmed gone. If we
-	// unlinked them up-front (e.g. in a defer at the top of the function),
-	// we would mask a hypothetical regression of #1998 in which SIGTERM was
-	// never sent: the listener would still be alive on its FD, but the
-	// path-based dial used by the stale-zombie regression test would get
-	// ENOENT and falsely report success. Unlinking AFTER process exit
-	// preserves the test's regression-guard semantics while still closing
+	// Critical ordering note: the per-session socket files are NOT unlinked
+	// here — only after the process is confirmed gone. Unlinking them up-front
+	// (e.g. in a defer at the top of the function) would mask a regression in
+	// which SIGTERM was never sent: the listener would still be alive on its
+	// FD, but the path-based dial used by the stale-zombie regression test
+	// would get ENOENT and falsely report success. Unlinking AFTER process
+	// exit preserves the test's regression-guard semantics while still closing
 	// the post-exit kernel race that motivates this fix.
 	deadline := time.Now().Add(timeout)
 	processGone := false
@@ -371,11 +367,11 @@ func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 // the given session, ignoring errors. Called from KillSidecarAndWait *after*
 // the sidecar process has been confirmed gone, so that a dial by path then
 // gets ENOENT regardless of the kernel's internal listener state. This closes
-// the race observed in issue #2047 where /proc/<pid>/status reports State:Z
-// (so sidecarProcessExists returns false) before the kernel has fully torn
-// down the bound Unix socket from its listener table. Importantly, the unlink
-// is NOT a defer at the top of KillSidecarAndWait — see the call site for why
-// ordering matters for preserving the #1998 regression guard.
+// the race where /proc/<pid>/status reports State:Z (so sidecarProcessExists
+// returns false) before the kernel has fully torn down the bound Unix socket
+// from its listener table. Importantly, the unlink is NOT a defer at the top
+// of KillSidecarAndWait — see the call site for why ordering matters for
+// preserving the regression guard.
 func unlinkSidecarSockets(sessionName string) {
 	if sockPath, err := SidecarHostAPIPath(sessionName); err == nil {
 		_ = os.Remove(sockPath)
@@ -401,7 +397,7 @@ const sidecarAliveDialTimeout = 250 * time.Millisecond
 // perfectly healthy. Classifying such a session as a stale zombie purely on
 // last_seen age — and then SIGTERMing its sidecar — severs every coordination
 // channel for the session (prompt delivery, finish notifications, event
-// recording). See issue #2255 for the incident this guards against.
+// recording).
 //
 // A dead socket (absent path, or a tombstone file whose listener is gone —
 // ECONNREFUSED) returns false, preserving the existing stale-zombie restart
@@ -490,7 +486,7 @@ type StartSidecarOpts struct {
 	// Passed via --plugin-path in container mode.
 	PluginHostPath string
 	// InitialPrompt is the spawn prompt to deliver to the agent after container
-	// readiness. Passed via --initial-prompt in container mode (#487).
+	// readiness. Passed via --initial-prompt in container mode.
 	// Empty string means no prompt delivery.
 	InitialPrompt string
 	// InstanceID is the UUID instance identifier for this session incarnation.
@@ -569,19 +565,16 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 
 	// Pass --isolation-mode when set; the sidecar uses this to branch on
 	// container creation, harness selection, and host-API socket setup.
-	// The flag survives the registry move because the spawned sidecar still
-	// needs to look up its own isolator after re-exec.
+	// The spawned sidecar needs the flag to look up its own isolator after
+	// re-exec.
 	if opts.IsolationMode != "" {
 		cmdArgs = append(cmdArgs, "--isolation-mode", opts.IsolationMode)
 	}
 
-	// D5 (issue #1133): the per-mode argv branches collapse into a single
-	// Isolator.SidecarFlags dispatch.
+	// The per-mode argv branches are a single Isolator.SidecarFlags dispatch:
 	//
 	//   - bwrap, sandbox-exec:  --port --agent-role --plugin-path …
 	//   - host:                 --port --agent-role --plugin-path …  (same as bwrap/sandbox-exec)
-	//
-	// The pre-refactor branch lived at internal/session/sidecar.go:317-352.
 	if opts.IsolationMode != "" {
 		iso, isoErr := container.For(config.IsolationMode(opts.IsolationMode), container.ConstructorOpts{Name: sessionName})
 		if isoErr == nil {

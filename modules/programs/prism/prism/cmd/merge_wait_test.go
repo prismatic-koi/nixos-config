@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for `prism merge --wait` (#1500).
+// Tests for `prism merge --wait`.
 
 import (
 	"encoding/json"
@@ -198,8 +198,8 @@ func captureStdoutAndStderr(t *testing.T, fn func()) string {
 }
 
 // TestRunMerge_WaitJSON_StdoutIsJSONOnly is the regression test for the
-// JSON-exclusive contract on the host-direct path (#1500 round-2
-// review-code blocker). When --wait and --json are both set, the only
+// JSON-exclusive contract on the host-direct path. When --wait and --json
+// are both set, the only
 // thing on stdout must be the single JSON object emitted by
 // emitMergeWaitTerminal — not the textual "PR #N enqueued ..." line.
 func TestRunMerge_WaitJSON_StdoutIsJSONOnly(t *testing.T) {
@@ -293,7 +293,7 @@ func TestEmitMergeWaitTerminal_JSONShape(t *testing.T) {
 	}
 }
 
-// ── #2420 initial-state --wait --json regression tests ────────────────────────
+// ── initial-state --wait --json regression tests ────────────────────────
 
 // runMergeWaitJSON invokes runMerge with --wait --json set on mergeCmd,
 // isolating the flag-mutation ceremony so the invocation-time-terminal
@@ -318,15 +318,14 @@ func runMergeWaitJSON(t *testing.T, arg string) (string, error) {
 	return out, runErr
 }
 
-// TestRunMerge_WaitJSON_TerminalShortCircuit_AlreadyMerged verifies the
-// PR-round-2 review-code blocker fix: a fresh invocation (no pending_merges
-// row on disk) of `prism merge --wait --json` against an already-merged PR
-// must emit a single parseable JSON envelope with status=merged, NOT empty
-// stdout. Pre-fix behaviour returned empty stdout with exit 0, silently
-// breaking the SKILL.md `--wait --json` contract for the invocation-time
-// terminal path (the existing TestRunMerge_WaitJSON_StdoutIsJSONOnly test
-// pre-seeded the pending_merges row, so it only exercised the
-// observeExistingMergeRow branch and did not cover this gap).
+// TestRunMerge_WaitJSON_TerminalShortCircuit_AlreadyMerged verifies that a
+// fresh invocation (no pending_merges row on disk) of
+// `prism merge --wait --json` against an already-merged PR emits a single
+// parseable JSON envelope with status=merged, NOT empty stdout. Empty stdout
+// with exit 0 silently breaks the SKILL.md `--wait --json` contract for the
+// invocation-time terminal path. TestRunMerge_WaitJSON_StdoutIsJSONOnly
+// pre-seeds the pending_merges row, so it only exercises the
+// observeExistingMergeRow branch and does not cover this path.
 func TestRunMerge_WaitJSON_TerminalShortCircuit_AlreadyMerged(t *testing.T) {
 	openMergeTestDB(t)
 	const coordSession = "nixos-config@main"
@@ -455,7 +454,7 @@ func TestRunMerge_WaitJSON_TerminalShortCircuit_Conflict(t *testing.T) {
 	}
 }
 
-// TestRunMerge_WaitJSON_TerminalShortCircuit_CIFailed verifies the #2527
+// TestRunMerge_WaitJSON_TerminalShortCircuit_CIFailed verifies the
 // invocation-time CI-failure terminal path under --wait --json: JSON is
 // emitted with status=failed, exit non-zero, no row enqueued — the same
 // contract shape as the merge-conflict terminal above.

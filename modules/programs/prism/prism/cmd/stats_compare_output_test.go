@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for prism stats compare output-contract fixes (issue #2099):
+// Tests for prism stats compare output-contract fixes:
 //
 //   Bug 1 — `--format table` column alignment uses a single-pass
 //   width calculation across all rows; value cells line up vertically
@@ -39,7 +39,7 @@ import (
 // forceLipglossANSI forces lipgloss to emit ANSI escape sequences for
 // the duration of the test. Without this, lipgloss auto-detects that
 // stdout is not a TTY (test environment) and emits plain text, which
-// would hide the issue #2099 Bug 1 mis-alignment that depends on
+// hides the mis-alignment that depends on
 // `len(styled_bytes) > visible_width`. The cleanup restores the Ascii
 // profile so concurrent / subsequent tests are unaffected.
 //
@@ -62,9 +62,8 @@ var ansiEscapeRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
 // stripANSI removes ANSI escape sequences from s so the result reflects
 // the *visible* characters that would land in the user's terminal. This
 // is the right primitive for column-alignment assertions because the
-// alignment bug (#2099 Bug 1) was specifically that lipgloss escape
-// codes contributed bytes but zero visible width, breaking the renderer's
-// `%-*s` byte-count padding.
+// alignment defect is that lipgloss escape codes contribute bytes but zero
+// visible width, which breaks the renderer's `%-*s` byte-count padding.
 func stripANSI(s string) string { return ansiEscapeRE.ReplaceAllString(s, "") }
 
 // dataRowRE matches lines of the form `<axis_name>: <value>...` — i.e.
@@ -103,7 +102,7 @@ func findValueColumnAnchors(t *testing.T, plain string) []int {
 }
 
 // TestRenderCompareTable_ValueColumnsAlignAcrossRows is the primary
-// alignment guard for issue #2099 Bug 1: every "label: value..." row
+// alignment guard: every "label: value..." row
 // must place its first value cell at the same column anchor as every
 // other data row's first value cell. The old renderer drifted by
 // (raw_bytes_of_styled_label - visible_width) per row, so rows with
@@ -517,7 +516,7 @@ func TestStatsCompare_FormatJSONErrorEnvelope(t *testing.T) {
 	}
 }
 
-// ── CSV negative — the fix must NOT over-broad to the CSV format ─────────────
+// ── CSV negative — the change must NOT extend to the CSV format ─────────────
 
 // TestStatsCompare_CSVFormatStillWorks is the negative AC for the
 // renderer/error-envelope refactor: --format csv must continue to emit a

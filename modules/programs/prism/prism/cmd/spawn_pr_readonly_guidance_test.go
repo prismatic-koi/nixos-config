@@ -1,7 +1,7 @@
 package cmd
 
-// Tests for issue #2633's second gap: `prism spawn --pr <number>` targets a
-// pre-existing PR exactly like `prism pr <number>` does, so it must receive
+// Tests for `prism spawn --pr <number>`: it targets a pre-existing PR exactly
+// like `prism pr <number>` does, so it must receive
 // the same read-only guidance. The actual injection happens once, host-side,
 // in runSpawn (see the withPRReadOnlyGuidance call site in spawn.go) — this
 // is the single point both `prism pr` (via the host-API /spawn handler
@@ -71,7 +71,7 @@ func TestRunSpawn_NoPR_EmptyPromptStillRejected(t *testing.T) {
 // --pr set and no --prompt, does not reject locally (layers 1+2) but instead
 // forwards the request to the host API — where the layer-3 carve-out in
 // host_api.go (req.PR != "") and the host-side runSpawn injection take over.
-// This is the "sandboxed caller" half of the AC: a container-routed
+// This is the "sandboxed caller" half: a container-routed
 // `prism spawn --pr <number>` with no caller prompt must reach the host, not
 // be rejected client-side the way a plain empty-prompt spawn would be.
 func TestProxySpawn_PRFlag_EmptyPromptForwarded(t *testing.T) {

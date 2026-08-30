@@ -1,6 +1,6 @@
 package sidecar
 
-// Unit tests for the prism-binary staleness diagnostic (issue #2742).
+// Unit tests for the prism-binary staleness diagnostic.
 //
 // prismBinaryStaleDiagnostic is the pure core of the fix: given the
 // sidecar's launch-time binary path and a fresh resolution of the

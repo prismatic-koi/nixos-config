@@ -20,7 +20,7 @@ import (
 // package-level testDBPath so openDB() uses it. It also unsets PRISM_HOST_API
 // so runPrompt uses the local DB path, not the host-API proxy.
 //
-// As a deflake measure (#1521) it also calls resetRootCmdFlags so any
+// As a deflake measure it also calls resetRootCmdFlags so any
 // rootCmd flag values left behind by a previous test (or a previous iteration
 // under `go test -count=N`) are wiped before this test drives the cobra tree
 // via rootCmd.SetArgs / rootCmd.Execute.

@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for --json flag on prism checkin (#1463).
+// Tests for --json flag on prism checkin.
 //
 // Both the direct-DB path and the proxy path are exercised.
 
@@ -129,9 +129,8 @@ func TestCheckin_JSONFlag_ProxyPath(t *testing.T) {
 	}
 }
 
-// TestCheckin_JSONFlag_StableSchema verifies the schema for checkin --json output:
-// the output must contain "session", "state", and "events" keys.
-// This is the "stable schema" AC from the issue.
+// TestCheckin_JSONFlag_StableSchema verifies the schema for checkin --json
+// output: the output must contain "session", "state", and "events" keys.
 func TestCheckin_JSONFlag_StableSchema(t *testing.T) {
 	serverResp := map[string]any{
 		"session": "nixos-config@main",

@@ -20,15 +20,15 @@ import (
 // os.UserHomeDir()+"/.local/state" when unset). In the nix build sandbox
 // (HOME=/homeless-shelter) the fallback path is unwritable, which makes any
 // test that constructs a Sidecar without first redirecting $XDG_STATE_HOME a
-// homeless-shelter footgun — see issue #1851 and the AGENTS.md note about
-// PR #1455.
+// homeless-shelter footgun — see the AGENTS.md note about the
+// homeless-shelter sandbox.
 //
-// Production callers leave Config.DashboardSink nil; New() then installs the
-// production sink (productionDashboardSink) which preserves the historical
-// behaviour exactly: PushEvent dials the dashboard socket in a goroutine,
-// TouchSentinel runs inline. Tests that construct a Sidecar via
-// sidecartest.NewIsolated get a no-op sink so no filesystem or socket I/O is
-// attempted regardless of how $HOME / $XDG_STATE_HOME are configured.
+// Production callers leave Config.DashboardSink nil. New() then installs the
+// production sink (productionDashboardSink): PushEvent dials the dashboard
+// socket in a goroutine, and TouchSentinel runs inline. Tests that construct
+// a Sidecar via sidecartest.NewIsolated get a no-op sink so no filesystem or
+// socket I/O is attempted regardless of how $HOME / $XDG_STATE_HOME are
+// configured.
 //
 // The hook is read once at New() time and never mutated thereafter, so it is
 // safe to call without holding s.mu.
@@ -44,19 +44,17 @@ type DashboardSink interface {
 }
 
 // productionDashboardSink is the default DashboardSink installed by New() when
-// Config.DashboardSink is nil. It preserves the pre-#1851 behaviour exactly:
-// PushEvent is dispatched on a goroutine (fire-and-forget) and TouchSentinel
-// runs inline.
+// Config.DashboardSink is nil. PushEvent is dispatched on a goroutine
+// (fire-and-forget), and TouchSentinel runs inline.
 type productionDashboardSink struct{}
 
-// PushEvent implements DashboardSink by spawning the historical fire-and-
-// forget goroutine that dials the dashboard socket.
+// PushEvent implements DashboardSink by spawning a fire-and-forget
+// goroutine that dials the dashboard socket.
 func (productionDashboardSink) PushEvent(sessionName, state, title string) {
 	go pushDashboardEvent(sessionName, state, title)
 }
 
-// TouchSentinel implements DashboardSink by invoking the historical inline
-// touch.
+// TouchSentinel implements DashboardSink by invoking the inline touch.
 func (productionDashboardSink) TouchSentinel() {
 	touchDashboardSentinel()
 }
@@ -92,7 +90,7 @@ func pushDashboardEvent(sessionName, state, title string) {
 	}
 	defer conn.Close()
 
-	// Set a short write deadline so we never block the caller.
+	// Set a short write deadline so the caller never blocks.
 	_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
 
 	data, err := json.Marshal(map[string]string{
@@ -130,8 +128,7 @@ func dashboardSocketPath() string {
 // described in AGENTS.md. Tests MUST go through sidecartest.NewIsolated to
 // avoid touching $XDG_STATE_HOME paths. NewIsolated installs a no-op
 // DashboardSink (NoopDashboardSink()) which bypasses both this function and
-// pushDashboardEvent entirely. See issue #1851 for the footgun analysis and
-// the original PR #1455 for the failure shape this contract prevents.
+// pushDashboardEvent entirely.
 func touchDashboardSentinel() {
 	stateHome := os.Getenv("XDG_STATE_HOME")
 	if stateHome == "" {

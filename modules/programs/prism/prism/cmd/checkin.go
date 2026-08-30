@@ -115,8 +115,8 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 
 	// Render a review-group summary only when the user explicitly requests it
 	// via the "~review" suffix. A plain "prism checkin <session>" must always
-	// show the session's own conversation, even if that session has previously
-	// called "prism review" and is registered as a parent_session in
+	// show the session's own conversation, even if that session has called
+	// "prism review" and is registered as a parent_session in
 	// session_groups.
 	if strings.HasSuffix(sessionArg, "~review") {
 		// Strip the "~review" suffix to get the parent session name, then use
@@ -142,7 +142,7 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 // if the DB has no rows for this session.
 //
 // Permission: the caller's role and repo scope are checked on BOTH routes out
-// of this function (issue #2619). A sandboxed caller proxies to the host-API
+// of this function. A sandboxed caller proxies to the host-API
 // `/checkin` endpoint, which applies the tiers server-side. A `host`-mode
 // caller takes the direct route below, where authorizeDirectCheckin applies
 // the same predicate — see cmd/checkin_permission.go.
@@ -179,8 +179,8 @@ func runCheckinSession(session string, limit int, before, after *string, types [
 		return runCheckinSessionJSON(session, limit, before, after, types)
 	}
 
-	// When --types is explicitly set, use the old raw-event query path.
-	// The new assistant-turn-centric path only applies to the default view.
+	// When --types is explicitly set, use the raw-event query path.
+	// The assistant-turn-centric path only applies to the default view.
 	if len(types) > 0 {
 		return runCheckinSessionRaw(session, limit, before, after, types, verbose)
 	}
@@ -320,7 +320,7 @@ func runCheckinSessionJSON(session string, limit int, before, after *string, typ
 	return printJSON(data)
 }
 
-// runCheckinSessionRaw is the legacy raw-event query path, used when --types
+// runCheckinSessionRaw is the raw-event query path, used when --types
 // is explicitly specified. It returns raw events without turn grouping.
 func runCheckinSessionRaw(session string, limit int, before, after *string, types []string, verbose bool) error {
 	d, err := openDB()

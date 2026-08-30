@@ -9,17 +9,16 @@
 //
 // A repo protected only via a ruleset (as this repo's `main` is —
 // nixos-config-branch-ruleset) returns HTTP 404 from the classic endpoint.
-// Prior to #2436, both probe sites treated that 404 as "no protection
-// configured at all" and, per the #2420 no-silent-auto-merge rule, waited
-// for a human forever even though the PR was fully green.
+// If a probe site treats that 404 as "no protection configured at all", the
+// no-silent-auto-merge rule makes it wait for a human forever even though the
+// PR is fully green.
 //
 // Probe fixes this by falling back to the rulesets effective-rules endpoint
-// when the classic endpoint 404s. The #2420 conservative default is
-// preserved: a repo with neither classic protection nor any effective
-// ruleset still reports unprotected, and any error other than a 404 from
-// either endpoint (network, permissions, rate-limit) is surfaced as an
-// error so the caller takes the stay-watching path rather than silently
-// concluding "unprotected".
+// when the classic endpoint 404s. The conservative default is preserved: a
+// repo with neither classic protection nor any effective ruleset still
+// reports unprotected, and any error other than a 404 from either endpoint
+// (network, permissions, rate-limit) is surfaced as an error so the caller
+// takes the stay-watching path rather than silently concluding "unprotected".
 package branchprotect
 
 import (
@@ -51,8 +50,8 @@ type Result struct {
 	// RequiredApprovingReviewCount is the number of approving reviews the
 	// branch protection requires before a PR may merge. Only meaningful when
 	// Configured is true. Zero means no approving review is required — the
-	// common case for a repo whose only gate is required status checks
-	// (#2576). Callers must not infer "a human must approve" from any signal
+	// common case for a repo whose only gate is required status checks.
+	// Callers must not infer "a human must approve" from any signal
 	// other than this count being above zero.
 	RequiredApprovingReviewCount int
 }
@@ -139,7 +138,7 @@ func Probe(ctx context.Context, run Runner, classicPath, rulesetPath string) (Re
 	if rerr != nil {
 		if isNotFoundError(string(rout) + " " + rerr.Error()) {
 			// Neither classic protection nor any effective ruleset — the
-			// #2420 conservative default: genuinely unprotected.
+			// conservative default: genuinely unprotected.
 			return Result{Configured: false}, nil
 		}
 		return Result{}, fmt.Errorf("gh api branch rules: %w: %s", rerr, strings.TrimSpace(string(rout)))
@@ -182,9 +181,8 @@ func parseClassic(out []byte) (Result, error) {
 // parseRuleset parses a rules/branches/{branch} effective-rules response
 // body (a JSON array of rule objects) into a Result. A required_status_checks
 // rule or a pull_request rule is each independently sufficient to mark the
-// branch as protected (mirroring the issue's "and/or" framing); required
-// check names are extracted only from the required_status_checks rule's
-// parameters.
+// branch as protected; required check names are extracted only from the
+// required_status_checks rule's parameters.
 func parseRuleset(out []byte) (Result, error) {
 	var rules []rulesetRule
 	if err := json.Unmarshal(out, &rules); err != nil {

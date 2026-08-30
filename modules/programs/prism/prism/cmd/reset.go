@@ -11,14 +11,14 @@ package cmd
 //     is the canonical "active session" filter throughout the codebase) AND
 //     clear the per-session pi conversation resume pointer
 //     (agent_status.harness_session_id) on every row, so the next switch into
-//     a previously-active project starts pi with a fresh conversation
-//     (issue #1947). The (worktree, harness_session_id) pairs are
-//     snapshotted BEFORE the clear so step 4b can scope its transcript
-//     removal to exactly the sessions being reset (issue #2220).
+//     a previously-active project starts pi with a fresh conversation.
+//     The (worktree, harness_session_id) pairs are snapshotted BEFORE the
+//     clear so step 4b can scope its transcript removal to exactly the
+//     sessions being reset.
 //  4. Kill all sidecar processes and remove stale run files (PID, ready)
 //     from ~/.local/state/prism/run/, and delete exactly the pi transcript
 //     JSONLs belonging to the snapshotted resume pointers from the shared
-//     host pi sessions root (issues #1947, #2220).
+//     host pi sessions root.
 //  5. (Unless --no-launch) invoke `prism launch` to restart the server.
 //
 // Flags:
@@ -102,10 +102,9 @@ func runReset(cmd *cobra.Command, _ []string) error {
 	}
 
 	// ── Step 2: Reset every registered isolator ──────────────────────────────
-	// Post A1.L3 (issue #1140): the per-mode reset logic moved into each
-	// Isolator's Reset method. `prism reset` iterates over the registered
-	// modes and dispatches to each. Today every isolator's Reset is a no-op
-	// stub — orphan-agent-run reaping is a future implementation.
+	// The per-mode reset logic lives in each Isolator's Reset method.
+	// `prism reset` iterates over the registered modes and dispatches to each.
+	// Today every isolator's Reset is a no-op stub.
 	fmt.Println("Running per-isolator reset sweeps...")
 	if err := resetIsolators(); err != nil {
 		proglog.Warnf("[prism reset] isolator cleanup: %v (continuing)\n", err)
@@ -130,7 +129,7 @@ func runReset(cmd *cobra.Command, _ []string) error {
 	// Reset means forget: drop the on-disk pi session JSONLs for the
 	// snapshotted resume pointers so that even if a stale harness_session_id
 	// somehow survived (e.g. an external writer), piResolveResumeSession
-	// returns false and pi starts a fresh chat. See issues #1947 and #2220.
+	// returns false and pi starts a fresh chat.
 	fmt.Println("Removing pi-agent transcript JSONLs...")
 	if err := resetClearPiTranscripts(resumePointers); err != nil {
 		proglog.Warnf("[prism reset] transcript cleanup: %v (continuing)\n", err)
@@ -204,13 +203,12 @@ type piResumePointer struct {
 // non-ended agent_status rows, then calls ClearAllResumePointers to wipe the
 // per-session pi conversation resume pointer (harness_session_id) on every
 // row. The two operations are independent (different columns) but conceptually
-// paired by `prism reset`: end every session, then forget the resume pointer
-// (issue #1947).
+// paired by `prism reset`: end every session, then forget the resume pointer.
 //
 // Before the clear, the (worktree, harness_session_id) pairs of every row
 // carrying a resume pointer are snapshotted and returned so the FS half of
 // the reset (resetClearPiTranscripts) can delete exactly those transcript
-// JSONLs (issue #2220). The snapshot deliberately covers ended rows too —
+// JSONLs. The snapshot deliberately covers ended rows too —
 // ClearAllResumePointers wipes the column on every row, and the FS half must
 // match that scope. A snapshot failure is logged and degrades the FS half to
 // a no-op; the DB-side clears (the load-bearing half) still run.
@@ -255,7 +253,7 @@ func resetMarkDBEnded() ([]piResumePointer, error) {
 	}
 
 	// Wipe per-row resume pointers (harness_session_id). This is the DB-side
-	// half of the issue #1947 fix; the FS-side half lives in
+	// half of the resume-pointer clear; the FS-side half lives in
 	// resetClearPiTranscripts.
 	cleared, err := d.ClearAllResumePointers()
 	if err != nil {
@@ -327,11 +325,10 @@ func resetKillSidecars() error {
 }
 
 // resetClearPiTranscripts deletes the on-disk pi transcript JSONLs belonging
-// to the sessions being reset. This is the filesystem-side half of the issue
-// #1947 fix (the DB-side half is ClearAllResumePointers, called from
-// resetMarkDBEnded), re-scoped by issue #2220 to the shared host pi sessions
-// root where pi actually writes transcripts in EVERY isolation mode
-// (post #2186/#2210):
+// to the sessions being reset. This is the filesystem-side half of the
+// resume-pointer clear (the DB-side half is ClearAllResumePointers, called
+// from resetMarkDBEnded). It removes transcripts from the shared host pi
+// sessions root where pi writes transcripts in EVERY isolation mode:
 //
 //	$PI_CODING_AGENT_DIR/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl
 //	(or ~/.pi/agent/sessions/... when the env var is unset)
@@ -347,16 +344,9 @@ func resetKillSidecars() error {
 // linkage was already severed) are untouched.
 //
 // Unlike `prism cleanup` (which archives the transcript before severing —
-// see archiveThenSeverPiResume, issue #2219), reset deletes WITHOUT
-// archiving: reset is the destructive "forget everything" surface
-// (issue #1947: "Reset means forget"); cleanup is the lifecycle path that
-// preserves history.
-//
-// The pre-#2220 implementation instead swept two dead layouts — the
-// pre-#1985 bwrap run-dir layout ($XDG_STATE_HOME/prism/run/<hash>/pi-agent/
-// sessions/) and the sandbox-exec staging HOME ($XDG_STATE_HOME/prism/
-// sessions/<instanceID>/home/.pi/agent/sessions/, which pi never wrote to) —
-// and was therefore a silent no-op in every current isolation mode.
+// see archiveThenSeverPiResume), reset deletes WITHOUT archiving: reset is
+// the destructive "forget everything" surface (Reset means forget); cleanup
+// is the lifecycle path that preserves history.
 //
 // Best-effort: a per-pointer removal failure is logged and the remaining
 // pointers are still processed; the first error is returned so the caller

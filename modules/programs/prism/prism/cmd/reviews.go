@@ -1,10 +1,10 @@
 package cmd
 
-// prism reviews — inspect the review-group ledger (#1500).
+// prism reviews — inspect the review-group ledger.
 //
 // Mirrors the shape of `prism merges` but for review groups. The
-// session_groups table records every review round prism has spawned; this
-// command exposes that ledger so coordinators and workers don't have to
+// session_groups table records every review round prism has spawned. This
+// command exposes that ledger so coordinators and workers do not have to
 // `prism sessions list | grep '~review-N-'` and reconstruct the metadata.
 //
 // Subcommands:
@@ -87,14 +87,12 @@ func runReviewsList(cmd *cobra.Command, _ []string) error {
 	jsonMode, _ := cmd.Flags().GetBool("json")
 	limit, _ := cmd.Flags().GetInt("limit")
 
-	// Inside a bwrap / sandbox-exec sandbox: proxy the list to
-	// the host sidecar (#1043 pattern). The host's prism.db is invisible
-	// to direct reads from inside the sandbox — falling through to the DB
-	// path would silently return an empty list (the shadow tmpfs DB has
-	// no rows the host watcher writes). The sibling `prism merges list`
-	// already does this; without the same branch, `prism reviews list`
-	// inside a sandbox would silently return [] (#1500 round-2
-	// review-context blocker).
+	// Inside a bwrap / sandbox-exec sandbox: proxy the list to the host
+	// sidecar. The host's prism.db is invisible to direct reads from inside
+	// the sandbox — a fall-through to the DB path silently returns an empty
+	// list (the shadow tmpfs DB has no rows the host watcher writes). The
+	// sibling `prism merges list` does the same. Without this branch,
+	// `prism reviews list` inside a sandbox silently returns [].
 	if apiURL := sandboxenv.HostAPISocket(); apiURL != "" {
 		params := map[string]string{}
 		if limit > 0 {

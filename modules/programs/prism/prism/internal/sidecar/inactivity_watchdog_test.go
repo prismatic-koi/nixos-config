@@ -1,7 +1,7 @@
 package sidecar
 
 // inactivity_watchdog_test.go — coverage for the per-session inactivity
-// watchdog added by #1709 to rescue review agents that complete substantive
+// watchdog that rescues review agents that complete substantive
 // work but never emit state_change{finished}.
 //
 // The watchdog is a Sidecar-side timer that resets on every inbound frame
@@ -31,8 +31,8 @@ import (
 //
 // Host-state isolation: redirects $XDG_STATE_HOME to a tempdir so any
 // path lookup performed by the sidecar (e.g. notifyParentWorker on
-// watchdog fire) cannot reach the real prism state directory (#1709,
-// issue #1608 defence in depth).
+// watchdog fire) cannot reach the real prism state directory (defence in
+// depth).
 func newReviewAgentSidecarWithActivityTimeout(t *testing.T, sockPath string, activityTimeout time.Duration) (*Sidecar, *testClock) {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -133,7 +133,7 @@ func TestExplicitActivityTimeout_PreservedForAnyRole(t *testing.T) {
 }
 
 // TestInactivityWatchdog_FiresAfterTurnEndWithNoStateChange reproduces the
-// exact stall described in issue #1709: a review agent receives turn_start,
+// exact stall: a review agent receives turn_start,
 // streams an assistant message, sends turn_end, then never emits
 // state_change{finished} (because the LLM stopReason was not "stop"). The
 // session must be force-transitioned to StateError so GroupCompleted returns
@@ -298,11 +298,11 @@ func TestInactivityWatchdog_NoOpWhenAlreadyTerminal(t *testing.T) {
 	_ = wait()
 }
 
-// ── #1761: mid-tool heartbeat ───────────────────────────────────────────────
+// ── mid-tool heartbeat ───────────────────────────────────────────────
 //
 // The PI extension emits a `tool_progress` frame on a fixed cadence while a
 // tool execution is in flight so that long-running bash invocations (e.g.
-// `nix build`, `go test -count=20`) don't silence the wire long enough to
+// `nix build`, `go test -count=20`) do not silence the wire long enough to
 // trip the per-session inactivity watchdog.
 //
 // Sidecar-side contract:
@@ -320,7 +320,7 @@ func TestInactivityWatchdog_NoOpWhenAlreadyTerminal(t *testing.T) {
 //     accidentally regress it.
 
 // TestToolProgressHeartbeat_ResetsWatchdog drives the exact pathology from
-// issue #1761: a review agent runs a long bash tool with no other frames
+// a review agent runs a long bash tool with no other frames
 // emitted, but the extension sends a tool_progress heartbeat. The watchdog
 // must be reset (not fire) for each heartbeat that arrives within the
 // timeout window.
@@ -447,9 +447,9 @@ func TestToolProgressHeartbeat_NotWrittenToEvents(t *testing.T) {
 
 // TestToolProgressHeartbeat_GenuineStuckStillFires verifies the rescue path
 // is preserved: if the agent stops emitting heartbeats (PI hung, event loop
-// blocked, etc.), the watchdog still force-transitions the session to error
-// within the configured window. This is the property that makes #1728's
-// rescue logic load-bearing — the heartbeat must not be load-bearing in the
+// blocked, and so on), the watchdog still force-transitions the session to error
+// within the configured window. This is the property that makes the
+// watchdog's rescue logic load-bearing — the heartbeat must not be load-bearing in the
 // opposite direction (preventing fire when truly stuck).
 func TestToolProgressHeartbeat_GenuineStuckStillFires(t *testing.T) {
 	sockPath := shortSockPath(t)
@@ -492,12 +492,12 @@ func TestToolProgressHeartbeat_GenuineStuckStillFires(t *testing.T) {
 	_ = wait()
 }
 
-// ── #1842: goNotify registration ─────────────────────────────────────────────
+// ── goNotify registration ─────────────────────────────────────────────
 //
-// handleActivityTimeout previously spawned the parent-worker startup-failure
-// notification with a raw `go` instead of s.goNotify. The raw `go` bypassed
-// notifyWG, so tests had to sleep or poll to observe the notification — the
-// same race class that motivated goNotify in #1713/#1716.
+// handleActivityTimeout spawns the parent-worker startup-failure
+// notification via s.goNotify, not a raw `go`. A raw `go` bypasses notifyWG,
+// so tests would have to sleep or poll to observe the notification — the
+// same race class that motivated goNotify.
 //
 // The fix wraps the call in s.goNotify so WaitNotifies() drains it
 // deterministically.
@@ -506,7 +506,7 @@ func TestToolProgressHeartbeat_GenuineStuckStillFires(t *testing.T) {
 // inactivity watchdog fires on a review-agent session, the parent-worker
 // startup-failure notification is tracked by notifyWG so WaitNotifies()
 // returns only after the delivery has completed — no sleeping or polling
-// required (#1842).
+// required.
 func TestInactivityWatchdog_NotifyRegisteredWithWaitGroup(t *testing.T) {
 	// The parent worker session for "prism-test@worker-1842~review-1-review-goal"
 	// is "prism-test@worker-1842".
@@ -516,7 +516,7 @@ func TestInactivityWatchdog_NotifyRegisteredWithWaitGroup(t *testing.T) {
 	// NewIsolated seeds the worker as an active session in the DB and starts
 	// an httptest.Server to capture delivered prompt bodies. It also sets
 	// XDG_STATE_HOME and PRISM_TEST_MODE_RESTRICT_HOSTAPI so no host-state
-	// is touched (#1608).
+	// is touched.
 	bus := sidecartest.NewIsolated(t, workerSession)
 
 	sockPath := shortSockPath(t)
@@ -590,11 +590,11 @@ func TestInactivityWatchdog_NotifyRegisteredWithWaitGroup(t *testing.T) {
 	_ = wait()
 }
 
-// ── #2239: stall-vs-no-start classification ──────────────────────────────────
+// ── stall-vs-no-start classification ──────────────────────────────────
 //
-// The inactivity watchdog previously collapsed two failure classes into one
-// "failed to start" label. The sidecar now tracks inbound frames per session
-// (recordInboundFrame) and classifies the timeout on fire:
+// The inactivity watchdog tracks inbound frames per session
+// (recordInboundFrame) and classifies the timeout on fire, rather than
+// collapsing two failure classes into one "failed to start" label:
 //
 //   - zero frames  → never-started: a startup_error event is written and the
 //     parent notification retains the "failed to start" wording, with the
@@ -693,8 +693,8 @@ func TestInactivityWatchdog_NoFrames_ClassifiedAsFailedToStart(t *testing.T) {
 }
 
 // TestInactivityWatchdog_AfterFrames_ClassifiedAsMidRunStall drives a session
-// through real review work (turn_start, msg_assistant, turn_end — the exact
-// #2228 shape: assistant turns, then silence) and fires the watchdog. The
+// through real review work (turn_start, msg_assistant, turn_end — the
+// assistant-turns-then-silence shape) and fires the watchdog. The
 // failure must be classified as a mid-run stall: a stall_error event (NOT
 // startup_error) whose reason includes elapsed time, frame count, and the
 // last-frame timestamp, and a parent notification that says "stalled mid-run"
@@ -737,7 +737,7 @@ func TestInactivityWatchdog_AfterFrames_ClassifiedAsMidRunStall(t *testing.T) {
 	}
 
 	// Timer registration: #1 post-handshake, #2 turn_start, #3 msg_assistant,
-	// #4 turn_end. Fire the live timer (#4).
+	// #4 turn_end. Fire the live timer.
 	timer := clk.WaitForTimerCount(4, 5*time.Second)
 	if timer == nil {
 		t.Fatal("no activity watchdog timer registered after turn_end")

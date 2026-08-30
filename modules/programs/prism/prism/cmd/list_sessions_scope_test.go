@@ -1,12 +1,11 @@
 package cmd
 
-// Tests for the default-scope behaviour of `prism list-sessions` (#1830):
-// other-repo root sessions are visible; other-repo workers are hidden.
+// Tests for the default-scope behaviour of `prism list-sessions`.
+// Other-repo root sessions are visible. Other-repo workers are hidden.
 //
-// Issue #2658 widened "root session" from "<repo>@main coordinator" to
-// "<repo>@main coordinator, or a non-worktree session with a bare name", and
-// renamed the query accordingly. The tests below keep the pre-#2658 cases
-// unchanged and add the bare-name cases.
+// A "root session" is a "<repo>@main coordinator, or a non-worktree session
+// with a bare name". These tests cover both the <repo>@main cases and the
+// bare-name cases.
 
 import (
 	"strings"
@@ -17,7 +16,7 @@ import (
 )
 
 // TestListSessions_DefaultScope_HidesOtherRepoWorkers verifies the four-session
-// scenario from issue #1830 on the local-DB path (no PRISM_HOST_API):
+// scenario on the local-DB path (no PRISM_HOST_API):
 //
 //	repoA@main    (coordinator, root_agent_name='coordinator') → visible
 //	repoA@feature (worker)                                     → visible
@@ -215,18 +214,18 @@ func TestAllActiveStatusForRepoAndOtherRootSessions_DBLayer(t *testing.T) {
 	}
 }
 
-// TestListSessions_BareNameSessionIsVisible is the #2658 AC: "`prism sessions
-// list` run from the `nixos-config` worktree includes the `obsidian` row."
+// TestListSessions_BareNameSessionIsVisible verifies that a bare-name
+// (non-worktree) session in the viewer's own repo appears in the listing,
+// even when its root_agent_name is not 'coordinator'.
 //
 // A non-worktree session has a bare name, so it can never equal
-// `repo || '@main'`, and its row here carries the wrong root_agent_name that
-// the issue reports. Both halves of the pre-#2658 rule therefore answered
-// false and the row was dropped. `prism dashboard` used a different query and
-// did show it, so the two surfaces disagreed about which sessions exist.
-//
-// Negative-mutation guard: restore the pre-#2658 clause
+// `repo || '@main'`. A rule that admits a root session only when
 // `root_agent_name = 'coordinator' OR (root_agent_name IS NULL AND
-// session_name = (repo || '@main'))` and the first assertion fails.
+// session_name = (repo || '@main'))` drops such a row. `prism dashboard`
+// uses a different query and does show it, so the two surfaces disagree
+// about which sessions exist.
+//
+// Negative-mutation guard: restore that clause and the first assertion fails.
 func TestListSessions_BareNameSessionIsVisible(t *testing.T) {
 	d := openStatsTestDB(t)
 
@@ -238,8 +237,8 @@ func TestListSessions_BareNameSessionIsVisible(t *testing.T) {
 	if err := d.UpsertStatusSeedRootAgentName("bare-project", "bare-project", "/docs/bare-project", "active", nil, nil, "review-goal", "pi", "host"); err != nil {
 		t.Fatalf("seed bare-project: %v", err)
 	}
-	// Its investigator. Post-#2658 the repo column is the parent's repo, so
-	// the row is cross-repo for the viewer and must stay hidden.
+	// Its investigator. The repo column is the parent's repo, so the row is
+	// cross-repo for the viewer and must stay hidden.
 	if err := d.UpsertStatusSeedRootAgentName("bare-project~investigate-v2", "bare-project", "/docs/bare-project", "active", nil, nil, "worker", "pi", "host"); err != nil {
 		t.Fatalf("seed investigator: %v", err)
 	}
@@ -264,7 +263,7 @@ func TestListSessions_BareNameSessionIsVisible(t *testing.T) {
 	}
 }
 
-// TestListSessions_MetaSessionsAreNeverListed pins the #2658 edge-case AC.
+// TestListSessions_MetaSessionsAreNeverListed pins the meta-session edge case.
 // cmd/event.go refuses to write these rows at all, so the exclusion here is
 // defence in depth: it holds even if a row is written by another route.
 func TestListSessions_MetaSessionsAreNeverListed(t *testing.T) {

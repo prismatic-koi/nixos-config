@@ -1,11 +1,11 @@
 package cmd
 
-// Tests for issue #2501: `prism cleanup` could not delete a branch whose
-// name contains '/'. The session name carries the sanitised form ('/' →
-// '--', not reversible), so any code path that reconstructed the branch
-// name from the session component was broken for slash branches. The fix
-// reads the actual branch name from the worktree's HEAD (resolveBranchName)
-// before the worktree is removed, rather than trusting the sanitised name.
+// Tests for `prism cleanup` deleting a branch whose name contains '/'. The
+// session name carries the sanitised form ('/' → '--', not reversible), so
+// any code path that reconstructs the branch name from the session component
+// is broken for slash branches. cleanup reads the actual branch name from the
+// worktree's HEAD (resolveBranchName) before the worktree is removed, rather
+// than trusting the sanitised name.
 
 import (
 	"os"
@@ -73,8 +73,8 @@ func setupBareRepoWithBranch(t *testing.T, branchName string) (bareRoot, worktre
 }
 
 // sanitisedComponent mirrors sanitiseBranchComponent's '/' → '--' mapping,
-// which is what the session name (and therefore worktreeName as parsed at
-// cleanup.go:429) actually contains for a slash branch.
+// which is what the session name (and therefore worktreeName) actually
+// contains for a slash branch.
 func sanitisedComponent(branch string) string {
 	return strings.ReplaceAll(branch, "/", "--")
 }
@@ -110,14 +110,11 @@ func TestResolveBranchName_Empty(t *testing.T) {
 }
 
 // TestHeadlessCleanup_SlashBranch_DeletesBranch is the end-to-end regression
-// test for the #2501 bug: a session whose branch contains '/' must have its
-// branch deleted by headlessCleanupWithJSON, even though the worktreeName
-// argument it receives is the sanitised ('/' → '--') session component and
-// therefore does not name a real branch.
-//
-// This test FAILS before the fix: headlessCleanupWithJSONTo used to call
-// git.BranchExists(bareRoot, worktreeName) directly with the sanitised name,
-// which never matches a slash branch, so the delete was silently skipped.
+// test: a session whose branch contains '/' must have its branch deleted by
+// headlessCleanupWithJSON, even though the worktreeName argument it receives
+// is the sanitised ('/' → '--') session component and therefore does not name
+// a real branch. Calling git.BranchExists with the sanitised name never
+// matches a slash branch, so cleanup must resolve the real branch name first.
 func TestHeadlessCleanup_SlashBranch_DeletesBranch(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found in PATH — skipping integration test")

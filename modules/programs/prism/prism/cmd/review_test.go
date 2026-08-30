@@ -52,7 +52,7 @@ func TestAgentsForHarness_AgentNames(t *testing.T) {
 
 // ── resolveReviewWorktree tests ────────────────────────────────────────────────
 //
-// These tests cover the three scenarios mandated by #751:
+// These tests cover three scenarios:
 //
 //  1. Happy path: session present in DB with a real host-side worktree path →
 //     resolveReviewWorktree returns that path (not "/workspace").
@@ -83,7 +83,7 @@ func openReviewTestDB(t *testing.T) *db.DB {
 // TestResolveReviewWorktree_ContainerMode_UsesDBPath verifies that when
 // cfg.ContainerMode is true on the host and PRISM_HOST_API is unset,
 // resolveReviewWorktree returns the host-side worktree stored in the DB, not
-// "/workspace" (the container-internal fallback that was the root of bug #751).
+// "/workspace" (the container-internal fallback).
 //
 // The test seeds a session with a host-side path, then calls
 // resolveReviewWorktree and asserts the returned path matches the DB value.
@@ -161,10 +161,10 @@ func TestResolveReviewWorktree_EmptyWorktree(t *testing.T) {
 
 // ── resolveParentIsolationMode tests ──────────────────────────────────────────
 //
-// These tests cover the DB lookup added by issue #1034: prism review must use
-// the parent session's recorded isolation_mode, not the machine-level default
-// from cfg.EffectiveIsolationMode(). On navi the machine default is "podman",
-// but worker sessions run as "bwrap"; using the wrong mode causes agent-run to
+// These tests cover the DB lookup: prism review must use the parent session's
+// recorded isolation_mode, not the machine-level default from
+// cfg.EffectiveIsolationMode(). When the machine default differs from the
+// mode a worker session runs under, using the wrong mode causes agent-run to
 // reject the spawned review agents.
 
 // TestResolveParentIsolationMode_Bwrap verifies that a session recorded as
@@ -187,7 +187,8 @@ func TestResolveParentIsolationMode_Bwrap(t *testing.T) {
 }
 
 // TestResolveParentIsolationMode_Podman verifies that a legacy session recorded
-// as "podman" in the DB falls back to "bwrap" since podman is no longer valid.
+// as "podman" in the DB falls back to "bwrap" because podman is not a valid
+// isolation mode.
 func TestResolveParentIsolationMode_Podman(t *testing.T) {
 	d := openReviewTestDB(t)
 
@@ -225,8 +226,8 @@ func TestResolveParentIsolationMode_PreV10HostModeTrue(t *testing.T) {
 }
 
 // TestResolveParentIsolationMode_IsolationModePodman verifies that a legacy
-// session with isolation_mode="podman" falls back to "bwrap" since podman is
-// no longer a valid isolation mode.
+// session with isolation_mode="podman" falls back to "bwrap" because podman is
+// not a valid isolation mode.
 func TestResolveParentIsolationMode_PreV10HostModeFalse(t *testing.T) {
 	d := openReviewTestDB(t)
 
@@ -371,9 +372,9 @@ func TestOnlyFlag_EmptyCSVReturnsNoTokens(t *testing.T) {
 
 // ── CheckAgentAvailability guard logic tests ──────────────────────────────────
 //
-// These tests document the fix for #758: the if !cfg.ContainerMode guard was
-// removed from runReview. CheckAgentAvailability is now called unconditionally
-// when PRISM_HOST_API == "". By the time runReview reaches the
+// CheckAgentAvailability is called unconditionally in runReview (there is no
+// if !cfg.ContainerMode guard) when PRISM_HOST_API == "". By the time
+// runReview reaches the
 // CheckAgentAvailability call, PRISM_HOST_API is guaranteed to be "" (the
 // proxy-out branch fires first if it is set).
 
@@ -395,7 +396,7 @@ func TestCheckAgentAvailability_CalledWhenHostAPIUnset(t *testing.T) {
 	agents := review.Agents()
 
 	// The check must be performed unconditionally. We verify this by calling
-	// CheckAgentAvailability directly — as runReview now does — and confirming
+	// CheckAgentAvailability directly — as runReview does — and confirming
 	// it returns an error naming the missing agents.
 	err := review.CheckAgentAvailability(agents, prismAgentRoleValidator)
 	if err == nil {
@@ -453,7 +454,7 @@ func TestAgentNameStrings(t *testing.T) {
 
 // ── rejectIfCoordinator tests ─────────────────────────────────────────────────
 //
-// These tests cover the coordinator guard added by issue #846.
+// These tests cover the coordinator guard.
 // All tests set PRISM_SESSION_NAME (and TMUX="" to avoid tmux look-ups) to
 // control which session is detected, and set testDBPath to an isolated temp DB.
 

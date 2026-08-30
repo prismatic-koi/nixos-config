@@ -38,9 +38,9 @@ func (m refreshRecorder) View() string { return "" }
 // persistent dashboard triggers a full session re-fetch when the dashboard
 // sentinel changes. StartPersistentWatchers must wire the sentinel watcher,
 // which sends RefreshMsg; the persistent model handles RefreshMsg by returning
-// FetchSessionsFromDB (a full re-fetch). Reverting the fix (wiring only the
-// socket listener, as the persistent branch did before) means no RefreshMsg
-// arrives and this test times out. Regression for issue #2522, defect 3.
+// FetchSessionsFromDB (a full re-fetch). Wiring only the socket listener
+// (without the sentinel watcher) means no RefreshMsg arrives and this test
+// times out.
 func TestStartPersistentWatchers_SentinelTriggersRefetch(t *testing.T) {
 	// Isolate all dashboard bus paths (sentinel + socket) under a temp
 	// XDG_STATE_HOME so the test never touches the real ~/.local/state and is

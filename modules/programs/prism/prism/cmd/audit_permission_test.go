@@ -1,12 +1,12 @@
 package cmd
 
-// Tests for the direct-CLI coordinator guard on `prism audit` (issue #2627).
+// Tests for the direct-CLI coordinator guard on `prism audit`.
 //
 // The host API gates the proxy route — GET /audit calls requireCoordinator —
 // which covers every sandboxed caller. A session in `host` isolation mode has
 // no socket, so fetchAuditEvents skips the proxy branch and reaches
-// fetchAuditEventsLocal. Before this fix that path had no role check at all,
-// so a host-mode worker read every session's audit rows.
+// fetchAuditEventsLocal. Without a role check on that path, a host-mode
+// worker reads every session's audit rows.
 //
 // These tests mirror cmd/merges_coordinator_guard_test.go: refusal for every
 // non-coordinator role, admission for a coordinator (including the
@@ -54,12 +54,10 @@ func seedAuditGuardSession(t *testing.T, d *db.DB, sessionName, rootAgent, insta
 
 // ── refusal on the direct path ────────────────────────────────────────────────
 
-// TestRunAudit_HostModeWorker_Refused is the headline assertion of #2627: a
+// TestRunAudit_HostModeWorker_Refused is the headline assertion: a
 // worker in host isolation mode — the exact session shape that carries no
 // host-API socket and therefore never meets the host-API gate — is refused
 // on the direct path.
-//
-// Before the fix this call returned nil and printed the audit table.
 func TestRunAudit_HostModeWorker_Refused(t *testing.T) {
 	d := openStatsTestDB(t)
 	seedAuditGuardSession(t, d, auditGuardWorker, "worker", auditGuardWorkerInst)
@@ -123,9 +121,9 @@ func TestRunAudit_NonCoordinatorRoles_Refused(t *testing.T) {
 
 // TestRunAudit_HostModeCoordinator_Admitted is the other half of the gate: a
 // coordinator in host isolation mode still reads the audit trail. This is
-// what stops the fix from being "deny everyone", and exercises --days,
+// what stops the guard from being "deny everyone", and exercises --days,
 // --pattern, --limit, --json, a session-name argument, and the no-results
-// output, per the #2627 acceptance criteria.
+// output.
 func TestRunAudit_HostModeCoordinator_Admitted(t *testing.T) {
 	d := openStatsTestDB(t)
 	seedAuditGuardSession(t, d, auditGuardCoordinator, "coordinator", auditGuardCoordInst)
@@ -173,8 +171,8 @@ func TestRunAudit_HostModeCoordinator_Admitted(t *testing.T) {
 // ── unresolvable caller ───────────────────────────────────────────────────────
 
 // TestRunAudit_UnresolvableCaller_FailsClosed makes the unresolvable-caller
-// behaviour explicit, per the #2627 acceptance criteria: a non-zero exit,
-// naming PRISM_SESSION_NAME, before QueryAuditEvents is ever reached.
+// behaviour explicit: a non-zero exit, naming PRISM_SESSION_NAME, before
+// QueryAuditEvents is ever reached.
 //
 // PRISM_SESSION_NAME is empty and the suite-wide tmux neutralisation makes
 // tmux.CurrentSession() fail, so review.LookupParentSession returns "".

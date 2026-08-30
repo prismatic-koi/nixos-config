@@ -1,8 +1,8 @@
 package cmd
 
-// prism feedback — a friction log for agents and humans (issue #1505 /
-// principle 10 of #1497). Records short notes about CLI rough edges to a
-// local JSONL store at $XDG_STATE_HOME/prism/feedback.jsonl, with optional
+// prism feedback — a friction log for agents and humans. Records short notes
+// about CLI rough edges to a local JSONL store at
+// $XDG_STATE_HOME/prism/feedback.jsonl, with optional
 // upstream POST when PRISM_FEEDBACK_ENDPOINT is set.
 //
 // Surface:
@@ -134,7 +134,7 @@ func runFeedbackRecord(cmd *cobra.Command, args []string) error {
 	// Sandbox proxy path: when $PRISM_HOST_API is set the process is running
 	// inside a bwrap worker sandbox whose filesystem namespace is ephemeral.
 	// Writes to ~/.local/state/prism/ inside the sandbox never reach the host,
-	// so the data would be silently lost on sandbox exit (issue #1644).
+	// so the data is silently lost on sandbox exit.
 	// Route through the host-API instead so the sidecar — which runs on the
 	// host — performs the actual append.
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
@@ -177,8 +177,7 @@ func runFeedbackRecord(cmd *cobra.Command, args []string) error {
 //
 // On any error (missing socket, HTTP error, malformed response) this
 // function returns a non-nil error and does NOT fall back to the sandbox-
-// internal write path — that fallback is the current failure mode this fix
-// is resolving (issue #1644).
+// internal write path. That fallback silently loses the data on sandbox exit.
 func runFeedbackRecordViaHostAPI(cmd *cobra.Command, apiURL string, entry feedback.Entry) error {
 	var resp struct {
 		Path string `json:"path"`

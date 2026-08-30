@@ -1,6 +1,6 @@
 package sidecar
 
-// Tests for once-per-session title generation (issue #2683).
+// Tests for once-per-session title generation.
 //
 // The frames are fed to handlePipeFrame directly rather than over a real
 // socket: the trigger points live in that switch, and driving them straight
@@ -89,7 +89,7 @@ func feedTurnStart(t *testing.T, sc *Sidecar) {
 }
 
 // feedMsgUser drives one msg_user frame — the coordinator's title source
-// (#2678) — through the real frame handler.
+// — through the real frame handler.
 func feedMsgUser(t *testing.T, sc *Sidecar, text string) {
 	t.Helper()
 	frame, err := json.Marshal(map[string]string{
@@ -135,8 +135,7 @@ func TestTitleGen_WorkerIsTitledFromItsSpawnPrompt(t *testing.T) {
 
 // TestTitleGen_CoordinatorIsTitledFromItsFirstUserMessage covers the AC for
 // the coordinator half. A coordinator has no spawn prompt, so its source
-// text is the first thing the operator typed, delivered as a msg_user frame
-// (#2678).
+// text is the first thing the operator typed, delivered as a msg_user frame.
 func TestTitleGen_CoordinatorIsTitledFromItsFirstUserMessage(t *testing.T) {
 	gen := &stubTitleGenerator{title: "Triage the merge queue"}
 	sc, bus := newTitleTestSidecar(t, "coordinator", "", gen)
@@ -488,7 +487,7 @@ func TestTitleGen_BlankSourceDoesNotConsumeTheAttempt(t *testing.T) {
 	}
 }
 
-// TestTitleGen_RejectedReplyFallsBackAndDoesNotBlock covers the issue #2693
+// TestTitleGen_RejectedReplyFallsBackAndDoesNotBlock covers the rejected-reply
 // edge cases: a reply that is not title-shaped must be rejected via
 // titlegen.IsRejected, and the caller must fall back to the deterministic
 // title exactly as it does for a transport error -- never a retry, never a

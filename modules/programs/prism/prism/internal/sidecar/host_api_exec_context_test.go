@@ -1,5 +1,5 @@
-// Tests for the per-endpoint exec.CommandContext + WithTimeout wiring added
-// for issue #1847. Without this wiring, a hung subprocess (e.g. `gh` blocked
+// Tests for the per-endpoint exec.CommandContext + WithTimeout wiring.
+// Without this wiring, a hung subprocess (e.g. `gh` blocked
 // on the network, a wedged `prism spawn`) would pin the host-API handler
 // goroutine indefinitely.
 //
@@ -17,8 +17,7 @@
 // would require waiting for the smallest per-endpoint timeout (30 s for
 // /switch /event /escalate). The kill mechanism and the contextErrStatus
 // branch are identical on both code paths — the only difference is which
-// sentinel ctx.Err() returns. The kill-on-context is the part this issue is
-// about.
+// sentinel ctx.Err() returns.
 //
 // The stub also writes its own PID to a sentinel file so the test can verify
 // the child process is no longer running after the handler returns.
@@ -128,7 +127,7 @@ func assertProcessKilled(t *testing.T, pid int, timeout time.Duration) {
 	t.Fatalf("process pid=%d still alive after %v (no /proc entry)", pid, timeout)
 }
 
-// endpointCase describes one host-API handler that issue #1847 wired up with
+// endpointCase describes one host-API handler wired up with
 // exec.CommandContext + WithTimeout. The role, sessionName, and body fields
 // are picked to make the request reach the exec path (i.e. pass any
 // pre-shell-out auth/validation gates).
@@ -143,9 +142,9 @@ type endpointCase struct {
 }
 
 // TestHostAPI_ExecContext_KillsChildOnCancel exercises the 7 host-API
-// handlers wired up by issue #1847 (every site listed in the issue except
-// /review, which already used CommandContext as the reference shape). For
-// each endpoint:
+// handlers wired up with exec.CommandContext + WithTimeout (every such site
+// except /review, which already used CommandContext as the reference shape).
+// For each endpoint:
 //
 //   - Start the handler with a request whose context will be cancelled.
 //   - Wait until the stub has recorded its PID (proves the exec actually ran).
@@ -155,9 +154,9 @@ type endpointCase struct {
 //     code at every site).
 //   - Assert the child process is no longer alive.
 //
-// This is the AC: "When the context fires (timeout or client disconnect),
+// The contract: when the context fires (timeout or client disconnect),
 // the child process is killed and the handler returns a documented non-200
-// status."
+// status.
 func TestHostAPI_ExecContext_KillsChildOnCancel(t *testing.T) {
 	cases := []endpointCase{
 		{
@@ -217,8 +216,8 @@ func TestHostAPI_ExecContext_KillsChildOnCancel(t *testing.T) {
 			body:        `{"prompt":"halp"}`,
 		},
 		{
-			// Coordinator: /investigate is gated on requireCoordinator
-			// (issue #2588), so a worker session is refused with 403
+			// Coordinator: /investigate is gated on requireCoordinator,
+			// so a worker session is refused with 403
 			// before the handler ever execs the child.
 			name:        "investigate",
 			path:        "/investigate",

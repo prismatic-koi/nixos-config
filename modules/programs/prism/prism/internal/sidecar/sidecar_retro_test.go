@@ -1,6 +1,6 @@
 package sidecar
 
-// Tests for the host-API GET /retro endpoint (issue #2583). The endpoint runs
+// Tests for the host-API GET /retro endpoint. The endpoint runs
 // db.AssembleRetro and returns the report JSON. It is all-roles read, matching
 // /stats — a worker session must be able to read it inside a sandbox. The shape
 // mirrors the /stats tests in sidecar_stats_test.go.

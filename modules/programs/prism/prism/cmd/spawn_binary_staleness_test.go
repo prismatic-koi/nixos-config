@@ -1,11 +1,10 @@
 package cmd
 
-// TestProxySpawn_WarningPrintedToStderr is the CLI-side regression test for
-// issue #2742 (review-context finding on the initial PR): the sidecar's
-// /spawn response can carry a "warning" field (the prism-binary staleness
-// diagnostic) alongside session_name, and proxySpawn must decode and print
-// it, or the diagnostic never reaches a real `prism spawn` caller — it stays
-// log-only in practice despite the AC requiring otherwise.
+// TestProxySpawn_WarningPrintedToStderr is the CLI-side regression test: the
+// sidecar's /spawn response can carry a "warning" field (the prism-binary
+// staleness diagnostic) alongside session_name, and proxySpawn must decode and
+// print it, or the diagnostic never reaches a real `prism spawn` caller and
+// stays log-only in practice.
 
 import (
 	"net/http"

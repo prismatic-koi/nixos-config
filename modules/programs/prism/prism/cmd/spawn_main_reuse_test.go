@@ -1,7 +1,7 @@
 package cmd
 
 // spawn_main_reuse_test.go — tests for the `prism spawn --branch main`
-// coordinator-reuse default (#2352).
+// coordinator-reuse default.
 //
 // In the bare+worktree layout the main worktree already exists at
 // <bareRoot>/main/, and there is at most one coordinator per repo. So
@@ -221,7 +221,7 @@ func TestRunSpawn_MainBranch_HealthySessionReuses(t *testing.T) {
 	// worktree column must hold the full worktree path (production writers
 	// via SpawnOpts.Worktree and `event tmux-session-start --worktree` both
 	// store the full path). ActiveStatusForRepoWorktree matches on that
-	// column exactly, so the seed must mirror production shape (#2352).
+	// column exactly, so the seed must mirror production shape.
 	mainWt := filepath.Join(bareRoot, "main")
 	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", mainWt, "active", nil, &sid, &agent, nil); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
@@ -548,7 +548,7 @@ func TestRunSpawn_MainBranch_NoSession_NoMainWorktree_FallsThrough(t *testing.T)
 	// through to CreateWorktree. The subsequent CreateWorktree call would
 	// have to synthesise a main branch from scratch and may or may not
 	// succeed depending on git state; either way, the code path is the
-	// pre-#2352 legacy shape.
+	// fall-through-to-CreateWorktree shape.
 	got, ok := existingWorktreeForBranch(bareRoot, "main")
 	if ok {
 		t.Fatalf("existingWorktreeForBranch reported worktree at %q for a repo without one — unit fixture is wrong, cannot verify AC7", got)

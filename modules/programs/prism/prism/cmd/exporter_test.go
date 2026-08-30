@@ -26,7 +26,7 @@ func TestExporterCmd_IsRegisteredAndVisible(t *testing.T) {
 }
 
 // The flag defaults are what a systemd unit inherits when the NixOS module
-// passes nothing. They must match the package constants #2701 points at.
+// passes nothing. They must match the package constants the exporter uses.
 func TestExporterCmd_FlagDefaultsMatchThePackageConstants(t *testing.T) {
 	for _, tc := range []struct {
 		flag string

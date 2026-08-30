@@ -28,7 +28,7 @@ func (s *Sidecar) cancelRecoveryTimer() {
 	}
 }
 
-// cancelActivityTimer cancels the inactivity watchdog (#1709). Must be called
+// cancelActivityTimer cancels the inactivity watchdog. Must be called
 // with s.mu held.
 func (s *Sidecar) cancelActivityTimer() {
 	if s.activityTimer != nil {
@@ -37,7 +37,7 @@ func (s *Sidecar) cancelActivityTimer() {
 	}
 }
 
-// touchActivity resets the inactivity watchdog (#1709). Called on every
+// touchActivity resets the inactivity watchdog. Called on every
 // inbound frame from the PI extension (handlePipeFrame) and the SSE harness
 // (HandleEvent) so that any sign of life from the agent restarts the
 // countdown. A no-op when cfg.ActivityTimeout is zero (watchdog disabled)
@@ -69,9 +69,9 @@ func (s *Sidecar) touchActivity() {
 // recordInboundFrame notes the receipt of an inbound frame from the agent
 // harness (handlePipeFrame on the PI socket-pipe path, HandleEvent on the
 // SSE path) and resets the inactivity watchdog. The frame counter and
-// timestamps feed the watchdog's stall-vs-no-start classification (#2239):
-// when the watchdog fires with zero recorded frames the agent never started;
-// with one or more frames it stalled mid-run. Must be called with s.mu held.
+// timestamps feed the watchdog's stall-vs-no-start classification: when the
+// watchdog fires with zero recorded frames the agent never started. With one
+// or more frames it stalled mid-run. Must be called with s.mu held.
 func (s *Sidecar) recordInboundFrame() {
 	now := s.cfg.Clock.Now()
 	if s.inboundFrameCount == 0 {
@@ -82,7 +82,7 @@ func (s *Sidecar) recordInboundFrame() {
 	s.touchActivity()
 }
 
-// handleActivityTimeout is the inactivity-watchdog fire callback (#1709). It
+// handleActivityTimeout is the inactivity-watchdog fire callback. It
 // runs on the Clock's timer goroutine without s.mu held. Acquires s.mu,
 // checks that the session is still in a non-terminal state, writes a
 // state_change{error} event with note="inactivity timeout", and notifies the
@@ -90,9 +90,8 @@ func (s *Sidecar) recordInboundFrame() {
 // so a stalled review agent surfaces a real signal to its worker rather than
 // hanging silently.
 //
-// Failure-class labelling (#2239): the inbound-frame stats recorded by
-// recordInboundFrame distinguish two very different failure classes that the
-// watchdog previously collapsed into one "failed to start" label:
+// Failure-class labelling: the inbound-frame stats recorded by
+// recordInboundFrame distinguish two failure classes:
 //
 //   - never-started (inboundFrameCount == 0): no inbound frame was ever
 //     received — spawn/handshake/auth failure. A startup_error event is
@@ -106,8 +105,8 @@ func (s *Sidecar) recordInboundFrame() {
 //     stall label instead of the misleading no-start one.
 //
 // Both classes remain non-counting infrastructure rounds for the review
-// cycle counter (#1995 contract): the session terminates in state "error",
-// which is never verdict-producing.
+// cycle counter: the session terminates in state "error", which is never
+// verdict-producing.
 func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 	s.mu.Lock()
 	s.activityTimer = nil
@@ -119,7 +118,7 @@ func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 
 	// Re-check current state under the lock. If the session has already
 	// reached a terminal state via a normal path (state_change{finished},
-	// session_shutdown, etc.), the watchdog is a no-op.
+	// session_shutdown, and others), the watchdog is a no-op.
 	current := s.currentDBState()
 	if current == agent.StateFinished || current == agent.StateError ||
 		current == agent.StateInterrupted {
@@ -128,7 +127,7 @@ func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 		return
 	}
 
-	// Classify the failure before mutating state (#2239).
+	// Classify the failure before mutating state.
 	frames := s.inboundFrameCount
 	firstFrameAt := s.firstInboundFrameAt
 	lastFrameAt := s.lastInboundFrameAt
@@ -144,7 +143,7 @@ func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 	}, nil)
 
 	// Write the failure-class event so the review monitor's report carries
-	// the distinguishing label (#2239). failureText doubles as the
+	// the distinguishing label. failureText doubles as the
 	// parent-notification text below (notifyParentWorkerOnReviewFailure
 	// prefixes it with "review agent <name> ").
 	var failureText string
@@ -177,7 +176,7 @@ func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 	//
 	// Use goNotify (not a raw `go`) so the goroutine is tracked by notifyWG
 	// and tests can drain in-flight notifications via WaitNotifies() without
-	// sleeping or polling (#1842).
+	// sleeping or polling.
 	s.goNotify(func() {
 		s.notifyParentWorkerOnReviewFailure(failureText)
 	})
@@ -204,11 +203,11 @@ func (s *Sidecar) upsertState(state agent.AgentState, title *string, harnessSess
 	}
 	// Determine the effective agent role to write to root_agent_name:
 	//   1. cfg.AgentRole non-empty (container mode): use it directly — the role
-	//      is known at startup and authoritative (#555, #557).
+	//      is known at startup and authoritative.
 	//   2. cfg.AgentRole empty AND s.rootAgent non-empty (host-mode sessions
 	//      after SSE inference): use s.rootAgent so that root_agent_name is
 	//      written (or self-corrected from a stale "worker" value) on every
-	//      state transition after the first user message is seen (#776).
+	//      state transition after the first user message is seen.
 	//   3. cfg.AgentRole empty AND s.rootAgent empty (host-mode session before
 	//      any SSE inference, or legacy session): fall back to UpsertStatus so
 	//      that root_agent_name is left NULL rather than set to an empty string.
@@ -266,8 +265,8 @@ func (s *Sidecar) writeStateChangeWithSID(state agent.AgentState, harnessSession
 	// Both calls are routed through s.cfg.DashboardSink so test setups (via
 	// sidecartest.NewIsolated) can install a no-op sink and avoid touching
 	// $XDG_STATE_HOME-derived paths. Production sessions get the default
-	// productionDashboardSink which preserves the historical fire-and-forget
-	// goroutine for PushEvent and the inline TouchSentinel. See issue #1851.
+	// productionDashboardSink: a fire-and-forget goroutine for PushEvent and
+	// an inline TouchSentinel.
 	sessionName := s.cfg.SessionName
 	title := s.lastTitle
 	stateStr := string(state)
@@ -317,8 +316,8 @@ func (s *Sidecar) writeEvent(eventType string, payload any, harnessSessionID *st
 // — that contract is satisfied here because writeStartupError holds the lock for
 // the entire upsertState + writeStateChange block.
 //
-// This is the Gap 1 + Gap 2 fix for startup failures (WaitHealthy timeout,
-// CreateSession failure). Calling it ensures:
+// This handles startup failures (WaitHealthy timeout, CreateSession
+// failure). It ensures:
 //   - The DB row transitions to "error" immediately in the sidecar, not via the
 //     fragile pane-died tmux hook.
 //   - The parent worker is notified when a review-agent container fails to start.
@@ -336,11 +335,11 @@ func (s *Sidecar) writeStartupError(startupErr error) {
 // startup-error path have been committed to s.cfg.Logger.
 //
 // This variant exists to satisfy the write-ordering invariant required by the
-// bwrap startup-connect timeout path (#1690): the `[timing] harness listening:
+// bwrap startup-connect timeout path: the `[timing] harness listening:
 // ... (timed out)` log marker must be the last log line written by the timeout
 // goroutine, so that a reader observing the marker is guaranteed not to race
 // with any further concurrent writes from this path. With asynchronous notify,
-// notifyParentWorkerOnStartupFailure could still be writing to the logger after
+// notifyParentWorkerOnStartupFailure can still write to the logger after
 // Run() returned, producing a data race on test loggers (and an unobservable
 // log ordering in production).
 //
@@ -356,11 +355,11 @@ func (s *Sidecar) writeStartupErrorImpl(startupErr error, asyncNotify bool) {
 	s.writeStateChange(agent.StateError)
 	// Write a startup_error event recording the failure reason so the review
 	// monitor can distinguish a no-start failure from a mid-run crash when
-	// formatting the review-complete prompt (#1222).
+	// formatting the review-complete prompt.
 	s.writeEvent("startup_error", map[string]string{"reason": startupErr.Error()}, nil)
 	s.mu.Unlock()
 
-	// Gap 2 fix: notify the parent worker when this is a review-agent session.
+	// Notify the parent worker when this is a review-agent session.
 	// Normal finish notifications for review agents remain suppressed in
 	// notifyCoordinator — this is an exception only for the startup-failure path.
 	if asyncNotify {

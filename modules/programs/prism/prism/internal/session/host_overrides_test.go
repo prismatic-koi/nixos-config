@@ -1,7 +1,7 @@
 package session
 
-// host_overrides_test.go — issue #2086 regression tests for the host-mode
-// direct pi launch command.
+// host_overrides_test.go — regression tests for the host-mode direct pi
+// launch command.
 //
 // In host mode, the tmux pane runs pi directly (not via `prism agent-run`),
 // so the CLI overrides --model and --variant must be appended to pi's argv
@@ -53,7 +53,7 @@ func TestBuildDirectAgentCmd_HostModeVariantOverride(t *testing.T) {
 
 // TestBuildDirectAgentCmd_HostModeBothOverrides asserts the combined case:
 // when both Model and Variant are set, both flag pairs appear, and the
-// pre-#2086 invariants (pi appears, --agent appears) are preserved.
+// invariants (pi appears, --agent appears) are preserved.
 func TestBuildDirectAgentCmd_HostModeBothOverrides(t *testing.T) {
 	opts := Opts{
 		Agent:       "worker",
@@ -78,8 +78,8 @@ func TestBuildDirectAgentCmd_HostModeBothOverrides(t *testing.T) {
 
 // TestBuildDirectAgentCmd_HostModeNoOverrides_NoFlags is the no-regression
 // guard: when Model and Variant are empty, neither --model nor --thinking
-// appears on the host-mode direct command (matching the pre-#2086 shape,
-// where pi's own defaults take over). Host mode consults no profile slot at
+// appears on the host-mode direct command (pi's own defaults take over).
+// Host mode consults no profile slot at
 // all — config.SlotForRole has a single caller, populatePIConfig in
 // cmd/agent_run.go, which runs only on the bwrap / sandbox-exec path.
 func TestBuildDirectAgentCmd_HostModeNoOverrides_NoFlags(t *testing.T) {
@@ -117,7 +117,7 @@ func TestBuildDirectAgentCmd_NonPiHarness_NoOverrideFlags(t *testing.T) {
 	}
 }
 
-// ── issue #2852: the host-mode --provider clause ────────────────────────────
+// ── the host-mode --provider clause ───────────────────────────────────────
 //
 // Unlike the variant axis, the provider axis needs no flag-name translation:
 // prism's --provider and pi's --provider are the same flag.
@@ -137,9 +137,9 @@ func TestBuildDirectAgentCmd_HostModeProviderOverride(t *testing.T) {
 	}
 }
 
-// TestBuildDirectAgentCmd_HostModeNoProvider_NoFlag is the #2852
-// no-regression guard: an empty Provider must never render a --provider
-// argument with an empty value.
+// TestBuildDirectAgentCmd_HostModeNoProvider_NoFlag is the no-regression
+// guard: an empty Provider must never render a --provider argument with an
+// empty value.
 func TestBuildDirectAgentCmd_HostModeNoProvider_NoFlag(t *testing.T) {
 	opts := Opts{
 		Agent:       "worker",
@@ -153,8 +153,8 @@ func TestBuildDirectAgentCmd_HostModeNoProvider_NoFlag(t *testing.T) {
 	}
 }
 
-// TestBuildDirectAgentCmd_NonPiHarness_NoProviderFlag is the #2852 edge-case
-// AC for the host-mode emit site: a non-pi harness never receives --provider.
+// TestBuildDirectAgentCmd_NonPiHarness_NoProviderFlag guards the host-mode
+// emit site: a non-pi harness never receives --provider.
 func TestBuildDirectAgentCmd_NonPiHarness_NoProviderFlag(t *testing.T) {
 	opts := Opts{
 		Agent:       "worker",
@@ -191,8 +191,8 @@ func TestBuildDirectAgentCmd_ProviderBeforePrompt(t *testing.T) {
 }
 
 // TestBuildOptsForLayout_ForwardsProvider pins the SpawnOpts → Opts
-// forwarding for the provider axis (issue #2852), so a refactor cannot drop
-// the field between cmd/spawn.go and the emitters.
+// forwarding for the provider axis, so a refactor cannot drop the field
+// between cmd/spawn.go and the emitters.
 func TestBuildOptsForLayout_ForwardsProvider(t *testing.T) {
 	spawnOpts := SpawnOpts{
 		SessionName: "myrepo@branch",
@@ -233,9 +233,8 @@ func TestBuildOptsForLayout_ForwardsModelAndVariant(t *testing.T) {
 
 // TestBuildOptsForLayout_ForwardsModelsByRole pins the per-role override map
 // on the full-layout mapping, alongside its Provider and Model/Variant
-// siblings above. The full layout has always forwarded the field, so this is
-// a guard rather than a fix — but the agent-only layout dropped the same
-// field (issue #2863), so both mappings now carry a forwarding test.
+// siblings above. Both the full-layout and agent-only-layout mappings carry a
+// forwarding test so a refactor cannot silently drop the field.
 func TestBuildOptsForLayout_ForwardsModelsByRole(t *testing.T) {
 	spawnOpts := SpawnOpts{
 		SessionName:  "myrepo@branch",

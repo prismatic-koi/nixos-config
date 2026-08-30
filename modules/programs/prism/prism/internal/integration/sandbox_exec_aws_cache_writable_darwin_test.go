@@ -3,30 +3,23 @@
 package integration_test
 
 // sandbox_exec_aws_cache_writable_darwin_test.go — integration coverage for
-// the write-access fix to the ~/.aws/sso and ~/.aws/cli carve-outs in the
-// SBPL profile (issue #1558).
+// the write-access allow on the ~/.aws/sso and ~/.aws/cli carve-outs in the
+// SBPL profile.
 //
-// Background: the SBPL profile §5 previously emitted only:
-//
-//	(allow file-read*
-//	  (subpath "~/.aws/sso")
-//	  (subpath "~/.aws/cli"))
-//
-// This allowed the sandbox to READ through the staging HOME symlinks for
-// those two dirs but not WRITE. The aws CLI writes STS token cache entries
-// to ~/.aws/cli/cache/ and refreshes SSO tokens in ~/.aws/sso/. Without
-// file-write* the CLI fails with EPERM, and kubectl against EKS breaks too
-// (its exec-credential plugin shells out to aws and gets EPERM). The fix
-// adds file-write* to the carve-out:
+// The SBPL profile §5 emits:
 //
 //	(allow file-read* file-write*
 //	  (subpath "~/.aws/sso")
 //	  (subpath "~/.aws/cli"))
 //
-// Since #2245 (Step 3e of #2132) the staging HOME no longer symlinks
-// .aws/sso or .aws/cli at all — the carve-out rules above are the SOLE
-// in-sandbox capability for the two cache dirs, exercised at the real host
-// paths.
+// The aws CLI writes STS token cache entries to ~/.aws/cli/cache/ and
+// refreshes SSO tokens in ~/.aws/sso/. Without file-write* the CLI fails
+// with EPERM, and kubectl against EKS breaks too (its exec-credential
+// plugin shells out to aws and gets EPERM).
+//
+// The staging HOME does not symlink .aws/sso or .aws/cli. The carve-out
+// rules above are the SOLE in-sandbox capability for the two cache dirs,
+// exercised at the real host paths.
 //
 // This file tests:
 //
@@ -78,14 +71,14 @@ const awsCacheSSOWriteContent = "prism-1558-aws-sso-write-sentinel"
 const awsCacheCLIWriteContent = "prism-1558-aws-cli-write-sentinel"
 
 // TestSandboxExecProfile_AWSSSOWritable is the positive integration test for
-// write access to ~/.aws/sso (issue #1558). It:
+// write access to ~/.aws/sso. It:
 //
 //  1. Creates ~/.aws/sso under the real user HOME (so the write attempt
 //     targets the deny-covered path, not /private/var/folders).
 //  2. Generates the production profile (which emits file-read* file-write*
 //     for both ~/.aws/sso and ~/.aws/cli).
 //  3. Writes a file inside the real ~/.aws/sso from inside the sandbox and
-//     asserts exit 0 (no staging symlink involved — #2245).
+//     asserts exit 0 (no staging symlink involved).
 func TestSandboxExecProfile_AWSSSOWritable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -111,7 +104,7 @@ func TestSandboxExecProfile_AWSSSOWritable(t *testing.T) {
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
 	// Write a sentinel file inside the REAL ~/.aws/sso from inside the
-	// sandbox — the carve-out grants the real path directly (#2245).
+	// sandbox — the carve-out grants the real path directly.
 	writeTarget := filepath.Join(ssoDir, ".prism-1558-write-test")
 	t.Cleanup(func() { _ = os.Remove(writeTarget) })
 
@@ -155,7 +148,7 @@ func TestSandboxExecProfile_AWSSSOWriteDeniedWithoutFileWrite(t *testing.T) {
 	//   (allow file-read* file-write*
 	//     (subpath "<awsSSOPath>")
 	//     (subpath "<awsCLIPath>"))
-	// We replace it with the read-only form to simulate the pre-fix state.
+	// We replace it with the read-only form to remove the write capability.
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
 		return strings.ReplaceAll(p,
 			"(allow file-read* file-write*\n  (subpath "+sbplQuoteForTest(filepath.Join(realUserHome(t), ".aws", "sso")),
@@ -180,7 +173,7 @@ func TestSandboxExecProfile_AWSSSOWriteDeniedWithoutFileWrite(t *testing.T) {
 }
 
 // TestSandboxExecProfile_AWSCLIWritable is the positive integration test for
-// write access to ~/.aws/cli (issue #1558), symmetric to AWSSSOWritable.
+// write access to ~/.aws/cli, symmetric to AWSSSOWritable.
 func TestSandboxExecProfile_AWSCLIWritable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -267,10 +260,9 @@ func TestSandboxExecProfile_AWSCLIWriteDeniedWithoutFileWrite(t *testing.T) {
 	}
 }
 
-// TestSandboxExecProfile_AWSOutsideCarveoutDenied is the security test for
-// issue #1558 AC #5: a write attempt to ~/.aws/<other> (a path inside the
-// broad deny but outside the ~/.aws/sso and ~/.aws/cli carve-outs) must
-// still fail. This guards against the carve-out being accidentally widened
+// TestSandboxExecProfile_AWSOutsideCarveoutDenied is the security test: a
+// write attempt to ~/.aws/<other> (a path inside the broad deny but outside
+// the ~/.aws/sso and ~/.aws/cli carve-outs) must still fail. This guards against the carve-out being accidentally widened
 // to cover the entire ~/.aws subtree.
 //
 // The test creates a temporary directory directly under ~/.aws (NOT under
@@ -321,9 +313,9 @@ func TestSandboxExecProfile_AWSOutsideCarveoutDenied(t *testing.T) {
 }
 
 // TestSandboxExecProfile_AWSCarveoutAbsent_ProfileLoads is the edge-case
-// integration test for issue #1558: when ~/.aws/cli and ~/.aws/sso do NOT
-// exist on the host at session-spawn time, the generated profile still loads
-// under /usr/bin/sandbox-exec and a non-AWS workload exits 0.
+// integration test: when ~/.aws/cli and ~/.aws/sso do NOT exist on the host
+// at session-spawn time, the generated profile still loads under
+// /usr/bin/sandbox-exec and a non-AWS workload exits 0.
 //
 // generateProfile unconditionally emits the carve-out rules with the host
 // paths (filepath.Join(home, ".aws", "sso") and ".aws", "cli").
@@ -347,8 +339,8 @@ func TestSandboxExecProfile_AWSCarveoutAbsent_ProfileLoads(t *testing.T) {
 	// If either directory exists, temporarily rename it so this test can
 	// simulate a host without ~/.aws/sso and ~/.aws/cli. This is a best-effort
 	// skip rather than a skip-if-absent because the test is specifically about
-	// profile loading when the dirs are absent; we don't want to silently skip
-	// on developer machines where they always exist.
+	// profile loading when the dirs are absent. We do not want to silently
+	// skip on developer machines where they always exist.
 	for _, p := range []string{awsSSOPath, awsCLIPath} {
 		if _, statErr := os.Stat(p); statErr == nil {
 			// Temporarily rename out of the way.

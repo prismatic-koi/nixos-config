@@ -1,15 +1,15 @@
 package session
 
-// stale_zombie_test.go — regression test for issue #1998.
+// stale_zombie_test.go — regression test for the stale-zombie socket hazard.
 //
-// The stale-zombie bug: when ensureAndSwitch encounters a tmux session whose
-// last_seen is ≥ 60s (stale or zombie), the old code killed only the tmux
-// session but left the sidecar process alive. The sidecar holds open its
-// host-API Unix socket; when the new sidecar starts, checkNoLiveSidecar dials
-// the socket, finds it live, and refuses to start — returning duplicateStartError.
+// The hazard: when ensureAndSwitch encounters a tmux session whose last_seen
+// is ≥ 60s (stale or zombie), killing only the tmux session leaves the sidecar
+// process alive. The sidecar holds open its host-API Unix socket; when the new
+// sidecar starts, checkNoLiveSidecar dials the socket, finds it live, and
+// refuses to start — returning duplicateStartError.
 //
-// The fix: call KillSidecarAndWait before session.Create so that by the time
-// the new sidecar attempts its duplicate-start probe, the old socket is gone.
+// So call KillSidecarAndWait before session.Create, so that by the time the
+// new sidecar attempts its duplicate-start probe, the old socket is gone.
 //
 // This test verifies the key invariant:
 //
@@ -96,7 +96,7 @@ func TestKillSidecarAndWait_StaleZombie_SocketFreedBeforeReturn(t *testing.T) {
 	// t.TempDir() embeds the full test function name which on GitHub Actions
 	// produces a path like /tmp/TestKillSidecarAndWait_StaleZombie_…<N>/
 	// that, combined with the per-session hash subdir and "hostapi.sock",
-	// exceeds 108 bytes and causes bind(2) to fail with EINVAL. See #1050.
+	// exceeds 108 bytes and causes bind(2) to fail with EINVAL.
 	tmp, err := os.MkdirTemp("", "pst-")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)

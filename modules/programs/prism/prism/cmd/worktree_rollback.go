@@ -1,7 +1,7 @@
 package cmd
 
 // worktree_rollback.go — shared caller-level unwind for freshly created
-// worktrees (#2363).
+// worktrees.
 //
 // The three worktree-creating front doors (`prism spawn`, `prism pr`, and
 // the `prism switch` create-new-worktree flow) each register this rollback
@@ -9,7 +9,7 @@ package cmd
 // fails, the freshly created worktree is removed and the branch is deleted
 // when — and only when — it was freshly forked by that CreateWorktree call
 // and still has no commits beyond its fork point. Reused worktrees
-// (e.g. the `prism spawn --branch main` coordinator-reuse path, #2352)
+// (for example, the `prism spawn --branch main` coordinator-reuse path)
 // never arm the rollback because they never call CreateWorktree.
 
 import (
@@ -27,8 +27,8 @@ import (
 // left alone).
 //
 // Rollback failures are logged, never returned — the original error that
-// triggered the unwind must remain the error reported to the caller (#2363
-// edge-case AC). label names the calling command for the log line.
+// triggered the unwind must remain the error reported to the caller. label
+// names the calling command for the log line.
 func rollbackCreatedWorktree(bareRoot string, created *git.CreatedWorktree, label string) {
 	if created == nil {
 		return

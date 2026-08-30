@@ -3,12 +3,11 @@
 package integration_test
 
 // sandbox_exec_pi_agent_darwin_test.go — integration tests for PI agent
-// credential files in the SBPL profile (issue #1305, refreshed for #2034).
+// credential files in the SBPL profile.
 //
-// PI stores auth credentials in ~/.pi/agent/auth.json. Since design #2031
-// PR3 (#2034), the per-session pi-agent staging dir has been collapsed into
-// a single shared mount; PI reads ~/.pi/agent directly inside the sandbox.
-// The SBPL profile emits
+// PI stores auth credentials in ~/.pi/agent/auth.json and reads ~/.pi/agent
+// directly inside the sandbox through a single shared mount. The SBPL profile
+// emits
 //
 //	(allow file-read* file-write* … (subpath ~/.pi/agent))
 //
@@ -20,7 +19,7 @@ package integration_test
 // asserts the read fails, proving the positive is not a no-op.
 //
 // Each positive test is paired with a negative test per the convention in
-// docs/sandbox-exec-testing.md (issue #1192).
+// docs/sandbox-exec-testing.md.
 
 import (
 	"os"

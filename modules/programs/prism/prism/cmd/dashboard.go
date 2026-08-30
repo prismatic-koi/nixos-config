@@ -55,8 +55,8 @@ var dashboardCmd = &cobra.Command{
 				// Start the persistent dashboard's background watchers: the
 				// push-event socket listener AND the sentinel watcher. The sentinel
 				// watcher triggers a full re-fetch on spawns/cleanups/review-group
-				// changes within one poll interval, matching the popup (issue #2522,
-				// defect 3). If socket creation fails, log and continue without push
+				// changes within one poll interval, matching the popup. If socket
+				// creation fails, log and continue without push
 				// events — the dashboard still renders correctly via the sentinel
 				// watcher, the SessionSyncTick, and on-demand DB refreshes.
 				if _, err := dashboard.StartPersistentWatchers(ctx, p); err != nil {

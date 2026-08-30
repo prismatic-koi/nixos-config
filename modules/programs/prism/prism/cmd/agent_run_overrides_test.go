@@ -1,6 +1,6 @@
 package cmd
 
-// agent_run_overrides_test.go — issue #2086 regression tests.
+// agent_run_overrides_test.go — regression tests for the CLI override path.
 //
 // Covers the CLI override path that threads `prism spawn --model` /
 // `--variant` through `prism agent-run` and into `populatePIConfig`, where
@@ -115,7 +115,7 @@ func isolateForPopulatePIConfig(t *testing.T) (configHome, piBinary string) {
 
 // TestPopulatePIConfig_SlotOnly is the no-regression baseline: with no CLI
 // overrides set, ctrCfg.PIModel and ctrCfg.PIThinking must come from the
-// active profile slot exactly as they did before issue #2086.
+// active profile slot.
 func TestPopulatePIConfig_SlotOnly(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("populatePIConfig depends on POSIX exec semantics")
@@ -141,7 +141,7 @@ func TestPopulatePIConfig_SlotOnly(t *testing.T) {
 	}
 }
 
-// TestPopulatePIConfig_CLIOverrideWins is the core #2086 regression guard:
+// TestPopulatePIConfig_CLIOverrideWins is the core CLI-override regression guard:
 // when a non-empty Model / Variant override is supplied alongside a profile
 // that defines a different slot value, the override wins on ctrCfg.PIModel
 // and ctrCfg.PIThinking — i.e. on the final pi argv that PIInvocation
@@ -173,7 +173,7 @@ func TestPopulatePIConfig_CLIOverrideWins(t *testing.T) {
 		t.Errorf("PIThinking = %q, want override value %q", ctrCfg.PIThinking, "high")
 	}
 	// No provider override was supplied here, so PIProvider must still come
-	// from the slot (the #2852 fall-through case).
+	// from the slot (the fall-through case).
 	if ctrCfg.PIProvider != "anthropic" {
 		t.Errorf("PIProvider = %q, want slot value %q", ctrCfg.PIProvider, "anthropic")
 	}
@@ -197,7 +197,7 @@ func TestPopulatePIConfig_CLIOverrideWins(t *testing.T) {
 	}
 }
 
-// TestPopulatePIConfig_ProviderOverrideWins is the issue #2852 core guard:
+// TestPopulatePIConfig_ProviderOverrideWins is the provider-override core guard:
 // a non-empty Provider override replaces the profile slot's provider on
 // ctrCfg.PIProvider, and therefore on the final pi argv that PIInvocation
 // builds from the container.Config.
@@ -238,8 +238,8 @@ func TestPopulatePIConfig_ProviderOverrideWins(t *testing.T) {
 	}
 }
 
-// TestPopulatePIConfig_EmptyProviderFallsThroughToSlot is the issue #2852
-// edge-case AC: an empty-string provider override leaves the slot value
+// TestPopulatePIConfig_EmptyProviderFallsThroughToSlot is the empty-provider
+// edge case: an empty-string provider override leaves the slot value
 // unchanged, so no blank `--provider ""` argument can ever be emitted.
 func TestPopulatePIConfig_EmptyProviderFallsThroughToSlot(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -294,15 +294,15 @@ func TestPopulatePIConfig_PartialOverride_ModelOnly(t *testing.T) {
 	}
 }
 
-// TestAgentRunCmd_FlagsRegistered asserts the help surface promised by the
-// AC: `prism agent-run --help` lists --model, --variant, and --provider.
+// TestAgentRunCmd_FlagsRegistered asserts the help surface:
+// `prism agent-run --help` lists --model, --variant, and --provider.
 // Cobra's flag lookup is the closest verifiable analogue to "appears in
 // --help" without re-exec'ing the binary. The registration is load-bearing
 // beyond help text: the bwrap / sandbox-exec pane command passes these flags
 // on the argv, so an unregistered flag makes `prism agent-run` fail to parse
 // its own launch command.
 //
-// --agent-model joined the set with issue #2863. The name is asserted at both
+// --agent-model is part of the set. The name is asserted at both
 // ends of the hop: here for the parser, and in
 // internal/container/agent_model_override_test.go for the emitter.
 func TestAgentRunCmd_FlagsRegistered(t *testing.T) {

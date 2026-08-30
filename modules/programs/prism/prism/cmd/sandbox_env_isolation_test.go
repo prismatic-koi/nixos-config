@@ -1,6 +1,6 @@
 package cmd
 
-// Suite-wide sandbox-env isolation for the cmd package (issue #2217).
+// Suite-wide sandbox-env isolation for the cmd package.
 //
 // The prism sidecar injects a set of PRISM_* environment variables into every
 // agent session it spawns (see cmd/agent_run_sandbox_exec_darwin.go and
@@ -14,7 +14,7 @@ package cmd
 //     cleanup, close, db, escalate, feedback, investigate, list-sessions,
 //     logs, merge, pr, prompt, review, spawn, stats, switch, …). Inherited
 //     from a sandbox, it points at the LIVE host API socket — a test that
-//     reaches the proxy branch unpinned would talk to the real sidecar.
+//     reaches the proxy branch unpinned talks to the real sidecar.
 //   - PRISM_SESSION_NAME → session auto-detection (escalate, feedback,
 //     investigate, mute, profile, sessions; review.LookupParentSession).
 //   - PRISM_SPAWN_PATH / PRISM_BARE_ROOT → cwd/repo fallbacks (checkin
@@ -22,20 +22,18 @@ package cmd
 //   - PRISM_HARNESS_PIPE → not read by Go code today; cleared so the suite
 //     controls the full surface the sidecar injects.
 //
-// As with the tmux isolation (#2214), per-test t.Setenv is not a structural
+// As with the tmux isolation, per-test t.Setenv is not a structural
 // fix: it protects only the tests that remembered it. The suite-wide
 // neutralisation below, applied by TestMain before m.Run(), unsets the whole
 // injected set so the suite sees the same environment on CI, developer
 // hosts, and inside worker sandboxes. Tests that need a specific value
-// (e.g. pointing PRISM_HOST_API at a mock unix server) still override it
+// (for example, pointing PRISM_HOST_API at a mock unix server) still override it
 // per-test with t.Setenv, which takes precedence and is restored
 // automatically.
 //
-// An empirical poison-run before this isolation (all five variables set to
-// unreachable/poisoned values) showed no currently-failing test — the
-// exposure today is latent, not active. The TestMain pin closes the class
-// structurally rather than relying on each future test remembering the
-// boilerplate.
+// The exposure is latent, not active: no current test fails without this
+// isolation. The TestMain pin closes the class structurally rather than
+// relying on each future test remembering the boilerplate.
 
 import (
 	"os"
@@ -57,7 +55,7 @@ var sandboxInjectedPrismEnvVars = []string{
 // isolateSuiteFromSandboxEnv unsets the sidecar-injected PRISM_* variables
 // (matching CI, where they are unset) and returns a restore function that
 // puts the original environment back. TestMain calls restore after m.Run()
-// for symmetry with the tmux isolation (#2214).
+// for symmetry with the tmux isolation.
 func isolateSuiteFromSandboxEnv() (restore func()) {
 	type saved struct {
 		val string
@@ -81,7 +79,7 @@ func isolateSuiteFromSandboxEnv() (restore func()) {
 }
 
 // TestSuiteSandboxEnvIsolation_NotInherited is the regression guard for the
-// #2217 env-inheritance class. Under the TestMain-level neutralisation, none
+// env-inheritance class. Under the TestMain-level neutralisation, none
 // of the sidecar-injected PRISM_* variables may be visible to tests that do
 // not set them explicitly.
 //

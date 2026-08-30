@@ -172,8 +172,7 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				// Resolve the viewing client deterministically from the
 				// dashboard session's client list, not display-message, which
-				// is unsound from this pane-resident process (issue #2522,
-				// defect 2).
+				// is unsound from this pane-resident process.
 				client, _ := resolveDashClientFunc()
 				if client != "" {
 					_ = tmux.SwitchClientLast(client)
@@ -224,7 +223,7 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, CursorTimeoutCmd()
 			}
 			// Enter on a live session row switches on the FIRST keypress - no
-			// cursor-activation step is required (issue #2522, defect 1). The
+			// cursor-activation step is required. The
 			// passive-watch cursor is kept for j/k, which still activate before
 			// they move, but Enter must act immediately on the highlighted row.
 			m.CursorActive = false
@@ -240,7 +239,7 @@ func (m PersistentModel) View() string {
 
 // switchToSessionCmd returns a tea.Cmd that resolves the client viewing the
 // persistent dashboard and switches it to sessionName. It resolves the client
-// deterministically via resolveDashClientFunc (issue #2522, defect 2) rather
+// deterministically via resolveDashClientFunc rather
 // than display-message, which can return a client on another session or an
 // empty string from this pane-resident process. When no client is attached it
 // returns a visible status message instead of a silent no-op.

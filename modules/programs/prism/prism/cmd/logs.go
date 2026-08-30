@@ -62,7 +62,7 @@ session.SpawnSession before tmux send-keys):
   prism logs nixos-config@feat --startup
 
 Use --harness-events to print the raw PI JSONL frames recorded for a
-socket-pipe session (P5.LOGS / #1218). One JSON object per line in
+socket-pipe session. One JSON object per line in
 chronological order; pipe to jq for pretty-printing:
 
   prism logs nixos-config@feat --harness-events
@@ -81,7 +81,7 @@ func init() {
 	logsCmd.Flags().BoolP("follow", "f", false, "Stream new lines as they are written; exits when session ends or Ctrl-C")
 	logsCmd.Flags().Bool("agent-run", false, "Read the agent-run log (bwrap harness stdout/stderr) instead of the sidecar log")
 	logsCmd.Flags().Bool("startup", false, "Read the agent-startup log (spawn-time breadcrumbs written by session.SpawnSession)")
-	logsCmd.Flags().Bool("harness-events", false, "Print raw PI JSONL frames recorded for this session (P5.LOGS / #1218)")
+	logsCmd.Flags().Bool("harness-events", false, "Print raw PI JSONL frames recorded for this session")
 	logsCmd.Flags().String("direction", "", "With --harness-events: filter frames by direction (in|out)")
 	logsCmd.Flags().String("types", "", "With --harness-events: comma-separated list of frame types to include")
 	logsCmd.Flags().String(
@@ -195,7 +195,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 			// For the default sidecar-log path, if a startup log exists, hint
 			// at it — the operator was probably looking at the wrong file
 			// because the agent silently failed to come up before the sidecar
-			// produced any meaningful events (the #1051 failure mode).
+			// produced any meaningful events.
 			if session.AgentStartupLogExists(sessionName) {
 				return fmt.Errorf("no sidecar log file found for session %q\nhint: an agent-startup log exists for this session — try `prism logs %s --startup` to see spawn-time breadcrumbs",
 					sessionName, sessionName)
@@ -227,8 +227,8 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// AC-4: when the operator is reading the default (sidecar) log and that
-	// log contains nothing beyond SSE-retry noise — the #1051 failure
+	// When the operator is reading the default (sidecar) log and that
+	// log contains nothing beyond SSE-retry noise — the agent-failed-to-start
 	// signature — surface a one-line hint pointing at the agent-startup log
 	// where spawn-time breadcrumbs live. The hint is silenced when the
 	// sidecar log shows real activity (server.connected, first event, etc.)

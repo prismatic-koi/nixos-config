@@ -1,6 +1,6 @@
 package sidecar
 
-// Tests for the socket-pipe startup init path (issue #1437).
+// Tests for the socket-pipe startup init path.
 //
 // These tests exercise Sidecar.Run with a TransportSocketPipe harness and
 // assert that the transport-agnostic init blocks (instance_id mint/load and
@@ -80,9 +80,9 @@ func runSidecarRun(ctx context.Context, sc *Sidecar) func() error {
 //   - s.cfg.InstanceID is non-empty (instance_id was minted or loaded)
 //   - s.mergeWatcherCancel is set (merge-queue watcher was started)
 //
-// This is the primary regression test for issue #1437: before the fix, both
-// of these assertions would fail because runStartupSocketPipe returned before
-// the post-switch init block ran.
+// This is the primary regression test for socket-pipe startup init: without
+// the fix, both of these assertions fail because runStartupSocketPipe returns
+// before the post-switch init block runs.
 func TestSocketPipeInit_CoordinatorInstanceIDAndWatcher(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc := newSocketPipeCoordinatorSidecar(t, sockPath)
@@ -93,7 +93,7 @@ func TestSocketPipeInit_CoordinatorInstanceIDAndWatcher(t *testing.T) {
 	wait := runSidecarRun(ctx, sc)
 
 	// Wait for the socket file to appear — proves Run() has entered
-	// runStartupSocketPipe (i.e. the transport-shape switch was reached and
+	// runStartupSocketPipe (that is, the transport-shape switch was reached and
 	// the transport-agnostic init blocks before it have completed).
 	deadline := time.Now().Add(3 * time.Second)
 	for {

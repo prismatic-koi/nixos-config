@@ -1,14 +1,14 @@
 package cmd
 
-// End-to-end seam test for the issue #1947 fix, updated for #1985 and #2220.
+// End-to-end seam test for the reset resume-pointer clear.
 //
 // Pins the post-reset invariant: given a DB row with a non-empty
 // harness_session_id AND a transcript JSONL on disk, after the
 // `prism reset` DB + FS code paths run, the `--session <id>` injection
 // trigger in pi_invocation.go no longer fires — on BOTH surfaces.
 //
-// Post-#2220 update: since #2186/#2210 pi writes its transcripts to the
-// shared host sessions root (~/.pi/agent/sessions/--<encoded-cwd>--/, or
+// pi writes its transcripts to the shared host sessions root
+// (~/.pi/agent/sessions/--<encoded-cwd>--/, or
 // $PI_CODING_AGENT_DIR/sessions/...) in every isolation mode. `prism reset`
 // snapshots the (worktree, harness_session_id) pairs from the DB before
 // clearing them and deletes exactly those *_<id>.jsonl files from the shared
@@ -22,7 +22,7 @@ package cmd
 //       shared root ("reset means forget"); transcripts the DB does not know
 //       about — sibling ids on the same worktree, other cwd roots — survive.
 //   (3) PIInvocation: with HarnessSessionID="" the helper short-circuits and
-//       does not append --session (issue #1838 contract); and even with a
+//       does not append --session; and even with a
 //       stale id, ResolvePIResumeSession finds no transcript, so the flag is
 //       not emitted either — the reset guard is now double-layered.
 //
@@ -149,7 +149,7 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 	}
 
 	// (2) FS: the reset session's transcript is REMOVED from the shared root
-	//     (issue #2220: reset means forget, scoped per-id). Transcripts the
+	//     (reset means forget, scoped per-id). Transcripts the
 	//     DB does not know about survive, as do the run/<hash>/ files.
 	if _, err := os.Stat(transcript); !os.IsNotExist(err) {
 		t.Errorf("reset session's transcript was not removed (stat err=%v)", err)
@@ -169,8 +169,7 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 
 	// (3) Even a caller holding the STALE id can no longer resume: the
 	//     transcript is gone, so ResolvePIResumeSession returns false and
-	//     PIInvocation omits --session. This is the FS-side guard the
-	//     pre-#2220 sweep never actually provided.
+	//     PIInvocation omits --session. This is the FS-side guard.
 	if container.ResolvePIResumeSession(preCfg) {
 		t.Errorf("post-reset: ResolvePIResumeSession = true, want false (transcript must be gone)")
 	}
@@ -207,13 +206,13 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 }
 
 // TestReset_E2E_UntrackedTranscriptsSurvive pins the shared-root safety
-// property of the #2220 design: transcripts with NO corresponding resume
+// property: transcripts with NO corresponding resume
 // pointer in prism's DB — non-prism pi conversations, other repos' sessions,
 // sessions whose linkage was already severed at cleanup — survive a reset
 // untouched. The removal is keyed off DB rows, so an empty DB means zero FS
 // deletions.
 //
-// It also pins the #1838 resume regression guard: because the untracked
+// It also pins the resume regression guard: because the untracked
 // transcript survives, a caller that (re)acquires the id can still resume —
 // reset must not break the legitimate resume path for conversations it does
 // not own.
@@ -261,7 +260,7 @@ func TestReset_E2E_UntrackedTranscriptsSurvive(t *testing.T) {
 		t.Errorf("untracked transcript was removed by reset; reset must only delete transcripts it has resume pointers for: %v", err)
 	}
 
-	// #1838 regression guard: the surviving transcript is still resumable by
+	// Regression guard: the surviving transcript is still resumable by
 	// a caller that holds the id — PIInvocation appends --session for it.
 	cfgWithSID := container.Config{
 		SessionName:      sessionName,

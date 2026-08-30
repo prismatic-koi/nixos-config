@@ -30,8 +30,8 @@ import (
 
 // statusClientClosedRequest is the de-facto HTTP status code (popularised by
 // nginx and HAProxy) returned when the client closes the connection before
-// the server has finished processing the request. Issue #1847 documents this
-// as the response status when a host-API handler's context is cancelled
+// the server has finished processing the request. This is the response
+// status when a host-API handler's context is cancelled
 // because the caller disconnected (as opposed to the per-endpoint timeout
 // firing, which uses 504 Gateway Timeout).
 const statusClientClosedRequest = 499
@@ -44,7 +44,7 @@ const statusClientClosedRequest = 499
 // the normal subprocess-failure path so it can surface the underlying error.
 //
 // This helper is used by the host-API handlers that wrap r.Context() with
-// context.WithTimeout and exec.CommandContext (issue #1847). When the child
+// context.WithTimeout and exec.CommandContext. When the child
 // is killed by context cancellation, os/exec returns an error like
 // "signal: killed" which says nothing about *why*; the caller's ctx.Err() is
 // the authoritative signal.
@@ -63,7 +63,7 @@ func contextErrStatus(ctx context.Context) (int, bool) {
 // removed. Used to control specific environment variables passed to a child
 // process (e.g. unsetting PRISM_SPAWN_PATH / PRISM_KEYBIND_SPAWN so the
 // child does not inherit the sidecar process's own value — see the
-// /spawn handler and issues #2063, #2073).
+// /spawn handler).
 func filterEnv(env []string, name string) []string {
 	prefix := name + "="
 	out := env[:0:0]
@@ -236,17 +236,17 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 // on its own session only), and "all roles" means the handler applies no role
 // check. When you add, remove, or re-gate an endpoint, update the matching
 // line in the same change. TestHostAPI_CoordinatorOnly_DeniesWorker pins the
-// "coordinator only" half of this list (issue #2588).
+// "coordinator only" half of this list.
 //
 // /db/query, /db/schema, /db/tables are coordinator-only because /db/query
 // exposes a strict superset of /checkin: raw cross-session payloads (e.g.
 // SELECT * FROM harness_frames) versus /checkin's single-session rendered
-// view. That reasoning survives #2587, which made /checkin role-scoped: the
+// view. That reasoning holds even though /checkin is role-scoped: the
 // three-tier model scopes /checkin per caller, and /db/query has no such
 // scoping — one statement reads every session in the DB. The tier-3
 // troubleshooting privilege covers /checkin ALONE and must not be extended
 // here. The /stats analogue does not apply — /stats is aggregate counts,
-// /db/query is row-level conversation content (#1467 round-3 review).
+// /db/query is row-level conversation content.
 //
 // Role-based permissions are enforced based on s.cfg.AgentRole and
 // s.cfg.SessionName. Workers have restricted access; coordinators have broader
@@ -301,21 +301,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//
 	// The name heuristic is OR-ed in, not a fallback: it is evaluated on the
 	// primary path too, and it wins on disagreement, so a row that says
-	// 'worker' on a session named <repo>@main is still admitted. That OR was
-	// added deliberately (#944) to survive a stale or racing DB value.
+	// 'worker' on a session named <repo>@main is still admitted. That OR is
+	// deliberate: it survives a stale or racing DB value.
 	//
 	// Undeterminable role — no DB handle, no agent_status row, a DB read
 	// error, or a NULL root_agent_name — falls through to the name heuristic
 	// ALONE. For every session name that does not end in @main that is false,
 	// so the caller is denied. A session named <repo>@main is admitted on the
-	// heuristic alone, with no DB evidence; #2587 records the caution that a
-	// privilege check must not rest on that heuristic alone, and is the issue
-	// that revisits it.
+	// heuristic alone, with no DB evidence. A privilege check must not rest on
+	// that heuristic alone.
 	//
 	// This is the enforcement point for the worker restriction on
 	// coordinator-only verbs (`prism merge`, `prism investigate`, …). No
 	// entry in the pi extension's bash deny list matches a prism verb; agent
-	// prose must name this gate (issue #2588).
+	// prose must name this gate.
 	requireCoordinator := func(w http.ResponseWriter, operation string) bool {
 		if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
 			writeError(w, http.StatusForbidden,
@@ -330,8 +329,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// the absolute path at binary launch time, avoiding CWD-relative resolution.
 	// When Config.PrismBinaryPath is set (e.g. in tests), it is used instead.
 	//
-	// Also the single chokepoint for the prism-binary staleness check (issue
-	// #2742): every one of the 10 delegated-operation exec sites below calls
+	// Also the single chokepoint for the prism-binary staleness check:
+	// every one of the 10 delegated-operation exec sites below calls
 	// prismBinary(), so checking here — rather than per-endpoint — covers
 	// all of them with no per-endpoint staleness code. checkBinaryStale()
 	// itself is a no-op after its first call (sync.Once on the Sidecar, so
@@ -370,14 +369,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//   view=detail    → {"session":{...db.Session...},"outcome":{...db.SpawnOutcome...}|null}
 	//                    (single-session incarnation detail; outcome is the
 	//                    persisted-or-computed spawn_outcome row, nil for a
-	//                    still-live session with no row yet — issue #2582)
+	//                    still-live session with no row yet)
 	//   view=compare   → {"runs":[...db.CompareRunData...]} one per id, in request order;
 	//                    404 if any id fails to resolve (atomic, mirrors the host CLI path)
 	//   view=abtest    → {"runs":[...db.CompareRunData...]} group members sorted by session_name
 	//   view=abtest_list → {"pairs":[...db.AbtestPairRow...]} all A/B pairs (prism stats --abtest)
 	//
 	// compare/abtest/abtest_list back `prism stats compare`, `prism stats abtest
-	// <group>`, and `prism stats --abtest` from sandboxed sessions (issue #2098).
+	// <group>`, and `prism stats --abtest` from sandboxed sessions.
 	// The data assembly (resolution + spawn_outcome aggregation) reuses the same
 	// db helpers as the CLI direct path, so the CLI renders byte-identical output
 	// on both paths.
@@ -511,7 +510,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			}
 			// Include the spawn_outcome token/cost data alongside the session so
 			// the sandbox proxy path can render identical output to the
-			// host-direct path (issue #2582). CompareRunOutcome returns the
+			// host-direct path. CompareRunOutcome returns the
 			// persisted row, an on-the-fly computation for a terminal session
 			// with no row yet, or nil for a still-live session — the renderer
 			// treats nil as "not yet available", never as zero.
@@ -523,7 +522,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// resolves each and assembles its per-run data; resolution is
 			// atomic — a single unresolvable id fails the whole request with a
 			// 404, exactly as the host-direct CLI path aborts on the first bad
-			// arg (issue #2098).
+			// arg.
 			ids := q["id"]
 			if len(ids) < 2 {
 				writeError(w, http.StatusBadRequest, "view=compare requires at least 2 id params")
@@ -574,8 +573,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 	})
 
-	// GET /retro — the retrospective read surface behind `prism retro`
-	// (issue #2583). All-roles read, matching /stats: the data it returns —
+	// GET /retro — the retrospective read surface behind `prism retro`.
+	// All-roles read, matching /stats: the data it returns —
 	// per-session token/cost/waste aggregates rolled up into trains — is the
 	// same class of aggregate the /stats summary and detail views already
 	// expose to every role. It carries no row-level conversation content, so it
@@ -584,7 +583,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Query params:
 	//   repo  — repo scope (optional; empty = all repos)
 	//   since — window cut-off as a Unix-millisecond timestamp string (optional)
-	//   train — a train session name (optional; issue #2584). When present, the
+	//   train — a train session name (optional). When present, the
 	//           response also carries section 3, the review-cycle detail for
 	//           that train's full history (independent of since/repo, which
 	//           still bound sections 1, 2, and 5).
@@ -658,7 +657,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		} else {
 			// Same-repo: everything. Other repos: only root sessions — a
 			// "<repo>@main" coordinator, or a non-worktree session with a bare
-			// name (issue #2658). The SQL states the same rule as
+			// name. The SQL states the same rule as
 			// authz.IsRootSession, which the /prompt gate above reads.
 			ownRepo, repoErr := repoFromSession(s.cfg.SessionName, s.cfg.DB)
 			if repoErr != nil {
@@ -682,7 +681,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// GET /checkin
 	// Query params: session (required), last (default 10), types (optional),
 	//               from (optional cursor), before (optional cursor)
-	// Permission: three tiers (issue #2587) — see checkin_permission.go.
+	// Permission: three tiers — see checkin_permission.go.
 	//   tier 1 (worker)                 the review agents of its own session only
 	//   tier 2 (coordinator)            own-repo sessions plus cross-repo coordinators
 	//   tier 3 (privileged coordinator) any session in any repo, audited
@@ -834,12 +833,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 	// GET /checkin/review-summary
 	// Query params: parent (required)
-	// Permission: the aggregate form of the /checkin three tiers (issue #2628)
-	//   — see authz.AuthorizeCheckinReviewAggregate. This is the host-API half
-	//   of the gate that closes the non-verbose `prism checkin <parent>~review`
-	//   gap left open by #2619/#2625: that form reads d.QueryEvents inline for
-	//   every review-group member and never reaches the per-session /checkin
-	//   gate.
+	// Permission: the aggregate form of the /checkin three tiers — see
+	//   authz.AuthorizeCheckinReviewAggregate. This is the host-API half of
+	//   the gate for the non-verbose `prism checkin <parent>~review` form. That
+	//   form reads d.QueryEvents inline for every review-group member and never
+	//   reaches the per-session /checkin gate, so it needs its own gate here.
 	//
 	// Returns one summary entry per review-group member: session name, role
 	// label, state, and (when present) the last msg_assistant event. This
@@ -1040,7 +1038,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// LRU set; repeats are dropped before any frame is enqueued and the
 	// response carries {"replayed":true} so the sender can log/observe. When
 	// delivery_id is empty the request is treated as legacy and dedup is
-	// skipped (the frame is delivered unconditionally). Issue #1685.
+	// skipped (the frame is delivered unconditionally).
 	mux.HandleFunc("/prompt", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
 			return
@@ -1053,29 +1051,28 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// "review-complete" the sidecar clears reviewingInFlight AFTER the
 			// prompt frame is enqueued on the outbound writer (synchronous-
 			// success path) or after flushPendingReplay re-enqueues the frame
-			// post-reconnect (buffered path) — see #1843. Clearing only after
+			// post-reconnect (buffered path). Clearing only after
 			// the frame is on the wire keeps the events.go suppression guards
 			// armed through the delivery window, preventing the spurious
-			// "finished" notification class (#1372 / #1652). All other
+			// "finished" notification class. All other
 			// deliveries (coordinator follow-ups, merge-queue notifications,
 			// etc.) leave the flag unchanged — clearing on non-review prompts
-			// would prematurely end the reviewing window (#1372, AC #7).
+			// would prematurely end the reviewing window.
 			Source string `json:"source,omitempty"`
 			// DeliverAs controls the delivery mode for same-session PI targets.
 			// Accepted values: "steer", "followUp", "nextTurn". When omitted the
-			// sidecar defaults to "nextTurn" (existing behaviour, backward
-			// compatible with callers that do not set this field). Unknown values
-			// are rejected with HTTP 400 before any frame is enqueued.
+			// sidecar defaults to "nextTurn" for callers that do not set this
+			// field. Unknown values are rejected with HTTP 400 before any frame
+			// is enqueued.
 			DeliverAs string `json:"deliver_as,omitempty"`
 			// DeliveryID is the sender-minted UUID used for idempotency. When
 			// non-empty, the receiving sidecar dedups against its in-memory set
-			// and drops repeats. When empty, dedup is skipped (legacy callers).
-			// Issue #1685.
+			// and drops repeats. When empty, dedup is skipped.
 			DeliveryID string `json:"delivery_id,omitempty"`
 		}
-		// /prompt uses the bumped 16 MiB body cap (issue #1848): worker spawn
-		// prompts may legitimately embed file attachments and large context
-		// blobs, so the default 1 MiB ceiling is too tight for this surface.
+		// /prompt uses the 16 MiB body cap: worker spawn prompts may
+		// legitimately embed file attachments and large context blobs, so the
+		// default 1 MiB ceiling is too tight for this surface.
 		if status, err := decodeRequestJSON(w, r, &req, promptMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -1107,14 +1104,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// taken by the host-side `prism prompt <pi-session>` CLI when it
 		// dials the per-session host-API socket directly, and by the
 		// promptdelivery.DeliverToSession helper used by the review-complete
-		// monitor, coordinator notify, and merge-queue watcher (#1364).
+		// monitor, coordinator notify, and merge-queue watcher.
 		// We still gate on the harness having a TransportSocketPipe shape
 		// so an HTTP-harness session — which uses HTTP-port delivery — does not
 		// silently route through this branch.
 		if req.Session == s.cfg.SessionName {
 			if shape, ok := harness.ShapeOf(s.cfg.HarnessName); ok && shape == harness.TransportSocketPipe {
 				// Reject delivery when the pi session is in "waiting" state,
-				// consistent with the `prism prompt` CLI behaviour (#1364).
+				// consistent with the `prism prompt` CLI behaviour.
 				if s.cfg.DB != nil {
 					selfStatus, dbErr := s.cfg.DB.CurrentStatus(s.cfg.SessionName)
 					if dbErr == nil && selfStatus != nil && selfStatus.State == "waiting" {
@@ -1128,7 +1125,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				// have seen it recently, this is a repeat — drop it and respond
 				// 200 with {"replayed":true} so the sender can observe. The
 				// dedup set is bounded (LRU, capacity 256) and per-sidecar.
-				// See delivery_dedup.go and issue #1685.
+				// See delivery_dedup.go.
 				if req.DeliveryID != "" && s.promptDedup != nil {
 					if s.promptDedup.markSeen(req.DeliveryID) {
 						s.logger().Printf("sidecar: host-API /prompt: dedup hit, dropping repeat delivery_id=%s (session=%s)", req.DeliveryID, req.Session)
@@ -1138,15 +1135,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				}
 
 				// reviewingInFlight handling for source=="review-complete":
-				// see issue #1843. The flag MUST remain true until the prompt
+				// the flag MUST remain true until the prompt
 				// is actually on the wire (or, on the buffered path, has been
 				// re-enqueued from flushPendingReplay) — otherwise an
 				// incidental state_change{finished} / session.idle arriving
 				// between this point and the actual delivery evades the
 				// suppression guards in events.go and fires a spurious
-				// "finished" notification (the #1372 / #1652 race class).
+				// "finished" notification.
 				//
-				// Strategy (#1843):
+				// Strategy:
 				//   - Synchronous-success path: call DeliverPrompt first;
 				//     clear reviewingInFlight only after it returns true.
 				//   - Buffered (PI-disconnected) path: tag the pending entry
@@ -1156,18 +1153,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				//
 				// Non-review-complete deliveries (coordinator follow-ups,
 				// merge-queue notifications) must NEVER clear the flag — doing
-				// so would prematurely end the reviewing window (#1372, AC #7).
+				// so would prematurely end the reviewing window.
 				s.logger().Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s) deliver_as=%s", req.Session, deliverAs)
 				if !s.DeliverPrompt(req.Prompt, deliverAs) {
 					// PI extension is disconnected. Buffer the delivery so it
 					// will be flushed on next handshake with replay=true, then
 					// respond 200 — the delivery is accepted but deferred.
-					// Pre-#1685 behaviour returned 503; the new contract is that
-					// a single /prompt call delivers exactly once (after
+					// A single /prompt call delivers exactly once (after
 					// reconnect, marked replay) rather than failing the call.
-					// Issue #1685 AC #7. Source is propagated so flushPendingReplay
-					// can clear reviewingInFlight after the replayed frame is
-					// enqueued on the new connection (#1843).
+					// Source is propagated so flushPendingReplay can clear
+					// reviewingInFlight after the replayed frame is enqueued on
+					// the new connection.
 					s.bufferPendingReplay(pendingReplayDelivery{
 						DeliveryID: req.DeliveryID,
 						Text:       req.Prompt,
@@ -1180,7 +1176,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				}
 				// Synchronous success: the prompt frame is enqueued on the
 				// outbound writer. Incoming guidance has reached the session, so
-				// release the escalate same-turn guard (issue #2255) — the
+				// release the escalate same-turn guard — the
 				// turn_start this prompt provokes must transition
 				// escalated→active per the documented contract.
 				s.mu.Lock()
@@ -1200,7 +1196,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					// Push the reviewing-cleared signal to the PI extension so
 					// its pendingReviewCall guard is released even if the
 					// inbound prompt frame is missed by the extension's own
-					// clearing path (issue #2050). Belt-and-braces: the
+					// clearing path. Belt-and-braces: the
 					// prompt-frame clear at extensions/prism.ts still applies.
 					s.writeReviewingState(false)
 				}
@@ -1227,8 +1223,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// Coordinator: own repo any session allowed; cross-repo only a root
 			// session.
 			//
-			// The gate reads isRootSession, not isCoordinatorSession (issue
-			// #2658). A non-worktree session such as `obsidian` has no branch,
+			// The gate reads isRootSession, not isCoordinatorSession. A
+			// non-worktree session such as `obsidian` has no branch,
 			// so it can never end in "@main" and was refused here even though it
 			// is the only session for its project. isRootSession admits it and
 			// admits nothing else new: a descendant ("~"), a meta-session, and
@@ -1284,7 +1280,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// the child's stdout is a plain human-readable line and any
 		// buffered:true signal from the target sidecar is discarded when the
 		// child exits 0 — which is exactly the sandboxed-caller silent-success
-		// class of #2359 that this endpoint is on the hook to fix.
+		// class this endpoint fixes.
 		args := []string{"prompt", req.Session, "--prompt", req.Prompt, "--json"}
 		s.logger().Printf("sidecar: host-API /prompt: prism prompt --json %s <omitted>", req.Session)
 
@@ -1314,12 +1310,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		// Parse the child's --json envelope so the sandboxed caller sees the
 		// same buffered / replayed fields it would from a direct-host
-		// `prism prompt --json` invocation (issue #2359 review-code /
-		// review-context Gap B follow-up). The child's stdout in --json mode
+		// `prism prompt --json` invocation. The child's stdout in --json mode
 		// is a single-line JSON object; an empty or unparseable body is not
-		// treated as an error — the pre-#2359 shape of returning `{}` is
-		// preserved on parse failure, matching the direct path's
-		// synchronous-success default.
+		// treated as an error — returning `{}` on parse failure matches the
+		// direct path's synchronous-success default.
 		replyEnv := struct {
 			Buffered bool `json:"buffered,omitempty"`
 			Replayed bool `json:"replayed,omitempty"`
@@ -1338,17 +1332,16 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// The "repo" field is accepted but ignored — the sidecar always substitutes
 	// its own repo (derived from its session name) so that a client sending a
 	// mount-path name (e.g. "prism-git") still spawns into the correct repo
-	// (e.g. "nixos-config"). See issue #616.
+	// (e.g. "nixos-config").
 	//
 	// Optional field "model_variant_overrides" accepts a JSON-encoded
 	// map[string]string produced by proxySpawn (cmd/spawn.go). Each entry is
 	// forwarded as a --model-override role=model flag to the host-side prism
 	// spawn invocation. A malformed JSON value is rejected with HTTP 400.
-	// Absence of the field (the pre-#1263 behaviour) is treated as an empty map.
-	// See issue #1263 (C2.PROXY proxy-spawn model-override parity).
+	// Absence of the field is treated as an empty map.
 	//
-	// Optional field "provider" carries the --provider CLI flag value (issue
-	// #2852). It is forwarded as --provider to the host-side prism spawn when
+	// Optional field "provider" carries the --provider CLI flag value. It is
+	// forwarded as --provider to the host-side prism spawn when
 	// non-empty. The host-side spawn re-runs the same pi-harness and --abtest
 	// validation the proxy client already ran, so an arbitrary HTTP caller
 	// cannot bypass those rules by posting here directly. An absent field
@@ -1359,7 +1352,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// are forwarded as --abtest flags to the host-side prism spawn. Exactly 0
 	// or 2 values are accepted; 1 or 3+ return HTTP 400. When abtest is set,
 	// "profile" must be absent. The response carries "session_names" (a two-
-	// element array) rather than the singular "session_name". See issue #1330.
+	// element array) rather than the singular "session_name".
 	//
 	// Response: {"session_name":"nixos-config@my-feature"} | {"error":"..."}
 	//           {"session_names":["nixos-config@branch-a","nixos-config@branch-b"]} (abtest)
@@ -1377,8 +1370,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// prism spawn instead of a client-resolved --branch. This preserves
 			// the PR identity across the host-API boundary so CreateWorktree can
 			// track the real (possibly slash-containing) PR head ref rather than
-			// a sanitised branch name that may not exist locally or on origin
-			// (issue #2432). Mutually exclusive with Branch; validated as a
+			// a sanitised branch name that may not exist locally or on origin.
+			// Mutually exclusive with Branch; validated as a
 			// positive integer string below to prevent CLI-flag injection into
 			// the host-side prism spawn invocation.
 			PR                    string   `json:"pr"`
@@ -1387,31 +1380,29 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Profile               string   `json:"profile"`
 			Model                 string   `json:"model"`
 			Variant               string   `json:"variant"`
-			Provider              string   `json:"provider"` // see #2852 in the doc comment above
+			Provider              string   `json:"provider"` // see the doc comment above
 			Isolation             string   `json:"isolation"`
 			Harness               string   `json:"harness"`
 			IgnoreConcurrencyCap  bool     `json:"ignore_concurrency_cap"`
 			Reuse                 bool     `json:"reuse"`
-			ModelVariantOverrides string   `json:"model_variant_overrides"` // JSON-encoded map[string]string; see #1263
-			Abtest                []string `json:"abtest"`                  // two-element array of profile names; see #1330
-			// Containers mirrors the --containers CLI flag (#2317 / #2323).
-			// Forwarded as --containers to the host-side prism spawn when true.
-			// A proxy client that omits the field (older client, non-prism HTTP
+			ModelVariantOverrides string   `json:"model_variant_overrides"` // JSON-encoded map[string]string
+			Abtest                []string `json:"abtest"`                  // two-element array of profile names
+			// Containers mirrors the --containers CLI flag. Forwarded as
+			// --containers to the host-side prism spawn when true. A proxy
+			// client that omits the field (older client, non-prism HTTP
 			// caller) gets the default false — the host-side spawn then writes
-			// containers_flag=0 and leaves containers_enabled=0, matching the
-			// pre-#2317 behaviour for that session.
+			// containers_flag=0 and leaves containers_enabled=0.
 			Containers bool `json:"containers"`
 			// FromKeybind discriminates a tmux Prefix+a (keybind) spawn from
 			// an arbitrary HTTP caller. When true, an empty prompt is
 			// permitted — the operator types the initial prompt to the live
 			// agent after the popup attaches. The proxySpawn CLI path sets
 			// this when PRISM_KEYBIND_SPAWN is set in its own environment
-			// (the dedicated keybind sentinel introduced in #2073 to replace
-			// the overloaded PRISM_SPAWN_PATH). See issues #2012 (host-side
-			// carve-out), #2063 (proxy parity), and #2073 (sentinel decoupling).
+			// (PRISM_KEYBIND_SPAWN, the dedicated keybind sentinel, separate
+			// from the overloaded PRISM_SPAWN_PATH).
 			FromKeybind bool `json:"from_keybind"`
 		}
-		// /spawn body cap: default 1 MiB (issue #1848). DisallowUnknownFields
+		// /spawn body cap: default 1 MiB. DisallowUnknownFields
 		// is applied via decodeRequestJSON — already strict on this endpoint.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
@@ -1438,7 +1429,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		// Validate the PR number server-side as defence-in-depth: a malformed
 		// value (e.g. "1 --isolation host") could otherwise inject CLI flags
-		// into the host-side prism spawn invocation (issue #2432).
+		// into the host-side prism spawn invocation.
 		if req.PR != "" {
 			validPRNumber := regexp.MustCompile(`^[0-9]+$`)
 			if !validPRNumber.MatchString(req.PR) {
@@ -1446,19 +1437,19 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				return
 			}
 		}
-		// Reject an empty prompt at the API boundary (layer 3 of issue #1891).
+		// Reject an empty prompt at the API boundary (the last of three layers).
 		// The CLI proxy (proxySpawn) already rejects empty prompts at layers 1+2,
 		// so a well-behaved client never reaches this branch. Defence-in-depth:
 		// a malformed or alternate client that POSTs {"prompt":""} would otherwise
 		// produce a session that comes up successfully but sits idle forever
 		// because no --prompt argument is forwarded to the host-side prism spawn.
 		//
-		// Keybind carve-out (issue #2063): when the request carries
+		// Keybind carve-out: when the request carries
 		// from_keybind=true the empty prompt is intentional and the spawn
 		// proceeds. The carve-out fires only on this explicit discriminator,
 		// so arbitrary HTTP callers that omit the field still hit this guard.
 		//
-		// PR carve-out (issue #2633): when req.PR is set, an empty prompt is
+		// PR carve-out: when req.PR is set, an empty prompt is
 		// also legitimate — the host-side `prism spawn --pr` subprocess
 		// injects read-only guidance into the prompt itself (see
 		// withPRReadOnlyGuidance in cmd/spawn.go), so a caller does not have
@@ -1511,7 +1502,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		// Validate harness before spawning. An empty string means the client
 		// did not pass --harness explicitly; the host-side spawn will derive
-		// the harness from the profile slot as designed (#1421). Only validate
+		// the harness from the profile slot as designed. Only validate
 		// when the field is non-empty.
 		if req.Harness != "" {
 			if _, ok := harness.Lookup(req.Harness); !ok {
@@ -1551,7 +1542,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		// Pass --prompt-source proxy-spawn unconditionally so the host-side spawn
 		// records the correct C.4.SRC discriminator regardless of whether a prompt
-		// is included (C.4.SRC, issue #1148).
+		// is included (C.4.SRC).
 		args = append(args, "--prompt-source", "proxy-spawn")
 		if req.Prompt != "" {
 			args = append(args, "--prompt", req.Prompt)
@@ -1591,7 +1582,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			args = append(args, "--model-override", role+"="+model)
 		}
 		// Only pass --harness when the client explicitly set it. When absent,
-		// the host-side spawn derives the harness from the profile slot (#1421).
+		// the host-side spawn derives the harness from the profile slot.
 		if req.Harness != "" {
 			args = append(args, "--harness", req.Harness)
 		}
@@ -1642,7 +1633,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		logArgs = append(logArgs, "--repo", ownRepo)
 		s.logger().Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
 
-		// Staleness check (issue #2739). config.Load() memoises its result for
+		// Staleness check. config.Load() memoises its result for
 		// the process lifetime, so this long-running sidecar froze
 		// pi_extension_dir at startup (s.cfg.PIExtensionDir). Re-read config.json
 		// fresh and compare: a mismatch means a switch changed the PI extension
@@ -1659,28 +1650,28 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// Per-endpoint timeout: 10 min. `prism spawn` can legitimately take a
 		// while — it creates a git worktree, sets up a tmux session, and may
 		// pull a container image on first use. 10 min is the documented outer
-		// bound (issue #1847). On timeout returns 504 Gateway Timeout; on
+		// bound. On timeout returns 504 Gateway Timeout; on
 		// client disconnect returns 499 ("client closed request").
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, prismBinary(), args...)
-		// Issues #2063, #2073: when the request was initiated by the tmux
+		// When the request was initiated by the tmux
 		// Prefix+a keybind, propagate the keybind discriminator to the
 		// host-side `prism spawn` child so runSpawn's own carve-out fires and
 		// the empty-prompt guard is skipped.
 		//
 		// Two env vars are involved, with two separate jobs:
 		//
-		//   - PRISM_KEYBIND_SPAWN=1 — the dedicated keybind sentinel
-		//     introduced in #2073. This is the SOLE discriminator runSpawn
-		//     uses. No sandbox injects this var, so propagating it on
+		//   - PRISM_KEYBIND_SPAWN=1 — the dedicated keybind sentinel. This
+		//     is the SOLE discriminator runSpawn uses. No sandbox injects
+		//     this var, so propagating it on
 		//     from_keybind cannot leak into ordinary container worker-spawn
 		//     flows.
 		//   - PRISM_SPAWN_PATH — a working-directory hint (see
 		//     internal/sandboxenv/sandboxenv.go). Propagated here so the
 		//     host-side child has a real path to resolve the bare repo from
 		//     when it falls back through `resolveBareRoot`. NOT a
-		//     discriminator post-#2073.
+		//     discriminator.
 		//
 		// IMPORTANT: control both env values explicitly in BOTH branches.
 		// Without an explicit unset, the child inherits the sidecar process's
@@ -1702,9 +1693,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// for a NON-empty-prompt invocation would make the child call
 		// session.Attach against whatever tmux client this sidecar inherited.
 		// Restricting propagation to the empty-prompt case keeps the
-		// supplied-prompt path byte-identical to the pre-PR behaviour even
-		// if a malformed client posts from_keybind:true alongside a
-		// non-empty prompt.
+		// supplied-prompt path unaffected even if a malformed client posts
+		// from_keybind:true alongside a non-empty prompt.
 		spawnPathEnv := "PRISM_SPAWN_PATH="
 		keybindEnv := "PRISM_KEYBIND_SPAWN="
 		if req.FromKeybind && req.Prompt == "" {
@@ -1719,8 +1709,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// made the request, so session.SpawnOpts.InvokerSession — and in turn
 		// the from_session field on the durable session.spawn_intent /
 		// session.spawn_failed events — records the true requester rather
-		// than whatever value the sidecar process itself inherited (issue
-		// #2622). s.cfg.SessionName is this sidecar's own session — the
+		// than whatever value the sidecar process itself inherited.
+		// s.cfg.SessionName is this sidecar's own session — the
 		// session that made this HTTP request through its local sidecar
 		// socket. Filter any inherited PRISM_SESSION_NAME out before setting
 		// the correct value so the inherited value cannot survive, including
@@ -1747,7 +1737,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		outStr := string(out)
 
-		// Binary staleness (issue #2742): checkBinaryStale() (called via
+		// Binary staleness: checkBinaryStale() (called via
 		// prismBinary() above, as part of building cmd) already ran and cached
 		// its result on s. The sidecar log line is capped at once per process,
 		// but the caller of `prism spawn` needs its own signal — the sidecar
@@ -1826,27 +1816,25 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// Request validation runs BEFORE the pre-emptive reviewing-state
 		// write so that malformed-request failures (bad JSON, missing or
 		// non-numeric pr_number, unknown agent name) never leave the
-		// calling session pinned in `reviewing` — see issue #2258. The
-		// pre-#2258 ordering wrote `reviewing` immediately on entry, before
-		// touching the request body, so any subsequent 4xx return short-
-		// circuited without rolling back the DB row or clearing
-		// `reviewingInFlight`, with the worker silently stuck until the
-		// next successful review delivery.
+		// calling session pinned in `reviewing`. If the write came first,
+		// a subsequent 4xx return would short-circuit without rolling back
+		// the DB row or clearing `reviewingInFlight`, and the worker would
+		// be silently stuck until the next successful review delivery.
 		//
 		// Decode + validate first; do the pre-emptive write only after the
-		// request is known to be well-formed and routable. This preserves
-		// the #1372 race-window guarantee (the write still precedes
+		// request is known to be well-formed and routable. This keeps the
+		// race-window guarantee (the write still precedes
 		// `cmd.Start`, so by the time the worker observes any handler-side
 		// effect the row is already `reviewing`) because the request-
 		// validation budget is microseconds and far below the idle-
-		// debounce window the pre-emptive write was added to outrun.
+		// debounce window the pre-emptive write outruns.
 		var req struct {
 			PRNumber string   `json:"pr_number"`
 			Agents   []string `json:"agents"`
 			Timeout  string   `json:"timeout"`
 			Rebase   bool     `json:"rebase"`
 		}
-		// /review body cap: default 1 MiB (issue #1848).
+		// /review body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -1887,7 +1875,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		//
 		// Writing here, in-process with the DB handle already open, closes
 		// the race deterministically: by the time we return the first byte
-		// to the worker, the row is already `reviewing`. See #1068. The
+		// to the worker, the row is already `reviewing`. The
 		// subprocess-side write in RunAsync remains as defence in depth.
 		//
 		// Retry on SQLITE_BUSY: the sidecar's socket-pipe reader goroutine
@@ -1898,7 +1886,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// by the in-process pool the write can return SQLITE_BUSY immediately.
 		// Three attempts with 10 ms backoff (≤30 ms total) outlast a typical
 		// sidecar write without blocking the socket-pipe reader goroutine for
-		// more than one write round-trip. See #1355.
+		// more than one write round-trip.
 		//
 		// If all retries fail, return HTTP 500 so the agent receives a clear
 		// failure it can retry, rather than silently spawning review agents
@@ -1911,8 +1899,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// prevStatus, when non-nil, holds the agent_status row read
 		// immediately before the pre-emptive `reviewing` write. It is the
 		// authoritative restore target on any post-write failure path
-		// (subprocess spawn error, subprocess non-zero exit) per issue
-		// #2258. nil means the pre-emptive write was skipped (DB error or
+		// (subprocess spawn error, subprocess non-zero exit).
+		// nil means the pre-emptive write was skipped (DB error or
 		// no row) and rollback is a no-op.
 		var prevStatus *db.Status
 		if status, dbErr := s.cfg.DB.CurrentStatus(s.cfg.SessionName); dbErr != nil {
@@ -1937,17 +1925,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				return
 			}
 			// Capture the pre-write status for rollback on any post-write
-			// failure path (issue #2258).
+			// failure path.
 			prevStatus = status
 			// Set the in-memory flag atomically now that the DB write succeeded.
 			// handlePipeFrame's turn_start guard reads this flag instead of calling
-			// currentDBState(), eliminating the SQLite read-after-write race (#1372).
+			// currentDBState(), eliminating the SQLite read-after-write race.
 			s.mu.Lock()
 			s.reviewingInFlight = true
 			s.mu.Unlock()
 			// Push the authoritative reviewing-state transition to the PI
 			// extension so its pendingReviewCall guard is set in lock-step with
-			// the sidecar's ledger-backed flag (issue #2050). A dropped frame
+			// the sidecar's ledger-backed flag. A dropped frame
 			// here is non-fatal: the handshake-time emission and any subsequent
 			// transition will re-assert the correct state.
 			s.writeReviewingState(true)
@@ -1955,7 +1943,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		// rollbackPreemptiveWrite restores the calling session's pre-write
 		// state on any failure path AFTER the pre-emptive reviewing write
-		// landed (issue #2258). It is a no-op when the pre-emptive write was
+		// landed. It is a no-op when the pre-emptive write was
 		// skipped (prevStatus == nil) and is idempotent — callers may invoke
 		// it once per failure branch without coordination. Specifically:
 		//
@@ -1963,7 +1951,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		//      using the same SQLITE_BUSY-retry budget as the forward write.
 		//   2. Clears s.reviewingInFlight under s.mu.
 		//   3. Pushes reviewing_state{false} to the PI extension so its
-		//      pendingReviewCall guard releases in lock-step (#2050). A
+		//      pendingReviewCall guard releases in lock-step. A
 		//      dropped frame here is non-fatal: the next transition or
 		//      handshake-time emission re-asserts the correct state.
 		//
@@ -2007,7 +1995,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.Rebase {
 			// Forward the inline-rebase request from the container worker so
 			// the host-side subprocess runs the gate with --rebase. The gate
-			// itself runs in the host subprocess (issue #1518).
+			// itself runs in the host subprocess.
 			args = append(args, "--rebase")
 		}
 
@@ -2070,7 +2058,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if pipeErr != nil {
 			// Roll back the pre-emptive `reviewing` write — no subprocess
 			// has been spawned, so the calling session must not remain
-			// pinned in `reviewing` (issue #2258).
+			// pinned in `reviewing`.
 			rollbackPreemptiveWrite()
 			writeError(w, http.StatusInternalServerError, "review: stdout pipe: "+pipeErr.Error())
 			return
@@ -2079,7 +2067,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if startErr := cmd.Start(); startErr != nil {
 			// Roll back the pre-emptive `reviewing` write — the subprocess
 			// failed to start so no agents were spawned and the calling
-			// session must not remain pinned in `reviewing` (issue #2258).
+			// session must not remain pinned in `reviewing`.
 			rollbackPreemptiveWrite()
 			writeError(w, http.StatusInternalServerError, "review: start: "+startErr.Error())
 			return
@@ -2152,12 +2140,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// `reviewing` itself after a successful all-agents spawn, so a
 		// non-zero exit means the child did not transition the session to
 		// `reviewing` and our pre-emptive write must be reversed to
-		// prevent the worker from staying pinned (issue #2258).
+		// prevent the worker from staying pinned.
 		//
 		// On waitErr == nil the agents spawned successfully; the monitor
 		// is now responsible for delivering the review-complete prompt,
-		// which clears reviewingInFlight via the normal /prompt path
-		// (#1843). No rollback in that case.
+		// which clears reviewingInFlight via the normal /prompt path.
+		// No rollback in that case.
 		if waitErr != nil {
 			rollbackPreemptiveWrite()
 		}
@@ -2172,7 +2160,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// (proxyCleanupToHostAPI) writes them verbatim to its own stdout/stderr so
 	// that an agent running inside a coordinator container sees the same
 	// per-resource progress lines a host invocation would print. Without this
-	// forwarding, the container path was silent on success — issue #1527.
+	// forwarding, the container path is silent on success.
 	mux.HandleFunc("/cleanup", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
 			return
@@ -2186,7 +2174,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			JSON         bool   `json:"json"`
 			KeepWorktree bool   `json:"keep_worktree"`
 		}
-		// /cleanup body cap: default 1 MiB (issue #1848).
+		// /cleanup body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -2222,9 +2210,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			args = append(args, "--json")
 		}
 		if req.KeepWorktree {
-			// issue #2179: forward --keep-worktree so the host-side cleanup
-			// performs a soft close (preserves worktree + branch) even for
-			// a worker session.
+			// Forward --keep-worktree so the host-side cleanup performs a
+			// soft close (preserves worktree + branch) even for a worker
+			// session.
 			args = append(args, "--keep-worktree")
 		}
 
@@ -2272,7 +2260,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		})
 	})
 
-	// POST /close (issue #2179)
+	// POST /close
 	// Request:  {"session":"nixos-config@my-feature","yes":true,"json":false,
 	//            "keep_worktree":false,"remove_worktree":false}
 	// Response: {"stdout":"...","stderr":"..."} | {"error":"...","stdout":"...","stderr":"..."}
@@ -2385,7 +2373,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		var req struct {
 			Session string `json:"session"`
 		}
-		// /switch body cap: default 1 MiB (issue #1848).
+		// /switch body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -2408,7 +2396,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		// Per-endpoint timeout: 30 s. `prism switch` issues a single tmux
 		// switch-client command and exits — it should complete in well under
-		// a second. 30 s is the documented outer bound (issue #1847). On
+		// a second. 30 s is the documented outer bound. On
 		// timeout returns 504 Gateway Timeout; on client disconnect returns 499.
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
@@ -2435,7 +2423,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Enqueues a PR into the merge queue using the sidecar's own session_name
 	// and instance_id — the values the merge-queue watcher queries against.
 	// This is the proxy path for `prism merge <pr>` invoked from inside a
-	// bwrap sandbox where dbPath() resolves to a shadow tmpfs (#1043).
+	// bwrap sandbox where dbPath() resolves to a shadow tmpfs.
 	//
 	// Coordinator-only: the merge queue is owned by coordinator sessions.
 	mux.HandleFunc("/merge", func(w http.ResponseWriter, r *http.Request) {
@@ -2449,7 +2437,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			PR    int     `json:"pr"`
 			Title *string `json:"title"`
 		}
-		// /merge body cap: default 1 MiB (issue #1848).
+		// /merge body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -2469,8 +2457,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// the row is keyed on exactly the values the merge-queue watcher
 		// queries against. Repo is required because pending_merges is now
 		// keyed on (repo, pr) so PR numbers can safely collide across repos
-		// sharing one prism.db (issue #2354). This is the architectural
-		// reason for routing through the sidecar at all (#1043).
+		// sharing one prism.db. This is the architectural reason for routing
+		// through the sidecar at all.
 		row, err := s.cfg.DB.EnqueueMerge(req.PR, s.cfg.Repo, s.cfg.SessionName, s.cfg.InstanceID, req.Title)
 		if err != nil {
 			s.logger().Printf("sidecar: host-API /merge: EnqueueMerge: %v", err)
@@ -2489,7 +2477,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Lists merge queue entries scoped to the sidecar's own instance_id and
 	// session_name — the same filters used by the host-side `prism merges`
 	// command. This is the proxy path for `prism merges` invoked from inside
-	// a bwrap sandbox (#1043).
+	// a bwrap sandbox.
 	mux.HandleFunc("/merges", func(w http.ResponseWriter, r *http.Request) {
 		if !requireGet(w, r) {
 			return
@@ -2536,7 +2524,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		var req struct {
 			PR int `json:"pr"`
 		}
-		// /merges/cancel body cap: default 1 MiB (issue #1848).
+		// /merges/cancel body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -2553,8 +2541,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// Scope by (pr, repo, instance_id) so cancellation can never touch a
-		// same-numbered row belonging to another repo sharing this prism.db
-		// (issue #2354). The instance_id filter continues to prevent one
+		// same-numbered row belonging to another repo sharing this prism.db.
+		// The instance_id filter continues to prevent one
 		// coordinator incarnation from cancelling another's rows.
 		cancelled, err := s.cfg.DB.CancelMerge(req.PR, s.cfg.Repo, s.cfg.InstanceID)
 		if err != nil {
@@ -2586,7 +2574,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Writes a lifecycle event to the host DB by running `prism event <kind>`
 	// with the supplied args on the host. This is the proxy path for every
 	// `prism event <kind>` subcommand invoked from inside a container where
-	// dbPath() resolves to a per-container shadow DB invisible to the host (#1254).
+	// dbPath() resolves to a per-container shadow DB invisible to the host.
 	//
 	// Allowed kinds: state-change, pane-died, tmux-session-start, tmux-session-end,
 	// compaction, error, doom-loop-detected.
@@ -2597,9 +2585,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//     NOTE: we intentionally do NOT require the session to already exist in
 	//     the host DB. tmux-session-start is called for brand-new sessions that
 	//     have no agent_status row yet; a DB-existence check would reject the
-	//     very first event that creates the session record. #1254 originally
-	//     required "matches a known session", but that AC item was relaxed to
-	//     non-empty-only to allow tmux-session-start to work correctly.
+	//     very first event that creates the session record.
 	//   - All role levels (worker and coordinator) are permitted — lifecycle
 	//     events are emitted by both.
 	//
@@ -2615,7 +2601,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Session string            `json:"session"`
 			Args    map[string]string `json:"args"`
 		}
-		// /event body cap: default 1 MiB (issue #1848).
+		// /event body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -2651,7 +2637,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		// Per-endpoint timeout: 30 s. `prism event` writes one row to the host
 		// DB and exits — it should complete in well under a second. 30 s is
-		// the documented outer bound (issue #1847). On timeout returns 504
+		// the documented outer bound. On timeout returns 504
 		// Gateway Timeout; on client disconnect returns 499.
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
@@ -2682,7 +2668,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Appends one feedback entry to the host's feedback.jsonl file. This is the
 	// proxy path for `prism feedback` invoked from inside a bwrap worker sandbox
 	// where the sandbox namespace is ephemeral — writes inside the sandbox never
-	// reach the host filesystem (issue #1644). The sidecar runs on the host, so
+	// reach the host filesystem. The sidecar runs on the host, so
 	// its Append call lands in the real ~/.local/state/prism/feedback.jsonl.
 	//
 	// All roles (worker and coordinator) are permitted — feedback is intentionally
@@ -2691,15 +2677,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//
 	// The response includes the resolved path so the CLI can print it in the
 	// success message — the worker sees the host path, which is the same path
-	// `prism feedback list` will read from on the host (AC: "message prints the
-	// path the entry actually landed at").
+	// `prism feedback list` will read from on the host.
 	mux.HandleFunc("/feedback", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
 			return
 		}
 
 		var entry feedback.Entry
-		// /feedback body cap: default 1 MiB (issue #1848). DisallowUnknownFields
+		// /feedback body cap: default 1 MiB. DisallowUnknownFields
 		// is enabled because feedback.Entry is a closed schema co-owned by this
 		// repo (cmd/feedback.go and internal/feedback) — no external producers.
 		if status, err := decodeRequestJSON(w, r, &entry, defaultMaxBodyBytes, false); err != nil {
@@ -2737,13 +2722,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Response: {"account":"<resolved account name>"} | {"error":"..."}
 	//
 	// Persists a Claude subscription rate-limit snapshot to
-	// $XDG_STATE_HOME/prism/usage/<account>.json and .../current.json
-	// (issue #2538, parent #2537). The caller is the vendored `anthropic-oauth`
+	// $XDG_STATE_HOME/prism/usage/<account>.json and .../current.json.
+	// The caller is the vendored `anthropic-oauth`
 	// pi extension, which captures the headers off a 200 response on the OAuth
 	// path and POSTs them here without awaiting the result.
 	//
 	// The write happens here, host-side, rather than in the extension. Three
-	// reasons (issue #2537):
+	// reasons:
 	//
 	//  1. ~/.config/prism/accounts/ is deliberately not bound into agent
 	//     sandboxes (internal/container/mounts.go), so a sandboxed session
@@ -2778,7 +2763,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		var req usageSnapshotRequest
-		// Body cap: default 1 MiB (issue #1848), which is orders of magnitude
+		// Body cap: default 1 MiB, which is orders of magnitude
 		// more than the ~300-byte payload this endpoint expects. The final
 		// argument is allowUnknownFields=false, so DisallowUnknownFields is on.
 		// That is load-bearing here: it is what keeps the persisted object
@@ -2824,7 +2809,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// POST /escalate
 	// Request:  {"prompt":"...","to":"<session>" (optional),"from":"<session>" (optional)}
 	// Response: {} on success, {"error":"..."} otherwise.
-	// Wait-probe endpoints (issue #1500) — read-only DB lookups used by the
+	// Wait-probe endpoints — read-only DB lookups used by the
 	// `--wait` flag on prism merge / review / spawn when the CLI runs inside a
 	// sandbox. The CLI cannot poll the host's prism.db directly (the sandbox
 	// has its own shadow DB), so it polls these endpoints instead. Each is a
@@ -2840,8 +2825,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// only in-process caller (proxyWaitProbe) always passes repo; the
 	// omission fallback exists so that ad-hoc curl / older prism CLIs on
 	// the host cannot accidentally cross-repo through this endpoint.
-	// Repo scoping was added in issue #2354 to close the cross-repo PR-
-	// number collision that produced a false "merged" signal.
+	// Repo scoping closes the cross-repo PR-number collision that would
+	// otherwise produce a false "merged" signal.
 	mux.HandleFunc("/merges/by-pr", func(w http.ResponseWriter, r *http.Request) {
 		if !requireGet(w, r) {
 			return
@@ -2899,11 +2884,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// GET /groups/list?limit=N
 	// Response: 200 with []db.ReviewGroupSummary (newest first).
 	//
-	// Backs `prism reviews list` (issue #1500) when invoked from inside a
+	// Backs `prism reviews list` when invoked from inside a
 	// sandbox — the in-sandbox prism.db is a tmpfs shadow with no review
 	// groups, so a direct read returns an empty list. Routing through this
 	// endpoint lets the in-sandbox CLI see the host's session_groups
-	// table. Same #1043 pattern as /merges.
+	// table. Same pattern as /merges.
 	mux.HandleFunc("/groups/list", func(w http.ResponseWriter, r *http.Request) {
 		if !requireGet(w, r) {
 			return
@@ -2989,13 +2974,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// JSON forwards the --json flag to the host-side `prism escalate`
 			// child so its stdout carries the JSON envelope (and stderr the
 			// human mirror). The proxy on the container side then writes the
-			// captured streams verbatim to its own stdout/stderr. See #2018.
+			// captured streams verbatim to its own stdout/stderr.
 			JSON bool `json:"json,omitempty"`
 			// DedupWindow forwards the hidden --dedup-window flag for tests
 			// and operator overrides. Empty string falls back to the default.
 			DedupWindow string `json:"dedup_window,omitempty"`
 		}
-		// /escalate body cap: default 1 MiB (issue #1848).
+		// /escalate body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -3033,7 +3018,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		// Per-endpoint timeout: 30 s. `prism escalate` writes one bus event
 		// and may best-effort prompt the coordinator; it should return well
-		// inside a second. 30 s is the documented outer bound (issue #1847).
+		// inside a second. 30 s is the documented outer bound.
 		// On timeout returns 504 Gateway Timeout; on client disconnect returns 499.
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
@@ -3046,7 +3031,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// side can re-emit them on the matching local streams. Using
 		// CombinedOutput would mash them together and break --json mode
 		// (which writes JSON to stdout and the human mirror to stderr).
-		// See issue #2018 review-context blocker.
 		var stdoutBuf, stderrBuf bytes.Buffer
 		cmd.Stdout = &stdoutBuf
 		cmd.Stderr = &stderrBuf
@@ -3073,7 +3057,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// variant — all exit 0 with the state held). Arm the in-memory
 		// same-turn guard BEFORE responding, so the agent-loop iteration that
 		// resumes once this bash call returns cannot clobber the escalated
-		// state with its turn_start active upsert (issue #2255). Only for our
+		// state with its turn_start active upsert. Only for our
 		// own session: a coordinator proxying an escalation for another
 		// session must not pin itself.
 		if fromSession == s.cfg.SessionName {
@@ -3099,10 +3083,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//
 	// Coordinator-only: a worker that needs research context escalates to its
 	// coordinator, and the coordinator decides whether to spawn an
-	// investigator. Before #2588 this rule was documented in the agent prose
-	// but had no enforcement point here, so any worker could spawn an
-	// investigator. The gate matches /merge — requireCoordinator immediately
-	// after requirePost, ahead of the body decode.
+	// investigator. This rule is also documented in the agent prose, but this
+	// gate is the enforcement point. The gate matches /merge — requireCoordinator
+	// immediately after requirePost, ahead of the body decode.
 	mux.HandleFunc("/investigate", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
 			return
@@ -3115,7 +3098,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			From   string `json:"from,omitempty"`
 			Name   string `json:"name,omitempty"`
 		}
-		// /investigate body cap: default 1 MiB (issue #1848).
+		// /investigate body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -3157,7 +3140,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// caller sees the actionable message (e.g. `invoker session %q has no
 		// agent_status row`) instead of a bare `exit status 1`. On the
 		// success path any non-fatal stderr warnings are logged to the
-		// sidecar log rather than discarded. See issue #2362 / parent #2356.
+		// sidecar log rather than discarded.
 		var stdoutBuf, stderrBuf bytes.Buffer
 		cmd.Stdout = &stdoutBuf
 		cmd.Stderr = &stderrBuf
@@ -3205,7 +3188,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Model    string `json:"model"`
 			Thinking string `json:"thinking"`
 		}
-		// /set-model body cap: default 1 MiB (issue #1848).
+		// /set-model body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -3237,7 +3220,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		status := liveModelSwapForSession(s, req.Session, req.Provider, req.Model, req.Thinking)
 		// When the outbound channel is full, return 503 so the caller knows the
-		// frame was dropped rather than silently accepting 200 OK. Issue #1844.
+		// frame was dropped rather than silently accepting 200 OK.
 		httpStatus := http.StatusOK
 		if status == "error:queue-full" {
 			httpStatus = http.StatusServiceUnavailable
@@ -3272,7 +3255,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Scope   string `json:"scope"`
 			Session string `json:"session"` // only for scope=session
 		}
-		// /apply-profile body cap: default 1 MiB (issue #1848).
+		// /apply-profile body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -3383,7 +3366,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// When any target's outbound channel was full, return 503 so the caller
-		// knows at least one set_model frame was dropped. Issue #1844.
+		// knows at least one set_model frame was dropped.
 		applyHTTPStatus := http.StatusOK
 		if applyAnyQueueFull {
 			applyHTTPStatus = http.StatusServiceUnavailable
@@ -3408,7 +3391,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Scope   string         `json:"scope"`
 			Session string         `json:"session"` // only for scope=session
 		}
-		// /register-provider body cap: default 1 MiB (issue #1848).
+		// /register-provider body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -3489,7 +3472,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// When any target's outbound channel was full, return 503 so the caller
-		// knows at least one frame was dropped. Issue #1844.
+		// knows at least one frame was dropped.
 		regHTTPStatus := http.StatusOK
 		if anyQueueFull {
 			regHTTPStatus = http.StatusServiceUnavailable
@@ -3513,7 +3496,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Name    string         `json:"name"`
 			Config  map[string]any `json:"config"`
 		}
-		// /register-provider-direct body cap: default 1 MiB (issue #1848).
+		// /register-provider-direct body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -3531,7 +3514,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		// Propagate channel-full failure as 503 so the forwarding sidecar
-		// knows the frame was dropped. Issue #1844.
+		// knows the frame was dropped.
 		if !s.RegisterProvider(req.Name, req.Config) {
 			s.logger().Printf("sidecar: /register-provider-direct: enqueue failed (queue full) for session %s", req.Session)
 			writeError(w, http.StatusServiceUnavailable, "outbound queue full")
@@ -3547,7 +3530,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Enqueues a set_active_tools frame to the PI extension for the session's
 	// own harness pipe. Only targets the calling session (workers) or a named
 	// session (coordinator). Returns 503 Service Unavailable when the outbound
-	// channel is full so the caller knows the frame was dropped. Issue #1844.
+	// channel is full so the caller knows the frame was dropped.
 	mux.HandleFunc("/set-active-tools", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
 			return
@@ -3556,7 +3539,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Session string   `json:"session"`
 			Tools   []string `json:"tools"`
 		}
-		// /set-active-tools body cap: default 1 MiB (issue #1848).
+		// /set-active-tools body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -3576,7 +3559,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		// Return 503 when the outbound channel is full so the caller knows the
-		// frame was dropped rather than silently accepting 200 OK. Issue #1844.
+		// frame was dropped rather than silently accepting 200 OK.
 		if !s.SetActiveTools(req.Tools) {
 			s.logger().Printf("sidecar: /set-active-tools: enqueue failed (queue full) for session %s", req.Session)
 			writeError(w, http.StatusServiceUnavailable, "outbound queue full")
@@ -3592,7 +3575,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Enqueues an abort frame to the PI extension for the session's own harness
 	// pipe. Only targets the calling session (workers) or a named session
 	// (coordinator). Returns 503 Service Unavailable when the outbound channel
-	// is full so the caller knows the frame was dropped. Issue #1844.
+	// is full so the caller knows the frame was dropped.
 	mux.HandleFunc("/abort", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
 			return
@@ -3600,7 +3583,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		var req struct {
 			Session string `json:"session"`
 		}
-		// /abort body cap: default 1 MiB (issue #1848).
+		// /abort body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
@@ -3620,7 +3603,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		// Return 503 when the outbound channel is full so the caller knows the
-		// frame was dropped rather than silently accepting 200 OK. Issue #1844.
+		// frame was dropped rather than silently accepting 200 OK.
 		if !s.Abort() {
 			s.logger().Printf("sidecar: /abort: enqueue failed (queue full) for session %s", req.Session)
 			writeError(w, http.StatusServiceUnavailable, "outbound queue full")
@@ -3629,7 +3612,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"session": req.Session, "status": "applied"})
 	})
 
-	// GET /db/query, /db/schema, /db/tables — read-only query surface (#1467).
+	// GET /db/query, /db/schema, /db/tables — read-only query surface.
 	// All three open a fresh read-only handle (?mode=ro) per request rather
 	// than sharing the sidecar's writable handle. Handlers live in
 	// host_api_db.go so the wiring stays minimal here.
@@ -3667,14 +3650,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		s.hostAPIDBTables(w, r)
 	})
 
-	// GET /audit — the audit-trail read surface behind `prism audit` (#2618).
+	// GET /audit — the audit-trail read surface behind `prism audit`.
 	// The handler lives in host_api_audit.go, which also carries the security
 	// rationale in full.
 	//
 	// Coordinator-only, matching /db/query. Audit rows are agent_events rows
 	// with type = 'audit', and /db/query already reads every agent_events row
 	// for any coordinator, so this gate copies an existing decision rather
-	// than making a new one. The tier-3 `prism checkin` privilege (#2587) is
+	// than making a new one. The tier-3 `prism checkin` privilege is
 	// not consulted here and must not be: it covers /checkin ALONE.
 	//
 	// The type = 'audit' filter is applied inside db.QueryAuditEvents, not by
@@ -3697,7 +3680,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 //
 // usageSnapshotRequest is the closed wire schema of POST /usage/snapshot. Each
 // field maps 1:1 to one of the allowlisted `anthropic-ratelimit-unified-*`
-// response headers confirmed in issue #2537. The type is deliberately separate
+// response headers. The type is deliberately separate
 // from usage.Snapshot: the persisted object also carries `captured_at` and
 // `account`, and both are set host-side. Keeping them off the request schema
 // means DisallowUnknownFields rejects a caller that tries to supply either.
@@ -3718,7 +3701,7 @@ type usageSnapshotRequest struct {
 	Fallback            *usageSnapshotFallback `json:"fallback"`
 	Overage             *usageSnapshotOverage  `json:"overage"`
 	// OrganizationID and WorkspaceID mirror `anthropic-organization-id` and
-	// `anthropic-workspace-id` (issue #2713, parent #2699). Like every other
+	// `anthropic-workspace-id`. Like every other
 	// field on this type, they carry no credential and are not part of the
 	// isEmpty gate below — an org/workspace pair with no rate-limit data
 	// attached is not worth persisting on its own.
@@ -3934,16 +3917,16 @@ func knownReviewAgentNames() []string {
 	return names
 }
 
-// ── P3.LIVE live-model-swap helpers (#1214) ───────────────────────────────────
+// ── live-model-swap helpers ─────────────────────────────────────────────
 
 // stripProviderPrefix normalises a model ID for the set_model wire contract
 // by removing a single leading "<provider>/" segment when the leading segment
 // matches the supplied provider. The wire contract for set_model frames is a
 // bare model ID; profiles.json conventionally stores the prefixed form
 // ("anthropic/claude-sonnet-4") for the spawn-time --model CLI flag, so the
-// live-swap path must normalise before building the frame. Issue #2252.
+// live-swap path must normalise before building the frame.
 //
-// Constraints (from the issue):
+// Constraints:
 //   - Strip at most ONE leading "<provider>/" segment.
 //   - Strip only when that segment exactly equals the frame's provider.
 //   - Preserve any remaining '/' characters — model IDs may legitimately
@@ -3975,11 +3958,10 @@ func stripProviderPrefix(provider, model string) string {
 //
 // The model argument is normalised via stripProviderPrefix before being
 // placed on the wire — both the own-session SetModel enqueue and the
-// forwarded peer /set-model call see the bare model ID. This is the canonical
-// fix for issue #2252 (the live-swap silent no-op): the bug shape was
-// /apply-profile passing slot.Model ("anthropic/claude-fable-5") verbatim
-// into the frame, which the extension's modelRegistryFind then failed to
-// resolve.
+// forwarded peer /set-model call see the bare model ID. Without this
+// normalisation, a prefixed model ID like "anthropic/claude-fable-5" reaches
+// the frame verbatim, and the extension's modelRegistryFind fails to resolve
+// it — a silent no-op.
 //
 // Returns a status string: "applied" or "error:disconnected".
 func liveModelSwapForSession(s *Sidecar, targetSess, provider, model, thinking string) string {
@@ -3989,7 +3971,7 @@ func liveModelSwapForSession(s *Sidecar, targetSess, provider, model, thinking s
 			return "error:disconnected"
 		}
 		// Propagate channel-full failure as error:queue-full so the HTTP caller
-		// receives a non-200 response rather than a silent 200 OK. Issue #1844.
+		// receives a non-200 response rather than a silent 200 OK.
 		if !s.SetModel(provider, model, thinking) {
 			s.logger().Printf("sidecar: liveModelSwapForSession: enqueue failed (queue full) for %s", targetSess)
 			return "error:queue-full"
@@ -4012,7 +3994,7 @@ func liveRegisterProviderForSession(s *Sidecar, targetSess, name string, cfg map
 			return "error:disconnected"
 		}
 		// Propagate channel-full failure as error:queue-full so the HTTP caller
-		// receives a non-200 response rather than a silent 200 OK. Issue #1844.
+		// receives a non-200 response rather than a silent 200 OK.
 		if !s.RegisterProvider(name, cfg) {
 			s.logger().Printf("sidecar: liveRegisterProviderForSession: enqueue failed (queue full) for %s", targetSess)
 			return "error:queue-full"
@@ -4063,7 +4045,7 @@ func resolveRoleForSession(s *Sidecar, targetSess string) (role, skipStatus stri
 // /apply-profile fan-out and same-session enqueue paths. The peer's
 // /set-model handler will also normalise on receipt — the dual-strip is
 // deliberate defence in depth and harmless because stripProviderPrefix is
-// idempotent. Issue #2252.
+// idempotent.
 func forwardSetModel(targetSess, provider, model, thinking string) error {
 	sockPath, err := hostAPISocketPath(targetSess)
 	if err != nil {

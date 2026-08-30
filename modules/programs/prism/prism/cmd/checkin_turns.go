@@ -28,8 +28,8 @@ import (
 // Default mode (verbose=false): rich one-liner per tool call, state changes
 // shown inline, msg_user shown with ▶ prefix.
 //
-// Verbose mode (verbose=true): full tool args + full results, no truncation;
-// same as prior behaviour. Subagent turns shown inline with │ prefix.
+// Verbose mode (verbose=true): full tool args + full results, no truncation.
+// Subagent turns shown inline with │ prefix.
 //
 // Subagent turns (where the agent field differs from the session's root agent)
 // are collapsed into a single summary line in default mode. In verbose mode they
@@ -75,13 +75,13 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 	secondary, serr := d.QueryEventsByMessageIDs(session, messageIDs, childTypes)
 
 	// Organise children by parent-assistant messageId. tool_call /
-	// tool_result frames emit `parentMessageId` (#1787); permission_* /
+	// tool_result frames emit `parentMessageId`; permission_* /
 	// thinking frames emit `messageId`. `extractParentMessageID` picks
 	// the right field for each event type.
 	//
 	// Orphans — child events whose parent assistant turn is not in the
 	// queried window — are collected in a separate slice and rendered
-	// as standalone lines after the timeline (#1787 edge-case AC).
+	// as standalone lines after the timeline.
 	childrenByMsgID := make(map[string][]childEventItem)
 	assistantMsgIDs := make(map[string]struct{}, len(messageIDs))
 	for _, id := range messageIDs {
@@ -165,8 +165,8 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 
 	// isSubagentEntry returns true when an entry's agent differs from the root
 	// agent, indicating it belongs to a subagent invocation. When rootAgentName
-	// is empty (pre-migration sessions), all entries are treated as root-agent
-	// entries to preserve current behaviour.
+	// is empty (a session with no recorded root agent), all entries are treated
+	// as root-agent entries.
 	isSubagentEntry := func(entry timelineEntry) bool {
 		if rootAgentName == "" {
 			return false
@@ -339,7 +339,7 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 
 	// Orphan child events (no parent assistant turn in the queried
 	// window) are surfaced as standalone summary lines after the
-	// timeline so they aren't silently dropped — #1787 edge-case AC.
+	// timeline so they aren't silently dropped.
 	// In default mode tool_call/tool_result orphans share the same
 	// renderer as the paired path so the visual shape is consistent;
 	// other child types fall back to their verbose form.

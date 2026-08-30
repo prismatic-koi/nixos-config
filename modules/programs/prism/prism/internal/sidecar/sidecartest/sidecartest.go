@@ -16,11 +16,11 @@
 //     and sidecar.pushDashboardEvent, both of which derive paths from
 //     $XDG_STATE_HOME / $HOME) are suppressed: sidecar.New() consults the same
 //     PRISM_TEST_MODE_RESTRICT_HOSTAPI guard set by NewIsolated and installs a
-//     no-op DashboardSink when it is set. See issue #1851 for the
+//     no-op DashboardSink when it is set. See dashboard.go for the
 //     homeless-shelter footgun this closes.
 //
 // Session names used in test fixtures must NOT use real coordinator slugs
-// (e.g. "nixos-config@main"). Use "prism-test@invoker-<testname>" instead so
+// (for example, "nixos-config@main"). Use "prism-test@invoker-<testname>" instead so
 // that if isolation is accidentally broken, it cannot collide with a live session.
 package sidecartest
 
@@ -44,10 +44,10 @@ import (
 //
 //   - causes promptdelivery.deliverViaSidecarSocket to refuse to dial any
 //     socket path that does not reside under the process's $XDG_STATE_HOME
-//     directory; and
+//     directory.
 //   - causes sidecar.New() to install a no-op DashboardSink when
 //     Config.DashboardSink is nil, so writeStateChangeWithSID does not touch
-//     $XDG_STATE_HOME-derived paths (issue #1851).
+//     $XDG_STATE_HOME-derived paths.
 //
 // It is set automatically by NewIsolated.
 //
@@ -94,7 +94,7 @@ func (b *Bus) CopyBodies() []string {
 // NewIsolated creates a fully isolated test bus for a sidecar test. It:
 //
 //   - Sets XDG_STATE_HOME to a new t.TempDir() path via t.Setenv so that all
-//     path resolution (SidecarHostAPIPath, SidecarHarnessPipePath, etc.) is
+//     path resolution (SidecarHostAPIPath, SidecarHarnessPipePath, and more) is
 //     redirected to the tempdir.
 //   - Sets PRISM_TEST_MODE_RESTRICT_HOSTAPI=1 so deliverViaSidecarSocket
 //     refuses to dial sockets outside the tempdir.
@@ -109,7 +109,7 @@ func (b *Bus) CopyBodies() []string {
 // invokerSession is the session name to seed into the DB as an active invoker
 // row pointing to the httptest.Server. Pass an empty string to skip seeding.
 //
-// All session names used in tests should use the "prism-test@" prefix, e.g.:
+// All session names used in tests must use the "prism-test@" prefix, for example:
 //
 //	invoker := "prism-test@invoker-" + t.Name()
 func NewIsolated(t *testing.T, invokerSession string) *Bus {
@@ -133,9 +133,9 @@ func NewIsolated(t *testing.T, invokerSession string) *Bus {
 	//    ($XDG_STATE_HOME/prism/prism.db). Keeping the DB inside the
 	//    test-scoped XDG tempdir makes the isolation assertable by
 	//    construction: a test can verify Bus.DB.Path() resides under
-	//    Bus.XDGStateHome instead of probing live host state (#2227).
+	//    Bus.XDGStateHome instead of probing live host state.
 	//    OpenDB stamps a pre-migrated template instead of re-running the
-	//    schema and every migration, so the open costs no fsync (#2598).
+	//    schema and every migration, so the open costs no fsync.
 	prismDir := filepath.Join(xdgTmp, "prism")
 	if err := os.MkdirAll(prismDir, 0o700); err != nil {
 		t.Fatalf("sidecartest: create prism state dir: %v", err)

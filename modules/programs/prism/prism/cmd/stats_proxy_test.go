@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for the PRISM_HOST_API proxy dispatch in prism stats (#1463).
+// Tests for the PRISM_HOST_API proxy dispatch in prism stats.
 //
 // Each test spins up a real HTTP server bound to a Unix socket, sets
 // PRISM_HOST_API, and verifies that:
@@ -280,8 +280,8 @@ func TestRunStatsProxy_SummaryJSON(t *testing.T) {
 
 // TestRunStatsProxy_Detail_RendersOutcome verifies that a `prism stats
 // <session>` detail lookup via the proxy path renders the token/cost fields
-// from the outcome the host-API view=detail response now carries, instead of
-// the old fixed "token data requires host DB access" stub line (issue #2582).
+// from the outcome the host-API view=detail response carries, instead of
+// a fixed "token data requires host DB access" stub line.
 func TestRunStatsProxy_Detail_RendersOutcome(t *testing.T) {
 	sess := db.Session{
 		InstanceID:  "cccc1111-2222-3333-4444-555555555555",
@@ -324,7 +324,7 @@ func TestRunStatsProxy_Detail_RendersOutcome(t *testing.T) {
 // TestRunStatsProxy_Detail_OutcomeNotYetAvailable verifies that a detail
 // lookup for a session with no spawn_outcome row yet (still active) renders
 // an explicit "not yet available" message rather than presenting zero values
-// as real data (issue #2582 edge case).
+// as real data.
 func TestRunStatsProxy_Detail_OutcomeNotYetAvailable(t *testing.T) {
 	sess := db.Session{
 		InstanceID:  "dddd1111-2222-3333-4444-555555555555",
@@ -444,9 +444,9 @@ func TestRunStatsProxy_HostPathUnchanged(t *testing.T) {
 	}
 }
 
-// ── compare / abtest / --abtest proxy paths (#2098) ───────────────────────────
+// ── compare / abtest / --abtest proxy paths ───────────────────────────
 //
-// These tests exercise the host-API proxy dispatch added in #2098 for
+// These tests exercise the host-API proxy dispatch for
 // `prism stats compare`, `prism stats abtest <group>`, and
 // `prism stats --abtest`. The strongest guarantee is byte-identical output
 // between the direct-DB path and the proxy path: each test renders the same
@@ -574,7 +574,7 @@ func renderCompareProxy(t *testing.T, cmd *cobra.Command, apiURL string, args ..
 	})
 }
 
-// TestStatsCompareProxy_ByteIdentical_Table is the core #2098 AC: the table
+// TestStatsCompareProxy_ByteIdentical_Table is the core case: the table
 // output of `prism stats compare A B` must be byte-identical between the
 // direct-DB path and the host-API proxy path.
 func TestStatsCompareProxy_ByteIdentical_Table(t *testing.T) {

@@ -1,11 +1,10 @@
 package sidecar
 
 // Tests for the host-API /event endpoint added to fix the shadow-DB issue for
-// prism event subcommands running inside containers (issue #1254).
+// prism event subcommands running inside containers.
 //
 // These tests exercise the hostAPIHandler() method directly without spinning
-// up a real Unix socket server. The shape mirrors sidecar_merge_test.go from
-// #1043.
+// up a real Unix socket server. The shape mirrors sidecar_merge_test.go.
 //
 // Note: the success path (kind + session both valid, event written to host DB)
 // is covered at the cmd level in cmd/event_proxy_test.go via a fake HTTP

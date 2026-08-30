@@ -2,13 +2,12 @@ package session
 
 // Test helper: a non-empty placeholder for SpawnOpts.PIExtensionDir /
 // Opts.PIExtensionDir on test fixtures that exercise spawn / Create code
-// paths unrelated to the #2065 fail-fast guard.
+// paths unrelated to the fail-fast guard.
 //
 // ValidatePILaunchOpts (the chokepoint) rejects an empty PIExtensionDir on
-// host-mode pi launches. That guard is correct for production callers, but
-// every pre-#2064 spawn-test fixture left the field unset because the gate
-// did not exist. Rather than churn each fixture to set the field literally,
-// they all use this single string so the intent ("test does not care about
+// host-mode pi launches. That guard is correct for production callers. Test
+// fixtures that do not care about the extension dir use this single string so
+// the intent ("test does not care about
 // extension dir; satisfy the guard") is visible at the call site.
 //
 // The string itself is never opened or stat'd by SpawnSession / Create —

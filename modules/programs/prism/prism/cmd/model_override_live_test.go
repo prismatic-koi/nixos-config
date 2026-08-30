@@ -1,7 +1,5 @@
 package cmd
 
-// model_override_live_test.go — issue #2863.
-//
 // Pins the agent-run half of the per-role model override for the two
 // pane-owned isolation modes. bwrap and sandbox-exec share this step: both
 // dispatch through `prism agent-run`, which stashes its flags on

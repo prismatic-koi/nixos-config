@@ -1,7 +1,7 @@
 package session
 
 // Tests for the durable spawn-intent / spawn-failed events written by
-// SpawnSession (#2364 B5 + B7). These cover the acceptance criteria:
+// SpawnSession. These cover the acceptance criteria:
 //
 //   - Every spawn attempt that reaches SpawnSession writes a session.spawn_intent
 //     event carrying session name and instance_id.

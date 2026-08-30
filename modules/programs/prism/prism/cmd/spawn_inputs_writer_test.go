@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for the centralised spawn_inputs writer introduced in issue #2087.
+// Tests for the centralised spawn_inputs writer.
 //
 // SpawnSession is the single chokepoint that writes spawn_inputs (see
 // internal/session/spawn.go). The writer builds the row from
@@ -9,7 +9,7 @@ package cmd
 // DB so the schema, flag→column mapping, and abtest-pair propagation all
 // land correctly without spinning up tmux / sidecar / a real agent.
 //
-// Test-suite isolation contract (AGENTS.md, issue #1608):
+// Test-suite isolation contract (AGENTS.md):
 //   - sidecartest.NewIsolated redirects $XDG_STATE_HOME to a t.TempDir() and
 //     sets the PRISM_TEST_MODE_RESTRICT_HOSTAPI guard, so no host DB / bus /
 //     tmux state is touched.
@@ -30,7 +30,7 @@ import (
 // seedSessionForSpawnInputs inserts a minimal sessions row for the given instance + name so
 // the spawn_inputs FK (spawn_inputs.instance_id → sessions.instance_id) is
 // satisfied. Mirrors what SpawnSession does host-side before writing the
-// audit row (#1507).
+// audit row.
 func seedSessionForSpawnInputs(t *testing.T, d *db.DB, instanceID, sessionName string) {
 	t.Helper()
 	if err := d.InsertSession(db.Session{
@@ -49,9 +49,8 @@ func seedSessionForSpawnInputs(t *testing.T, d *db.DB, instanceID, sessionName s
 // the row is written via InsertSpawnInputs and read back via
 // SpawnInputsByInstanceID.
 //
-// This is the core flag→column mapping test required by issue #2087:
-// after a `prism spawn` with all flags set, the audit row reflects the
-// invocation faithfully.
+// This is the core flag→column mapping test: after a `prism spawn` with all
+// flags set, the audit row reflects the invocation faithfully.
 func TestSpawnInputsFromOpts_FullFlagSet(t *testing.T) {
 	bus := sidecartest.NewIsolated(t, "")
 	d := bus.DB
@@ -114,7 +113,7 @@ func TestSpawnInputsFromOpts_FullFlagSet(t *testing.T) {
 	assertStringPtr(t, "ProfileName", got.ProfileName, "anthropic")
 	assertStringPtr(t, "ModelFlag", got.ModelFlag, "anthropic/claude-opus-4-8")
 	assertStringPtr(t, "VariantFlag", got.VariantFlag, "high")
-	// ProviderFlag is the issue #2852 audit column: the resolved --provider
+	// ProviderFlag is the --provider audit column: the resolved --provider
 	// value must survive the round trip so a retro can compare the intended
 	// routing provider against the session's actual outcome.
 	assertStringPtr(t, "ProviderFlag", got.ProviderFlag, "openrouter")
@@ -350,8 +349,8 @@ func TestSpawnInputsFromOpts_InvestigateMinimalRow(t *testing.T) {
 	assertStringPtr(t, "HarnessFlag", got.HarnessFlag, "pi")
 }
 
-// TestSpawnInputsFromOpts_AbtestPairCarriesRendererFields is the issue #2102
-// Layer 2 AC at the writer level: every --abtest leg must persist the columns
+// TestSpawnInputsFromOpts_AbtestPairCarriesRendererFields verifies at the
+// writer level that every --abtest leg persists the columns
 // that `prism stats compare`'s Spawn Inputs block actually reads —
 // profile_name, harness_flag, isolation_flag, agent_flag — with non-empty
 // values. Without these, the renderer collapses each leg to "—" and the
@@ -404,7 +403,7 @@ func TestSpawnInputsFromOpts_AbtestPairCarriesRendererFields(t *testing.T) {
 }
 
 // TestSpawnInputsFromOpts_IsolationModeDefaultsWhenFlagOmitted is the
-// issue #2105 writer-level AC. When --isolation is omitted (the common
+// writer-level check. When --isolation is omitted (the common
 // case where the user relies on the resolved default), the writer must
 // still populate spawn_inputs.isolation_mode with the resolved effective
 // mode the session is about to run under. isolation_flag stays NULL
@@ -449,8 +448,8 @@ func TestSpawnInputsFromOpts_IsolationModeDefaultsWhenFlagOmitted(t *testing.T) 
 		t.Fatal("SpawnInputsByInstanceID: got nil row, want non-nil")
 	}
 
-	// isolation_mode must carry the resolved effective mode — the bug
-	// fix in #2105 hinges on this not being NULL.
+	// isolation_mode must carry the resolved effective mode — it must not be
+	// NULL.
 	assertStringPtr(t, "IsolationMode", got.IsolationMode, resolvedMode)
 
 	// isolation_flag must stay NULL because no raw --isolation flag was

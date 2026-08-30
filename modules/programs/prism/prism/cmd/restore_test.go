@@ -40,10 +40,9 @@ import (
 // in #{pane_start_command}, leaving the session with only [edit, term] and
 // the assertions on the agent window fail.
 //
-// The skip is loud and named per issue #1510 — a follow-up that explores
-// self-hosted runners, privileged containers, or alternative test shapes
-// that would let these tests run on CI rather than only in a host shell
-// or a Nix dev shell.
+// The skip is loud and named — a follow-up could explore self-hosted
+// runners, privileged containers, or alternative test shapes that would let
+// these tests run on CI rather than only in a host shell or a Nix dev shell.
 func skipRestoreOnGHA(t *testing.T) {
 	t.Helper()
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
@@ -69,8 +68,8 @@ func withRestoreConfig(t *testing.T, cfg config.Config) {
 // sends NvimCmd into the session's edit window via a real tmux.SendKeys —
 // against the real tmux server these restore tests drive (cmdTestServer),
 // that really execs the `nvim` binary. That real, unmanaged nvim process is
-// the writer of `.local/state/nvim` under the test's fake HOME (issue
-// #2719): it can still be writing its state dir when a later t.TempDir()
+// the writer of `.local/state/nvim` under the test's fake HOME: it can
+// still be writing its state dir when a later t.TempDir()
 // cleanup for HOME runs RemoveAll, racing on "directory not empty". These
 // tests only assert on the agent window (window 1), so the edit window's
 // content is never under test — stubbing nvim removes the writer instead of
@@ -104,7 +103,7 @@ func agentPaneStartCmd(t *testing.T, s *cmdTestServer, sessionName string) strin
 //
 // Also ensures `loadRestoreConfig` returns a config with a non-empty
 // PIExtensionDir if no test has already overridden it — the host-mode pi
-// launch path enforces the #2065 fail-fast guard
+// launch path enforces the fail-fast guard
 // (session.ValidatePILaunchOpts) and would otherwise reject every restore
 // test that exercises LayoutFull. Tests that explicitly override
 // `loadRestoreConfig` via `withRestoreConfig` and want the empty-
@@ -302,11 +301,10 @@ func TestRestoreSession_NonBare(t *testing.T) {
 // would not match what sessionNameFor() would produce from the worktree is still
 // restored with the correct (stored) name.
 //
-// This is the core regression test for Bug 1: the old code called
-// ensureAndSwitchSession(s.Worktree, bareRoot, ...) which re-derived the
-// session name from the filesystem. If the stored worktree was corrupted (Bug 2)
-// or belonged to a non-bare session, the derived name diverged from s.SessionName
-// and the correct session was never created.
+// This is the core regression test for name divergence: re-deriving the
+// session name from the filesystem (rather than using the stored name) means
+// a corrupted or non-bare worktree yields a derived name that diverges from
+// s.SessionName, and the correct session is never created.
 func TestRestoreSession_NameDivergence(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
 	// Redirect XDG_STATE_HOME so StartSidecar writes its PID file to an
@@ -674,17 +672,17 @@ func TestStaggerDelay_CustomValue(t *testing.T) {
 	}
 }
 
-// ─── restore-attempts-on-prior-failure tests (issue #2315) ───────────────
+// ─── restore-attempts-on-prior-failure tests ───────────────
 //
-// The circuit breaker was removed in #2315. These tests pin the new
-// behaviour: restoreSession must attempt session.Create for every session
+// These tests pin the behaviour: restoreSession must attempt session.Create
+// for every session
 // that does not already have a live tmux session and whose worktree directory
 // exists, regardless of how many consecutive non-finished terminal
 // state_change events its history carries.
 
 // writeRestoreStateChange is a test helper that inserts a state_change event
 // for the given session with the given state value into the DB. Used by the
-// #2315 restore-attempts-on-prior-failure tests below.
+// restore-attempts-on-prior-failure tests below.
 func writeRestoreStateChange(t *testing.T, d *db.DB, sessionName, state string) {
 	t.Helper()
 	if err := d.WriteEvent(db.Event{
@@ -702,9 +700,8 @@ func writeRestoreStateChange(t *testing.T, d *db.DB, sessionName, state string) 
 
 // TestRestoreSession_PriorErrorEvents_StillAttempted verifies that a session
 // whose history contains 3+ consecutive `state_change: error` events is still
-// attempted by restoreSession (no longer skipped). Pre-#2315, the circuit
-// breaker would have skipped this session with
-// "skipped (circuit breaker): ...".
+// attempted by restoreSession. Without the always-attempt behaviour, a
+// circuit breaker would skip this session.
 func TestRestoreSession_PriorErrorEvents_StillAttempted(t *testing.T) {
 	skipRestoreOnGHA(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -718,7 +715,7 @@ func TestRestoreSession_PriorErrorEvents_StillAttempted(t *testing.T) {
 	status := seedStatus(t, d, sessionName, worktreeDir, nil)
 
 	// Write 5 consecutive `state_change: error` events (more than the legacy
-	// breaker threshold of 3). Pre-#2315 this would have been skipped.
+	// breaker threshold of 3).
 	for i := 0; i < 5; i++ {
 		writeRestoreStateChange(t, d, sessionName, "error")
 	}
@@ -733,8 +730,7 @@ func TestRestoreSession_PriorErrorEvents_StillAttempted(t *testing.T) {
 	}
 
 	// The agent_status row must remain active (NOT marked ended). The
-	// circuit-breaker code path deliberately left rows active so the user
-	// could intervene; the new always-attempt path must preserve that.
+	// always-attempt path must leave rows active so the user can intervene.
 	if isEnded(t, d, sessionName) {
 		t.Error("session was marked ended despite a successful restore attempt")
 	}
@@ -743,10 +739,10 @@ func TestRestoreSession_PriorErrorEvents_StillAttempted(t *testing.T) {
 // TestRestoreSession_PriorInterruptedEvents_StillAttempted verifies that a
 // session whose history contains 3+ consecutive `state_change: interrupted`
 // events (e.g. from repeated SIGTERM-on-reboot) is still attempted by
-// restoreSession. This is the exact failure mode #2315 was filed to address:
-// the breaker's query treated `interrupted` (clean SIGTERM at shutdown)
-// identically to `error`, so three reboots in a row would lock the session
-// out of restore.
+// restoreSession. This is the failure mode the always-attempt behaviour
+// addresses: a breaker that treats `interrupted` (clean SIGTERM at shutdown)
+// identically to `error` would lock the session out of restore after three
+// reboots in a row.
 func TestRestoreSession_PriorInterruptedEvents_StillAttempted(t *testing.T) {
 	skipRestoreOnGHA(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -775,7 +771,7 @@ func TestRestoreSession_PriorInterruptedEvents_StillAttempted(t *testing.T) {
 }
 
 // TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists is the
-// end-to-end host-mode regression guard for issue #1838 / AC8(d). It seeds
+// end-to-end host-mode regression guard for harness-session resume. It seeds
 // an agent_status row with a non-NULL harness_session_id, writes a matching
 // pi session JSONL under ~/.pi/agent/sessions/<encoded-cwd>/, runs restore,
 // and asserts that the resulting tmux agent pane start command contains
@@ -798,7 +794,7 @@ func TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists(t *testing.T) 
 	// sessions root in host mode) so the test never touches real state.
 	// Also clear PI_CODING_AGENT_DIR so the resolver exercises the
 	// home-fallback branch deterministically (the developer host sets that
-	// env var system-wide; post-#2185 the resolver honours it).
+	// env var system-wide; the resolver honours it).
 	clearPICodingAgentDir(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	fakeHome := t.TempDir()
@@ -809,7 +805,7 @@ func TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists(t *testing.T) 
 	// (internal/session/session.go) doesn't just record a string — it
 	// types the command into a live shell in a live pane, which really
 	// execs the `nvim` binary. That real nvim process is the writer of
-	// `.local/state/nvim` under $HOME (issue #2719): it is a background
+	// `.local/state/nvim` under $HOME: it is a background
 	// process the test neither owns nor waits on, so it can still be
 	// writing its state dir when a later t.TempDir() cleanup (for this
 	// fakeHome) runs RemoveAll, racing on "directory not empty". Stub
@@ -879,8 +875,8 @@ func TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists(t *testing.T) 
 	}
 }
 
-// TestRestoreSession_HostMode_NoSessionFlag_WhenFileMissing exercises AC4 /
-// AC5 on the host-mode launch path: when the agent_status row carries a
+// TestRestoreSession_HostMode_NoSessionFlag_WhenFileMissing exercises the
+// host-mode launch path: when the agent_status row carries a
 // HarnessSessionID but no matching pi JSONL exists on disk,
 // buildDirectAgentCmd must omit --session and pi must start a fresh
 // conversation. The negative assertion proves the test from
@@ -896,7 +892,7 @@ func TestRestoreSession_HostMode_NoSessionFlag_WhenFileMissing(t *testing.T) {
 	// Same real-tmux setup as TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists
 	// (config.IsolationHost + real tmux via callRestoreSession ->
 	// setupFullLayout -> NvimCmd), so it carries the identical
-	// .local/state/nvim teardown race (issue #2719). Stub nvim here too —
+	// .local/state/nvim teardown race. Stub nvim here too —
 	// see stubNvimOnPath's doc comment for the full writer identification.
 	stubNvimOnPath(t)
 

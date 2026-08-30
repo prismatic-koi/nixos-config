@@ -1,7 +1,7 @@
 package cmd
 
-// checkin_legacy.go — legacy screen-scrape fallback path for sessions that
-// have no DB rows. Kept for backward compatibility.
+// checkin_legacy.go — screen-scrape fallback path for sessions that have no
+// DB rows.
 
 import (
 	"fmt"
@@ -12,7 +12,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
-// runCheckinSessionLegacy is the old screen-scrape path, kept as a fallback.
+// runCheckinSessionLegacy is the screen-scrape fallback path, used when a
+// session has no DB rows.
 func runCheckinSessionLegacy(session string, height int) error {
 	if !tmux.HasSession(session) {
 		return fmt.Errorf("session %q not found\nrun `prism sessions list` to see available sessions", session)

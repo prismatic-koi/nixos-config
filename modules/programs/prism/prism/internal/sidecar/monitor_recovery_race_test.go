@@ -1,6 +1,6 @@
 package sidecar
 
-// monitor_recovery_race_test.go — F14 integration test for issue #1885.
+// monitor_recovery_race_test.go — integration test for the monitor-recovery delivery race.
 //
 // Regression guard: drives MonitorFunc (the happy-path delivery path) and
 // DeliverGroupResults (the recovery-watcher delivery path) against the same
@@ -173,7 +173,7 @@ func setupMonitorRecoveryFixture(t *testing.T) (d *db.DB, workerSession, groupID
 // drives MonitorFunc (the happy-path monitor process) and DeliverGroupResults
 // (the recovery watcher's delivery primitive) at the same sidecar. After
 // both calls complete, the test asserts that exactly one frame was forwarded
-// to the PI extension (i.e. the pipe channel received exactly one entry).
+// to the PI extension (that is, the pipe channel received exactly one entry).
 //
 // Before the F2 fix: MonitorFunc used a random UUID delivery_id, so the
 // sidecar's dedup set did not recognise the second delivery as a repeat →
@@ -255,7 +255,7 @@ func TestMonitorAndRecovery_ExactlyOneDelivery(t *testing.T) {
 
 	// Count frames forwarded to PI. We only care about the prompt-frame
 	// delivery here; the sidecar may legitimately emit other control frames
-	// (e.g. reviewing_state on the in-memory flag flip after delivery, #2050)
+	// (for example, reviewing_state on the in-memory flag flip after delivery)
 	// alongside the prompt, which are unrelated to the dedup behaviour under
 	// test. Filter to prompt frames only so the assertion remains stable.
 	var promptFrames [][]byte

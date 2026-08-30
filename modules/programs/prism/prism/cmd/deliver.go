@@ -12,8 +12,8 @@ package cmd
 //	                        success prints {"delivered_to":..., "status":...}
 //	                        and 4xx/5xx are reported as a non-zero exit
 //
-// Unknown schemes return a structured refusal naming the valid set
-// (principle 3 of the 10-Principles audit, parent #1497). The caller
+// Unknown schemes return a structured refusal naming the valid set.
+// The caller
 // (cmd/logs.go, cmd/logs_harness.go) is responsible for buffering the
 // content into a []byte before invoking deliver — both surfaces today
 // already read from the on-disk log or the DB into a buffer.

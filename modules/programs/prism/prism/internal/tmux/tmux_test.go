@@ -256,7 +256,7 @@ func TestTwoClientsCallerClientBug_Direct(t *testing.T) {
 	// Stamp clientB as the caller (simulates B opened dashboard after A).
 	s.setGlobal("@prism_caller_client", clientB)
 
-	// BUG SIMULATION: old code reads the global stamp to decide who to switch.
+	// BUG SIMULATION: reading the global stamp to decide who to switch.
 	buggyClient := s.getGlobal("@prism_caller_client") // returns clientB
 	if buggyClient != clientB {
 		t.Fatalf("setup error: buggyClient should be clientB")
@@ -1023,7 +1023,7 @@ func shellSingleQuote(s string) string {
 // the error returned by a public helper that goes through run() contains both
 // the tmux subcommand name and a substring derived from tmux's stderr.
 //
-// This is the core diagnostic regression test for issue #1054.
+// This is the core diagnostic regression test.
 func TestRunError_IncludesArgvAndStderr(t *testing.T) {
 	const stderrMsg = "can't find session: bogus-session"
 	fakeTmux(t, stderrMsg, 1)

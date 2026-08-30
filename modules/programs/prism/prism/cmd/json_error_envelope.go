@@ -1,7 +1,7 @@
 package cmd
 
 // json_error_envelope.go — shared helper for the prism `--json` error
-// contract (issue #2099). Subcommands that expose a `--json` (or
+// contract. Subcommands that expose a `--json` (or
 // `--format json`) surface MUST emit errors as a single-line JSON object
 // `{"error":"<message>"}` on stderr, leaving stdout empty and exiting
 // non-zero. This file centralises the helper so the contract is

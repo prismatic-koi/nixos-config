@@ -123,12 +123,10 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 
 	// Default: human-readable summary of all states.
 	//
-	// Errored sessions must remain visible in both renderers. Pre-#1499
-	// they were folded into the `idle` bucket via the `default:` arm of
-	// the state switch, so they showed up as "N idle" — the new dedicated
-	// `nError` counter (added for --json) must be rendered explicitly
-	// here, otherwise error sessions silently disappear from the status
-	// bar. Render in red so they're visually distinct from idle.
+	// Errored sessions must remain visible in both renderers. Render the
+	// dedicated `nError` counter explicitly here. If it folds into the
+	// `idle` bucket, error sessions silently disappear from the status bar.
+	// Render in red so they are visually distinct from idle.
 	if tmuxFormat {
 		if s := tmuxstatus.Format(counts, statusColors()); s != "" {
 			fmt.Print(s)

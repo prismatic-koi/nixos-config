@@ -4,8 +4,7 @@ package integration_test
 
 // sandbox_exec_launch_dir_darwin_test.go — fixture helpers for launching
 // the sandboxed test process from a CWD the profile under test actually
-// grants (issue #2247 host-run follow-up; hole pre-existing since #2022 /
-// #2221).
+// grants.
 //
 // Why this exists: exec.Command without cmd.Dir inherits the go-test
 // binary's CWD — the integration package dir inside the repo checkout —
@@ -16,9 +15,9 @@ package integration_test
 //   - git:   "fatal: Unable to read current working directory"
 //   - bash:  merely WARNS ("shell-init: error retrieving current directory:
 //     getcwd: cannot access parent directories: Operation not permitted")
-//     and continues — which is why bash-based tests tolerated the hole and
-//     the node/git-based tests (the playwright trio, GitConfigGlobalUsable)
-//     could never have passed a host run in the old fixture shape.
+//     and continues — which is why bash-based tests tolerate a missing CWD
+//     grant and the node/git-based tests (the playwright trio,
+//     GitConfigGlobalUsable) require the launch-dir fixture.
 //
 // Production sessions do not hit this: the agent's CWD is the worktree,
 // which the production profile grants RW (§6), and the §6b BareRoot

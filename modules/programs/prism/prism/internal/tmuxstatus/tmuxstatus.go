@@ -76,10 +76,8 @@ type SessionStatus struct {
 //   - When s.Muted is false, the segment renders empty so an unmuted pane
 //     does not waste status-bar real estate on a "not muted" indicator.
 //
-// The current rendering set is intentionally narrow: today the only
-// per-session state the human operator wants surfaced is the muted flag.
-// Other future per-session indicators can be threaded through this same
-// formatter without changing the tmux-side wiring.
+// The rendering set is intentionally narrow: the only per-session state
+// surfaced is the muted flag.
 func FormatSessionStatus(s SessionStatus, col Colors) string {
 	if s.Name == "" && !s.Muted {
 		return ""
@@ -97,7 +95,7 @@ func FormatSessionStatus(s SessionStatus, col Colors) string {
 // FormatWaiting renders the --waiting --tmux-format segment: a single
 // "<n> waiting" pip in Yellow followed by the Primary-coloured "| "
 // separator. Returns "" when c.Waiting <= 0 so the segment disappears
-// entirely from the status bar (the AC's "no waiting → empty string" path).
+// entirely from the status bar.
 //
 // The trailing space after "| " is intentional — it separates this segment
 // from whatever follows in status-right (the prism segment, the hostname,

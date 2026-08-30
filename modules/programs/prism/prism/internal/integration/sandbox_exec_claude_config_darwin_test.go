@@ -3,13 +3,13 @@
 package integration_test
 
 // sandbox_exec_claude_config_darwin_test.go — integration coverage for the
-// claude config XDG relocation (issue #2243, Step 3c of #2132).
+// claude config XDG relocation.
 //
 // The staging-HOME .claude write-through symlink is gone. claude-code
 // resolves its config dir (and .claude.json) via the CLAUDE_CONFIG_DIR env
 // var at the host XDG path ~/.config/claude. Unlike the aws/kube XDG configs
 // (Steps 3a/3b), ~/.config/claude is a plain host directory — NOT a sops
-// symlink — so the #2211 secrets.d allowlist plays no part here: the
+// symlink — so the secrets.d allowlist plays no part here: the
 // in-sandbox read/write capability is the explicit RW
 // (subpath ~/.config/claude) grant emitted by generateProfile.
 //
@@ -21,11 +21,11 @@ package integration_test
 //
 //  2. Negative: stripping the (subpath ~/.config/claude) RW allow block
 //     makes the same write fail — proving the explicit grant is
-//     load-bearing (sandbox-exec testing convention, #1192). Because the
-//     path is not sops-backed there is no allowlist fallback to mask the
+//     load-bearing (sandbox-exec testing convention). Because the path is
+//     not sops-backed there is no allowlist fallback to mask the
 //     regression.
 //
-// Capability-probe gating (#2207) applies via requireSandboxExec. Shared
+// Capability-probe gating applies via requireSandboxExec. Shared
 // helpers live in sandbox_exec_helpers_darwin_test.go.
 
 import (
@@ -68,18 +68,17 @@ func claudeRoundTripScript(target string) string {
 }
 
 // claudeAllowBlock returns the exact RW allow block generateProfile emits
-// for the claude config dir (issue #2243). Mirrors the generator's emission
-// format; the negative test removes the whole block (removing only the
-// (subpath ...) line would leave a filter-less (allow ...) clause, which
-// SBPL treats as allow-everything — masking the regression in the wrong
-// direction).
+// for the claude config dir. Mirrors the generator's emission format. The
+// negative test removes the whole block. Removing only the (subpath ...)
+// line leaves a filter-less (allow ...) clause, which SBPL treats as
+// allow-everything — masking the regression in the wrong direction.
 func claudeAllowBlock(claudeDir string) string {
 	return "(allow file-read* file-write* file-test-existence file-read-metadata\n" +
 		"  (subpath " + sbplQuoteForTest(claudeDir) + "))\n"
 }
 
 // TestSandboxExecClaudeConfig_XDGDirReadWrite is the positive integration
-// test for the #2243 RW grant: under the production profile, a sandboxed
+// test for the RW grant: under the production profile, a sandboxed
 // process can create, read, and remove a file under the host
 // ~/.config/claude. This is the capability claude-code needs at the path
 // CLAUDE_CONFIG_DIR carries (config writes, history, token refreshes).
@@ -97,7 +96,7 @@ func TestSandboxExecClaudeConfig_XDGDirReadWrite(t *testing.T) {
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The profile must carry the explicit RW allow block — the sole grant
-	// for this path (not sops-backed; no #2211 allowlist involvement).
+	// for this path (not sops-backed, no allowlist involvement).
 	if !strings.Contains(prepared.content, claudeAllowBlock(claudeDir)) {
 		t.Fatalf("profile does not carry the ~/.config/claude RW allow block (issue #2243).\nProfile:\n%s", prepared.content)
 	}
@@ -118,8 +117,8 @@ func TestSandboxExecClaudeConfig_XDGDirReadWrite(t *testing.T) {
 }
 
 // TestSandboxExecClaudeConfig_WriteDeniedWithoutSubpathGrant is the paired
-// negative test (sandbox-exec testing convention, #1192). It strips the
-// entire ~/.config/claude RW allow block from the profile and asserts the
+// negative test (sandbox-exec testing convention). It strips the entire
+// ~/.config/claude RW allow block from the profile and asserts the
 // same write fails — proving the positive is not green by accident: the
 // explicit subpath grant is the load-bearing capability for the path (there
 // is no sops allowlist or broader allow to fall back on).

@@ -1,6 +1,6 @@
 package mergequeue
 
-// Watcher-level regression tests for the repo scoping added in issue #2354.
+// Watcher-level regression tests for the repo scoping.
 //
 // The DB-layer tests in internal/db/mergequeue_repo_scope_test.go cover
 // the direct SQL surface. These tests pin down the watcher-facing
@@ -68,8 +68,8 @@ func TestWatcher_TerminateOnlyAffectsOwnRepo(t *testing.T) {
 	}
 
 	// Watcher A terminates its head. The production code passes
-	// head.Repo to TerminateMerge (see watcher.go), which is the fix
-	// for #2354.
+	// head.Repo to TerminateMerge (see watcher.go), which scopes the
+	// terminal write to this coordinator's repo.
 	if err := d.TerminateMerge(headA.PR, headA.Repo, "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge headA: %v", err)
 	}

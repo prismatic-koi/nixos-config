@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for --json flag on prism profile list / show (#1499).
+// Tests for --json flag on prism profile list / show.
 
 import (
 	"encoding/json"
@@ -61,9 +61,9 @@ func TestBuildProfileJSON_SnakeCaseAndActiveFlag(t *testing.T) {
 			t.Errorf("slots.coordinator missing snake_case key %q", k)
 		}
 	}
-	// The role system-prompt is no longer carried in the slot (design #2031):
-	// it is injected at runtime by the prism PI extension. Neither the
-	// snake_case nor the camelCase key should appear.
+	// The role system-prompt is not carried in the slot: it is injected at
+	// runtime by the prism PI extension. Neither the snake_case nor the
+	// camelCase key must appear.
 	for _, badK := range []string{"system_prompt_path", "systemPromptPath"} {
 		if _, ok := coord[badK]; ok {
 			t.Errorf("slots.coordinator must not have removed key %q", badK)

@@ -1,32 +1,28 @@
 package session
 
-// Per-session initial-prompt file (#1064 Option A).
+// Per-session initial-prompt file.
 //
-// In host-mode sessions, the initial prompt was historically interpolated
-// directly onto the agent launch command (`pi --prompt '<text>'`),
-// which was then handed to `tmux new-window ... sh -c <cmd>`. tmux's command
-// argument handling has practical size limits; prompts above ~12 KB were
-// observed to be silently truncated, leaving the agent unable to start and
-// the operator with no visible signal beyond a session that idles forever
-// (#1064 root cause).
+// Host-mode SpawnSession writes the prompt to a small file in the per-session
+// run directory. The constructed launch command reads it with $(cat …) inside
+// the pane shell. This keeps the launch command a few hundred bytes whatever
+// the prompt size, and delivers the prompt to the agent via argv, which
+// handles 100s of KB on both Linux and Darwin.
 //
-// To remove the size coupling between the prompt and the tmux command line,
-// host-mode SpawnSession writes the prompt to a small file in the per-session
-// run directory and the constructed launch command reads it with $(cat …)
-// inside the pane shell. The launch command itself stays a few hundred bytes
-// regardless of prompt size, while the prompt content reaches the agent via
-// argv (which comfortably handles 100s of KB on both Linux and Darwin).
+// Do not interpolate the prompt directly onto the tmux command line. tmux has
+// practical size limits on its command argument. A prompt above ~12 KB is
+// silently truncated, so the agent cannot start and the operator sees only a
+// session that idles forever.
 //
-// The file lives next to agent-startup.log (#1051 / #1062), agent-run.log
-// (#1061), and hostapi.sock under a single SessionDirName-derived directory
-// so the per-session run directory has a single authoritative location:
+// The file lives next to agent-startup.log, agent-run.log, and hostapi.sock
+// under a single SessionDirName-derived directory, so the per-session run
+// directory has a single authoritative location:
 //
 //	$XDG_STATE_HOME/prism/run/<sessionDirName>/initial-prompt.txt
 //
 // SessionDirName(sessionName) is the 12-hex SHA-256 prefix of the session
-// name (see sidecar.go) — the same scheme #1061 introduced to keep socket
-// paths under the sun_path limit. Using the raw session name here would
-// scatter the forensic trail across two sibling directories — see #1066.
+// name (see sidecar.go). This scheme keeps socket paths under the sun_path
+// limit. The raw session name would scatter the forensic trail across two
+// sibling directories.
 //
 // Cleanup is best-effort and lifecycle-tied:
 //   - Pre-spawn: any stale file from a previous incarnation is removed
@@ -49,8 +45,7 @@ import (
 // SessionDirName(sessionName), so it is co-located with agent-startup.log
 // (see startup_log.go), agent-run.log, and hostapi.sock — a single
 // `ls $XDG_STATE_HOME/prism/run/<sessionDirName>/` shows the full forensic
-// trail. See #1066 for the alignment rationale and #1061 for the original
-// switch to SessionDirName.
+// trail.
 func InitialPromptPath(sessionName string) (string, error) {
 	base, err := sidecarStateDir()
 	if err != nil {
@@ -67,8 +62,8 @@ func InitialPromptPath(sessionName string) (string, error) {
 //
 // Returns the path that was written so the caller can plumb it through into
 // the constructed launch command. On error the path may be partially written;
-// callers that surface this to the operator should treat the spawn as failed
-// (per #1064 AC-5 — the prompt-delivery path failing must not be swallowed).
+// callers that surface this to the operator must treat the spawn as failed. A
+// failure in the prompt-delivery path must not be swallowed.
 func WriteInitialPrompt(sessionName, prompt string) (string, error) {
 	path, err := InitialPromptPath(sessionName)
 	if err != nil {

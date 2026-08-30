@@ -1,7 +1,7 @@
 package cmd
 
 // Unit tests for proxyToHostAPI and the container-mode proxy paths in
-// spawn/cleanup/switch (A-3, issue #509).
+// spawn/cleanup/switch.
 //
 // Each test spins up a real Unix socket server (net.Listen("unix", ...)) in
 // process, sets PRISM_HOST_API to point at it, and verifies that:
@@ -90,8 +90,8 @@ func (m *mockTCPServer) apiURL() string {
 
 // ── proxyToHostAPI unit tests ─────────────────────────────────────────────────
 
-// TestProxyToHostAPI_SendsCorrectRequestAndParsesResponse verifies AC-4 and
-// AC-10: the function dials the Unix socket, POSTs to the correct path, sends
+// TestProxyToHostAPI_SendsCorrectRequestAndParsesResponse verifies that
+// the function dials the Unix socket, POSTs to the correct path, sends
 // the expected JSON body, and unmarshals the response into respDst.
 func TestProxyToHostAPI_SendsCorrectRequestAndParsesResponse(t *testing.T) {
 	type reqBody struct {
@@ -142,7 +142,7 @@ func TestProxyToHostAPI_SendsCorrectRequestAndParsesResponse(t *testing.T) {
 	}
 }
 
-// TestProxyToHostAPI_ReturnsErrorOnHTTP500 verifies AC-5: when the server
+// TestProxyToHostAPI_ReturnsErrorOnHTTP500 verifies that when the server
 // returns HTTP 500 with {"error":"spawn failed"}, proxyToHostAPI returns a
 // non-nil error wrapping that message.
 func TestProxyToHostAPI_ReturnsErrorOnHTTP500(t *testing.T) {
@@ -174,7 +174,7 @@ func TestProxyToHostAPI_MalformedURL(t *testing.T) {
 	}
 }
 
-// TestProxyToHostAPI_SocketNotFound verifies AC-9: when the socket path does
+// TestProxyToHostAPI_SocketNotFound verifies that when the socket path does
 // not exist, the error message mentions the socket path.
 func TestProxyToHostAPI_SocketNotFound(t *testing.T) {
 	nonExistent := filepath.Join(t.TempDir(), "nonexistent.sock")
@@ -218,15 +218,15 @@ func TestParseUnixSocketURL_ValidAndInvalid(t *testing.T) {
 	}
 }
 
-// ── spawn proxy tests (AC-1, AC-11) ──────────────────────────────────────────
+// ── spawn proxy tests ──────────────────────────────────────────
 
-// TestProxySpawn_SendsCorrectPayload verifies AC-11 for spawn: when
-// PRISM_HOST_API is set and proxySpawn is called, the mock server receives
-// the expected JSON payload. Setting PRISM_BARE_ROOT to a container mount path
-// (e.g. "/prism-git" whose filepath.Base differs from the actual repo name)
-// confirms that the client-side repo derivation defect (issue #616) is no
-// longer exercised: the client does not send a "repo" field at all, and the
-// server substitutes its own repo name.
+// TestProxySpawn_SendsCorrectPayload verifies that when PRISM_HOST_API is set
+// and proxySpawn is called, the mock server receives the expected JSON
+// payload. Setting PRISM_BARE_ROOT to a container mount path (e.g.
+// "/prism-git" whose filepath.Base differs from the actual repo name)
+// confirms that the client-side repo derivation defect is not exercised: the
+// client does not send a "repo" field at all, and the server substitutes its
+// own repo name.
 func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 	type spawnReq struct {
 		Repo    string `json:"repo"`
@@ -308,12 +308,11 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 	}
 }
 
-// TestProxySpawn_PRForwardedInsteadOfBranch is the regression test for issue
-// #2432: proxySpawn must forward --pr as "pr" in the JSON body verbatim,
-// NOT resolve it to a branch name client-side. Resolving it client-side
-// (the pre-fix behaviour) sent only a possibly-sanitised branch name across
-// the host-API boundary, losing the PR's real head ref whenever it contained
-// a slash.
+// TestProxySpawn_PRForwardedInsteadOfBranch is the regression test for --pr
+// forwarding: proxySpawn must forward --pr as "pr" in the JSON body verbatim,
+// NOT resolve it to a branch name client-side. Resolving it client-side sends
+// only a possibly-sanitised branch name across the host-API boundary, losing
+// the PR's real head ref whenever it contains a slash.
 func TestProxySpawn_PRForwardedInsteadOfBranch(t *testing.T) {
 	type spawnReq struct {
 		Branch string `json:"branch"`
@@ -461,10 +460,10 @@ func TestProxySpawn_IgnoreConcurrencyCapForwarded(t *testing.T) {
 
 // TestProxySpawn_IsolationForwarded verifies that --isolation <mode> is
 // forwarded over the host-API as the "isolation" JSON field, for each of the
-// four valid values. Regression test for issue #1059: previously the proxy
-// dropped --isolation entirely, so coordinators inside containers spawning
-// `--isolation host` (or any other value) silently fell back to the configured
-// default. The fix requires that the value reach the host-API request body
+// four valid values. Regression test: without this, the proxy drops
+// --isolation entirely, so coordinators inside containers spawning
+// `--isolation host` (or any other value) silently fall back to the
+// configured default. The value must reach the host-API request body
 // unchanged.
 func TestProxySpawn_IsolationForwarded(t *testing.T) {
 	type spawnReq struct {
@@ -613,10 +612,10 @@ func TestProxySpawn_IsolationUnknownValueRejectedClientSide(t *testing.T) {
 	}
 }
 
-// ── cleanup proxy tests (AC-2, AC-11) ─────────────────────────────────────────
+// ── cleanup proxy tests ─────────────────────────────────────────
 
-// TestHeadlessCleanup_Proxy verifies AC-11 for cleanup: when PRISM_HOST_API is
-// set, headlessCleanup POSTs to /cleanup with the session name and yes:true,
+// TestHeadlessCleanup_Proxy verifies that when PRISM_HOST_API is set,
+// headlessCleanup POSTs to /cleanup with the session name and yes:true,
 // instead of touching tmux.
 func TestHeadlessCleanup_Proxy(t *testing.T) {
 	type cleanupReq struct {
@@ -696,11 +695,11 @@ func TestHeadlessCloseSession_Proxy(t *testing.T) {
 	}
 }
 
-// ── switch proxy tests (AC-3, AC-11) ──────────────────────────────────────────
+// ── switch proxy tests ──────────────────────────────────────────
 
-// TestSwitchProxy_SendsCorrectPayload verifies AC-11 for switch: when
-// PRISM_HOST_API is set, switchCmd.RunE POSTs to /switch with the session
-// (path) value from the --path flag.
+// TestSwitchProxy_SendsCorrectPayload verifies that when PRISM_HOST_API is
+// set, switchCmd.RunE POSTs to /switch with the session (path) value from the
+// --path flag.
 func TestSwitchProxy_SendsCorrectPayload(t *testing.T) {
 	type switchReq struct {
 		Session string `json:"session"`
@@ -745,7 +744,7 @@ func TestSwitchProxy_SendsCorrectPayload(t *testing.T) {
 
 // ── regression: host mode (PRISM_HOST_API unset) ──────────────────────────────
 
-// TestProxyToHostAPI_NotCalledWhenEnvUnset verifies AC-6: when PRISM_HOST_API
+// TestProxyToHostAPI_NotCalledWhenEnvUnset verifies that when PRISM_HOST_API
 // is not set, proxyToHostAPI is never called (the check is a no-op).
 // We verify this indirectly by confirming the mock server receives zero requests.
 func TestProxyToHostAPI_NotCalledWhenEnvUnset(t *testing.T) {
@@ -1172,11 +1171,11 @@ func TestProxyToHostAPI_TCPScheme_ErrorResponse(t *testing.T) {
 	}
 }
 
-// ── proxyReviewAsync streaming tests (issue #815) ─────────────────────────────
+// ── proxyReviewAsync streaming tests ─────────────────────────────
 
 // TestProxyReviewAsync_LinesArrivedProgressively verifies that output lines
-// produced by the sidecar /review endpoint are printed to stdout as they arrive
-// (AC: lines produced by subprocess arrive in response body as emitted).
+// produced by the sidecar /review endpoint are printed to stdout as they
+// arrive.
 //
 // The mock server writes lines one at a time with a short delay between them,
 // then appends the passed sentinel. proxyReviewAsync must print each line to
@@ -1238,7 +1237,7 @@ func TestProxyReviewAsync_LinesArrivedProgressively(t *testing.T) {
 
 // TestProxyReviewAsync_QuietStdoutSuppressesStreaming verifies the
 // JSON-exclusive contract for `prism review --wait --json` from inside a
-// sandbox (#1500 round-2 review-code blocker). When quietStdout is true,
+// sandbox. When quietStdout is true,
 // proxyReviewAsync must NOT write any of the streamed Ack lines to stdout,
 // but the buffered return value must still contain them so the caller can
 // parse the group_id.
@@ -1268,8 +1267,7 @@ func TestProxyReviewAsync_QuietStdoutSuppressesStreaming(t *testing.T) {
 }
 
 // TestProxyReviewAsync_SentinelConsumedNotEchoed verifies that proxyReviewAsync
-// consumes the sentinel line and does NOT echo it to stdout (AC: sentinel marker
-// is NOT printed to the worker's stdout).
+// consumes the sentinel line and does NOT echo it to stdout.
 func TestProxyReviewAsync_SentinelConsumedNotEchoed(t *testing.T) {
 	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -1300,8 +1298,7 @@ func TestProxyReviewAsync_SentinelConsumedNotEchoed(t *testing.T) {
 
 // TestProxyReviewAsync_FailedSentinelProducesError verifies that when the sidecar
 // writes ReviewSentinelFailed (exit-1 subprocess), proxyReviewAsync returns a
-// non-nil error and the output lines before the sentinel are still printed
-// (AC: exit-1 subprocess produces non-zero exit and correct output).
+// non-nil error and the output lines before the sentinel are still printed.
 func TestProxyReviewAsync_FailedSentinelProducesError(t *testing.T) {
 	const progressLine = "Review-Goal started"
 
@@ -1338,9 +1335,7 @@ func TestProxyReviewAsync_FailedSentinelProducesError(t *testing.T) {
 
 // TestProxyReviewAsync_MidStreamDisconnectReportsError verifies that if the
 // server closes the connection without writing a sentinel (subprocess died
-// mid-stream), proxyReviewAsync returns a clear error rather than hanging
-// (AC: edge-case — if host-side subprocess dies mid-stream, worker's invocation
-// reports a clear error).
+// mid-stream), proxyReviewAsync returns a clear error rather than hanging.
 func TestProxyReviewAsync_MidStreamDisconnectReportsError(t *testing.T) {
 	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
 		// Write some output then close without sentinel.
@@ -1385,12 +1380,11 @@ func TestProxyReviewAsync_HTTP500BeforeStreamReturnsError(t *testing.T) {
 	}
 }
 
-// ── proxySpawn model-override forwarding (C2.PROXY, issue #1263) ─────────────
+// ── proxySpawn model-override forwarding ─────────────
 
 // TestProxySpawn_ModelOverrideForwarded verifies that when --model-override
 // flags are passed, proxySpawn includes model_variant_overrides as a
-// JSON-encoded map[string]string in the request body (AC: functional —
-// proxy-spawn honours --model-override).
+// JSON-encoded map[string]string in the request body.
 func TestProxySpawn_ModelOverrideForwarded(t *testing.T) {
 	type spawnReq struct {
 		Branch                string `json:"branch"`
@@ -1444,8 +1438,7 @@ func TestProxySpawn_ModelOverrideForwarded(t *testing.T) {
 }
 
 // TestProxySpawn_NoModelOverrideOmitsField verifies that when no --model-override
-// flags are passed, model_variant_overrides is absent from the request body
-// (AC: edge-case — absence behaves identically to today).
+// flags are passed, model_variant_overrides is absent from the request body.
 func TestProxySpawn_NoModelOverrideOmitsField(t *testing.T) {
 	type spawnReq struct {
 		Branch                string `json:"branch"`
@@ -1500,20 +1493,19 @@ func TestProxySpawn_NoModelOverrideOmitsField(t *testing.T) {
 	}
 }
 
-// ── proxySpawn empty-prompt rejection (issue #1891) ─────────────────────────
+// ── proxySpawn empty-prompt rejection ─────────────────────────
 //
 // These tests verify the operator-boundary fix (layers 1+2 of the four-layer
-// silent-acceptance chain described in issue #1891). Before the fix, an empty
-// prompt-file, an empty --prompt literal, or empty stdin all silently posted
-// {"prompt":""} to the host-API /spawn endpoint, producing a session that
-// came up successfully on every observable surface but never received a
-// prompt and sat idle forever. proxySpawn now refuses the spawn upfront with
-// a clear, source-named error.
+// silent-acceptance chain). Without it, an empty prompt-file, an empty
+// --prompt literal, or empty stdin all silently post {"prompt":""} to the
+// host-API /spawn endpoint, producing a session that comes up successfully on
+// every observable surface but never receives a prompt and sits idle forever.
+// proxySpawn refuses the spawn upfront with a clear, source-named error.
 //
 // The error message must name the specific input source so the operator
 // immediately knows what to fix.
 
-// TestProxySpawn_EmptyPromptFile_Rejected verifies AC6(a): an empty
+// TestProxySpawn_EmptyPromptFile_Rejected verifies that an empty
 // --prompt-file produces a clear error and never reaches the host-API.
 func TestProxySpawn_EmptyPromptFile_Rejected(t *testing.T) {
 	// Mock server that records whether it was hit. The test passes only if
@@ -1527,9 +1519,9 @@ func TestProxySpawn_EmptyPromptFile_Rejected(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
 	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
-	// Post-#2073 the keybind carve-out is gated on PRISM_KEYBIND_SPAWN, a
+	// The keybind carve-out is gated on PRISM_KEYBIND_SPAWN, a
 	// dedicated sentinel that no sandbox injects — the defensive
-	// `t.Setenv("PRISM_SPAWN_PATH", "")` shim that pre-#2073 tests carried
+	// `t.Setenv("PRISM_SPAWN_PATH", "")` shim
 	// is no longer required.
 
 	// Write an empty prompt file.
@@ -1565,7 +1557,7 @@ func TestProxySpawn_EmptyPromptFile_Rejected(t *testing.T) {
 	}
 }
 
-// TestProxySpawn_EmptyPromptLiteral_Rejected verifies AC6(b): --prompt ""
+// TestProxySpawn_EmptyPromptLiteral_Rejected verifies that --prompt ""
 // produces a clear error and never reaches the host-API.
 func TestProxySpawn_EmptyPromptLiteral_Rejected(t *testing.T) {
 	called := make(chan struct{}, 1)
@@ -1577,7 +1569,7 @@ func TestProxySpawn_EmptyPromptLiteral_Rejected(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
 	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
-	// Post-#2073 the keybind carve-out is gated on PRISM_KEYBIND_SPAWN, a
+	// The keybind carve-out is gated on PRISM_KEYBIND_SPAWN, a
 	// dedicated sentinel that no sandbox injects — the defensive
 	// `t.Setenv("PRISM_SPAWN_PATH", "")` shim is no longer required.
 
@@ -1602,8 +1594,8 @@ func TestProxySpawn_EmptyPromptLiteral_Rejected(t *testing.T) {
 	}
 }
 
-// TestProxySpawn_EmptyPromptStdin_Rejected verifies the stdin variant of
-// AC6(b): --prompt - with empty stdin produces a clear error and never
+// TestProxySpawn_EmptyPromptStdin_Rejected verifies the stdin variant:
+// --prompt - with empty stdin produces a clear error and never
 // reaches the host-API.
 func TestProxySpawn_EmptyPromptStdin_Rejected(t *testing.T) {
 	called := make(chan struct{}, 1)
@@ -1615,7 +1607,7 @@ func TestProxySpawn_EmptyPromptStdin_Rejected(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
 	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
-	// Post-#2073 the keybind carve-out is gated on PRISM_KEYBIND_SPAWN, a
+	// The keybind carve-out is gated on PRISM_KEYBIND_SPAWN, a
 	// dedicated sentinel that no sandbox injects — the defensive
 	// `t.Setenv("PRISM_SPAWN_PATH", "")` shim is no longer required.
 

@@ -11,10 +11,10 @@ import (
 
 // duplicateStartDialTimeout is how long the duplicate-start check waits for a
 // dial against an existing Unix socket. Kept short (250ms) so a hung path —
-// e.g. a socket whose owning process is paused in a debugger — does not stall
-// sidecar startup. The accept loop on the remote side responds immediately
-// when a sidecar is genuinely alive; ECONNREFUSED from a tombstone returns
-// near-instantly without consuming the timeout budget.
+// for example, a socket whose owning process is paused in a debugger — does
+// not stall sidecar startup. The accept loop on the remote side responds
+// immediately when a sidecar is genuinely alive. ECONNREFUSED from a
+// tombstone returns near-instantly without consuming the timeout budget.
 const duplicateStartDialTimeout = 250 * time.Millisecond
 
 // duplicateStartError is returned when another sidecar process is detected
@@ -54,10 +54,10 @@ const (
 //   - If the dial succeeds, the remote end is live. The connection is closed
 //     immediately and socketLive is returned. The caller MUST refuse to start
 //     and MUST NOT touch the socket file.
-//   - Any other dial error (e.g. permission denied, timeout) is returned as-is.
-//     The caller should treat this as a fatal startup error rather than
-//     blindly removing the socket — proceeding could clobber a live sidecar
-//     whose accept loop merely happened to be slow.
+//   - Any other dial error (for example, permission denied or timeout) is
+//     returned as-is. The caller must treat this as a fatal startup error
+//     rather than blindly removing the socket — a remove can clobber a live
+//     sidecar whose accept loop merely happened to be slow.
 //
 // sockPath is the absolute filesystem path of the Unix socket to probe.
 func checkSocketLiveness(sockPath string) (socketLiveness, error) {
@@ -66,11 +66,10 @@ func checkSocketLiveness(sockPath string) (socketLiveness, error) {
 		// treated as "no live sidecar to refuse against" — the downstream
 		// net.Listen path will surface its own clear error if the path is
 		// genuinely unusable. This intentionally keeps the duplicate-start
-		// guard narrow: it refuses only when we have positive proof of a
-		// remote listener, never when probing was inconclusive. The cost of
-		// a false negative here is a normal bind failure one step later;
-		// the cost of a false positive would be refusing to start when no
-		// other sidecar exists.
+		// guard narrow: it refuses only on positive proof of a remote
+		// listener, never when probing was inconclusive. The cost of a false
+		// negative here is a normal bind failure one step later. The cost of a
+		// false positive is a refusal to start when no other sidecar exists.
 		return socketAbsent, nil
 	}
 
@@ -89,7 +88,7 @@ func checkSocketLiveness(sockPath string) (socketLiveness, error) {
 		return socketTombstone, nil
 	}
 
-	// Any other dial error (timeout, permission denied, etc.) is also
+	// Any other dial error (timeout, permission denied, and others) is also
 	// treated as inconclusive — same rationale as the stat case above.
 	// The bind path will fail loudly if the path is truly unusable.
 	return socketAbsent, fmt.Errorf("dial %q: %w", sockPath, dialErr)

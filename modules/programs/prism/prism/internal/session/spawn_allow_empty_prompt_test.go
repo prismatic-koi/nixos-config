@@ -1,14 +1,12 @@
 package session
 
-// Tests for the keybind carve-out of the layer-4 empty-prompt guard
-// (issue #2012). The layer-4 guard at the top of SpawnSession refuses
-// LayoutFull / LayoutAgentOnly when opts.Prompt is empty (#1891). The
-// tmux Prefix+a keybind needs to spawn a full-layout session with no
-// initial prompt because the operator types it to the live agent after
-// the popup attaches. The new opts.AllowEmptyPrompt field opts the
-// caller out of the layer-4 guard; cmd/spawn.go sets it when
-// PRISM_KEYBIND_SPAWN is present (the dedicated keybind sentinel
-// introduced in #2073 to replace the overloaded PRISM_SPAWN_PATH).
+// Tests for the keybind carve-out of the empty-prompt guard. The guard at
+// the top of SpawnSession refuses LayoutFull / LayoutAgentOnly when
+// opts.Prompt is empty. The tmux Prefix+a keybind needs to spawn a
+// full-layout session with no initial prompt because the operator types it
+// to the live agent after the popup attaches. The opts.AllowEmptyPrompt field
+// opts the caller out of the guard; cmd/spawn.go sets it when
+// PRISM_KEYBIND_SPAWN is present (the dedicated keybind sentinel).
 //
 // These tests are package-internal (`package session`, not session_test)
 // so they can use spyTmuxBin / openSpawnTestDB from spawn_test.go — the
@@ -59,8 +57,7 @@ func TestSpawnSession_AllowEmptyPrompt_LayoutFull_Accepted(t *testing.T) {
 // matching negative test: the same call without AllowEmptyPrompt set is
 // still rejected by the layer-4 guard. Together with the positive test
 // above this proves the carve-out is gated on the opt-in and does not
-// silently weaken the existing #1891 guard for any caller that forgot
-// to set it.
+// silently weaken the guard for any caller that forgot to set it.
 func TestSpawnSession_AllowEmptyPrompt_LayoutFull_OptInRequired(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	_ = spyTmuxBin(t)
@@ -88,7 +85,7 @@ func TestSpawnSession_AllowEmptyPrompt_LayoutFull_OptInRequired(t *testing.T) {
 		t.Errorf("error %q does not mention 'Prompt is required'", err.Error())
 	}
 	// Nothing should have been written to the DB: refusal must happen
-	// before any side-effects (same invariant as the #1891 layer-4 test).
+	// before any side-effects.
 	if st, _ := d.CurrentStatus(sessionName); st != nil {
 		t.Errorf("agent_status row created despite empty-prompt rejection: %+v", st)
 	}

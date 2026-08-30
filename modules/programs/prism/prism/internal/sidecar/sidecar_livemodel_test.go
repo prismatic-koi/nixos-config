@@ -1,12 +1,12 @@
 package sidecar
 
-// Integration tests for P3.LIVE host-API endpoints (#1214):
+// Integration tests for P3.LIVE host-API endpoints:
 //   POST /set-model
 //   POST /apply-profile
 //   POST /register-provider
 //
 // The tests use the fake-extension harness from sidecar_socketpipe_test.go
-// (dialAndHandshake, sendJSON, readJSON, etc.) to verify that frames are
+// (dialAndHandshake, sendJSON, readJSON, and more) to verify that frames are
 // delivered to live PI sessions and that role-scoping / skip rules work.
 
 import (
@@ -82,7 +82,7 @@ func setHarnessInDB(t *testing.T, d *db.DB, sessionName string) {
 	t.Helper()
 	if err := d.SetHarness(sessionName, "pi"); err != nil {
 		t.Logf("setHarnessInDB: SetHarness not available (%v) — trying direct SQL", err)
-		// Direct SQL fallback for DBs that don't expose SetHarness yet.
+		// Direct SQL fallback for DBs that do not expose SetHarness.
 		if err2 := d.SetHarnessRaw(sessionName, "pi"); err2 != nil {
 			t.Fatalf("setHarnessInDB: %v", err2)
 		}

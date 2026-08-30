@@ -64,7 +64,7 @@ func shortSockPath(t *testing.T) string {
 func newSocketPipeSidecar(t *testing.T, sockPath string) *Sidecar {
 	t.Helper()
 	// Redirect XDG_STATE_HOME so sidecar writes (touchDashboardSentinel,
-	// socket paths, etc.) never escape to the developer's real prism state.
+	// socket paths, and more) never escape to the developer's real prism state.
 	// Also activate the host-API socket guard.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
@@ -81,7 +81,7 @@ func newSocketPipeSidecar(t *testing.T, sockPath string) *Sidecar {
 		HarnessPipeSockPath:   sockPath,
 		StartupConnectTimeout: 5 * time.Second,
 		// PipeReconnectTimeout is set to a short value so tests that close the
-		// connection without a session_shutdown don't block for 30s.
+		// connection without a session_shutdown do not block for 30s.
 		PipeReconnectTimeout: 200 * time.Millisecond,
 		Harness:              pih.New("", "", ""),
 	}
@@ -122,7 +122,7 @@ func dialAndHandshake(t *testing.T, sockPath string) (net.Conn, map[string]any) 
 	// (if both frames arrive in one syscall, a fresh bufio per readJSON call
 	// would discard the second frame). The post-handshake reviewing_state
 	// frame initialises the extension's pendingReviewCall guard from the
-	// authoritative sidecar-side flag (issue #2050).
+	// authoritative sidecar-side flag.
 	rd := bufio.NewReader(conn)
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	defer conn.SetReadDeadline(time.Time{}) //nolint:errcheck
@@ -283,10 +283,13 @@ func TestSocketPipe_StateChange(t *testing.T) {
 	// immediately. The sidecar records a state_change event in agent_events and starts
 	// the 2s debounce timer.
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
-	time.Sleep(50 * time.Millisecond)
 
-	// A debounce timer must have been created.
-	if timer := clk.LastTimer(); timer == nil {
+	// A debounce timer must have been created. Wait deterministically on the
+	// AfterFunc registration event rather than sleeping a fixed window: under
+	// -race on a loaded runner the sidecar goroutine can be descheduled past a
+	// fixed sleep, so LastTimer() would observe nil and the test would flake
+	// (issue #2902).
+	if timer := clk.WaitForTimerCount(1, 5*time.Second); timer == nil {
 		t.Error("no finished debounce timer created after state_change{finished}")
 	}
 
@@ -304,7 +307,7 @@ func TestSocketPipe_StateChange(t *testing.T) {
 
 // TestSocketPipe_TurnStartEmitsStateActive verifies that a turn_start frame
 // causes the sidecar to transition the session to active state in the DB.
-// This is the real fix for #1350: PI uses TransportSocketPipe, so the fix must
+// PI uses TransportSocketPipe, so the fix must
 // live in handlePipeFrame — NormaliseFrame is not on this code path.
 //
 // Note: state_change{finished} starts the 2s finished debounce. turn_start
@@ -320,36 +323,21 @@ func TestSocketPipe_TurnStartEmitsStateActive(t *testing.T) {
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "active"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
 
-	// Wait for the finished debounce timer to be created.
-	deadline := time.Now().Add(2 * time.Second)
-	var idleTimer *testTimer
-	for {
-		idleTimer = clk.LastTimer()
-		if idleTimer != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no finished debounce timer created after state_change{finished}")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Wait deterministically for the finished debounce timer registration.
+	idleTimer := clk.WaitForTimerCount(1, 5*time.Second)
+	if idleTimer == nil {
+		t.Fatal("no finished debounce timer created after state_change{finished}")
 	}
 
 	// Now send turn_start — must cancel the debounce and keep the session active.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 
-	// Poll until the finished debounce timer is stopped (cancelled by turn_start).
+	// Wait until the finished debounce timer is stopped (cancelled by turn_start).
 	// The sidecar processes frames sequentially under s.mu: cancelIdleTimer is
 	// called before any DB write, so once the timer is stopped we know turn_start
 	// was processed.
-	deadline = time.Now().Add(2 * time.Second)
-	for {
-		if idleTimer.Stopped() {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("finished debounce timer was not stopped by turn_start within timeout")
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !idleTimer.WaitStopped(5 * time.Second) {
+		t.Fatal("finished debounce timer was not stopped by turn_start within timeout")
 	}
 
 	// State must be active (not finished).
@@ -410,7 +398,7 @@ func TestSocketPipe_TurnStartActiveWhenAlreadyActive(t *testing.T) {
 
 // TestSocketPipe_TurnStart_DoesNotClobberReviewing verifies that a turn_start
 // frame arriving while the DB state is "reviewing" does NOT overwrite it with
-// "active". This is the fix for #1365: prism review writes reviewing directly
+// "active". prism review writes reviewing directly
 // to the DB via UpsertStatus; the sidecar's in-memory lastState is still
 // active, so without the guard a subsequent turn_start clobbers reviewing.
 func TestSocketPipe_TurnStart_DoesNotClobberReviewing(t *testing.T) {
@@ -473,7 +461,7 @@ func TestSocketPipe_TurnStart_DoesNotClobberReviewing(t *testing.T) {
 
 // TestSocketPipe_TurnStart_IdleTransitionsToActive verifies that a turn_start
 // frame when the session is in the idle-debounce window transitions it correctly
-// to active (regression guard for #1365 — the reviewing guard must not break
+// to active (regression guard — the reviewing guard must not break
 // the idle→active path).
 //
 // Note: state_change{finished} starts the debounce (not writing "finished"
@@ -490,22 +478,15 @@ func TestSocketPipe_TurnStart_IdleTransitionsToActive(t *testing.T) {
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "active"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
 
-	// Wait for the debounce timer to be created.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if clk.LastTimer() != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no finished debounce timer created after state_change{finished}")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Wait deterministically for the debounce timer registration.
+	if clk.WaitForTimerCount(1, 5*time.Second) == nil {
+		t.Fatal("no finished debounce timer created after state_change{finished}")
 	}
 
 	// turn_start must cancel the debounce and transition to active.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 
-	deadline = time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for {
 		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
 		if s == string(agent.StateActive) {
@@ -888,7 +869,7 @@ func TestSocketPipe_SidecarDispatchesSocketPipe(t *testing.T) {
 // CLI dials the per-session host-API socket directly — the request targets
 // the sidecar's own session, so there is no cross-session security boundary
 // to enforce. Without the bypass, a worker PI session could not be prompted
-// from the host CLI at all (P2.SPAWN edge-case AC, #1212).
+// from the host CLI at all (the spawn edge case).
 func TestSocketPipe_HostAPIPromptSelfWorkerBypassesAuth(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
@@ -1092,8 +1073,8 @@ func TestSocketPipe_MsgAssistantCoalesced(t *testing.T) {
 
 // TestSocketPipe_ModelStampedOnMsgAssistant verifies that a `model` field on
 // the turn_end frame is recorded as $.model on the coalesced msg_assistant row
-// and refreshes agent_status.model_id / root_model_id (issue #2727 AC:
-// functional #1, #2). The format is providerID/modelID, matching the keys in
+// and refreshes agent_status.model_id / root_model_id. The format is
+// providerID/modelID, matching the keys in
 // internal/pricing.
 func TestSocketPipe_ModelStampedOnMsgAssistant(t *testing.T) {
 	sockPath := shortSockPath(t)
@@ -1155,7 +1136,7 @@ func TestSocketPipe_ModelStampedOnMsgAssistant(t *testing.T) {
 // TestSocketPipe_SubagentModelDoesNotOverwriteRoot verifies that a turn_end
 // frame from a subagent (a differing, non-empty `agent` field) records its own
 // model on that turn's msg_assistant row but does NOT overwrite the root
-// agent's recorded model in agent_status (issue #2727 AC: functional #3). This
+// agent's recorded model in agent_status. This
 // mirrors handleMessageUpdated's subagent-suppression semantic on the SSE path.
 func TestSocketPipe_SubagentModelDoesNotOverwriteRoot(t *testing.T) {
 	sockPath := shortSockPath(t)
@@ -1231,7 +1212,7 @@ func TestSocketPipe_SubagentModelDoesNotOverwriteRoot(t *testing.T) {
 // TestSocketPipe_NoModelOnTurnEndWritesEmptyModel verifies the edge case: a
 // turn_end frame that carries no `model` field still writes its msg_assistant
 // row (with $.model empty) and leaves the agent_status model columns unchanged,
-// without error (issue #2727 AC: edge-case #6).
+// without error.
 func TestSocketPipe_NoModelOnTurnEndWritesEmptyModel(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
@@ -1323,7 +1304,7 @@ func TestSocketPipe_TurnStartTurnEndPersisted(t *testing.T) {
 // TestSocketPipe_EmptyAccumulatorAtTurnEnd verifies that a turn_end with no
 // preceding msg_assistant frames does NOT write a msg_assistant event. Tool-only
 // turns (turn_start → tool_call → tool_result → turn_end, no text fragments)
-// must not produce a spurious "(no text)" row in prism checkin (#1319).
+// must not produce a spurious "(no text)" row in prism checkin.
 func TestSocketPipe_EmptyAccumulatorAtTurnEnd(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
@@ -1598,7 +1579,7 @@ func TestSocketPipe_ReconnectTimeout(t *testing.T) {
 }
 
 // TestSocketPipe_HostAPISockCreatedBeforeDispatch is the regression test for
-// issue #1346: the host-API listener must be started before Run() dispatches to
+// The host-API listener must be started before Run() dispatches to
 // runStartupSocketPipe, so that pi bwrap sessions have a working hostapi.sock
 // from the moment the harness-pipe handshake begins.
 //
@@ -1650,7 +1631,7 @@ func TestSocketPipe_HostAPISockCreatedBeforeDispatch(t *testing.T) {
 	}()
 
 	// Wait for the harness-pipe socket to appear.  This proves that Run() has
-	// entered runStartupSocketPipe (i.e. the transport-shape switch has been
+	// entered runStartupSocketPipe (that is, the transport-shape switch has been
 	// executed).  At this point the host-API listener block — which is now
 	// placed BEFORE the switch — must already have run.
 	deadline := time.Now().Add(3 * time.Second)
@@ -1685,7 +1666,7 @@ func TestSocketPipe_HostAPISockCreatedBeforeDispatch(t *testing.T) {
 // newSocketPipeSidecarWithClock creates a Sidecar for socket-pipe testing and
 // also returns the testClock so callers can drive timers manually.
 // PipeReconnectTimeout is set to a short value so tests that close the
-// connection without a session_shutdown don't block for 30s.
+// connection without a session_shutdown do not block for 30s.
 func newSocketPipeSidecarWithClock(t *testing.T, sockPath string) (*Sidecar, *testClock) {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -1723,9 +1704,9 @@ func countBusMessages(t *testing.T, d *db.DB, toSession string) int {
 
 // TestSocketPipe_IdleDebounce_WritesFinishedAfterDebounce verifies that
 // state_change{finished} starts the 2s finished debounce and, when it fires,
-// writes StateFinished and calls notifyCoordinator (Gap 1 fix, protocol v2).
+// writes StateFinished and calls notifyCoordinator (protocol v2).
 //
-// Synchronisation (issue #1515): rather than sleeping for a fixed 50ms before
+// Synchronisation: rather than sleeping for a fixed 50ms before
 // calling clk.LastTimer(), this test blocks on clk.WaitForTimerCount(1, ...)
 // which observes the actual AfterFunc registration event. Under load the old
 // 50ms sleep was not always enough for the sidecar goroutine to reach
@@ -1775,9 +1756,9 @@ func TestSocketPipe_IdleDebounce_WritesFinishedAfterDebounce(t *testing.T) {
 
 // TestSocketPipe_IdleDebounce_CancelledByTurnStart verifies that a turn_start
 // arriving while the finished debounce timer is running cancels the timer and
-// transitions the session to StateActive, not StateFinished (Gap 1 + 2 fix).
+// transitions the session to StateActive, not StateFinished.
 //
-// Synchronisation (issue #1515): waits for timer registration via
+// Synchronisation: waits for timer registration via
 // clk.WaitForTimerCount and for cancellation via timer.WaitStopped — no
 // wall-clock sleeps. The DB-state assertion uses waitForState so a slow handler
 // commit does not race with the assertion.
@@ -1823,9 +1804,9 @@ func TestSocketPipe_IdleDebounce_CancelledByTurnStart(t *testing.T) {
 
 // TestSocketPipe_MultipleIdle_OnlyOneTimer verifies that multiple consecutive
 // state_change{finished} frames result in exactly one debounce timer running
-// at a time — earlier timers are cancelled before a new one starts (Gap 2 fix).
+// at a time — earlier timers are cancelled before a new one starts.
 //
-// Synchronisation (issue #1515): each timer is awaited via WaitForTimerCount
+// Synchronisation: each timer is awaited via WaitForTimerCount
 // (registration) and WaitStopped (cancellation), so the test does not depend
 // on a fixed sleep being long enough for the sidecar goroutine to run.
 func TestSocketPipe_MultipleIdle_OnlyOneTimer(t *testing.T) {
@@ -1874,9 +1855,9 @@ func TestSocketPipe_MultipleIdle_OnlyOneTimer(t *testing.T) {
 
 // TestSocketPipe_ErrorState_CancelsTimers verifies that state_change{error}
 // cancels any in-flight finished-debounce or recovery timer and records
-// lastErrorAt, so a stale debounce cannot overwrite StateError (Gap 3 fix).
+// lastErrorAt, so a stale debounce cannot overwrite StateError.
 //
-// Synchronisation (issue #1515): WaitForTimerCount + WaitStopped + waitForState
+// Synchronisation: WaitForTimerCount + WaitStopped + waitForState
 // replace the previous fixed sleeps so the assertions wait on the actual
 // events (timer registered, timer cancelled, DB state committed) rather than
 // on wall-clock elapsed time.
@@ -1928,7 +1909,7 @@ func TestSocketPipe_ErrorState_CancelsTimers(t *testing.T) {
 
 // TestSocketPipe_TurnStart_ClearsEndedOnErrorResume verifies that a turn_start
 // arriving after a state_change{error} clears ended_at in the DB so the session
-// reappears in AllActiveStatus (Gap 4 fix).
+// reappears in AllActiveStatus.
 func TestSocketPipe_TurnStart_ClearsEndedOnErrorResume(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, _ := newSocketPipeSidecarWithClock(t, sockPath)
@@ -1993,7 +1974,7 @@ func TestSocketPipe_TurnStart_ClearsEndedOnErrorResume(t *testing.T) {
 }
 
 // TestSocketPipe_TurnStart_ClearsEndedOnInterruptedResume verifies that a
-// turn_start after a state_change{interrupted} also clears ended_at (Gap 4).
+// turn_start after a state_change{interrupted} also clears ended_at.
 func TestSocketPipe_TurnStart_ClearsEndedOnInterruptedResume(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, _ := newSocketPipeSidecarWithClock(t, sockPath)
@@ -2047,9 +2028,9 @@ func TestSocketPipe_TurnStart_ClearsEndedOnInterruptedResume(t *testing.T) {
 
 // TestSocketPipe_WaitingState_CancelsIdleTimer verifies that state_change{waiting}
 // cancels any in-flight finished-debounce timer so the session does not spuriously
-// transition to StateFinished while waiting for user input (Gap 5 fix).
+// transition to StateFinished while waiting for user input.
 //
-// Synchronisation (issue #1515): WaitForTimerCount + WaitStopped + waitForState
+// Synchronisation: WaitForTimerCount + WaitStopped + waitForState
 // replace fixed sleeps; the test now reacts to the actual sidecar transitions.
 func TestSocketPipe_WaitingState_CancelsIdleTimer(t *testing.T) {
 	sockPath := shortSockPath(t)
@@ -2087,9 +2068,9 @@ func TestSocketPipe_WaitingState_CancelsIdleTimer(t *testing.T) {
 
 // TestSocketPipe_AutoRetryStart_CancelsIdleTimer verifies that an auto_retry_start
 // frame cancels any in-flight finished-debounce timer so the session does not
-// spuriously finish during the retry window (Gap 6 fix).
+// spuriously finish during the retry window.
 //
-// Synchronisation (issue #1515): WaitForTimerCount + WaitStopped replace fixed
+// Synchronisation: WaitForTimerCount + WaitStopped replace fixed
 // sleeps. The trailing state assertion is bounded by waitForCondition so a
 // stray race cannot let StateFinished slip in unnoticed.
 func TestSocketPipe_AutoRetryStart_CancelsIdleTimer(t *testing.T) {
@@ -2134,9 +2115,9 @@ func TestSocketPipe_AutoRetryStart_CancelsIdleTimer(t *testing.T) {
 
 // TestSocketPipe_TurnEnd_UpdatesLastAssistantAgent verifies that a turn_end
 // frame updates lastAssistantAgent so that handleSessionFinished()'s subagent-
-// suppression logic works correctly for PI sessions (Gap 7 fix).
+// suppression logic works correctly for PI sessions.
 //
-// Synchronisation (issue #1515): turn_end has no observable timer or DB-state
+// Synchronisation: turn_end has no observable timer or DB-state
 // effect by itself, so the test polls sc.lastAssistantAgent under sc.mu via
 // waitForCondition rather than racing a 50ms sleep.
 func TestSocketPipe_TurnEnd_UpdatesLastAssistantAgent(t *testing.T) {
@@ -2194,9 +2175,9 @@ func TestSocketPipe_TurnEnd_UpdatesLastAssistantAgent(t *testing.T) {
 
 // TestSocketPipe_SessionShutdown_CancelsTimers verifies that session_shutdown
 // cancels any in-flight finished-debounce/recovery timer before writing
-// StateFinished so the coordinator receives exactly one notification (Gap 8 fix).
+// StateFinished so the coordinator receives exactly one notification.
 //
-// Synchronisation (issue #1515): WaitForTimerCount replaces the leading sleep;
+// Synchronisation: WaitForTimerCount replaces the leading sleep;
 // the post-shutdown assertion that no extra finished event was emitted now
 // uses a brief polling window to give a (would-be-buggy) timer fire a chance
 // to surface, rather than a fixed sleep that may be too short under load.
@@ -2273,13 +2254,13 @@ func countStateChangeEvents(t *testing.T, d *db.DB, session, state string) int {
 
 // TestSocketPipe_ErrorResumeDebounce_LastErrorAtRecorded verifies that
 // state_change{error} records lastErrorAt so the ErrorResumeDebounce guard in
-// handleSessionUpdated has a reference time (Gap 3 edge-case from AC).
+// handleSessionUpdated has a reference time.
 //
 // The PI path does not go through handleSessionUpdated; this test validates
 // the lastErrorAt prerequisite: that a turn_start arriving within the debounce
 // window DOES still proceed normally (since the PI path uses turn_start, not
 // session.updated), but that lastErrorAt is set after an error state.
-// Synchronisation (issue #1515): the test waits for the DB to reflect the
+// Synchronisation: the test waits for the DB to reflect the
 // state change, then polls sc.lastErrorAt under sc.mu via waitForCondition.
 // This replaces a fixed 50ms sleep that flaked under contended scheduling.
 func TestSocketPipe_ErrorResumeDebounce_LastErrorAtRecorded(t *testing.T) {
@@ -2314,9 +2295,9 @@ func TestSocketPipe_ErrorResumeDebounce_LastErrorAtRecorded(t *testing.T) {
 }
 
 // TestSocketPipe_TurnStart_DoesNotClobberReviewing_PreservesExistingBehaviour
-// is a renamed alias for the original TestSocketPipe_TurnStart_DoesNotClobberReviewing
-// that confirms the existing behaviour is preserved after the Gap fixes.
-// The original test already covers this; this marker ensures the AC is explicit.
+// is an alias for TestSocketPipe_TurnStart_DoesNotClobberReviewing that
+// confirms the reviewing guard holds. That test already covers this; this
+// marker makes the requirement explicit.
 func TestSocketPipe_ReviewingGuardPreservedAfterGapFixes(t *testing.T) {
 	// This is covered by TestSocketPipe_TurnStart_DoesNotClobberReviewing.
 	// We verify here that the reviewing guard AND the cancelIdleTimer call
@@ -2331,9 +2312,15 @@ func TestSocketPipe_ReviewingGuardPreservedAfterGapFixes(t *testing.T) {
 	// Drive to active, start finished debounce.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
-	time.Sleep(50 * time.Millisecond)
 
-	idleTimer := clk.LastTimer()
+	// Wait deterministically for the finished debounce timer registration
+	// rather than sleeping a fixed window; a fixed sleep could observe nil
+	// under scheduler load and make the later cancellation check vacuous
+	// (issue #2902).
+	idleTimer := clk.WaitForTimerCount(1, 5*time.Second)
+	if idleTimer == nil {
+		t.Fatal("no finished debounce timer created after state_change{finished}")
+	}
 
 	// Simulate /review: write reviewing to DB and set reviewingInFlight.
 	if err := sc.cfg.DB.UpsertStatus(
@@ -2348,10 +2335,10 @@ func TestSocketPipe_ReviewingGuardPreservedAfterGapFixes(t *testing.T) {
 
 	// Send turn_start — finished debounce timer cancelled but active write suppressed.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
-	time.Sleep(50 * time.Millisecond)
 
-	// Finished debounce timer must be cancelled.
-	if idleTimer != nil && !idleTimer.Stopped() {
+	// Finished debounce timer must be cancelled. Wait deterministically for the
+	// cancellation rather than sleeping a fixed window (issue #2902).
+	if !idleTimer.WaitStopped(5 * time.Second) {
 		t.Error("finished debounce timer was not cancelled by turn_start while reviewing")
 	}
 
@@ -2369,9 +2356,9 @@ func TestSocketPipe_ReviewingGuardPreservedAfterGapFixes(t *testing.T) {
 // TestSocketPipe_ReviewAgent_ReachesFinishedViaTurnEnd verifies that a review-agent
 // session (AgentRole = "review-goal") reaches StateFinished via the unified
 // turn_end → state_change{finished} path, without requiring the agent_end hook
-// or role-specific branching (issue #1434).
+// or role-specific branching.
 //
-// Synchronisation (issue #1515): WaitForTimerCount replaces the previous 50ms
+// Synchronisation: WaitForTimerCount replaces the previous 50ms
 // sleep so the test waits on the actual debounce-timer registration event.
 func TestSocketPipe_ReviewAgent_ReachesFinishedViaTurnEnd(t *testing.T) {
 	sockPath := shortSockPath(t)
@@ -2412,7 +2399,7 @@ func TestSocketPipe_ReviewAgent_ReachesFinishedViaTurnEnd(t *testing.T) {
 }
 
 // TestSocketPipe_ProtocolVersion1_TooOld verifies that protocol_version=1 is
-// rejected as too old now that the sidecar requires protocol v2 (issue #1434).
+// rejected as too old now that the sidecar requires protocol v2.
 func TestSocketPipe_ProtocolVersion1_TooOld(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
@@ -2448,11 +2435,11 @@ func TestSocketPipe_ProtocolVersion1_TooOld(t *testing.T) {
 	_ = wait()
 }
 
-// ── #1440 regression tests ────────────────────────────────────────────────
+// ── session_shutdown regression tests ────────────────────────────────────────────────
 //
-// These tests guard against the regression introduced in #1434 and fixed in
-// #1440: the PI extension's `session_shutdown` hook was erroneously sending a
-// `{type:"session_shutdown"}` wire frame before closing the connection. The
+// These tests guard against a regression: the PI extension's
+// `session_shutdown` hook must not send a `{type:"session_shutdown"}` wire
+// frame before closing the connection. The
 // sidecar treats that frame as terminal, removes pipe.sock, and breaks the
 // reconnect loop — causing ECONNRESET when PI fires `session_start`.
 //
@@ -2638,7 +2625,7 @@ func TestSocketPipe_SessionShutdownHook_NoWireFrame_Fork(t *testing.T) {
 // session_shutdown hook closes the connection without a wire frame, the unix
 // socket file at HarnessPipeSockPath is NOT removed between the first
 // connection's close and the second connection's accept. This is the key
-// invariant that prevents ECONNRESET on the session_start re-dial (#1440 AC).
+// invariant that prevents ECONNRESET on the session_start re-dial.
 func TestSocketPipe_SessionShutdownHook_SockFilePresent(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
@@ -2683,8 +2670,8 @@ func TestSocketPipe_SessionShutdownHook_SockFilePresent(t *testing.T) {
 // TestSocketPipe_GenuineSessionShutdown_StillDrivesFinished verifies that a
 // genuine {type:"session_shutdown"} wire frame (e.g. from process exit) still
 // drives the session to StateFinished and breaks the reconnect loop. This
-// guards against any accidental change to handlePipeFrame semantics (#1440
-// out-of-scope: the sidecar must still handle the genuine frame correctly).
+// guards against any accidental change to handlePipeFrame semantics
+// (the sidecar must still handle the genuine frame correctly).
 func TestSocketPipe_GenuineSessionShutdown_StillDrivesFinished(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
@@ -2714,7 +2701,7 @@ func TestSocketPipe_GenuineSessionShutdown_StillDrivesFinished(t *testing.T) {
 // TestSocketPipe_SessionShutdownHook_NextFrameDispatchedNormally verifies that
 // after the extension reconnects following a session_shutdown hook close, the
 // next inbound frame from the sidecar is parsed and dispatched normally with
-// no leftover state from the previous connection (#1440 edge-case AC).
+// no leftover state from the previous connection.
 func TestSocketPipe_SessionShutdownHook_NextFrameDispatchedNormally(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
@@ -2772,9 +2759,10 @@ func TestSocketPipe_SessionShutdownHook_NextFrameDispatchedNormally(t *testing.T
 // session_status frame carrying a non-empty session_id causes the sidecar to
 // call UpdateHarnessSessionID and record the PI session ID in the DB.
 //
-// This is the regression test for bug #1538 fix #1: previously session_status
-// fell through to the default case and the harness_session_id column was never
-// populated for PI sessions, causing prism cleanup to log
+// This is the regression test for the harness_session_id write: without this
+// handling session_status falls through to the default case and the
+// harness_session_id column is never populated for PI sessions, causing
+// prism cleanup to log
 // "raw/session.jsonl not found" and produce an empty archive.
 func TestSocketPipe_SessionStatus_PopulatesHarnessSessionID(t *testing.T) {
 	sockPath := shortSockPath(t)
@@ -2879,16 +2867,16 @@ func TestSocketPipe_SessionStatus_EmptySessionID_NoOp(t *testing.T) {
 	}
 }
 
-// ── #1656 invariant test ─────────────────────────────────────────────────
+// ── harness_session_id write-ordering invariant test ─────────────────────────────────────────────────
 //
 // These tests assert the write-ordering invariant introduced by the fix for
-// issue #1656: whenever agent_status.harness_session_id is set, the
+// Whenever agent_status.harness_session_id is set, the
 // corresponding session_status event must already exist in agent_events.
 // This invariant is what makes TestSocketPipe_SessionStatus_PopulatesHarnessSessionID
 // race-free: the polling target (agent_status) is always the LAST write.
 
 // TestSocketPipe_SessionStatus_EventBeforeStatus asserts the write-ordering
-// invariant for the session_status handler (issue #1656 fix): the
+// invariant for the session_status handler: the
 // agent_events row for the session_status frame is committed BEFORE
 // agent_status.harness_session_id is set. We verify this by polling
 // agent_status until harness_session_id is set, then immediately asserting
@@ -2952,7 +2940,7 @@ func TestSocketPipe_SessionStatus_EventBeforeStatus(t *testing.T) {
 	}
 }
 
-// ── #1652 regression tests ────────────────────────────────────────────────
+// ── reviewing-window TOCTOU regression tests ────────────────────────────────────────────────
 //
 // These tests guard against the race where the finished-debounce in
 // handleSessionFinished suppresses only when BOTH reviewingInFlight==true AND
@@ -2960,13 +2948,13 @@ func TestSocketPipe_SessionStatus_EventBeforeStatus(t *testing.T) {
 // the DB back to StateActive while the in-memory flag is still true, causing
 // the AND to fail and the session to prematurely transition to StateFinished.
 //
-// The fix (approach b from issue #1652): rely on the in-memory flag alone.
+// The fix: rely on the in-memory flag alone.
 
 // TestSocketPipe_StateChange_DoesNotClobberReviewing verifies that a
 // state_change{finished} frame while reviewingInFlight==true does NOT
 // transition the session to finished, even when the DB state has drifted back
-// to active (i.e. the old AND guard would have failed). This is the core
-// regression test for issue #1652.
+// to active (the old AND guard fails here). This is the core
+// regression test for the reviewing-window TOCTOU.
 //
 // Synchronisation: WaitForTimerCount waits for the debounce timer, then we
 // fire it manually and assert the session stays not-finished.
@@ -2994,7 +2982,7 @@ func TestSocketPipe_StateChange_DoesNotClobberReviewing(t *testing.T) {
 	sc.reviewingInFlight = true
 	sc.mu.Unlock()
 
-	// Simulate DB state drifting back to active (the bug scenario from #1652):
+	// Simulate DB state drifting back to active (the bug scenario):
 	// a state_change frame from a prior code path overwrote reviewing with active.
 	// We replicate this directly without going through the protocol.
 	if err := sc.cfg.DB.UpsertStatus(
@@ -3037,7 +3025,7 @@ func TestSocketPipe_StateChange_DoesNotClobberReviewing(t *testing.T) {
 }
 
 // TestSocketPipe_FailedRetryReview_StateChangeDoesNotFinish reproduces the
-// exact timeline from issue #1652:
+// exact timeline:
 //
 //  1. Worker starts, reaches active.
 //  2. /review is called (1st attempt) — writes reviewing to DB, sets flag.
@@ -3133,7 +3121,7 @@ func TestSocketPipe_FailedRetryReview_StateChangeDoesNotFinish(t *testing.T) {
 // Ensure db import is used.
 var _ *db.DB
 
-// ── Issue #1844: control-plane backpressure tests ─────────────────────────────
+// ── control-plane backpressure tests ─────────────────────────────
 //
 // These tests verify that when the outbound channel (harnessPipeOutCh, buffered
 // to 64) is full, each control-plane HTTP handler returns a non-200 response
@@ -3645,7 +3633,7 @@ func TestSocketPipe_LineCap_HelloOversizedClosesConnection(t *testing.T) {
 	}
 }
 
-// ── zero-output exit classification (issue #2081) ───────────────────────────
+// ── zero-output exit classification ───────────────────────────
 
 // newZeroOutputWorkerSidecar wires a worker-named ("testrepo@feature")
 // socket-pipe sidecar against a freshly-seeded coordinator row at
@@ -3713,13 +3701,13 @@ func seedWorkerIdle(t *testing.T, sc *Sidecar) {
 	}
 }
 
-// TestSocketPipe_ZeroOutputExit_ClassifiesAsError reproduces issue #2081: a
-// worker connects, performs the handshake, receives a turn_end + state_change
-// {finished} pair without ever emitting a turn_start (and therefore without
-// producing any assistant output), and disconnects. The historical
-// behaviour wrote StateFinished and notified the coordinator with the
-// "has finished" wording — leading the coordinator to chase a PR that
-// did not exist.
+// TestSocketPipe_ZeroOutputExit_ClassifiesAsError reproduces the zero-output
+// exit: a worker connects, performs the handshake, receives a turn_end +
+// state_change{finished} pair without ever emitting a turn_start (and
+// therefore without producing any assistant output), and disconnects. Without
+// the classification, this writes StateFinished and notifies the coordinator
+// with the "has finished" wording — leading the coordinator to chase a PR
+// that did not exist.
 //
 // After the fix, the finished-debounce callback consults the persisted state:
 // when it is still StateIdle (no turn_start ever fired), the sidecar honours
@@ -3803,8 +3791,8 @@ func TestSocketPipe_ZeroOutputExit_ClassifiesAsError(t *testing.T) {
 }
 
 // TestSocketPipe_NormalExitWithContent_StillClassifiesFinished is the
-// negative counterpart to TestSocketPipe_ZeroOutputExit_ClassifiesAsError
-// (issue #2081 AC #4). A worker that emits a normal turn_start → msg_assistant
+// negative counterpart to TestSocketPipe_ZeroOutputExit_ClassifiesAsError.
+// A worker that emits a normal turn_start → msg_assistant
 // → turn_end → state_change{finished} sequence must still land in StateFinished
 // with the "has finished" coordinator notification. The fix must not be
 // over-broad and silently relabel normal exits as errors.

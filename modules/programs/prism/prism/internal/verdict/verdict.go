@@ -6,9 +6,9 @@
 // internal/db, so the rule cannot live in internal/review without an import
 // cycle back through internal/db. A leaf package lets all three consumers —
 // internal/db, internal/review, and internal/dashboard — share one rule
-// (issue #2862). Before this package the rule was copied in three places and
-// drifted: two copies ran against a raw, JSON-escaped payload where the marker
-// could never match, and none of the three recognised PASS_WITH_DISAGREEMENT.
+// instead of separate copies that can drift. The rule must run on the decoded
+// message text: in a raw, JSON-escaped payload '<' becomes \u003c and the
+// marker never matches.
 package verdict
 
 import "strings"

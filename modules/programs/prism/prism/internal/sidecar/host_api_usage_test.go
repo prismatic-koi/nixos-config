@@ -1,7 +1,6 @@
 package sidecar
 
-// Tests for the host-API POST /usage/snapshot endpoint (issue #2538,
-// parent #2537).
+// Tests for the host-API POST /usage/snapshot endpoint.
 //
 // Isolation: every test sets $XDG_STATE_HOME and $XDG_CONFIG_HOME to a
 // t.TempDir(), so nothing is written under the real state or config
@@ -57,8 +56,7 @@ func newUsageSidecar(t *testing.T) *Sidecar {
 	return newSidecarWithRole(t, "prism-test@usage-worker", "prism-test", "worker", d)
 }
 
-// fullBody is the request the extension sends for the worked example in
-// issue #2537.
+// fullBody is the request the extension sends for the worked example.
 const fullBody = `{
   "unified_status": "allowed_warning",
   "representative_claim": "five_hour",
@@ -81,7 +79,7 @@ const fullBody = `{
 }`
 
 // fullBodyWithOrgWorkspace adds the anthropic-organization-id /
-// anthropic-workspace-id pair (issue #2713, parent #2699) to fullBody.
+// anthropic-workspace-id pair to fullBody.
 const fullBodyWithOrgWorkspace = `{
   "unified_status": "allowed_warning",
   "representative_claim": "five_hour",
@@ -106,7 +104,7 @@ const fullBodyWithOrgWorkspace = `{
 }`
 
 // TestHostAPI_UsageSnapshot_PersistsOrganizationAndWorkspaceID covers the
-// functional round-trip AC for issue #2713: both fields reach the persisted
+// functional round-trip: both fields reach the persisted
 // JSON via the same endpoint the active refresh path (`prism account usage`)
 // POSTs through.
 func TestHostAPI_UsageSnapshot_PersistsOrganizationAndWorkspaceID(t *testing.T) {
@@ -548,7 +546,7 @@ func TestHostAPI_UsageSnapshot_NoCredentialInFilesOrLog(t *testing.T) {
 }
 
 // TestHostAPI_UsageSnapshot_AcceptsTheRefreshPayload pins the wire contract
-// between the active refresh (issue #2541) and this endpoint.
+// between the active refresh and this endpoint.
 //
 // The refresh marshals a usage.SnapshotPayload and POSTs it here. The handler
 // decodes with DisallowUnknownFields, so ONE extra or renamed field on that

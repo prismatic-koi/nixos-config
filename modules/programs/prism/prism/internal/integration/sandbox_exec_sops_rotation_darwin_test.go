@@ -3,16 +3,15 @@
 package integration_test
 
 // sandbox_exec_sops_rotation_darwin_test.go — integration coverage for sops
-// rotation safety on the env-var delivery routes (#1410/#1573 property,
-// post-#2132 mechanism).
+// rotation safety on the env-var delivery routes (the rotation property).
 //
 // After darwin-rebuild switch, sops rotates secrets.d/<N>/ → secrets.d/<N+1>/
-// and removes the old directory. Post Step 5 of #2132 there is no staging
-// HOME and no per-symlink (literal …) target allow: every sops-backed
-// credential read inside the sandbox goes through a STABLE host source path
-// (~/.ssh/<keyname> embedded in the work-dir ssh-config/gitconfig;
-// ~/.config/aws/* and ~/.config/kube/* via env vars) and rides the broad
-// (subpath "/private/var/folders") allow narrowed by the #2211 secrets.d
+// and removes the old directory. There is no staging HOME and no per-symlink
+// (literal …) target allow: every sops-backed credential read inside the
+// sandbox goes through a STABLE host source path (the ~/.ssh/<keyname> paths
+// embedded in the work-dir ssh-config/gitconfig, and ~/.config/aws/* and
+// ~/.config/kube/* via env vars) and rides the broad
+// (subpath "/private/var/folders") allow narrowed by the secrets.d
 // allowlist. Rotation safety is carried by the allowlist exceptions being
 // counter-independent ([0-9]+ regexes derived from secret NAMES).
 //
@@ -23,9 +22,9 @@ package integration_test
 //   - Generic counter-rotation of an allowlisted name is proven by
 //     TestSandboxExecSecretsDeny_RotationSimulation and its load-bearing
 //     negative.
-//   - This file pins the kube config variant explicitly (issue #2235
-//     edge-case AC): the KUBECONFIG env-var route must survive a rotation,
-//     and the kube require-not exception must be the load-bearing grant.
+//   - This file pins the kube config variant explicitly: the KUBECONFIG
+//     env-var route must survive a rotation, and the kube require-not
+//     exception must be the load-bearing grant.
 //
 // The kube tests derive the kube secret NAME from the real host source,
 // plant a fake secrets.d tree under the per-user TMPDIR (where the
@@ -34,8 +33,8 @@ package integration_test
 // rotation.
 //
 // Each positive has a paired profile-mutation negative proving it is not a
-// no-op (docs/sandbox-exec-testing.md, #1192). The #2207 capability-probe
-// gating applies via requireSandboxExec.
+// no-op (docs/sandbox-exec-testing.md). The capability-probe gating applies
+// via requireSandboxExec.
 //
 // Shared helpers:
 //   - requireSandboxExec, requireNixBash, newProfileManager,
@@ -59,8 +58,8 @@ import (
 
 // kubeRotationHostSource returns the stable host XDG path of the kube
 // agents config and its secrets.d-relative name, skipping when the source
-// is absent or not sops-backed on this host (the #2211 allowlist mechanism
-// under test does not apply then). This is the guard for the kube rotation
+// is absent or not sops-backed on this host (the allowlist mechanism under
+// test does not apply then). This is the guard for the kube rotation
 // tests' indirection invariant: the secret NAME is derived from the same
 // stable source that feeds collectSecretsDAllowlistNames, so the fake-tree
 // reads below exercise exactly the exception the production profile carries
@@ -77,9 +76,9 @@ func kubeRotationHostSource(t *testing.T) (configPath, secretName string) {
 }
 
 // TestSandboxExecSopsRotation_KubeConfigAllowlistCounterIndependent is the
-// kube positive rotation entry (issue #2235 edge-case AC: a sops rotation
-// after spawn does not break kube config reads). The kube config rides the
-// #2211 allowlist: KUBECONFIG points at the stable XDG symlink, and the
+// kube positive rotation entry: a sops rotation after spawn does not break
+// kube config reads. The kube config rides the allowlist: KUBECONFIG points
+// at the stable XDG symlink, and the
 // in-sandbox read of the resolved secrets.d target is permitted by the
 // counter-independent ([0-9]+) require-not exception for the kube secret
 // name. The test derives that name from the real host source, plants a
@@ -101,7 +100,7 @@ func TestSandboxExecSopsRotation_KubeConfigAllowlistCounterIndependent(t *testin
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The profile must carry the kube exception — the grant the env-var
-	// route rides on (issue #2211 / #2235).
+	// route rides on.
 	found := false
 	for _, name := range parseSecretsDAllowlist(prepared.content) {
 		if name == kubeName {
@@ -142,8 +141,8 @@ func TestSandboxExecSopsRotation_KubeConfigAllowlistCounterIndependent(t *testin
 }
 
 // TestSandboxExecSopsRotation_KubeConfigExceptionLoadBearing is the paired
-// negative for the kube rotation entry (sandbox-exec testing convention,
-// #1192): with the kube require-not exception stripped from the profile,
+// negative for the kube rotation entry (sandbox-exec testing convention):
+// with the kube require-not exception stripped from the profile,
 // the same fake-counter read fails — proving the exception (not some
 // broader rule) is what permits the kube config read in the positive test.
 func TestSandboxExecSopsRotation_KubeConfigExceptionLoadBearing(t *testing.T) {

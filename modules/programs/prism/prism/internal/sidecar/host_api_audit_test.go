@@ -1,6 +1,7 @@
 package sidecar
 
-// host_api_audit_test.go — issue #2618.
+// host_api_audit_test.go — GET /audit, the host-side half of the
+// `prism audit` proxy branch.
 //
 // GET /audit is the host-side half of the `prism audit` proxy branch. Two
 // properties keep it inside the boundary that already exists, and this file
@@ -15,7 +16,7 @@ package sidecar
 //     not reachable from any request parameter, so the route cannot be
 //     widened into a general cross-session conversation-payload reader.
 //
-// # Isolation contract (#1608)
+// # Isolation contract
 //
 // Every sidecar here is built through the helpers in
 // host_api_role_gate_test.go, which use sidecartest.NewIsolated(t, "") — so
@@ -136,7 +137,7 @@ func getAuditEvents(t *testing.T, sc *Sidecar, rawQuery string) []db.Event {
 // ── the type filter ──────────────────────────────────────────────────────────
 
 // TestHostAPIAudit_NeverReturnsNonAuditRows is the headline security
-// assertion of #2618. The endpoint reads agent_events, which holds every
+// assertion. The endpoint reads agent_events, which holds every
 // session's conversation payloads. Only `type = 'audit'` rows may leave it.
 //
 // Each case passes a hostile value for one or more of the four parameters the

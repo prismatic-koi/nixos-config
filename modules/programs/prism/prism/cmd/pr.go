@@ -45,7 +45,7 @@ import (
 // `prism pr` always targets a pre-existing PR (Case 1 in agents/coordinator.md),
 // so the session never authored the PR and must default to review-only. The
 // command cannot establish who authored the PR branch, so this guidance is
-// injected unconditionally (issue #2633) — fail safe toward read-only rather
+// injected unconditionally — fail safe toward read-only rather
 // than attempt to infer authorship from the branch or PR metadata. Only an
 // explicit operator instruction given during the session lifts this.
 const prReadOnlyGuidance = `IMPORTANT — this session was started with ` + "`prism pr <number>`" + `, which always
@@ -63,7 +63,7 @@ See "Case 1" in agents/coordinator.md and agents/worker.md for the full
 review-only flow this session should follow.`
 
 // withPRReadOnlyGuidance prepends the read-only guidance to a caller-supplied
-// prompt (preserving it, per issue #2633 AC2) or returns the guidance alone
+// prompt (preserving it) or returns the guidance alone
 // when the caller passed neither --prompt nor --prompt-file.
 //
 // Idempotent: there are exactly two call sites, this one and the one in
@@ -116,7 +116,7 @@ var prCmd = &cobra.Command{
 		}
 		// prism pr always targets a pre-existing PR (Case 1), so the session
 		// is review-only by default regardless of --prompt / --prompt-file.
-		// See prReadOnlyGuidance above for the rationale (issue #2633).
+		// See prReadOnlyGuidance above for the rationale.
 		promptFlag = withPRReadOnlyGuidance(promptFlag)
 
 		bareRoot, err := resolveBareRoot(repoFlag)
@@ -128,19 +128,19 @@ var prCmd = &cobra.Command{
 		// number is forwarded as "pr" — NOT resolved to a branch locally — so
 		// the host-side prism spawn (which runs the correct FetchRemote +
 		// PRBranch + CreateWorktree-tracking-origin path) preserves the real
-		// PR head ref end-to-end. Resolving the branch client-side and
-		// forwarding only a sanitised branch name silently forked a new
-		// branch from the default branch whenever the PR head ref contained a
-		// slash (issue #2432).
+		// PR head ref end-to-end. Client-side branch resolution loses the head
+		// ref for any PR whose head contains a slash: SanitiseBranch maps '/'
+		// to '-', no matching branch is found, and a new branch is forked from
+		// the default branch instead of the PR's commits.
 		if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 			repo := filepath.Base(bareRoot)
 			var resp struct {
 				SessionName string `json:"session_name"`
 				// Warning carries the sidecar's prism-binary staleness
-				// diagnostic (issue #2742), set only when the sidecar that
-				// handled this spawn launched from a binary a switch has
-				// since replaced. Empty in the common case; the field is
-				// simply absent from the JSON then.
+				// diagnostic, set only when the sidecar that handled this
+				// spawn launched from a binary a switch has since replaced.
+				// Empty in the common case — the field is simply absent
+				// from the JSON then.
 				Warning string `json:"warning"`
 			}
 			body := map[string]any{
@@ -194,7 +194,6 @@ var prCmd = &cobra.Command{
 
 		// Concurrency cap checks: BEFORE any container-creation side effects
 		// (no worktree, no tmux session, no DB row on refusal).
-		// A.3 (#1134): unified cap via iso.Cap(ctx, dbPath).Check(ignoreCap).
 		if err := checkConcurrencyCap(cmd, "pr", isoMode); err != nil {
 			return err
 		}
@@ -211,7 +210,7 @@ var prCmd = &cobra.Command{
 			return fmt.Errorf("create worktree: %w", err)
 		}
 		worktreePath := created.Path
-		// Caller-level rollback (#2363): a failure in any step between
+		// Caller-level rollback: a failure in any step between
 		// worktree creation and ensureAndSwitch success removes the freshly
 		// created worktree. A pre-existing PR branch is never deleted —
 		// CreateWorktree marks only freshly forked branches for deletion —
@@ -245,24 +244,16 @@ var prCmd = &cobra.Command{
 		}
 
 		// Validate the resolved profile before any session state is created.
+		// RequireSlot rejects three misconfigurations:
 		//
-		// This replaces the validation that config.BuildConfigContent supplied
-		// as a side effect before #2854 retired it. It is deliberately NOT a
-		// like-for-like restoration — RequireSlot is strictly stronger:
-		//
-		//   - BuildConfigContent rejected a nil profiles file paired with a
-		//     non-empty profile name, and rejected an unknown profile name.
-		//     RequireSlot rejects both, so the guard stays keyed on
-		//     resolvedProfile alone: a state file naming a profile while
-		//     profiles.json failed to load must still fail here, as it did
-		//     before.
-		//   - BuildConfigContent did NOT check slot presence. It looked the
-		//     role up with a comma-ok and silently emitted an empty model on a
-		//     miss. RequireSlot errors instead, so a profile with no slot for
-		//     this session's root role is now rejected where it previously
-		//     proceeded. That is intentional: it matches the gate cmd/spawn.go
-		//     already applies, and a session with no slot for its own role has
-		//     no model to run on.
+		//   - A nil profiles file paired with a non-empty profile name. A
+		//     state file can name a profile while profiles.json fails to load;
+		//     the guard is keyed on resolvedProfile alone so that case still
+		//     fails here.
+		//   - An unknown profile name.
+		//   - A profile with no slot for this session's root role. A session
+		//     with no slot for its own role has no model to run on. This
+		//     matches the gate cmd/spawn.go applies.
 		//
 		// The slot's model, provider, and thinking level reach pi over argv —
 		// resolved at agent-run time by populatePIConfig (bwrap /
@@ -301,9 +292,9 @@ var prCmd = &cobra.Command{
 			PluginHostPath: cfg.SidecarPluginPath,
 			RuntimeEnvVars: prHarness.RuntimeEnv(),
 			ModelsByRole:   modelsByRole,
-			// PIExtensionDir for host-mode pi launches (#2065).
+			// PIExtensionDir for host-mode pi launches.
 			PIExtensionDir: cfg.PIExtensionDir,
-			// CLI overrides (issue #2086) flow through to the tmux pane
+			// CLI overrides flow through to the tmux pane
 			// command so `prism agent-run` (bwrap / sandbox-exec) and direct
 			// pi (host) receive --model / --variant on the final argv.
 			// `prism pr` is a sibling front door to `prism spawn` and
@@ -311,9 +302,9 @@ var prCmd = &cobra.Command{
 			// so the same wire-through is required here.
 			Model:   modelFlag,
 			Variant: variantFlag,
-			// ForceFresh=true: prism pr creates a new worktree; if a session
+			// ForceFresh=true: prism pr creates a new worktree. If a session
 			// with the same name exists it is a stale zombie and should be
-			// killed, matching the same semantics as prism spawn.
+			// killed, matching prism spawn.
 			ForceFresh: true,
 		}
 		if err := ensureAndSwitch(worktreePath, bareRoot, opts); err != nil {
@@ -323,7 +314,7 @@ var prCmd = &cobra.Command{
 		// this point may tear down the worktree of a running session.
 		createdWorktree = nil
 
-		// Write spawn_inputs (#2087). prism pr does not go through
+		// Write spawn_inputs. prism pr does not go through
 		// SpawnSession — it uses ensureAndSwitch → session.Create — so the
 		// audit-row writer fires here, mirroring the centralised writer in
 		// SpawnSession with the same column mapping.
@@ -364,7 +355,7 @@ type prSpawnInputsArgs struct {
 	harnessFlag   string
 	isolationFlag string
 	// isolationMode is the resolved effective isolation mode for the
-	// session — always populated (#2105) so spawn_inputs.isolation_mode
+	// session — always populated so spawn_inputs.isolation_mode
 	// reflects what the session actually ran under, even when --isolation
 	// was omitted and isolationFlag is therefore "".
 	isolationMode        string
@@ -418,7 +409,7 @@ func writeSpawnInputsForPR(cmd *cobra.Command, a prSpawnInputsArgs) {
 // the flag-to-column mapping is testable without spinning up tmux / git /
 // the cobra command. Mirrors spawnInputsFromOpts in internal/session/spawn.go
 // — the two writers must stay in sync because both front doors share the
-// same spawn_inputs schema. Issue #2105.
+// same spawn_inputs schema.
 func buildPRSpawnInputs(a prSpawnInputsArgs, instanceID, skillsManifestHash, agentPromptHash string, createdAt int64) db.SpawnInputs {
 	si := db.SpawnInputs{
 		InstanceID: instanceID,
@@ -444,7 +435,7 @@ func buildPRSpawnInputs(a prSpawnInputsArgs, instanceID, skillsManifestHash, age
 	}
 	// isolationMode mirrors spawn_inputs.isolation_mode — the resolved
 	// effective mode the session ran under, distinct from the raw
-	// --isolation flag value. Always populated post-#2105 so the
+	// --isolation flag value. Always populated so the
 	// `prism stats compare` Spawn Inputs block surfaces a meaningful value
 	// even when --isolation was omitted (the common case).
 	if a.isolationMode != "" {

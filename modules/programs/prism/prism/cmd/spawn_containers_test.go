@@ -1,8 +1,7 @@
 package cmd
 
-// Tests for the `prism spawn --containers` flag plumbing (Step 6 of #2317 /
-// issue #2323). This file is the writer-level + flag-registration coverage
-// for the new --containers CLI flag.
+// Tests for the `prism spawn --containers` flag plumbing. This file is the
+// writer-level + flag-registration coverage for the --containers CLI flag.
 //
 // What lives here:
 //   - flag-registration tests against spawnCmd (presence, type, default).
@@ -13,12 +12,12 @@ package cmd
 //   - Agent-context output exposes --containers as a bool with default false.
 //
 // What is NOT here (covered elsewhere):
-//   - The DB migration tests for the new columns (Step 2 / #2319,
-//     internal/db/db_migration_v36_v37_test.go).
-//   - The sidecar startup path (Step 3 / #2320, internal/sidecar/podman_proxy_test.go).
-//   - The proxy package policy (Step 1 / #2318, internal/podmanproxy).
+//   - The DB migration tests for the columns
+//     (internal/db/db_migration_v36_v37_test.go).
+//   - The sidecar startup path (internal/sidecar/podman_proxy_test.go).
+//   - The proxy package policy (internal/podmanproxy).
 //
-// Test-suite isolation contract (AGENTS.md, issue #1608):
+// Test-suite isolation contract (AGENTS.md):
 //   - sidecartest.NewIsolated redirects $XDG_STATE_HOME to a t.TempDir() and
 //     sets the PRISM_TEST_MODE_RESTRICT_HOSTAPI guard, so no host DB / bus /
 //     tmux state is touched.
@@ -40,7 +39,7 @@ import (
 // TestContainersFlag_Registered verifies that --containers is registered on
 // spawnCmd as a bool with default false. The agent-context generator walks
 // cobra.Command.Flags() so once this is in place the JSON document picks
-// the flag up automatically — AC #4 of #2323 piggybacks on this.
+// the flag up automatically.
 func TestContainersFlag_Registered(t *testing.T) {
 	flag := spawnCmd.Flags().Lookup("containers")
 	if flag == nil {
@@ -61,7 +60,7 @@ func TestContainersFlag_Registered(t *testing.T) {
 // TestSpawnInputsFromOpts_ContainersFlagTrue verifies that when SpawnOpts
 // carries ContainersFlag=true, the spawn_inputs row written by
 // InsertSpawnInputs records containers_flag=1 and that
-// SpawnInputsByInstanceID reads it back as true. AC #1 of #2323.
+// SpawnInputsByInstanceID reads it back as true.
 func TestSpawnInputsFromOpts_ContainersFlagTrue(t *testing.T) {
 	bus := sidecartest.NewIsolated(t, "")
 	d := bus.DB
@@ -97,9 +96,8 @@ func TestSpawnInputsFromOpts_ContainersFlagTrue(t *testing.T) {
 }
 
 // TestSpawnInputsFromOpts_ContainersFlagDefault verifies that the default
-// (flag omitted) yields ContainersFlag=false on the round-tripped row.
-// AC #3 of #2323 — `prism spawn` without --containers leaves both
-// columns at 0.
+// (flag omitted) yields ContainersFlag=false on the round-tripped row —
+// `prism spawn` without --containers leaves both columns at 0.
 func TestSpawnInputsFromOpts_ContainersFlagDefault(t *testing.T) {
 	bus := sidecartest.NewIsolated(t, "")
 	d := bus.DB
@@ -137,15 +135,15 @@ func TestSpawnInputsFromOpts_ContainersFlagDefault(t *testing.T) {
 // TestSetContainersEnabled_FlipsTheRuntimeGate verifies that
 // d.SetContainersEnabled flips agent_status.containers_enabled — the
 // runtime gate the sidecar reads on startup to decide whether to start
-// the per-session filtering podman socket proxy (#2317 / #2320).
+// the per-session filtering podman socket proxy.
 //
-// AC #2 of #2323: when --containers is passed, the new agent_status row
-// has containers_enabled=1. This is the writer-level test for that wire:
+// When --containers is passed, the new agent_status row has
+// containers_enabled=1. This is the writer-level test for that wire:
 // SpawnSession calls d.SetContainersEnabled when opts.ContainersFlag, so
 // the contract reduces to "the setter correctly flips the bit on the row
 // the sidecar will later read".
 //
-// AC #3 (the default-false case) is covered by the schema's
+// The default-false case is covered by the schema's
 // `INTEGER NOT NULL DEFAULT 0` declaration plus the
 // TestStatus_ContainersEnabledDefaultsFalse migration test that lives
 // alongside the schema (internal/db/db_migration_v36_v37_test.go).
@@ -223,8 +221,8 @@ func TestSetContainersEnabled_NoRowIsNoOp(t *testing.T) {
 }
 
 // TestProxySpawnBody_ContainersForwardedOnlyWhenSet verifies the
-// flag-forwarding pattern documented in #2323's cross-spawn forwarding AC:
-// the proxy body carries "containers": true ONLY when the flag was
+// cross-spawn flag-forwarding pattern: the proxy body carries
+// "containers": true ONLY when the flag was
 // explicitly set; an unset child must NOT inherit the parent's value via
 // JSON default.
 //
@@ -303,8 +301,8 @@ func boolString(b bool) string {
 	return "false"
 }
 
-// TestWarnContainersWithHostMode covers AC #5 of #2323: when --containers is
-// combined with --isolation host, prism spawn emits a warning to stderr
+// TestWarnContainersWithHostMode covers the case where --containers is
+// combined with --isolation host: prism spawn emits a warning to stderr
 // matching the substring "host mode bypasses the proxy" and exits 0 (the
 // spawn proceeds). The warning fires for every isolation resolution path
 // that ends at "host" — explicit flag, config default, or future precedence
@@ -347,7 +345,7 @@ func TestWarnContainersWithHostMode(t *testing.T) {
 	}
 }
 
-// TestContainersFlag_DoubleSetIsIdempotent covers AC #6 of #2323: passing
+// TestContainersFlag_DoubleSetIsIdempotent verifies that passing
 // --containers twice on the same command line does not error. cobra's
 // pflag.Bool tolerates repeated --flag values by overwriting; this test
 // pins that behaviour so a future flag-registration change (e.g. switching
@@ -375,8 +373,7 @@ func TestContainersFlag_DoubleSetIsIdempotent(t *testing.T) {
 }
 
 // TestAgentContext_ContainersFlagExposed verifies that the agent-context
-// JSON output surfaces --containers as a bool with default false. This is
-// AC #4 of #2323 verbatim:
+// JSON output surfaces --containers as a bool with default false:
 //
 //	prism agent-context | jq '.commands.spawn.flags["--containers"]'
 //	returns {type: "bool", default: false, description: "..."}.

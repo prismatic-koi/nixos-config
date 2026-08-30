@@ -1,23 +1,21 @@
 package sidecar
 
 // checkin_permission.go — the sidecar's binding to the shared `prism checkin`
-// permission predicate (issues #2587, #2619).
+// permission predicate.
 //
-// The three-tier model itself lives in internal/authz. It moved there in
-// #2619, unchanged, so the direct CLI route can call the same copy: the
-// predicate used to be a method on *Sidecar that read the caller from
-// s.cfg.SessionName, which `cmd/` has no way to construct. authz.CheckinRequest
-// takes the caller as a parameter instead.
+// The three-tier model lives in internal/authz. authz.CheckinRequest takes the
+// caller as a parameter, so the host-API route and the direct CLI route call
+// the same copy. (cmd/ has no *Sidecar and cannot read the caller from
+// s.cfg.SessionName.)
 //
 // What stays here is the sidecar-specific half: the adapter that fills a
 // CheckinRequest from Config, and the audit writer, which needs s.writeEvent
 // and s.mu.
 //
-// The host-API handler in host_api.go is deliberately untouched by the move.
-// authz.CheckinDecision carries the same four fields under the same names, and
-// checkinPrivilegeGrantName below keeps its sidecar-local spelling, so the
-// handler and its regression tests compile and behave exactly as before. That
-// is the point: #2619 must not change the host-API route for any tier.
+// The host-API handler in host_api.go and its regression tests depend on
+// authz.CheckinDecision carrying the same four fields under the same names,
+// and on checkinPrivilegeGrantName below keeping its sidecar-local spelling.
+// Both routes must emit one grant label for any tier.
 
 import (
 	"github.com/prismatic-koi/prism/internal/authz"
@@ -50,9 +48,8 @@ func (s *Sidecar) authorizeCheckin(targetSession string) authz.CheckinDecision {
 }
 
 // authorizeCheckinReviewAggregate decides whether this sidecar's session may
-// read the review-agent summary of parentSession's review group (issue
-// #2628 — the aggregate `prism checkin <parent>~review` form, without
-// --verbose).
+// read the review-agent summary of parentSession's review group — the
+// aggregate `prism checkin <parent>~review` form, without --verbose.
 //
 // It is a binding over authz.AuthorizeCheckinReviewAggregate, exactly as
 // authorizeCheckin is a binding over authz.AuthorizeCheckin. The equivalent

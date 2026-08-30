@@ -36,7 +36,7 @@ func IsMetaSession(name string) bool {
 // A descendant session (a name that carries "~" — a review agent or an
 // investigator) is refused before any of the three steps runs. See the same
 // guard in authz.IsCoordinatorSession for the reasoning; the two copies must
-// answer alike, which is why both read sessionname.IsDescendant (#2658).
+// answer alike, which is why both read sessionname.IsDescendant.
 //
 // The d parameter may be nil; when nil the DB-backed lookup is skipped and
 // only the heuristic is used.

@@ -478,8 +478,8 @@ func TestFeedback_Record_HostAPIProxy_Success(t *testing.T) {
 		t.Errorf("posted text = %q, want 'sandbox note'", posted.Text)
 	}
 
-	// Nothing must have been written locally — the sandbox write path is the
-	// bug this fix resolves.
+	// Nothing must be written locally. The sandbox write path must not be
+	// used.
 	if _, statErr := os.Stat(local); statErr == nil {
 		data, _ := os.ReadFile(local)
 		t.Errorf("data unexpectedly written to local store: %s", data)

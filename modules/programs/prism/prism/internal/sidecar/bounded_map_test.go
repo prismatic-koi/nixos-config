@@ -3,7 +3,6 @@ package sidecar
 // bounded_map_test.go — unit tests for the generic insertion-order LRU
 // map used to cap the per-message tracking structures on Sidecar
 // (writtenMessages / textByMessage / msgCreatedAtMs / ttftByMessage).
-// Issue #1846.
 
 import (
 	"strconv"
@@ -104,7 +103,7 @@ func TestBoundedMap_EvictsOldestWhenAtCapacity(t *testing.T) {
 	}
 }
 
-// TestBoundedMap_NeverExceedsCapacity is the headline AC #1 check: after
+// TestBoundedMap_NeverExceedsCapacity is the headline check: after
 // many inserts the map size must never exceed the bound.
 func TestBoundedMap_NeverExceedsCapacity(t *testing.T) {
 	const cap = 64

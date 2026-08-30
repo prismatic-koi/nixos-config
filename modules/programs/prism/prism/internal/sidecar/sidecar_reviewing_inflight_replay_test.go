@@ -1,6 +1,6 @@
 package sidecar
 
-// Tests for issue #1843: reviewingInFlight must not be cleared on the
+// Tests for the requirement that reviewingInFlight must not be cleared on the
 // same-session /prompt review-complete branch until the prompt frame is
 // actually on the wire — either synchronously (DeliverPrompt success) or
 // after flushPendingReplay re-enqueues a buffered entry.
@@ -29,11 +29,11 @@ import (
 )
 
 // TestHostAPI_Prompt_ReviewComplete_SyncSuccess_ClearsAfterDeliver is the
-// AC #1 / AC #5 happy-path test. It verifies that when DeliverPrompt
+// happy-path test. It verifies that when DeliverPrompt
 // succeeds synchronously, reviewingInFlight ends up false after the handler
 // returns. This mirrors the existing
 // TestHostAPI_Prompt_ReviewComplete_ClearsReviewingInFlight test but is kept
-// here too so the #1843 fix has its own focused regression target — both the
+// here too so this fix has its own focused regression target — both the
 // invert-order branch and the existing semantics are exercised in one place.
 func TestHostAPI_Prompt_ReviewComplete_SyncSuccess_ClearsAfterDeliver(t *testing.T) {
 	d := openTestDB(t)
@@ -64,7 +64,7 @@ func TestHostAPI_Prompt_ReviewComplete_SyncSuccess_ClearsAfterDeliver(t *testing
 		t.Errorf("synchronous-success response should not carry buffered:true; body=%s", rr.Body.String())
 	}
 
-	// AC #1: flag is false on return.
+	// Flag is false on return.
 	sc.mu.Lock()
 	inFlight := sc.reviewingInFlight
 	sc.mu.Unlock()
@@ -81,7 +81,7 @@ func TestHostAPI_Prompt_ReviewComplete_SyncSuccess_ClearsAfterDeliver(t *testing
 }
 
 // TestHostAPI_Prompt_ReviewComplete_Buffered_KeepsFlagAndSuppressesFinish is
-// the AC #2 / AC #3 / AC #4 regression test for the buffered-for-replay
+// the regression test for the buffered-for-replay
 // branch. The full timeline:
 //
 //  1. Worker sidecar is mid-review (reviewingInFlight=true, DB=reviewing).
@@ -89,8 +89,8 @@ func TestHostAPI_Prompt_ReviewComplete_SyncSuccess_ClearsAfterDeliver(t *testing
 //  3. Monitor POSTs /prompt with source=review-complete.
 //     - Response is 200 buffered:true.
 //     - The buffered entry's Source is "review-complete".
-//     - reviewingInFlight is STILL true (#1843 invariant) — the original
-//     bug cleared it before DeliverPrompt was even tried.
+//     - reviewingInFlight is STILL true (the invariant). Clearing it before
+//     DeliverPrompt is even tried reopens the suppression-evasion race.
 //  4. During the disconnect window, the worker's runtime emits a
 //     state_change{finished} (simulated by calling handleSessionFinished
 //     directly — equivalent to the path a real frame takes through
@@ -99,8 +99,8 @@ func TestHostAPI_Prompt_ReviewComplete_SyncSuccess_ClearsAfterDeliver(t *testing
 //     reviewingInFlight=true and SUPPRESS the transition. The DB state must
 //     not become StateFinished — which also implies notifyCoordinator (the
 //     branch that calls it inside the suppression-gated block) is NOT
-//     invoked. This is the same suppression invariant guarded by #1372 /
-//     #1652; this test re-asserts it for the buffered review-complete path.
+//     invoked. This is the same suppression invariant guarded elsewhere.
+//     This test re-asserts it for the buffered review-complete path.
 //  6. Reconnect: install a fresh pipe channel and call flushPendingReplay
 //     directly. The replayed frame is enqueued, and flushPendingReplay
 //     clears reviewingInFlight (Source="review-complete" branch).
@@ -153,9 +153,9 @@ func TestHostAPI_Prompt_ReviewComplete_Buffered_KeepsFlagAndSuppressesFinish(t *
 		t.Errorf("buffered entry DeliveryID = %q, want %q (sanity)", bufferedID, "d-1843")
 	}
 
-	// AC #2: reviewingInFlight must still be true after the buffered-path
-	// /prompt returns. The pre-#1843 code cleared it before DeliverPrompt
-	// was even called, exposing the suppression-evasion race.
+	// reviewingInFlight must still be true after the buffered-path
+	// /prompt returns. Clearing it before DeliverPrompt is even called exposes
+	// the suppression-evasion race.
 	sc.mu.Lock()
 	inFlightAfterBuffer := sc.reviewingInFlight
 	sc.mu.Unlock()
@@ -174,7 +174,7 @@ func TestHostAPI_Prompt_ReviewComplete_Buffered_KeepsFlagAndSuppressesFinish(t *
 		t.Fatal("no finished debounce timer created after handleSessionFinished")
 	}
 
-	// Step 5: fire the debounce. With #1843 fixed, the closure in
+	// Step 5: fire the debounce. The closure in
 	// handleSessionFinished sees reviewingInFlight=true and suppresses the
 	// transition. Without the fix, the pre-cleared flag would let the
 	// closure overwrite DB state to StateFinished and call
@@ -213,7 +213,7 @@ func TestHostAPI_Prompt_ReviewComplete_Buffered_KeepsFlagAndSuppressesFinish(t *
 		t.Error("expected a replayed frame on the pipe channel after flushPendingReplay")
 	}
 
-	// Step 7: AC #2 closing condition — reviewingInFlight is now false
+	// Step 7: closing condition — reviewingInFlight is now false
 	// (the Source="review-complete" branch in flushPendingReplay cleared it
 	// after the successful re-enqueue).
 	sc.mu.Lock()
@@ -232,7 +232,7 @@ func TestHostAPI_Prompt_ReviewComplete_Buffered_KeepsFlagAndSuppressesFinish(t *
 // regression test: flushPendingReplay must clear reviewingInFlight ONLY for
 // entries whose Source is "review-complete". A buffered coordinator
 // follow-up (Source=="") that happens to flush while a review is in flight
-// must leave the flag alone — otherwise we'd reintroduce the #1372 class of
+// must leave the flag alone — otherwise it reintroduces the class of
 // "non-review prompt prematurely ends the reviewing window".
 func TestFlushPendingReplay_NonReviewSourceDoesNotClearFlag(t *testing.T) {
 	d := openTestDB(t)

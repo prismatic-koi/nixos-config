@@ -1,7 +1,6 @@
 package cmd
 
-// prism retro — a retrospective surface for coordinators (issue #2583, part
-// 2/4 of tracking issue #2529).
+// prism retro — a retrospective surface for coordinators.
 //
 // Usage:
 //

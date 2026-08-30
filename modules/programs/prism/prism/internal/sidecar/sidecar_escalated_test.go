@@ -7,7 +7,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 )
 
-// TestSocketPipe_TurnStartClearsEscalated verifies AC #6: an incoming
+// TestSocketPipe_TurnStartClearsEscalated verifies that an incoming
 // turn_start frame transitions a session out of the "escalated" state back
 // into "active". The state machine must permit escalated→active and the
 // sidecar's PI turn_start handler must perform the upsert unconditionally
@@ -63,7 +63,7 @@ func TestSocketPipe_TurnStartClearsEscalated(t *testing.T) {
 	}
 }
 
-// TestSocketPipe_FinishedDebounceSuppressedWhileEscalated verifies AC #3:
+// TestSocketPipe_FinishedDebounceSuppressedWhileEscalated verifies that
 // while a session is in the escalated state, the sidecar must NOT transition
 // it to finished even when the harness fires state_change{finished}. The
 // session.escalated bus event already informed the coordinator; a finished
@@ -96,18 +96,10 @@ func TestSocketPipe_FinishedDebounceSuppressedWhileEscalated(t *testing.T) {
 	// Now fire state_change{finished} — sidecar will start the debounce timer.
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
 
-	// Wait for the debounce timer to be created.
-	deadline = time.Now().Add(2 * time.Second)
-	var idleTimer *testTimer
-	for {
-		idleTimer = clk.LastTimer()
-		if idleTimer != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no finished debounce timer created")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Wait deterministically for the debounce timer registration.
+	idleTimer := clk.WaitForTimerCount(1, 5*time.Second)
+	if idleTimer == nil {
+		t.Fatal("no finished debounce timer created")
 	}
 
 	// Fire the timer — the suppression guard inside must bail out without

@@ -1,7 +1,7 @@
-// Tests for the "prism quick pr" command (issue #2118).
+// Tests for the "prism quick pr" command.
 //
-// The seam pattern mirrors PR #2113 (cmd/investigate.go's
-// investigateSpawnSessionFn). Test bodies swap the package-level
+// The seam pattern follows cmd/investigate.go's
+// investigateSpawnSessionFn. Test bodies swap the package-level
 // piLookPathFn / piExecFn / gitRunFn / gitOutputFn / ghRunFn / ghOutputFn
 // / openBrowserFn function vars with stubs, exercise Run() (or the
 // helpers it calls), then assert on captured calls and returned errors.
@@ -10,7 +10,7 @@
 // flow, the structured-output parse, the >72-char title truncation,
 // and the legacy-profiles.json JSON unmarshal compatibility.
 //
-// Test-suite isolation contract (AGENTS.md, issue #1608): these tests do
+// Test-suite isolation contract (AGENTS.md): these tests do
 // not touch the host bus, DB, tmux, or HOME. profiles.json is loaded from
 // XDG_CONFIG_HOME, which we redirect to t.TempDir().
 
@@ -223,7 +223,7 @@ func TestRun_HappyPath(t *testing.T) {
 		t.Fatalf("piExecFn called %d times, want 1", len(r.piCalls))
 	}
 	got := r.piCalls[0].args
-	// Required flags (issue #2118 ACs).
+	// Required flags.
 	requireFlag(t, got, "--print")
 	requireFlagValue(t, got, "--mode", "json")
 	requireFlag(t, got, "--no-tools")
@@ -236,10 +236,9 @@ func TestRun_HappyPath(t *testing.T) {
 			t.Errorf("pi args contain %q — AGENTS.md auto-discovery must remain enabled (issue #2118)", a)
 		}
 	}
-	// System prompt must be present and materially expanded vs the old
-	// 5-line template. The old template was 5 lines including blank
-	// separators; the new one is several hundred chars with worked
-	// examples. Assert on length + presence of a representative phrase.
+	// System prompt must be present and materially expanded: several hundred
+	// chars with worked examples. Assert on length + presence of a
+	// representative phrase.
 	sp := flagValue(t, got, "--system-prompt")
 	if len(sp) < 500 {
 		t.Errorf("--system-prompt is only %d chars — expected the materially expanded prompt", len(sp))
@@ -282,7 +281,7 @@ func TestRun_HappyPath(t *testing.T) {
 // Run() exits with a clear error naming the missing binary and does NOT
 // invoke any destructive git/gh operations.
 //
-// Negative-mutation check (issue #2118 discipline): if you delete the
+// Negative-mutation check: if you delete the
 // piLookPathFn() pre-flight from Run(), the test below produces a
 // different error (something like "exec: \"pi\": file not found") and
 // destructive git/gh seams MAY be called — assertions fail.
@@ -430,8 +429,7 @@ func TestRun_TitleTruncatedAt72Chars(t *testing.T) {
 	}
 
 	// Capture stderr to assert the warning was emitted. We drain the
-	// pipe concurrently per the stdout-capture-testing convention
-	// (issue #1798).
+	// pipe concurrently per the stdout-capture-testing convention.
 	origStderr := os.Stderr
 	rPipe, wPipe, err := os.Pipe()
 	if err != nil {
@@ -480,7 +478,7 @@ func TestRun_TitleTruncatedAt72Chars(t *testing.T) {
 }
 
 // TestLegacyProfilesJSONUnmarshal locks in the schema-compatibility
-// promise (issue #2118): loading a profiles.json that still carries a
+// promise: loading a profiles.json that still carries a
 // `providerOrder` field on the pr entry must NOT fail unmarshalling.
 //
 // Negative-mutation check: if QuickProfile ever gets a
@@ -515,7 +513,7 @@ func TestLegacyProfilesJSONUnmarshal(t *testing.T) {
 
 // TestNoOpenRouterReferences guards against accidental re-introduction of
 // the OPENROUTER_API_KEY env var or openrouter.ai URL in the quick
-// package — both must be gone per issue #2118.
+// package — both must be gone.
 //
 // Negative-mutation check: re-add either string and this test fails.
 func TestNoOpenRouterReferences(t *testing.T) {
@@ -595,8 +593,7 @@ func TestExtractTitleBody_NoAssistantMessage(t *testing.T) {
 
 // TestGenerateDescription_PrintsProgressBeforePiExec verifies that a
 // progress line reaches stdout before the (seamed) pi call runs, so the
-// user sees output during the model call instead of a silent hang
-// (issue #2777).
+// user sees output during the model call instead of a silent hang.
 func TestGenerateDescription_PrintsProgressBeforePiExec(t *testing.T) {
 	r := newRecorder()
 	installSeams(t, r)
@@ -608,7 +605,7 @@ func TestGenerateDescription_PrintsProgressBeforePiExec(t *testing.T) {
 	}
 
 	// Capture stdout, draining concurrently per the stdout-capture-testing
-	// convention (issue #1798) — the printed line is tiny here, but the
+	// convention — the printed line is tiny here, but the
 	// convention is followed regardless of size.
 	origStdout := os.Stdout
 	pr, pw, err := os.Pipe()

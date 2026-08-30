@@ -151,7 +151,7 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 			return fmt.Errorf("create worktree: %w", err)
 		}
 		worktreePath := created.Path
-		// Caller-level rollback (#2363): a failure in any later step of this
+		// Caller-level rollback: a failure in any later step of this
 		// create-new-worktree flow (config injection, blob write,
 		// ensureAndSwitch) removes the freshly created worktree and — only
 		// when freshly forked with no commits — its branch. Existing-worktree

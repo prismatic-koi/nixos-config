@@ -1,6 +1,6 @@
 package session
 
-// Tests for SidecarAlive (issue #2255) — the socket-probe liveness signal
+// Tests for SidecarAlive — the socket-probe liveness signal
 // used by the stale-zombie classification in cmd/switch.go and
 // startupGuardKillOld. A paused-by-design session (escalated awaiting
 // coordinator guidance, reviewing awaiting verdicts) stops bumping
@@ -18,7 +18,7 @@ import (
 )
 
 // setupAliveTestEnv redirects XDG_STATE_HOME to a short-prefix tempdir (so
-// the derived socket path stays under sun_path limits — see #1050) and
+// the derived socket path stays under sun_path limits) and
 // returns the hostapi.sock path for sessionName with its directory created.
 func setupAliveTestEnv(t *testing.T, sessionName string) string {
 	t.Helper()
@@ -48,7 +48,7 @@ func TestSidecarAlive_NoSocket(t *testing.T) {
 
 // TestSidecarAlive_LiveListener verifies that a responsive listener on the
 // session's hostapi.sock reports alive — this is the paused-escalated-session
-// case from #2255 where last_seen is stale but the sidecar is healthy.
+// case where last_seen is stale but the sidecar is healthy.
 func TestSidecarAlive_LiveListener(t *testing.T) {
 	sockPath := setupAliveTestEnv(t, "prism-test@alive-live")
 

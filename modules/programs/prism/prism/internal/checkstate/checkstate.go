@@ -5,20 +5,17 @@
 // conservative classification:
 //
 //   - The merge-queue watcher's BLOCKED handling (internal/mergequeue), which
-//     decides whether a polling row can terminate as failed (#2525).
+//     decides whether a polling row can terminate as failed.
 //   - `prism merge`'s invocation-time initial-state probe (cmd/merge.go),
 //     which decides whether the command should report CI failure immediately
-//     instead of enqueuing a poller that can never resolve (#2527).
+//     instead of enqueuing a poller that can never resolve.
 //
-// Before this package existed, each call site carried its own copy of this
-// logic. cmd/merge.go's copy (pendingRequiredCheckNames) classified any
-// non-SUCCESS check — including a COMPLETED check with conclusion FAILURE —
-// as merely "pending", so `prism merge` on a PR whose required check had
-// already failed told the coordinator to keep waiting for something that
-// could never happen. Lifting the logic here, rather than duplicating the
-// fix, is deliberate: the conservative bias below (never call a check
-// "failed" until the required set is fully accounted for) is the entire
-// value of this code, and two copies WILL drift.
+// The conservative bias below — never call a check "failed" until the required
+// set is fully accounted for — is the entire value of this code. If a call
+// site instead classifies a COMPLETED check with conclusion FAILURE as merely
+// "pending", `prism merge` on a PR whose required check has already failed
+// tells the coordinator to keep waiting for something that can never happen. A
+// single shared implementation stops two copies drifting.
 package checkstate
 
 import "strings"
@@ -42,7 +39,7 @@ type CheckEntry struct {
 }
 
 // checkState is the aggregate verdict for one required check name, derived
-// from every rollup entry carrying that name (#2525).
+// from every rollup entry carrying that name.
 type checkState int
 
 const (
@@ -63,7 +60,7 @@ const (
 )
 
 // RequiredCheckFailureConclusions is the check-run `conclusion` allowlist
-// that counts as a real failure for the #2525/#2527 terminal transitions.
+// that counts as a real failure for the terminal transitions.
 //
 // The set is deliberately closed and deliberately small. Widening it risks
 // the expensive direction of the trade-off: declaring a good PR dead.
@@ -83,8 +80,7 @@ var RequiredCheckFailureConclusions = []string{
 // RequiredCheckFailureConclusions. Legacy contexts use a separate, smaller
 // enum (EXPECTED, PENDING, SUCCESS, FAILURE, ERROR) with no `status` field,
 // so they need their own mapping. Without it a required legacy context that
-// fails would classify as pending and reproduce the exact silent hang #2525
-// and #2527 fix.
+// fails would classify as pending and reproduce the silent hang.
 var LegacyStatusFailureStates = []string{
 	"FAILURE",
 	"ERROR",
@@ -161,8 +157,8 @@ func CheckName(c CheckEntry) string {
 }
 
 // FailedRequiredChecks returns the names of required checks that concluded
-// in a failure state, but ONLY when the whole required set is accounted for
-// (#2525, #2527). It returns nil in every other case, which callers read as
+// in a failure state, but ONLY when the whole required set is accounted for.
+// It returns nil in every other case, which callers read as
 // "keep watching" / "not yet a terminal failure".
 //
 // nil is returned when:

@@ -147,10 +147,10 @@ func TestIsCoordinatorSession_NilDB_FallsBackToHeuristic(t *testing.T) {
 	}
 }
 
-// TestIsCoordinatorSession_StaleRootAgentName_MainHeuristicWins verifies the
-// fix for the bug where a coordinator session with root_agent_name="worker"
-// (stale/incorrect DB value) would incorrectly return false, allowing
-// self-notification to proceed.
+// TestIsCoordinatorSession_StaleRootAgentName_MainHeuristicWins verifies that
+// a coordinator session with root_agent_name="worker" (stale/incorrect DB
+// value) still resolves as a coordinator, rather than returning false and
+// allowing self-notification to proceed.
 func TestIsCoordinatorSession_StaleRootAgentName_MainHeuristicWins(t *testing.T) {
 	d := openTestDB(t)
 
@@ -166,8 +166,9 @@ func TestIsCoordinatorSession_StaleRootAgentName_MainHeuristicWins(t *testing.T)
 	}
 }
 
-// TestIsCoordinatorSession_StaleRootAgentName_NonMain verifies that the fix
-// does not accidentally promote a genuine worker session with a non-@main name.
+// TestIsCoordinatorSession_StaleRootAgentName_NonMain verifies that the
+// @main heuristic does not accidentally promote a genuine worker session with
+// a non-@main name.
 func TestIsCoordinatorSession_StaleRootAgentName_NonMain(t *testing.T) {
 	d := openTestDB(t)
 

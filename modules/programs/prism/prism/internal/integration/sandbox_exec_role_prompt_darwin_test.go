@@ -3,32 +3,32 @@
 package integration_test
 
 // Integration tests for the prism agent role-prompt directory under
-// sandbox-exec (issue #2032; real-path grant since #2245, Step 3f of #2132).
+// sandbox-exec.
 // The prism PI extension reads ~/.config/prism/agents/<role>.md at
-// before_agent_start and injects it as the role system prompt. The former
-// staging-HOME symlink is gone — the capability is the explicit RO
-// (subpath ~/.config/prism/agents) grant in the section-5f block emitted by
-// generateProfile, evaluated at the REAL host path.
+// before_agent_start and injects it as the role system prompt. The
+// capability is the explicit RO (subpath ~/.config/prism/agents) grant in
+// the section-5f block emitted by generateProfile, evaluated at the REAL
+// host path.
 //
-// Read-target strategy (#2245 host-run follow-up): on deployed hosts the
+// Read-target strategy: on deployed hosts the
 // agents dir is home-manager-managed — typically a read-only symlink into
 // the nix store, overwritten on every switch — so planting a test sentinel
 // there is impossible. The tests therefore prefer the DEPLOYED role file
 // (worker.md) when one exists, and fall back to sentinel-planting only when
 // the dir is genuinely writable (dev machines without hm management).
 //
-// Per the #1192 convention this file carries:
+// Per the convention this file carries:
 //
 //   - a positive (the role file readable at the real path under the
 //     production profile — the exact capability the PI extension needs),
 //   - a whole-block strip negative (removing the ENTIRE 5f block makes the
-//     same read fail — per the #2243 lesson, stripping only the agents
-//     (subpath ...) line would leave the clipboard line carrying the block).
+//     same read fail — stripping only the agents (subpath ...) line leaves
+//     the clipboard line carrying the block).
 //     The strip negative additionally requires a read target whose
 //     EvalSymlinks-resolved path is the lexical path itself: SBPL evaluates
-//     open(2)-class operations against the RESOLVED target (the #2132 §2
-//     mechanism note, same as the documented §5g no-strip-negative
-//     deviation), so a store-symlinked deployed role file remains readable
+//     open(2)-class operations against the RESOLVED target (same as the
+//     documented §5g no-strip-negative deviation), so a store-symlinked
+//     deployed role file remains readable
 //     via the §2 /nix allow even with 5f stripped — the denial is
 //     unobservable there. On hm-managed hosts where no in-place target can
 //     be planted either, the strip negative SKIPs with that justification;
@@ -121,8 +121,8 @@ func plantRolePromptSentinel(t *testing.T) (string, bool) {
 // TestSandboxExecProfile_RolePromptReadable is the positive integration test:
 // the role-prompt markdown is readable at its REAL host path under the
 // production profile via the section-5f RO grant — the same path shape the
-// PI extension will resolve once Step 5 of #2132 flips $HOME/XDG to the real
-// home. The deployed worker.md is preferred as the read target (see the
+// PI extension resolves. The deployed worker.md is preferred as the read
+// target (see the
 // file-top strategy note); a planted sentinel is the dev-machine fallback.
 func TestSandboxExecProfile_RolePromptReadable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
@@ -173,7 +173,7 @@ func TestSandboxExecProfile_RolePromptReadable(t *testing.T) {
 // TestSandboxExecProfile_RolePromptDeniedWithoutGrantBlock is the paired
 // strip negative: removing the ENTIRE section-5f block makes the same
 // real-path read fail — proving the block is load-bearing and the positive
-// is not green by accident (#1192; whole-block strip per the #2243 lesson).
+// is not green by accident (whole-block strip).
 //
 // The read target must resolve to itself (no symlinks): SBPL evaluates
 // open(2) against the RESOLVED path, so a deployed role file that is a

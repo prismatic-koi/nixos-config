@@ -1,7 +1,7 @@
 // Package tmuxtest provides a shared capability probe for test suites that
 // need to start a private tmux server (tmux -L <socket>).
 //
-// # Why this exists (issue #2204)
+// # Why this exists
 //
 // Inside a prism sandbox-exec worker session the sandbox profile denies the
 // fork tmux needs to daemonise its server process. Every attempt to bootstrap
@@ -39,7 +39,7 @@ import (
 
 // forkDenialSignature is the error tmux emits when the sandbox profile blocks
 // the fork required to daemonise the tmux server. This is the exact signature
-// observed inside prism sandbox-exec worker sessions (issue #2204).
+// observed inside prism sandbox-exec worker sessions.
 const forkDenialSignature = "fork failed: Operation not permitted"
 
 var (

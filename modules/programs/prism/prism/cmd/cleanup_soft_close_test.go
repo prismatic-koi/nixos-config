@@ -1,28 +1,29 @@
 package cmd
 
-// cleanup_soft_close_test.go — regression tests for issue #2371.
+// cleanup_soft_close_test.go — regression tests for soft-close transcript
+// preservation.
 //
 // Soft-close paths (closeSession, headlessCloseSessionWithJSONTo — i.e.
 // coordinator/@main sessions, non-@ sessions, open-PR workers, and
 // --keep-worktree, which routes through headlessCloseSessionWithJSONTo) must
 // PRESERVE the pi transcript JSONL in the pi sessions root: that file is
-// what pi's interactive /resume reads, and deleting it on every Prefix-q
-// permanently destroyed conversation history. The #2035 defence (a re-spawn
-// on the same session name must start a fresh conversation) is carried
-// entirely by the DB clear — spawn appends `--session <id>` only when
+// what pi's interactive /resume reads, and deleting it on a soft close would
+// permanently destroy conversation history. The auto-resume defence (a
+// re-spawn on the same session name must start a fresh conversation) is
+// carried entirely by the DB clear — spawn appends `--session <id>` only when
 // agent_status.harness_session_id is non-empty AND a matching JSONL exists
 // on disk — so the soft paths clear the DB pointer and purge
 // pending_replay_deliveries WITHOUT the FS delete. The DB-only sever runs
 // UNCONDITIONALLY on soft paths — not gated on the archive outcome —
 // because a soft-closed session name is re-spawned routinely (every reopen
 // of the coordinator @main) and a retained pointer next to a preserved
-// transcript is exactly the #2035 auto-resume combination.
+// transcript is exactly the auto-resume combination.
 //
 // Hard-cleanup paths (doCleanup, headlessCleanupWithJSONTo) retain the FS
-// delete plus the #2336 copied-gate and archive-failure skip, byte-for-byte
+// delete plus the copied-gate and archive-failure skip, byte-for-byte
 // — covered in cleanup_archive_order_test.go and cleanup_sever_gate_test.go.
 //
-// Test discipline (#2336): the new skip logic ("soft mode skips the FS
+// Test discipline: the skip logic ("soft mode skips the FS
 // delete") is a mode parameter, not a deep-frame gate, so the
 // revert-and-watch-fail pair is expressed as two direct calls to
 // archiveThenSeverPiResume on identical fixtures differing ONLY in the mode
@@ -62,7 +63,7 @@ func runArchiveThenSeverDirect(t *testing.T, f archiveOrderFixture, mode severMo
 }
 
 // TestArchiveThenSever_SoftMode_PreservesTranscript is the positive half of
-// the #2371 revert-and-watch-fail pair: with severModeSoft, the transcript
+// the revert-and-watch-fail pair: with severModeSoft, the transcript
 // survives in the pi sessions root, the DB pointer is cleared, and the
 // outcome reports true (the sever completed).
 func TestArchiveThenSever_SoftMode_PreservesTranscript(t *testing.T) {
@@ -78,8 +79,8 @@ func TestArchiveThenSever_SoftMode_PreservesTranscript(t *testing.T) {
 }
 
 // TestArchiveThenSever_HardMode_RemovesTranscript_RevertGuard is the guard
-// half: the SAME fixture shape processed with severModeHard (the pre-#2371
-// behaviour of every close path) must DELETE the transcript. If this fails,
+// half: the SAME fixture shape processed with severModeHard must DELETE the
+// transcript. If this fails,
 // the preservation assertion in the soft-mode test above is not load-bearing
 // — some other layer would be preserving the file regardless of the mode.
 func TestArchiveThenSever_HardMode_RemovesTranscript_RevertGuard(t *testing.T) {
@@ -98,8 +99,8 @@ func TestArchiveThenSever_HardMode_RemovesTranscript_RevertGuard(t *testing.T) {
 }
 
 // TestSoftClose_PurgesPendingReplayDeliveries verifies the soft sever still
-// wipes the durable pending-replay buffer (issue #2359 twin of the DB
-// pointer): a re-spawn on the same session name must not pick up the
+// wipes the durable pending-replay buffer (the twin of the DB pointer):
+// a re-spawn on the same session name must not pick up the
 // previous incarnation's undelivered coordinator directives, even though the
 // transcript itself is preserved.
 func TestSoftClose_PurgesPendingReplayDeliveries(t *testing.T) {
@@ -142,7 +143,7 @@ func TestSoftClose_PurgesPendingReplayDeliveries(t *testing.T) {
 	}
 }
 
-// TestSoftClose_RespawnLaunchesPiWithoutSessionFlag verifies the #2035
+// TestSoftClose_RespawnLaunchesPiWithoutSessionFlag verifies the auto-resume
 // defence end-to-end from the spawn side: after a soft close, the DB
 // harness_session_id is NULL, so the next spawn builds a pi invocation with
 // NO `--session <id>` argument — a fresh conversation — even though the
@@ -208,7 +209,7 @@ func TestSoftClose_RespawnLaunchesPiWithoutSessionFlag(t *testing.T) {
 	}
 }
 
-// TestSoftClose_JSONEnvelope_ReportsCleared verifies the AC: the --json
+// TestSoftClose_JSONEnvelope_ReportsCleared verifies that the --json
 // envelope's harness_session_id_cleared field reports true after a
 // successful soft close (the DB clear ran), while the transcript is
 // preserved on disk.
@@ -240,12 +241,12 @@ func TestSoftClose_JSONEnvelope_ReportsCleared(t *testing.T) {
 // never existed completes without error, and the envelope reports the sever
 // outcome truthfully.
 //
-// The soft sever is DB-only and unconditional (the #2336 copied-gate
-// protects the FS delete, which soft mode never performs), so the DB clear
-// runs and the field reports `true` — which is truthful:
-// harness_session_id_cleared speaks only to the DB clear, and makes no
-// claim that a transcript was removed or preserved. The unconditional clear
-// is load-bearing for #2035: were the pointer retained on the archive skip
+// The soft sever is DB-only and unconditional (the copied-gate protects the
+// FS delete, which soft mode never performs), so the DB clear runs and the
+// field reports `true` — which is truthful: harness_session_id_cleared speaks
+// only to the DB clear, and makes no claim that a transcript was removed or
+// preserved. The unconditional clear is load-bearing for the auto-resume
+// defence: were the pointer retained on the archive skip
 // paths, a transcript later appearing (or one the archive failed to locate)
 // plus the live pointer would resume a defunct conversation on re-spawn.
 func TestSoftClose_NoTranscript_SucceedsAndReportsTruthfully(t *testing.T) {
@@ -313,16 +314,15 @@ func TestSoftClose_NoTranscript_SucceedsAndReportsTruthfully(t *testing.T) {
 }
 
 // TestSoftClose_ArchiveFailure_TranscriptUntouchedPointerCleared covers the
-// archive-failure edge case on a soft close (issue #2371 forensics design
-// decision): the transcript JSONL in the sessions root is untouched, the
+// archive-failure edge case on a soft close: the transcript JSONL in the
+// sessions root is untouched, the
 // command still exits nil (generic archive failures are non-fatal), AND —
 // unlike the hard path, where the sever is skipped so a re-run can
 // archive-then-sever — the DB clear still runs. The soft sever is
 // unconditional because a soft-closed session name is re-spawned routinely
 // (every coordinator @main reopen); skipping the clear on archive failure
 // would leave the pointer set next to the deliberately preserved transcript
-// and the next re-spawn would silently auto-resume the closed conversation
-// (#2035).
+// and the next re-spawn would silently auto-resume the closed conversation.
 //
 // The hard-mode counterpart — TestHeadlessCleanup_ArchiveFailureLeavesTranscript
 // in cleanup_archive_order_test.go — asserts the pointer is RETAINED under
@@ -387,9 +387,9 @@ func TestSoftClose_ArchiveFailure_TranscriptUntouchedPointerCleared(t *testing.T
 // wrote the archive directory for this instance), and the unconditional soft
 // sever still runs — an idempotent no-op DB clear — so the command exits
 // nil, the envelope reports true, and the transcript is still preserved.
-// This covers the archiveErr-propagation path introduced by #2371 (soft mode
-// returns the archive error alongside the sever outcome so the callers'
-// ErrAlreadyExists collision-warning handling stays mode-independent).
+// This covers the archiveErr-propagation path: soft mode returns the archive
+// error alongside the sever outcome so the callers' ErrAlreadyExists
+// collision-warning handling stays mode-independent.
 func TestSoftClose_Rerun_Idempotent(t *testing.T) {
 	f := setupArchiveOrderFixture(t, "soft-close-rerun", "")
 

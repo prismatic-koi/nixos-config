@@ -1,19 +1,19 @@
 package dashboard
 
-// review_verdict_closed_row_internal_test.go — issue #2862.
+// review_verdict_closed_row_internal_test.go
 //
 // The dashboard attaches each review agent's last message via
 // attachReviewLastMessages so the collapsed group row and the expanded child
-// rows can render a verdict. That read used the narrow db.GroupResults, which
-// drops rows whose ended_at is set. Since the 15-minute release (#2649) closes
-// every member of a delivered round, a still-visible round rendered every
+// rows can render a verdict. That read must not use the narrow db.GroupResults,
+// which drops rows whose ended_at is set: the 15-minute release closes every
+// member of a delivered round, so a still-visible round would render every
 // agent as pending once it aged out.
 //
 // This white-box test seeds a review member, closes it the way the release
 // does, and asserts the verdict still renders. The msg_assistant payload is
 // built by marshalling through encoding/json so the '<' escaping is exercised
-// (the decode half of the fix) — a literal-'<' fixture would pass against the
-// old raw-store code and prove nothing.
+// (the decode half) — a literal-'<' fixture would pass against raw-store code
+// and prove nothing.
 
 import (
 	"encoding/json"
@@ -74,7 +74,7 @@ func TestAttachReviewLastMessages_ClosedRowStillRendersVerdict(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WriteEvent: %v", err)
 	}
-	// Close the row exactly as the automatic release (#2649) does.
+	// Close the row exactly as the automatic release does.
 	if err := d.SetEnded(sess); err != nil {
 		t.Fatalf("SetEnded: %v", err)
 	}

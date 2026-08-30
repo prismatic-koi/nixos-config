@@ -1,6 +1,6 @@
 package mergequeue
 
-// Issue #2110: merge-queue watcher persists pr_merged_at on the worker's
+// The merge-queue watcher persists pr_merged_at on the worker's
 // spawn_outcome row inside succeedAndNotify.
 //
 // The watcher already has the timestamp at hand (it is the same wall-clock

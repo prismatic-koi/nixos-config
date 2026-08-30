@@ -5,7 +5,7 @@ package cmd
 // host-API proxy path returns), so the table and the JSON never drift.
 //
 // Token counts render with thousands separators, never in scientific notation
-// (issue #2583 correction 6): `prism db query` emits values such as
+// `prism db query` emits values such as
 // 1.1297191e+07, which is unreadable at a glance.
 
 import (
@@ -157,10 +157,9 @@ func renderRetroTrains(styleHeader, styleDim lipgloss.Style, trains []db.RetroTr
 }
 
 // renderRetroReviewCycles renders section 3 of `prism retro <train-session>`:
-// per review cycle, per agent, the cost, turn count, and verdict (issue
-// #2584). train with no review groups at all (session_groups has no rows for
-// it) states that plainly rather than printing an empty table — the edge
-// case AC.
+// per review cycle, per agent, the cost, turn count, and verdict. A train
+// with no review groups at all (session_groups has no rows for it) states
+// that plainly rather than printing an empty table.
 func renderRetroReviewCycles(train string, cycles []review.ReviewCycle) {
 	styleHeader := lipgloss.NewStyle().Bold(true)
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
@@ -187,8 +186,7 @@ func renderRetroReviewCycles(train string, cycles []review.ReviewCycle) {
 
 		if len(c.Agents) == 0 {
 			// No agent_status rows were ever recorded for this round — "no
-			// review data recorded", distinct from a recorded zero cost
-			// (issue #2584 correction 2).
+			// review data recorded", distinct from a recorded zero cost.
 			fmt.Println(styleDim.Render("    no review data recorded for this round"))
 			fmt.Println()
 			continue

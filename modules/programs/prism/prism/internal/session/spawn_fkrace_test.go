@@ -1,8 +1,7 @@
 package session
 
-// Regression tests for issue #1507 — concurrent `prism spawn` invocations
-// produced two distinct races in the spawn pipeline. This file covers the
-// FK-constraint race ("Symptom 1" in the issue):
+// Regression tests for the concurrent-spawn races in the spawn pipeline.
+// This file covers the FK-constraint race:
 //
 //   The sidecar mints an instance_id, immediately starts processing inbound
 //   frames, and writes events with that instance_id — but the corresponding
@@ -11,15 +10,13 @@ package session
 //   the agent runs for ~30s with all events dropped, and the sidecar
 //   eventually dies on extension reconnect-timeout.
 //
-// The fix lives in SpawnSession: the host-side spawn driver now mints
-// instance_id and inserts the sessions row synchronously, before tmux/
-// sidecar are kicked off. The sidecar's first writeEvent therefore always
-// finds the FK target in place.
+// SpawnSession mints instance_id and inserts the sessions row synchronously,
+// before tmux/sidecar are kicked off. The sidecar's first writeEvent
+// therefore always finds the FK target in place.
 //
 // These tests reproduce the failure mode deterministically without spinning
 // up a real sidecar — they exercise the same DB-state invariants the sidecar
-// relies on. They fail on the pre-#1507 code (no sessions row pre-insert)
-// and pass after the fix.
+// relies on.
 
 import (
 	"strings"
@@ -32,18 +29,17 @@ import (
 )
 
 // TestSpawnSession_FullLayout_PreInsertsSessionsRow is the primary deterministic
-// regression test for the FK-constraint race (#1507 Symptom 1). It exercises
+// regression test for the FK-constraint race. It exercises
 // the LayoutFull spawn path — the path used by `prism spawn` — and verifies
 // the post-condition the sidecar relies on: by the time SpawnSession returns
 // (or, more precisely, by the time SpawnSession kicks off the sidecar), a
 // `sessions` row exists keyed on the same instance_id that ends up on
 // agent_status.
 //
-// On the pre-#1507 code path, only LayoutAgentOnly pre-inserted the sessions
-// row, and even then only when the caller pre-populated InstanceID. LayoutFull
-// deferred the insert to the tmux-session-start hook, which races with the
-// sidecar. This test would fail (no sessions row → next assertion that we can
-// write an event without FK error fails) on that code.
+// LayoutFull must pre-insert the sessions row itself rather than defer to the
+// tmux-session-start hook, which races with the sidecar. Without the
+// pre-insert, no sessions row exists and the next assertion (that an event
+// can be written without an FK error) fails.
 func TestSpawnSession_FullLayout_PreInsertsSessionsRow(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	_ = spyTmuxBin(t)
@@ -80,8 +76,8 @@ func TestSpawnSession_FullLayout_PreInsertsSessionsRow(t *testing.T) {
 	instanceID := *st.InstanceID
 
 	// Post-condition 2: sessions row exists for that instance_id.
-	// On the pre-fix code path this row would not exist yet (it would be
-	// created later by the tmux-session-start hook racing with the sidecar).
+	// Without the host-side pre-insert this row would not exist yet (it would
+	// be created later by the tmux-session-start hook racing with the sidecar).
 	sess, err := d.SessionByInstanceID(instanceID)
 	if err != nil {
 		t.Fatalf("SessionByInstanceID(%s): %v", instanceID, err)
@@ -96,7 +92,7 @@ func TestSpawnSession_FullLayout_PreInsertsSessionsRow(t *testing.T) {
 	// Post-condition 3: agent_events insert keyed on instance_id succeeds.
 	// This is the failure the sidecar logged hundreds of times in the issue
 	// repro: "WriteEvent(state_change) failed: ... FOREIGN KEY constraint
-	// failed (787)". After the fix it must succeed.
+	// failed (787)". It must succeed.
 	iid := instanceID
 	evt := db.Event{
 		ID:          uuid.New().String(),
@@ -119,8 +115,8 @@ func TestSpawnSession_FullLayout_PreInsertsSessionsRow(t *testing.T) {
 // caller pre-populates opts.InstanceID, SpawnSession threads that value
 // through unchanged — i.e. it does not mint a fresh UUID and clobber the
 // caller's value. This guards against a regression where the host-side mint
-// short-circuits the existing pre-mint plumbing in test code (#1496/#1506)
-// or in any future caller that wants to know the instance_id up-front.
+// short-circuits the existing pre-mint plumbing in test code or in any future
+// caller that wants to know the instance_id up-front.
 func TestSpawnSession_FullLayout_HonoursPreSetInstanceID(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	_ = spyTmuxBin(t)
@@ -160,16 +156,16 @@ func TestSpawnSession_FullLayout_HonoursPreSetInstanceID(t *testing.T) {
 }
 
 // TestSpawnSession_FullLayout_ConcurrentSpawnsAllPreSeeded is the high-stakes
-// regression test for the Symptom 1 trigger condition: concurrent spawns
-// from the same coordinator produced FK errors because each sidecar's
-// instance_id mint raced against the tmux-session-start hook. With the fix,
-// every concurrent SpawnSession invocation owns its instance_id + sessions
-// row insert synchronously, so all N spawns can write events keyed on their
-// respective instance_id without FK failures.
+// regression test for the concurrent-spawn trigger condition: concurrent
+// spawns from the same coordinator can hit FK errors when each sidecar's
+// instance_id mint races the tmux-session-start hook. Every concurrent
+// SpawnSession invocation owns its instance_id + sessions row insert
+// synchronously, so all N spawns can write events keyed on their respective
+// instance_id without FK failures.
 //
-// AC-1 ("≥5 concurrent spawns produce no FK errors") is exercised here at
-// the SpawnSession layer rather than at the host-API layer; the race the
-// issue describes lives in SpawnSession's sequencing, so reproducing it at
+// The ≥5-concurrent-spawns-produce-no-FK-errors case is exercised here at
+// the SpawnSession layer rather than at the host-API layer; the race lives in
+// SpawnSession's sequencing, so reproducing it at
 // this level is sufficient and avoids the need to spin up a real host-API
 // server in unit tests.
 func TestSpawnSession_FullLayout_ConcurrentSpawnsAllPreSeeded(t *testing.T) {
@@ -178,7 +174,7 @@ func TestSpawnSession_FullLayout_ConcurrentSpawnsAllPreSeeded(t *testing.T) {
 	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	const N = 6 // covers AC-1's "≥5"
+	const N = 6 // exercises the "≥5 concurrent spawns" case
 	var wg sync.WaitGroup
 	errs := make([]error, N)
 	names := make([]string, N)

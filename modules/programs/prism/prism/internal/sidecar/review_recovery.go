@@ -1,7 +1,7 @@
 package sidecar
 
 // review_recovery.go — worker-sidecar watcher that rescues review groups
-// orphaned by a dead monitor subprocess (#1709 reopen).
+// orphaned by a dead monitor subprocess.
 //
 // Background. `prism review` spawns a detached `prism monitor-review`
 // subprocess that owns the all-terminal → deliver transition. There is no
@@ -17,7 +17,7 @@ package sidecar
 // review.DeliverGroupResults. The delivery uses a deterministic
 // delivery_id derived from the group_id so that if the original monitor
 // is somehow still alive and delivers at the same moment, the receiving
-// host-API /prompt dedup (#1685) drops the second hit.
+// host-API /prompt dedup drops the second hit.
 //
 // The watcher is deliberately additive: in the happy path (monitor alive,
 // delivers normally) the watcher's GroupCompleted check transitions from
@@ -132,7 +132,7 @@ func (s *Sidecar) reviewRecoveryTick(grace time.Duration, now time.Time) {
 		qdb = s.cfg.DB
 	}
 
-	// LatestGroupForParent (#1709 reopen) is the right query: while
+	// LatestGroupForParent is the right query: while
 	// reviewingInFlight is true, the worker is awaiting a single in-flight
 	// review round, and that round corresponds to the most recently created
 	// session_groups row for this parent. ActiveReviewGroupForParent uses a
@@ -143,7 +143,7 @@ func (s *Sidecar) reviewRecoveryTick(grace time.Duration, now time.Time) {
 	// Retry on SQLITE_BUSY: the socket-pipe reader's turn_start upsert may
 	// hold the write lock at the same instant the tick fires. Three attempts
 	// × 10 ms matches the backoff used by the /review pre-emptive write
-	// (host_api.go). See #1854.
+	// (host_api.go).
 	const (
 		recoveryDBAttempts = 3
 		recoveryDBBackoff  = 10 * time.Millisecond

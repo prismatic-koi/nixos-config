@@ -16,11 +16,11 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Record the inbound event and reset the inactivity watchdog (#1709):
-	// any inbound event counts as activity. The watchdog only fires after
+	// Record the inbound event and reset the inactivity watchdog: any inbound
+	// event counts as activity. The watchdog only fires after
 	// cfg.ActivityTimeout of continuous silence (no-op when disabled). The
 	// frame counter feeds the stall-vs-no-start classification when the
-	// watchdog fires (#2239).
+	// watchdog fires.
 	s.recordInboundFrame()
 
 	// Delegate harness-specific event type extraction to the harness adapter.
@@ -30,17 +30,17 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 
 	s.logger().Printf("sidecar: event: %s", eventType)
 
-	// Gap 1b: log the first event received from the agent (once per session).
+	// Log the first event received from the agent (once per session).
 	if !s.firstEventLogged {
 		s.firstEventLogged = true
 		elapsed := time.Since(s.spawnTime).Round(time.Millisecond)
 		s.logger().Printf("sidecar: first event received from harness (%s after spawn)", elapsed)
 
-		// Bwrap path `[timing]` markers (#1052). The container path emitted
-		// these from sidecar.Run() around WaitHealthy / CreateSession; in bwrap
-		// mode the agent is launched by the tmux pane (via prism agent-run)
-		// and the sidecar's only signal of readiness is the first SSE event,
-		// so the markers are emitted here.
+		// Bwrap path `[timing]` markers. The container path emits these from
+		// sidecar.Run() around WaitHealthy / CreateSession. In bwrap mode the
+		// agent is launched by the tmux pane (via prism agent-run) and the
+		// sidecar's only signal of readiness is the first SSE event, so the
+		// markers are emitted here.
 		//
 		//   - agent listening: equivalent to the container path's WaitHealthy
 		//     ok marker — the agent's HTTP endpoint is reachable, since SSE has
@@ -76,7 +76,7 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 		// the only signal that the agent is alive and the port is up.
 		// Write a state_change to agent_events so WaitForReady's DB poll
 		// unblocks — but only once, and only if no state has been written yet
-		// (i.e. lastState is still empty), to avoid stomping on a real state
+		// (that is, lastState is still empty), to avoid stomping on a real state
 		// transition that arrives on a subsequent heartbeat.
 		s.handleServerHeartbeat()
 	case "session.status":
@@ -109,10 +109,10 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 	case "message.part.updated":
 		s.handleMessagePartUpdated(evt)
 	default:
-		// Gap 6: log unknown event types once per unique type.
+		// Log unknown event types once per unique type.
 		// Fast-path: once the cap has been reached, skip the map lookup
-		// and len() call entirely. A misbehaving harness emitting unknown
-		// event types at high frequency would otherwise pay that cost on
+		// and len() call entirely. A misbehaving harness that emits unknown
+		// event types at high frequency otherwise pays that cost on
 		// every event.
 		if s.seenUnknownCapReached {
 			return
@@ -134,11 +134,11 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 // handleServerHeartbeat is called when the agent emits server.heartbeat.
 // In --prompt (server-only) mode the TUI is absent and session.created is
 // never emitted, so the heartbeat is the only liveness signal the sidecar
-// receives before the agent starts working. We treat the first heartbeat as
-// an "active" readiness signal so WaitForReady's DB poll unblocks.
+// receives before the agent starts working. The sidecar treats the first
+// heartbeat as an "active" readiness signal so WaitForReady's DB poll unblocks.
 func (s *Sidecar) handleServerHeartbeat() {
 	if s.lastState != "" {
-		return // real state already written — don't overwrite
+		return // real state already written — do not overwrite
 	}
 	s.upsertState(agent.StateActive, nil, nil)
 	s.writeStateChange(agent.StateActive)
@@ -146,9 +146,9 @@ func (s *Sidecar) handleServerHeartbeat() {
 
 // handleServerConnected is called when the agent sends the server.connected
 // event on each new SSE connection. On the initial connection the sidecar has
-// no prior state (lastState is empty) so this is a no-op. On reconnects the
-// sidecar may have been in active state when the connection dropped, in which
-// case session.idle might have been emitted during the gap. The recovery timer
+// no prior state (lastState is empty) so this is a no-op. On a reconnect the
+// sidecar can still be in active state from when the connection dropped, so
+// session.idle can have been emitted during the gap. The recovery timer
 // gives arriving events (session.status busy, session.idle) a 60-second window
 // to arrive before concluding the session finished and writing that state.
 func (s *Sidecar) handleServerConnected() {
@@ -165,8 +165,8 @@ func (s *Sidecar) handleServerConnected() {
 		defer s.mu.Unlock()
 		s.recoveryTimer = nil
 
-		// Only proceed if we are still in active state (no event arrived to
-		// update it in the recovery window).
+		// Proceed only if the session is still in active state (no event
+		// arrived to update it in the recovery window).
 		if s.lastState != agent.StateActive {
 			return
 		}
@@ -179,7 +179,7 @@ func (s *Sidecar) handleServerConnected() {
 		// delivering, so checking currentDBState() == StateReviewing detects
 		// whether delivery has already happened: once it has, the DB is
 		// "active" (not "reviewing"), the guard is false, and suppression is
-		// lifted. See #1384.
+		// lifted.
 		if s.reviewingInFlight && s.currentDBState() == agent.StateReviewing {
 			s.logger().Printf("sidecar: recovery timer suppressed (cause=reviewing — awaiting review-complete prompt)")
 			return
@@ -219,12 +219,12 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 		s.busyEpoch++
 		// Suppress the active write if compacting (existing exception) or if
 		// reviewingInFlight — the worker is awaiting the review-complete prompt
-		// and any incidental busy turn (e.g. an assistant summary fired after
-		// `prism review` returns, before the monitor delivers results) must not
+		// and any incidental busy turn (for example, an assistant summary fired
+		// after `prism review` returns, before the monitor delivers results) must not
 		// clobber `reviewing`. The monitor is responsible for writing `active`
 		// to the DB just before delivering the review-complete prompt so that
 		// the genuine reviewing→active transition still happens. See
-		// internal/review/monitor.go and #1049.
+		// internal/review/monitor.go.
 		if s.reviewingInFlight && s.currentDBState() == agent.StateReviewing {
 			s.logger().Printf("sidecar: busy event suppressed (cause=reviewing — awaiting review-complete prompt)")
 		} else if !s.compacting {
@@ -236,8 +236,8 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 		s.cancelRecoveryTimer()
 		// Record lastErrorAt so that handleSessionUpdated's error-resume debounce
 		// also protects this path. session.status{retry} independently writes
-		// StateError; without this, an immediate session.updated would bypass the
-		// debounce guard and false-resume.
+		// StateError. Without this, an immediate session.updated bypasses the
+		// debounce guard and false-resumes.
 		s.lastErrorAt = s.cfg.Clock.Now()
 		s.logger().Printf("sidecar: transition -> error (cause=error_finish)")
 		s.upsertState(agent.StateError, nil, nil)
@@ -246,11 +246,11 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 }
 
 // handleSessionFinished is the PI-path handler for state_change{finished}
-// frames (protocol v2, issue #1434). It applies the same 2 s debounce as
+// frames (protocol v2). It applies the same 2 s debounce as
 // the SSE handleSessionIdle path: on timer fire it writes StateFinished
 // and calls notifyCoordinator(), subject to the existing role-policy
 // suppression in notifyCoordinator. The debounce is cancelled if a turn_start
-// frame arrives before the timer fires (Gap 1 fix from #1430, preserved here).
+// frame arrives before the timer fires.
 //
 // This function is only called from handlePipeFrame (PI socket-pipe path).
 // The SSE path retains handleSessionIdle below.
@@ -267,7 +267,7 @@ func (s *Sidecar) handleSessionFinished() {
 	// (sidecar.go:2780) share one root cause: pi exposes no subagent identity,
 	// so lastAssistantAgent is always empty (fed from agentName fallback) and
 	// this suppression never fires on pi. Both sites must be revisited together
-	// if pi ever grows subagent identity. See issue #2735.
+	// if pi ever grows subagent identity.
 	if s.lastAssistantAgent != "" && s.rootAgent != "" && s.lastAssistantAgent != s.rootAgent {
 		s.logger().Printf("sidecar: finished suppressed: lastAssistantAgent=%q is not rootAgent=%q", s.lastAssistantAgent, s.rootAgent)
 		return
@@ -285,7 +285,7 @@ func (s *Sidecar) handleSessionFinished() {
 		// `prism escalate`, its same-turn clobber guard has done its job —
 		// release it so the NEXT turn_start (incoming guidance or a human
 		// typing into tmux) transitions escalated→active per the documented
-		// contract (issue #2255). The DB-state check below still suppresses
+		// contract. The DB-state check below still suppresses
 		// the finished write for the escalated session.
 		s.escalatedInFlight = false
 
@@ -300,15 +300,15 @@ func (s *Sidecar) handleSessionFinished() {
 			return
 		}
 
-		// Check current DB state: if interrupted or error, don't overwrite.
+		// Check current DB state: if interrupted or error, do not overwrite.
 		// If reviewingInFlight, suppress finished — the worker is awaiting review
-		// results; it will transition to finished naturally after the
-		// review-complete prompt is delivered and the worker resolves the results.
+		// results. It transitions to finished naturally after the review-complete
+		// prompt is delivered and the worker resolves the results.
 		//
-		// Note: we rely on the in-memory flag alone (not the DB state) because the
-		// DB state can be overwritten back to active by intermediate state_change
-		// frames while reviewingInFlight is still true (the TOCTOU race fixed by
-		// #1652). The flag has a clear, well-defined clearing path: only
+		// Note: the sidecar relies on the in-memory flag alone (not the DB state)
+		// because the DB state can be overwritten back to active by intermediate
+		// state_change frames while reviewingInFlight is still true (a TOCTOU
+		// race). The flag has a clear, well-defined clearing path: only
 		// source="review-complete" prompt delivery clears it, so it cannot wedge
 		// the session. See handleSessionIdle for the SSE-path equivalent.
 		currentState := s.currentDBState()
@@ -324,26 +324,26 @@ func (s *Sidecar) handleSessionFinished() {
 			return
 		}
 
-		// Zero-output exit detection (issue #2081) with fast-agent race guard
-		// (issue #2409): when the persisted state is still "idle" at
-		// debounce-fire time, two distinct situations must be distinguished.
+		// Zero-output exit detection with fast-agent race guard: when the
+		// persisted state is still "idle" at debounce-fire time, two distinct
+		// situations must be distinguished.
 		//
-		//   1. True zero-output exit (#2081): the worker connected, emitted
+		//   1. True zero-output exit: the worker connected, emitted
 		//      state_change{finished}, and disconnected without producing any
 		//      assistant output. The persisted-state agent state machine
 		//      rejects the idle → finished transition; write StateError with a
 		//      diagnostic note and route the coordinator notification through
 		//      notifyCoordinatorError ("has errored its current task" wording).
-		//      This is the #2081 phantom-PR guard.
+		//      This is the phantom-PR guard.
 		//
-		//   2. Fast-agent race (#2409): the worker DID produce assistant
+		//   2. Fast-agent race: the worker DID produce assistant
 		//      output this session, but the turn_start frame's
 		//      idle → active upsert has not been persisted before the
 		//      finished-debounce fires. Persisted state is idle for a timing
 		//      reason, not because no work was done. Complete the legal
 		//      idle → active → finished path (rather than widening
-		//      ValidTransitions to allow idle → finished, which would
-		//      re-open the #2081 hole).
+		//      ValidTransitions to allow idle → finished, which
+		//      re-opens the zero-output hole).
 		//
 		// The discriminator is s.assistantOutputSeen, latched to true by
 		// markAssistantOutputSeen on every non-empty msg_assistant fragment
@@ -363,7 +363,7 @@ func (s *Sidecar) handleSessionFinished() {
 				s.goNotify(func() { s.notifyInvestigatorCompletion(agent.StateError, finalText) })
 				return
 			}
-			// Fast-agent race (#2409): assistant output WAS produced this
+			// Fast-agent race: assistant output WAS produced this
 			// session, but the turn_start upsert was not persisted in time.
 			// Synthesise the missing idle → active step so the state machine
 			// sees a valid active → finished transition below, and no
@@ -389,7 +389,7 @@ func (s *Sidecar) handleSessionFinished() {
 //
 // This function is only called from the SSE dispatcher in
 // handleOpenCodeEvent. The PI socket-pipe path uses handleSessionFinished
-// (renamed in #1434) to handle state_change{finished} frames instead.
+// to handle state_change{finished} frames instead.
 func (s *Sidecar) handleSessionIdle() {
 	// Snapshot current DB state before the timer fires.
 	s.cancelIdleTimer()
@@ -423,18 +423,18 @@ func (s *Sidecar) handleSessionIdle() {
 			return
 		}
 
-		// Check current DB state: if interrupted or error, don't overwrite.
+		// Check current DB state: if interrupted or error, do not overwrite.
 		// If reviewingInFlight, suppress finished — the worker is awaiting review
-		// results; it will transition to finished naturally after the
-		// review-complete prompt is delivered and the worker resolves the results.
+		// results. It transitions to finished naturally after the review-complete
+		// prompt is delivered and the worker resolves the results.
 		//
-		// Note: unlike handleSessionFinished (the PI socket-pipe path, fixed by
-		// #1652), this SSE path retains the AND with DB state deliberately. The
-		// monitor writes "active" to DB just before delivering the review-complete
-		// prompt via deliverViaHTTP (bypassing the sidecar's /prompt handler).
-		// That pre-delivery write is the signal that review is done; if we
-		// suppressed on reviewingInFlight alone here, the session would wedge
-		// after review-complete delivery on SSE-harness workers (#1384).
+		// Note: unlike handleSessionFinished (the PI socket-pipe path), this SSE
+		// path retains the AND with DB state deliberately. The monitor writes
+		// "active" to DB just before delivering the review-complete prompt via
+		// deliverViaHTTP (bypassing the sidecar's /prompt handler). That
+		// pre-delivery write is the signal that review is done. If this path
+		// suppressed on reviewingInFlight alone, the session wedges after
+		// review-complete delivery on SSE-harness workers.
 		currentState := s.currentDBState()
 		if currentState == agent.StateInterrupted || currentState == agent.StateError {
 			return
@@ -475,11 +475,11 @@ func (s *Sidecar) handleSessionCreated(evt harness.HarnessEvent) {
 	s.harnessSessionID = info.ID
 
 	// Always persist the new harness session ID unconditionally so that if the
-	// user creates a new session mid-conversation (e.g. via /continue or TUI
-	// restart), the DB stays current. upsertState uses COALESCE for
+	// user creates a new session mid-conversation (for example, via /continue
+	// or TUI restart), the DB stays current. upsertState uses COALESCE for
 	// harness_session_id (only overwriting when the incoming value is non-nil),
-	// which is insufficient here — we need an unconditional update so that a
-	// fresh session ID always replaces a stale one. (#694)
+	// which is insufficient here — an unconditional update is needed so that a
+	// fresh session ID always replaces a stale one.
 	if info.ID != "" {
 		if err := s.cfg.DB.UpdateHarnessSessionID(s.cfg.SessionName, info.ID); err != nil {
 			s.logger().Printf("sidecar: handleSessionCreated: UpdateHarnessSessionID failed: %v", err)
@@ -489,7 +489,7 @@ func (s *Sidecar) handleSessionCreated(evt harness.HarnessEvent) {
 	// strPtr normalises an empty title to nil, so an empty-string title from
 	// the harness is treated identically to "no title field sent" and never
 	// clobbers an existing (real or fallback) title via upsertState's
-	// COALESCE semantics (#2641).
+	// COALESCE semantics.
 	title := strPtr(info.Title)
 	sid := strPtr(info.ID)
 	s.upsertState(agent.StateActive, title, sid)
@@ -523,7 +523,7 @@ func (s *Sidecar) handleSessionUpdated(evt harness.HarnessEvent) {
 		// Deliberately omit writeStateChange here: compacting is an internal detail
 		// and does not warrant a dashboard refresh or state_change event.
 		// lastState is intentionally not updated so a later writeStateChange
-		// won't consider this a no-op.
+		// will not consider this a no-op.
 		s.upsertState(agent.StateCompacting, nil, sid)
 		return
 	}
@@ -542,12 +542,12 @@ func (s *Sidecar) handleSessionUpdated(evt harness.HarnessEvent) {
 		s.upsertState(agent.StateActive, title, sid)
 		s.writeStateChange(agent.StateActive)
 	case agent.StateError:
-		// Resume from error: only transition to active if we are outside the
-		// post-error debounce window. Within ErrorResumeDebounce of the last
+		// Resume from error: only transition to active if the session is outside
+		// the post-error debounce window. Within ErrorResumeDebounce of the last
 		// session.error, this event is treated as post-error churn that the agent
 		// emits in the same millisecond burst (session.error → session.updated),
 		// not as a genuine user-initiated resume. After the window, genuine
-		// resumes (e.g. user presses Enter) transition normally.
+		// resumes (for example, the user presses Enter) transition normally.
 		if !s.lastErrorAt.IsZero() && s.cfg.Clock.Now().Sub(s.lastErrorAt) < ErrorResumeDebounce {
 			// Within debounce window: treat as churn. Update metadata only.
 			s.logger().Printf("sidecar: session.updated within error-resume debounce window (%v since error) — suppressing resume", s.cfg.Clock.Now().Sub(s.lastErrorAt))
@@ -571,8 +571,8 @@ func (s *Sidecar) handleSessionUpdated(evt harness.HarnessEvent) {
 		s.writeStateChange(agent.StateActive)
 	default:
 		// Session exists and is in a non-terminal state. Update metadata only.
-		// We still call upsert to update title/opencode_sid/last_seen, but
-		// pass the current state to avoid changing it.
+		// This still calls upsert to update title/opencode_sid/last_seen, but
+		// passes the current state to avoid changing it.
 		s.upsertState(currentState, title, sid)
 	}
 }
@@ -598,7 +598,7 @@ func (s *Sidecar) handleSessionError(evt harness.HarnessEvent) {
 		errorMessage = payload.Properties.Error.Message
 	}
 
-	// Gap 2: log the error name and truncated message.
+	// Log the error name and truncated message.
 	// MessageAbortedError is visually distinguishable — it is a known/expected
 	// condition (user pressed Escape/Ctrl-C) whereas other errors are unexpected.
 	truncatedMsg := truncate(errorMessage, 200)
@@ -789,8 +789,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 		// before any assistant message is produced, so that worker prompts
 		// delivered during the response window read a fresh model value.
 		// Only write for root-agent messages (same gate as the assistant
-		// path below) and only when model is non-empty (AC-1, AC-2, AC-3,
-		// AC-4).
+		// path below) and only when model is non-empty.
 		isRootAgent := s.rootAgent == "" || agentName == "" || agentName == s.rootAgent
 		if model != "" && isRootAgent {
 			if err := s.cfg.DB.UpdateRootModelID(s.cfg.SessionName, model); err != nil {
@@ -808,11 +807,11 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 		s.textByMessage.del(info.ID)
 
 	} else if info.Role == "assistant" {
-		// Store time.created for TTFT computation as soon as we see any
-		// assistant message event (whether or not time.completed is set).
-		// This records the request-sent timestamp that we compare against the
-		// first text-part arrival. Only store once (first seen wins) so that
-		// subsequent message.updated events for the same message don't
+		// Store time.created for TTFT computation as soon as any assistant
+		// message event arrives (whether or not time.completed is set).
+		// This records the request-sent timestamp, compared against the first
+		// text-part arrival. Only store once (first seen wins) so that
+		// subsequent message.updated events for the same message do not
 		// overwrite the original created time.
 		if info.Time != nil && info.Time.Created != nil {
 			if !s.msgCreatedAtMs.has(info.ID) {
@@ -852,9 +851,9 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 		// final message), so a second session.idle may never arrive after
 		// the root agent appends its handoff message. Starting the timer
 		// here ensures the session always reaches finished even when no
-		// second idle event is emitted (#538).
+		// second idle event is emitted.
 		if agentName != "" && agentName == s.rootAgent {
-			// Gap 4: emit assistant turn summary before the internal state lines.
+			// Emit assistant turn summary before the internal state lines.
 			isRoot := agentName == s.rootAgent
 			totalTokens := 0
 			if info.Tokens != nil {
@@ -872,8 +871,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 			// The root agent then appends its handoff message, but because the
 			// session was already idle from the agent's perspective, no second
 			// session.idle is emitted. Starting the timer here ensures the
-			// session always reaches finished even when no second idle arrives
-			// (#538).
+			// session always reaches finished even when no second idle arrives.
 			//
 			// Capture the current busyEpoch. If session.status busy fires
 			// after this point, cancelIdleTimer() stops the timer in
@@ -929,9 +927,9 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 
 		// Refresh root_model_id with the current session's model so that
 		// coordinator notifications always reflect the live model
-		// configuration (AC-1, AC-2, AC-3). Only write when model is
-		// non-empty to avoid overwriting an existing value with nothing
-		// (AC-5). Only write for root-agent messages: if a root agent is
+		// configuration. Only write when model is non-empty to avoid
+		// overwriting an existing value with nothing. Only write for
+		// root-agent messages: if a root agent is
 		// known and this message is from a subagent (different name), skip
 		// the update so the root agent's model is not overwritten by a
 		// subagent's model.
@@ -1075,20 +1073,19 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 					}, nil)
 					s.logger().Printf("sidecar: audit: high-impact command recorded: %s", truncate(cmd, 120))
 				}
-				// Issue #2110: capture the PR number when the worker opens its
-				// PR via `gh pr create`. This is the worker-side capture path
-				// (option (a) from the AC), chosen because it writes at the
-				// natural event boundary — the moment the PR comes into
-				// existence — from the session whose spawn_outcome row holds
-				// the column the renderer reads. Other options (backfill at
-				// merge-enqueue time / cleanup time / read-time) push the
-				// write further from the source-of-truth and require either
-				// a session-suffix heuristic to find the worker or a live
-				// GitHub round-trip on every render.
+				// Capture the PR number when the worker opens its PR via
+				// `gh pr create`. This is the worker-side capture path, chosen
+				// because it writes at the natural event boundary — the moment
+				// the PR comes into existence — from the session whose
+				// spawn_outcome row holds the column the renderer reads. Other
+				// options (backfill at merge-enqueue time / cleanup time /
+				// read-time) push the write further from the source-of-truth
+				// and require either a session-suffix heuristic to find the
+				// worker or a live GitHub round-trip on every render.
 				//
-				// We only act on completed bash invocations (the surrounding
+				// This only acts on completed bash invocations (the surrounding
 				// `status == "completed"` guard rules out errored runs whose
-				// output would contain the gh error text rather than a URL).
+				// output contains the gh error text rather than a URL).
 				if isGhPRCreateCommand(cmd) && s.cfg.DB != nil && s.cfg.InstanceID != "" {
 					if prNum, ok := extractPRNumberFromGhOutput(fmt.Sprintf("%v", part.State.Output)); ok {
 						if err := s.cfg.DB.UpdateSpawnOutcomePR(s.cfg.InstanceID, prNum); err != nil {
@@ -1100,7 +1097,7 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 				}
 			}
 		} else if part.State != nil && part.State.Status == "error" {
-			// Gap 5: log tool call failures and write a tool_error DB event.
+			// Log tool call failures and write a tool_error DB event.
 			errStr := truncate(fmt.Sprintf("%v", part.State.Output), 200)
 			s.logger().Printf("sidecar: tool call failed (tool=%s messageId=%s err=%s)", part.Tool, part.MessageID, errStr)
 			s.writeEvent("tool_error", map[string]string{

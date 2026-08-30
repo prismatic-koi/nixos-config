@@ -8,13 +8,6 @@
 //	<parent>~review-<n>-<role>          a review agent of <parent>
 //	<parent>~investigate-<slug>         an investigator of <parent>
 //
-// Before issue #2658 the grammar had no single home. Two different functions
-// named `deriveRepo` disagreed about it: one took a filesystem path
-// (cmd/event.go), the other took a session name (internal/review/prompt.go)
-// and split on "@" alone. The name-taking one gave `obsidian~investigate-v2`
-// a repo of its own, because a non-worktree name carries no "@" to split on.
-// Three separate copies of the coordinator rule made the same assumption.
-//
 // This package is pure. It reads no database and it imports nothing but
 // `strings`, so every layer — internal/db, internal/authz, internal/session,
 // internal/review — can share one answer. A predicate that must also consult
@@ -125,9 +118,9 @@ func HasBranch(name string) bool {
 //
 // This is the name heuristic that authz.IsCoordinatorSession applies, and it
 // is the designed defence against a wrong root_agent_name value in the
-// database. It is structurally unavailable to a name with no branch — which is
-// what made a single wrong value permanent for the `obsidian` session in
-// issue #2658.
+// database. It is structurally unavailable to a name with no branch: for a
+// non-worktree session, a wrong root_agent_name value cannot be caught by this
+// heuristic.
 func HasCoordinatorSuffix(name string) bool {
 	return strings.HasSuffix(name, CoordinatorSuffix)
 }

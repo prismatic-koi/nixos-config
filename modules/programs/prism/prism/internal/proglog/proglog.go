@@ -21,7 +21,7 @@
 // Recognised values (case-insensitive): "error", "warn", "info", "debug".
 // Unrecognised or unset → "error".
 //
-// Design constraints (see issue #1818):
+// Design constraints:
 //
 //   - No log framework dependencies. Just fmt.Fprintf gated on a cached level.
 //   - No prefix added by the helper itself. Callers preserve their existing
