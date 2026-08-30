@@ -96,18 +96,10 @@ func TestSocketPipe_FinishedDebounceSuppressedWhileEscalated(t *testing.T) {
 	// Now fire state_change{finished} — sidecar will start the debounce timer.
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
 
-	// Wait for the debounce timer to be created.
-	deadline = time.Now().Add(2 * time.Second)
-	var idleTimer *testTimer
-	for {
-		idleTimer = clk.LastTimer()
-		if idleTimer != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no finished debounce timer created")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Wait deterministically for the debounce timer registration.
+	idleTimer := clk.WaitForTimerCount(1, 5*time.Second)
+	if idleTimer == nil {
+		t.Fatal("no finished debounce timer created")
 	}
 
 	// Fire the timer — the suppression guard inside must bail out without
