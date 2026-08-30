@@ -283,10 +283,13 @@ func TestSocketPipe_StateChange(t *testing.T) {
 	// immediately. The sidecar records a state_change event in agent_events and starts
 	// the 2s debounce timer.
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
-	time.Sleep(50 * time.Millisecond)
 
-	// A debounce timer must have been created.
-	if timer := clk.LastTimer(); timer == nil {
+	// A debounce timer must have been created. Wait deterministically on the
+	// AfterFunc registration event rather than sleeping a fixed window: under
+	// -race on a loaded runner the sidecar goroutine can be descheduled past a
+	// fixed sleep, so LastTimer() would observe nil and the test would flake
+	// (issue #2902).
+	if timer := clk.WaitForTimerCount(1, 5*time.Second); timer == nil {
 		t.Error("no finished debounce timer created after state_change{finished}")
 	}
 
@@ -320,36 +323,21 @@ func TestSocketPipe_TurnStartEmitsStateActive(t *testing.T) {
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "active"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
 
-	// Wait for the finished debounce timer to be created.
-	deadline := time.Now().Add(2 * time.Second)
-	var idleTimer *testTimer
-	for {
-		idleTimer = clk.LastTimer()
-		if idleTimer != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no finished debounce timer created after state_change{finished}")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Wait deterministically for the finished debounce timer registration.
+	idleTimer := clk.WaitForTimerCount(1, 5*time.Second)
+	if idleTimer == nil {
+		t.Fatal("no finished debounce timer created after state_change{finished}")
 	}
 
 	// Now send turn_start — must cancel the debounce and keep the session active.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 
-	// Poll until the finished debounce timer is stopped (cancelled by turn_start).
+	// Wait until the finished debounce timer is stopped (cancelled by turn_start).
 	// The sidecar processes frames sequentially under s.mu: cancelIdleTimer is
 	// called before any DB write, so once the timer is stopped we know turn_start
 	// was processed.
-	deadline = time.Now().Add(2 * time.Second)
-	for {
-		if idleTimer.Stopped() {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("finished debounce timer was not stopped by turn_start within timeout")
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !idleTimer.WaitStopped(5 * time.Second) {
+		t.Fatal("finished debounce timer was not stopped by turn_start within timeout")
 	}
 
 	// State must be active (not finished).
@@ -490,22 +478,15 @@ func TestSocketPipe_TurnStart_IdleTransitionsToActive(t *testing.T) {
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "active"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
 
-	// Wait for the debounce timer to be created.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if clk.LastTimer() != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no finished debounce timer created after state_change{finished}")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Wait deterministically for the debounce timer registration.
+	if clk.WaitForTimerCount(1, 5*time.Second) == nil {
+		t.Fatal("no finished debounce timer created after state_change{finished}")
 	}
 
 	// turn_start must cancel the debounce and transition to active.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 
-	deadline = time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for {
 		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
 		if s == string(agent.StateActive) {
@@ -2331,9 +2312,15 @@ func TestSocketPipe_ReviewingGuardPreservedAfterGapFixes(t *testing.T) {
 	// Drive to active, start finished debounce.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
-	time.Sleep(50 * time.Millisecond)
 
-	idleTimer := clk.LastTimer()
+	// Wait deterministically for the finished debounce timer registration
+	// rather than sleeping a fixed window; a fixed sleep could observe nil
+	// under scheduler load and make the later cancellation check vacuous
+	// (issue #2902).
+	idleTimer := clk.WaitForTimerCount(1, 5*time.Second)
+	if idleTimer == nil {
+		t.Fatal("no finished debounce timer created after state_change{finished}")
+	}
 
 	// Simulate /review: write reviewing to DB and set reviewingInFlight.
 	if err := sc.cfg.DB.UpsertStatus(
@@ -2348,10 +2335,10 @@ func TestSocketPipe_ReviewingGuardPreservedAfterGapFixes(t *testing.T) {
 
 	// Send turn_start — finished debounce timer cancelled but active write suppressed.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
-	time.Sleep(50 * time.Millisecond)
 
-	// Finished debounce timer must be cancelled.
-	if idleTimer != nil && !idleTimer.Stopped() {
+	// Finished debounce timer must be cancelled. Wait deterministically for the
+	// cancellation rather than sleeping a fixed window (issue #2902).
+	if !idleTimer.WaitStopped(5 * time.Second) {
 		t.Error("finished debounce timer was not cancelled by turn_start while reviewing")
 	}
 
