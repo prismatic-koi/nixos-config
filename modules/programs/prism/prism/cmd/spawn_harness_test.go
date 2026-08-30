@@ -5,8 +5,8 @@ package cmd
 // Coverage:
 //   - runSpawn rejects unknown harness values before any state is created
 //   - runSpawn accepts "pi" (explicitly or as default)
-//   - proxySpawn forwards the harness field only when explicitly set (#1421)
-//   - proxySpawn omits the harness field when --harness is not explicitly passed (#1421)
+//   - proxySpawn forwards the harness field only when explicitly set
+//   - proxySpawn omits the harness field when --harness is not explicitly passed
 
 import (
 	"encoding/json"
@@ -73,7 +73,7 @@ func TestRunSpawn_UnknownHarness_ReturnsErrorBeforeStateCreated(t *testing.T) {
 // repo" without calling tmux.CurrentPanePath(). If PRISM_SPAWN_PATH is empty,
 // resolveBareRoot falls through to CurrentPanePath which reads the live tmux
 // pane path — potentially a nixos-config worktree — causing runSpawn to create
-// real worktrees, DB rows, and tmux sessions in the live environment. See #1180.
+// real worktrees, DB rows, and tmux sessions in the live environment.
 func TestRunSpawn_HarnessPi_Explicit_PassesValidation(t *testing.T) {
 	cmd := &cobra.Command{Use: "spawn"}
 	cmd.Flags().String("branch", "", "")
@@ -94,7 +94,7 @@ func TestRunSpawn_HarnessPi_Explicit_PassesValidation(t *testing.T) {
 	// directly and returns "not inside a git repo" without calling
 	// tmux.CurrentPanePath(). An empty value would fall through to
 	// CurrentPanePath which reads the live pane path and could trigger real
-	// session creation if the live pane is inside a prism bare repo (#1180).
+	// session creation if the live pane is inside a prism bare repo.
 	t.Setenv("PRISM_SPAWN_PATH", t.TempDir())
 	// PRISM_BARE_ROOT points to nowhere — runSpawn will fail, but not on harness.
 	t.Setenv("PRISM_BARE_ROOT", "")
@@ -201,7 +201,7 @@ func TestProxySpawn_HarnessForwarded(t *testing.T) {
 // TestProxySpawn_HarnessAbsentWhenNotExplicit verifies that when --harness is
 // not explicitly set (i.e. the user did not pass the flag), the harness field
 // is absent from the JSON body sent to the host-API. This allows the host-side
-// spawn to derive the harness from the profile slot as designed (#1421).
+// spawn to derive the harness from the profile slot as designed.
 func TestProxySpawn_HarnessAbsentWhenNotExplicit(t *testing.T) {
 	// Use a raw map to detect field presence vs. zero-value absence.
 	reqCh := make(chan map[string]any, 1)

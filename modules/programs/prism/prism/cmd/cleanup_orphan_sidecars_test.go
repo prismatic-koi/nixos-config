@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for killOrphanReviewSidecars (issue #1751).
+// Tests for killOrphanReviewSidecars.
 //
 // The traversal walks /proc looking at each running process's argv via
 // /proc/<pid>/cmdline, matches `--session <parent>~review-…` (or
@@ -80,7 +80,7 @@ func writeFakeProcEntry(t *testing.T, procRoot string, pid int, argv []string) {
 }
 
 // TestFindOrphanReviewSidecarPIDs_MatchesAllReviewCycles covers the
-// "multiple review cycles" AC: a parent with both ~review-1-… and
+// multiple-review-cycles case: a parent with both ~review-1-… and
 // ~review-2-… children should produce matches for both.
 func TestFindOrphanReviewSidecarPIDs_MatchesAllReviewCycles(t *testing.T) {
 	procRoot := t.TempDir()
@@ -145,7 +145,7 @@ func TestFindOrphanReviewSidecarPIDs_MatchesAllReviewCycles(t *testing.T) {
 }
 
 // TestFindOrphanReviewSidecarPIDs_MatchesInvestigatorChildren covers the
-// "~investigate-" infix AC alongside the "~review-" one.
+// "~investigate-" infix alongside the "~review-" one.
 func TestFindOrphanReviewSidecarPIDs_MatchesInvestigatorChildren(t *testing.T) {
 	procRoot := t.TempDir()
 	parent := "myrepo@feature"
@@ -164,8 +164,8 @@ func TestFindOrphanReviewSidecarPIDs_MatchesInvestigatorChildren(t *testing.T) {
 	}
 }
 
-// TestFindOrphanReviewSidecarPIDs_DoesNotMatchOtherParent verifies the
-// "non-review sessions unchanged" AC — an unrelated parent's review
+// TestFindOrphanReviewSidecarPIDs_DoesNotMatchOtherParent verifies that
+// non-review sessions are unchanged — an unrelated parent's review
 // children are not matched.
 func TestFindOrphanReviewSidecarPIDs_DoesNotMatchOtherParent(t *testing.T) {
 	procRoot := t.TempDir()
@@ -233,10 +233,9 @@ func TestFindOrphanReviewSidecarPIDs_EmptyParent(t *testing.T) {
 	}
 }
 
-// TestKillOrphanReviewSidecars_EndToEnd is the integration test required
-// by AC: spawn fake ~review-1-… and ~review-2-… sidecars, call
-// killOrphanReviewSidecars, assert all are dead and unrelated stubs are
-// untouched.
+// TestKillOrphanReviewSidecars_EndToEnd is the integration test: spawn fake
+// ~review-1-… and ~review-2-… sidecars, call killOrphanReviewSidecars,
+// assert all are dead and unrelated stubs are untouched.
 func TestKillOrphanReviewSidecars_EndToEnd(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("killOrphanReviewSidecars walks /proc — Linux only")
@@ -304,7 +303,7 @@ func TestKillOrphanReviewSidecars_EndToEnd(t *testing.T) {
 	}
 }
 
-// TestKillOrphanReviewSidecars_AlreadyExited covers the edge-case AC: a
+// TestKillOrphanReviewSidecars_AlreadyExited covers the edge case: a
 // review sidecar that has already exited produces no error log and no
 // panic. We exercise this by calling the function against a parent for
 // which no live processes exist — the loop body never runs and the
@@ -322,8 +321,8 @@ func TestKillOrphanReviewSidecars_AlreadyExited(t *testing.T) {
 // TestKillOrphanReviewSidecars_RepeatIsIdempotent confirms calling the
 // wrapper twice in a row is harmless: the first call kills the stubs,
 // the second call finds no live processes (because they're gone) and
-// returns silently with no error log. This covers the "already exited
-// — no spurious error log" edge-case AC at the wrapper layer.
+// returns silently with no error log. This covers the already-exited,
+// no-spurious-error-log edge case at the wrapper layer.
 func TestKillOrphanReviewSidecars_RepeatIsIdempotent(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("killOrphanReviewSidecars walks /proc — Linux only")

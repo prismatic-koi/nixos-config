@@ -3,7 +3,7 @@ package cmd
 // cleanup_orphan_sidecars.go — find and SIGTERM orphan review-group and
 // investigator-group sidecar processes that outlived their DB rows.
 //
-// Background (issue #1751): when a worker session is cleaned up after its PR
+// Background: when a worker session is cleaned up after its PR
 // is merged, `prism cleanup --yes --session <worker>` clears the worker's
 // own state and runs review.CleanupReviewSessionsForParent which cleans up
 // DB rows for known review children. However, sidecar processes spawned

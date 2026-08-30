@@ -1,7 +1,6 @@
 package cmd
 
-// spawn_provider_test.go — tests for the --provider flag on prism spawn
-// (issue #2852).
+// spawn_provider_test.go — tests for the --provider flag on prism spawn.
 //
 // Coverage:
 //   - --provider with a non-pi --harness is rejected before any state is
@@ -63,8 +62,8 @@ func isolateSpawnValidation(t *testing.T) {
 
 // ── runSpawn rejections ──────────────────────────────────────────────────────
 
-// TestRunSpawn_ProviderWithNonPiHarness_Rejected is the issue #2852 edge-case
-// AC: --provider alongside a non-pi --harness exits non-zero before any
+// TestRunSpawn_ProviderWithNonPiHarness_Rejected covers the edge case:
+// --provider alongside a non-pi --harness exits non-zero before any
 // session is created, with an error naming both flags.
 //
 // The check deliberately runs before the harness-registry lookup, so the
@@ -90,9 +89,9 @@ func TestRunSpawn_ProviderWithNonPiHarness_Rejected(t *testing.T) {
 	}
 }
 
-// TestRunSpawn_ProviderWithAbtest_Rejected is the issue #2852 edge-case AC
-// for the abtest combination: it is refused with a mutual-exclusion error,
-// matching the existing --profile behaviour. Each abtest arm draws its
+// TestRunSpawn_ProviderWithAbtest_Rejected covers the abtest combination:
+// it is refused with a mutual-exclusion error, matching the --profile
+// behaviour. Each abtest arm draws its
 // provider from its own profile slot by design.
 func TestRunSpawn_ProviderWithAbtest_Rejected(t *testing.T) {
 	cmd := buildProviderCmd(t)

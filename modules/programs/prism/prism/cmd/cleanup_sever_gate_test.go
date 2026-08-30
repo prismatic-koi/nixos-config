@@ -1,19 +1,19 @@
 package cmd
 
-// cleanup_sever_gate_test.go — regression tests for issue #2336.
+// cleanup_sever_gate_test.go — regression tests for the sever gate.
 //
-// Post-#2219 the cleanup pipeline archives the pi transcript BEFORE severing
-// the pi resume linkage, but the gate that decides whether to sever was
-// under-constrained: it only checked `archiveErr == nil`. runSessionArchive
-// has seven silent-nil-return paths (six documented in the issue body plus a
-// seventh from the harness_session_id NULL-fallback ordering), so a session
-// where the archive step preserved nothing still proceeded to sever — which
-// deleted the transcript from the live pi sessions dir. Result: silent data
-// loss (the concrete home-ops incident, 2026-07-03).
+// The cleanup pipeline archives the pi transcript BEFORE severing the pi
+// resume linkage. The gate that decides whether to sever must check that the
+// archive actually preserved a transcript (copied == true), not merely
+// `archiveErr == nil`. runSessionArchive has seven silent-nil-return paths
+// (six enumerated below plus a seventh from the harness_session_id
+// NULL-fallback ordering), so a session where the archive step preserved
+// nothing must NOT proceed to sever — severing anyway deletes the transcript
+// from the live pi sessions dir, which is silent data loss.
 //
-// The #2336 fix threads a `copied bool` up from piArchiveAdapter.Archive and
-// gates the sever on that instead. This file exercises each of the seven
-// skip paths end-to-end via headlessCleanup, asserting:
+// The gate threads a `copied bool` up from piArchiveAdapter.Archive. This file
+// exercises each of the seven skip paths end-to-end via headlessCleanup,
+// asserting:
 //
 //   (a) the transcript file (if one was on disk) is NOT deleted, AND
 //   (b) agent_status.harness_session_id is retained.
@@ -22,10 +22,11 @@ package cmd
 // package-level severGateForceAlwaysSever knob flipped, sever runs anyway and
 // the assertions in (a) or (b) flip — proving the copied-gate is load-
 // bearing, not a no-op. The pattern mirrors the podman-proxy field-admission
-// discipline (see modules/programs/prism/prism/docs/podman-proxy.md §3 and
+// discipline (see modules/programs/prism/prism/docs/podman-proxy.md,
+// "Field-admission process" and
 // internal/podmanproxy/proxy_name_prefix_test.go::…_RevertGuard).
 //
-// Skip path numbering matches the issue body:
+// Skip path numbering:
 //
 //   1. instanceID == "" (agent_status.instance_id NULL)
 //   2. statusIsolationMode not in {host, bwrap, sandbox-exec}
@@ -531,15 +532,13 @@ func TestSeverGate_SkipPath6_NoMatchingTranscript_RevertGuard(t *testing.T) {
 // Two variants:
 //
 //   7a. sessions.harness_session_id is NULL, but agent_status has a value.
-//       The fallback code path resolves it. Under the pre-#2336 ordering,
-//       SourcePath was called BEFORE the fallback ran — it received the
-//       empty ID, fell through to the "no session ID → return sessions
-//       root" branch, and Archive no-op'd on the directory. Manifest-only
-//       archive, sever ran anyway (via the old gate), transcript deleted.
-//
-//       Under the fix, the fallback runs BEFORE SourcePath, so the
-//       resolved ID reaches the adapter and the transcript is archived.
-//       Sever then runs on a real copy — the correct outcome.
+//       The fallback code path resolves it. The fallback must run BEFORE
+//       SourcePath: if SourcePath receives the empty ID it falls through to
+//       the "no session ID → return sessions root" branch, Archive no-ops on
+//       the directory, and the manifest-only archive would let the sever
+//       delete the transcript. With the fallback first, the resolved ID
+//       reaches the adapter, the transcript is archived, and the sever runs
+//       on a real copy.
 //
 //   7b. sessions.harness_session_id is NULL, and the agent_status
 //       fallback also returns empty (harness never wrote an ID). The
@@ -618,11 +617,11 @@ func instanceIDForFixture(t *testing.T, d *db.DB, session string) string {
 }
 
 // TestSeverGate_SkipPath7a_FallbackResolvesID_RevertGuard proves the
-// fallback-ordering fix is not a no-op: if the fallback runs AFTER
-// SourcePath (the pre-#2336 order), SourcePath receives an empty
-// HarnessSessionID, falls through to the "no session ID → sessions root"
-// branch, and the adapter's Archive no-op's on the directory. The archive
-// dir then contains manifest.json but no session.jsonl.
+// fallback-ordering behaviour is not a no-op: if the fallback runs AFTER
+// SourcePath, SourcePath receives an empty HarnessSessionID, falls through to
+// the "no session ID → sessions root" branch, and the adapter's Archive
+// no-op's on the directory. The archive dir then contains manifest.json but
+// no session.jsonl.
 //
 // Rather than physically reverting the code order at test time (which would
 // require re-implementing the buggy version), this test exercises the same
@@ -632,7 +631,7 @@ func instanceIDForFixture(t *testing.T, d *db.DB, session string) string {
 // no-session-jsonl outcome is the same as if the reorder was reverted. If
 // the reorder were reverted AND agent_status still had the value, the same
 // failure mode would arise via a different route — this test proves the
-// downstream shape (no session.jsonl) that the reorder fix prevents.
+// downstream shape (no session.jsonl) that the fallback-first order prevents.
 //
 // This is the closest we can get to a "mutation" test for a code-order
 // change without introducing a runtime knob for it. The 7a positive test
@@ -640,8 +639,8 @@ func instanceIDForFixture(t *testing.T, d *db.DB, session string) string {
 // proves that outcome is not vacuous.
 func TestSeverGate_SkipPath7a_FallbackResolvesID_RevertGuard(t *testing.T) {
 	f := setupSkipPathFixture(t, "skip7a-revert-noid", skipPath7SID, func(t *testing.T, dbFile, session, instanceID string) {
-		// Simulate "empty ID reaches SourcePath" — the pre-#2336 failure
-		// mode's downstream shape.
+		// Simulate "empty ID reaches SourcePath" — the failure mode's
+		// downstream shape.
 		execRaw(t, dbFile, "UPDATE sessions SET harness_session_id = NULL WHERE instance_id = ?", instanceID)
 		execRaw(t, dbFile, "UPDATE agent_status SET harness_session_id = NULL WHERE session_name = ?", session)
 	})
@@ -738,7 +737,7 @@ func TestSeverGate_SkipPath7b_FallbackAlsoEmpty_RevertGuard(t *testing.T) {
 	t.Skip("skip path 7b has no data-loss risk under either gate setting; the copied-gate protects only the JSON envelope signal, which is covered by TestSeverGate_JSONEnvelope_TranscriptMissing")
 }
 
-// TestSeverGate_JSONEnvelope_TranscriptMissing verifies the AC:
+// TestSeverGate_JSONEnvelope_TranscriptMissing verifies:
 // "[functional] The --json cleanup envelope's harness_session_id_cleared
 // field surfaces the skip class when sever is skipped due to transcript-not-
 // copied — matching the existing 'skipped: archive failed: <err>' shape,

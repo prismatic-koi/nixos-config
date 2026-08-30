@@ -1,7 +1,7 @@
 package cmd
 
 // cleanup_reap_cause_2613_test.go — applyDBLifecycleClears records why it
-// closed the row, and only when it actually closed it (issue #2613).
+// closed the row, and only when it actually closed it.
 //
 // `prism cleanup` on an already-ended session is an explicitly supported
 // idempotent no-op: SetEnded's `AND ended_at IS NULL` guard suppresses the
