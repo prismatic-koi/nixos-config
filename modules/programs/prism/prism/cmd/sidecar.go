@@ -218,7 +218,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// constructed transiently here for the EffectiveModel call; a fresh
 	// adapter with the resolved model is constructed below for the sidecar.
 	// When modelsByRole contains an entry for agentRole, that takes precedence
-	// over the profile slot lookup (C.2 §6.3).
+	// over the profile slot lookup.
 	var agentModel string
 	if m, ok := modelsByRole[agentRole]; ok && m != "" {
 		agentModel = m
@@ -247,7 +247,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 		hostAPISockPath = sockPath
 		// Wire the socket path into the container config so the container
-		// gets the socket mounted and PRISM_HOST_API injected (A-2).
+		// gets the socket mounted and PRISM_HOST_API injected.
 		// In bwrap and sandbox-exec modes ctrCfg is nil — the sandbox args
 		// are built by the isolator at prism agent-run time, not here.
 		if ctrCfg != nil {
@@ -255,7 +255,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Build the harness pipe socket path for socket-pipe harnesses (P2.SIDECAR).
+	// Build the harness pipe socket path for socket-pipe harnesses.
 	// The socket co-locates with the host-API socket in the same per-session
 	// directory, so the existing bind-mount for that directory covers it too.
 	//
@@ -333,8 +333,8 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	//     (the agent already created a session when the TUI started)
 	//   - DeliverInitialPrompt is a no-op (prompt was sent via --prompt CLI flag)
 	//
-	// When modelsByRole is non-nil (C.2 --model-override), pass the full map
-	// so DeliverInitialPrompt and EffectiveModel use per-role models.
+	// When modelsByRole is non-nil (the --model-override flag), pass the full
+	// map so DeliverInitialPrompt and EffectiveModel use per-role models.
 	var h harness.Harness
 	if len(modelsByRole) > 0 {
 		if useContainerHarness {
