@@ -62,7 +62,7 @@ session.SpawnSession before tmux send-keys):
   prism logs nixos-config@feat --startup
 
 Use --harness-events to print the raw PI JSONL frames recorded for a
-socket-pipe session (P5.LOGS / #1218). One JSON object per line in
+socket-pipe session. One JSON object per line in
 chronological order; pipe to jq for pretty-printing:
 
   prism logs nixos-config@feat --harness-events
@@ -81,7 +81,7 @@ func init() {
 	logsCmd.Flags().BoolP("follow", "f", false, "Stream new lines as they are written; exits when session ends or Ctrl-C")
 	logsCmd.Flags().Bool("agent-run", false, "Read the agent-run log (bwrap harness stdout/stderr) instead of the sidecar log")
 	logsCmd.Flags().Bool("startup", false, "Read the agent-startup log (spawn-time breadcrumbs written by session.SpawnSession)")
-	logsCmd.Flags().Bool("harness-events", false, "Print raw PI JSONL frames recorded for this session (P5.LOGS / #1218)")
+	logsCmd.Flags().Bool("harness-events", false, "Print raw PI JSONL frames recorded for this session")
 	logsCmd.Flags().String("direction", "", "With --harness-events: filter frames by direction (in|out)")
 	logsCmd.Flags().String("types", "", "With --harness-events: comma-separated list of frame types to include")
 	logsCmd.Flags().String(
