@@ -36,7 +36,7 @@ func openDB() (*db.DB, error) {
 	return db.Open(dbPath())
 }
 
-// dbCmd is the parent cobra command for the read-only db surface (#1467).
+// dbCmd is the parent cobra command for the read-only db surface.
 // Subcommands are registered in their own files (db_query.go, db_schema.go,
 // db_tables.go).
 var dbCmd = &cobra.Command{

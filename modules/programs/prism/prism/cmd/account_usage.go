@@ -1,12 +1,11 @@
 package cmd
 
-// prism account usage — print Claude subscription rate-limit usage
-// snapshots (issue #2539, parent #2537).
+// prism account usage — print Claude subscription rate-limit usage snapshots.
 //
-// This subcommand is a READER of the snapshot format `internal/usage` owns
-// (issue #2538). It never writes a snapshot itself. The sidecar is the only
-// writer — the active refresh added in #2541 persists by POSTing to the
-// sidecar's /usage/snapshot endpoint (see account_usage_refresh.go).
+// This subcommand is a READER of the snapshot format `internal/usage` owns.
+// It never writes a snapshot itself. The sidecar is the only writer — the
+// active refresh persists by POSTing to the sidecar's /usage/snapshot
+// endpoint (see account_usage_refresh.go).
 //
 // Sandbox constraint: the DISPLAY path must identify the active account from
 // current.json inside the usage directory, never from
@@ -66,8 +65,8 @@ func addAccountUsageFlags(c *cobra.Command) {
 
 // windowJSON is the snake_case --json shape for one rate-limit window.
 // Percentage is an integer derived from the stored fraction; utilization
-// itself is not re-exposed here because #2539's contract is percentage +
-// reset, not the raw header shape (that's usage.Snapshot's job).
+// itself is not re-exposed here because the contract is percentage + reset,
+// not the raw header shape (that's usage.Snapshot's job).
 type windowJSON struct {
 	PercentUsed int    `json:"percent_used"`
 	Reset       string `json:"reset"`
@@ -83,8 +82,8 @@ type accountUsageJSON struct {
 	SevenDay   *windowJSON `json:"seven_day,omitempty"`
 	Error      string      `json:"error,omitempty"`
 	// OrganizationID and WorkspaceID mirror usage.Snapshot's fields of the
-	// same name (issue #2713, parent #2699) — the round-trip AC requires
-	// them to reach `prism account usage --json`, not just the on-disk file.
+	// same name — the round-trip requires them to reach `prism account usage
+	// --json`, not just the on-disk file.
 	OrganizationID string `json:"organization_id,omitempty"`
 	WorkspaceID    string `json:"workspace_id,omitempty"`
 }

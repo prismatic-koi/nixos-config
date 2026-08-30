@@ -128,11 +128,11 @@ func runStats(cmd *cobra.Command, args []string) error {
 	jsonMode, _ := cmd.Flags().GetBool("json")
 
 	// --abtest: list all A/B test pairs with summary metrics. runStatsAbtestFlag
-	// performs its own PRISM_HOST_API proxy dispatch (issue #2098) so a
-	// sandboxed session lists pairs from the host DB rather than the empty
-	// shadow DB. The jsonMode arg honours the prism-wide --json convention
-	// (issue #2099 Bug 2): on success the function emits a single JSON
-	// document mirroring the /stats?view=abtest_list shape.
+	// performs its own PRISM_HOST_API proxy dispatch so a sandboxed session
+	// lists pairs from the host DB rather than the empty shadow DB. The
+	// jsonMode arg honours the prism-wide --json convention: on success the
+	// function emits a single JSON document mirroring the
+	// /stats?view=abtest_list shape.
 	if abtest {
 		return runStatsAbtestFlag(jsonMode)
 	}
@@ -326,10 +326,9 @@ func runStatsProxy(cmd *cobra.Command, args []string, apiURL string, days int, d
 			return fmt.Errorf("stats: %q not found", sessionFilter)
 		}
 		// Render the session detail using the incarnation renderer. The
-		// host-API view=detail response now proxies the spawn_outcome
-		// token/cost fields alongside the session (issue #2582), so the
-		// sandbox path renders identical Token Usage output to the
-		// host-direct path instead of the old fixed stub line.
+		// host-API view=detail response proxies the spawn_outcome token/cost
+		// fields alongside the session, so the sandbox path renders identical
+		// Token Usage output to the host-direct path.
 		renderIncarnationDetailFromSession(resp.Session, resp.Outcome)
 		return nil
 	}

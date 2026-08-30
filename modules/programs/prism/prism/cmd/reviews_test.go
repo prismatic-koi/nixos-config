@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for `prism reviews list` (#1500). Verifies the ledger surface
+// Tests for `prism reviews list`. Verifies the ledger surface
 // returns rows from session_groups + agent_status, and that the JSON
 // shape carries the documented fields.
 

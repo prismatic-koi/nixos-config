@@ -1,7 +1,6 @@
 package cmd
 
-// End-to-end tests for the `prism account usage` active refresh
-// (issue #2541, parent #2537).
+// End-to-end tests for the `prism account usage` active refresh.
 //
 // Every test here runs against three fakes wired together the way the real
 // system is:
@@ -106,8 +105,7 @@ func newRefreshFixture(t *testing.T, status int, headers http.Header) *refreshFi
 
 	// In-process seam. There is deliberately NO environment variable that can
 	// redirect the refresh: the request carries an OAuth bearer token, and an
-	// env-var destination would be an exfiltration lever on a real host
-	// (round-1 review-security finding).
+	// env-var destination is an exfiltration lever on a real host.
 	prev := newUsageRefresher
 	t.Cleanup(func() { newUsageRefresher = prev })
 	newUsageRefresher = func() *usage.Refresher {
@@ -341,8 +339,8 @@ func TestAccountUsageRefresh_StaleSnapshotRefreshesAndPrints(t *testing.T) {
 	}
 }
 
-// AC: a successful refresh persists through the sidecar endpoint #2538
-// defines, rather than writing the files directly.
+// A successful refresh persists through the sidecar's /usage/snapshot
+// endpoint, rather than writing the files directly.
 //
 // Two halves, and both matter. The POST proves the write went through the
 // endpoint; the changed file proves the endpoint's write actually landed.
@@ -463,7 +461,7 @@ func TestAccountUsageRefresh_AtMostOneRequestPerInvocation(t *testing.T) {
 	}
 }
 
-// ── Token source (#2569 review round 1: review-context) ─────────────────────
+// ── Token source ─────────────────────
 
 // The refresh must read the LIVE token from auth.json, not the frozen copy in
 // accounts/<name>.json.
@@ -472,9 +470,9 @@ func TestAccountUsageRefresh_AtMostOneRequestPerInvocation(t *testing.T) {
 // back to the accounts directory (anthropic-oauth/credentials.ts,
 // writeCredentials). An Anthropic token lives 36000 s, so the stored copy is
 // expired roughly ten hours after the snapshot that produced it. A refresh
-// that read the stored copy would work once and then report "expired" on
-// every later invocation, while pi held a perfectly good token — AC 1 and AC 2
-// would stop holding on any real host after about ten hours.
+// that read the stored copy works once and then reports "expired" on every
+// later invocation, while pi holds a perfectly good token. On any real host,
+// this behaviour breaks after about ten hours.
 func TestAccountUsageRefresh_PrefersTheLiveTokenOverTheStoredCopy(t *testing.T) {
 	f := newRefreshFixture(t, http.StatusOK, refreshHeaders())
 	f.seedAccount(t, "work", time.Now().Add(time.Hour))
@@ -591,7 +589,7 @@ func TestAccountUsageRefresh_NonOKStatusNamesCodeAndKeepsSnapshot(t *testing.T) 
 	if !strings.Contains(errOut, "429") {
 		t.Errorf("expected the status code named in the warning, got: %s", errOut)
 	}
-	// #2537: a 429 from a malformed OAuth request looks exactly like quota
+	// A 429 from a malformed OAuth request looks exactly like quota
 	// exhaustion. The message must say so, or the next reader chases the
 	// wrong cause.
 	if !strings.Contains(errOut, "request shape") {
@@ -957,9 +955,9 @@ func TestMergeRefreshed(t *testing.T) {
 	// Round-1 review-context finding. rows[].Active comes from
 	// usage/current.json while the refresh target comes from
 	// accounts/current. The two disagree between a `prism account use` and
-	// the next capture, which is exactly the mid-session switch #2537 exists
-	// to serve. Without the clearing loop the text output prints `*` on two
-	// rows and --json emits two entries with "active": true.
+	// the next capture, which is exactly the mid-session switch this serves.
+	// Without the clearing loop the text output prints `*` on two rows and
+	// --json emits two entries with "active": true.
 	t.Run("exactly one row stays active after a switch", func(t *testing.T) {
 		rows := []usage.AccountSnapshot{
 			{Name: "personal", Active: true, Snapshot: &usage.Snapshot{Account: "personal"}},

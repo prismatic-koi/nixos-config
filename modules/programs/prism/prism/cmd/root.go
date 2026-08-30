@@ -7,8 +7,8 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "prism",
 	Short: "Prism — tmux-based AI development environment",
-	// SilenceErrors + SilenceUsage make main.go the sole error printer
-	// (issue #2362 / parent #2356). Without these, cobra prints
+	// SilenceErrors + SilenceUsage make main.go the sole error printer.
+	// Without these, cobra prints
 	// `Error: <msg>` and the full usage block on every RunE failure, and
 	// main.go then prints the message a second time.
 	//
@@ -35,7 +35,7 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	// Ensure genuine flag-parse errors on any subcommand still surface
-	// usage guidance (AC #6 of issue #2362). Cobra checks BOTH the
+	// usage guidance. Cobra checks BOTH the
 	// offending command's and the root's SilenceUsage — both must be
 	// false for the usage block to print — so we print the usage
 	// ourselves from FlagErrorFunc and rely on main.go to print the

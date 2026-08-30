@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for the #2420 `prism merge` initial-state probe: probeInitialState,
+// Tests for the `prism merge` initial-state probe: probeInitialState,
 // probeBranchProtection, pendingRequiredCheckNames, and the state-table
 // message discipline enforced by runMerge.
 //
@@ -138,11 +138,11 @@ func TestProbeInitialState_Conflict(t *testing.T) {
 	}
 }
 
-// TestProbeInitialState_CIFailed is the #2527 core case: mergeStateStatus is
-// BLOCKED and the required check has COMPLETED with conclusion FAILURE.
-// Before the fix this misclassified as merely "pending" (via
-// pendingRequiredCheckNames, which does not consult Status) and told the
-// coordinator to keep waiting for something that could never happen.
+// TestProbeInitialState_CIFailed is the core case: mergeStateStatus is
+// BLOCKED and the required check has a COMPLETED status with conclusion
+// FAILURE. Without discrimination on Status this misclassifies as merely
+// "pending" (via pendingRequiredCheckNames, which does not consult Status)
+// and tells the coordinator to wait for something that can never happen.
 func TestProbeInitialState_CIFailed(t *testing.T) {
 	stubGhBinStates(t,
 		`{"state":"OPEN","number":106,"title":"ci failed","mergedAt":null,"mergeStateStatus":"BLOCKED","reviewDecision":"APPROVED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"FAILURE","status":"COMPLETED"}]}`,
@@ -166,7 +166,7 @@ func TestProbeInitialState_CIFailed(t *testing.T) {
 	}
 }
 
-// TestProbeInitialState_CIFailed_StillPendingStaysWatching is the #2525
+// TestProbeInitialState_CIFailed_StillPendingStaysWatching is the
 // conservative-bias edge case, checked at the invocation surface: BLOCKED
 // with the required check still IN_PROGRESS must not be reported as failed.
 func TestProbeInitialState_CIFailed_StillPendingStaysWatching(t *testing.T) {
@@ -258,11 +258,11 @@ func TestProbeInitialState_ProtectedPending(t *testing.T) {
 	}
 }
 
-// TestProbeInitialState_ProtectedReviewRequired is the #2576 genuine-approval
+// TestProbeInitialState_ProtectedReviewRequired is the genuine-approval
 // path: branch protection requires an approving review
 // (required_approving_review_count > 0) and the PR does not have one yet, so
 // the human-approval message fires — on real fetched data, not by elimination.
-// The anti-reviewer-shopping guidance is preserved.
+// The anti-reviewer-shopping guidance is present.
 func TestProbeInitialState_ProtectedReviewRequired(t *testing.T) {
 	stubGhBinStates(t,
 		`{"state":"OPEN","number":105,"title":"awaiting review","mergedAt":null,"mergeStateStatus":"BLOCKED","reviewDecision":"REVIEW_REQUIRED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"}]}`,
@@ -287,20 +287,21 @@ func TestProbeInitialState_ProtectedReviewRequired(t *testing.T) {
 	if !strings.Contains(dec.Message, "merged out-of-band") {
 		t.Errorf("message %q does not contain the out-of-band notification promise", dec.Message)
 	}
-	// #2576: the human-approval message must not also claim the human has
-	// nothing to do — that phrase was the audience-mixing defect.
+	// The human-approval message must not also claim the human has nothing
+	// to do. That phrasing mixes audiences: it asks for an approval yet says
+	// nothing is required.
 	if strings.Contains(dec.Message, "No action required from you") {
 		t.Errorf("message %q still mixes audiences: it asks for an approval yet says 'No action required from you'", dec.Message)
 	}
 }
 
-// zeroApprovalRuleset is the on-repo reality (#2576): ruleset-protected main
+// zeroApprovalRuleset is the on-repo reality: ruleset-protected main
 // with a required_status_checks rule and a pull_request rule that requires
-// ZERO approving reviews. No PR on such a repo may ever produce the
+// ZERO approving reviews. No PR on such a repo can ever produce the
 // human-approval message.
 const zeroApprovalRuleset = `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-gate"}]}},{"type":"pull_request","parameters":{"required_approving_review_count":0}}]`
 
-// TestProbeInitialState_UnknownMergeState_Undetermined is the #2576 core fix:
+// TestProbeInitialState_UnknownMergeState_Undetermined is the core case:
 // mergeStateStatus=UNKNOWN (GitHub still computing mergeability, the routine
 // post-enqueue case) must produce an undetermined result that names the
 // observed state and keeps polling — never the guessed human-approval message.
@@ -325,10 +326,10 @@ func TestProbeInitialState_UnknownMergeState_Undetermined(t *testing.T) {
 	}
 }
 
-// TestProbeInitialState_Behind_NamesWatcherOwnership is #2654: a PR whose
-// mergeStateStatus is BEHIND must get its own outcome and a message that
-// names the watcher as the one that runs `gh pr update-branch`, forbids the
-// coordinator/worker from running it, and explains why a sync below the
+// TestProbeInitialState_Behind_NamesWatcherOwnership pins the BEHIND case: a
+// PR whose mergeStateStatus is BEHIND must get its own outcome and a message
+// that names the watcher as the one that runs `gh pr update-branch`, forbids
+// the coordinator/worker from running it, and explains why a sync below the
 // head of the queue is wasted work.
 func TestProbeInitialState_Behind_NamesWatcherOwnership(t *testing.T) {
 	stubGhBinRuleset(t,
@@ -361,9 +362,8 @@ func TestProbeInitialState_Behind_NamesWatcherOwnership(t *testing.T) {
 }
 
 // TestProbeInitialState_ZeroApprovalRepo_NeverRequiresApproval sweeps every
-// non-CLEAN state that used to reach the guessed human-approval fallthrough.
-// On a repo requiring zero approving reviews, none of them may produce that
-// message (#2576 AC1).
+// non-CLEAN state. On a repo requiring zero approving reviews, none of them
+// can produce the human-approval message.
 func TestProbeInitialState_ZeroApprovalRepo_NeverRequiresApproval(t *testing.T) {
 	states := []string{"UNKNOWN", "UNSTABLE", "BEHIND", "HAS_HOOKS", "SOME_FUTURE_STATE"}
 	for _, state := range states {
@@ -390,7 +390,7 @@ func TestProbeInitialState_ZeroApprovalRepo_NeverRequiresApproval(t *testing.T) 
 	}
 }
 
-// TestProbeInitialState_UnstableNonRequiredCheck_NotApproval is #2576 AC:
+// TestProbeInitialState_UnstableNonRequiredCheck_NotApproval:
 // an UNSTABLE PR whose only failing check is non-required must be reported as
 // undetermined (naming UNSTABLE), not as requiring approval.
 func TestProbeInitialState_UnstableNonRequiredCheck_NotApproval(t *testing.T) {
@@ -432,7 +432,7 @@ func TestProbeInitialState_ApprovalRequiredButApproved_NotReview(t *testing.T) {
 	}
 }
 
-// TestProbeBranchProtection_ReturnsApprovalCount is the #2576 AC that
+// TestProbeBranchProtection_ReturnsApprovalCount checks that
 // probeBranchProtection surfaces the required approving-review count.
 func TestProbeBranchProtection_ReturnsApprovalCount(t *testing.T) {
 	stubGhBinStates(t,
@@ -467,14 +467,14 @@ func TestProbeBranchProtection_ZeroApprovalCount(t *testing.T) {
 	}
 }
 
-// TestProbeInitialState_NoBranchProtection is the AC1-critical case: a repo
+// TestProbeInitialState_NoBranchProtection is the critical case: a repo
 // whose branch-protection endpoint returns HTTP 404 takes the "no protection,
-// wait for a human" path, NOT the "merge now" path. This is the bootstrap-
-// repo accidental-auto-merge class the #2420 spec explicitly closes.
+// wait for a human" path, NOT the "merge now" path. This guards against the
+// bootstrap-repo accidental-auto-merge class.
 func TestProbeInitialState_NoBranchProtection(t *testing.T) {
 	// Note: mergeStateStatus is CLEAN — on an unprotected repo GitHub often
-	// reports the PR as trivially clean, which is exactly the trap the
-	// #2420 fix closes. The 404 on branch protection is the deciding signal.
+	// reports the PR as trivially clean, which is exactly the trap. The 404
+	// on branch protection is the deciding signal.
 	stubGhBinStates(t,
 		`{"state":"OPEN","number":106,"title":"bootstrap PR","mergedAt":null,"mergeStateStatus":"CLEAN","reviewDecision":"","baseRefName":"main","statusCheckRollup":[]}`,
 		"",
@@ -545,11 +545,11 @@ func TestProbeBranchProtection_ParsesRequiredChecks(t *testing.T) {
 	}
 }
 
-// ── #2436 ruleset-fallback tests ──────────────────────────────────────────────
+// ── ruleset-fallback tests ──────────────────────────────────────────────
 
 // stubGhBinRuleset installs a `gh` shim that discriminates between the
 // classic branches/.../protection path and the rules/branches/... path, so
-// tests can exercise the #2436 fallback independently of each other. Both
+// tests can exercise the ruleset fallback independently of each other. Both
 // classicJSON and rulesetJSON empty means "404" for that endpoint.
 func stubGhBinRuleset(t *testing.T, prJSON, classicJSON, rulesetJSON string) string {
 	t.Helper()
@@ -599,11 +599,11 @@ esac
 	return counterPath
 }
 
-// TestProbeBranchProtection_RulesetFallback_Configured is the PR #2435
-// false-negative regression guard: classic protection 404s (as it does on
-// this repo's ruleset-only-protected main) but the rules/branches endpoint
-// reports an actively-enforced required_status_checks rule. The probe must
-// report protected=true with the check name extracted, not "unprotected".
+// TestProbeBranchProtection_RulesetFallback_Configured guards against the
+// false-negative: classic protection 404s (as it does on this repo's
+// ruleset-only-protected main) but the rules/branches endpoint reports an
+// actively-enforced required_status_checks rule. The probe must report
+// protected=true with the check name extracted, not "unprotected".
 func TestProbeBranchProtection_RulesetFallback_Configured(t *testing.T) {
 	stubGhBinRuleset(t,
 		`{"state":"OPEN","number":1,"title":"","mergedAt":null,"mergeStateStatus":"","reviewDecision":"","baseRefName":"main","statusCheckRollup":[]}`,
@@ -622,8 +622,8 @@ func TestProbeBranchProtection_RulesetFallback_Configured(t *testing.T) {
 	}
 }
 
-// TestProbeBranchProtection_NeitherClassicNorRuleset is the #2420
-// conservative-default regression guard: both endpoints 404, so the probe
+// TestProbeBranchProtection_NeitherClassicNorRuleset is the
+// conservative-default guard: both endpoints 404, so the probe
 // must still report unprotected.
 func TestProbeBranchProtection_NeitherClassicNorRuleset(t *testing.T) {
 	stubGhBinRuleset(t,
@@ -643,7 +643,7 @@ func TestProbeBranchProtection_NeitherClassicNorRuleset(t *testing.T) {
 	}
 }
 
-// TestProbeInitialState_RulesetProtected_Ready is the PR #2435 end-to-end
+// TestProbeInitialState_RulesetProtected_Ready is the end-to-end
 // scenario: a ruleset-protected repo with a CLEAN, all-checks-green PR must
 // reach the enqueue-ready outcome rather than being stuck reporting
 // "no branch protection configured".
@@ -839,10 +839,10 @@ func TestRunMerge_MergeConflict_ExitsFailure(t *testing.T) {
 	}
 }
 
-// TestRunMerge_CIFailed_ExitsFailureNoEnqueue is the #2527 acceptance case:
-// `prism merge` on a PR whose required check already COMPLETED with FAILURE
-// prints the CI-failed message, exits non-zero, and does not enqueue a row
-// (no poller starts for a PR that can never resolve on its own).
+// TestRunMerge_CIFailed_ExitsFailureNoEnqueue is the acceptance case:
+// `prism merge` on a PR whose required check has a COMPLETED status with
+// FAILURE prints the CI-failed message, exits non-zero, and does not enqueue
+// a row (no poller starts for a PR that can never resolve on its own).
 func TestRunMerge_CIFailed_ExitsFailureNoEnqueue(t *testing.T) {
 	openMergeTestDB(t)
 	const coordSession = "nixos-config@main"
@@ -884,7 +884,7 @@ func TestRunMerge_CIFailed_ExitsFailureNoEnqueue(t *testing.T) {
 	}
 }
 
-// TestRunMerge_Unprotected_EnqueuesButAnnounces verifies the AC1-critical
+// TestRunMerge_Unprotected_EnqueuesButAnnounces verifies the critical
 // user-facing path: `prism merge` on an unprotected repo emits the
 // "no branch protection" message and enqueues the PR for silent polling.
 // The watcher will never auto-merge; the initial message tells the

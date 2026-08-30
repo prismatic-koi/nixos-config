@@ -15,7 +15,7 @@ import (
 // It also unsets PRISM_HOST_API for the duration of the test so that
 // runMerge / runMergesList / runMergesCancel exercise the host-side DB path
 // rather than attempting to proxy through a host-API socket that does not
-// exist in the test environment (#1043).
+// exist in the test environment.
 func openMergeTestDB(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
@@ -27,8 +27,8 @@ func openMergeTestDB(t *testing.T) {
 // ── runMerge coordinator-only guard ───────────────────────────────────────────
 
 // TestRunMerge_WorkerSessionIsRejected verifies that a worker session calling
-// prism merge receives an error and no row is inserted. This is the security
-// AC: "Worker agents are not permitted to invoke prism merge."
+// prism merge receives an error and no row is inserted. Worker agents must
+// not invoke prism merge.
 func TestRunMerge_WorkerSessionIsRejected(t *testing.T) {
 	openMergeTestDB(t)
 
@@ -73,10 +73,9 @@ func TestRunMerge_WorkerSessionIsRejected(t *testing.T) {
 
 // TestRunMerge_CoordinatorSessionNotRejectedByWorkerGuard verifies that a
 // @main session (coordinator heuristic) is allowed past the worker-rejection
-// gate. With the mint-on-the-fly fix, the call no longer fails at the
-// instance_id check — it mints one and proceeds to the gh preflight, which
-// fails in a test environment (no real GitHub API). The only assertion here is
-// that the error is NOT about "coordinator sessions only".
+// gate. The call fails later, at the gh preflight, which has no real GitHub
+// API in tests. The only assertion here is that the error is NOT about
+// "coordinator sessions only".
 func TestRunMerge_CoordinatorSessionNotRejectedByWorkerGuard(t *testing.T) {
 	openMergeTestDB(t)
 
@@ -114,9 +113,8 @@ func TestRunMerge_CoordinatorSessionNotRejectedByWorkerGuard(t *testing.T) {
 
 // TestRunMerge_FailsWhenInstanceIDMissing verifies that when a coordinator
 // session has no instance_id in the DB, runMerge returns a clear error
-// indicating the sidecar did not start correctly. The sidecar is now the
-// sole owner of instance_id minting (issue #1252); on-the-fly recovery in
-// runMerge has been removed.
+// indicating the sidecar did not start correctly. The sidecar is the sole
+// owner of instance_id minting. runMerge does no on-the-fly recovery.
 func TestRunMerge_FailsWhenInstanceIDMissing(t *testing.T) {
 	openMergeTestDB(t)
 
@@ -147,7 +145,7 @@ func TestRunMerge_FailsWhenInstanceIDMissing(t *testing.T) {
 	}
 }
 
-// ── GitLab guardrail (#2669) ──────────────────────────────────────────────────
+// ── GitLab guardrail ──────────────────────────────────────────────────
 
 // TestRunMerge_RefusesOnGitLabRemote verifies that `prism merge` refuses
 // outright when the current directory's origin remote is gitlab.com, before
@@ -229,18 +227,18 @@ func TestRunMerge_GitHubRemoteUnaffected(t *testing.T) {
 	}
 }
 
-// ── re-entry / idempotence (#1875) ────────────────────────────────────────────
+// ── re-entry / idempotence ────────────────────────────────────────────
 //
 // These tests cover the cmd/-layer side of merge-queue idempotence. The DB
-// layer's EnqueueMerge is already idempotent via ON CONFLICT(pr) DO UPDATE,
-// but the cmd/-layer behaviour around re-entry was previously unverified:
+// layer's EnqueueMerge is idempotent via ON CONFLICT(pr) DO UPDATE. These
+// tests pin the cmd/-layer re-entry behaviour so that re-entry does not:
 //
-//   - duplicate `gh pr view` round-trip on every re-entry,
-//   - user-facing message reported "enqueued" as if the call were fresh,
-//   - in-sandbox proxy path always ran preflight unconditionally even when
-//     the PR was already terminal on the host.
+//   - pay a duplicate `gh pr view` round-trip,
+//   - report "enqueued" as if the call were fresh,
+//   - run preflight unconditionally on the in-sandbox proxy path when the
+//     PR is already terminal on the host.
 //
-// The fix is observeExistingMergeRow() at the top of runMerge: a single
+// observeExistingMergeRow() at the top of runMerge is the mechanism: a single
 // read-only probe of pending_merges short-circuits both the gh round-trip
 // and the duplicate enqueue when a row already exists.
 
@@ -303,7 +301,7 @@ func countGhCalls(t *testing.T, counterPath string) int {
 	return strings.Count(string(data), "\n")
 }
 
-// TestRunMerge_ReentrySameRow verifies AC (a): two sequential `runMerge`
+// TestRunMerge_ReentrySameRow verifies that two sequential `runMerge`
 // calls for the same PR converge to a single DB row (no duplicate). This
 // is a regression test for the cmd/-layer side of the EnqueueMerge
 // idempotence contract — a paper-cut bug here would either explode into
@@ -369,7 +367,7 @@ func TestRunMerge_ReentrySameRow(t *testing.T) {
 	}
 }
 
-// TestRunMerge_ReentryAlreadyMergedSkipsGh verifies AC (b): re-enqueueing
+// TestRunMerge_ReentryAlreadyMergedSkipsGh verifies that re-enqueueing
 // a PR that is already merged on host does not pay a `gh pr view`
 // round-trip and does not re-insert a fresh watching row over the
 // terminal one. The counting gh stub asserts call count = 0; the DB row
@@ -419,7 +417,7 @@ func TestRunMerge_ReentryAlreadyMergedSkipsGh(t *testing.T) {
 		}
 	})
 
-	// AC (b) headline: zero gh round-trips on the re-entry path.
+	// Headline: zero gh round-trips on the re-entry path.
 	if n := countGhCalls(t, counterPath); n != 0 {
 		t.Errorf("gh was called %d times on re-entry of already-merged PR — expected 0 (preflight must be skipped)", n)
 	}
@@ -455,10 +453,9 @@ func TestRunMerge_ReentryAlreadyMergedSkipsGh(t *testing.T) {
 	}
 }
 
-// TestRunMerge_ReentryDistinguishableMessage verifies AC (c): the
-// user-facing message on re-entry of an already-non-terminal row is
-// distinguishable from the fresh-enqueue line. This is the user-visible
-// half of the fix — a coordinator who runs `prism merge N` twice should
+// TestRunMerge_ReentryDistinguishableMessage verifies that the user-facing
+// message on re-entry of an already-non-terminal row is distinguishable from
+// the fresh-enqueue line. A coordinator who runs `prism merge N` twice must
 // not be told "enqueued" on the second call as if it were the first.
 //
 // As a side-assertion, the counting gh stub confirms the optional AC
@@ -481,7 +478,7 @@ func TestRunMerge_ReentryDistinguishableMessage(t *testing.T) {
 		t.Errorf("first call stdout does not report fresh enqueue: %q", firstOut)
 	}
 	callsAfterFirst := countGhCalls(t, counterPath)
-	// The #2420 initial-state probe makes two gh invocations per fresh
+	// The initial-state probe makes two gh invocations per fresh
 	// call: `gh pr view` (state, mergeable, reviewDecision, checks) and
 	// `gh api ...branches/:branch/protection` (protected vs 404). Together
 	// they are the invocation-time state-table probe.
@@ -594,7 +591,7 @@ func testRunMergeReentryAfterTerminalReEnqueues(t *testing.T, pr int, terminalSt
 	// gh MUST have been called — the short-circuit must not fire on
 	// retry-eligible terminal statuses.
 	if n := countGhCalls(t, counterPath); n != 2 {
-		// #2420 initial-state probe = pr view + branch protection.
+		// Initial-state probe = pr view + branch protection.
 		t.Errorf("gh was called %d times on re-entry of %s PR — expected exactly 2 (#2420 probe = pr view + branch protection; must run on retry)", n, terminalStatus)
 	}
 
@@ -662,7 +659,7 @@ func TestRunMerge_ProxyReentrySkipsGh(t *testing.T) {
 	// Provide a callable session so resolveCallerRepo returns
 	// "nixos-config" — without it the repo-gated short-circuit in
 	// observeExistingMergeRow falls through and the assertions on
-	// zero gh calls / zero /merge POSTs fail (issue #2354).
+	// zero gh calls / zero /merge POSTs fail.
 	t.Setenv("PRISM_SESSION_NAME", "nixos-config@main")
 	t.Setenv("TMUX", "")
 

@@ -1,6 +1,6 @@
 package cmd
 
-// review_wait.go — `prism review --wait` blocking poll loop (#1500).
+// review_wait.go — `prism review --wait` blocking poll loop.
 //
 // After RunAsync spawns the review group and returns, --wait polls the prism
 // DB for group completion. Termination is determined by db.GroupCompleted —
@@ -51,7 +51,7 @@ type reviewWaitAgentJSON struct {
 // Sandbox-aware via newWaitProbe(): in-sandbox callers route reads through
 // the sidecar's /groups/poll endpoint so the host's session_groups table is
 // visible. Without this, --wait inside a sandbox would poll a tmpfs shadow
-// DB and never observe completion (issue #1500 review-code feedback).
+// DB and never observe completion.
 //
 // Exit codes:
 //
@@ -157,7 +157,7 @@ func emitReviewWaitTerminalAgg(prNumber, groupID string, allMembers []db.Status,
 				if mr.StartupError != "" {
 					row.Error = "startup error: " + mr.StartupError
 				} else if mr.StallError != "" {
-					// Mid-run stall (#2239): the reason already begins with
+					// Mid-run stall: the reason already begins with
 					// "stalled mid-run after …".
 					row.Error = mr.StallError
 				}

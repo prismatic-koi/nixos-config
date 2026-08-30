@@ -1,6 +1,6 @@
 package cmd
 
-// prism merges — inspect and manage the local serial merge queue (#783).
+// prism merges — inspect and manage the local serial merge queue.
 //
 // Usage:
 //
@@ -12,7 +12,7 @@ package cmd
 //	prism merges cancel <pr>             cancel a watching entry
 //
 // Both verbs are coordinator-only, and each route carries its own
-// enforcement point (#2608). The proxy route is gated at the host API:
+// enforcement point. The proxy route is gated at the host API:
 // `/merges` and `/merges/cancel` both call requireCoordinator. The direct
 // route is gated by requireMergesCoordinator below.
 
@@ -98,11 +98,11 @@ func runMergesList(cmd *cobra.Command, _ []string) error {
 		filter = "all"
 	}
 
-	// Inside a bwrap sandbox: proxy the list to the host sidecar (#1043).
+	// Inside a bwrap sandbox: proxy the list to the host sidecar.
 	// The host's prism.db is invisible to direct DB reads from inside the
-	// sandbox, so falling through to the DB path would read from a shadow
-	// tmpfs DB that has none of the host's queued rows. The sidecar reads its
-	// own (host-side) DB using the same instance_id and session_name the
+	// sandbox. A fall-through to the DB path reads from a shadow tmpfs DB
+	// that has none of the host's queued rows. The sidecar reads its own
+	// (host-side) DB using the same instance_id and session_name the
 	// merge-queue watcher uses, so the response matches what `sqlite3
 	// prism.db` shows on the host.
 	if apiURL := sandboxenv.HostAPISocket(); apiURL != "" {
@@ -127,7 +127,7 @@ func runMergesList(cmd *cobra.Command, _ []string) error {
 	}
 	defer d.Close()
 
-	// Guard: coordinator-only (#2608). The read-only list path is guarded as
+	// Guard: coordinator-only. The read-only list path is guarded as
 	// well as the cancel path — see requireMergesCoordinator for why a
 	// read-only verb still needs it. The guard runs after the proxy branch
 	// above returns, so the proxy route is untouched and keeps the host API's
@@ -221,7 +221,7 @@ func runMergesCancel(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prism merges cancel: invalid PR number %q", prArg)
 	}
 
-	// Inside a bwrap sandbox: proxy the cancel to the host sidecar (#1043).
+	// Inside a bwrap sandbox: proxy the cancel to the host sidecar.
 	// See merge.go and runMergesList for the reasoning. The sidecar uses its
 	// own instance_id when calling CancelMerge, which is the same identity
 	// the host watcher and `prism merges` use, so cancellation is visible to
@@ -260,7 +260,7 @@ func runMergesCancel(cmd *cobra.Command, args []string) error {
 	}
 	defer d.Close()
 
-	// Guard: coordinator-only (#2608). Same placement as in runMergesList —
+	// Guard: coordinator-only. Same placement as in runMergesList —
 	// after the proxy branch, and before any DB read or write, so a
 	// non-coordinator never reaches d.CancelMerge.
 	if guardErr := requireMergesCoordinator("prism merges cancel", fmt.Sprintf("prism merges cancel %d", pr), callerSession, d); guardErr != nil {
@@ -274,7 +274,7 @@ func runMergesCancel(cmd *cobra.Command, args []string) error {
 
 	// Resolve the caller's repo authoritatively from agent_status. This is
 	// required so CancelMerge cannot touch a same-numbered row belonging
-	// to a different repo sharing this prism.db (issue #2354), and so the
+	// to a different repo sharing this prism.db, and so the
 	// helper messages below only surface rows from the caller's repo.
 	status, statusErr := d.CurrentStatus(sessionName)
 	if statusErr != nil || status == nil {
@@ -308,7 +308,7 @@ func runMergesCancel(cmd *cobra.Command, args []string) error {
 }
 
 // requireMergesCoordinator is the direct-CLI half of the coordinator-only
-// gate on `prism merges list` and `prism merges cancel` (issue #2608).
+// gate on `prism merges list` and `prism merges cancel`.
 //
 // The host API gates both verbs: `/merges` and `/merges/cancel` each call
 // requireCoordinator (internal/sidecar/host_api.go), so a sandboxed caller
@@ -316,14 +316,15 @@ func runMergesCancel(cmd *cobra.Command, args []string) error {
 // carries the host-API socket, so every call from one routes through that
 // gate. A session in `host` isolation mode has no socket, so
 // sandboxenv.HostAPISocket() is empty, the proxy branch is skipped, and the
-// call reaches the direct DB path. With no check there, any host-mode worker,
-// review agent, or investigator reached d.CancelMerge with no role check.
+// call reaches the direct DB path. Without a check there, any host-mode
+// worker, review agent, or investigator reaches d.CancelMerge with no role
+// check.
 //
 // This mirrors the `// Guard: coordinator-only` branch in cmd/merge.go and
 // requireInvestigateCoordinator in cmd/investigate.go — the same
 // session.IsCoordinatorSession call, keyed on the resolved caller session.
-// The three properties that made #2604 reject that shape for `prism spawn`
-// all hold for these two verbs:
+// The three properties that make this caller-keyed shape safe for these two
+// verbs, but not for `prism spawn`, are:
 //
 //  1. Both verbs already fail closed on an unresolvable caller:
 //     resolveCallerIdentity errors when callerSession is empty. Neither verb
@@ -379,13 +380,13 @@ See: modules/programs/prism/agents/coordinator.md`, verb, callerSession, suggest
 
 // resolveCallerIdentity returns the instance_id and session_name for the
 // calling session. Falls back to empty strings gracefully when no session
-// can be identified (e.g. running outside a tmux session).
+// can be identified (for example, running outside a tmux session).
 //
-// Since #2608, requireMergesCoordinator runs before this function on both
-// call paths and returns the same unresolvable-caller error, so the empty
-// check below is no longer the first line of defence. It is kept as defence
-// in depth: a future caller that skips the guard must still not reach
-// CurrentStatus with an empty session name.
+// requireMergesCoordinator runs before this function on both call paths and
+// returns the same unresolvable-caller error, so the empty check below is
+// defence in depth, not the first line of defence: a future caller that
+// skips the guard must still not reach CurrentStatus with an empty session
+// name.
 func resolveCallerIdentity(callerSession string, d *db.DB) (instanceID, sessionName string, err error) {
 	if callerSession == "" {
 		return "", "", fmt.Errorf("cannot determine caller session — run from inside a prism tmux session or set PRISM_SESSION_NAME")

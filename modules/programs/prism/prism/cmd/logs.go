@@ -195,7 +195,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 			// For the default sidecar-log path, if a startup log exists, hint
 			// at it — the operator was probably looking at the wrong file
 			// because the agent silently failed to come up before the sidecar
-			// produced any meaningful events (the #1051 failure mode).
+			// produced any meaningful events.
 			if session.AgentStartupLogExists(sessionName) {
 				return fmt.Errorf("no sidecar log file found for session %q\nhint: an agent-startup log exists for this session — try `prism logs %s --startup` to see spawn-time breadcrumbs",
 					sessionName, sessionName)
@@ -227,8 +227,8 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// AC-4: when the operator is reading the default (sidecar) log and that
-	// log contains nothing beyond SSE-retry noise — the #1051 failure
+	// When the operator is reading the default (sidecar) log and that
+	// log contains nothing beyond SSE-retry noise — the agent-failed-to-start
 	// signature — surface a one-line hint pointing at the agent-startup log
 	// where spawn-time breadcrumbs live. The hint is silenced when the
 	// sidecar log shows real activity (server.connected, first event, etc.)

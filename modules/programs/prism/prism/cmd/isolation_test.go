@@ -177,8 +177,8 @@ func TestIsolationFlagExists(t *testing.T) {
 	}
 }
 
-// TestHostModeFlagDoesNotExist verifies that --host-mode has been removed from
-// spawnCmd (Phase D-2 of the deprecation cycle).
+// TestHostModeFlagDoesNotExist verifies that --host-mode is not a registered
+// flag on spawnCmd.
 func TestHostModeFlagDoesNotExist(t *testing.T) {
 	flag := spawnCmd.Flags().Lookup("host-mode")
 	if flag != nil {

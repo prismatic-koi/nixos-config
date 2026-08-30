@@ -1,12 +1,12 @@
 package cmd
 
 // stats_compare_containers_test.go — `prism stats compare` Spawn Inputs
-// renderer coverage for the new containers_flag axis (#2317 / #2323).
+// renderer coverage for the containers_flag axis.
 //
 // The renderer surface mirrors the existing audit-field axes
-// (profile_name, harness, isolation_mode, …): a row with a populated
-// spawn_inputs row renders "true" / "false"; a row with no spawn_inputs
-// renders "—" so pre-#2087 sessions display cleanly.
+// (profile_name, harness, isolation_mode, …). A row with a populated
+// spawn_inputs row renders "true" / "false". A row with no spawn_inputs
+// renders "—", so sessions with no spawn_inputs row display cleanly.
 
 import (
 	"testing"
@@ -18,8 +18,8 @@ import (
 
 // TestInputsValue_ContainersFlagTrue verifies that a spawn_inputs row with
 // ContainersFlag=true surfaces as "true" via inputsValue("containers_flag").
-// This is the renderer side of AC #7 — the `prism stats compare` Spawn
-// Inputs block carries the new audit column.
+// This is the renderer side — the `prism stats compare` Spawn Inputs block
+// carries the audit column.
 func TestInputsValue_ContainersFlagTrue(t *testing.T) {
 	d := openStatsTestDB(t)
 	startedAt := time.Now().Add(-time.Minute)
@@ -71,7 +71,7 @@ func TestInputsValue_ContainersFlagFalse(t *testing.T) {
 // TestInputsValue_ContainersFlagAbsentRendersDash verifies that a session
 // with no spawn_inputs row surfaces containers_flag as "—" (the missing
 // glyph). Mirrors TestInputsValue_IsolationModeAbsentRendersDash for the
-// pre-#2087 / no-row case so the renderer never crashes on a nil
+// no-row case so the renderer never crashes on a nil
 // CompareInputs pointer.
 func TestInputsValue_ContainersFlagAbsentRendersDash(t *testing.T) {
 	d := openStatsTestDB(t)

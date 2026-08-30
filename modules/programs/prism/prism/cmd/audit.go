@@ -37,17 +37,15 @@ import (
 //
 //  1. Bash promotion — internal/sidecar/events.go promotes a bash tool call
 //     whose command matches sidecar.HighImpactCommandPrefixes().
-//  2. The tier-3 `prism checkin` troubleshooting privilege (issue #2587) —
+//  2. The tier-3 `prism checkin` troubleshooting privilege —
 //     every cross-repo read that the privileged-repo grant admits is
 //     recorded, on either route of the verb: by
 //     internal/sidecar/checkin_permission.go for a sandboxed caller, and by
-//     cmd/checkin_permission.go for a `host`-mode caller (issue #2619).
+//     cmd/checkin_permission.go for a `host`-mode caller.
 //
-// The bash list is derived from the sidecar package rather than copied,
-// because the copy drifted: it still named the pre-#2364 set after four
-// prefixes were added, and no test noticed. Writer 2 was missed by the same
-// mechanism on the PR that introduced it. audit_writers_test.go now pins
-// both halves.
+// The bash list is derived from the sidecar package rather than copied. A
+// copy drifts: it keeps naming a stale set as prefixes are added, and no test
+// notices. audit_writers_test.go pins both halves.
 
 // privilegedCheckinWriterClause names writer 2 in prose. It is a separate
 // clause because that writer is not a bash command and has no prefix to list.
@@ -142,7 +140,7 @@ func runAudit(cmd *cobra.Command, args []string) error {
 //
 // Inside a sandbox the prism DB is unreachable: $XDG_STATE_HOME/prism is
 // deliberately never bound in, so openDB fails with "operation not permitted"
-// (issue #2618). When PRISM_HOST_API is set we therefore proxy the read to the
+// When PRISM_HOST_API is set we therefore proxy the read to the
 // host sidecar instead of opening the local file. Both branches return the
 // same []db.Event, so every caller downstream — table rendering, --json, and
 // the no-results message — is identical on both routes.
@@ -156,7 +154,7 @@ func fetchAuditEvents(sessionName string, sinceMs int64, pattern string, limit i
 // fetchAuditEventsLocal opens the local prism DB and runs the query directly.
 // Used when PRISM_HOST_API is unset (i.e. we're on the host).
 //
-// Guard: coordinator-only (#2627), matching the host-API route's
+// Guard: coordinator-only, matching the host-API route's
 // requireCoordinator. See requireAuditCoordinator in cmd/audit_permission.go
 // for the full rationale. The guard runs before openDB so an unresolvable
 // caller never reaches the database, and before QueryAuditEvents so a

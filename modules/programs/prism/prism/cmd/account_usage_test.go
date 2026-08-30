@@ -1,4 +1,4 @@
-// Tests for `prism account usage` (issue #2539, parent #2537).
+// Tests for `prism account usage`.
 package cmd
 
 import (
@@ -26,13 +26,11 @@ import (
 //
 // It also pins $XDG_CONFIG_HOME and $PI_AUTH_JSON. That is not cosmetic
 // isolation: `prism account usage` refreshes a missing or stale snapshot by
-// default (#2541), and the refresh reads its bearer token from auth.json and
-// its account name from $XDG_CONFIG_HOME/prism/accounts/. Left unpinned, both
+// default, and the refresh reads its bearer token from auth.json and its
+// account name from $XDG_CONFIG_HOME/prism/accounts/. Left unpinned, both
 // resolve to the DEVELOPER'S REAL FILES, and any test here whose snapshot is
 // missing or stale posts a live, authenticated request to api.anthropic.com —
 // spending real subscription quota, silently, on every `go test ./...`.
-// Round 1 of the #2569 review measured exactly that: three hits from three
-// tests, all still reporting PASS.
 //
 // Pinning here is the structural fix. It holds for every test in this file,
 // present and future, regardless of which flags the test registers on its
@@ -270,9 +268,8 @@ func TestAccountUsage_JSONEmitsSnakeCaseAndRFC3339(t *testing.T) {
 	}
 }
 
-// TestAccountUsage_JSONIncludesOrganizationAndWorkspaceID covers the AC on
-// issue #2713 that the round-trip must reach `prism account usage --json`,
-// not just the on-disk file.
+// TestAccountUsage_JSONIncludesOrganizationAndWorkspaceID verifies that the
+// round-trip reaches `prism account usage --json`, not just the on-disk file.
 func TestAccountUsage_JSONIncludesOrganizationAndWorkspaceID(t *testing.T) {
 	dir := withUsageFixture(t)
 	writeUsageSnapshot(t, dir, usage.Snapshot{
@@ -394,7 +391,7 @@ func TestAccountUsage_NoTokenValuePrinted(t *testing.T) {
 	}
 }
 
-// ── Network-isolation regression (#2569 review round 1) ──────────────────────
+// ── Network-isolation regression ──────────────────────
 
 // countingTransport records every outbound request and refuses to perform it.
 // Reaching it at all is the failure the test is looking for.
@@ -462,28 +459,24 @@ func seedRefreshableAccount(t *testing.T, usageDir string) {
 	}
 }
 
-// TestAccountUsage_FixtureAloneBlocksTheNetwork is the regression test for the
-// round-1 review-qa finding on PR #2569.
+// TestAccountUsage_FixtureAloneBlocksTheNetwork verifies that withUsageFixture
+// alone blocks the network, whatever flags a test registers.
 //
-// Before the fix, `withUsageFixture` pinned only $XDG_STATE_HOME. Three tests
-// in this file build a bare cobra command that registers only `json`, so
-// `GetBool("no-refresh")` returned (false, err), the discarded error left
-// noRefresh false, and the refresh ran against the DEVELOPER'S REAL
-// ~/.config/prism/accounts/ and ~/.pi/agent/auth.json. The measured result was
-// three live authenticated POSTs to api.anthropic.com per `go test ./cmd/`,
-// with every test still reporting PASS. CI never saw it — the runner has no
-// accounts directory.
+// If `withUsageFixture` pins only $XDG_STATE_HOME, a test that builds a bare
+// cobra command registering only `json` leaves noRefresh false (GetBool
+// ("no-refresh") returns (false, err) and the error is discarded), so the
+// refresh runs against the DEVELOPER'S REAL ~/.config/prism/accounts/ and
+// ~/.pi/agent/auth.json — a live authenticated POST to api.anthropic.com per
+// `go test ./cmd/`. CI never sees it: the runner has no accounts directory.
 //
-// Two independent defences now hold, and each sub-test below isolates ONE of
-// them. Testing them together would let either mask the other, which is how a
-// mutation probe caught an earlier version of this very test.
+// Two independent defences hold, and each sub-test below isolates ONE of
+// them. Testing them together lets either mask the other.
 func TestAccountUsage_FixtureAloneBlocksTheNetwork(t *testing.T) {
 	// Defence 1, asserted DIRECTLY rather than by observing an effect.
 	//
 	// An effect-based assertion ("no request was made") passes vacuously on
 	// any machine that happens to have no ~/.config/prism/accounts/ — which
-	// includes every CI runner and every agent sandbox. That is precisely why
-	// the original defect survived a full review round. Asserting the
+	// includes every CI runner and every agent sandbox. Asserting the
 	// resolved paths instead fails deterministically everywhere.
 	t.Run("fixture pins the credential paths inside the tempdir", func(t *testing.T) {
 		usageDir := withUsageFixture(t)

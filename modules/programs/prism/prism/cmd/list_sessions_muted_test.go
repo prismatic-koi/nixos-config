@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for the muted-aware surface of `prism sessions list` (#2013):
+// Tests for the muted-aware surface of `prism sessions list`:
 //
 //   - The (muted) marker appears on muted rows in the human-readable table.
 //   - The `muted` field appears in the --json output of every session object.

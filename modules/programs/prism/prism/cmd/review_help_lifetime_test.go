@@ -1,12 +1,13 @@
 package cmd
 
-// review_help_lifetime_test.go — issue #2649.
+// Tests that `prism review --help` states the current review-agent session
+// lifetime.
 //
 // `prism review --help` states how long review-agent sessions live. That text
-// is the copy a user and an agent actually read, and it went stale in review
-// round 1 of PR #2676: the file header was corrected and the cobra Long string
-// 43 lines below it was not, so --help kept promising the pre-change contract
-// ("sessions persist until prism cleanup is invoked on the parent").
+// is the copy a user and an agent actually read. If the file header is
+// corrected but the cobra Long string 43 lines below it is not, --help keeps
+// promising a stale contract ("sessions persist until prism cleanup is
+// invoked on the parent").
 //
 // A comment listing the prose sites cannot catch that. This test can.
 
@@ -36,7 +37,7 @@ func TestReviewHelp_StatesTheReleaseWindow(t *testing.T) {
 }
 
 // TestReviewHelp_DoesNotClaimSessionsPersistUntilCleanup is the direct guard
-// for the stale sentence. Review agents are no longer kept until the parent is
+// for the stale sentence. Review agents are not kept until the parent is
 // cleaned up, so any wording that promises that is false.
 func TestReviewHelp_DoesNotClaimSessionsPersistUntilCleanup(t *testing.T) {
 	long := strings.ToLower(reviewCmd.Long)

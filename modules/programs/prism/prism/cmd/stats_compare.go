@@ -59,8 +59,7 @@ Examples:
 	// stderr (see runStatsCompare) and let main.go drive the non-zero
 	// exit code. Cobra's default behaviour would dump the usage block
 	// and a duplicate "Error: ..." line, both of which violate the
-	// documented `--json` output contract for `prism stats compare`
-	// (issue #2099 Bug 3).
+	// documented `--json` output contract for `prism stats compare`.
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
@@ -88,10 +87,10 @@ func init() {
 		cmd.Flags().Bool("include-inputs", false, "Prepend spawn_inputs block (default: on for 2-run, off for 3+)")
 		cmd.Flags().Bool("include-rubric", false, "Include rubric_* columns (hidden by default)")
 		// Top-level `--json` flag honours the prism-wide convention that
-		// every list/lookup subcommand accepts `--json` (issue #2099 Bug 2).
-		// It is byte-equivalent to `--format json` on stdout for the success
-		// path; on the error path both surfaces emit `{"error":"..."}` on
-		// stderr per the prism `--json` contract (issue #2099 Bug 3).
+		// every list/lookup subcommand accepts `--json`. It is byte-equivalent
+		// to `--format json` on stdout for the success path. On the error path
+		// both surfaces emit `{"error":"..."}` on stderr per the prism
+		// `--json` contract.
 		cmd.Flags().Bool("json", false, "Emit a single JSON document to stdout (alias for --format json). On error, emits {\"error\":\"...\"} to stderr.")
 	}
 	statsCmd.AddCommand(compareCmd)
@@ -99,9 +98,9 @@ func init() {
 }
 
 // jsonOutputRequested reports whether the caller asked for the JSON
-// output contract via either the top-level `--json` flag (issue #2099
-// Bug 2) or the legacy `--format json`. The two surfaces are equivalent
-// — see compareCmd.Long for the documented contract.
+// output contract via either the top-level `--json` flag or the
+// `--format json` flag. The two surfaces are equivalent — see
+// compareCmd.Long for the documented contract.
 func jsonOutputRequested(cmd *cobra.Command) bool {
 	if j, _ := cmd.Flags().GetBool("json"); j {
 		return true
@@ -139,7 +138,7 @@ func runStatsCompareInner(cmd *cobra.Command, args []string) error {
 	// not carry the host's data, so the resolution + aggregation must run on the
 	// host. The sidecar returns the assembled per-run data and the rendering
 	// (Δ column, table/json/csv, all flags) stays on the CLI side — byte for
-	// byte identical to the host-direct path (issue #2098).
+	// byte identical to the host-direct path.
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		runs, err := proxyStatsCompare(apiURL, args)
 		if err != nil {
@@ -174,7 +173,7 @@ func runStatsAbtest(cmd *cobra.Command, args []string) error {
 func runStatsAbtestInner(cmd *cobra.Command, args []string) error {
 	groupID := args[0]
 
-	// PRISM_HOST_API proxy dispatch (issue #2098): same contract as compare —
+	// PRISM_HOST_API proxy dispatch: same contract as compare —
 	// the host resolves the group members and assembles per-run data; the CLI
 	// renders.
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
@@ -267,14 +266,15 @@ type compareRun struct {
 	// state (finished/error/interrupted) but no spawn_outcome row exists yet
 	// (the window between terminal transition and prism cleanup), Outcome is
 	// populated by an on-the-fly call to db.ComputeSpawnOutcome — see
-	// loadCompareRuns and issue #2102.
+	// loadCompareRuns.
 	Outcome *db.SpawnOutcome
 	// Inputs is the slim, non-sensitive spawn_inputs projection for this
-	// session, or nil when no row exists (pre-#2087 spawns, or a session
-	// created outside of the SpawnSession chokepoint). It is db.CompareInputs
-	// rather than the full db.SpawnInputs so the conversation-bearing columns
-	// (prompt_text, …) never cross the all-roles host-API /stats boundary on
-	// the proxy path (issue #2098 security review).
+	// session, or nil when no row exists (spawns with no inputs row, or a
+	// session created outside of the SpawnSession chokepoint). It is
+	// db.CompareInputs rather than the full db.SpawnInputs so the
+	// conversation-bearing columns (prompt_text, …) never cross the
+	// all-roles host-API /stats boundary on the proxy path. This is a
+	// security boundary.
 	Inputs *db.CompareInputs
 }
 
@@ -294,18 +294,17 @@ func runComparison(cmd *cobra.Command, d *db.DB, sessions []*db.Session) error {
 
 // renderComparison reads the rendering flags and dispatches to the table,
 // JSON, or CSV renderer. It takes fully-assembled runs so the direct-DB and
-// host-API proxy paths render byte-identically from the same code (issue
-// #2098): every rendering flag (--format, --diff-only, --axes,
+// host-API proxy paths render byte-identically from the same code: every
+// rendering flag (--format, --diff-only, --axes,
 // --include-inputs, --include-rubric) is applied here, on the CLI side, so
 // none of them can silently degrade on the proxy path.
 func renderComparison(cmd *cobra.Command, runs []compareRun) error {
 	format, _ := cmd.Flags().GetString("format")
-	// The top-level `--json` flag (issue #2099 Bug 2) is an alias for
-	// `--format json`. Both surfaces must produce byte-identical stdout,
-	// so collapse them to the same renderer dispatch here. If both are
-	// set with conflicting values (e.g. `--json --format csv`), --json
-	// wins — it is the documented prism-wide convention and the more
-	// explicit signal.
+	// The top-level `--json` flag is an alias for `--format json`. Both
+	// surfaces must produce byte-identical stdout, so collapse them to the
+	// same renderer dispatch here. If both are set with conflicting values
+	// (for example `--json --format csv`), --json wins — it is the
+	// documented prism-wide convention and the more explicit signal.
 	if j, _ := cmd.Flags().GetBool("json"); j {
 		format = "json"
 	}
@@ -356,7 +355,7 @@ func renderComparison(cmd *cobra.Command, runs []compareRun) error {
 // on the fly from agent_events via db.ComputeSpawnOutcome. ComputeSpawnOutcome
 // is the same code path WriteSpawnOutcome uses internally, so the values
 // surfaced here agree byte-for-byte with the row the cleanup pass will
-// later write (issue #2102).
+// later write.
 //
 // Live sessions (active / idle / reviewing / escalated) keep Outcome == nil
 // so the renderer shows “—” — the aggregates are not yet meaningful.
@@ -684,12 +683,12 @@ func buildAxisRows(axes []string, runs []compareRun, diffOnly bool) []axisRow {
 
 // ---------- table renderer ----------
 //
-// Issue #2099 Bug 1 — the previous renderer used `fmt.Sprintf("%-*s", wLabel,
-// styleLabel.Render(row.Name+":"))` which mixes byte-count padding with ANSI
-// escape sequences from lipgloss. Escape codes contribute bytes but zero
-// visible width, so the visible column anchor drifted by (raw_bytes - visible)
-// on every row, breaking vertical alignment between value cells and the
-// header row's run-A / run-B / Δ positions.
+// The table renderer must not pad with byte counts over lipgloss-styled
+// strings, for example `fmt.Sprintf("%-*s", wLabel, styleLabel.Render(...))`.
+// ANSI escape codes contribute bytes but zero visible width. Byte-count
+// padding over styled text drifts the visible column anchor by
+// (raw_bytes - visible) on every row, which breaks vertical alignment
+// between value cells and the header row's run-A / run-B / Δ positions.
 //
 // The new renderer:
 //   - assembles every section (Session, Spawn Inputs, Process-level, ...)
@@ -969,9 +968,9 @@ func padRightVisible(s string, width int) string {
 // ---------- spawn_inputs renderer helpers ----------
 
 // inputsAxes is the canonical ordered list of spawn_inputs columns surfaced
-// by `prism stats compare`. The set must match the AC for issue #2102 Layer 2:
-// profile_name, isolation_mode, branch, agent_role, harness, plus the
-// abtest pair id (the data point that ties two sibling sessions together).
+// by `prism stats compare`. The set is: profile_name, isolation_mode,
+// branch, agent_role, harness, plus the abtest pair id (the data point that
+// ties two sibling sessions together).
 var inputsAxes = []string{
 	"profile_name",
 	"harness",
@@ -1001,12 +1000,11 @@ func inputsValue(axis string, run compareRun) string {
 			return run.Session.Harness
 		}
 	case "isolation_mode":
-		// Prefer the resolved effective mode (#2105 — always populated for
-		// new rows post-fix) so the renderer surfaces a meaningful value
-		// even when --isolation was omitted at spawn time. Fall back to the
-		// raw --isolation flag value for back-compat with pre-#2105 rows
-		// (where isolation_mode is NULL) so we never crash or misreport on
-		// historical data.
+		// Prefer the resolved effective mode (always populated for new rows)
+		// so the renderer surfaces a meaningful value even when --isolation
+		// was omitted at spawn time. Fall back to the raw --isolation flag
+		// value for older rows where isolation_mode is NULL, so the renderer
+		// never crashes or misreports on historical data.
 		if in != nil && in.IsolationMode != nil && *in.IsolationMode != "" {
 			return *in.IsolationMode
 		}
@@ -1030,8 +1028,8 @@ func inputsValue(axis string, run compareRun) string {
 		}
 	case "containers_flag":
 		// Always renders for rows that have an inputs row, with "true" / "false"
-		// so the absence ("—") cleanly distinguishes pre-#2087 rows from rows
-		// that recorded containers_flag=0. (#2317 / #2323)
+		// so the absence ("—") cleanly distinguishes rows with no inputs row
+		// from rows that recorded containers_flag=0.
 		if in != nil {
 			if in.ContainersFlag {
 				return "true"

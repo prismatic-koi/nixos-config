@@ -2,7 +2,7 @@ package cmd
 
 // prism db query — run a single read-only SQL statement.
 //
-// Implements issue #1467. Highlights:
+// Highlights:
 //   - Read-only enforcement is delegated to SQLite via ?mode=ro. We do NOT
 //     attempt to parse SQL to allowlist statements.
 //   - Single-statement guard is performed at the CLI layer (and again on the

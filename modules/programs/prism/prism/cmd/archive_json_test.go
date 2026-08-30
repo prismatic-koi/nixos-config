@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for --json flag on prism archive --all (#1499).
+// Tests for --json flag on prism archive --all.
 
 import (
 	"encoding/json"
