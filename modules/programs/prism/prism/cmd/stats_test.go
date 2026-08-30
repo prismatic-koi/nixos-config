@@ -78,13 +78,13 @@ func assistantPayloadWithTokens(msgID, text string, inputTokens, outputTokens, c
 }
 
 // toolCallPayloadWithDuration returns a tool_call JSON payload using
-// the post-#1783 pi-extension wire shape ({name, id, args}) plus a
-// `durationMs` field (kept by the older PI stdio adapter).
+// the pi-extension wire shape ({name, id, args}) plus a `durationMs` field
+// (kept by the older PI stdio adapter).
 //
 // Args is JSON-encoded as a string literal so legacy bare inputs
 // ("echo hello", "main.go") survive without breaking JSON syntax.
-// Stats consumers re-read `Name` (the renamed `Tool` field) and
-// `DurationMs` only; args content is irrelevant to the metric paths.
+// Stats consumers re-read `Name` and `DurationMs` only. args content is
+// irrelevant to the metric paths.
 func toolCallPayloadWithDuration(msgID, tool, args string, durationMs int64) string {
 	encodedArgs, _ := json.Marshal(args)
 	return fmt.Sprintf(`{"name":%q,"id":%q,"args":%s,"durationMs":%d}`,
@@ -1050,8 +1050,8 @@ func TestRunStats_DaysMutuallyExclusive(t *testing.T) {
 	}
 }
 
-// TestRunStats_AllFlagRemoved verifies that --all is no longer a registered flag
-// on statsCmd (passing it should result in an error/unknown flag).
+// TestRunStats_AllFlagRemoved verifies that --all is not a registered flag
+// on statsCmd (passing it results in an unknown-flag error).
 func TestRunStats_AllFlagRemoved(t *testing.T) {
 	f := statsCmd.Flags().Lookup("all")
 	if f != nil {
@@ -1059,7 +1059,7 @@ func TestRunStats_AllFlagRemoved(t *testing.T) {
 	}
 }
 
-// TestRunStatsModel_AllFlagRemoved verifies that --all is no longer a registered
+// TestRunStatsModel_AllFlagRemoved verifies that --all is not a registered
 // flag on modelCmd.
 func TestRunStatsModel_AllFlagRemoved(t *testing.T) {
 	f := modelCmd.Flags().Lookup("all")
@@ -1468,7 +1468,7 @@ func TestRunStatsModel_LatencyNote(t *testing.T) {
 }
 
 // TestRunStatsSummary_ShowsAllRepos verifies that the summary table shows all
-// repos by default (no longer scoped to current repo).
+// repos by default (not scoped to the current repo).
 func TestRunStatsSummary_ShowsAllRepos(t *testing.T) {
 	d := openStatsTestDB(t)
 	base := time.Now().Truncate(time.Second)
@@ -1850,7 +1850,7 @@ func TestRunStatsModel_TtftAbsentInOldRows(t *testing.T) {
 	}
 }
 
-// ── formatDurationLong edge cases (issue #1010) ───────────────────────────────
+// ── formatDurationLong edge cases ───────────────────────────────
 
 // TestFormatDurationLong_SaturatedDuration verifies that MaxInt64 (and values
 // close to it) are rendered as "—" rather than "2562047h 47m".
@@ -1920,13 +1920,13 @@ func TestFormatDurationLong_ValidDurations(t *testing.T) {
 	}
 }
 
-// --- issue #2738: prism stats model must not hide a provider-reported cost ---
+// --- prism stats model must not hide a provider-reported cost ---
 
 // TestRunStatsModel_UnknownModelShowsProviderReportedCost verifies that a
 // model absent from ModelCosts, but with a non-zero event-reported cost,
-// prints that cost instead of "-". This is the core defect in #2738: m.Cost
-// is already correct via the pricing.Cost fallback, but the display gate was
-// keyed on table presence alone.
+// prints that cost instead of "-". m.Cost is correct via the pricing.Cost
+// fallback. The display gate must not key on table presence alone, or a
+// provider-reported cost for an untabled model is hidden.
 func TestRunStatsModel_UnknownModelShowsProviderReportedCost(t *testing.T) {
 	sid := "sid-2738-unknown"
 	events := []db.Event{
@@ -2031,9 +2031,9 @@ func TestRunStatsModel_UnknownModelCostMarkedDistinctFromTableCost(t *testing.T)
 	}
 }
 
-// TestRunStatsModel_UnknownModelNoCostStillShowsDash verifies the guard #2738
-// explicitly keeps: a model absent from ModelCosts with no reported cost
-// still shows "-", never "$0.00".
+// TestRunStatsModel_UnknownModelNoCostStillShowsDash verifies the guard:
+// a model absent from ModelCosts with no reported cost still shows "-",
+// never "$0.00".
 func TestRunStatsModel_UnknownModelNoCostStillShowsDash(t *testing.T) {
 	sid := "sid-2738-nocost"
 	events := []db.Event{
@@ -2071,8 +2071,7 @@ func TestRunStatsModel_UnknownModelNoCostStillShowsDash(t *testing.T) {
 }
 
 // TestRunStatsModel_KnownModelCostUnchanged locks in that a model present in
-// the pricing table renders exactly as it did before #2738: a plain
-// formatted cost with no marker.
+// the pricing table renders as a plain formatted cost with no marker.
 func TestRunStatsModel_KnownModelCostUnchanged(t *testing.T) {
 	sid := "sid-2738-known2"
 	events := []db.Event{
@@ -2108,9 +2107,9 @@ func TestRunStatsModel_KnownModelCostUnchanged(t *testing.T) {
 	}
 }
 
-// TestRunStatsModel_NoModelCostsMutated is a static guard that #2738 does not
-// add, remove, or change any entry in pricing.ModelCosts. It fails loudly if
-// a future edit to this PR's branch slips a table change in.
+// TestRunStatsModel_NoModelCostsMutated is a static guard on
+// pricing.ModelCosts. It fails loudly if a future edit adds, removes, or
+// changes any entry.
 func TestRunStatsModel_NoModelCostsMutated(t *testing.T) {
 	want := map[string]pricing.ModelCost{
 		"anthropic/claude-sonnet-4-6":          {Input: 3.0, Output: 15.0, CacheRead: 0.30, CacheWrite: 3.75},
@@ -2147,7 +2146,7 @@ func TestRunStatsModel_NoModelCostsMutated(t *testing.T) {
 // internal/exporter/cost_test.go's TestExporter_CostEqualsPricingCost is the
 // same assertion from the exporter's side; together the two lock both
 // consumers to the one shared implementation, so they cannot silently
-// diverge again as they had before #2722.
+// diverge.
 func TestRunStatsModel_CostAgreesWithPricingCostFallback(t *testing.T) {
 	sid := "sid-2738-agree"
 	type turn struct {

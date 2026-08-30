@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for `prism logs --harness-events` (P5.LOGS / #1218).
+// Tests for `prism logs --harness-events`.
 
 import (
 	"bytes"

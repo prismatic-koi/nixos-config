@@ -1,9 +1,9 @@
 package cmd
 
-// prism merge <pr> — enqueue a PR for the local serial merge queue (#783).
+// prism merge <pr> — enqueue a PR for the local serial merge queue.
 //
 // Coordinator-only: looks up the calling session's instance_id from the DB,
-// pre-flight-validates that the PR exists and is open, then inserts a row into
+// validates that the PR exists and is open, then inserts a row into
 // pending_merges with status = 'watching'. The sidecar's merge-queue watcher
 // drives the merge lifecycle asynchronously.
 //
@@ -66,7 +66,7 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prism merge: invalid PR number %q — must be a positive integer", prArg)
 	}
 
-	// GitLab guardrail (#2669): the local merge queue is GitHub-only. Refuse
+	// GitLab guardrail: the local merge queue is GitHub-only. Refuse
 	// up front, before the gh pr view state probe below, so a gitlab.com
 	// remote never enqueues and never shells out to gh. github.com (and any
 	// remote forge.FromRemoteURL does not recognise) is unaffected — this
@@ -80,21 +80,20 @@ func runMerge(cmd *cobra.Command, args []string) error {
 	timeoutFlag, _ := cmd.Flags().GetDuration("timeout")
 
 	// Resolve the calling session's repo up front. Every downstream probe
-	// and DB write is now repo-scoped (issue #2354) so we need this value
-	// available before the re-entry short-circuit runs. When we cannot
-	// resolve a repo (running outside a prism tmux session, DB error,
-	// row not yet present) callerRepo stays empty and the probe falls
-	// through as if no row exists — the enqueue path below re-derives
-	// repo and produces a clear error if resolution is still impossible.
+	// and DB write is repo-scoped, so this value must be available before
+	// the re-entry short-circuit runs. When the repo cannot be resolved
+	// (running outside a prism tmux session, DB error, row not yet present)
+	// callerRepo stays empty and the probe falls through as if no row
+	// exists — the enqueue path below re-derives repo and produces a clear
+	// error if resolution is still impossible.
 	callerRepo := resolveCallerRepo()
 
-	// Re-entry short-circuit (#1875). Probe the merge ledger BEFORE running
+	// Re-entry short-circuit. Probe the merge ledger BEFORE running
 	// the `gh pr view` preflight or hitting the sidecar /merge endpoint.
 	// This is the cmd/-layer side of the DB-level idempotence in
-	// EnqueueMerge: the DB does the right thing on duplicate inserts, but
-	// the user-facing behaviour was misleading (a second `prism merge N`
-	// reported "enqueued" as if it were fresh) and gratuitous network cost
-	// was paid on every re-entry (one `gh pr view` round-trip per call).
+	// EnqueueMerge. The DB handles duplicate inserts correctly, but without
+	// this short-circuit a second `prism merge N` reports "enqueued" as if
+	// it were fresh and pays one `gh pr view` round-trip per call.
 	//
 	//   - Terminal row, status == "merged" — short-circuit and print the
 	//     recorded status. This is a true no-op: the PR is done.
@@ -111,26 +110,24 @@ func runMerge(cmd *cobra.Command, args []string) error {
 	//   - No row — fall through to the normal enqueue path.
 	//
 	// The lookup is scoped to callerRepo so a same-numbered row belonging
-	// to a different repo cannot short-circuit our own enqueue (issue
-	// #2354). Uses newWaitProbe() so the lookup works on both the host
-	// (direct DB) and inside a sandbox (host-API proxy); a probe failure
-	// falls through rather than erroring so the user still gets sensible
-	// behaviour.
+	// to a different repo cannot short-circuit our own enqueue. Uses
+	// newWaitProbe() so the lookup works on both the host (direct DB) and
+	// inside a sandbox (host-API proxy). A probe failure falls through
+	// rather than erroring so the user still gets sensible behaviour.
 	if done, reentryErr := observeExistingMergeRow(pr, callerRepo, waitFlag, jsonFlag, timeoutFlag); done {
 		return reentryErr
 	}
 
-	// Inside a bwrap sandbox: proxy the enqueue to the host sidecar (#1043).
+	// Inside a bwrap sandbox: proxy the enqueue to the host sidecar.
 	// The host's prism.db is invisible to direct DB writes from inside the
-	// sandbox, so falling through to the DB path would silently write to a
-	// shadow tmpfs DB that the merge-queue watcher never sees. We must NOT
-	// silently fall back to the direct DB path on socket failure — that is the
-	// exact behaviour this fix replaces. A clear error and non-zero exit is
-	// the correct response (AC-6).
+	// sandbox. A fall-through to the DB path silently writes to a shadow
+	// tmpfs DB that the merge-queue watcher never sees. Do NOT silently
+	// fall back to the direct DB path on socket failure. A clear error and
+	// non-zero exit is the correct response.
 	//
 	// Coordinator-only enforcement happens on the sidecar side via
 	// requireCoordinator, which returns HTTP 403 for worker sessions. The
-	// #2420 initial-state probe runs inside the sandbox (gh works there)
+	// initial-state probe runs inside the sandbox (gh works there)
 	// before the proxy call so invalid or terminal PRs do not pin sidecar
 	// resources and the coordinator gets the state-table message immediately.
 	if apiURL := sandboxenv.HostAPISocket(); apiURL != "" {
@@ -162,7 +159,7 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		}, &row); proxyErr != nil {
 			return fmt.Errorf("prism merge: %w", proxyErr)
 		}
-		// JSON-exclusive contract (#1500): when --wait and --json are both
+		// JSON-exclusive contract: when --wait and --json are both
 		// set, the terminal status is the only thing on stdout. Suppress
 		// the textual enqueue-confirmation lines on that path so a
 		// `--wait --json` consumer sees a single parseable JSON object.
@@ -203,7 +200,7 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 	}
 
 	// Look up instance_id for the calling session. The sidecar mints
-	// instance_id at startup, so it should always be present in the DB row.
+	// instance_id at startup, so it is normally present in the DB row.
 	// If it is missing, the sidecar startup did not run correctly — return a
 	// clear error rather than attempting on-the-fly recovery.
 	if callerSession == "" {
@@ -221,10 +218,10 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 	sessionName := callerSession
 
 	// Prefer the stored repo from agent_status over the session-name split
-	// (which is a best-effort fallback in resolveCallerRepo). agent_status
-	// is written at sidecar startup from the same source, but in tests the
-	// two paths may diverge (e.g. seeded rows use different repo values),
-	// and status.Repo is the authoritative record for this coordinator.
+	// (a best-effort fallback in resolveCallerRepo). agent_status is written
+	// at sidecar startup from the same source, but in tests the two paths
+	// can diverge (for example, seeded rows use different repo values).
+	// status.Repo is the authoritative record for this coordinator.
 	repo := status.Repo
 	if repo == "" {
 		repo = callerRepo
@@ -233,12 +230,11 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 		return fmt.Errorf("prism merge: cannot determine repo for session %q — agent_status.repo is empty and session name has no '@' prefix", callerSession)
 	}
 
-	// #2420 initial-state probe: describe what will happen, then enqueue
+	// Initial-state probe: describe what will happen, then enqueue
 	// for non-terminal outcomes. Terminal outcomes (already merged, closed
 	// without merge, merge conflict) short-circuit here — no row is written
-	// to pending_merges. Timeout is kept tight (5s per gh call) so the
-	// overall command returns well within the 2-second AC when the API
-	// responds promptly.
+	// to pending_merges. The timeout is kept tight (5s per gh call) so the
+	// overall command returns promptly when the API responds.
 	decision, err := probeInitialState(pr)
 	if err != nil {
 		return fmt.Errorf("prism merge: %w", err)
@@ -251,7 +247,7 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 
 	// Enqueue (idempotent). Pass title for `prism merges list` display.
 	// Repo is required so pending_merges rows are keyed on (repo, pr) and
-	// PR numbers can safely collide across repos (issue #2354).
+	// PR numbers can safely collide across repos.
 	var titlePtr *string
 	if title != "" {
 		titlePtr = &title
@@ -261,7 +257,7 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 		return fmt.Errorf("prism merge: %w", err)
 	}
 
-	// JSON-exclusive contract (#1500): suppress the textual enqueue
+	// JSON-exclusive contract: suppress the textual enqueue
 	// confirmation when --wait and --json are both set.
 	if !quietStdout {
 		fmt.Printf("PR #%d enqueued (queue_position=%d, status=%s)\n", pr, row.QueuePosition, row.Status)
@@ -309,7 +305,7 @@ func resolveCallerRepo() string {
 }
 
 // observeExistingMergeRow is the cmd/-layer re-entry short-circuit for
-// `prism merge` (#1875). It probes the pending_merges ledger before any
+// `prism merge`. It probes the pending_merges ledger before any
 // `gh pr view` preflight or sidecar round-trip and decides whether the
 // caller can be served entirely from the existing row.
 //
@@ -322,11 +318,11 @@ func resolveCallerRepo() string {
 // the caller pays the gh round-trip but still gets a correct outcome via
 // the idempotent DB layer.
 func observeExistingMergeRow(pr int, repo string, waitFlag, jsonMode bool, timeout time.Duration) (bool, error) {
-	// A missing repo means we cannot safely scope the lookup — a match on
-	// pr alone would re-open the exact cross-repo collision issue #2354
-	// closed. Fall through to the normal enqueue path, which resolves the
-	// repo authoritatively from agent_status and returns a clear error if
-	// resolution is still impossible.
+	// A missing repo means the lookup cannot be safely scoped. A match on
+	// pr alone reopens the cross-repo collision: a same-numbered PR in a
+	// different repo matches. Fall through to the normal enqueue path, which
+	// resolves the repo authoritatively from agent_status and returns a
+	// clear error if resolution is still impossible.
 	if repo == "" {
 		return false, nil
 	}
@@ -375,7 +371,7 @@ func observeExistingMergeRow(pr int, repo string, waitFlag, jsonMode bool, timeo
 
 // isMergeTerminalStatus mirrors internal/db.isMergeTerminal at the cmd
 // layer so the short-circuit in observeExistingMergeRow does not need to
-// import an unexported predicate. The set is small and stable; if a new
+// import an unexported predicate. The set is small and stable. If a new
 // terminal status is added to the DB layer, this list must be updated to
 // match.
 func isMergeTerminalStatus(status string) bool {
@@ -394,14 +390,13 @@ func isMergeTerminalStatus(status string) bool {
 // the regular path — best-effort short-circuit, never a hard failure.
 //
 // Uses newWaitProbe() so the lookup is correct both on the host (direct DB)
-// and inside a sandbox (host-API proxy). Reading the host's prism.db
-// directly from inside a sandbox would hit a shadow tmpfs DB the merge-queue
-// watcher never writes to, silently returning "no row" and skipping the
-// short-circuit — see issue #1500 review-code feedback for the parallel bug
-// in the wait poll loop below.
+// and inside a sandbox (host-API proxy). A direct read of the host's
+// prism.db from inside a sandbox hits a shadow tmpfs DB the merge-queue
+// watcher never writes to, silently returns "no row", and skips the
+// short-circuit.
 //
-// repo scopes the lookup so we cannot short-circuit on a same-numbered row
-// from a different repo (issue #2354). An empty repo returns (false, nil).
+// repo scopes the lookup so a same-numbered row from a different repo cannot
+// short-circuit. An empty repo returns (false, nil).
 func observeAlreadyTerminal(pr int, repo string, jsonMode bool) (bool, error) {
 	if repo == "" {
 		return false, nil
@@ -425,18 +420,18 @@ func observeAlreadyTerminal(pr int, repo string, jsonMode bool) (bool, error) {
 // waitForMergeTerminal polls the merge-queue ledger for the given PR until it
 // reaches a terminal state (merged/failed/cancelled/abandoned), the timeout
 // elapses, or the user interrupts. The merge-queue watcher (running in the
-// host sidecar) writes the terminal row — this poll loop only observes it;
-// killing this process does NOT cancel the merge.
+// host sidecar) writes the terminal row. This poll loop only observes it.
+// Killing this process does NOT cancel the merge.
 //
 // Sandbox-aware via newWaitProbe(): host shells read prism.db directly,
 // in-sandbox callers route reads through the sidecar's /merges/by-pr
-// endpoint. Without this, --wait inside a sandbox would poll a tmpfs shadow
-// DB and never observe the terminal (issue #1500 review-code feedback).
+// endpoint. Without this, --wait inside a sandbox polls a tmpfs shadow
+// DB and never observes the terminal.
 //
 // repo scopes each poll to the caller's repo so --wait cannot observe a
-// terminal state belonging to a different repo's PR of the same number
-// (issue #2354). An empty repo returns an error rather than polling
-// unscoped — that would reintroduce exactly the incident this fix closes.
+// terminal state belonging to a different repo's PR of the same number.
+// An empty repo returns an error rather than polling unscoped: unscoped
+// polling reintroduces the cross-repo collision.
 func waitForMergeTerminal(pr int, repo string, jsonMode bool, timeout time.Duration) error {
 	if repo == "" {
 		return fmt.Errorf("prism merge --wait: cannot determine repo for the calling session — --wait requires a resolvable repo to avoid cross-repo PR-number collisions (issue #2354)")
@@ -468,8 +463,8 @@ func waitForMergeTerminal(pr int, repo string, jsonMode bool, timeout time.Durat
 			return false, nil
 		})
 	// Translate the pollWait outcome. waitExitTimeout gets a structured
-	// payload (distinguishable from a real merge failure per AC); other
-	// outcomes propagate verbatim.
+	// payload, distinguishable from a real merge failure. Other outcomes
+	// propagate verbatim.
 	if err != nil {
 		switch exitCodeOf(err) {
 		case waitExitTimeout:
@@ -531,10 +526,9 @@ func emitMergeWaitTerminal(row *db.PendingMerge, jsonMode bool) error {
 	} else {
 		if row.Status == "merged" {
 			// Include the stored PR title in the already-merged short-circuit
-			// output so a cross-repo mismatch — the incident shape of issue
-			// #2354 — is visually detectable by the caller. When the title
-			// is unavailable (older row, or the row was created before we
-			// captured titles), fall back to the original terse form.
+			// output so a cross-repo mismatch is visually detectable by the
+			// caller. When the title is unavailable (older row without a
+			// captured title), fall back to the terse form.
 			if row.Title != nil && *row.Title != "" {
 				fmt.Printf("PR #%d merged: %s\n", row.PR, *row.Title)
 			} else {
@@ -580,11 +574,10 @@ func emitMergeWaitTimeout(pr int, lastRow *db.PendingMerge, jsonMode bool, timeo
 	return nil
 }
 
-// preflight is a thin adapter over probeInitialState that preserves the
-// pre-#2420 return contract (title, error). Callers that only need the
-// title — the sandbox proxy path and the direct-DB enqueue path — use
-// preflight. Callers that need to emit the #2420 state-table initial-state
-// message use probeInitialState directly.
+// preflight is a thin adapter over probeInitialState that returns just
+// (title, error). Callers that only need the title — the sandbox proxy path
+// and the direct-DB enqueue path — use preflight. Callers that need to emit
+// the state-table initial-state message use probeInitialState directly.
 func preflight(pr int) (string, error) {
 	decision, err := probeInitialState(pr)
 	if err != nil {
@@ -593,14 +586,14 @@ func preflight(pr int) (string, error) {
 	return decision.Title, nil
 }
 
-// initialStateOutcome names one row in the #2420 state table for
+// initialStateOutcome names one row in the state table for
 // `prism merge` invocation. It steers the synchronous message emitted to
 // the coordinator and decides whether the PR is enqueued for polling.
 type initialStateOutcome int
 
 const (
 	// initialOutcomeAlreadyMerged — PR is already MERGED at invocation.
-	// Coordinator is told to clean up; no poller starts.
+	// Coordinator is told to clean up. No poller starts.
 	initialOutcomeAlreadyMerged initialStateOutcome = iota
 
 	// initialOutcomeClosedNotMerged — PR is CLOSED without a merge.
@@ -608,15 +601,14 @@ const (
 	initialOutcomeClosedNotMerged
 
 	// initialOutcomeConflict — PR has merge conflicts at invocation. The
-	// worker must rebase; command exits non-zero, no poller starts.
+	// worker must rebase. Command exits non-zero. No poller starts.
 	initialOutcomeConflict
 
-	// initialOutcomeCIFailed — a required check has COMPLETED with a
-	// failure conclusion while mergeStateStatus is BLOCKED (#2527, mirrors
-	// #2525's poll-time discrimination at the invocation surface). The
-	// poller can never resolve this without a new push, so it is treated as
-	// terminal in the same shape as initialOutcomeConflict: report it, do
-	// not enqueue, exit non-zero. Unlike initialOutcomeAlreadyMerged /
+	// initialOutcomeCIFailed — a required check has a COMPLETED status and a
+	// failure conclusion while mergeStateStatus is BLOCKED. The poller can
+	// never resolve this without a new push, so it is treated as terminal in
+	// the same shape as initialOutcomeConflict: report it, do not enqueue,
+	// exit non-zero. Unlike initialOutcomeAlreadyMerged /
 	// initialOutcomeClosedNotMerged, the branch is still needed, so the
 	// message must not say "Please clean up the branch and worktree".
 	initialOutcomeCIFailed
@@ -632,37 +624,36 @@ const (
 	// initialOutcomeEnqueueReview — branch protection genuinely requires an
 	// approving review (required_approving_review_count > 0) and the PR does
 	// not yet have it. Only reached when that count is fetched and found to be
-	// above zero (#2576) — never by elimination. Watcher polls silently until
+	// above zero — never by elimination. Watcher polls silently until
 	// reviewDecision transitions to APPROVED (and checks are green), or the PR
 	// is closed or merged out-of-band.
 	initialOutcomeEnqueueReview
 
 	// initialOutcomeEnqueueUndetermined — the PR is not CLEAN and no positive
-	// cause was identified: mergeStateStatus is UNKNOWN (GitHub has not
-	// finished computing mergeability — the routine post-enqueue case), or an
+	// cause is identified: mergeStateStatus is UNKNOWN (GitHub is still
+	// computing mergeability — the routine post-enqueue case), or an
 	// unmatched/future state (UNSTABLE with only optional checks failing,
 	// BEHIND, HAS_HOOKS, a merge-queue transient). The message names the
-	// observed state and asserts no cause; the watcher polls until the state
-	// resolves. This replaces the pre-#2576 fallthrough that guessed "requires
-	// human approval" for this whole set.
+	// observed state and asserts no cause. The watcher polls until the state
+	// resolves.
 	initialOutcomeEnqueueUndetermined
 
 	// initialOutcomeEnqueueBehind — mergeStateStatus is BEHIND: the PR's
 	// branch is behind the base branch. Unlike the rest of the undetermined
-	// set, this state has a named, high-confidence cause and a documented
-	// fix already in flight: internal/mergequeue/watcher.go syncs the QUEUE
-	// HEAD with `gh pr update-branch` itself, just-in-time, once the PR
-	// reaches the front of the queue. A coordinator reasoning from first
-	// principles ('main only moves further ahead, so this can't self-
-	// resolve') is primed to run `gh pr update-branch` manually — which is
-	// redundant when the PR is already the watcher's job, and wasted work
-	// when it is not yet at the head of the queue, because every merge
-	// ahead of it invalidates the sync (#2654). The message names the
-	// forbidden action explicitly, mirroring the approval-case message.
+	// set, this state has a named, high-confidence cause and a named fix
+	// owner: internal/mergequeue/watcher.go syncs the QUEUE HEAD with
+	// `gh pr update-branch` itself, just-in-time, once the PR reaches the
+	// front of the queue. A coordinator reasoning from first principles
+	// ('main only moves further ahead, so this cannot self-resolve') is
+	// primed to run `gh pr update-branch` manually. That is redundant when
+	// the watcher already owns the PR, and wasted work when the PR is not
+	// yet at the head of the queue, because every merge ahead of it
+	// invalidates the sync. The message names the forbidden action
+	// explicitly, mirroring the approval-case message.
 	initialOutcomeEnqueueBehind
 
 	// initialOutcomeEnqueueUnprotected — no branch protection at all.
-	// Watcher polls silently and NEVER auto-merges; a human must merge
+	// Watcher polls silently and NEVER auto-merges. A human must merge
 	// or close the PR.
 	initialOutcomeEnqueueUnprotected
 )
@@ -670,7 +661,7 @@ const (
 // initialStateDecision holds the outcome of the invocation-time probe.
 type initialStateDecision struct {
 	Outcome initialStateOutcome
-	Message string // rendered per the #2420 state-table row for Outcome
+	Message string // rendered per the state-table row for Outcome
 	Title   string // PR title (used for enqueue-row display)
 	BaseRef string // target branch name (empty when not observable)
 }
@@ -690,14 +681,13 @@ type probeInitialStatePRView struct {
 	StatusCheckRollup []checkEntry `json:"statusCheckRollup"`
 }
 
-// checkEntry is an alias for the shared checkstate.CheckEntry shape (#2527).
-// It used to be a locally-duplicated copy of the mergequeue package's rollup
-// entry shape; both call sites now share one classification implementation
-// via internal/checkstate, which fixed the invocation-time defect where a
-// COMPLETED-with-FAILURE required check was misreported as merely pending.
+// checkEntry is an alias for the shared checkstate.CheckEntry shape. Both
+// call sites share one classification implementation via internal/checkstate.
+// A locally-duplicated copy risks the invocation-time defect where a
+// COMPLETED-with-FAILURE required check is misreported as merely pending.
 type checkEntry = checkstate.CheckEntry
 
-// probeInitialState is the #2420 synchronous initial-state probe. It queries
+// probeInitialState is the synchronous initial-state probe. It queries
 // `gh pr view` for the PR's current shape, and — for non-terminal cases —
 // `gh api repos/:owner/:repo/branches/:branch/protection` to determine
 // whether the target branch is protected. The result names the state-table
@@ -746,7 +736,7 @@ func probeInitialState(pr int) (initialStateDecision, error) {
 
 	// Non-terminal. Query branch protection for the PR's base branch
 	// (default main when unknown). A 404 means the repo has no protection
-	// at all — the #2420 rule: NEVER auto-merge, wait for a human.
+	// at all — the rule: NEVER auto-merge, wait for a human.
 	baseRef := view.BaseRefName
 	if baseRef == "" {
 		baseRef = "main"
@@ -765,12 +755,11 @@ func probeInitialState(pr int) (initialStateDecision, error) {
 		return dec, nil
 	}
 
-	// Terminal: a required check has already COMPLETED with a failure
-	// conclusion while mergeStateStatus is BLOCKED (#2527, mirrors #2525's
-	// poll-time discrimination). checkstate.FailedRequiredChecks only
-	// returns names when the whole required set is accounted for, so this
-	// never fires on a still-running or absent check — the conservative
-	// bias documented there is preserved exactly.
+	// Terminal: a required check has a COMPLETED status and a failure
+	// conclusion while mergeStateStatus is BLOCKED.
+	// checkstate.FailedRequiredChecks only returns names when the whole
+	// required set is accounted for, so this never fires on a still-running
+	// or absent check — the conservative bias is preserved exactly.
 	if strings.EqualFold(view.MergeStateStatus, "BLOCKED") {
 		if failed := checkstate.FailedRequiredChecks(view.StatusCheckRollup, requiredNames); len(failed) > 0 {
 			dec.Outcome = initialOutcomeCIFailed
@@ -798,12 +787,12 @@ func probeInitialState(pr int) (initialStateDecision, error) {
 	}
 
 	// Not CLEAN, no pending required checks. Do NOT guess "requires human
-	// approval" by elimination (#2576). Discriminate on real data.
+	// approval" by elimination. Discriminate on real data.
 
 	// BEHIND: the PR's branch is behind the base branch. This has a named
 	// cause and a named fix owner — the merge watcher — so it gets its own
-	// message rather than falling into the generic undetermined case
-	// (#2654). Do NOT run `gh pr update-branch` here or tell the
+	// message rather than falling into the generic undetermined case.
+	// Do NOT run `gh pr update-branch` here or tell the
 	// coordinator to.
 	if strings.EqualFold(view.MergeStateStatus, "BEHIND") {
 		dec.Outcome = initialOutcomeEnqueueBehind
@@ -843,7 +832,7 @@ func probeInitialState(pr int) (initialStateDecision, error) {
 
 	// Any other non-CLEAN state — UNSTABLE (only optional checks failing),
 	// HAS_HOOKS, a merge-queue transient, or a future GitHub status. BEHIND
-	// is handled above with its own message (#2654). Name the observed
+	// is handled above with its own message. Name the observed
 	// state and assert no cause rather than inventing one.
 	dec.Outcome = initialOutcomeEnqueueUndetermined
 	dec.Message = fmt.Sprintf(
@@ -866,15 +855,15 @@ func mergeStateDisplay(s string) string {
 
 // probeBranchProtection queries GitHub for whether the given base branch is
 // protected — via classic branch protection or, when that 404s, via an
-// actively-enforced ruleset (#2436) — and returns (protected, requiredCheckNames, requiredApprovals, err):
+// actively-enforced ruleset — and returns (protected, requiredCheckNames, requiredApprovals, err):
 //
 //   - protected=false, err=nil — neither the classic endpoint nor the
-//     rulesets effective-rules endpoint found any protection. #2420 treats
-//     this as a state, not a failure.
+//     rulesets effective-rules endpoint found any protection. This is a
+//     state, not a failure.
 //   - protected=true, err=nil — protection is configured (classic or
 //     ruleset); requiredCheckNames enumerates the required status checks and
 //     requiredApprovals is the required approving-review count (0 when the
-//     branch requires no approving review — the common case, #2576).
+//     branch requires no approving review — the common case).
 //   - err != nil — an API call failed in a way we cannot classify (network,
 //     permissions). Callers surface the error to the coordinator.
 //
@@ -929,7 +918,7 @@ func pendingRequiredCheckNames(rollup []checkEntry, required []string) []string 
 	return pending
 }
 
-// emitInitialStateMessage prints the #2420 initial-state message to stdout
+// emitInitialStateMessage prints the initial-state message to stdout
 // and returns whether the caller should short-circuit (no enqueue). For
 // terminal outcomes it returns (true, err) so the caller returns immediately.
 // For enqueue outcomes it returns (false, nil) and the caller continues into
@@ -937,14 +926,12 @@ func pendingRequiredCheckNames(rollup []checkEntry, required []string) []string 
 //
 // On the JSON-quiet stdout contract (`--wait --json`), the human message is
 // suppressed and the terminal short-circuits synthesise a `mergeWaitJSON`
-// payload equivalent to what emitMergeWaitTerminal would have emitted on the
-// enqueue-then-terminate path — so a `--wait --json` consumer always sees a
-// single parseable JSON object on stdout regardless of whether the PR was
-// terminal at invocation or reached terminal via the poller. PR round-2
-// review-code flagged the pre-fix behaviour: fresh-invocation terminal
-// outcomes produced empty stdout under `--wait --json`, breaking the
-// contract documented in `SKILL.md` ("emits a single JSON object on stdout
-// ... so consumers can `jq` the status").
+// payload equivalent to the payload emitMergeWaitTerminal emits on the
+// enqueue-then-terminate path. A `--wait --json` consumer always sees a
+// single parseable JSON object on stdout, whether the PR was terminal at
+// invocation or reached terminal via the poller. The contract is documented
+// in `SKILL.md` ("emits a single JSON object on stdout ... so consumers can
+// `jq` the status").
 func emitInitialStateMessage(dec initialStateDecision, pr int, quietStdout bool) (bool, error) {
 	switch dec.Outcome {
 	case initialOutcomeAlreadyMerged:
@@ -977,7 +964,7 @@ func emitInitialStateMessage(dec initialStateDecision, pr int, quietStdout bool)
 		// short-circuits above. Coordinator prompts worker to rebase.
 		return true, newExitErr(waitExitTerminalFail, "")
 	case initialOutcomeCIFailed:
-		// Same shape as initialOutcomeConflict (#2527): terminal, non-zero
+		// Same shape as initialOutcomeConflict: terminal, non-zero
 		// exit, no row enqueued. dec.Message already names the failed checks
 		// and deliberately omits "Please clean up the branch and worktree" —
 		// the branch is still needed for the worker's fix.

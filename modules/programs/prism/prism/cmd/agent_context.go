@@ -20,8 +20,6 @@ package cmd
 //	commands           — map of command name → CommandMeta
 //	available_profiles — list of profile names from profiles.json ([] if missing)
 //	precedence         — map of cross-cutting precedence rules
-//
-// See issue #1498.
 
 import (
 	"encoding/json"
@@ -165,13 +163,13 @@ var precedenceRules = map[string][]string{
 	// mismatch between them as a warning, not an error: pi strips a --model
 	// value's "<provider>/" prefix only when the prefix equals --provider. On
 	// a mismatch pi builds a custom model id instead. Keep the two in
-	// agreement (issue #2852).
+	// agreement.
 	//
 	// The model axis has three rungs, not two: --model-override names a single
 	// role and beats --model for that role only.
 	//
 	// The top rung is enforced at the point each isolation mode renders pi's
-	// --model argument (issue #2863). session.roleModelOverride picks the
+	// --model argument. session.roleModelOverride picks the
 	// entry keyed by the session's own role; host mode emits it from
 	// buildDirectAgentCmd, and bwrap / sandbox-exec carry it as
 	// `prism agent-run --agent-model` into container.Config.AgentModel, which

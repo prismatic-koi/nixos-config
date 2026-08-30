@@ -1,4 +1,4 @@
-// Package cmd unit tests for the `prism profile` subcommands (#1207, #1215, #1591).
+// Package cmd unit tests for the `prism profile` subcommands.
 //
 // These tests exercise runProfileUse / runProfileList / runProfileShow
 // directly against a synthesised profiles.json under XDG_CONFIG_HOME and an
@@ -365,7 +365,7 @@ func newFakeApplyProfileServer(t *testing.T) (sockPath string, requests <-chan m
 	return sockPath, ch
 }
 
-// TestProfileUse_DefaultLiveSwap verifies the new default behaviour (#1591):
+// TestProfileUse_DefaultLiveSwap verifies the default behaviour:
 // bare `prism profile use NAME` (no flags) updates the state file AND sends
 // a POST /apply-profile with scope=coordinator to the coordinator's socket.
 func TestProfileUse_DefaultLiveSwap(t *testing.T) {

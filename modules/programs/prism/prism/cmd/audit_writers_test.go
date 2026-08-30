@@ -1,21 +1,21 @@
 package cmd
 
-// audit_writers_test.go — issue #2587, round-1 review-context finding.
+// Tests that `prism audit` names every action that writes audit events.
 //
 // `prism audit` tells the reader which actions write audit events. Three class
 // A documents point a coordinator at that command as the proof of the tier-3
 // checkin control, so a footer that omits a writer actively contradicts them.
 //
-// The enumeration had drifted twice before this test existed:
+// The enumeration drifts when a writer is added but the footer is not
+// updated:
 //
-//   - #2364 added `prism merge`, `prism investigate`, `prism pr`, and
-//     `prism review` to the bash-promotion list. The footer kept naming the
-//     older set.
-//   - #2587 added a second writer entirely — the tier-3 privileged checkin.
-//     The footer named only the bash writer.
+//   - Adding a command to the bash-promotion list, while the footer keeps
+//     naming the older set.
+//   - Adding a second writer entirely (the tier-3 privileged checkin), while
+//     the footer names only the bash writer.
 //
-// Both slipped through because the string was hand-maintained and nothing
-// compared it to the source of truth. These tests do that comparison.
+// This slips through when the string is hand-maintained and nothing
+// compares it to the source of truth. These tests do that comparison.
 
 import (
 	"strings"

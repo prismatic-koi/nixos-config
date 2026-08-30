@@ -1,15 +1,14 @@
 package cmd
 
-// Issue #2110: end-to-end coverage of the `prism stats compare` renderer
-// surfacing the Agent-level outcomes block columns when the write paths have
-// fired.
+// End-to-end coverage of the `prism stats compare` renderer surfacing the
+// Agent-level outcomes block columns when the write paths have fired.
 //
-// The pre-fix symptom (#2110): every column in the Agent-level outcomes
-// block (pr_number, pr_merged_at, review_verdict, review_pass_count,
-// review_fail_count) rendered as `—` for every session because no write path
-// populated them. This test stands up a synthetic DB whose spawn_outcome
-// rows carry the columns populated via the new dedicated writers and
-// asserts the renderer surfaces them correctly.
+// Without the write paths, every column in the Agent-level outcomes block
+// (pr_number, pr_merged_at, review_verdict, review_pass_count,
+// review_fail_count) renders as `—` for every session, because nothing
+// populates them. This test stands up a synthetic DB whose spawn_outcome
+// rows carry the columns populated via the dedicated writers and asserts the
+// renderer surfaces them correctly.
 //
 // Companion negative tests:
 //

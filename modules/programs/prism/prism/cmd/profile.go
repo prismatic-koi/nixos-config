@@ -1,6 +1,6 @@
 package cmd
 
-// prism profile — manage the runtime active profile (#1207, #1215, #1591).
+// prism profile — manage the runtime active profile.
 //
 // Subcommands:
 //

@@ -15,8 +15,8 @@ import (
 // restartSummaryLine is the single success-side summary line emitted by
 // `prism restart` immediately before the re-exec into `launch`. Defined as
 // a package-level constant so tests can assert on the exact byte content
-// without duplicating the string literal. Issue #1527 AC: the destructive
-// command must not be silent on success.
+// without duplicating the string literal. The destructive command must not
+// be silent on success.
 const restartSummaryLine = "prism restart: tmux server killed, sessions restored, re-execing into launch"
 
 // emitRestartSummary writes the success-side restart summary to w and flushes
@@ -86,8 +86,8 @@ func runRestart(_ *cobra.Command, _ []string) error {
 	// our stdout fd but does not flush our buffered writes for us; fmt.Println
 	// to os.Stdout is unbuffered on a tty/pipe, but Sync is called inside
 	// emitRestartSummary as belt-and-braces for the unusual case where stdout
-	// is a regular file). Per issue #1527: the destructive command must not
-	// be silent on success.
+	// is a regular file). The destructive command must not be silent on
+	// success.
 	emitRestartSummary(os.Stdout)
 
 	// Re-exec with "launch"

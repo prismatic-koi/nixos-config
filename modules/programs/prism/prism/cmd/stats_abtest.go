@@ -25,12 +25,12 @@ import (
 // distinct from `prism stats abtest <group_id>` which is runStatsAbtest in stats_compare.go).
 //
 // When jsonMode is true, emits the abtest_list payload to stdout as a single
-// JSON document on the success path (issue #2099 Bug 2 — sibling surface
-// of `prism stats compare --json`). The shape mirrors the host-API
+// JSON document on the success path (a sibling surface of
+// `prism stats compare --json`). The shape mirrors the host-API
 // /stats?view=abtest_list response so the direct-DB and proxy paths are
 // byte-identical.
 func runStatsAbtestFlag(jsonMode bool) error {
-	// PRISM_HOST_API proxy dispatch (issue #2098): inside a sandbox the local
+	// PRISM_HOST_API proxy dispatch: inside a sandbox the local
 	// shadow DB carries no abtest pairs, so list them from the host DB via the
 	// sidecar /stats?view=abtest_list endpoint. Rendering stays on the CLI side
 	// for byte-identical output with the host-direct path.
@@ -101,7 +101,7 @@ func proxyStatsAbtestList(apiURL string) ([]db.AbtestPairRow, error) {
 }
 
 // renderAbtestPairs renders the abtest pairs listing, handling the empty case
-// identically on the direct-DB and proxy paths (issue #2098).
+// identically on the direct-DB and proxy paths.
 func renderAbtestPairs(pairs []db.AbtestPairRow) {
 	if len(pairs) == 0 {
 		fmt.Println("no abtest pairs recorded")

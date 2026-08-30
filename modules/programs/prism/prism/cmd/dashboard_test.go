@@ -1,8 +1,7 @@
 // Package cmd white-box tests for PopupModel and PersistentModel (via internal/dashboard).
 //
-// These tests verify that the dashboard models behave correctly after the
-// refactoring into the internal/dashboard package. Fields are now exported so
-// tests can access them directly.
+// These tests verify that the dashboard models behave correctly. Their fields
+// are exported so tests can access them directly.
 package cmd
 
 import (
@@ -82,7 +81,7 @@ type cmdTestServer struct {
 // newCmdTestServer starts an isolated tmux server for a cmd test. Skips (via
 // tmuxtest.RequireServer) when tmux is absent from PATH or when tmux server
 // creation is blocked by the sandbox (fork EPERM inside prism sandbox-exec
-// worker sessions — issue #2204).
+// worker sessions).
 func newCmdTestServer(t *testing.T) *cmdTestServer {
 	t.Helper()
 	bin := tmuxtest.RequireServer(t)
@@ -251,7 +250,7 @@ func scriptCmdArgs(cmd string) []string {
 //
 //  3. GitHub Actions ubuntu-latest runner: detects via $GITHUB_ACTIONS == "true".
 //     Actions runner steps lack the controlling-terminal semantics script(1)
-//     needs for tmux client attachment. See issue #1510.
+//     needs for tmux client attachment.
 //
 // Callers should only skip PTY-attach tests on this basis, not all tmux tests.
 func insideSandbox() bool {
@@ -286,9 +285,8 @@ func insideSandbox() bool {
 // Tests needing only non-PTY tmux operations (session creation, window listing,
 // option setting) do not need this guard and will run in all environments.
 //
-// The skip message is loud and named per issue #1510 — reviewers should see
-// the specific environment and reason in test output rather than a vague
-// "skipping in a sandbox" string.
+// The skip message is loud and named — it shows the specific environment and
+// reason in test output rather than a vague "skipping in a sandbox" string.
 func skipIfSandboxPTY(t *testing.T) {
 	t.Helper()
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
@@ -420,10 +418,9 @@ func TestPopupSwitchTarget(t *testing.T) {
 
 // TestDashModelEnterSwitchesOnFirstKeypress verifies that in persistent-session
 // mode, pressing Enter on a live row switches on the FIRST keypress even when
-// the cursor is inactive (passive watch mode). Before the issue #2522 fix, the
-// first Enter only re-activated the cursor and swallowed the switch. The switch
-// path deactivates the cursor and returns a switch command (not a
-// CursorTimeoutCmd).
+// the cursor is inactive (passive watch mode). The switch path deactivates the
+// cursor and returns a switch command (not a CursorTimeoutCmd). Without this,
+// the first Enter only re-activates the cursor and swallows the switch.
 func TestDashModelEnterSwitchesOnFirstKeypress(t *testing.T) {
 	t.Parallel()
 
@@ -629,7 +626,7 @@ func TestDashFilterEnterSwitches(t *testing.T) {
 
 // TestDashFilterCursorStaysActiveOnTimeout verifies that a CursorTimeoutMsg
 // does not deactivate the cursor highlight while filter mode is active.
-// Without the fix, the selection bar would silently vanish 3 seconds after
+// Without this, the selection bar silently vanishes 3 seconds after
 // pressing '/' even while the user is still typing.
 func TestDashFilterCursorStaysActiveOnTimeout(t *testing.T) {
 	t.Parallel()
@@ -761,7 +758,7 @@ func TestDashFilterSnapSkippedWhenFilterActive(t *testing.T) {
 	if !pm.CursorInitialised {
 		t.Error("CursorInitialised should be true after first SessionsMsg")
 	}
-	// The snap should have been skipped; cursor must still point into the
+	// The snap must be skipped. The cursor must still point into the
 	// filtered list (at most index 0 since Displayed has one entry).
 	if pm.Cursor != 0 {
 		t.Errorf("Cursor = %d, want 0 — snap into Displayed must not run during filter mode", pm.Cursor)
@@ -1202,8 +1199,8 @@ func TestPersistentModelEnterMultiClient(t *testing.T) {
 // (@prism_caller_client) points to client B and m.Client was overwritten by
 // a stale FocusMsg from client B.
 //
-// The fix: the model no longer uses m.Client for the switch operation; it
-// calls CurrentClientFunc at switch time, which returns the client that most
+// The model does not use m.Client for the switch operation. It calls
+// CurrentClientFunc at switch time, which returns the client that most
 // recently sent input to the pane (simulated here by overriding the func).
 func TestPersistentModelEnterStaleStamp(t *testing.T) {
 	skipIfSandboxPTY(t)
@@ -1275,14 +1272,12 @@ func TestPersistentModelEnterStaleStamp(t *testing.T) {
 	}
 }
 
-// TestPersistentModelEnterIgnoresStaleClient is the direct regression test for
-// issue #453. It verifies that when m.Client is stale (pointing to client B
-// because B triggered FocusMsg most recently), pressing Enter still switches
-// client A — because the model queries CurrentClientFunc at switch time rather
-// than using the cached m.Client value.
-//
-// Before the fix, m.Client was used directly in the Enter handler, so B would
-// be switched instead of A.
+// TestPersistentModelEnterIgnoresStaleClient verifies that when m.Client is
+// stale (pointing to client B because B triggered FocusMsg most recently),
+// pressing Enter still switches client A — because the model queries
+// CurrentClientFunc at switch time rather than using the cached m.Client
+// value. If m.Client is used directly in the Enter handler, B is switched
+// instead of A.
 func TestPersistentModelEnterIgnoresStaleClient(t *testing.T) {
 	skipIfSandboxPTY(t)
 	s := newCmdTestServer(t)

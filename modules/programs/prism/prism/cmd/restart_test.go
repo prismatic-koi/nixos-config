@@ -1,5 +1,4 @@
-// Tests for the success-side summary line emitted by `prism restart`
-// (issue #1527).
+// Tests for the success-side summary line emitted by `prism restart`.
 //
 // runRestart itself calls syscall.Exec at the end of the success path, which
 // replaces the test process and is therefore not directly unit-testable. We

@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for prism archive (issue #999 ACs):
+// Tests for prism archive:
 //   - prism archive <instance-id> → prints archive_path
 //   - prism archive <session-name> → most recent incarnation's archive_path
 //   - prism archive <session-name> --all → all paths, newest first

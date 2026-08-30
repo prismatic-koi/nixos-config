@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for prism agent-context (issue #1498).
+// Tests for prism agent-context.
 //
 // Verifies:
 //  1. TestAgentContextCoversAllCommands — every non-hidden top-level command
@@ -216,7 +216,7 @@ func TestAgentContextPrecedenceKeys(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
 	}
 
-	// "model" and "provider" were added by issue #2852: `prism agent-context`
+	// "model" and "provider" are documented axes: `prism agent-context`
 	// must document that the CLI flag beats the profile slot on both axes.
 	for _, key := range []string{"profile", "isolation", "model", "provider"} {
 		chain, ok := doc.Precedence[key]
@@ -248,7 +248,7 @@ func TestAgentContextPrecedenceKeys(t *testing.T) {
 	// is a false statement to every agent that reads agent-context, so the top
 	// rung is pinned here.
 	//
-	// The rung is pinned to the behaviour, not to the intent (issue #2863):
+	// The rung is pinned to the behaviour, not to the intent:
 	// the sub-test below re-checks the enforcement point, so a rung can never
 	// state a precedence that no emit site applies.
 	modelChain := doc.Precedence["model"]

@@ -1,7 +1,7 @@
 package cmd
 
-// Tests for the PRISM_HOST_API proxy paths in cmd/merge.go and cmd/merges.go
-// added in #1043 to fix the bwrap shadow-DB issue.
+// Tests for the PRISM_HOST_API proxy paths in cmd/merge.go and cmd/merges.go.
+// These paths fix the bwrap shadow-DB issue.
 //
 // These tests stand up a real httptest server bound to a Unix socket on disk
 // and point PRISM_HOST_API at it, then exercise runMerge / runMergesList /
@@ -43,7 +43,7 @@ type fakeHostAPIServer struct {
 	// byPRRow, when non-nil, is the row returned by /merges/by-pr. When
 	// nil the endpoint returns 404 — the shape proxyWaitProbe.Merge
 	// interprets as "no row". Used to stage re-entry scenarios for
-	// observeExistingMergeRow over the proxy path (#1875).
+	// observeExistingMergeRow over the proxy path.
 	byPRRow map[string]any
 }
 
@@ -175,7 +175,7 @@ EOF
 
 // TestRunMerge_ProxiesToHostAPIWhenSet is the headline test: when
 // PRISM_HOST_API is set, runMerge sends the enqueue request to the sidecar
-// socket rather than touching the local DB. This is the fix for #1043.
+// socket rather than touching the local DB.
 func TestRunMerge_ProxiesToHostAPIWhenSet(t *testing.T) {
 	openMergeTestDB(t) // sets PRISM_HOST_API="" — we override below.
 	stubGhBin(t, 42, "OPEN", "test PR")
@@ -192,8 +192,8 @@ func TestRunMerge_ProxiesToHostAPIWhenSet(t *testing.T) {
 	if len(server.requests) == 0 {
 		t.Fatal("server received no requests — proxy did not fire")
 	}
-	// The re-entry short-circuit (#1875) probes /merges/by-pr before the
-	// /merge POST, so the recorded requests now start with the probe. The
+	// The re-entry short-circuit probes /merges/by-pr before the
+	// /merge POST, so the recorded requests start with the probe. The
 	// fundamental assertion is that /merge fired with the right body —
 	// scan for it rather than pinning request index 0.
 	var mergePost *recordedRequest
@@ -238,9 +238,9 @@ func TestRunMerge_ProxyDoesNotTouchLocalDB(t *testing.T) {
 	}
 }
 
-// TestRunMerge_ProxyUnreachableSocketReturnsClearError covers AC-6: a bwrap
-// session whose host-API socket is unreachable must NOT silently fall back to
-// the direct DB path. It must return a clear error and exit non-zero.
+// TestRunMerge_ProxyUnreachableSocketReturnsClearError covers the case where a
+// bwrap session's host-API socket is unreachable: it must NOT silently fall
+// back to the direct DB path. It must return a clear error and exit non-zero.
 func TestRunMerge_ProxyUnreachableSocketReturnsClearError(t *testing.T) {
 	openMergeTestDB(t)
 	stubGhBin(t, 42, "OPEN", "test PR")

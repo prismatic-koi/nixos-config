@@ -1,8 +1,8 @@
 package cmd
 
-// Active refresh for `prism account usage` (issue #2541, parent #2537).
+// Active refresh for `prism account usage`.
 //
-// `prism account usage` reads a passively captured snapshot (#2538, #2539).
+// `prism account usage` reads a passively captured snapshot.
 // A snapshot only exists once a session has actually talked to Anthropic, so
 // an account nobody has used recently shows nothing at all. This file fills
 // that gap: when the active account's snapshot is missing or stale, the
@@ -28,8 +28,8 @@ package cmd
 //
 // # 2. The sidecar owns the write
 //
-// A successful refresh is persisted by POSTing to /usage/snapshot, the
-// endpoint #2538 defines. Nothing here writes a snapshot file. The sidecar
+// A successful refresh is persisted by POSTing to /usage/snapshot. Nothing
+// here writes a snapshot file. The sidecar
 // resolves the account host-side at write time, which is what keeps
 // attribution correct when the user switches accounts.
 //
@@ -55,7 +55,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/usage"
 )
 
-// usageSnapshotEndpoint is the sidecar host-API path #2538 defines. Shared
+// usageSnapshotEndpoint is the sidecar host-API path. Shared
 // with the pi extension's ratelimit.ts::USAGE_SNAPSHOT_PATH.
 const usageSnapshotEndpoint = "/usage/snapshot"
 
@@ -212,7 +212,7 @@ func describeRefreshError(accountName string, err error) string {
 			"usage refresh failed: HTTP %d from the Anthropic API — the stored snapshot is unchanged",
 			statusErr.StatusCode)
 		if statusErr.StatusCode == 429 {
-			// #2537: a malformed OAuth request is rejected by Anthropic's WAF
+			// A malformed OAuth request is rejected by Anthropic's WAF
 			// with a 429 that carries no rate-limit headers, which reads
 			// exactly like quota exhaustion and is not. Say so, so the next
 			// reader does not chase the wrong cause.
@@ -264,8 +264,8 @@ func refreshUnavailable() string {
 //
 // Only the ACTIVE account is ever refreshed. The sidecar endpoint takes no
 // account parameter — it resolves `accounts/current` host-side at write time
-// (#2538) — so a snapshot fetched for any other account would be persisted
-// under the active account's name and misattribute the numbers.
+// — so a snapshot fetched for any other account is persisted under the active
+// account's name and misattributes the numbers.
 func activeAccountName() (string, error) {
 	paths, err := account.ResolvePaths()
 	if err != nil {

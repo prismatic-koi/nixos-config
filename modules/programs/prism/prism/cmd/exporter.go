@@ -1,7 +1,7 @@
 package cmd
 
 // prism exporter — long-running host daemon serving prism's own operational
-// metrics on /metrics for Alloy to scrape (issue #2700, parent #2699).
+// metrics on /metrics for Alloy to scrape.
 //
 // The daemon runs on the HOST. prism.db is not bind-mounted into worker
 // sandboxes, so there is no in-sandbox proxy path for this command and none

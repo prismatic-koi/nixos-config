@@ -88,7 +88,7 @@ func runListSessions(cmd *cobra.Command, _ []string) error {
 	} else {
 		// Same-repo: everything. Other repos: only root sessions — a
 		// "<repo>@main" coordinator, or a non-worktree session with a bare
-		// name (issue #2658).
+		// name.
 		ss, err = d.AllActiveStatusForRepoAndOtherRootSessions(currentRepo)
 	}
 	if err != nil {
@@ -159,7 +159,7 @@ func renderSessionTable(ss []db.Status, groupParents map[string]string, abtestPa
 	var rows []row
 	for _, s := range ss {
 		// DisplayTitle folds agent_status.issue_ref in front of the title so
-		// the reference is visible here rather than write-only (#2683).
+		// the reference is visible here rather than write-only.
 		title := s.DisplayTitle()
 		if title == "" {
 			title = "—"

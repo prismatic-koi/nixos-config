@@ -1,6 +1,6 @@
 package cmd
 
-// prism account — manage named Claude OAuth subscriptions (#2283).
+// prism account — manage named Claude OAuth subscriptions.
 //
 // Each subcommand calls account.Init first so the on-disk store is
 // guaranteed to exist (and the first-run migration is applied) before

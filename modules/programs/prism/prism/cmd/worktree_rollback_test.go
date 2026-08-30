@@ -1,7 +1,7 @@
 package cmd
 
 // worktree_rollback_test.go — tests for the caller-level worktree rollback
-// wiring (#2363): the shared rollbackCreatedWorktree helper and the runSpawn
+// wiring: the shared rollbackCreatedWorktree helper and the runSpawn
 // failure-path integration.
 //
 // Coverage:
@@ -174,8 +174,8 @@ func TestRollbackCreatedWorktreeHelper_RollsBackWhenNoSession(t *testing.T) {
 
 // ── runSpawn wiring ──────────────────────────────────────────────────────────
 
-// TestRunSpawn_FailureAfterWorktreeCreation_RollsBack covers the core #2363
-// AC: SpawnSession fails well after CreateWorktree (in environments without
+// TestRunSpawn_FailureAfterWorktreeCreation_RollsBack covers the core case:
+// SpawnSession fails well after CreateWorktree (in environments without
 // a configured pi_extension_dir it fails at the host-mode PIExtensionDir
 // check; on machines with a full config it fails at the tmux layout step —
 // the stub fails every tmux command). Either way the failure is in the

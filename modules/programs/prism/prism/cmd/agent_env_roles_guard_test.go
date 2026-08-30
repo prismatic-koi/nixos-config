@@ -1,7 +1,7 @@
 package cmd
 
 // agent_env_roles_guard_test.go — wiring guard for the role-filtered
-// AgentEnvVars map (issue #2533).
+// AgentEnvVars map.
 //
 // The filter itself is unit-tested in internal/config, and its effect at the
 // isolator boundary is tested in internal/container. Neither of those can see

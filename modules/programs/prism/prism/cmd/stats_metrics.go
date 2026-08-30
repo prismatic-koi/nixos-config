@@ -170,7 +170,7 @@ func collectMetrics(events []db.Event, harnessSessionID string) *sessionMetrics 
 		case "tool_call":
 			var p payload.ToolCall
 			if err := json.Unmarshal([]byte(e.Payload), &p); err == nil {
-				// Post-#1783 the payload's tool name lives on `Name`.
+				// The payload's tool name lives on `Name`.
 				m.ToolCalls[p.Name]++
 				if p.DurationMs > 0 {
 					m.ToolDurations[p.Name] = append(m.ToolDurations[p.Name], time.Duration(p.DurationMs)*time.Millisecond)

@@ -1,11 +1,10 @@
 package cmd
 
-// Tests for prism stats compare — focus on issue #2102:
+// Tests for prism stats compare.
 //
-//   Layer 1: spawn_outcome aggregates must be available to `prism stats
-//   compare` between terminal-state transition and `prism cleanup`. The
-//   read path falls back to db.ComputeSpawnOutcome when no persisted row
-//   exists yet.
+// spawn_outcome aggregates must be available to `prism stats compare`
+// between terminal-state transition and `prism cleanup`. The read path falls
+// back to db.ComputeSpawnOutcome when no persisted row exists yet.
 //
 //   Layer 2: the Spawn Inputs block must surface the values written at
 //   spawn time (profile_name, isolation, harness, branch, agent_role)
@@ -199,8 +198,8 @@ func TestLoadCompareRuns_TerminalFinishedNoOutcome(t *testing.T) {
 }
 
 // TestLoadCompareRuns_TerminalErrorNoOutcome verifies the same shape for an
-// `error` terminal state (issue #2081 path: zero-output exit transitions to
-// error). The AC requires identical behaviour across finished/error/interrupted.
+// `error` terminal state (zero-output exit transitions to error). The
+// behaviour must be identical across finished/error/interrupted.
 func TestLoadCompareRuns_TerminalErrorNoOutcome(t *testing.T) {
 	d := openStatsTestDB(t)
 	startedAt := time.Now().Add(-2 * time.Minute)
@@ -390,11 +389,10 @@ func TestInputsValue_PullsFromSpawnInputs(t *testing.T) {
 	}
 }
 
-// TestInputsValue_IsolationModePreferredOverFlag is the issue #2105
-// renderer AC. When a row has BOTH isolation_mode and isolation_flag set
-// (the new post-fix shape), the renderer must surface isolation_mode —
-// the resolved effective mode is what the operator wants to see for
-// A/B leg comparisons. isolation_flag is the raw audit trail.
+// TestInputsValue_IsolationModePreferredOverFlag: when a row has BOTH
+// isolation_mode and isolation_flag set, the renderer must surface
+// isolation_mode — the resolved effective mode is what the operator wants to
+// see for A/B leg comparisons. isolation_flag is the raw audit trail.
 func TestInputsValue_IsolationModePreferredOverFlag(t *testing.T) {
 	d := openStatsTestDB(t)
 	startedAt := time.Now().Add(-time.Minute)
@@ -418,13 +416,12 @@ func TestInputsValue_IsolationModePreferredOverFlag(t *testing.T) {
 	}
 }
 
-// TestInputsValue_IsolationModeFallsBackToFlagForLegacyRow is the
-// issue #2105 over-broad-fix guard. Pre-#2105 rows have isolation_mode
-// NULL (the column did not yet exist or the writer did not yet populate
-// it) but isolation_flag set to the resolved mode (the old shim). The
-// renderer must surface the legacy isolation_flag value gracefully
-// rather than "—" — historical sessions should still display sensibly
-// in stats compare output.
+// TestInputsValue_IsolationModeFallsBackToFlagForLegacyRow guards the
+// fallback. Older rows have isolation_mode NULL (the column did not yet
+// exist, or the writer did not yet populate it) but isolation_flag set to
+// the resolved mode. The renderer must surface the isolation_flag value
+// rather than "—", so historical sessions still display sensibly in stats
+// compare output.
 func TestInputsValue_IsolationModeFallsBackToFlagForLegacyRow(t *testing.T) {
 	d := openStatsTestDB(t)
 	startedAt := time.Now().Add(-time.Minute)
@@ -434,7 +431,8 @@ func TestInputsValue_IsolationModeFallsBackToFlagForLegacyRow(t *testing.T) {
 		ProfileName:   strPtr("anthropic"),
 		HarnessFlag:   strPtr("pi"),
 		IsolationFlag: strPtr("bwrap"),
-		// IsolationMode deliberately nil — simulating a pre-#2105 row.
+		// IsolationMode deliberately nil — simulating an older row with no
+		// isolation_mode.
 		AgentFlag: strPtr("worker"),
 	}
 	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateFinished, inputs)
@@ -471,9 +469,9 @@ func TestInputsValue_IsolationModeAbsentRendersDash(t *testing.T) {
 	}
 }
 
-// TestInputsValue_PartialRowSurfacesWhatExists guards the Layer 2 AC: a row
-// with only profile_name set (the #2092/#2093 case) must surface that field
-// rather than treating the whole row as absent.
+// TestInputsValue_PartialRowSurfacesWhatExists guards a partial row: a row
+// with only profile_name set must surface that field rather than treating
+// the whole row as absent.
 func TestInputsValue_PartialRowSurfacesWhatExists(t *testing.T) {
 	d := openStatsTestDB(t)
 	startedAt := time.Now().Add(-time.Minute)

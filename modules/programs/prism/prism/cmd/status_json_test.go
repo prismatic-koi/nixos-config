@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for --json flag on prism status (#1499).
+// Tests for --json flag on prism status.
 
 import (
 	"encoding/json"
@@ -47,7 +47,7 @@ func TestRenderStatusJSON_AllStateKeysPresent(t *testing.T) {
 }
 
 // TestStatusCmd_JSONAndTmuxFormatMutuallyExclusive verifies that combining
-// --json and --tmux-format returns an error per AC #1499.
+// --json and --tmux-format returns an error.
 func TestStatusCmd_JSONAndTmuxFormatMutuallyExclusive(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 
@@ -102,12 +102,11 @@ func TestStatusCmd_JSON_DBOpenFailureStillEmitsJSON(t *testing.T) {
 	}
 }
 
-// TestStatusCmd_HumanRenderer_ShowsErrorSessions is a regression test for
-// the bug where introducing a dedicated nError counter (for --json) made
-// error-state sessions silently disappear from the human-readable summary
-// and the tmux status bar (review-code blocker on PR #1511 round 2).
+// TestStatusCmd_HumanRenderer_ShowsErrorSessions guards against error-state
+// sessions disappearing from the human-readable summary and the tmux status
+// bar when a dedicated nError counter (for --json) is introduced.
 //
-// Both renderers must surface error sessions; they should never be silently
+// Both renderers must surface error sessions. They must never be silently
 // rolled into idle or omitted entirely.
 func TestStatusCmd_HumanRenderer_ShowsErrorSessions(t *testing.T) {
 	d := openStatsTestDB(t)

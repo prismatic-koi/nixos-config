@@ -53,7 +53,7 @@ func TestFormatMergesRows_PosIsOneBasedRank(t *testing.T) {
 }
 
 // TestFormatMergesRows_RankPerFilteredView verifies that the rank reflects
-// display order within a filtered view, not the storage ordering key. AC-2:
+// display order within a filtered view, not the storage ordering key.
 // `prism merges list --failed`, `--abandoned`, `--all` all use the same
 // renderer, so a single test on the renderer covers all of them.
 func TestFormatMergesRows_RankPerFilteredView(t *testing.T) {

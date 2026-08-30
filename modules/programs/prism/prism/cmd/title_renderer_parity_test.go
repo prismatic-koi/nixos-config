@@ -1,18 +1,16 @@
 package cmd
 
-// Parity test for the three agent_status title renderers (#2683 review).
+// Parity test for the three agent_status title renderers.
 //
-// Why this test exists rather than three separate assertions: the first cut
-// of this change updated `prism sessions list` and the tmux dashboard but
-// missed `prism checkin` (no argument), so the same row rendered
-// "#2683 · title" on two surfaces and "title" on the third. The
-// Status.DisplayTitle doc comment nevertheless claimed every renderer went
+// The test exists rather than three separate assertions because the three
+// surfaces (`prism sessions list`, the tmux dashboard, and `prism checkin`
+// with no argument) must render a title identically. If one surface bypasses
+// Status.DisplayTitle, the same row renders differently across surfaces while
+// the Status.DisplayTitle doc comment still claims every renderer goes
 // through it.
 //
-// That is the same defect class the PR corrects elsewhere: internal/session/
-// title_fallback.go carried a false in-code claim ("sessions a human renamed
-// interactively") that led the next reader to the wrong conclusion. A claim
-// in a comment is only worth what enforces it, so this test enforces it.
+// A claim in a comment is only worth what enforces it, so this test enforces
+// that all three renderers go through Status.DisplayTitle.
 //
 // Adding a fourth renderer that reads Status.Title directly will not fail
 // this test — no test can catch a call site it does not know about — but any

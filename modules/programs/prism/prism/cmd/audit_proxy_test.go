@@ -1,12 +1,12 @@
 package cmd
 
-// Tests for the PRISM_HOST_API proxy branch in `prism audit` (#2618).
+// Tests for the PRISM_HOST_API proxy branch in `prism audit`.
 //
 // $XDG_STATE_HOME/prism holds prism.db and is deliberately never bound into a
-// sandbox, so a sandboxed caller cannot open it. `prism audit` had no proxy
-// branch, which made the audit trail unreadable by the seat that writes it.
+// sandbox, so a sandboxed caller cannot open it. Without a proxy branch,
+// `prism audit` is unreadable by the seat that writes the audit trail.
 //
-// The assertions here are the CLI half of the fix:
+// The assertions here are the CLI half:
 //
 //   - the proxy branch is taken when PRISM_HOST_API is set, and the four
 //     filters (--days, --pattern, --limit, session argument) reach the host;
@@ -146,7 +146,7 @@ func startAuditProxyServer(t *testing.T, d *db.DB) (*auditProxyServer, string) {
 
 // renderAuditDirect runs `prism audit` against the direct-DB path.
 //
-// The direct route is now gated coordinator-only (#2627), so the caller
+// The direct route is gated coordinator-only, so the caller
 // session must resolve to a coordinator. auditProxyDirectCaller is seeded as
 // one on first use, and PRISM_SESSION_NAME points every direct-route test in
 // this file at it.

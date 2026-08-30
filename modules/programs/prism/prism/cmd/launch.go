@@ -4,13 +4,13 @@ package cmd
 //
 // Launches Prism: ensures the scratchpad session and the prism-dashboard
 // session both exist, then attaches to the dashboard as the default landing
-// point. The C-f context-switcher popup is no longer opened on plain startup;
-// the dashboard is the primary navigation surface.
+// point. On plain startup the dashboard is the primary navigation surface.
+// The C-f context-switcher popup is not opened.
 //
-// When --path is supplied, the behaviour is unchanged from before: instead of
-// landing on the dashboard, the context switcher is opened pre-seeded with that
-// path. This preserves existing keybindings (ALT+o, ALT+n, zsh ^o) that jump
-// directly to a specific project.
+// When --path is supplied, the context switcher is opened pre-seeded with
+// that path instead of landing on the dashboard. This preserves the
+// keybindings (ALT+o, ALT+n, zsh ^o) that jump directly to a specific
+// project.
 //
 // Flags:
 //
@@ -39,9 +39,9 @@ var (
 
 // execStart starts the given *exec.Cmd without waiting for it (mirrors
 // (*exec.Cmd).Start). It is a package-level indirection so tests can redirect
-// the kitty spawn through a real pty (e.g. via `script`) against an isolated
-// test tmux server, to exercise the actual tmux command-list execution
-// semantics that caused issue #2521, instead of only inspecting argv.
+// the kitty spawn through a real pty (for example, via `script`) against an
+// isolated test tmux server, to exercise the actual tmux command-list
+// execution semantics, instead of only inspecting argv.
 var execStart = func(cmd *exec.Cmd) error {
 	return cmd.Start()
 }
@@ -112,11 +112,11 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 		// dashboard session. The scratchpad and dashboard sessions are ensured
 		// here, on the Go side, exactly as the other two branches do — this
 		// avoids chaining their creation into the same tmux command list as the
-		// final attach. Chaining is what caused issue #2521: when prism-dashboard
-		// already existed, the chained "new-session -ds prism-dashboard" command
-		// failed, which aborted the rest of the tmux command list (including the
-		// trailing "switch-client"/attach), leaving the new kitty window's client
-		// attached to scratchpad instead of the dashboard.
+		// final attach. If creation is chained: when prism-dashboard already
+		// exists, the chained "new-session -ds prism-dashboard" command fails,
+		// which aborts the rest of the tmux command list (including the trailing
+		// "switch-client"/attach), leaving the new kitty window's client attached
+		// to scratchpad instead of the dashboard.
 		if err := ensureScratchpad(); err != nil {
 			return err
 		}
