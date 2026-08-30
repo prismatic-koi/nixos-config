@@ -35,11 +35,10 @@ import (
 //
 // It seeds a temp DB with a status row containing a real filesystem path, then
 // calls worktreePathFromSession with a session name that does not exist in tmux.
-// The function must return the DB-stored path unconditionally (issue #2506) —
-// including when the path does not currently exist on disk. The previous
-// behaviour gated the DB fallback on an os.Stat existence check, which was
-// the root cause of the DB fallback returning "" for perfectly healthy rows
-// (orphaning worktrees instead of removing them).
+// The function must return the DB-stored path unconditionally — including
+// when the path does not currently exist on disk. It must NOT gate the DB
+// fallback on an os.Stat existence check: that returns "" for perfectly
+// healthy rows and orphans worktrees instead of removing them.
 func TestWorktreePathFromSession_DBFallback(t *testing.T) {
 	// Create a real directory to act as the worktree path.
 	existingPath := t.TempDir()
@@ -78,7 +77,7 @@ func TestWorktreePathFromSession_DBFallback(t *testing.T) {
 	})
 
 	t.Run("stale path (not on disk) is still returned", func(t *testing.T) {
-		// #2506: the DB fallback trusts agent_status.worktree unconditionally.
+		// The DB fallback trusts agent_status.worktree unconditionally.
 		// A path that no longer exists on disk is still returned here — the
 		// downstream git operations (RemoveWorktree, ForceDeleteBranch) treat
 		// their own failures as non-fatal warnings, so this degrades
@@ -177,9 +176,9 @@ func TestProbeConventionalWorktreePath(t *testing.T) {
 // bare-root derivation is depth-agnostic: for a branch name containing "/"
 // (e.g. "feat/my-thing"), the stored worktree path is nested two levels below
 // the bare root, not one. A naive filepath.Dir(status.Worktree) would derive
-// the wrong bare root (the intermediate "feat" directory), mirroring the bug
-// fixed in session.DefaultAgent for issue #2510. This test constructs a
-// genuinely nested worktree with a real .bare marker at the true bare root
+// the wrong bare root (the intermediate "feat" directory). This test
+// constructs a genuinely nested worktree with a real .bare marker at the
+// true bare root
 // and asserts probeConventionalWorktreePath still resolves it correctly.
 func TestProbeConventionalWorktreePath_NestedWorktree(t *testing.T) {
 	// Construct: <tmpdir>/bare-root/.bare, <tmpdir>/bare-root/feat/my-thing/.git
@@ -277,11 +276,10 @@ func TestHeadlessCleanup_EmptyWorktreePath(t *testing.T) {
 	})
 }
 
-// TestHeadlessCleanup_UnresolvedWorktreePathMessage verifies the AC (#2506):
-// when the worktree path genuinely cannot be resolved (both tmux and the DB
-// fallback come back empty), the emitted warning names both the session and
-// the branch/path it tried, rather than the old bare "worktree path unknown"
-// string.
+// TestHeadlessCleanup_UnresolvedWorktreePathMessage verifies that when the
+// worktree path genuinely cannot be resolved (both tmux and the DB fallback
+// come back empty), the emitted warning names both the session and the
+// branch/path it tried, rather than a bare "worktree path unknown" string.
 func TestHeadlessCleanup_UnresolvedWorktreePathMessage(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
@@ -304,9 +302,9 @@ func TestHeadlessCleanup_UnresolvedWorktreePathMessage(t *testing.T) {
 	}
 }
 
-// TestHeadlessCleanup_InvalidWorktreePath verifies AC-2:
-// when the worktree path exists on disk but is not a registered git worktree,
-// headlessCleanup warns and continues rather than returning an error.
+// TestHeadlessCleanup_InvalidWorktreePath verifies that when the worktree
+// path exists on disk but is not a registered git worktree, headlessCleanup
+// warns and continues rather than returning an error.
 func TestHeadlessCleanup_InvalidWorktreePath(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
 	// Redirect TmuxBin to a no-op so headlessCleanup's scratchpad-ensure
@@ -362,10 +360,10 @@ func TestHeadlessCleanup_InvalidWorktreePath(t *testing.T) {
 	}
 }
 
-// TestHeadlessCleanup_ForceDeletesSquashMergedBranch verifies AC-1:
-// after headlessCleanup on a session whose branch is NOT fully merged
-// (e.g. after a squash-merge), the branch is force-deleted rather than
-// skipped. This is the core regression test for the squash-merge fix.
+// TestHeadlessCleanup_ForceDeletesSquashMergedBranch verifies that after
+// headlessCleanup on a session whose branch is NOT fully merged (e.g. after
+// a squash-merge), the branch is force-deleted rather than skipped. This is
+// the core regression test for the squash-merge fix.
 func TestHeadlessCleanup_ForceDeletesSquashMergedBranch(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
@@ -473,7 +471,8 @@ func TestHeadlessCleanup_ForceDeletesSquashMergedBranch(t *testing.T) {
 }
 
 // TestCleanupCmd_NoTmuxSession_DBFallback_RemovesWorktreeAndBranch is the
-// regression test for issue #2506, bug 1 and bug 2.
+// regression test for the tmux-gone DB-fallback path (worktree path
+// resolution and branch deletion).
 //
 // It reproduces the exact failure mode: a session whose tmux presence is
 // entirely gone (no tmux server record at all — worktreePathFromSession's
@@ -486,13 +485,11 @@ func TestHeadlessCleanup_ForceDeletesSquashMergedBranch(t *testing.T) {
 // directly — this is the level at which bug 1 (worktree path resolution)
 // and bug 2 (branch deletion) actually manifested.
 //
-// Before the #2506 fix, worktreePathFromSession's DB fallback additionally
-// gated on an os.Stat existence check that had no reason to fail here (the
-// directory genuinely exists) but nonetheless produced the observed
-// behaviour along a different route in production; removing that gate is
-// the fix under test. Asserts BOTH outcomes required by the issue: the
-// worktree directory is removed from disk, and the branch is deleted from
-// the bare repo.
+// worktreePathFromSession's DB fallback must NOT gate on an os.Stat existence
+// check: the directory genuinely exists here, but such a gate returns "" for
+// healthy rows along a different route and orphans the worktree. Asserts BOTH
+// outcomes: the worktree directory is removed from disk, and the branch is
+// deleted from the bare repo.
 func TestCleanupCmd_NoTmuxSession_DBFallback_RemovesWorktreeAndBranch(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t) // tmux.ListWindows returns ("", nil) — simulates "no tmux session"
@@ -542,12 +539,12 @@ func TestCleanupCmd_NoTmuxSession_DBFallback_RemovesWorktreeAndBranch(t *testing
 		t.Fatalf("cleanupCmd.RunE returned error: %v", runErr)
 	}
 
-	// AC: the worktree directory must be removed from disk.
+	// The worktree directory must be removed from disk.
 	if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
 		t.Errorf("worktree path %q still exists after cleanup (stat err: %v) — expected it to be removed", worktreePath, statErr)
 	}
 
-	// AC: the branch must be deleted from the bare repo.
+	// The branch must be deleted from the bare repo.
 	bareDir := filepath.Join(bareRoot, ".bare")
 	if checkErr := exec.Command("git", "--git-dir", bareDir, "rev-parse", "--verify",
 		"refs/heads/"+branchName).Run(); checkErr == nil {
@@ -555,8 +552,8 @@ func TestCleanupCmd_NoTmuxSession_DBFallback_RemovesWorktreeAndBranch(t *testing
 	}
 }
 
-// TestHeadlessCleanup_BranchDeleteFailure verifies the edge-case AC:
-// if branch deletion fails (e.g. branch checked out in another worktree),
+// TestHeadlessCleanup_BranchDeleteFailure verifies the edge case: if branch
+// deletion fails (e.g. branch checked out in another worktree),
 // headlessCleanup logs a warning and returns nil rather than aborting.
 func TestHeadlessCleanup_BranchDeleteFailure(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
@@ -1442,8 +1439,8 @@ func TestIsSafeToRemoveWorktree_DescendantSessionGuard(t *testing.T) {
 }
 
 // TestHeadlessCleanup_InvestigatorSessionPreservesMainWorktree verifies the
-// full end-to-end bug scenario from issue #1582: an investigator session whose
-// worktree resolves to the main worktree path must NOT have that directory
+// full end-to-end scenario: an investigator session whose worktree resolves
+// to the main worktree path must NOT have that directory
 // removed by headlessCleanup.
 //
 // The investigator session name is of the form <coordinator>~investigate-<slug>
@@ -1519,15 +1516,14 @@ func TestHeadlessCleanup_InvestigatorSessionPreservesMainWorktree(t *testing.T) 
 	}
 }
 
-// TestCleanupCmd_KeepWorktreeFlag_SoftClosesWorker verifies the issue #2179
-// parity AC: `prism cleanup --yes --keep-worktree --session <worker>` runs
-// the soft-close path (preserves worktree + branch, marks DB ended) instead
-// of the default destructive cleanup.
+// TestCleanupCmd_KeepWorktreeFlag_SoftClosesWorker verifies that
+// `prism cleanup --yes --keep-worktree --session <worker>` runs the
+// soft-close path (preserves worktree + branch, marks DB ended) instead of
+// the default destructive cleanup.
 //
-// Without the flag, the same invocation removes the worktree. The flag is
-// the load-bearing difference — see the AC "`prism cleanup --keep-worktree`
-// exists as a flag on the existing `prism cleanup` command and produces a
-// soft close even for a non-coordinator worker session".
+// Without the flag, the same invocation removes the worktree. The flag is the
+// load-bearing difference: --keep-worktree produces a soft close even for a
+// non-coordinator worker session.
 func TestCleanupCmd_KeepWorktreeFlag_SoftClosesWorker(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found in PATH — skipping integration test")
@@ -1598,9 +1594,9 @@ func TestCleanupCmd_KeepWorktreeFlag_SoftClosesWorker(t *testing.T) {
 
 // TestCleanupCmd_NoKeepWorktreeFlag_HardCleansWorker is the negative-control
 // pair to TestCleanupCmd_KeepWorktreeFlag_SoftClosesWorker. Without the flag,
-// the same invocation removes the worktree and force-deletes the branch —
-// the AC "`prism cleanup` (without `--keep-worktree`) continues to behave
-// identically to its current implementation".
+// the same invocation removes the worktree and force-deletes the branch:
+// `prism cleanup` without `--keep-worktree` performs the full destructive
+// cleanup.
 func TestCleanupCmd_NoKeepWorktreeFlag_HardCleansWorker(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found in PATH — skipping integration test")
@@ -1652,17 +1648,17 @@ func TestCleanupCmd_NoKeepWorktreeFlag_HardCleansWorker(t *testing.T) {
 }
 
 // TestHeadlessCleanup_DescendantSessionOfSoftClosedParentPreservesBranch is
-// the regression test for issue #2638's data-loss path: cleaning up a
-// descendant (review/investigator) session whose parent was soft-closed with
-// `prism close --keep-worktree` must not touch the parent's worktree or
+// the regression test for the descendant-session data-loss path: cleaning up
+// a descendant (review/investigator) session whose parent was soft-closed
+// with `prism close --keep-worktree` must not touch the parent's worktree or
 // branch.
 //
-// Before the fix, headlessCleanupWithJSONTo resolved branchName from the
-// descendant's (i.e. the parent's) worktree HEAD with no ownership check.
-// Because the parent's row has ended_at set (soft close), isSafeToRemoveWorktree's
-// guard 2 does not fire, so the worktree is removed first — which then lifts
-// git's "branch used by worktree" refusal and lets the subsequent force-delete
-// succeed, destroying the parent's parked WIP branch.
+// Without the descendant guard, headlessCleanupWithJSONTo resolves branchName
+// from the descendant's (i.e. the parent's) worktree HEAD with no ownership
+// check. Because the parent's row has ended_at set (soft close),
+// isSafeToRemoveWorktree's guard 2 does not fire, so the worktree is removed
+// first — which then lifts git's "branch used by worktree" refusal and lets the
+// subsequent force-delete succeed, destroying the parent's parked WIP branch.
 func TestHeadlessCleanup_DescendantSessionOfSoftClosedParentPreservesBranch(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -1749,9 +1745,9 @@ func TestHeadlessCleanup_DescendantSessionOfSoftClosedParentPreservesBranch(t *t
 }
 
 // TestCleanupCmd_DescendantSession_JSONOmitsBranchDeleted verifies the --json
-// envelope contract for a descendant session (issue #2638 AC): branch_deleted
-// must be absent (null) because no branch-deletion attempt is made at all,
-// not merely because the attempt failed.
+// envelope contract for a descendant session: branch_deleted must be absent
+// (null) because no branch-deletion attempt is made at all, not merely
+// because the attempt failed.
 func TestCleanupCmd_DescendantSession_JSONOmitsBranchDeleted(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -1813,7 +1809,7 @@ func TestCleanupCmd_DescendantSession_JSONOmitsBranchDeleted(t *testing.T) {
 	}
 }
 
-// TestHeadlessCleanup_DescendantOfDefaultBranchSession is the edge-case AC:
+// TestHeadlessCleanup_DescendantOfDefaultBranchSession covers the edge case:
 // cleaning up a descendant whose parent is the default-branch (coordinator)
 // session must leave the default branch intact and report no attempted
 // delete.

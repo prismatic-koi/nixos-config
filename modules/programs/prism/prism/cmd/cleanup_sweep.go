@@ -1,7 +1,6 @@
 package cmd
 
-// Orphan-container sweep for sessions with containers_enabled=1
-// (Step 7 of #2317 / #2324).
+// Orphan-container sweep for sessions with containers_enabled=1.
 //
 // The sweep complements the per-mode container teardown that
 // `removeContainerIfExists` already performs: that path removes the
@@ -45,8 +44,7 @@ import (
 // 30 seconds matches the per-mode container teardown in
 // `removeContainerIfExists` (35s for the isolator's stop+rm). The
 // sweep is downstream of that and only deals with orphan derivatives
-// that the agent created, so a tighter cap is acceptable; the issue
-// AC names "≤30 seconds total".
+// that the agent created, so a tighter cap is acceptable.
 const podmanSweepBudget = 30 * time.Second
 
 // podmanRunner is the test-seamable wrapper around the `podman`
@@ -116,9 +114,8 @@ func sweepOrphanContainersForSession(sessionName string) (count int, ran bool) {
 		// separately; we silently skip the sweep here. Returning
 		// ran=false is structurally correct: a session whose
 		// containers_enabled value we could not read is treated as
-		// "do not issue podman commands" per the AC
-		// "containers_enabled=0 → no podman commands". This is the
-		// safe direction — we'd rather skip a sweep than spawn a
+		// "do not issue podman commands". This is the safe
+		// direction — we'd rather skip a sweep than spawn a
 		// spurious warning for a session that didn't use the proxy.
 		return 0, false
 	}
@@ -131,16 +128,16 @@ func sweepOrphanContainersForSession(sessionName string) (count int, ran bool) {
 }
 
 // containerNamePattern returns the strict regex that matches the
-// auto-prefix container name shape produced by Half 1 of #2324:
+// auto-prefix container name shape the proxy produces:
 // `prism-<sessionName>-<8 lowercase hex chars>`.
 //
-// Strict-shape filtering (not just "starts with prefix") is the
-// security AC: a sibling session "foo-bar" whose containers are
+// Strict-shape filtering (not just "starts with prefix") is a
+// security requirement: a sibling session "foo-bar" whose containers are
 // "prism-foo-bar-XXXXXXXX" must NOT be swept when cleaning session
 // "foo". Simple prefix matching cannot distinguish those two cases
 // because "prism-foo-bar-XXXXXXXX" starts with "prism-foo-". The
 // trailing `[a-f0-9]{8}$` anchor closes that gap by relying on the
-// random-suffix shape Half 1 enforces.
+// random-suffix shape the proxy enforces.
 //
 // User-supplied Names that pass Half 1's prefix check but do not
 // match this strict shape (e.g. "prism-foo-myname") are NOT swept
@@ -166,8 +163,8 @@ func containerNamePattern(sessionName string) *regexp.Regexp {
 //     side already excludes most non-matching containers.
 //  3. Re-filter the result in Go with the same regex. This is
 //     defence-in-depth against any podman version that interprets
-//     the filter as a substring match (the docker compat surface
-//     historically does); without this Go-side re-check, a substring
+//     the filter as a substring match, which the docker compat
+//     surface can do. Without this Go-side re-check, a substring
 //     match on the podman side could leak a sibling session's
 //     containers into the rm batch.
 //  4. If any names survive both filters, invoke `podman rm -f` on
@@ -214,7 +211,7 @@ func sweepWithRunner(runner podmanRunner, sessionName string) int {
 		}
 		// Defence-in-depth: enforce strict-shape match in Go even
 		// if podman returned extras. This is the load-bearing check
-		// for the security AC.
+		// for the strict-shape security requirement.
 		if !pattern.MatchString(name) {
 			continue
 		}
@@ -244,12 +241,10 @@ func sweepWithRunner(runner podmanRunner, sessionName string) int {
 	return len(names)
 }
 
-// formatPodmanArgs is a small debugging helper that renders a slice
-// of args into a single space-joined string for inclusion in
-// warning messages. Not exported; kept local so the tests can use
-// it via the export_test.go pattern if needed in the future.
+// formatPodmanArgs renders a slice of args into a single space-joined
+// string for inclusion in warning messages.
 //
-//nolint:unused // retained for future debugging surface
+//nolint:unused // debugging helper for warning-message construction
 func formatPodmanArgs(args []string) string {
 	return fmt.Sprintf("podman %s", strings.Join(args, " "))
 }
