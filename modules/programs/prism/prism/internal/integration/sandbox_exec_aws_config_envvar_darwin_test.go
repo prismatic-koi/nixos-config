@@ -3,17 +3,15 @@
 package integration_test
 
 // sandbox_exec_aws_config_envvar_darwin_test.go — integration coverage for
-// the env-var delivery of the aws config/credentials files (issue #2234,
-// Step 3a of #2132).
+// the env-var delivery of the aws config/credentials files.
 //
 // The staging-HOME .aws/config and .aws/credentials symlinks are gone. The
 // aws CLI resolves both files via AWS_CONFIG_FILE /
 // AWS_SHARED_CREDENTIALS_FILE pointing at the host XDG paths
-// (~/.config/aws/readonly-config and ~/.config/aws/credentials). Per the
-// #2132 §2 mechanism note, no literal SBPL grant exists on the XDG symlink
-// paths (it would be inert — SBPL evaluates resolved targets): the
-// in-sandbox read of the resolved sops target rides the broad
-// (subpath "/private/var/folders") allow narrowed by the #2211 secrets.d
+// (~/.config/aws/readonly-config and ~/.config/aws/credentials). No literal
+// SBPL grant exists on the XDG symlink paths (it is inert — SBPL evaluates
+// resolved targets): the in-sandbox read of the resolved sops target rides
+// the broad (subpath "/private/var/folders") allow narrowed by the secrets.d
 // allowlist, whose aws-readonly-config exception is derived from the same
 // stable XDG source path.
 //
@@ -32,13 +30,13 @@ package integration_test
 //     invocation.
 //
 //  2. Negative: stripping the aws-readonly-config require-not exception
-//     from the #2211 secrets.d deny makes the same invocation fail —
-//     proving the allowlist exception is the load-bearing grant for the
-//     env-var route (sandbox-exec testing convention, #1192).
+//     from the secrets.d deny makes the same invocation fail — proving the
+//     allowlist exception is the load-bearing grant for the env-var route
+//     (sandbox-exec testing convention).
 //
-// Capability-probe gating (#2207) applies via requireSandboxExec. Shared
-// helpers live in sandbox_exec_helpers_darwin_test.go; the allowlist parse
-// helpers live in sandbox_exec_secrets_deny_darwin_test.go.
+// Capability-probe gating applies via requireSandboxExec. Shared helpers
+// live in sandbox_exec_helpers_darwin_test.go. The allowlist parse helpers
+// live in sandbox_exec_secrets_deny_darwin_test.go.
 
 import (
 	"os"
@@ -54,8 +52,8 @@ import (
 // returns the PATH-resolved path (suitable for direct invocation — awscli2
 // from nixpkgs is a wrapper chain that must be entered at the top). Skips
 // the test when aws is not found or does not resolve into /nix/store (an
-// Apple-signed or homebrew binary would SIGABRT or skew the signal under
-// the deny-default profile — same rationale as requireNixBash, #1190).
+// Apple-signed or homebrew binary SIGABRTs or skews the signal under the
+// deny-default profile — same rationale as requireNixBash).
 func requireNixAws(t *testing.T) string {
 	t.Helper()
 
@@ -86,7 +84,7 @@ var awsProfileRe = regexp.MustCompile(`(?m)^\[profile ([^\]]+)\]`)
 // regression.
 //
 // Returns (configPath, resolvedTarget, profileName). configPath is the
-// stable XDG symlink path (what AWS_CONFIG_FILE carries in production);
+// stable XDG symlink path (what AWS_CONFIG_FILE carries in production).
 // resolvedTarget is the EvalSymlinks form used to derive the allowlist
 // exception name in the negative test.
 func awsHostConfigForTest(t *testing.T) (configPath, resolvedTarget, profileName string) {
@@ -144,9 +142,8 @@ func awsHostConfigForTest(t *testing.T) (configPath, resolvedTarget, profileName
 }
 
 // awsConfigureListCmd builds the in-sandbox `aws configure list` invocation
-// with the production env-var shape: HOME at the real host home (Step 5 of
-// #2132), AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE at the host XDG
-// paths. AWS_EC2_METADATA_DISABLED keeps the credential chain from probing
+// with the production env-var shape: HOME at the real host home,
+// AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE at the host XDG paths. AWS_EC2_METADATA_DISABLED keeps the credential chain from probing
 // IMDS (hermeticity — irrelevant to config resolution).
 func awsConfigureListCmd(t *testing.T, profilePath, awsBin, nixBash, configPath, profileName string) *exec.Cmd {
 	t.Helper()
@@ -163,7 +160,7 @@ func awsConfigureListCmd(t *testing.T, profilePath, awsBin, nixBash, configPath,
 }
 
 // TestSandboxExecAWSConfig_EnvVarResolution is the positive integration test
-// for the env-var delivery route (issue #2234 functional AC). It runs a real
+// for the env-var delivery route. It runs a real
 // config-resolving aws invocation inside sandbox-exec under the production
 // profile, with AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE pointing at
 // the host XDG paths, and asserts the named profile from the host config is
@@ -179,14 +176,14 @@ func TestSandboxExecAWSConfig_EnvVarResolution(t *testing.T) {
 	configPath, _, profileName := awsHostConfigForTest(t)
 
 	// BareRoot variant: traversing the XDG symlink under the real HOME needs
-	// the ancestor block's file-read-metadata allow (same as the #2211
+	// the ancestor block's file-read-metadata allow (same as the
 	// stable-chain tests).
 	m := newProfileManagerWithBareRoot(t)
 
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The profile must carry the aws-readonly-config allowlist exception —
-	// the grant the env-var route rides on (issue #2211 / #2234).
+	// the grant the env-var route rides on.
 	resolvedName := secretsDNameForTest(t, configPath)
 	found := false
 	for _, name := range parseSecretsDAllowlist(prepared.content) {
@@ -213,9 +210,9 @@ func TestSandboxExecAWSConfig_EnvVarResolution(t *testing.T) {
 }
 
 // TestSandboxExecAWSConfig_EnvVarResolutionDeniedWithoutAllowlistException
-// is the paired negative test (sandbox-exec testing convention, #1192). It
-// strips the aws-readonly-config require-not exception from the #2211
-// secrets.d deny and asserts the same aws invocation fails — proving the
+// is the paired negative test (sandbox-exec testing convention). It strips
+// the aws-readonly-config require-not exception from the secrets.d deny and
+// asserts the same aws invocation fails — proving the
 // positive is not green by accident: the allowlist exception is the
 // load-bearing grant for the env-var config read.
 func TestSandboxExecAWSConfig_EnvVarResolutionDeniedWithoutAllowlistException(t *testing.T) {

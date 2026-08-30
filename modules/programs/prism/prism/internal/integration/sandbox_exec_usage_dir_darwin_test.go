@@ -4,17 +4,17 @@ package integration_test
 
 // sandbox_exec_usage_dir_darwin_test.go — integration coverage for the
 // read-only (subpath ...) allow on the prism usage snapshot directory
-// ($XDG_STATE_HOME/prism/usage — issue #2572).
+// ($XDG_STATE_HOME/prism/usage).
 //
 // The bottom-bar usage segment reads current.json out of that directory
-// (pi/extensions/prism.ts::readUsageSnapshot, issue #2540). Under
-// deny-default the open failed and the reader — which degrades silently by
-// design — rendered nothing, so the feature was invisible in every sandboxed
+// (pi/extensions/prism.ts::readUsageSnapshot). Without this allow the open
+// fails under deny-default and the reader — which degrades silently by
+// design — renders nothing, so the feature is invisible in every sandboxed
 // session. `prism account usage` from inside a session reads the same
 // directory via internal/usage.ReadAll.
 //
-// Per docs/sandbox-exec-testing.md (issue #1192) the coverage is a
-// positive/negative pair plus a write-denied negative for the read-only AC:
+// Per docs/sandbox-exec-testing.md the coverage is a positive/negative pair
+// plus a write-denied negative for the read-only guarantee:
 //
 //   - TestSandboxExecProfile_UsageSnapshotReadable proves the generated
 //     profile permits reading current.json through the grant.
@@ -23,10 +23,11 @@ package integration_test
 //     fails with EPERM — proving the positive test is not green by accident
 //     via some broader allow.
 //   - TestSandboxExecProfile_UsageSnapshotWriteDenied proves the security
-//     AC: under the PRODUCTION profile a write into the directory fails, so
-//     a compromised session cannot forge usage figures on the host.
+//     property: under the PRODUCTION profile a write into the directory
+//     fails, so a compromised session cannot forge usage figures on the
+//     host.
 //   - TestSandboxExecProfile_UsageSnapshotParentNotReadable proves the
-//     leaf-only AC: prism.db, sitting in the PARENT directory, stays
+//     leaf-only property: prism.db, sitting in the PARENT directory, stays
 //     unreadable.
 //
 // Fixture note. These tests must NOT point at the user's real
@@ -161,10 +162,10 @@ func TestSandboxExecProfile_UsageSnapshotDeniedWithoutRule(t *testing.T) {
 	}
 }
 
-// TestSandboxExecProfile_UsageSnapshotWriteDenied is the read-only AC and
-// its security consequence: under the PRODUCTION profile a write into the
+// TestSandboxExecProfile_UsageSnapshotWriteDenied is the read-only guarantee
+// and its security consequence: under the PRODUCTION profile a write into the
 // usage directory must fail. Every legitimate writer goes through the
-// sidecar endpoint POST /usage/snapshot (issue #2538), so nothing in-sandbox
+// sidecar endpoint POST /usage/snapshot, so nothing in-sandbox
 // needs write access, and a read-only grant stops a compromised session
 // forging usage figures on the host.
 func TestSandboxExecProfile_UsageSnapshotWriteDenied(t *testing.T) {
@@ -215,11 +216,11 @@ func TestSandboxExecProfile_UsageSnapshotWriteDenied(t *testing.T) {
 }
 
 // TestSandboxExecProfile_UsageSnapshotParentNotReadable is the leaf-only
-// security AC: no path outside the usage directory becomes readable.
+// security property: no path outside the usage directory becomes readable.
 //
 // The parent $XDG_STATE_HOME/prism holds prism.db (the whole session
 // database) and run/ (every session's host-API socket dir, isolated per
-// session by security fix #960). A widening of section 5j from the leaf to
+// session). A widening of section 5j from the leaf to
 // the parent would hand a sandboxed agent all of it, so this test plants a
 // sentinel file beside the usage dir and asserts it stays unreadable.
 func TestSandboxExecProfile_UsageSnapshotParentNotReadable(t *testing.T) {

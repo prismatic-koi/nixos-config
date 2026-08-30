@@ -3,15 +3,15 @@
 package integration_test
 
 // sandbox_exec_nix_trusted_settings_darwin_test.go — integration coverage for
-// the single-file read-only allow on ~/.local/share/nix/trusted-settings.json
-// (issue #2201).
+// the single-file read-only allow on ~/.local/share/nix/trusted-settings.json.
 //
 // Flake-CLI nix commands consult $XDG_DATA_HOME/nix/trusted-settings.json
 // whenever the target flake declares a nixConfig block. Inside a sandbox-exec
 // session XDG_DATA_HOME points at the real host ~/.local/share (see
-// cmd/agent_run_sandbox_exec_darwin.go), so under deny-default the read
-// failed EPERM and nix aborted the entire eval — making every flake CLI
-// command unusable on repos with a nixConfig block (e.g. nixos-config).
+// cmd/agent_run_sandbox_exec_darwin.go), so without this allow the read fails
+// EPERM under deny-default and nix aborts the entire eval — making every
+// flake CLI command unusable on repos with a nixConfig block (for example,
+// nixos-config).
 //
 // Per docs/sandbox-exec-testing.md the coverage is a positive/negative pair:
 //
@@ -24,7 +24,7 @@ package integration_test
 //     not permitted"). Both branches prove the sandbox allowed the open,
 //     which is exactly the property nix needs (nix's pathExists/readFile
 //     tolerate ENOENT but abort on EPERM). The ENOENT branch also covers the
-//     issue #2201 edge-case AC: a missing host file follows nix's normal
+//     missing-file case: a missing host file follows nix's normal
 //     missing-file path instead of crashing.
 //
 //   - TestSandboxExecProfile_NixTrustedSettingsDeniedWithoutRule mutates the
@@ -117,7 +117,7 @@ func TestSandboxExecProfile_NixTrustedSettingsReadable(t *testing.T) {
 // negative test: with the trusted-settings allow block removed from the
 // generated profile, the same read must fail with EPERM. This proves the
 // positive test exercises the rule itself rather than passing by accident
-// (e.g. via some broader allow).
+// (for example, via some broader allow).
 func TestSandboxExecProfile_NixTrustedSettingsDeniedWithoutRule(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")

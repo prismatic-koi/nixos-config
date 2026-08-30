@@ -3,11 +3,12 @@
 package integration_test
 
 // sandbox_exec_playwright_darwin_test.go — integration coverage for the
-// playwright-cli enablement under sandbox-exec (issue #2021).
+// playwright-cli enablement under sandbox-exec.
 //
-// Without the changes in this PR, running `playwright-cli open <url>` inside
-// a sandbox-exec session SIGSEGVs in IONotificationPortGetRunLoopSource at
-// ChromeMain+~50ms — the canonical fingerprint of `iokit-open` denial.
+// Without the iokit allows in this profile, running `playwright-cli open
+// <url>` inside a sandbox-exec session SIGSEGVs in
+// IONotificationPortGetRunLoopSource at ChromeMain+~50ms — the canonical
+// fingerprint of `iokit-open` denial.
 // Subsequent secondary failures (`Operation not permitted` on the crashpad
 // xattr writes, `kill EPERM` on the node-side launcher trying to clean up
 // the chromium child) cascade from there.
@@ -25,12 +26,12 @@ package integration_test
 //   4. The chromium user-data directory created by playwright-cli during
 //      the session lives under <sessionDir>/Library/Application
 //      Support/Google/Chrome for Testing/ (the per-session work dir that
-//      CFFIXED_USER_HOME points at — issue #2247, Step 4 of #2132), NOT
-//      under the host ~/Library/Application Support/... and NOT under the
-//      staging HOME (which holds no Library/ entries post-#2247).
+//      CFFIXED_USER_HOME points at), NOT under the host ~/Library/Application
+//      Support/... and NOT under the staging HOME (which holds no Library/
+//      entries).
 //   5. A full open → close → re-open cycle succeeds under the same
-//      profile (issue #2249) — the launch path is repeatable in-sandbox,
-//      not green only on first-boot state.
+//      profile — the launch path is repeatable in-sandbox, not green only
+//      on first-boot state.
 //
 // The two negative tests in this file use the `withMutatedProfile` helper
 // to:
@@ -38,22 +39,20 @@ package integration_test
 //   - Remove the iokit-open-user-client allow block. The positive test
 //     above must then fail with the SEGV fingerprint, proving the
 //     iokit-open-user-client rule is load-bearing.
-//   - Remove the iokit-open-service IOPMrootDomain allow (issue #2249).
-//     The positive test above must then fail with the SEGV fingerprint,
-//     proving the iokit-open-service rule is load-bearing — current
-//     Chrome for Testing acquires its power-management port via
-//     iokit-open-service on IOPMrootDomain, a different operation class
-//     from the user-client allow.
+//   - Remove the iokit-open-service IOPMrootDomain allow. The positive test
+//     above must then fail with the SEGV fingerprint, proving the
+//     iokit-open-service rule is load-bearing — current Chrome for Testing
+//     acquires its power-management port via iokit-open-service on
+//     IOPMrootDomain, a different operation class from the user-client
+//     allow.
 //
 // The signal `(target children)` widening is covered by the deterministic
-// positive/negative pair in sandbox_exec_signal_darwin_test.go (issue
-// #2249 — the former playwright-based kill-EPERM negative lost its
-// distinguishing premise once the browser stopped SEGVing; see the NOTE
-// near the end of this file).
+// positive/negative pair in sandbox_exec_signal_darwin_test.go. See the
+// NOTE near the end of this file for why no playwright-based signal negative
+// exists here.
 //
 // We intentionally do not exercise the headless / WindowServer-bootstrap
-// rule here — that follow-up is out of scope (issue #2021, "Out of scope"
-// §4.2 — headless-by-default is tracked separately).
+// rule here — headless-by-default is tracked separately.
 //
 
 // Why playwright-cli end-to-end rather than a minimal IOKit harness:
@@ -132,7 +131,7 @@ const killEPERMFingerprint = "kill EPERM"
 // crashpadEPERMFingerprint is the crashpad xattr write denial that
 // surfaces when chromium's user-data directory falls under a path the
 // sandbox does not allow writes to. Confirms the work-dir Library
-// skeleton (issue #2247) is working.
+// skeleton is working.
 const crashpadEPERMFingerprint = "Operation not permitted"
 
 // playwrightCLITimeout caps the playwright-cli invocation in case the
@@ -143,10 +142,9 @@ const playwrightCLITimeout = 60 * time.Second
 // runPlaywrightCLI invokes sandbox-exec on the given profile path against
 // playwright-cli with the given CLI args (e.g. "open", <url> — or "close").
 // The env mirrors what agent_run_sandbox_exec_darwin.go does in
-// production: HOME and XDG_CACHE/CONFIG at the real host home (Step 5 of
-// #2132), and CFFIXED_USER_HOME at the per-session work dir (issue #2247,
-// Step 4 of #2132) so chromium's NSHomeDirectory()-derived writes land
-// under <sessionDir>/Library/...
+// production: HOME and XDG_CACHE/CONFIG at the real host home, and
+// CFFIXED_USER_HOME at the per-session work dir so chromium's
+// NSHomeDirectory()-derived writes land under <sessionDir>/Library/...
 //
 // The launch CWD is the session work dir: node hard-fails at bootstrap
 // ("EPERM: process.cwd failed ... uv_cwd") when the sandboxed CWD is
@@ -155,10 +153,7 @@ const playwrightCLITimeout = 60 * time.Second
 // worktree. Callers must build the profile with the getcwd ancestor extras
 // (writeAugmentedPositiveProfileWithLaunchDir /
 // withMutatedProfileAndLaunchDir — see
-// sandbox_exec_launch_dir_darwin_test.go). With the old fixture shape (CWD
-// inherited from the go-test binary, ungranted) these tests could never
-// have passed a host run — a pre-existing hole from #2022, surfaced by the
-// first host run that exercised them (#2247).
+// sandbox_exec_launch_dir_darwin_test.go).
 func runPlaywrightCLI(t *testing.T, profilePath, playwrightBin, sessionDir string, cliArgs ...string) (combinedOutput string, runErr error) {
 	t.Helper()
 
@@ -173,14 +168,13 @@ func runPlaywrightCLI(t *testing.T, profilePath, playwrightBin, sessionDir strin
 		"PATH=" + os.Getenv("PATH"),
 		"XDG_CACHE_HOME=" + filepath.Join(realHome, ".cache"),
 		"XDG_CONFIG_HOME=" + filepath.Join(realHome, ".config"),
-		// Mirrors buildSandboxExecHomeEnv (issue #2249): without these,
-		// playwright-core on Darwin derives its daemon registry/log dir
-		// AND its browser-server descriptor registry from POSIX $HOME
+		// Mirrors buildSandboxExecHomeEnv: without these, playwright-core
+		// on Darwin derives its daemon registry/log dir AND its
+		// browser-server descriptor registry from POSIX $HOME
 		// (os.homedir()/Library/Caches — XDG_CACHE_HOME is ignored on
-		// darwin). Post Step 5 of #2132 ($HOME = real home) an
-		// unredirected daemon would write into the real ~/Library/Caches
-		// — denied by the profile AND a host-pollution hazard, so the
-		// redirects are load-bearing.
+		// darwin). With $HOME = real home, an unredirected daemon writes
+		// into the real ~/Library/Caches — denied by the profile AND a
+		// host-pollution hazard, so the redirects are load-bearing.
 		"PLAYWRIGHT_DAEMON_SESSION_DIR=" + filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "daemon"),
 		"PLAYWRIGHT_SERVER_REGISTRY=" + filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "b"),
 	}
@@ -223,27 +217,23 @@ func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, sessionDir s
 }
 
 // TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile is the
-// positive integration test for the chromium-under-sandbox-exec fix
-// (issue #2021).
+// positive integration test for chromium under sandbox-exec.
 //
 // It generates the production SBPL profile (which also prepares the
 // session work dir — creating the chromium Library/Application
 // Support/Google skeleton inside it), and invokes playwright-cli with
-// `open <data-url>` (then close → re-open → close, issue #2249) under
-// sandbox-exec. Asserts exit 0 with no SEGV or kill-EPERM fingerprints in
-// stderr, and that the chromium user-data directory landed under the
-// work-dir Library (not the host Library).
+// `open <data-url>` (then close → re-open → close) under sandbox-exec.
+// Asserts exit 0 with no SEGV or kill-EPERM fingerprints in stderr, and
+// that the chromium user-data directory landed under the work-dir Library
+// (not the host Library).
 //
-// History: this positive was skipped between 2026-06-12 and #2249's fix.
-// The 2026-06-12 host bisect (PR #2248) showed it failing identically on
-// main — the live Chrome for Testing performs iokit-open-service on
-// IOPMrootDomain, a different operation class from the profile's
-// iokit-open-user-client RootDomainUserClient allow, and the denial
-// cascades into an AMFI core-dump denial and SEGV_ACCERR at render init.
-// The §9c iokit-open-service IOPMrootDomain allow (issue #2249) closed the
-// gap; the paired negative
-// TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOPMrootDomainAllow
-// proves it is load-bearing.
+// The live Chrome for Testing performs iokit-open-service on IOPMrootDomain,
+// a different operation class from the profile's iokit-open-user-client
+// RootDomainUserClient allow. Without the §9c iokit-open-service
+// IOPMrootDomain allow, the denial cascades into an AMFI core-dump denial
+// and SEGV_ACCERR at render init. The paired negative
+// TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOPMrootDomainAllow proves
+// that allow is load-bearing.
 func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -263,7 +253,7 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 		t.Fatalf("SessionWorkDir: %v", err)
 	}
 
-	// Sanity-check the #2247 layout before launching anything: the
+	// Sanity-check the chromium-skeleton layout before launching anything: the
 	// chromium skeleton lives in the session work dir. The unit test
 	// TestPrepareSessionWorkDir_ChromiumLibrarySkeleton covers this more
 	// thoroughly, but a failure here would explain a cascade of crashpad
@@ -322,7 +312,7 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 			"(issue #2247).\nOutput:\n%s", crashpadEPERMFingerprint, combined)
 	}
 
-	// open → close → re-open cycle (issue #2249 AC): the first open above
+	// open → close → re-open cycle: the first open above
 	// spawned the playwright daemon; close must tear the session down
 	// cleanly, and a second open must then succeed from scratch — proving
 	// the in-sandbox launch path is repeatable, not green only on
@@ -370,7 +360,7 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 	}
 
 	// Post-run: no legacy staging-HOME dir may have appeared under the
-	// session work dir — the mechanism is deleted (Step 5 of #2132).
+	// session work dir — the mechanism is deleted.
 	if _, statErr := os.Lstat(filepath.Join(sessionDir, "home")); statErr == nil {
 		t.Errorf("a legacy staging-HOME dir appeared under the session work dir during the run — the staging mechanism was deleted in Step 5 of #2132.\nOffending entries:\n%s", listTreeForDiag(filepath.Join(sessionDir, "home")))
 	}
@@ -435,15 +425,15 @@ func TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOKitAllow(t *testing.T) {
 }
 
 // TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOPMrootDomainAllow is
-// the paired negative test for the iokit-open-service IOPMrootDomain allow
-// (issue #2249). It strips only the iokit-open-service clause from the
-// profile — leaving the iokit-open-user-client block (#2021) fully intact —
-// and asserts that playwright-cli now fails with the SEGV fingerprint.
+// the paired negative test for the iokit-open-service IOPMrootDomain allow.
+// It strips only the iokit-open-service clause from the profile — leaving
+// the iokit-open-user-client block fully intact — and asserts that
+// playwright-cli now fails with the SEGV fingerprint.
 //
 // This proves the new allow is load-bearing on its own: the user-client
-// allow set from #2021 is NOT sufficient for current Chrome for Testing,
-// which acquires its power-management port via iokit-open-service on the
-// IOPMrootDomain registry entry (deny-log smoking gun from 2026-06-12:
+// allow set is NOT sufficient for current Chrome for Testing, which
+// acquires its power-management port via iokit-open-service on the
+// IOPMrootDomain registry entry (the deny-log signature is
 // `deny(1) iokit-open-service IOPMrootDomain`).
 func TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOPMrootDomainAllow(t *testing.T) {
 	if runtime.GOOS != "darwin" {
@@ -494,28 +484,23 @@ func TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOPMrootDomainAllow(t *test
 	}
 }
 
-// NOTE (issue #2249): the former
-// TestSandboxExecProfile_PlaywrightCLISignalEPERMWithoutTargetChildren
-// negative was REMOVED here. Its premise broke with the #2249 fix: pre-fix,
-// the SEGVd browser forced the node launcher down the force-kill path,
-// surfacing `kill EPERM` when (target children) was absent. Post-fix the
-// browser runs healthily, `playwright-cli close` tears the session down
-// gracefully over CDP (no signal is sent), and the launcher never exercises
-// the kill path — so the EPERM fingerprint cannot manifest without
-// contriving a SEGV. The signal (target children) widening is instead
-// covered by the deterministic positive/negative pair in
-// sandbox_exec_signal_darwin_test.go, which proves the rule's semantics
-// (child-signalling allowed with the rule, EPERM without it) directly with
-// a bash child-kill probe. The killEPERMFingerprint absence assertion in
-// the positive test above is retained — it guards any future close-path
-// force-kill regression.
+// NOTE: this file has no playwright-based signal (target children) negative.
+// `playwright-cli close` tears the session down gracefully over CDP and
+// sends no signal, so the launcher never exercises the kill path and the
+// `kill EPERM` fingerprint cannot manifest without contriving a SEGV. The
+// signal (target children) widening is covered by the deterministic
+// positive/negative pair in sandbox_exec_signal_darwin_test.go, which
+// proves the rule's semantics (child-signalling allowed with the rule,
+// EPERM without it) directly with a bash child-kill probe. The
+// killEPERMFingerprint absence assertion in the positive test above is
+// retained — it guards any future close-path force-kill regression.
 
 // listTreeForDiag returns a newline-separated recursive listing of root
 // (relative paths), capped at 200 entries, for assertion diagnostics. When
-// the #2247 staging-Library assertions fire, the listing names the
-// offending writer (e.g. Caches/ms-playwright/daemon/... → the playwright
-// daemon log dir, issue #2249) instead of leaving the operator to re-run
-// with manual instrumentation.
+// the staging-Library assertions fire, the listing names the offending
+// writer (for example, Caches/ms-playwright/daemon/... → the playwright
+// daemon log dir) instead of leaving the operator to re-run with manual
+// instrumentation.
 func listTreeForDiag(root string) string {
 	const maxEntries = 200
 	var entries []string
@@ -569,8 +554,8 @@ func removeIOKitAllowBlock(p string) string {
 }
 
 // removeIOPMrootDomainAllowBlock returns a copy of the generated profile
-// with the (allow iokit-open-service ...) clause stripped (issue #2249).
-// The clause spans two lines in the current generator output:
+// with the (allow iokit-open-service ...) clause stripped. The clause spans
+// two lines in the current generator output:
 //
 //	(allow iokit-open-service
 //	  (iokit-registry-entry-class "IOPMrootDomain"))
