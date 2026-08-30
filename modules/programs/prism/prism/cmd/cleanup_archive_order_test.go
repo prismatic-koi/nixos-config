@@ -1,13 +1,14 @@
 package cmd
 
-// cleanup_archive_order_test.go — regression tests for issue #2219.
+// cleanup_archive_order_test.go — regression tests for the
+// archive-before-sever ordering.
 //
 // All four cleanup paths (doCleanup, headlessCleanupWithJSON, closeSession,
 // headlessCloseSessionWithJSON) must archive the pi transcript JSONL BEFORE
 // severing the pi resume linkage — the hard-mode sever deletes the same
-// host-root file the archive copies (post-#2210 both resolve the same path
-// in every isolation mode), so the inverted ordering produced manifest-only
-// archives: lossy cleanup.
+// host-root file the archive copies (both resolve the same path in every
+// isolation mode), so an inverted ordering produces manifest-only archives:
+// lossy cleanup.
 //
 // Each path is exercised end-to-end against a temp HOME / temp XDG_DATA_HOME
 // and a temp DB, asserting behaviourally (not by inspection) that:
@@ -17,14 +18,14 @@ package cmd
 //     headlessCleanupWithJSON) the transcript is removed from the host
 //     sessions root; on the SOFT paths (closeSession,
 //     headlessCloseSessionWithJSON) the transcript is PRESERVED so pi's
-//     /resume keeps working (issue #2371), and
+//     /resume keeps working, and
 //  3. agent_status.harness_session_id is cleared in both modes.
 //
 // The archive-failure semantic is also covered: when the archive step fails,
 // the sever must be skipped entirely — the transcript stays on disk and
 // harness_session_id stays populated so a re-run can archive-then-sever.
 //
-// The soft-close-specific #2371 semantics (pending-replay purge, JSON
+// The soft-close-specific semantics (pending-replay purge, JSON
 // envelope truthfulness, no-transcript and archive-failure edge cases, and
 // the hard-mode revert guard) live in cleanup_soft_close_test.go.
 
@@ -164,10 +165,10 @@ func assertSeveredAfterArchive(t *testing.T, f archiveOrderFixture) {
 	assertHarnessSessionIDCleared(t, f)
 }
 
-// assertSoftSeveredAfterArchive asserts the post-archive SOFT sever ran
-// (issue #2371): the host-root transcript is PRESERVED — it is what pi's
-// interactive /resume reads — while agent_status.harness_session_id is NULL
-// (the load-bearing #2035 defence).
+// assertSoftSeveredAfterArchive asserts the post-archive SOFT sever ran:
+// the host-root transcript is PRESERVED — it is what pi's interactive /resume
+// reads — while agent_status.harness_session_id is NULL (the load-bearing
+// auto-resume defence).
 func assertSoftSeveredAfterArchive(t *testing.T, f archiveOrderFixture) {
 	t.Helper()
 	if _, err := os.Stat(f.transcript); err != nil {
@@ -214,9 +215,9 @@ func TestHeadlessCleanup_ArchivesTranscriptBeforeSever(t *testing.T) {
 
 // TestHeadlessCloseSession_ArchivesAndPreservesTranscript covers the
 // headlessCloseSessionWithJSON path (prism close --yes / coordinator close).
-// This is a SOFT-close path: the archive still runs first (#2219), the DB
-// pointer is still cleared (#2035), but the transcript in the pi sessions
-// root is preserved so /resume keeps working (issue #2371).
+// This is a SOFT-close path: the archive still runs first, the DB pointer is
+// still cleared, but the transcript in the pi sessions root is preserved so
+// /resume keeps working.
 func TestHeadlessCloseSession_ArchivesAndPreservesTranscript(t *testing.T) {
 	f := setupArchiveOrderFixture(t, "archive-order-soft", "")
 
@@ -230,8 +231,7 @@ func TestHeadlessCloseSession_ArchivesAndPreservesTranscript(t *testing.T) {
 
 // TestCloseSession_ArchivesAndPreservesTranscript covers the interactive
 // closeSession path (@main / non-worktree sessions). Same soft-close
-// semantics as above: archive runs, DB pointer cleared, transcript preserved
-// (issue #2371).
+// semantics as above: archive runs, DB pointer cleared, transcript preserved.
 func TestCloseSession_ArchivesAndPreservesTranscript(t *testing.T) {
 	f := setupArchiveOrderFixture(t, "archive-order-close", "")
 
@@ -275,7 +275,7 @@ func TestDoCleanup_ArchivesTranscriptBeforeSever(t *testing.T) {
 }
 
 // TestHeadlessCleanup_ArchiveFailureLeavesTranscript covers the
-// archive-failure semantic (issue #2219 AC): when the archive step fails, the
+// archive-failure semantic: when the archive step fails, the
 // sever must be skipped — the transcript JSONL stays on disk and
 // agent_status.harness_session_id stays populated (so a re-run of cleanup can
 // archive-then-sever; clearing the pointer would orphan the file forever) —
@@ -345,17 +345,12 @@ func TestHeadlessCleanup_ArchiveFailureLeavesTranscript(t *testing.T) {
 }
 
 // TestHeadlessCleanup_NoTranscript_ManifestOnlyArchive covers the no-transcript
-// edge case (issue #2219 AC, semantics updated for issue #2336): a session
-// whose pi transcript never existed must clean up without error, producing a
-// manifest-only archive (no session.jsonl). Post-#2336 the sever step is
-// SKIPPED in this case — harness_session_id is retained and no file under
+// edge case: a session whose pi transcript never existed must clean up without
+// error, producing a manifest-only archive (no session.jsonl). The sever step
+// is SKIPPED in this case — harness_session_id is retained and no file under
 // the pi sessions dir is deleted — so a follow-up cleanup can archive-then-
-// sever if the transcript reappears.
-//
-// Pre-#2336 the sever ran anyway, which meant a manifest-only archive
-// silently deleted the (missing) transcript pointer from the DB and, if the
-// transcript later reappeared, the pointer to it. Skipping the sever here
-// closes that data-loss path.
+// sever if the transcript reappears. Running the sever on a manifest-only
+// archive would delete the transcript pointer and open a data-loss path.
 func TestHeadlessCleanup_NoTranscript_ManifestOnlyArchive(t *testing.T) {
 	f := setupArchiveOrderFixture(t, "archive-order-empty", "")
 	// Remove the transcript the fixture seeded — this test wants the
@@ -393,7 +388,7 @@ func TestHeadlessCleanup_NoTranscript_ManifestOnlyArchive(t *testing.T) {
 	if st == nil {
 		t.Fatal("agent_status row missing after cleanup")
 	}
-	// Post-#2336: sever is gated on the adapter reporting copied == true.
+	// The sever is gated on the adapter reporting copied == true.
 	// Here the adapter saw os.IsNotExist(srcPath) and returned (false, nil),
 	// so severPiResumeLinkage does not run — harness_session_id is retained.
 	if st.HarnessSessionID == nil || *st.HarnessSessionID != archiveOrderSID {

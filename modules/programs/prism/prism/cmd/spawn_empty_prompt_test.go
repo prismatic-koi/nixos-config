@@ -1,21 +1,18 @@
 package cmd
 
-// Tests for the keybind carve-out of the layer-1+2 empty-prompt guard
-// (issues #2012, #2063, #2073). The tmux Prefix+a keybind invokes
-// `prism spawn --attach` with no --prompt — the operator types the
-// initial prompt to the live agent after the popup attaches. The keybind
-// discriminator is the PRISM_KEYBIND_SPAWN environment variable
-// (introduced in #2073 to replace the overloaded PRISM_SPAWN_PATH); when
-// that is set and no prompt was supplied, runSpawn must skip the
-// empty-prompt rejection so the popup does not flash-close with an
-// unreadable error.
+// Tests for the keybind carve-out of the empty-prompt guard. The tmux
+// Prefix+a keybind invokes `prism spawn --attach` with no --prompt — the
+// operator types the initial prompt to the live agent after the popup
+// attaches. The keybind discriminator is the PRISM_KEYBIND_SPAWN environment
+// variable (a dedicated sentinel, not the overloaded PRISM_SPAWN_PATH). When
+// that is set and no prompt was supplied, runSpawn must skip the empty-prompt
+// rejection so the popup does not flash-close with an unreadable error.
 //
-// Without PRISM_KEYBIND_SPAWN set, the existing emptyPromptError must
-// still fire — protecting the shell-invocation path and proving the
-// relaxation is gated on the dedicated sentinel only. Crucially,
-// PRISM_SPAWN_PATH alone (which every sandbox injects unconditionally)
-// must NOT trip the carve-out — that conflation was the reason #2073
-// existed.
+// Without PRISM_KEYBIND_SPAWN set, emptyPromptError must still fire —
+// protecting the shell-invocation path and proving the relaxation is gated on
+// the dedicated sentinel only. Crucially, PRISM_SPAWN_PATH alone (which every
+// sandbox injects unconditionally) must NOT trip the carve-out: it cannot
+// distinguish a keybind spawn from a container worker spawn.
 
 import (
 	"encoding/json"
@@ -59,16 +56,16 @@ func buildSpawnCmdForEmptyPromptTest(t *testing.T) *cobra.Command {
 // layer-1+2 guard — typically on resolveBareRoot ("not inside a git
 // repo") or another pre-flight check. The assertion is therefore
 // negative: the error must NOT contain the empty-prompt message. That
-// is sufficient evidence that the layer-1+2 guard let the call through,
-// which is the exact behaviour the issue #2012/#2073 fix promises.
+// is sufficient evidence that the guard let the call through, which is the
+// exact behaviour the keybind carve-out promises.
 func TestRunSpawn_KeybindCarveOut_EmptyPromptAccepted(t *testing.T) {
 	cmd := buildSpawnCmdForEmptyPromptTest(t)
 	// No --prompt / --prompt-file flags set — promptText resolves to "".
 
 	t.Setenv("PRISM_HOST_API", "")
-	// PRISM_KEYBIND_SPAWN is the dedicated keybind discriminator (#2073).
+	// PRISM_KEYBIND_SPAWN is the dedicated keybind discriminator.
 	t.Setenv("PRISM_KEYBIND_SPAWN", "1")
-	// PRISM_SPAWN_PATH is now purely a working-directory hint. Set it to a
+	// PRISM_SPAWN_PATH is purely a working-directory hint. Set it to a
 	// non-git temp dir so resolveBareRoot fails with "not inside a git repo"
 	// without falling back to tmux.CurrentPanePath() (which would resolve
 	// against the real test cwd — the nixos-config repo — and leak a
@@ -102,10 +99,9 @@ func TestRunSpawn_NoKeybind_EmptyPromptStillRejected(t *testing.T) {
 	// No --prompt flags set.
 
 	t.Setenv("PRISM_HOST_API", "")
-	// PRISM_KEYBIND_SPAWN unset — not a keybind invocation. Post-#2073
-	// the sentinel is dedicated, so no sandbox injects it; we do not
-	// need the `t.Setenv("PRISM_SPAWN_PATH", "")` defensive shim that
-	// the pre-#2073 tests carried.
+	// PRISM_KEYBIND_SPAWN unset — not a keybind invocation. The sentinel is
+	// dedicated, so no sandbox injects it; the PRISM_SPAWN_PATH defensive
+	// shim is not needed.
 	t.Setenv("PRISM_BARE_ROOT", "")
 	withNoopTmux(t)
 
@@ -121,8 +117,8 @@ func TestRunSpawn_NoKeybind_EmptyPromptStillRejected(t *testing.T) {
 	}
 }
 
-// TestRunSpawn_SandboxEnvAlone_DoesNotTriggerKeybindCarveOut verifies the
-// #2073 AC edge case: a container-style invocation with PRISM_SPAWN_PATH
+// TestRunSpawn_SandboxEnvAlone_DoesNotTriggerKeybindCarveOut covers the
+// edge case: a container-style invocation with PRISM_SPAWN_PATH
 // set (every sandbox sets this unconditionally as a cwd hint) and
 // PRISM_KEYBIND_SPAWN UNSET must still hit the empty-prompt guard. The
 // dedicated sentinel cannot be tripped by the sandbox env-injection
@@ -150,7 +146,7 @@ func TestRunSpawn_SandboxEnvAlone_DoesNotTriggerKeybindCarveOut(t *testing.T) {
 }
 
 // TestProxySpawn_KeybindCarveOut_EmptyPromptForwarded verifies the parity
-// gap from #2063 carried forward by #2073: when proxySpawn is invoked
+// behaviour: when proxySpawn is invoked
 // with PRISM_HOST_API set, PRISM_KEYBIND_SPAWN set (the keybind
 // discriminator), and no prompt, the proxy must NOT return
 // emptyPromptError before the round-trip. Instead it must POST the
@@ -179,7 +175,7 @@ func TestProxySpawn_KeybindCarveOut_EmptyPromptForwarded(t *testing.T) {
 	})
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
-	// PRISM_KEYBIND_SPAWN is the dedicated keybind discriminator (#2073).
+	// PRISM_KEYBIND_SPAWN is the dedicated keybind discriminator.
 	t.Setenv("PRISM_KEYBIND_SPAWN", "1")
 
 	cmd := buildSpawnCmdForEmptyPromptTest(t)
@@ -188,7 +184,7 @@ func TestProxySpawn_KeybindCarveOut_EmptyPromptForwarded(t *testing.T) {
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
 		// The error must NOT be the empty-prompt rejection — anything else
 		// (e.g. an HTTP-level oddity) would be a separate failure, but a
-		// successful HTTP round-trip is what the AC requires.
+		// successful HTTP round-trip is what the carve-out requires.
 		if strings.Contains(err.Error(), "a prompt is required") ||
 			strings.Contains(err.Error(), "empty string — supply a non-empty prompt") {
 			t.Fatalf("proxySpawn returned empty-prompt error despite PRISM_KEYBIND_SPAWN set: %v", err)
@@ -210,8 +206,8 @@ func TestProxySpawn_KeybindCarveOut_EmptyPromptForwarded(t *testing.T) {
 }
 
 // TestProxySpawn_NoKeybind_EmptyPromptStillRejected verifies the security
-// AC: when PRISM_HOST_API is set but PRISM_KEYBIND_SPAWN is NOT set, an
-// empty prompt must still be rejected at the proxy boundary (layer 1+2)
+// property: when PRISM_HOST_API is set but PRISM_KEYBIND_SPAWN is NOT set, an
+// empty prompt must still be rejected at the proxy boundary
 // — the carve-out fires only on the keybind sentinel. The host-API
 // request must never be made.
 func TestProxySpawn_NoKeybind_EmptyPromptStillRejected(t *testing.T) {
@@ -245,13 +241,12 @@ func TestProxySpawn_NoKeybind_EmptyPromptStillRejected(t *testing.T) {
 	}
 }
 
-// TestProxySpawn_ContainerSandboxEnv_DoesNotSetFromKeybind verifies the
-// #2073 AC edge case at the proxy layer: a container worker-spawn (where
-// PRISM_SPAWN_PATH is set unconditionally by the sandbox but
-// PRISM_KEYBIND_SPAWN is NOT set) MUST NOT forward from_keybind=true,
-// even when the spawn happens to carry no --prompt (the proxy no longer
-// narrows on `promptFlag == ""` — the dedicated sentinel makes that
-// narrowing unnecessary).
+// TestProxySpawn_ContainerSandboxEnv_DoesNotSetFromKeybind covers the edge
+// case at the proxy layer: a container worker-spawn (where PRISM_SPAWN_PATH
+// is set unconditionally by the sandbox but PRISM_KEYBIND_SPAWN is NOT set)
+// MUST NOT forward from_keybind=true, even when the spawn happens to carry no
+// --prompt (the proxy does not narrow on `promptFlag == ""` — the dedicated
+// sentinel makes that narrowing unnecessary).
 //
 // This case wraps an unusual but legitimate flow: a container caller
 // proxy-spawning with an explicit empty prompt should hit the
@@ -301,9 +296,9 @@ func TestProxySpawn_ContainerSandboxEnv_DoesNotSetFromKeybind(t *testing.T) {
 	}
 }
 
-// TestRunSpawn_KeybindCarveOut_DoesNotSwallowSuppliedPrompt verifies the
-// AC edge-case: when PRISM_KEYBIND_SPAWN is set AND a non-empty --prompt
-// is also supplied, the carve-out does not swallow the prompt. We assert
+// TestRunSpawn_KeybindCarveOut_DoesNotSwallowSuppliedPrompt covers the edge
+// case: when PRISM_KEYBIND_SPAWN is set AND a non-empty --prompt is also
+// supplied, the carve-out does not swallow the prompt. We assert
 // this by checking the error is NOT an empty-prompt error (proving the
 // guard is bypassed cleanly without erasing the prompt the caller
 // supplied).

@@ -1,7 +1,7 @@
 package cmd
 
 // Tests for buildPRSpawnInputs — the `prism pr` flag-to-column mapping for
-// the spawn_inputs audit row. Issue #2105.
+// the spawn_inputs audit row.
 //
 // `prism pr` does not flow through SpawnSession (it uses ensureAndSwitch →
 // session.Create), so it has its own writer that mirrors

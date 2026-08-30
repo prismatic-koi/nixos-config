@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for the #2324 Step-7 orphan-container sweep.
+// Tests for the orphan-container sweep.
 //
 // The sweep is wired into the four cleanup paths via
 // applyOrphanContainerSweep; this file exercises the sweep in
@@ -116,7 +116,7 @@ func installFakeRunner(t *testing.T) *fakePodmanRunner {
 
 // TestSweep_FilterUsesAnchoredRegex verifies that the podman ps
 // invocation passes an anchored regex through --filter name=<regex>,
-// not a plain substring. This is the security AC's first line of
+// not a plain substring. This is the security requirement's first line of
 // defence: podman libpod's filter is regex-matched, so anchoring on
 // the podman side already excludes most non-matching containers
 // before the Go-side re-filter sees them.
@@ -145,9 +145,9 @@ func TestSweep_FilterUsesAnchoredRegex(t *testing.T) {
 
 // ── sweepWithRunner: empty result ─────────────────────────────────────────
 
-// TestSweep_ZeroMatches_NoRmInvocation verifies the AC: "When the
-// prefix-filter sweep returns zero matches, cleanup does not invoke
-// podman rm and reports containers_swept=0."
+// TestSweep_ZeroMatches_NoRmInvocation checks that when the prefix-filter
+// sweep returns zero matches, cleanup does not invoke podman rm and reports
+// containers_swept=0.
 func TestSweep_ZeroMatches_NoRmInvocation(t *testing.T) {
 	r := installFakeRunner(t)
 	r.script(scriptedResponse{stdout: []byte("\n")}) // ps returns just newlines
@@ -170,7 +170,7 @@ func TestSweep_ZeroMatches_NoRmInvocation(t *testing.T) {
 
 // ── sweepWithRunner: happy path ───────────────────────────────────────────
 
-// TestSweep_MatchedContainersRemoved verifies the AC: with
+// TestSweep_MatchedContainersRemoved verifies that with
 // containers_enabled=1 and ps returning matching names, the sweep
 // invokes podman rm -f on each name and reports the count.
 func TestSweep_MatchedContainersRemoved(t *testing.T) {
@@ -215,10 +215,10 @@ func TestSweep_MatchedContainersRemoved(t *testing.T) {
 	}
 }
 
-// ── sweepWithRunner: security AC — sibling session not swept ──────────────
+// ── sweepWithRunner: security — sibling session not swept ─────────────────
 
 // TestSweep_SiblingPrefixSessionNotSwept is the load-bearing security
-// AC test: when two sessions exist whose names are in a prefix
+// test: when two sessions exist whose names are in a prefix
 // relationship (session "foo" vs session "foo-bar"), the sweep for
 // "foo" must NOT touch "foo-bar"'s containers.
 //
@@ -293,10 +293,9 @@ func TestSweep_SubstringTrapNotSwept(t *testing.T) {
 
 // ── sweepWithRunner: ps failure is non-fatal ──────────────────────────────
 
-// TestSweep_PsFailureIsNonFatal verifies the AC: "When podman ps
-// fails (machine off, socket down), cleanup logs a warning and
-// completes successfully." The sweep returns 0 and does NOT
-// subsequently invoke rm.
+// TestSweep_PsFailureIsNonFatal checks that when podman ps fails (machine
+// off, socket down), cleanup logs a warning and completes successfully. The
+// sweep returns 0 and does NOT subsequently invoke rm.
 func TestSweep_PsFailureIsNonFatal(t *testing.T) {
 	r := installFakeRunner(t)
 	r.script(scriptedResponse{
@@ -335,10 +334,10 @@ func TestSweep_RmFailureIsNonFatal(t *testing.T) {
 
 // ── end-to-end: containers_enabled gating through headlessCleanup ─────────
 
-// TestHeadlessCleanup_ContainersDisabled_NoPodmanInvocation verifies
-// the CRITICAL AC: "When the session has containers_enabled=0,
-// cleanup issues NO podman commands. (No new warnings about podman
-// being unavailable on sessions that did not enable containers.)"
+// TestHeadlessCleanup_ContainersDisabled_NoPodmanInvocation checks the
+// critical property: when the session has containers_enabled=0, cleanup
+// issues NO podman commands (no new warnings about podman being unavailable
+// on sessions that did not enable containers).
 //
 // Seeds a session with containers_enabled=0 (the default) and
 // asserts the stub runner was NEVER invoked, AND the JSON envelope
@@ -361,12 +360,12 @@ func TestHeadlessCleanup_ContainersDisabled_NoPodmanInvocation(t *testing.T) {
 		}
 	})
 
-	// AC: NO podman commands issued.
+	// NO podman commands issued.
 	if calls := r.calls(); len(calls) != 0 {
 		t.Errorf("AC VIOLATION: containers_enabled=0 must not issue podman commands; got: %v", calls)
 	}
 
-	// AC: containers_swept key is OMITTED from the envelope.
+	// containers_swept key is OMITTED from the envelope.
 	var env map[string]any
 	if err := json.Unmarshal([]byte(out), &env); err != nil {
 		t.Fatalf("unmarshal envelope: %v\nraw: %q", err, out)
@@ -376,10 +375,9 @@ func TestHeadlessCleanup_ContainersDisabled_NoPodmanInvocation(t *testing.T) {
 	}
 }
 
-// TestHeadlessCleanup_ContainersEnabled_EmptySweepReportsZero verifies
-// the AC: "[edge-case] When the prefix-filter sweep returns zero
-// matches, cleanup does not invoke podman rm and reports
-// containers_swept=0."
+// TestHeadlessCleanup_ContainersEnabled_EmptySweepReportsZero checks the
+// edge case: when the prefix-filter sweep returns zero matches, cleanup does
+// not invoke podman rm and reports containers_swept=0.
 func TestHeadlessCleanup_ContainersEnabled_EmptySweepReportsZero(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
@@ -399,7 +397,7 @@ func TestHeadlessCleanup_ContainersEnabled_EmptySweepReportsZero(t *testing.T) {
 		}
 	})
 
-	// AC: containers_swept=0 present in envelope.
+	// containers_swept=0 present in envelope.
 	var env map[string]any
 	if err := json.Unmarshal([]byte(out), &env); err != nil {
 		t.Fatalf("unmarshal envelope: %v\nraw: %q", err, out)
@@ -417,7 +415,7 @@ func TestHeadlessCleanup_ContainersEnabled_EmptySweepReportsZero(t *testing.T) {
 		t.Errorf("containers_swept: got %v, want 0", f)
 	}
 
-	// AC: only ps invoked, no rm.
+	// only ps invoked, no rm.
 	calls := r.calls()
 	if len(calls) != 1 {
 		t.Errorf("expected one podman invocation (ps); got %d: %v", len(calls), calls)
@@ -429,10 +427,9 @@ func TestHeadlessCleanup_ContainersEnabled_EmptySweepReportsZero(t *testing.T) {
 	}
 }
 
-// TestHeadlessCleanup_ContainersEnabled_SweepReportsCount verifies the
-// AC: "prism cleanup --yes --session <name> --json for a
-// containers-enabled session includes \"containers_swept\": <n> in the
-// JSON envelope."
+// TestHeadlessCleanup_ContainersEnabled_SweepReportsCount checks that
+// `prism cleanup --yes --session <name> --json` for a containers-enabled
+// session includes "containers_swept": <n> in the JSON envelope.
 func TestHeadlessCleanup_ContainersEnabled_SweepReportsCount(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)

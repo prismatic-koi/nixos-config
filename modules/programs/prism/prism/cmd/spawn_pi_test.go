@@ -1,9 +1,9 @@
 package cmd
 
-// spawn_pi_test.go — tests for the PI harness spawn path (#1212, #1213).
+// spawn_pi_test.go — tests for the PI harness spawn path.
 //
 // Coverage:
-//   - --harness pi on Darwin passes harness validation (P2.DARWIN landed)
+//   - --harness pi on Darwin passes harness validation
 //   - --harness pi on Linux passes the harness validation step (the spawn
 //     fails later for an unrelated reason since the test does not prepare a
 //     real bwrap environment, but the failure is NOT a harness validation
@@ -18,10 +18,10 @@ import (
 )
 
 // TestRunSpawn_HarnessPI_DarwinPassesValidation verifies that --harness pi on
-// Darwin passes harness validation (P2.DARWIN #1213 landed). The test does not
-// prepare a real sandbox-exec environment so runSpawn fails further down; we
-// assert the failure is NOT a harness-validation error and NOT the old Darwin
-// "not yet supported" guard to prove validation passed and the guard is gone.
+// Darwin passes harness validation. The test does not prepare a real
+// sandbox-exec environment so runSpawn fails further down; we assert the
+// failure is NOT a harness-validation error and NOT a Darwin "not yet
+// supported" error, proving validation passed and no such guard fires.
 func TestRunSpawn_HarnessPI_DarwinPassesValidation(t *testing.T) {
 	if runtime.GOOS == "linux" {
 		t.Skip("Darwin-specific: verifies Darwin guard has been removed")

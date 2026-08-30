@@ -1,7 +1,7 @@
 package cmd
 
-// Tests for issue #2633: `prism pr <number>` sessions must receive read-only
-// guidance (Case 1 review-only), whether or not the caller supplies a prompt.
+// Tests for `prism pr <number>` sessions receiving read-only guidance
+// (Case 1 review-only), whether or not the caller supplies a prompt.
 
 import (
 	"encoding/json"

@@ -1,7 +1,6 @@
 package cmd
 
-// spawn_abtest_test.go — tests for the --abtest flag parsing and validation
-// (P4.ABTEST, issue #1216).
+// spawn_abtest_test.go — tests for the --abtest flag parsing and validation.
 //
 // Coverage:
 //   - --abtest and --profile are mutually exclusive

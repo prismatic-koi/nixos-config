@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for `prism spawn --wait` (#1500).
+// Tests for `prism spawn --wait`.
 //
 // We test the wait loop directly (waitForSpawnTerminal) rather than going
 // through runSpawn — runSpawn does substantial side-effecting work (worktree

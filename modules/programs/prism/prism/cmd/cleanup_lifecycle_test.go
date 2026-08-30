@@ -1,4 +1,4 @@
-// Tests for issue #2134 — agent_status lifecycle bookkeeping during cleanup.
+// Tests for agent_status lifecycle bookkeeping during cleanup.
 //
 // `prism cleanup --yes --session <name>` must, after the worktree/branch/tmux
 // teardown, leave the agent_status row in a fully cleaned-up state:
@@ -7,14 +7,14 @@
 //   - harness_port set to NULL ("released" sentinel)
 //   - harness_session_id set to NULL
 //
-// And the --json envelope must report these three outcomes via the new fields:
+// And the --json envelope must report these three outcomes via the fields:
 // ended_at_stamped, harness_port_released, harness_session_id_cleared. Each
 // field is `true` on success (including idempotent no-ops) or a string
 // describing the failure.
 //
 // These tests exercise the worktree-less paths (review subsessions) and the
-// already-dead tmux path that the issue calls out as the leaky surface, plus
-// the idempotent re-cleanup AC and the unknown-session security AC.
+// already-dead tmux path (the leaky surface), plus idempotent re-cleanup and
+// the unknown-session security check.
 
 package cmd
 
@@ -67,7 +67,7 @@ func captureStdoutDuringFn(t *testing.T, fn func()) string {
 
 // seedRowWithLifecycleFields creates a fully-archivable pi session so that
 // runSessionArchive can copy the on-disk transcript and severPiResumeLinkage
-// clears the harness_session_id column (issue #2336 gate). Concretely, this
+// clears the harness_session_id column. Concretely, this
 // helper:
 //
 //   - lazily plants a test-owned $HOME + XDG_DATA_HOME/XDG_STATE_HOME (so
@@ -81,14 +81,10 @@ func captureStdoutDuringFn(t *testing.T, fn func()) string {
 //   - plants a fake pi transcript at the host-mode sessions root so
 //     piArchiveAdapter.Archive returns (copied=true), unlocking the sever.
 //
-// Prior to #2336 the helper produced only an agent_status row — the archive
-// pipeline hit skip path 1 ("instance_id empty") on every run, and
-// archiveThenSeverPiResume proceeded to the sever anyway because the gate
-// was `archiveErr == nil`. Under the new gate (sever only when the adapter
-// reports copied == true), those minimal seeds no longer clear
-// harness_session_id — which was exactly the class of bug #2336 fixes. The
-// helper now seeds a healthy session end-to-end so the tests still validate
-// the DB-clear invariant they were written for.
+// The helper seeds a healthy session end-to-end. The sever gate only clears
+// harness_session_id when the archive adapter reports copied == true, so a
+// minimal agent_status-only seed would not exercise the DB-clear invariant
+// these tests validate.
 //
 // Returns the seeded port for later assertions.
 func seedRowWithLifecycleFields(t *testing.T, dbFile, session, worktree, harnessSessionID string) int {
@@ -186,9 +182,9 @@ func assertLifecycleColumnsCleared(t *testing.T, dbFile, session string, notBefo
 	}
 }
 
-// TestHeadlessCleanup_StampsLifecycleColumns is the core AC: after cleanup of
-// a worker session without a worktree (the issue's primary reproduction
-// shape), all three lifecycle columns are cleared.
+// TestHeadlessCleanup_StampsLifecycleColumns checks that after cleanup of
+// a worker session without a worktree, all three lifecycle columns are
+// cleared.
 func TestHeadlessCleanup_StampsLifecycleColumns(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
@@ -209,7 +205,7 @@ func TestHeadlessCleanup_StampsLifecycleColumns(t *testing.T) {
 	assertLifecycleColumnsCleared(t, dbFile, session, before)
 }
 
-// TestHeadlessCleanup_ReviewSubsession verifies the AC for review subsessions
+// TestHeadlessCleanup_ReviewSubsession covers review subsessions
 // — sessions without a worktree, named <parent>~review-<N>-<agent>. The
 // cleanup command goes through the same `headlessCleanupWithJSON` path with
 // worktreePath="" because the review subsession reuses the parent's worktree
@@ -239,9 +235,9 @@ func TestHeadlessCleanup_ReviewSubsession(t *testing.T) {
 	assertLifecycleColumnsCleared(t, dbFile, child, before)
 }
 
-// TestHeadlessCleanup_DeadTmuxStillClearsDB verifies the AC: "All three
-// updates happen regardless of whether the tmux session was alive at cleanup
-// time (already-dead tmux sessions still get the DB cleanup)."
+// TestHeadlessCleanup_DeadTmuxStillClearsDB checks that all three updates
+// happen regardless of whether the tmux session was alive at cleanup time —
+// an already-dead tmux session still gets the DB cleanup.
 //
 // withNoopTmux replaces tmux with a stub that exits 0 for every command — so
 // from the cleanup function's point of view, the session is "already dead"
@@ -266,10 +262,10 @@ func TestHeadlessCleanup_DeadTmuxStillClearsDB(t *testing.T) {
 	assertLifecycleColumnsCleared(t, dbFile, session, before)
 }
 
-// TestHeadlessCleanup_JSONEnvelopeReportsAllOutcomes verifies the AC:
-// "prism cleanup --yes --json envelope includes per-update fields (e.g.
-// ended_at_stamped, harness_port_released, harness_session_id_cleared)
-// reporting true on success or an error description on failure."
+// TestHeadlessCleanup_JSONEnvelopeReportsAllOutcomes checks that the
+// `prism cleanup --yes --json` envelope includes the per-update fields
+// (ended_at_stamped, harness_port_released, harness_session_id_cleared),
+// each reporting true on success or an error description on failure.
 //
 // Captures stdout from headlessCleanupWithJSON in json mode, unmarshals the
 // envelope, and asserts the three new fields each carry `true`.
@@ -312,10 +308,10 @@ func TestHeadlessCleanup_JSONEnvelopeReportsAllOutcomes(t *testing.T) {
 	}
 }
 
-// TestHeadlessCleanup_Idempotent verifies the AC: "Re-running prism cleanup
-// --yes --session <name> on an already-ended session is idempotent — does not
-// error, and produces a JSON envelope indicating each resource was already in
-// the cleaned-up state."
+// TestHeadlessCleanup_Idempotent checks that re-running `prism cleanup
+// --yes --session <name>` on an already-ended session is idempotent — it does
+// not error, and produces a JSON envelope indicating each resource was already
+// in the cleaned-up state.
 //
 // Runs cleanup once to put the row into the cleaned-up state, then runs it
 // again and checks the second invocation does not error and reports the
@@ -440,8 +436,8 @@ func TestHeadlessCleanup_JSONEnvelopeOnDBOpenFailure(t *testing.T) {
 		}
 		// On DB-open failure each field must carry a non-empty error
 		// description string — never `true` (which would falsely imply
-		// the bookkeeping succeeded) and never `null` (which would be the
-		// pre-fix silent-failure mode).
+		// the bookkeeping succeeded) and never `null`, which would be the
+		// silent-failure mode this envelope exists to prevent.
 		s, isStr := v.(string)
 		if !isStr {
 			t.Errorf("field %q: got %v (%T), want a non-empty error string", field, v, v)
@@ -453,10 +449,10 @@ func TestHeadlessCleanup_JSONEnvelopeOnDBOpenFailure(t *testing.T) {
 	}
 }
 
-// TestCleanupCmd_UnknownSessionReturnsError verifies the security AC:
-// "Cleanup does not stamp ended_at on a row whose <name> doesn't match an
-// existing row (no implicit row creation). Unknown sessions return a clear
-// error."
+// TestCleanupCmd_UnknownSessionDoesNotCreateRow checks the security property:
+// cleanup does not stamp ended_at on a row whose <name> does not match an
+// existing row, and does not implicitly create one. Unknown sessions return a
+// clear error.
 //
 // The validation lives at the top of cleanupCmd.RunE, but we test it via the
 // underlying check: cleanupCmd uses CurrentStatus to detect unknown sessions
@@ -503,10 +499,9 @@ func TestCleanupCmd_UnknownSessionDoesNotCreateRow(t *testing.T) {
 	}
 }
 
-// TestSessionsList_ExcludesEndedRows verifies the AC: "prism sessions list
-// (no flags) does not include rows where ended_at IS NOT NULL — verified by
-// spawning, cleaning up, and confirming the cleaned-up row drops out of the
-// list output."
+// TestSessionsList_ExcludesEndedRows checks that `prism sessions list`
+// (no flags) does not include rows where ended_at IS NOT NULL — it spawns,
+// cleans up, and confirms the cleaned-up row drops out of the list output.
 //
 // Sessions list is sourced from d.AllActiveStatus which filters
 // `WHERE ended_at IS NULL`. This test confirms a cleaned-up row is excluded
