@@ -1,10 +1,9 @@
 package cmd
 
-// Tests for the direct-CLI coordinator guard on `prism investigate`
-// (issue #2597).
+// Tests for the direct-CLI coordinator guard on `prism investigate`.
 //
-// PR #2596 gated the host-API /investigate endpoint, which covers every
-// sandboxed caller (bwrap, sandbox-exec) because those sessions always carry
+// The host-API /investigate endpoint is gated, which covers every sandboxed
+// caller (bwrap, sandbox-exec) because those sessions always carry
 // PRISM_HOST_API. A session in `host` isolation mode has no host-API socket,
 // so runInvestigate skips proxyInvestigate and reaches
 // spawnInvestigateSessionWithDB directly. These tests pin the guard on that
@@ -17,7 +16,7 @@ package cmd
 // session.SpawnSession. Every test drives that function rather than the
 // helper alone, so a guard that is present but unwired fails here.
 //
-// Test-suite isolation contract (AGENTS.md, issue #1608):
+// Test-suite isolation contract (AGENTS.md):
 //   - sidecartest.NewIsolated redirects $XDG_STATE_HOME to a t.TempDir() and
 //     sets the PRISM_TEST_MODE_RESTRICT_HOSTAPI guard.
 //   - Session names use the "prism-test" prefix.
@@ -33,8 +32,8 @@ import (
 
 // seedInvestigateInvokerWithRole inserts an active invoker row for the given
 // session with an explicit root_agent_name and isolation mode. A nil rootAgent
-// leaves root_agent_name NULL — the pre-migration shape that makes
-// IsCoordinatorSession fall back to the name heuristic alone.
+// leaves root_agent_name NULL, so IsCoordinatorSession falls back to the name
+// heuristic alone.
 func seedInvestigateInvokerWithRole(t *testing.T, d *db.DB, sessionName string, rootAgent *string, isolationMode string) {
 	t.Helper()
 	if err := d.UpsertStatusWithRootAgent(
@@ -70,11 +69,11 @@ func captureInvestigateSpawn(t *testing.T) **session.SpawnOpts {
 }
 
 // TestSpawnInvestigateSessionWithDB_HostModeWorker_Refused is the headline
-// security assertion of #2597: a worker in host isolation mode — the exact
-// session shape that carries no PRISM_HOST_API and therefore never meets the
+// security assertion: a worker in host isolation mode — the exact session
+// shape that carries no PRISM_HOST_API and therefore never meets the
 // host-API gate — is refused on the direct path, and no session is spawned.
 //
-// Before the fix this call succeeded and spawned an investigator.
+// Without the guard this call succeeds and spawns an investigator.
 func TestSpawnInvestigateSessionWithDB_HostModeWorker_Refused(t *testing.T) {
 	bus := sidecartest.NewIsolated(t, "")
 
@@ -100,7 +99,7 @@ func TestSpawnInvestigateSessionWithDB_HostModeWorker_Refused(t *testing.T) {
 }
 
 // TestSpawnInvestigateSessionWithDB_NonCoordinatorRoles_Refused widens the
-// refusal to the other non-coordinator roles the issue names: a review agent
+// refusal to the other non-coordinator roles: a review agent
 // and an investigator. Both are reachable in host mode and both must be
 // refused, so an investigator cannot recursively spawn investigators.
 func TestSpawnInvestigateSessionWithDB_NonCoordinatorRoles_Refused(t *testing.T) {
@@ -169,8 +168,7 @@ func TestSpawnInvestigateSessionWithDB_HostModeCoordinator_Admitted(t *testing.T
 }
 
 // TestSpawnInvestigateSessionWithDB_HostAPIChild_Admitted covers the edge case
-// the issue calls out: the host-side child that the /investigate handler
-// spawns.
+// of the host-side child that the /investigate handler spawns.
 //
 // The handler runs `prism investigate` with PRISM_SESSION_NAME set to the
 // invoking session and PRISM_HOST_API cleared, so the child takes the direct
@@ -178,10 +176,10 @@ func TestSpawnInvestigateSessionWithDB_HostModeCoordinator_Admitted(t *testing.T
 // requireCoordinator already admitted, so the guard must admit it too —
 // otherwise the coordinator's route through the host API breaks end to end.
 //
-// The row here has a NULL root_agent_name on an "@main" session name: the
-// pre-migration shape, where IsCoordinatorSession falls through to the name
-// heuristic. Admitting it proves the guard does not depend on the DB role
-// column being populated for the invoker.
+// The row here has a NULL root_agent_name on an "@main" session name, so
+// IsCoordinatorSession falls through to the name heuristic. Admitting it
+// proves the guard does not depend on the DB role column being populated for
+// the invoker.
 func TestSpawnInvestigateSessionWithDB_HostAPIChild_Admitted(t *testing.T) {
 	bus := sidecartest.NewIsolated(t, "")
 

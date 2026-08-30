@@ -113,7 +113,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("sidecar: unknown harness %q: valid harnesses: %s", harnessName, strings.Join(harness.Names(), ", "))
 	}
 
-	// Parse --model-override flags into a role→model map (C.2).
+	// Parse --model-override flags into a role→model map.
 	// Each entry is expected to be "role=model"; malformed entries are logged
 	// and skipped rather than causing a hard failure at sidecar startup.
 	modelsByRole := make(map[string]string, len(modelOverrideRaw))
@@ -163,13 +163,12 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// continuous LAST writer of the column and overwrites whatever the spawn
 	// path seeded.
 	//
-	// Until issue #2658 this held a private copy of the repo grammar that split
-	// on "@" alone. For a descendant of a non-worktree parent —
-	// `obsidian~investigate-v2` — that copy returned the whole name, so the row
-	// was re-attributed to a repo of its own moments after internal/review
-	// seeded it correctly. That is the exact evidence row in #2658. Do not
-	// reintroduce a local rule here; TestNoPrivateRepoGrammarInAWriter fails if
-	// you do.
+	// Do not reintroduce a local repo-grammar rule here. A private copy that
+	// splits on "@" alone returns the whole name for a descendant of a
+	// non-worktree parent — `obsidian~investigate-v2` — so the row is
+	// re-attributed to a repo of its own moments after internal/review seeded
+	// it correctly. TestNoPrivateRepoGrammarInAWriter fails if you reintroduce
+	// one.
 	repo := sessionname.Repo(sessionName)
 
 	worktree := os.Getenv("PRISM_WORKTREE")
@@ -203,8 +202,8 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// Sanitise the sidecar's own environment so that any subprocess it later
 	// spawns (e.g. `prism review` via the /review host-API handler, which
 	// inherits os.Environ()) sees valid GitHub token values, regardless of
-	// how prism itself was launched.  Fixes the sidecar half of issue #2348:
-	// under the boot-restore path the tmux server is started from a systemd
+	// how prism itself was launched. Under the boot-restore path the tmux
+	// server is started from a systemd
 	// user unit, so `$(cat /run/secrets/…)` env-var values propagate
 	// verbatim through the process tree — without this call, gh 401's on
 	// every subprocess-issued API call until a `prism restart` clears the
@@ -219,7 +218,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// constructed transiently here for the EffectiveModel call; a fresh
 	// adapter with the resolved model is constructed below for the sidecar.
 	// When modelsByRole contains an entry for agentRole, that takes precedence
-	// over the profile slot lookup (C.2 §6.3).
+	// over the profile slot lookup.
 	var agentModel string
 	if m, ok := modelsByRole[agentRole]; ok && m != "" {
 		agentModel = m
@@ -248,7 +247,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 		hostAPISockPath = sockPath
 		// Wire the socket path into the container config so the container
-		// gets the socket mounted and PRISM_HOST_API injected (A-2).
+		// gets the socket mounted and PRISM_HOST_API injected.
 		// In bwrap and sandbox-exec modes ctrCfg is nil — the sandbox args
 		// are built by the isolator at prism agent-run time, not here.
 		if ctrCfg != nil {
@@ -256,16 +255,16 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Build the harness pipe socket path for socket-pipe harnesses (P2.SIDECAR).
+	// Build the harness pipe socket path for socket-pipe harnesses.
 	// The socket co-locates with the host-API socket in the same per-session
 	// directory, so the existing bind-mount for that directory covers it too.
 	//
-	// Transport selection is gated on isolation mode, not GOOS (issue #2078):
+	// Transport selection is gated on isolation mode, not GOOS:
 	// sandbox-exec cannot reliably reach Unix sockets, so it uses a TCP port on
 	// 127.0.0.1. Every other mode (host on Linux/Darwin, bwrap on Linux) uses a
-	// Unix socket co-located with the host-API socket. Gating on GOOS broke
+	// Unix socket co-located with the host-API socket. Gating on GOOS mismatches
 	// Darwin host-mode pi sessions, because agentPaneEnvVars always injects a
-	// unix:// URL for host mode while the sidecar was binding TCP.
+	// unix:// URL for host mode while a GOOS-gated sidecar binds TCP.
 	var harnessPipeSockPath string
 	var harnessPipeTCPPort int
 	if isSocketPipe, useTCP := selectHarnessPipeTransport(harnessName, isolationMode); isSocketPipe {
@@ -275,7 +274,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			// before the agent pane was created). Never re-allocate when a
 			// port is recorded — agent-run does a one-shot read of the same
 			// column and bakes PRISM_HARNESS_PIPE into PI's immutable env, so
-			// a second allocation here would race that read (issue #2357).
+			// a second allocation here would race that read.
 			tcpPort, portErr := resolveHarnessPipeTCPPort(d, sessionName, port)
 			if portErr != nil {
 				return fmt.Errorf("sidecar: resolve harness pipe TCP port: %w", portErr)
@@ -296,8 +295,8 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Build the OnReady callback — only for container-owning modes (AC-18,
-	// AC-19). No current isolation mode sets IsContainer, so onReady stays nil.
+	// Build the OnReady callback — only for container-owning modes.
+	// No current isolation mode sets IsContainer, so onReady stays nil.
 	// In bwrap and sandbox-exec modes the sidecar does NOT write the readiness
 	// signal: "prism agent-run" in the tmux pane starts immediately without
 	// waiting. In host mode there is no readiness file at all.
@@ -327,15 +326,15 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// The adapter encapsulates all runtime-specific behaviour: session
 	// creation, prompt delivery, SSE subscription, event type extraction, and
 	// event mapping. The sidecar calls through the harness.Harness interface
-	// and has no direct dependency on the adapter package (#710).
+	// and has no direct dependency on the adapter package.
 	//
 	// In bwrap and sandbox-exec mode, use NewContainer so that:
 	//   - CreateSession uses GET /session to retrieve the existing session ID
 	//     (the agent already created a session when the TUI started)
 	//   - DeliverInitialPrompt is a no-op (prompt was sent via --prompt CLI flag)
 	//
-	// When modelsByRole is non-nil (C.2 --model-override), pass the full map
-	// so DeliverInitialPrompt and EffectiveModel use per-role models.
+	// When modelsByRole is non-nil (the --model-override flag), pass the full
+	// map so DeliverInitialPrompt and EffectiveModel use per-role models.
 	var h harness.Harness
 	if len(modelsByRole) > 0 {
 		if useContainerHarness {
@@ -359,7 +358,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		ctrCfg.RuntimeEnv = h.RuntimeEnv()
 	}
 
-	// Resolve the per-session podman proxy listener path (#2317 / #2320).
+	// Resolve the per-session podman proxy listener path.
 	// The path is set unconditionally so the sidecar wiring sees it; the
 	// gate on actually starting the proxy is the agent_status.containers_enabled
 	// column, read inside runPodmanProxyIfEnabled. Resolution failure is
@@ -377,7 +376,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// allowlist just gains one fewer entry in that case.
 	bareRoot := git.BareRoot(worktree)
 
-	// Tier-3 /checkin troubleshooting privilege (#2587). The list is read
+	// Tier-3 /checkin troubleshooting privilege. The list is read
 	// host-side, once, at sidecar start: the rendered file lives under
 	// ~/.config/prism/ and is deliberately not bound into any sandbox, so no
 	// agent can read or edit its own privilege.
@@ -542,8 +541,7 @@ func runSignalHandler(sigCh <-chan os.Signal, shutdownFn func(), cancelFn func()
 //
 // This function is the single source of truth for the transport decision —
 // agentPaneEnvVars (host mode) and agent-run (sandbox-exec, bwrap) must inject
-// PRISM_HARNESS_PIPE values consistent with whatever this function picks. See
-// issue #2078 for the regression that motivated extracting this gate.
+// PRISM_HARNESS_PIPE values consistent with whatever this function picks.
 func selectHarnessPipeTransport(harnessName string, isolationMode config.IsolationMode) (isSocketPipe bool, useTCP bool) {
 	shape, ok := harness.ShapeOf(harnessName)
 	if !ok || shape != harness.TransportSocketPipe {
@@ -560,20 +558,19 @@ func selectHarnessPipeTransport(harnessName string, isolationMode config.Isolati
 // path (db.AllocatePort) BEFORE the agent pane was created. `prism
 // agent-run` does a one-shot read of the same column and bakes
 // PRISM_HARNESS_PIPE=tcp://127.0.0.1:<port> into PI's immutable process
-// env. Re-allocating here (the pre-#2357 behaviour) raced that read: when
-// agent-run read first, PI was left pointed at a port nobody binds, forever
-// — the #1554 first-connect retry recovers from a timing race, not a wrong
-// port value — and the session ran headless.
+// env. Re-allocating here would race that read: if agent-run reads first, PI
+// is left pointed at a port nobody binds, forever — the first-connect retry
+// recovers from a timing race, not a wrong port value — and the session runs
+// headless.
 //
 // portFlag (the --port flag value, i.e. what the spawner allocated) is used
 // only for a divergence warning: agent-run reads the DB, not the flag, so
 // the DB value wins when they disagree.
 //
 // When no port is recorded at all (cleared row, direct sidecar invocation),
-// fall back to db.AllocatePort. Post-#2357 AllocatePort excludes the
-// session's own row from the used-port set and prefers the previously
-// recorded port, so even the fallback is idempotent while the port stays
-// free.
+// fall back to db.AllocatePort. AllocatePort excludes the session's own row
+// from the used-port set and prefers the previously recorded port, so even
+// the fallback is idempotent while the port stays free.
 func resolveHarnessPipeTCPPort(d *db.DB, sessionName string, portFlag int) (int, error) {
 	st, err := d.CurrentStatus(sessionName)
 	if err != nil {

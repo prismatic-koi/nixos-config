@@ -1,7 +1,7 @@
 package cmd
 
 // Tests for `prism escalate` Part B (unambiguous success signal) and Part C
-// (sender-side idempotency guard). See issue #2018.
+// (sender-side idempotency guard).
 
 import (
 	"bytes"
@@ -113,7 +113,7 @@ func TestEscalate_PartB_HumanSuccessLine_StdoutAndStderr(t *testing.T) {
 		}
 	})
 
-	// AC: exactly one line on stdout, "OK" as the first word after "escalate: "
+	// exactly one line on stdout, "OK" as the first word after "escalate: "
 	stdoutLines := splitNonEmptyLines(stdout)
 	if len(stdoutLines) != 1 {
 		t.Fatalf("stdout line count = %d, want 1; got: %q", len(stdoutLines), stdout)
@@ -126,7 +126,7 @@ func TestEscalate_PartB_HumanSuccessLine_StdoutAndStderr(t *testing.T) {
 		t.Errorf("stdout success line missing trailing ')': %q", line)
 	}
 
-	// AC: same line mirrored to stderr.
+	// same line mirrored to stderr.
 	stderrLines := splitNonEmptyLines(stderr)
 	if len(stderrLines) != 1 {
 		t.Fatalf("stderr line count = %d, want 1; got: %q", len(stderrLines), stderr)
@@ -135,7 +135,7 @@ func TestEscalate_PartB_HumanSuccessLine_StdoutAndStderr(t *testing.T) {
 		t.Errorf("stderr line = %q, want %q (mirror of stdout)", stderrLines[0], line)
 	}
 
-	// AC: OK token is the first whitespace-delimited word after "escalate: ".
+	// OK token is the first whitespace-delimited word after "escalate: ".
 	after := strings.TrimPrefix(line, "prism escalate: ")
 	firstWord := strings.SplitN(after, " ", 2)[0]
 	if firstWord != "OK" {
@@ -171,11 +171,11 @@ func TestEscalate_PartB_JSON_HappyPath(t *testing.T) {
 		t.Errorf("replayed = %v, want false", payload["replayed"])
 	}
 
-	// AC: human line may still print on stderr in --json mode for log capture.
+	// human line may still print on stderr in --json mode for log capture.
 	if !strings.Contains(stderr, "prism escalate: OK delivered to repo@main") {
 		t.Errorf("stderr missing human mirror in --json mode: %q", stderr)
 	}
-	// AC: stdout in --json mode contains ONLY JSON, no human line.
+	// stdout in --json mode contains ONLY JSON, no human line.
 	if strings.Contains(stdout, "prism escalate: OK") {
 		t.Errorf("stdout contains human line in --json mode (mutual exclusion violated): %q", stdout)
 	}
@@ -198,7 +198,7 @@ func TestEscalate_PartB_JSON_ErrorPath(t *testing.T) {
 		}
 	})
 
-	// AC: stdout MUST be empty in --json error path.
+	// stdout MUST be empty in --json error path.
 	if strings.TrimSpace(stdout) != "" {
 		t.Errorf("stdout = %q, want empty in --json error path", stdout)
 	}
@@ -275,7 +275,7 @@ func TestEscalate_PartC_ReplayWithinWindow_SkipsAllWrites(t *testing.T) {
 		}
 	})
 
-	// AC: no new bus_messages, no new agent_events.
+	// no new bus_messages, no new agent_events.
 	if got := busRowCount(t, d, "repo@feature", "repo@main"); got != busCountBefore {
 		t.Errorf("bus_messages count after replay = %d, want %d (no new row)", got, busCountBefore)
 	}
@@ -286,19 +286,19 @@ func TestEscalate_PartC_ReplayWithinWindow_SkipsAllWrites(t *testing.T) {
 		t.Errorf("session.escalated agent_events count after replay = %d, want %d", got, busEventsBefore)
 	}
 
-	// AC: no re-delivery (captured.body would be set if the HTTP stub
+	// no re-delivery (captured.body would be set if the HTTP stub
 	// received a second prompt).
 	if captured.body != nil {
 		t.Errorf("replay re-delivered to coordinator (captured.body = %v); want no new delivery", captured.body)
 	}
 
-	// AC: state stays escalated.
+	// state stays escalated.
 	st, _ := d.CurrentStatus("repo@feature")
 	if st == nil || st.State != string(agent.StateEscalated) {
 		t.Errorf("state after replay = %v, want escalated", stateOf(st))
 	}
 
-	// AC: replay line shape.
+	// replay line shape.
 	stdoutLines := splitNonEmptyLines(stdout)
 	if len(stdoutLines) != 1 {
 		t.Fatalf("replay stdout line count = %d, want 1; got: %q", len(stdoutLines), stdout)
@@ -414,14 +414,14 @@ func TestEscalate_PartC_QueuedNotYetDelivered_ShortCircuits(t *testing.T) {
 		}
 	})
 
-	// AC: no new bus_messages, no new escalation event.
+	// no new bus_messages, no new escalation event.
 	if got := busRowCount(t, d, "repo@feature", "repo@main"); got != busCountBefore {
 		t.Errorf("bus_messages count after queued-replay = %d, want %d", got, busCountBefore)
 	}
 	if got := eventCount(t, d, "repo@feature", "escalation"); got != escEventsBefore {
 		t.Errorf("escalation event count after queued-replay = %d, want %d", got, escEventsBefore)
 	}
-	// AC: replay line surfaces the prior delivery_id.
+	// replay line surfaces the prior delivery_id.
 	if !strings.Contains(stdout, "delivery_id=queued-prior-id") {
 		t.Errorf("replay stdout missing prior delivery_id: %q", stdout)
 	}

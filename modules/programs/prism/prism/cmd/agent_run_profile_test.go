@@ -1,28 +1,28 @@
 package cmd
 
-// agent_run_profile_test.go — issue #2092 regression tests.
+// agent_run_profile_test.go — profile-resolution regression tests.
 //
 // Covers the DB-backed profile-resolution path that closes the
 // `prism spawn --profile <X>` / `--abtest <A> <B>` silent-drop. The
-// canonical post-#2090 source of "what profile did the user spawn this
-// session with" is `spawn_inputs.profile_name`. populatePIConfig now reads
-// that column and passes it as the highest-precedence input to
-// ResolveActiveProfile, beating the state-file / nix-default fallback.
+// canonical source of "what profile did the user spawn this session with" is
+// `spawn_inputs.profile_name`. populatePIConfig reads that column and passes
+// it as the highest-precedence input to ResolveActiveProfile, beating the
+// state-file / nix-default fallback.
 //
 // The tests pin three behaviours:
 //
 //  1. Positive — a non-empty spawn_inputs.profile_name wins over the
 //     active profile, so `prism spawn --profile <X>` results in the agent
-//     running on profile <X>'s slot (AC #1).
+//     running on profile <X>'s slot.
 //  2. Negative — when the spawn_inputs row is missing or
 //     profile_name is NULL, populatePIConfig falls through to the
-//     active-profile resolution unchanged (AC #4 / no-regression on
-//     legacy rows and restart semantics).
+//     active-profile resolution unchanged (no regression on old rows and
+//     restart semantics).
 //  3. --abtest — two sessions sharing an abtest_pair_id but recording
 //     distinct profile_name values each resolve to their own slot,
-//     proving the per-leg profile passthrough required by AC #2.
+//     proving the per-leg profile passthrough.
 //
-// Test-suite isolation contract (AGENTS.md, issue #1608):
+// Test-suite isolation contract (AGENTS.md):
 //   - sidecartest.NewIsolated redirects $XDG_STATE_HOME to a t.TempDir()
 //     and sets PRISM_TEST_MODE_RESTRICT_HOSTAPI so no host bus / DB / tmux
 //     state is touched.
@@ -164,11 +164,11 @@ func seedSessionWithSpawnInputs(t *testing.T, d *db.DB, sessionName, profileName
 	return instanceID
 }
 
-// TestPopulatePIConfig_SpawnProfileWinsOverActive is the core issue #2092
-// positive: when spawn_inputs.profile_name = "spawn-profile" and the
-// nix-default (acting as the active-profile fallback) is "active-profile",
-// populatePIConfig must use spawn-profile's slot. Before #2092 the active
-// profile silently won and the spawn-time choice was discarded.
+// TestPopulatePIConfig_SpawnProfileWinsOverActive is the core positive:
+// when spawn_inputs.profile_name = "spawn-profile" and the nix-default
+// (acting as the active-profile fallback) is "active-profile",
+// populatePIConfig must use spawn-profile's slot. Without this, the active
+// profile silently wins and the spawn-time choice is discarded.
 func TestPopulatePIConfig_SpawnProfileWinsOverActive(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("populatePIConfig depends on POSIX exec semantics")
@@ -202,12 +202,12 @@ func TestPopulatePIConfig_SpawnProfileWinsOverActive(t *testing.T) {
 	}
 }
 
-// TestPopulatePIConfig_EmptySpawnProfileFallsThrough is the AC #4 / #6
+// TestPopulatePIConfig_EmptySpawnProfileFallsThrough is the empty-profile
 // negative: when spawn_inputs exists but profile_name is NULL,
 // populatePIConfig must fall through to the active-profile resolution
-// unchanged. This preserves restart / restore semantics for legacy
-// sessions that pre-date #2090 and any spawn path that legitimately does
-// not record a profile.
+// unchanged. This preserves restart / restore semantics for a session that
+// records no profile, and any spawn path that legitimately does not record
+// one.
 func TestPopulatePIConfig_EmptySpawnProfileFallsThrough(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("populatePIConfig depends on POSIX exec semantics")
@@ -238,11 +238,11 @@ func TestPopulatePIConfig_EmptySpawnProfileFallsThrough(t *testing.T) {
 	}
 }
 
-// TestPopulatePIConfig_NoSpawnInputsRowFallsThrough exercises the legacy /
-// host-mode path where there is no spawn_inputs row at all (e.g. a
-// session that pre-dates #2090). populatePIConfig must still resolve to
-// the active-profile slot — wedging the launcher because the audit row
-// is missing would break restart of pre-#2090 sessions.
+// TestPopulatePIConfig_NoSpawnInputsRowFallsThrough exercises the host-mode
+// path where there is no spawn_inputs row at all. populatePIConfig must
+// still resolve to the active-profile slot — wedging the launcher because
+// the audit row is missing would break restart of a session with no audit
+// row.
 func TestPopulatePIConfig_NoSpawnInputsRowFallsThrough(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("populatePIConfig depends on POSIX exec semantics")
@@ -268,8 +268,8 @@ func TestPopulatePIConfig_NoSpawnInputsRowFallsThrough(t *testing.T) {
 	}
 }
 
-// TestPopulatePIConfig_AbtestPairResolvesPerLeg is the integration shape
-// promised by AC #7: two sessions sharing an abtest_pair_id but each
+// TestPopulatePIConfig_AbtestPairResolvesPerLeg is the integration shape for
+// --abtest legs: two sessions sharing an abtest_pair_id but each
 // carrying its own spawn_inputs.profile_name resolve, on populatePIConfig,
 // to their own profile's slot — not the active profile's slot. This is
 // the end-to-end fix for the reproducer in the issue body

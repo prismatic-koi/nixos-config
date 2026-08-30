@@ -5,8 +5,8 @@ package cmd
 // agent_run_sandbox_exec_darwin.go — Darwin implementation of runAgentRunSandboxExec.
 //
 // This file contains the sandbox-exec dispatch path for the agent-run command.
-// It switches from the syscall.Exec model (used in PRs #1016 and #1017) to a
-// supervised child process model (os/exec.Command) so that:
+// It runs the sandbox-exec child as a supervised child process
+// (os/exec.Command) rather than via syscall.Exec so that:
 //
 //  1. A kqueue-based parent-death watcher can be installed (see lifecycle_darwin.go).
 //  2. SIGTERM/SIGINT/SIGHUP are forwarded cleanly to the sandbox-exec child.
@@ -39,20 +39,18 @@ import (
 // layer of the sandbox-exec env (K=V slice form). Any pre-existing entries
 // for those keys are stripped and replaced with:
 //
-//   - HOME=<realHome> — the REAL host home. The per-session staging HOME
-//     was deleted in Step 5 of #2132 (issue #2250): $HOME inside the
-//     sandbox equals the host $HOME, and every capability the agent needs
-//     is delivered by an explicit SBPL grant on the real host path, an
-//     env var at a host XDG path, or the per-session work dir.
+//   - HOME=<realHome> — the REAL host home. $HOME inside the sandbox equals
+//     the host $HOME, and every capability the agent needs is delivered by
+//     an explicit SBPL grant on the real host path, an env var at a host XDG
+//     path, or the per-session work dir.
 //   - XDG_CACHE_HOME / XDG_CONFIG_HOME / XDG_DATA_HOME / XDG_STATE_HOME —
 //     the real host paths (<realHome>/.cache, .config, .local/share,
 //     .local/state), set explicitly so the layer is deterministic
-//     regardless of what the host shell exported. Hard constraint from
-//     #2205: the nix trusted-settings grant depends on XDG_DATA_HOME
-//     staying real-host.
+//     regardless of what the host shell exported. Hard constraint: the nix
+//     trusted-settings grant depends on XDG_DATA_HOME staying real-host.
 //   - CFFIXED_USER_HOME=<sessionDir> — redirects CoreFoundation's
-//     NSHomeDirectory() to the per-session work dir (issue #2247, Step 4 of
-//     #2132) so chromium (Google Chrome for Testing, invoked via
+//     NSHomeDirectory() to the per-session work dir so chromium (Google
+//     Chrome for Testing, invoked via
 //     playwright-cli) writes its crash database, code cache, profile, and
 //     SingletonLock under
 //     <sessionDir>/Library/Application Support/Google/...
@@ -61,21 +59,20 @@ import (
 //     xattr write. Chromium uses NSHomeDirectory() (CoreFoundation) and not
 //     getenv("HOME") for the user-data directory root — Apple CF resolves
 //     home as CFFIXED_USER_HOME → getpwuid()->pw_dir and never consults
-//     $HOME (CFPlatform.c), so this override is the only env route (issues
-//     #2021, #2247). The Library skeleton dirs inside the work dir are
+//     $HOME (CFPlatform.c), so this override is the only env route. The
+//     Library skeleton dirs inside the work dir are
 //     created by PrepareSessionWorkDir; writes ride the profile's existing
 //     (subpath <sessionDir>) RW allow — no host-Library grant exists.
 //   - PLAYWRIGHT_DAEMON_SESSION_DIR=<sessionDir>/Library/Caches/ms-playwright/daemon
 //     — redirects the playwright-cli daemon's session registry and log
-//     directory (issue #2249). On Darwin playwright-core derives this dir
-//     from os.homedir()/Library/Caches (POSIX $HOME — it ignores
-//     XDG_CACHE_HOME on darwin, see cli-client/registry.js baseDaemonDir).
-//     With HOME at the real home (Step 5 of #2132) an unredirected daemon
-//     would write into the real ~/Library/Caches — this override MUST
-//     survive any env-layer refactor. Routed to the session work dir
-//     alongside the CF-routed chromium state.
+//     directory. On Darwin playwright-core derives this dir from
+//     os.homedir()/Library/Caches (POSIX $HOME — it ignores XDG_CACHE_HOME
+//     on darwin, see cli-client/registry.js baseDaemonDir). With HOME at the
+//     real home, an unredirected daemon writes into the real
+//     ~/Library/Caches — this override MUST survive any env-layer refactor.
+//     Routed to the session work dir alongside the CF-routed chromium state.
 //   - PLAYWRIGHT_SERVER_REGISTRY=<sessionDir>/Library/Caches/ms-playwright/b
-//     — same class, second writer (issue #2249, round-2 host capture):
+//     — same class, second writer:
 //     playwright-core's ServerRegistry (browser-server descriptor
 //     registry + chokidar watcher) derives `ms-playwright/b` from the
 //     same POSIX-$HOME cache root and mkdirSync's it on every successful
@@ -134,9 +131,9 @@ func buildSandboxExecHomeEnv(env []string, sessionDir, realHome string) []string
 // Manager.PrepareSandboxExec to materialise the SBPL profile, and then runs
 // sandbox-exec as a supervised child process (using os/exec.Command).
 //
-// PR 4 (#1018) switches from syscall.Exec to os/exec.Command + manual signal
-// forwarding so that a kqueue-based parent-death watcher can be installed. The
-// watcher watches the parent PID (the tmux pane process, captured via
+// It uses os/exec.Command with manual signal forwarding rather than
+// syscall.Exec so that a kqueue-based parent-death watcher can be installed.
+// The watcher watches the parent PID (the tmux pane process, captured via
 // os.Getppid() BEFORE launching the child) and, on parent exit, sends SIGTERM
 // then SIGKILL (3-second grace) to the sandbox-exec child.
 //
@@ -144,8 +141,8 @@ func buildSandboxExecHomeEnv(env []string, sessionDir, realHome string) []string
 // never sourced from environment-supplied or user-supplied values.
 //
 // agentRunStart and logFile are passed through from runAgentRun so that the
-// sandbox-exec path can emit `[timing]` markers symmetric to the bwrap path
-// (#1052). All durations are relative to agentRunStart.
+// sandbox-exec path can emit `[timing]` markers symmetric to the bwrap path.
+// All durations are relative to agentRunStart.
 func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart time.Time, logFile *os.File) error {
 	// Capture the parent PID immediately — this is the tmux pane process.
 	// os.Getppid() returns the real parent PID of this process (agent-run),
@@ -153,7 +150,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// before any goroutines or child processes are involved, so there is no
 	// window for it to be altered by environment variables or other input.
 	//
-	// Security AC: parentPID is never sourced from environment variables or
+	// Security: parentPID is never sourced from environment variables or
 	// user-controlled input — os.Getppid() is read from the kernel directly.
 	parentPID := os.Getppid()
 
@@ -199,7 +196,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	}
 
 	// Resolve the per-session filtering podman proxy socket path the sidecar
-	// binds when agent_status.containers_enabled=1 (issue #2317 / #2322).
+	// binds when agent_status.containers_enabled=1.
 	// We always derive the path so a session whose flag flips on between
 	// spawn and agent-run still gets a sane Config, but the SBPL grant and
 	// env injection below are gated on the DB row's ContainersEnabled field.
@@ -211,14 +208,14 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	}
 
 	// Profile-level agent env vars, filtered for the session role upstream of
-	// the isolator (issue #2533) — same resolver as the bwrap dispatch in
+	// the isolator — same resolver as the bwrap dispatch in
 	// agent_run.go, so both sandboxed modes deliver the same map for a role.
 	//
 	// This map is also where ctrCfg.GrafanaConfigPath below is sourced from,
 	// so the sandbox-exec secrets.d exception for the pi grafana MCP config
 	// bundle can never outlive the capability that needs it: a review role
 	// has GRAFANA_MCP_CONFIG_PATH stripped here, and therefore gets no
-	// profile exception for the bundle either (issues #2533, #2746).
+	// profile exception for the bundle either.
 	agentEnvVars := config.AgentEnvVarsForRole(agentRole)
 
 	// Resolve the harness name from the DB status. Fall back to "pi"
@@ -242,7 +239,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 
 	// Carry the persisted harness session UUID through to ctrCfg so that
 	// PIInvocation can append --session <id> for conversation resume on
-	// restore (issue #1838). Empty when the harness never started.
+	// restore. Empty when the harness never started.
 	sandboxHarnessSessionID := ""
 	if status.HarnessSessionID != nil {
 		sandboxHarnessSessionID = *status.HarnessSessionID
@@ -250,7 +247,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 
 	// Resolve the host-side agent-run log path so PRISM_AGENT_RUN_LOG can be
 	// injected below — the durable target for the PI extension's
-	// first-connect give-up diagnostic (issue #2357). sandbox-exec shares the
+	// first-connect give-up diagnostic. sandbox-exec shares the
 	// host filesystem and the SBPL profile grants RW on the per-session run
 	// dir (the HostAPISockPath sockDir subpath rule), so the extension can
 	// append to the same file this process's logFile handle points at.
@@ -338,14 +335,13 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	//
 	//  1. Start with the filtered minimal allow-list (PATH, HOME, USER, …).
 	//  2. Rewrite the HOME/XDG/CFFIXED_USER_HOME layer (real home + work-dir
-	//     redirects — Step 5 of #2132).
+	//     redirects).
 	//  3. Inject credential env vars (LLM API keys, GITHUB_TOKEN).
 	//  4. Inject harness/profile runtime env vars and prism context vars.
 	env := container.MinimalIsolatedExecEnv(os.Environ())
 
-	// Rewrite the HOME/XDG layer. HOME is the REAL host home (the staging
-	// HOME was deleted in Step 5 of #2132); CFFIXED_USER_HOME and the
-	// playwright redirects point at the per-session work dir (#2247, #2249).
+	// Rewrite the HOME/XDG layer. HOME is the REAL host home. CFFIXED_USER_HOME
+	// and the playwright redirects point at the per-session work dir.
 	// PrepareSandboxExec() created the work dir (hard-fail), so
 	// SessionWorkDir cannot error here in practice; skip the rewrite only
 	// when it does AND no fallback can be derived.
@@ -366,8 +362,8 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// Inject credential env vars (LLM API keys, GITHUB_TOKEN).
 	// A non-nil error means a configured GitHub token file path was
 	// unreadable — fail the spawn loudly with a diagnostic naming the path
-	// (never the value), per issue #2348.  Silently proceeding with no token
-	// would produce a session that 401's on every gh call.
+	// (never the value). Silently proceeding with no token produces a session
+	// that 401's on every gh call.
 	credEnv, credErr := m.CredentialEnvVars()
 	if credErr != nil {
 		return fmt.Errorf("agent-run: %w", credErr)
@@ -390,7 +386,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	}
 	// CONTAINER_HOST / DOCKER_HOST: when the session was spawned with
 	// containers_enabled=1, point both env vars at the per-session FILTERED
-	// podman socket the sidecar binds (issue #2317 §3c / #2322). Mirrors the
+	// podman socket the sidecar binds. Mirrors the
 	// PRISM_HOST_API injection pattern above. CONTAINER_HOST is the podman
 	// CLI's primary env var; DOCKER_HOST is the docker CLI's equivalent and
 	// is also honoured by many docker-compatible client libraries (testcontainers,
@@ -421,7 +417,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		env = append(env, fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://127.0.0.1:%d", ctrCfg.HarnessPipeTCPPort))
 	}
 
-	// Durable give-up diagnostics (#2357): expose the host-side agent-run log
+	// Durable give-up diagnostics: expose the host-side agent-run log
 	// path so the PI prism extension can append a diagnostic line if it
 	// exhausts its first-connect retries and gives up. Writes ride the SBPL
 	// run-dir subpath grant (section 6, HostAPISockPath sockDir).
@@ -432,7 +428,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// For PI sessions, set PI_CODING_AGENT_DIR so PI discovers settings.json /
 	// themes / AGENTS.md / skills from the shared host ~/.pi/agent directory.
 	// The role system-prompt is injected at runtime by the prism PI extension,
-	// not via this directory (design #2031). On Darwin (sandbox-exec) the
+	// not via this directory. On Darwin (sandbox-exec) the
 	// in-sandbox path is collapsed to the host path above (sandbox-exec shares
 	// the host filesystem), so PI_CODING_AGENT_DIR ends up pointing at
 	// ~/.pi/agent directly. The SBPL profile grants (subpath ~/.pi/agent) RW
@@ -443,7 +439,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	}
 
 	// GIT_CONFIG_GLOBAL + GIT_SSH_COMMAND: point git and ssh at the generated
-	// configs in the per-session work dir (issue #2213, Step 2 of #2132):
+	// configs in the per-session work dir:
 	//
 	//   GIT_CONFIG_GLOBAL=<sessionDir>/gitconfig
 	//   GIT_SSH_COMMAND="<sshBin> -F <sessionDir>/ssh-config"
@@ -451,7 +447,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// The work dir was created by PrepareSessionWorkDir() inside
 	// PrepareSandboxExec() above. The embedded key paths are the stable sops
 	// symlink paths (~/.ssh/<keyname>), so they survive secrets.d/<N>
-	// rotation mid-session (#1410/#1573).
+	// rotation mid-session.
 	//
 	// Why -F with the Nix-built openssh binary (cfg.SshBin):
 	//
@@ -469,13 +465,13 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	//    store paths under /nix, which are fully allowed), bypassing Apple's
 	//    network stack entirely.
 	//
-	// Known gap, accepted in #2132 Step 2: libgit2/go-git-class tools ignore
+	// Known gap: libgit2/go-git-class tools ignore
 	// GIT_CONFIG_GLOBAL; they fall back to $HOME-derived config, which does
 	// not exist — benign for read-only operations (e.g. nix flake metadata),
 	// which need no git identity.
 	//
 	// KUBECACHEDIR: redirect kubectl's discovery/http cache into the session
-	// work dir (issue #2235, Step 3b of #2132). kubectl defaults to
+	// work dir. kubectl defaults to
 	// $HOME/.kube/cache, which exists on the host and would EPERM under the
 	// deny-default profile. The kube config itself arrives via KUBECONFIG
 	// from agent.envVars (injected by AppendSandboxEnvVarsKV above); only the
@@ -483,7 +479,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// the SBPL profile covers kubectl's MkdirAll of the cache dir — no extra
 	// profile rule is needed — and the cache stays per-session and ephemeral.
 	// GLAB_CONFIG_DIR: redirect glab's config dir into the session work dir
-	// (issue #2668). glab reads ~/.config/glab-cli/config.yml on every
+	// glab reads ~/.config/glab-cli/config.yml on every
 	// invocation and aborts when the read returns EPERM, which is what the
 	// deny-default profile gives it for the real host path. The redirect also
 	// keeps the owner's interactive glab login out of the sandbox: the agent
@@ -497,7 +493,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	}
 
 	// GOTOOLCHAIN=local: nix is authoritative for the Go toolchain inside the
-	// sandbox (issue #2621, owner decision on the round-4 escalation). A
+	// sandbox. A
 	// sandboxed agent must not silently download an unpinned toolchain from
 	// the internet and execute it out of the shared module cache.
 	//
@@ -517,7 +513,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// profile-level SHELL entry, mirroring bwrap's standardSandboxEnvArgs
 	// pin (internal/container/bwrap.go) and the same "last occurrence wins"
 	// convention used for GOTOOLCHAIN above. See container.SandboxExecShellEnv
-	// godoc for the full root-cause rationale (issue #2674) and the
+	// godoc for the full root-cause rationale and the
 	// no-consumer-relies-on-zsh safety check.
 	env = append(env, container.SandboxExecShellEnv()...)
 
@@ -558,9 +554,9 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// the moment of cmd.Start (fork+exec). Mirrors `[timing] bwrap exec`.
 	logTimingTo(logFile, "sandbox-exec exec", time.Since(agentRunStart))
 
-	// Layer 1 FD isolation (#2190): cap the sandbox child's RLIMIT_NOFILE so
-	// a misbehaving agent cannot exhaust the host-wide FD pool (the #2180
-	// failure class). The caps are applied to this process immediately before
+	// Layer 1 FD isolation: cap the sandbox child's RLIMIT_NOFILE so
+	// a misbehaving agent cannot exhaust the host-wide FD pool. The caps are
+	// applied to this process immediately before
 	// Start() and restored immediately after — the child inherits them at
 	// fork time, while the parent's own FD bookkeeping (stderr pipe, log
 	// file, kqueue watcher) is unaffected. Warnings (host-hard clamping,
@@ -617,10 +613,8 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// Supervise the child: foreground the pgid, forward SIGTERM/SIGINT/SIGHUP
 	// (sandbox-exec deliberately does not subscribe SIGWINCH — see
 	// SuperviseOpts.ForwardWinch godoc for the rationale), and wait for exit.
-	// The shared SuperviseChild helper (supervise.go, A2.SUP) replaces the
-	// previous open-coded tcsetpgrpForeground / per-mode signal forwarding /
-	// cmd.Wait / tcsetpgrpRestore sequence — same behaviour, single
-	// implementation across the bwrap and sandbox-exec dispatch paths.
+	// The shared SuperviseChild helper (supervise.go) drives the bwrap and
+	// sandbox-exec dispatch paths with one implementation.
 	waitErr := SuperviseChild(sandboxCmd, int(os.Stdin.Fd()), SuperviseOpts{
 		ForwardWinch: false,
 		OnWinch:      nil,

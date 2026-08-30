@@ -1,17 +1,17 @@
 package cmd
 
-// Tests for harness pipe transport selection (issue #2078).
+// Tests for harness pipe transport selection.
 //
 // The harness pipe transport must be chosen based on isolation mode, NOT on
-// runtime.GOOS. Gating on GOOS broke Darwin host-mode pi sessions because
-// agentPaneEnvVars (host mode) injects a unix:// URL while the sidecar was
-// binding TCP — the pi-extension then retried 5× on a non-existent socket
-// and gave up.
+// runtime.GOOS. Gating on GOOS breaks Darwin host-mode pi sessions because
+// agentPaneEnvVars (host mode) injects a unix:// URL while the sidecar binds
+// TCP — the pi-extension then retries 5× on a non-existent socket and gives
+// up.
 //
 // These tests pin the gate to isolation mode so that a future revert to
 // runtime.GOOS == "darwin" fails CI. The Darwin-only assertions in
 // TestSelectHarnessPipeTransport_DarwinPinsToIsolationMode are the canonical
-// regression guard for #2078.
+// regression guard.
 
 import (
 	"runtime"
@@ -91,7 +91,8 @@ func TestSelectHarnessPipeTransport(t *testing.T) {
 }
 
 // TestSelectHarnessPipeTransport_DarwinPinsToIsolationMode is the explicit
-// regression guard for issue #2078. It documents the Darwin-specific contract:
+// regression guard for the transport gate. It documents the Darwin-specific
+// contract:
 // the transport must depend on isolation mode, not on GOOS.
 //
 // On Darwin host mode, agentPaneEnvVars injects PRISM_HARNESS_PIPE=unix://…
@@ -134,8 +135,7 @@ func TestSelectHarnessPipeTransport_DarwinPinsToIsolationMode(t *testing.T) {
 // TestSelectHarnessPipeTransport_LinuxPathsUnchanged guards the Linux side of
 // the gate: bwrap and host both use Unix sockets on Linux. This is platform-
 // agnostic logic (the helper has no GOOS branches), but the explicit Linux
-// test documents that the fix did not regress the Linux paths covered by
-// issue #2078's acceptance criteria.
+// test documents that the fix did not regress the Linux paths.
 func TestSelectHarnessPipeTransport_LinuxPathsUnchanged(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux-only assertion for issue #2078 AC")

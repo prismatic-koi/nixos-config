@@ -1,16 +1,15 @@
 package cmd
 
-// investigate_profile_test.go — issue #2097 regression tests for the
-// investigate-spawn profile-inheritance path.
+// investigate_profile_test.go — regression tests for the investigate-spawn
+// profile-inheritance path.
 //
-// `prism investigate` is the second of the two child-spawn front doors
-// fixed in #2097 (the first being `prism review`). Before #2097 the
-// spawned investigate session resolved its profile via
-// ResolveActiveProfile(pf, "") and silently picked up the host default,
-// regardless of the invoker's `--profile` choice.
+// `prism investigate` is one of the two child-spawn front doors (the other
+// being `prism review`). Without profile inheritance, the spawned investigate
+// session resolves its profile via ResolveActiveProfile(pf, "") and silently
+// picks up the host default, regardless of the invoker's `--profile` choice.
 //
-// buildInvestigateSpawnOpts is the testable seam extracted from
-// spawnInvestigateSession in #2097 — it returns the SpawnOpts that
+// buildInvestigateSpawnOpts is the testable seam within
+// spawnInvestigateSession — it returns the SpawnOpts that
 // would be handed to session.SpawnSession, without actually spawning
 // (no tmux, no sidecar, no port allocation). Asserting on the
 // SpawnOpts.ProfileName field there is equivalent to asserting on the
@@ -20,15 +19,15 @@ package cmd
 //
 // The tests below pin:
 //
-//   - AC #6 positive — modern invoker → child SpawnOpts.ProfileName
+//   - positive — modern invoker → child SpawnOpts.ProfileName
 //     equals the invoker's spawn_inputs.profile_name.
-//   - AC #7 abtest — two invokers with distinct profile_name values,
+//   - abtest — two invokers with distinct profile_name values,
 //     mirroring an `--abtest` pair, each produce a child whose
 //     ProfileName matches the leg's profile (no cross-bleed).
-//   - AC #8 negative — invoker with no spawn_inputs row falls through
-//     to state-file > nix-default. No regression.
+//   - negative — invoker with no spawn_inputs row falls through
+//     to state-file > nix-default.
 //
-// Test-suite isolation contract (AGENTS.md, issue #1608):
+// Test-suite isolation contract (AGENTS.md):
 //   - sidecartest.NewIsolated redirects $XDG_STATE_HOME to a t.TempDir()
 //     and sets PRISM_TEST_MODE_RESTRICT_HOSTAPI so no host bus / DB /
 //     tmux state is touched.
@@ -164,8 +163,8 @@ func writeStateFileForInvestigate(t *testing.T, profileName string) {
 	}
 }
 
-// TestInvestigateFanout_ProfileInheritedFromModernInvoker is the AC #6
-// positive: invoker has spawn_inputs.profile_name=X → the child's
+// TestInvestigateFanout_ProfileInheritedFromModernInvoker is the positive
+// case: invoker has spawn_inputs.profile_name=X → the child's
 // SpawnOpts.ProfileName = X. SpawnSession (via SpawnInputsFromOpts)
 // then writes profile_name=X on the child's audit row.
 func TestInvestigateFanout_ProfileInheritedFromModernInvoker(t *testing.T) {
@@ -196,7 +195,7 @@ func TestInvestigateFanout_ProfileInheritedFromModernInvoker(t *testing.T) {
 	}
 }
 
-// TestInvestigateFanout_AbtestLegsResolveIndependently is the AC #7
+// TestInvestigateFanout_AbtestLegsResolveIndependently is the abtest
 // shape adapted for investigate: two invokers sharing an
 // abtest_pair_id but each carrying its own profile_name. Each
 // invoker's investigate-child must carry its own profile, never the
@@ -237,8 +236,8 @@ func TestInvestigateFanout_AbtestLegsResolveIndependently(t *testing.T) {
 }
 
 // TestInvestigateFanout_LegacyInvokerFallsThroughToStateFile is the
-// AC #8 negative: an invoker with no spawn_inputs row (pre-#2090) →
-// the child falls through to the state-file value. No regression.
+// negative case: an invoker with no spawn_inputs row → the child falls
+// through to the state-file value.
 //
 // Note: the invoker still needs an agent_status row (the
 // CurrentStatus check is unrelated to spawn_inputs) so we seed that
@@ -269,9 +268,9 @@ func TestInvestigateFanout_LegacyInvokerFallsThroughToStateFile(t *testing.T) {
 }
 
 // TestInvestigateFanout_LegacyInvokerFallsThroughToNixDefault completes
-// the AC #8 chain: legacy invoker + no state-file → resolution lands
-// on pf.Default. This is the path every pre-#2097 investigate ran on
-// for users who had not invoked `prism profile set`.
+// the chain: legacy invoker + no state-file → resolution lands on
+// pf.Default. This is the path an investigate with no inheritance runs on
+// for users who have not invoked `prism profile set`.
 func TestInvestigateFanout_LegacyInvokerFallsThroughToNixDefault(t *testing.T) {
 	configHome, d := isolateForInvestigateBuilder(t)
 	const invoker = "prism-test@worker-investigate-fully-legacy"

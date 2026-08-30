@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for the shared --wait helpers (#1500). The per-command wait paths
+// Tests for the shared --wait helpers. The per-command wait paths
 // are tested in merge_wait_test.go, review_wait_test.go, and
 // spawn_wait_test.go.
 
@@ -72,7 +72,7 @@ func TestBackoffSchedule_JitterIsBoundedAndRandom(t *testing.T) {
 }
 
 // TestPollWait_ReturnsImmediatelyOnDone exercises the idempotent-observation
-// AC: a probe that is already done returns 0 immediately, no sleep.
+// a probe that is already done returns 0 immediately, no sleep.
 func TestPollWait_ReturnsImmediatelyOnDone(t *testing.T) {
 	start := time.Now()
 	err := pollWait(context.Background(), 1*time.Second,

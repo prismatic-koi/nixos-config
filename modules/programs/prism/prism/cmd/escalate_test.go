@@ -37,8 +37,8 @@ func startEscalateHTTPStub(t *testing.T) (*httptest.Server, *capturedPromptCall)
 	return srv, captured
 }
 
-// TestEscalate_AutoDiscoversSingleCoordinator covers AC #1: auto-discovery of
-// the same-repo default-branch coordinator and delivery as if it were a
+// TestEscalate_AutoDiscoversSingleCoordinator covers auto-discovery of the
+// same-repo default-branch coordinator and delivery as if it were a
 // `prism prompt`.
 func TestEscalate_AutoDiscoversSingleCoordinator(t *testing.T) {
 	d := openPromptTestDB(t)
@@ -85,7 +85,7 @@ func TestEscalate_AutoDiscoversSingleCoordinator(t *testing.T) {
 	}
 }
 
-// TestEscalate_StateTransitionEscalated covers AC #2: list-sessions sees
+// TestEscalate_StateTransitionEscalated covers that list-sessions sees
 // "escalated" rather than active or finished after the call.
 func TestEscalate_StateTransitionEscalated(t *testing.T) {
 	d := openPromptTestDB(t)
@@ -109,9 +109,9 @@ func TestEscalate_StateTransitionEscalated(t *testing.T) {
 	}
 }
 
-// TestEscalate_BusEventDistinct covers ACs #4 and #5: the bus event has a new
-// type session.escalated distinct from session.finished, and its payload
-// carries the metadata fields.
+// TestEscalate_BusEventDistinct covers that the bus event has type
+// session.escalated distinct from session.finished, and its payload carries
+// the metadata fields.
 func TestEscalate_BusEventDistinct(t *testing.T) {
 	d := openPromptTestDB(t)
 
@@ -160,11 +160,11 @@ func TestEscalate_BusEventDistinct(t *testing.T) {
 	}
 }
 
-// TestEscalate_MultipleCandidatesNoTo covers AC #7: multiple coordinator
+// TestEscalate_MultipleCandidatesNoTo covers that multiple coordinator
 // candidates and no --to → exits non-zero, state does NOT transition.
 //
-// Multiple candidates can arise when a pre-migration `<repo>@main` row exists
-// (root_agent_name NULL) alongside a freshly-spawned coordinator in the same
+// Multiple candidates can arise when a `<repo>@main` row with a NULL
+// root_agent_name exists alongside a freshly-spawned coordinator in the same
 // repo. The unique index permits that pairing because it filters
 // `WHERE root_agent_name = 'coordinator'` only.
 func TestEscalate_MultipleCandidatesNoTo(t *testing.T) {
@@ -172,7 +172,7 @@ func TestEscalate_MultipleCandidatesNoTo(t *testing.T) {
 
 	httpClient = &http.Client{Timeout: 2 * time.Second}
 
-	// Pre-migration legacy row: name matches <repo>@main, root_agent_name NULL.
+	// A `<repo>@main` row with a NULL root_agent_name.
 	seedSession(t, d, "repo@main", "active", nil, nil, nil, nil)
 	// Fresh coordinator with explicit root_agent_name='coordinator' on a
 	// different branch. The unique index permits this because it filters on
@@ -194,7 +194,7 @@ func TestEscalate_MultipleCandidatesNoTo(t *testing.T) {
 	}
 }
 
-// TestEscalate_NoCoordinatorStillEscalates covers AC #8: zero candidates →
+// TestEscalate_NoCoordinatorStillEscalates covers that zero candidates →
 // session still transitions to escalated, bus event still fires (target empty),
 // and a self-marker is recorded in the worker's own log.
 func TestEscalate_NoCoordinatorStillEscalates(t *testing.T) {
@@ -232,7 +232,7 @@ func TestEscalate_NoCoordinatorStillEscalates(t *testing.T) {
 	}
 }
 
-// TestEscalate_ExplicitToMissingSession covers AC #9: --to <nonexistent> exits
+// TestEscalate_ExplicitToMissingSession covers that --to <nonexistent> exits
 // non-zero without transitioning state.
 func TestEscalate_ExplicitToMissingSession(t *testing.T) {
 	d := openPromptTestDB(t)
@@ -253,7 +253,7 @@ func TestEscalate_ExplicitToMissingSession(t *testing.T) {
 	}
 }
 
-// TestEscalate_PromptEchoedToSelf covers AC #10: the prompt body is recorded
+// TestEscalate_PromptEchoedToSelf covers that the prompt body is recorded
 // in the calling session's own conversation log.
 func TestEscalate_PromptEchoedToSelf(t *testing.T) {
 	d := openPromptTestDB(t)
@@ -299,8 +299,8 @@ func TestEscalate_ResolveTarget_OneCandidate(t *testing.T) {
 }
 
 // TestEscalate_ResolveTarget_LegacyAtMainRow exercises the discovery
-// fallback for pre-migration rows where root_agent_name is NULL but the
-// session is named <repo>@main.
+// fallback for rows where root_agent_name is NULL but the session is named
+// <repo>@main.
 func TestEscalate_ResolveTarget_LegacyAtMainRow(t *testing.T) {
 	d := openPromptTestDB(t)
 	// Note: seedSession passes nil rootAgent → root_agent_name stays NULL.

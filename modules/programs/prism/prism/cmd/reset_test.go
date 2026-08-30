@@ -13,7 +13,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
-// TestResetMarkDBEnded_MarksAllNonEndedRows is the primary AC-10 test:
+// TestResetMarkDBEnded_MarksAllNonEndedRows is the primary test:
 // all non-ended rows in agent_status are updated to ended with a non-zero ended_at.
 func TestResetMarkDBEnded_MarksAllNonEndedRows(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
@@ -188,8 +188,8 @@ func TestResetMarkDBEnded_AlreadyEndedRowsUntouched(t *testing.T) {
 	}
 }
 
-// TestResetMarkDBEnded_SnapshotsResumePointersBeforeClear verifies the issue
-// #2220 capture-before-clear contract: resetMarkDBEnded returns the
+// TestResetMarkDBEnded_SnapshotsResumePointersBeforeClear verifies the
+// capture-before-clear contract: resetMarkDBEnded returns the
 // (sessionName, worktree, harness_session_id) snapshot of every row that
 // carried a resume pointer — including already-ended rows, since
 // ClearAllResumePointers wipes the column on every row — and the DB column is

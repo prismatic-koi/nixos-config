@@ -1,13 +1,13 @@
 package cmd
 
 // checkin_permission.go — the coordinator/worker permission gate on the DIRECT
-// CLI route of `prism checkin` (issue #2619).
+// CLI route of `prism checkin`.
 //
 // `prism checkin` reaches the DB by one of two routes:
 //
 //   - Proxy route (PRISM_HOST_API set — a sandboxed caller): the host-API
 //     `/checkin` handler in internal/sidecar/host_api.go applies the tiers and
-//     answers HTTP 403 / 404 (issue #2587, PR #2617).
+//     answers HTTP 403 / 404.
 //   - Direct route (PRISM_HOST_API unset — a `host`-isolation caller):
 //     authorizeDirectCheckin below applies the SAME predicate and returns a
 //     non-zero exit.
@@ -25,10 +25,10 @@ package cmd
 //
 //	sqlite3 ~/.local/state/prism/prism.db 'select * from agent_events where ...'
 //
-// The gate is justified on three narrower grounds, recorded on #2619: audit
+// The gate is justified on three narrower grounds: audit
 // completeness (a tier-3 read now leaves a record on either route), correct
 // behaviour for a cooperative caller, and route consistency with
-// `prism investigate` (#2597) and `prism merges` (#2608).
+// `prism investigate` and `prism merges`.
 //
 // # Scope
 //
@@ -51,7 +51,7 @@ package cmd
 //   - `--compare`.
 //
 // `prism checkin <parent>~review` WITHOUT `--verbose` — the aggregate summary
-// — is gated separately (issue #2628), by
+// — is gated separately, by
 // authorizeDirectCheckinReviewAggregate below and, on the host-API route, by
 // GET /checkin/review-summary. It could not reuse authorizeDirectCheckin
 // as-is: the target there is a set of sessions ("the review agents OF parent
@@ -116,18 +116,17 @@ func authorizeDirectCheckin(target string) error {
 // # Fail-closed behaviour
 //
 // A caller that cannot be resolved is refused, exactly as
-// requireMergesCoordinator refuses one (#2608), with the same remedy named in
-// the error text. The consequence is deliberate and was decided on #2619:
+// requireMergesCoordinator refuses one, with the same remedy named in
+// the error text. The consequence is deliberate:
 // bare-shell `prism checkin` from a plain terminal outside tmux is refused.
 // There is no carve-out. A bare shell has no session identity, so there is no
 // tier to place it in, and the fallback that would admit it is the widest
 // grant rather than the narrowest.
 //
 // A DB that cannot be opened is refused for the same reason: every tier scopes
-// on rows in that DB, so a gate that cannot read it cannot admit. This does
-// change one pre-#2619 behaviour on this route — `prism checkin` used to fall
-// back to the tmux screen-scrape when the DB was unreachable, and that
-// fallback is now behind the gate. The screen-scrape still runs for a session
+// on rows in that DB, so a gate that cannot read it cannot admit. The tmux
+// screen-scrape fallback is behind the gate — an unreachable DB refuses
+// rather than screen-scrapes. The screen-scrape still runs for a session
 // that has no rows in a DB that opened.
 func authorizeDirectCheckinFor(caller, target string) error {
 	if caller == "" {
@@ -172,7 +171,7 @@ func authorizeDirectCheckinFor(caller, target string) error {
 
 // authorizeDirectCheckinReviewAggregate resolves the caller session and
 // applies the shared aggregate permission predicate for the non-verbose
-// `prism checkin <parent>~review` form (issue #2628). It returns nil when the
+// `prism checkin <parent>~review` form. It returns nil when the
 // read is permitted, and a non-nil error (hence a non-zero exit) otherwise.
 //
 // This is the aggregate counterpart of authorizeDirectCheckin: it answers "may

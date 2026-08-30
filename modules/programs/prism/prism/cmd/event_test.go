@@ -26,13 +26,13 @@ import (
 // setupEventTestDB seeds a temp DB with a single active session row and
 // returns the DB path. The DB is closed before returning so openDB can reopen it.
 // It also unsets PRISM_HOST_API so that direct-DB-path tests exercise the
-// local DB rather than attempting to proxy (#1254 — proxy tests live in
+// local DB rather than attempting to proxy (proxy tests live in
 // event_proxy_test.go).
 func setupEventTestDB(t *testing.T, session string) string {
 	t.Helper()
 	// Wipe any rootCmd flag values left behind by a previous test (or a
 	// previous iteration under `go test -count=N`) before this test drives
-	// the cobra tree via rootCmd.SetArgs / rootCmd.Execute. See #1521.
+	// the cobra tree via rootCmd.SetArgs / rootCmd.Execute.
 	resetRootCmdFlags(t)
 	t.Setenv("PRISM_HOST_API", "")
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
@@ -187,7 +187,7 @@ func TestEventTmuxSessionEnd_EmptySession(t *testing.T) {
 // session (like "obsidian") gets an agent_status row with repo="", state="idle",
 // and ended_at=NULL when tmux-session-start fires.
 //
-// AC-7: new test for the non-worktree session path.
+// Covers the non-worktree session path.
 func TestEventTmuxSessionStart_NonWorktreeSession(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	// Does not need a live tmux server — no tmux calls in this path.
@@ -243,7 +243,7 @@ func TestEventTmuxSessionStart_NonWorktreeSession(t *testing.T) {
 // "prism-dashboard" are still silently skipped and do NOT produce an
 // agent_status row.
 //
-// AC-8: meta-sessions must not appear in agent_status.
+// Meta-sessions must not appear in agent_status.
 func TestEventTmuxSessionStart_SkipsMetaSessions(t *testing.T) {
 	for _, session := range []string{"scratchpad", "prism-dashboard"} {
 		t.Run(session, func(t *testing.T) {
@@ -290,9 +290,9 @@ func TestEventTmuxSessionStart_SkipsMetaSessions(t *testing.T) {
 // row in agent_status with repo="" and the supplied state, and appends a
 // state_change event row to the events table.
 //
-// Regression guard for issue #576: state-change used to silently drop events
-// for any session whose worktree had no .bare ancestor, leaving the dashboard
-// stuck showing the session as "idle".
+// Regression guard: without this, state-change silently drops events for any
+// session whose worktree has no .bare ancestor, leaving the dashboard stuck
+// showing the session as "idle".
 func TestEventStateChange_TracksNonWorktreeSession(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	const session = "obsidian"
@@ -366,8 +366,8 @@ func TestEventStateChange_TracksNonWorktreeSession(t *testing.T) {
 // "prism-dashboard" state-change invocations return nil without writing an
 // agent_status row or an events row.
 //
-// Regression guard for issue #576 — the precise name-based skip must still
-// exclude meta-sessions even though the broader repo=="" guard is gone.
+// Regression guard — the precise name-based skip must exclude
+// meta-sessions even though the broader repo=="" guard is gone.
 func TestEventStateChange_SkipsMetaSessions(t *testing.T) {
 	for _, session := range []string{"scratchpad", "prism-dashboard"} {
 		t.Run(session, func(t *testing.T) {
@@ -424,8 +424,8 @@ func TestEventStateChange_SkipsMetaSessions(t *testing.T) {
 // resolves repo via repoFromWorktreePath and writes it to both agent_status and the
 // state_change event row.
 //
-// Regression guard for issue #576 — relaxing the guard must not break the
-// existing worktree flow.
+// Regression guard — relaxing the guard must not break the existing
+// worktree flow.
 func TestEventStateChange_WorktreeSession(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	const session = "myrepo@main"
@@ -507,8 +507,8 @@ func TestEventStateChange_WorktreeSession(t *testing.T) {
 // non-worktree session, a subsequent state-change for that session updates
 // the existing row's state column rather than inserting a duplicate.
 //
-// This is the primary user-visible bug from issue #576 — the row existed but
-// was never updated, so the dashboard showed "idle" forever.
+// This is the primary user-visible bug — the row existed but was never
+// updated, so the dashboard showed "idle" forever.
 func TestEventStateChange_UpdatesExistingNonWorktreeRow(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	const session = "obsidian"
@@ -738,7 +738,7 @@ func TestEventTmuxSessionStart_AgentRole_PreservesExisting(t *testing.T) {
 // set, a new tmux-session-start call clears ended_at (making the session
 // visible to AllActiveStatus again).
 //
-// AC-9: regression protection for PR #475 — ClearEnded must fire for obsidian.
+// Regression protection: ClearEnded must fire for obsidian.
 func TestEventTmuxSessionStart_NonWorktreeSession_ClearsEnded(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	const session = "obsidian"
@@ -799,23 +799,23 @@ func TestEventTmuxSessionStart_NonWorktreeSession_ClearsEnded(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Issue #2253 — tmux-session-start must mint a fresh instance_id when the
-// previous incarnation's sessions row has ended_at set.
+// tmux-session-start must mint a fresh instance_id when the previous
+// incarnation's sessions row has ended_at set.
 //
-// Before the fix, the handler reused the agent_status.instance_id
-// unconditionally, so a long-lived coordinator session that was once spawned
-// with `prism spawn --profile X` carried that profile pin forward forever via
-// the spawn_inputs.profile_name column — even after `prism profile use Y`
-// and many respawns. The fix detects the ended-previous-incarnation case and
-// mints a fresh UUID so profile resolution at agent-run time falls through
-// to state-file / nix-default (the user's currently-active profile).
+// Without this, the handler reuses agent_status.instance_id unconditionally,
+// so a long-lived coordinator session once spawned with
+// `prism spawn --profile X` carries that profile pin forward forever via the
+// spawn_inputs.profile_name column — even after `prism profile use Y` and
+// many respawns. Detecting the ended-previous-incarnation case and minting a
+// fresh UUID makes profile resolution at agent-run time fall through to
+// state-file / nix-default (the user's currently-active profile).
 //
-// Historical spawn_inputs rows belonging to ended incarnations must NOT be
-// mutated or deleted by the respawn path — they are the #2090 audit trail
-// that `prism stats` / archive queries aggregate by profile_name.
+// The prior spawn_inputs rows belonging to ended incarnations must NOT be
+// mutated or deleted by the respawn path — they are the audit trail that
+// `prism stats` / archive queries aggregate by profile_name.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestEventTmuxSessionStart_RespawnAfterEnd_MintsFreshInstance verifies AC #1:
+// TestEventTmuxSessionStart_RespawnAfterEnd_MintsFreshInstance verifies that
 // when the previous sessions row has ended_at set, tmux-session-start mints
 // a fresh instance_id and writes it into agent_status.
 func TestEventTmuxSessionStart_RespawnAfterEnd_MintsFreshInstance(t *testing.T) {
@@ -917,9 +917,9 @@ func TestEventTmuxSessionStart_RespawnAfterEnd_MintsFreshInstance(t *testing.T) 
 		t.Errorf("new instance_id %q has spawn_inputs row %+v, want none", newIID, newSI)
 	}
 
-	// AC #4 — the historical spawn_inputs row for the ENDED incarnation
-	// must not be mutated or deleted by the respawn path. `prism stats`
-	// and archive queries depend on it.
+	// The prior spawn_inputs row for the ENDED incarnation must not be mutated
+	// or deleted by the respawn path. `prism stats` and archive queries
+	// depend on it.
 	oldSI, err := d2.SpawnInputsByInstanceID(oldIID)
 	if err != nil {
 		t.Fatalf("SpawnInputsByInstanceID(old): %v", err)
@@ -942,10 +942,10 @@ func TestEventTmuxSessionStart_RespawnAfterEnd_MintsFreshInstance(t *testing.T) 
 	}
 }
 
-// TestEventTmuxSessionStart_LiveIncarnation_PreservesInstance verifies AC #2:
+// TestEventTmuxSessionStart_LiveIncarnation_PreservesInstance verifies that
 // when the previous sessions row has ended_at unset (within-incarnation
 // agent-pane restart), tmux-session-start reuses the existing instance_id so
-// the spawn_inputs.profile_name pin keeps resolving (the #2092 semantics).
+// the spawn_inputs.profile_name pin keeps resolving.
 func TestEventTmuxSessionStart_LiveIncarnation_PreservesInstance(t *testing.T) {
 	resetRootCmdFlags(t)
 	t.Setenv("PRISM_HOST_API", "")
@@ -1015,7 +1015,7 @@ func TestEventTmuxSessionStart_LiveIncarnation_PreservesInstance(t *testing.T) {
 
 	// The spawn_inputs pin must still resolve through the unchanged
 	// instance_id — this is what guarantees `prism spawn --profile X`
-	// keeps X across agent-pane restarts (#2092).
+	// keeps X across agent-pane restarts.
 	si, err := d2.SpawnInputsByInstanceID(liveIID)
 	if err != nil {
 		t.Fatalf("SpawnInputsByInstanceID: %v", err)
@@ -1025,9 +1025,9 @@ func TestEventTmuxSessionStart_LiveIncarnation_PreservesInstance(t *testing.T) {
 	}
 }
 
-// TestEventTmuxSessionStart_LegacyAgentStatusNoSessionsRow verifies AC #5:
+// TestEventTmuxSessionStart_LegacyAgentStatusNoSessionsRow verifies that
 // when agent_status carries an instance_id that has no matching sessions row
-// (pre-#1606 legacy), the respawn path falls through to the existing reuse
+// (a legacy shape), the respawn path falls through to the existing reuse
 // behaviour — the instance_id is preserved and a sessions row is created
 // for it via INSERT OR IGNORE. Because no spawn_inputs row exists for the
 // reused instance_id, profile resolution still naturally falls through to
@@ -1051,7 +1051,7 @@ func TestEventTmuxSessionStart_LegacyAgentStatusNoSessionsRow(t *testing.T) {
 	if err := d.SetInstanceID(session, legacyIID); err != nil {
 		t.Fatalf("SetInstanceID: %v", err)
 	}
-	// Intentionally no InsertSession — the legacy / pre-#1606 shape.
+	// Intentionally no InsertSession — the legacy shape with no sessions row.
 	d.Close()
 
 	SetTestDBPath(dbFile)

@@ -2,10 +2,9 @@ package cmd
 
 // Unit tests for session.KillSidecar.
 //
-// KillSidecar was moved from the cmd package (where it was unexported as
-// killSidecar) to the session package so that both cmd and integration tests
-// can call it for test teardown.  These tests live in the cmd package because
-// they re-use the TestMain stub mechanism already present here.
+// KillSidecar lives in the session package so that both cmd and integration
+// tests can call it for test teardown. These tests live in the cmd package
+// because they re-use the TestMain stub mechanism already present here.
 //
 // Paths exercised:
 //   - Normal operation: PID file exists, process running, SIGTERM delivered,
@@ -54,45 +53,37 @@ import (
 //     test binary mid-run — t.Cleanup will not fire in that case, but the
 //     SIGTERM handler will.
 //
-//  3. Leak guard (#1180): snapshots the live agent_status and sessions
-//     tables and the live worktree root before running tests, then asserts
-//     no new entries appear after the suite completes. This catches any test
-//     that creates real DB rows or worktrees in the live environment. The
-//     guard uses the DB path that was live at suite start (before any test
+//  3. Leak guard: snapshots the live agent_status and sessions tables and
+//     the live worktree root before running tests, then asserts no new
+//     entries appear after the suite completes. This catches any test that
+//     creates real DB rows or worktrees in the live environment. The guard
+//     uses the DB path that was live at suite start (before any test
 //     overrides XDG_STATE_HOME), so it reliably reads the production
-//     database. The guard's original live-tmux-server session diff was
-//     dropped in #2227: since the suite-wide tmux isolation (#2214/#2224)
-//     THIS package's code under test cannot reach the live server by
-//     construction, so for cmd/ a live-server diff could only observe
-//     concurrent host activity (e.g. a parallel worker's review agents
-//     spawning mid-suite) and misattribute it to the suite — a false
-//     positive at ~1-in-6 full-suite runs on a multi-worker host. cmd/
-//     isolation regressions are instead caught deterministically by
+//     database. The guard does not diff live tmux sessions: the suite-wide
+//     tmux isolation makes this package's code under test unable to reach
+//     the live server by construction, so a live-server diff could only
+//     observe concurrent host activity (e.g. a parallel worker's review
+//     agents spawning mid-suite) and misattribute it to the suite. cmd/
+//     isolation regressions are caught deterministically by
 //     TestSuiteTmuxIsolation_HostServerUnreachable (tmux_isolation_test.go).
-//     One residual: the diff had also incidentally caught a CROSS-package
-//     leak (#1732, internal/review) via parallel `go test ./...` window
-//     overlap; that signal was indistinguishable from the false-positive
-//     class (both are live `*~review-N-review-*` sessions) and is gone —
-//     #2230 tracks #2224-style suite-wide isolation for internal/review.
 //     The DB-row and worktree diffs are retained because no equivalent
 //     by-construction isolation exists for them (tests opt in per-test via
 //     XDG_STATE_HOME / SetTestDBPath / PRISM_SPAWN_PATH overrides).
 //
-//  4. Tmux isolation (#2214): clears $TMUX and redirects $TMUX_TMPDIR to an
+//  4. Tmux isolation: clears $TMUX and redirects $TMUX_TMPDIR to an
 //     empty directory so no code under test can reach the live host tmux
 //     server via the default-socket fallback (tmux.CurrentSession et al.).
 //     See tmux_isolation_test.go for the full rationale. The original
 //     environment is restored after m.Run().
 //
-//  5. Sandbox-env isolation (#2217): unsets the PRISM_* variables the
+//  5. Sandbox-env isolation: unsets the PRISM_* variables the
 //     sidecar injects into agent sessions (PRISM_SESSION_NAME,
 //     PRISM_HOST_API, …) so tests see the same environment surface on CI,
 //     developer hosts, and inside prism worker sandboxes. See
 //     sandbox_env_isolation_test.go for the full rationale.
 //
-//  6. Re-exec stub interception (#2230 class, swept in #2237, extended in
-//     #2280): production code reachable from this package re-execs
-//     os.Executable() — in tests, THIS binary — as `<self> sidecar …` /
+//  6. Re-exec stub interception: production code reachable from this package
+//     re-execs os.Executable() — in tests, THIS binary — as `<self> sidecar …` /
 //     `<self> event …` (session.SpawnSession paths) and
 //     `<self> monitor-review …` (review.RunAsync → StartMonitorProcess with
 //     prismBinary=="").  An additional re-exec target reaches this binary
@@ -103,11 +94,10 @@ import (
 //     tmux.NewWindow. In tests `<abs-prism-path>` is the test binary, so
 //     tmux's pane shell invokes `<self> agent-run …` from outside the Go
 //     parent. Without the agent-run arm of the argv check, the subprocess
-//     ran the real cmd/agent_run.go path which calls openAgentRunLog and
+//     runs the real cmd/agent_run.go path which calls openAgentRunLog and
 //     creates `$XDG_STATE_HOME/prism/run/<hash>/agent-run.log` after the
 //     test body has returned — racing t.TempDir's RemoveAll and surfacing
-//     as `unlinkat …/prism: directory not empty` (#2280, third instance of
-//     the flake class after #1477 and #1705).
+//     as `unlinkat …/prism: directory not empty`.
 //     PRISM_TEST_SUBPROCESS=1 short-circuits an explicit stub re-invocation;
 //     the argv check covers paths reached without the env var, exiting
 //     instead of recursively running the suite. The argv check MUST stay
@@ -125,7 +115,7 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv("PRISM_TEST_SUBPROCESS") == "1" {
 		// Stub subprocess convention shared with the internal/review,
-		// internal/session, and internal/integration TestMains (#2237).
+		// internal/session, and internal/integration TestMains.
 		time.Sleep(50 * time.Millisecond)
 		os.Exit(0)
 	}
@@ -150,9 +140,9 @@ func TestMain(m *testing.M) {
 	beforeSessionsRows := snapshotSessionsRows(liveDBPath)
 	beforeWorktrees := snapshotWorktreeDirs()
 
-	// Tmux isolation (#2214).
+	// Tmux isolation.
 	restoreTmuxEnv := isolateSuiteFromHostTmux()
-	// Sandbox-env isolation (#2217): unset the sidecar-injected PRISM_* vars
+	// Sandbox-env isolation: unset the sidecar-injected PRISM_* vars
 	// so the suite controls its full environment surface.
 	restoreSandboxEnv := isolateSuiteFromSandboxEnv()
 

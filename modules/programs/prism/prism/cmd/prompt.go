@@ -68,7 +68,7 @@ var validDeliverAsModes = []string{"steer", "followUp", "nextTurn"}
 // waitingStateError returns the standard "session is waiting for user input"
 // error used by every callsite that would otherwise deliver a prompt to a
 // paused session. Shared by `prism prompt` and by `prism spawn --branch main`
-// on the reuse-with-prompt path (#2352) so the operator sees the same shape
+// on the reuse-with-prompt path so the operator sees the same shape
 // of message regardless of entry point.
 func waitingStateError(sessionName string) error {
 	return fmt.Errorf(
@@ -200,13 +200,13 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 
 // emitPromptOutcome renders the result of a `prism prompt` invocation. In
 // human mode it prints a single line that names the buffered outcome when
-// the sidecar responded {"buffered": true} (issue #2359 Gap B) so the
+// the sidecar responded {"buffered": true} so the
 // caller can distinguish "on the wire" from "parked awaiting reconnect".
 // In --json mode it emits a single JSON object with delivered_to,
 // delivery_id, buffered, replayed, and transport fields.
 //
 // Exit code stays 0 on buffered=true: the delivery is contractually
-// promised, and the sidecar's durable buffer (also #2359 Gap B) means it
+// promised, and the sidecar's durable buffer means it
 // survives sidecar restart. The distinguishing signal is in the message
 // content, not the exit code.
 func emitPromptOutcome(stdout io.Writer, jsonOut bool, sessionName, transport string, outcome promptdelivery.DeliveryOutcome) error {

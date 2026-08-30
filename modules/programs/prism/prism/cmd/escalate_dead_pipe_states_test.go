@@ -1,22 +1,23 @@
 package cmd
 
-// escalate_dead_pipe_states_test.go — regression tests for issue #2359 Gap A.
+// escalate_dead_pipe_states_test.go — regression tests for the dead-pipe
+// escalate-state transitions.
 //
-// Before this change, `prism escalate` transitioned the calling session to
-// `escalated` only when its DB state was `active`. A session whose harness
-// pipe never delivered a turn event sat at `idle` (no turn events flowing)
-// or `error` (startup-handshake timeout stamped it) while pi was mid-turn;
-// `prism escalate` from those states delivered the message to the coordinator
-// but the state write logged "invalid transition" and (if checkTransition
-// were tightened) would be silently skipped.
+// `prism escalate` must transition the calling session to `escalated` from
+// `idle` and `error`, not only from `active`. A session whose harness pipe
+// never delivered a turn event sits at `idle` (no turn events flowing) or
+// `error` (startup-handshake timeout stamped it) while pi is mid-turn. From
+// those states `prism escalate` delivers the message to the coordinator, but a
+// state write restricted to `active` logs "invalid transition" and (if
+// checkTransition were tightened) is silently skipped.
 //
-// The incident: the sidecar's finish-notification suppression, the
-// escalated-state indicator in `prism sessions list`, and the escalate-marker
-// audit event all rely on the DB state being `escalated`. When the write is
-// dropped, the coordinator sees a worker in `error` (or later stamped
-// `finished`) with no signal that the worker is awaiting guidance.
+// The sidecar's finish-notification suppression, the escalated-state indicator
+// in `prism sessions list`, and the escalate-marker audit event all rely on
+// the DB state being `escalated`. When the write is dropped, the coordinator
+// sees a worker in `error` (or later stamped `finished`) with no signal that
+// the worker is awaiting guidance.
 //
-// This file exercises the state-machine change: idle → escalated and
+// This file exercises the state-machine transitions: idle → escalated and
 // error → escalated must both succeed and land the row in `escalated`.
 
 import (
@@ -26,7 +27,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 )
 
-// TestEscalate_FromIdleState_TransitionsToEscalated is the primary AC:
+// TestEscalate_FromIdleState_TransitionsToEscalated is the primary case:
 // "prism escalate invoked by a session whose DB state is `idle` transitions
 // the session to `escalated`, delivers the escalation to the coordinator,
 // and the session shows `escalated` in prism sessions list."
@@ -64,11 +65,9 @@ func TestEscalate_FromIdleState_TransitionsToEscalated(t *testing.T) {
 	}
 
 	// The transition-table entry for idle→escalated must not fire the
-	// advisory "invalid transition" warning that the incident report
-	// (#2359) called out. If checkTransition is ever tightened to
-	// hard-reject invalid transitions (issue #2094 hints at this as a
-	// future direction), this assertion doubles as the write-not-skipped
-	// signal.
+	// advisory "invalid transition" warning. If checkTransition is ever
+	// tightened to hard-reject invalid transitions, this assertion doubles
+	// as the write-not-skipped signal.
 	if strings.Contains(stderr, "invalid transition") && strings.Contains(stderr, `"idle"`) {
 		t.Errorf("stderr carried an invalid-transition warning for idle→escalated (Gap A regression): %q", stderr)
 	}
@@ -84,7 +83,7 @@ func TestEscalate_FromIdleState_TransitionsToEscalated(t *testing.T) {
 	}
 }
 
-// TestEscalate_FromErrorState_TransitionsToEscalated is the edge-case AC:
+// TestEscalate_FromErrorState_TransitionsToEscalated is the edge case:
 // "prism escalate invoked by a session whose DB state is `error` also
 // transitions the session to `escalated`."
 func TestEscalate_FromErrorState_TransitionsToEscalated(t *testing.T) {
@@ -122,9 +121,8 @@ func TestEscalate_FromErrorState_TransitionsToEscalated(t *testing.T) {
 	}
 }
 
-// TestEscalate_FromActive_UnchangedBehaviour verifies the pre-#2359
-// path is preserved: a session already in `active` transitions to
-// `escalated` as before.
+// TestEscalate_FromActive_UnchangedBehaviour verifies the active-state
+// path: a session already in `active` transitions to `escalated`.
 func TestEscalate_FromActive_UnchangedBehaviour(t *testing.T) {
 	d := openPromptTestDB(t)
 	_ = seedEscalatePair(t, d, "repo@feature", "repo@main")

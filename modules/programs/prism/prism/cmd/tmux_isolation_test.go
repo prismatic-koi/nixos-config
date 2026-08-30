@@ -1,6 +1,6 @@
 package cmd
 
-// Suite-wide tmux isolation for the cmd package (#2214).
+// Suite-wide tmux isolation for the cmd package.
 //
 // Several production code paths in cmd/ fall back to querying the live tmux
 // server when no explicit session is provided:
@@ -20,7 +20,7 @@ package cmd
 // server resolves the "current" session via its most-recently-used
 // heuristics — i.e. whatever session the developer happens to be attached
 // to. Five cmd/ tests failed nondeterministically on developer hosts because
-// of exactly this (#2214): three independent sessions observed three
+// of exactly this: three independent sessions observed three
 // different leaked names ("actions-runner@main", "staging-db-refresh@main",
 // "aws-identity@main"), each the host's most-recently-used live session.
 //
@@ -36,7 +36,7 @@ package cmd
 // "error connecting to ..." — indistinguishable from a host with no tmux
 // server running, which is what CI sees. This neutralises the live-server
 // leak for every current and future test in the package without per-test
-// boilerplate (the same philosophy as sidecartest.NewIsolated, #1608).
+// boilerplate (the same philosophy as sidecartest.NewIsolated).
 //
 // The redirected directory must have a SHORT path: tmux sockets are Unix
 // domain sockets and sun_path is ~104 bytes on Darwin. os.MkdirTemp("", ...)
@@ -66,15 +66,13 @@ import (
 // process leaves the environment as it found it.
 //
 // Because this isolation makes the live host server unreachable from this
-// package's code under test by construction, the #1180 leak guard's
-// live-tmux-server before/after session diff was dropped (#2227): it could
-// no longer catch a leak from THIS package — only misattribute concurrent
-// host activity (parallel workers' spawns and review rounds) to the suite,
-// or incidentally observe another package's leak during parallel
-// `go test ./...` window overlap (#1732 — a class now tracked by #2230,
-// which proposes this same isolation pattern for internal/review). The
-// deterministic regression guard for this package's isolation is
-// TestSuiteTmuxIsolation_HostServerUnreachable below.
+// package's code under test by construction, the leak guard does not diff
+// live tmux sessions for this package: such a diff could not catch a leak
+// from THIS package — it could only misattribute concurrent host activity
+// (parallel workers' spawns and review rounds) to the suite, or incidentally
+// observe another package's leak during parallel `go test ./...` window
+// overlap. The deterministic regression guard for this package's isolation
+// is TestSuiteTmuxIsolation_HostServerUnreachable below.
 func isolateSuiteFromHostTmux() (restore func()) {
 	origTmux, hadTmux := os.LookupEnv("TMUX")
 	origTmpdir, hadTmpdir := os.LookupEnv("TMUX_TMPDIR")
@@ -113,7 +111,7 @@ func isolateSuiteFromHostTmux() (restore func()) {
 }
 
 // TestSuiteTmuxIsolation_HostServerUnreachable is the regression guard for
-// the #2214 leak class. It asserts that, under the TestMain-level
+// the live-server leak class. It asserts that, under the TestMain-level
 // neutralisation, the live host tmux server is unreachable from code under
 // test:
 //
