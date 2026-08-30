@@ -2,35 +2,34 @@ package sessionname
 
 import "testing"
 
-// TestRepo pins the repo-attribution rule (issue #2658, AC "Repo derivation
-// returns `obsidian` for both `obsidian` and `obsidian~investigate-v2`").
+// TestRepo pins the repo-attribution rule: Repo derivation returns `obsidian`
+// for both `obsidian` and `obsidian~investigate-v2`.
 //
-// The pre-#2658 rule split on "@" alone. Every case marked "was broken" below
-// FAILS against that rule: a name with no "@" was returned whole, so a
-// non-worktree session's descendants each became their own repo.
+// A rule that split on "@" alone returns a name with no "@" whole, so a
+// non-worktree session's descendants each become their own repo. The cases
+// marked "was broken" below fail against such a rule.
 //
-// This file uses the literal names from the issue (`obsidian`,
-// `obsidian~investigate-v2`) rather than `prism-test`-prefixed fixtures, so
-// each case is traceable to the reported defect. That is safe here and only
-// here: Repo is a pure string function. It opens no database, starts no tmux
-// session, and reads no host state, so no name in this file can collide with a
-// live session. Every test in this package holds that property. The tests that
-// DO touch a DB — internal/authz/root_session_test.go,
+// This file uses literal names (`obsidian`, `obsidian~investigate-v2`) rather
+// than `prism-test`-prefixed fixtures. That is safe here and only here: Repo
+// is a pure string function. It opens no database, starts no tmux session, and
+// reads no host state, so no name in this file can collide with a live
+// session. Every test in this package holds that property. The tests that DO
+// touch a DB — internal/authz/root_session_test.go,
 // internal/sidecar/host_api_bare_name_prompt_test.go — use `prism-test`
-// fixtures, per the naming discipline of #2112.
+// fixtures, per the naming discipline.
 func TestRepo(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
 		want string
 	}{
-		// Worktree shapes — unchanged by #2658.
+		// Worktree shapes.
 		{"coordinator", "nixos-config@main", "nixos-config"},
 		{"branch worker", "nixos-config@feature-x", "nixos-config"},
 		{"review agent of a branch", "nixos-config@feature-x~review-1-review-goal", "nixos-config"},
 		{"investigator of a coordinator", "nixos-config@main~investigate-flake", "nixos-config"},
 
-		// Non-worktree shapes — the #2658 repair.
+		// Non-worktree shapes.
 		{"bare name", "obsidian", "obsidian"},
 		{"investigator of a bare name (was broken)", "obsidian~investigate-v2", "obsidian"},
 		{"review agent of a bare name (was broken)", "obsidian~review-1-review-goal", "obsidian"},

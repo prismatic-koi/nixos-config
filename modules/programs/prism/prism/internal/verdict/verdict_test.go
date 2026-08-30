@@ -39,10 +39,10 @@ func TestParse_PassWithDisagreementDoesNotMatchPass(t *testing.T) {
 	}
 }
 
-// TestParse_OnDecodedText documents the contract at the heart of #2862: Parse
-// runs on the DECODED message text, not the raw JSON envelope. A payload that
-// encoding/json produced escapes '<' as \u003c, so the marker is invisible to
-// the substring rule until the caller decodes the "text" field first.
+// TestParse_OnDecodedText pins the contract: Parse runs on the DECODED message
+// text, not the raw JSON envelope. A payload that encoding/json produced
+// escapes '<' as \u003c, so the marker is invisible to the substring rule
+// until the caller decodes the "text" field first.
 func TestParse_OnDecodedText(t *testing.T) {
 	raw, err := json.Marshal(struct {
 		Text string `json:"text"`
@@ -50,7 +50,7 @@ func TestParse_OnDecodedText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	// The raw envelope must NOT match — this is the bug the decode fix removes.
+	// The raw envelope must NOT match — the JSON escaping hides the marker.
 	if verdict.Parse(string(raw)) != verdict.None {
 		t.Fatalf("raw JSON envelope %q unexpectedly matched a verdict; the escaping should hide it", raw)
 	}

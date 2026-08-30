@@ -15,9 +15,10 @@
 // # Problem
 //
 // Three delivery paths in prism (review-complete monitor, coordinator notify,
-// merge-queue watcher) originally always POSTed to the harness HTTP API
-// (http://localhost:<port>/session/<sid>/prompt_async). That path only works
-// for HTTP harness sessions — pi sessions do not have an HTTP server.
+// merge-queue watcher) send follow-up prompts. The harness HTTP API
+// (http://localhost:<port>/session/<sid>/prompt_async) only works for HTTP
+// harness sessions — pi sessions do not have an HTTP server, so a single HTTP
+// path cannot reach them.
 //
 // # Solution
 //
@@ -28,7 +29,7 @@
 //     handler detects the same-session socket-pipe shape and forwards the text
 //     to the pi process via DeliverPrompt (stdin pipe write).
 //   - harness != "pi" (or unknown) → POST to the harness HTTP API
-//     at http://localhost:<port>/session/<sid>/prompt_async (unchanged path).
+//     at http://localhost:<port>/session/<sid>/prompt_async.
 //
 // All callers must pass the result of db.CurrentStatus for the target session.
 // The caller is responsible for pre-flight checks (session found, not ended, etc).
@@ -58,11 +59,10 @@ import (
 // DeliveryOutcome is the summary result of a /prompt or prompt_async round
 // trip. It surfaces the sidecar's response envelope to the caller so the CLI
 // can distinguish a synchronous delivery from a buffered one and act
-// accordingly. Issue #2359 Gap B.
+// accordingly.
 //
-// A zero-value DeliveryOutcome (Buffered=false, Replayed=false) is the
-// pre-#2359 default — synchronous success on both socket-pipe and HTTP
-// harness paths.
+// A zero-value DeliveryOutcome (Buffered=false, Replayed=false) means
+// synchronous success on both socket-pipe and HTTP harness paths.
 type DeliveryOutcome struct {
 	// Buffered is true when the sidecar's /prompt handler returned
 	// {"buffered": true} — the delivery was accepted but the PI extension
@@ -79,7 +79,7 @@ type DeliveryOutcome struct {
 	// Existing sender-side dedup UX (e.g. `prism escalate`'s
 	// "OK already delivered" line) does its own bookkeeping; this
 	// field surfaces the receiving-sidecar decision for the direct
-	// `prism prompt` path (#1685).
+	// `prism prompt` path.
 	Replayed bool
 
 	// DeliveryID is the delivery_id sent in the request. Callers may want
@@ -114,12 +114,12 @@ type DeliveryOutcome struct {
 // sessions. It is forwarded as the "deliver_as" JSON field to the sidecar's
 // /prompt handler, which validates and passes it through to DeliverPrompt.
 // Accepted values: "steer", "followUp", "nextTurn". Empty string defaults to
-// "nextTurn" (current behaviour, for backward-compatible callers).
+// "nextTurn".
 // For HTTP harness sessions the parameter is ignored (they use prompt_async).
 //
 // The returned DeliveryOutcome is populated when the transport surfaces
-// a distinguishing signal (buffered / replayed); the pre-#2359 shape of
-// returning only an error is preserved for callers that discard it.
+// a distinguishing signal (buffered / replayed); callers that only need the
+// error can discard it.
 func DeliverToSession(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
 	_, err := DeliverToSessionEx(sessionName, status, text, buildHTTPBody, source, deliverAs)
 	return err
@@ -138,7 +138,7 @@ func DeliverToSessionEx(sessionName string, status *db.Status, text string, buil
 // The deliveryID is forwarded as the `delivery_id` JSON field on /prompt
 // requests so the receiving sidecar can dedup retries. Pass "" to skip
 // dedup (legacy behaviour) — the receiving sidecar will then deliver the
-// frame unconditionally. Issue #1685.
+// frame unconditionally.
 func DeliverToSessionWithID(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string, deliveryID string) error {
 	_, err := DeliverToSessionExWithID(sessionName, status, text, buildHTTPBody, source, deliverAs, deliveryID)
 	return err
@@ -147,7 +147,7 @@ func DeliverToSessionWithID(sessionName string, status *db.Status, text string, 
 // DeliverToSessionExWithID is the DeliveryOutcome-returning + explicit-ID
 // variant of DeliverToSession. This is the single point where the receiving
 // sidecar's response envelope (buffered / replayed) is parsed and surfaced
-// to callers. Issue #2359 Gap B.
+// to callers.
 func DeliverToSessionExWithID(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string, deliveryID string) (DeliveryOutcome, error) {
 	// Determine the transport shape from the harness field.
 	if status.Harness != nil && *status.Harness != "" {
@@ -192,7 +192,7 @@ const EnvRestrictHostAPI = "PRISM_TEST_MODE_RESTRICT_HOSTAPI"
 // Defaults to session.SidecarHostAPIPath; tests may override this to inject a
 // path outside $XDG_STATE_HOME so they can exercise the test-mode isolation
 // guard. Keep this seam minimal — it exists only to make the guard branch
-// testable via the public API (issue #1883).
+// testable via the public API.
 var sidecarHostAPIPathFn = session.SidecarHostAPIPath
 
 func deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID string) (DeliveryOutcome, error) {
@@ -259,8 +259,8 @@ func deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID st
 	}
 
 	// Parse the response envelope to surface {"buffered": true} /
-	// {"replayed": true} to the caller (issue #2359 Gap B / #1685). An
-	// empty or unparseable body is not an error — the pre-#1685 sidecar
+	// {"replayed": true} to the caller. An
+	// empty or unparseable body is not an error — the sidecar
 	// replies {} on synchronous success. Cap the read to a small
 	// upper-bound because the sidecar's response envelope is at most a
 	// few dozen bytes; a runaway body indicates a client-side bug rather

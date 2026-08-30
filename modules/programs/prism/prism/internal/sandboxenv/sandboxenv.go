@@ -4,20 +4,18 @@
 //
 // # Sandbox sentinel
 //
-// IsInsideSandbox uses PRISM_HOST_API != "" as its sentinel. This matches the
-// condition every existing inline check (cmd/merge.go, cmd/merges.go, etc.)
-// already uses to decide "am I inside a sandbox and need to proxy?":
+// IsInsideSandbox uses PRISM_HOST_API != "" as its sentinel:
 //
 //   - PRISM_HOST_API is set exclusively by the prism sidecar when launching a
 //     sandboxed session (bwrap or sandbox-exec).
 //   - PRISM_SPAWN_PATH is also set in sandboxed sessions but serves as a
 //     working-directory hint only — it is NOT a sandbox sentinel and NOT a
 //     keybind discriminator. The dedicated tmux-keybind sentinel is
-//     PRISM_KEYBIND_SPAWN (introduced in #2073 to retire the old overload),
-//     which the sidecar never injects into a sandboxed session.
+//     PRISM_KEYBIND_SPAWN, which the sidecar never injects into a sandboxed
+//     session.
 //
-// Future callers that need to know "am I sandboxed?" should use
-// IsInsideSandbox() rather than repeating the inline os.Getenv check.
+// Callers that need to know "am I sandboxed?" should use IsInsideSandbox()
+// rather than repeating the inline os.Getenv check.
 package sandboxenv
 
 import "os"

@@ -2,9 +2,8 @@
 // models, along with the unknown-model fallback logic used when computing
 // cost from token counts.
 //
-// This table was lifted verbatim from cmd/stats.go (issue #2722) so that
-// both prism stats and future consumers (e.g. the metrics exporter, #2704)
-// compute cost identically instead of maintaining separate copies that can
+// It is the single source of pricing for all consumers, so that cost is
+// computed identically everywhere instead of from separate copies that can
 // quietly diverge.
 package pricing
 
@@ -45,8 +44,7 @@ func Lookup(key string) (ModelCost, bool) {
 // Cost computes the USD cost for the given token counts against the known
 // pricing table entry for key. When key is not present in the pricing
 // table, it falls back to eventCost — the cost reported directly in the
-// event payload — exactly as prism stats has always done for unknown
-// models (e.g. openrouter/*).
+// event payload — for unknown models (e.g. openrouter/*).
 func Cost(key string, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens float64, eventCost float64) float64 {
 	c, ok := ModelCosts[key]
 	if !ok {

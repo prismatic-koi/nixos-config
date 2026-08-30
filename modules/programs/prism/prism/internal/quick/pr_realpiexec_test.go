@@ -1,4 +1,4 @@
-// Tests for realPiExec (issue #2777): the real `pi` subprocess path, not
+// Tests for realPiExec: the real `pi` subprocess path, not
 // the piExecFn seam that other pr_test.go tests inject. These tests
 // exercise realPiExec directly against a PATH-injected stub `pi` script,
 // mirroring the mergequeue execGH timeout-test convention
@@ -65,8 +65,8 @@ func TestRealPiExec_Timeout(t *testing.T) {
 }
 
 // TestRealPiExec_EnvScrub verifies that realPiExec strips the PI_*/
-// PRISM_HARNESS_PIPE variables named in the ACs from the subprocess
-// environment while preserving everything else (issue #2777).
+// PRISM_HARNESS_PIPE variables from the subprocess
+// environment while preserving everything else.
 func TestRealPiExec_EnvScrub(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PATH-injection stub scripts require a POSIX shell")
@@ -105,7 +105,7 @@ func TestRealPiExec_EnvScrub(t *testing.T) {
 }
 
 // TestRealPiExec_StderrTee verifies that pi's stderr is captured into the
-// piResult AND written to the real os.Stderr concurrently (issue #2777),
+// piResult AND written to the real os.Stderr concurrently,
 // by redirecting the test process's os.Stderr to a pipe and reading both
 // ends.
 func TestRealPiExec_StderrTee(t *testing.T) {

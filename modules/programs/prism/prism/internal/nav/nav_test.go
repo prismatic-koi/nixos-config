@@ -59,7 +59,7 @@ func TestIsSpineRow(t *testing.T) {
 		// Top-level rows: included.
 		{"plain", dashboard.AgentSession{Name: "scratchpad"}, true},
 		{"main", dashboard.AgentSession{Name: "nixos-config@main"}, true},
-		// Depth-1 child branches: now included (issue #1800).
+		// Depth-1 child branches: included.
 		{"branch", dashboard.AgentSession{Name: "nixos-config@feature"}, true},
 		{"dashboard-slim", dashboard.AgentSession{Name: "nixos-config@dashboard-slim"}, true},
 		// Depth-2 review-agent children: excluded.
@@ -80,12 +80,12 @@ func TestIsSpineRow(t *testing.T) {
 // runtime filter applied to the spine — sessions in any agent state
 // (including "finished", which means the turn is over but the session is
 // alive) are included as long as their tmux session is live. Depth-2 and
-// review-group rows are still excluded by IsSpineRow. See issue #1839.
+// review-group rows are still excluded by IsSpineRow.
 func TestVerticalTargets_FiltersNonLive(t *testing.T) {
 	sessions := makeSessions(t,
 		[2]string{"alpha@main", "active"},
-		[2]string{"alpha@feature", "active"}, // depth-1: included (issue #1800)
-		[2]string{"beta@main", "finished"},   // finished but live: included (issue #1839)
+		[2]string{"alpha@feature", "active"}, // depth-1: included
+		[2]string{"beta@main", "finished"},   // finished but live: included
 		[2]string{"gamma@main", "idle"},
 		[2]string{"gamma@feature~review-1-review-goal", "active"}, // depth-2: excluded
 		[2]string{"delta@main", "active"},                         // not live: excluded
@@ -100,8 +100,8 @@ func TestVerticalTargets_FiltersNonLive(t *testing.T) {
 	}
 }
 
-// TestVerticalTargets_Depth1Included_BasicRegression covers the core
-// regression from issue #1800: a fixture with `nixos-config@main` and a
+// TestVerticalTargets_Depth1Included_BasicRegression covers the depth-1
+// spine case: a fixture with `nixos-config@main` and a
 // depth-1 child `nixos-config@dashboard-slim` (no review groups) must yield
 // both names in dashboard order, and the cycle must connect them.
 func TestVerticalTargets_Depth1Included_BasicRegression(t *testing.T) {
@@ -190,7 +190,7 @@ func TestVerticalTargets_Depth1OnlyRepo(t *testing.T) {
 }
 
 // TestVerticalTargets_MainOnlyRepo verifies the edge case where a repo has
-// only `@main` and no depth-1 children — unchanged from previous behaviour.
+// only `@main` and no depth-1 children.
 func TestVerticalTargets_MainOnlyRepo(t *testing.T) {
 	sessions := makeSessions(t,
 		[2]string{"alpha@main", "active"},
@@ -205,9 +205,9 @@ func TestVerticalTargets_MainOnlyRepo(t *testing.T) {
 
 // TestVerticalTargets_DepthOneStateAgnostic verifies that depth-1 children
 // are included in the spine regardless of their AgentState, as long as
-// their tmux session is live. Previously these were excluded for terminal
-// states; per issue #1839 that filter was wrong ("finished" means turn
-// complete, not session ended).
+// their tmux session is live. A terminal state like "finished" means the
+// turn is complete, not that the session ended, so it must not exclude the
+// row.
 func TestVerticalTargets_DepthOneStateAgnostic(t *testing.T) {
 	for _, state := range []string{"finished", "deleted", "interrupted", "idle", "active"} {
 		sessions := makeSessions(t,
@@ -224,7 +224,6 @@ func TestVerticalTargets_DepthOneStateAgnostic(t *testing.T) {
 
 // TestVerticalTargets_TopLevelStateAgnostic mirrors the depth-1 variant:
 // top-level rows in any agent state are included as long as they are live.
-// Issue #1839.
 func TestVerticalTargets_TopLevelStateAgnostic(t *testing.T) {
 	for _, state := range []string{"finished", "deleted", "interrupted", "idle", "active"} {
 		sessions := makeSessions(t,
@@ -239,8 +238,8 @@ func TestVerticalTargets_TopLevelStateAgnostic(t *testing.T) {
 	}
 }
 
-// TestVerticalTargets_FinishedAndActive_BothNavigable is the positive
-// regression for issue #1839. Two sessions, one `active`, one `finished`,
+// TestVerticalTargets_FinishedAndActive_BothNavigable verifies both finished
+// and active live sessions are navigable. Two sessions, one `active`, one `finished`,
 // both live: both must be in the spine and C-j-style ResolveVertical must
 // switch between them in both directions (and wrap).
 func TestVerticalTargets_FinishedAndActive_BothNavigable(t *testing.T) {
@@ -537,7 +536,7 @@ func TestResolveReviewContext_AllChildrenDead(t *testing.T) {
 
 // TestCanonicalAgentNames_MatchesReviewAgents: smoke test guaranteeing the
 // nav cycle stays in sync with the canonical review.Agents() list — this is
-// the "do not hardcode it twice" invariant from the implementation notes.
+// the "do not hardcode it twice" invariant.
 func TestCanonicalAgentNames_MatchesReviewAgents(t *testing.T) {
 	got := nav.CanonicalAgentNames()
 	if len(got) == 0 {

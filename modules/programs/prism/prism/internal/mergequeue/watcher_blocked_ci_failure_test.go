@@ -1,6 +1,6 @@
 package mergequeue
 
-// Tests for issue #2525: a BLOCKED PR whose required checks have concluded
+// Tests for the case where a BLOCKED PR whose required checks have concluded
 // with a failure must terminate the queue row and notify the coordinator,
 // instead of polling forever in silence.
 //
@@ -24,7 +24,7 @@ import (
 )
 
 // cleanupPhrase is the completion-message discipline phrase that every merge
-// and close notification carries. The #2525 failure notification must NOT
+// and close notification carries. The required-check failure notification must NOT
 // carry it: nothing merged, nothing closed, and the worker still needs the
 // branch to push the fix.
 const cleanupPhrase = "Please clean up the branch and worktree"
@@ -359,7 +359,7 @@ func utf8Valid(s string) bool { return strings.ToValidUTF8(s, "\uFFFD") == s }
 
 // tickGH is a gh-CLI stub for driving the real Watcher.tick. It answers the
 // branch-protection probe and `gh pr view`, and fails the test loudly if the
-// watcher ever attempts a merge mutation — the #2420 core rule under test.
+// watcher ever attempts a merge mutation — the core rule under test.
 type tickGH struct {
 	t        *testing.T
 	required []string
@@ -482,8 +482,8 @@ func blockedInfo(reviewDecision string, rollup []checkEntry) prInfo {
 }
 
 // TestWatcher_BLOCKED_RequiredCheckFailed_TerminatesAndNotifies is the
-// headline #2525 regression test, reproducing the PR #2524 production
-// scenario: pr-gate COMPLETED/FAILURE, all checks COMPLETED, BLOCKED.
+// headline regression test, reproducing the production scenario:
+// pr-gate COMPLETED/FAILURE, all checks COMPLETED, BLOCKED.
 //
 // Covers the functional ACs: terminal transition, polling stops, one
 // notification naming the PR number and the failed required check names, and
@@ -566,7 +566,7 @@ func TestWatcher_BLOCKED_RequiredCheckFailed_RowLeavesWatchingList(t *testing.T)
 }
 
 // TestWatcher_BLOCKED_RequiredCheckFailed_FiresOnce covers the at-most-once
-// AC. The second tick must observe an empty queue head (the row is no longer
+// behaviour. The second tick must observe an empty queue head (the row is no longer
 // watching) and therefore send nothing and call gh not at all.
 func TestWatcher_BLOCKED_RequiredCheckFailed_FiresOnce(t *testing.T) {
 	f := newBlockedTickFixture(t, 3520, []string{"pr-gate"}, blockedInfo("APPROVED", []checkEntry{
@@ -687,7 +687,7 @@ func TestWatcher_BLOCKED_StillResolvable_StaysWatching(t *testing.T) {
 }
 
 // TestWatcher_BLOCKED_Unprotected_StaysWatching pins the interaction between
-// #2525 and the #2420 branch-protection gate: with no protection configured
+// the required-check failure path and the branch-protection gate: with no protection configured
 // there is no required-check set, so the failure transition can never fire
 // and the watcher keeps waiting for a human.
 func TestWatcher_BLOCKED_Unprotected_StaysWatching(t *testing.T) {
@@ -742,8 +742,8 @@ func TestWatcher_BLOCKED_Unprotected_StaysWatching(t *testing.T) {
 	}
 }
 
-// TestWatcher_BLOCKED_ProtectionFetchError_StaysWatching verifies the #2525
-// path cannot fire when the branch-protection probe itself fails: without a
+// TestWatcher_BLOCKED_ProtectionFetchError_StaysWatching verifies the
+// required-check failure path cannot fire when the branch-protection probe itself fails: without a
 // trustworthy required-check list there is no way to know the set is
 // accounted for.
 func TestWatcher_BLOCKED_ProtectionFetchError_StaysWatching(t *testing.T) {
@@ -796,8 +796,8 @@ func TestWatcher_BLOCKED_ProtectionFetchError_StaysWatching(t *testing.T) {
 	}
 }
 
-// TestWatcher_CLEAN_MergeConditionUnchanged is a guard for the AC that #2525
-// introduces no new auto-merge path and does not alter the CLEAN condition.
+// TestWatcher_CLEAN_MergeConditionUnchanged is a guard that the required-check
+// failure path introduces no new auto-merge path and does not alter the CLEAN condition.
 // The BLOCKED discrimination must not leak into the merge decision.
 func TestWatcher_CLEAN_MergeConditionUnchanged(t *testing.T) {
 	const (

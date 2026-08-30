@@ -68,7 +68,6 @@ func TestHostAPISocket(t *testing.T) {
 	})
 
 	t.Run("does not transform or parse the URL value", func(t *testing.T) {
-		// Verify no stripping of unix:// prefix or other transformation occurs.
 		const want = "unix:///var/run/prism/host-api.sock"
 		t.Setenv("PRISM_HOST_API", want)
 		if got := sandboxenv.HostAPISocket(); got != want {

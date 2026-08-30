@@ -35,7 +35,7 @@ func notFound() ([]byte, error) {
 	return []byte("HTTP 404: Branch not protected"), errors.New("exit status 1")
 }
 
-// TestProbe_ClassicConfigured is the pre-existing happy path: classic
+// TestProbe_ClassicConfigured is the happy path: classic
 // protection responds 200, so the ruleset endpoint is never consulted.
 func TestProbe_ClassicConfigured(t *testing.T) {
 	run := fakeRun(t, map[string]struct {
@@ -62,7 +62,7 @@ func TestProbe_ClassicConfigured(t *testing.T) {
 	}
 }
 
-// TestProbe_RulesetFallback_Configured is the #2436 false-negative case: the
+// TestProbe_RulesetFallback_Configured is the false-negative case: the
 // classic endpoint 404s (as it does on any ruleset-only-protected repo) but
 // the rulesets effective-rules endpoint reports an actively-enforced
 // required_status_checks rule. Probe must report Configured=true and extract
@@ -96,7 +96,7 @@ func TestProbe_RulesetFallback_Configured(t *testing.T) {
 
 // TestProbe_ClassicApprovingReviewCount checks that Probe surfaces the
 // classic required_pull_request_reviews.required_approving_review_count so the
-// #2576 caller can discriminate a genuine approval requirement from a repo
+// caller can discriminate a genuine approval requirement from a repo
 // that requires zero approvals.
 func TestProbe_ClassicApprovingReviewCount(t *testing.T) {
 	run := fakeRun(t, map[string]struct {
@@ -114,7 +114,7 @@ func TestProbe_ClassicApprovingReviewCount(t *testing.T) {
 	}
 }
 
-// TestProbe_ClassicNoApprovingReviews is the #2576 zero-approval case: a
+// TestProbe_ClassicNoApprovingReviews is the zero-approval case: a
 // classic response with no required_pull_request_reviews block must report a
 // count of 0 (the field's zero value), so no false approval requirement is
 // inferred.
@@ -136,8 +136,8 @@ func TestProbe_ClassicNoApprovingReviews(t *testing.T) {
 
 // TestProbe_RulesetApprovingReviewCount checks the count is extracted from the
 // pull_request rule's parameters on the ruleset path. This repo's main is
-// ruleset-protected with a zero count, which is the exact false-positive the
-// #2576 fix removes; a non-zero fixture proves the plumbing.
+// ruleset-protected with a zero count; a non-zero fixture proves the plumbing
+// extracts the count.
 func TestProbe_RulesetApprovingReviewCount(t *testing.T) {
 	classicOut, classicErr := notFound()
 	run := fakeRun(t, map[string]struct {
@@ -159,8 +159,8 @@ func TestProbe_RulesetApprovingReviewCount(t *testing.T) {
 	}
 }
 
-// TestProbe_RulesetZeroApprovingReviews pins the on-repo reality (issue
-// #2576): a pull_request rule with required_approving_review_count=0 must
+// TestProbe_RulesetZeroApprovingReviews pins the on-repo reality: a
+// pull_request rule with required_approving_review_count=0 must
 // report a count of 0, so `prism merge` never claims a human must approve.
 func TestProbe_RulesetZeroApprovingReviews(t *testing.T) {
 	classicOut, classicErr := notFound()
@@ -207,7 +207,7 @@ func TestProbe_RulesetFallback_PullRequestOnly(t *testing.T) {
 	}
 }
 
-// TestProbe_NeitherClassicNorRuleset is the #2420 conservative-default
+// TestProbe_NeitherClassicNorRuleset is the conservative-default
 // regression guard: both endpoints 404 (or the ruleset endpoint returns no
 // rules) — Probe must report Configured=false, not an error.
 func TestProbe_NeitherClassicNorRuleset(t *testing.T) {

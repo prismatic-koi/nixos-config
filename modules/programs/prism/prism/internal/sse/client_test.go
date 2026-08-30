@@ -523,9 +523,9 @@ func TestServerConnectedEvent(t *testing.T) {
 
 // TestLargeDataLine verifies that a single SSE data: line larger than the
 // default bufio.MaxScanTokenSize (64 KiB) is parsed without triggering a
-// reconnect. This exercises the root-cause fix for the reconnect storm:
-// opencode sends message.part.updated events with full LLM text in the data
-// field, which can exceed 64 KiB for long responses.
+// reconnect. opencode sends message.part.updated events with full LLM text in
+// the data field, which can exceed 64 KiB for long responses, and a large
+// data: line must not trigger a reconnect.
 func TestLargeDataLine(t *testing.T) {
 	// Generate a payload larger than the default 64 KiB scanner limit.
 	const size = 128 * 1024 // 128 KiB
