@@ -236,17 +236,28 @@ const (
 	summaryFull
 )
 
-// reviewSummaryTrailingPad is the single extra blank column appended after
-// the final verdict icon on a collapsed review-group row. A terminal that
-// draws these Nerd Font codicons wider than one cell needs a free following
-// cell to render the glyph at full size; every icon except the last already
-// gets that room from the two-space separator that follows it, but the last
-// icon sits at end of line with nothing after it. This is the only
-// place the trailing column count is written -- reviewSummaryLabelsWidth,
-// reviewSummaryCompactWidth, renderLabels, renderCompact, and
-// plainSummaryForBudget (view.go) all reference this constant rather than a
-// literal.
-const reviewSummaryTrailingPad = " "
+// reviewSummaryTrailingPad is the blank column run appended after the final
+// verdict icon on a collapsed review-group row.
+//
+// Every non-final icon already sits inside a run of blank columns: its own
+// renderIconCell padding (1 column, since these codicons measure a single
+// display column via lipgloss.Width — see renderIconCell) plus the
+// two-space separator before the next label (2 columns), for 3 blank
+// columns total before the next glyph starts. The final icon has no
+// separator after it, so its only blank-column run is renderIconCell's own
+// 1 column, unless this constant adds more. A one-column pad (the #2883
+// fix) brought the final icon to 2 blank columns — still short of the 3
+// every other icon gets, which is why #2911 could still reproduce it: a
+// terminal that needs the fuller 3-column run to draw the glyph at full
+// size renders the final icon scaled down exactly when it draws from a
+// buffer that only guarantees 2. Two columns here brings the final icon's
+// run to 3, matching every non-final icon exactly.
+//
+// This is the only place the trailing column count is written --
+// reviewSummaryLabelsWidth, reviewSummaryCompactWidth, renderLabels,
+// renderCompact, and plainSummaryForBudget (view.go) all reference this
+// constant rather than a literal.
+const reviewSummaryTrailingPad = "  "
 
 // reviewSummaryLabelsWidth returns the display-column width of the per-agent
 // verdict labels segment for the given summaries (e.g.
