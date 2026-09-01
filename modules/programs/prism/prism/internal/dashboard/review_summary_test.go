@@ -995,10 +995,72 @@ func wantCompactPlain(summaries []dashboard.ReviewChildSummary) string {
 			b.WriteString(pendingIcon + " ")
 		}
 	}
-	// A single trailing blank column after the final icon, matching the
-	// separator room every non-final icon gets from its own trailing space.
-	b.WriteString(" ")
+	// A blank-column run after the final icon matching the buffer every
+	// non-final icon gets from its own renderIconCell padding (1 col) plus
+	// the two-space separator before the next label (2 cols) = 3 cols
+	// total. The final icon has no separator, so this pad alone supplies
+	// the remaining 2 columns.
+	b.WriteString("  ")
 	return b.String()
+}
+
+// TestReviewSummaryTrailingPad_MatchesNonFinalIconBuffer is the ground-truth
+// regression test for issue #2911: every non-final icon sits before a run of
+// 3 blank display columns (1 from its own renderIconCell padding + 2 from
+// the separator before the next label) before the next glyph starts. The
+// final icon has no separator, so reviewSummaryTrailingPad must supply the
+// same 3-column run on its own, or a terminal that needs the fuller buffer
+// to draw the glyph at full size renders the final icon scaled down even
+// though every measured (lipgloss.Width) figure agrees -- lipgloss counts a
+// written blank column the same as a separator's blank column, so this test
+// asserts the byte-level buffer directly rather than relying on width
+// equality alone.
+func TestReviewSummaryTrailingPad_MatchesNonFinalIconBuffer(t *testing.T) {
+	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, nil, nil))
+	if len(summaries) < 2 {
+		t.Fatalf("need at least 2 canonical review agents for this test, got %d", len(summaries))
+	}
+
+	rendered, _, _ := dashboard.RenderReviewSummaryForTest(summaries, 1000)
+	plain := stripANSI(rendered)
+	runeRow := []rune(plain)
+
+	// Find the run of blank (space) columns following the first icon glyph
+	// (a non-final icon): its own 1-column padding + the 2-space separator.
+	// Locate the first PUA codicon rune (>= U+E000) and count consecutive
+	// spaces after it.
+	countBlanksAfterFirstIcon := func(runes []rune) int {
+		for i, r := range runes {
+			if r >= 0xE000 {
+				n := 0
+				for j := i + 1; j < len(runes) && runes[j] == ' '; j++ {
+					n++
+				}
+				return n
+			}
+		}
+		return -1
+	}
+	nonFinalBlanks := countBlanksAfterFirstIcon(runeRow)
+	if nonFinalBlanks != 3 {
+		t.Fatalf("non-final icon blank-column run = %d, want 3 (1 icon pad + 2 separator)", nonFinalBlanks)
+	}
+
+	// Count the blank columns after the final icon glyph (last PUA rune in
+	// the row) through to end of string.
+	lastIconIdx := -1
+	for i, r := range runeRow {
+		if r >= 0xE000 {
+			lastIconIdx = i
+		}
+	}
+	if lastIconIdx == -1 {
+		t.Fatalf("no icon glyph found in rendered row: %q", plain)
+	}
+	finalBlanks := len(runeRow) - lastIconIdx - 1
+	if finalBlanks != nonFinalBlanks {
+		t.Errorf("final icon blank-column run = %d, want %d (parity with non-final icon)", finalBlanks, nonFinalBlanks)
+	}
 }
 
 // TestRenderReviewSummary_EmptySummariesAllBudgets asserts that with an
