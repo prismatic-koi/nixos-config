@@ -42,25 +42,25 @@ in
                 })
               ];
               "node0" = {
-                HostName = "10.87.42.100";
+                HostName = "100.64.0.10";
                 User = username;
                 Port = 22;
                 IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
               };
               "node1" = {
-                HostName = "10.87.42.101";
+                HostName = "100.64.0.11";
                 User = username;
                 Port = 22;
                 IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
               };
               "node2" = {
-                HostName = "10.87.42.102";
+                HostName = "100.64.0.12";
                 User = username;
                 Port = 22;
                 IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
               };
               "node3" = {
-                HostName = "10.87.42.103";
+                HostName = "100.64.0.15";
                 User = username;
                 Port = 22;
                 IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
