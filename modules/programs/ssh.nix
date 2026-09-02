@@ -7,12 +7,6 @@
 let
   username = config.nx.username;
   homeDir = config.home-manager.users.${username}.home.homeDirectory;
-  cloudflaredBlock = {
-    ProxyCommand = "${pkgs.cloudflared}/bin/cloudflared access ssh --hostname %h.$CLOUDFLARED_DOMAIN";
-    User = username;
-    Port = 22;
-    IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
-  };
 in
 {
   options = {
@@ -33,9 +27,6 @@ in
       # Common configuration (both platforms)
       {
         home-manager.users.${username} = {
-          home.packages = with pkgs; [
-            cloudflared
-          ];
           programs.ssh = {
             enable = true;
             # https://github.com/nix-community/home-manager/blob/77f348da3176dc68b20a73dab94852a417daf361/modules/programs/ssh.nix#L633C17-L641
@@ -50,10 +41,30 @@ in
                   Include = "${homeDir}/.ssh/workconfig";
                 })
               ];
-              "node0" = cloudflaredBlock;
-              "node1" = cloudflaredBlock;
-              "node2" = cloudflaredBlock;
-              "node3" = cloudflaredBlock;
+              "node0" = {
+                HostName = "10.87.42.100";
+                User = username;
+                Port = 22;
+                IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
+              };
+              "node1" = {
+                HostName = "10.87.42.101";
+                User = username;
+                Port = 22;
+                IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
+              };
+              "node2" = {
+                HostName = "10.87.42.102";
+                User = username;
+                Port = 22;
+                IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
+              };
+              "node3" = {
+                HostName = "10.87.42.103";
+                User = username;
+                Port = 22;
+                IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
+              };
               "nas0" = {
                 HostName = "10.87.42.200";
                 Port = 220;
@@ -101,16 +112,7 @@ in
             "ssh/prismatic-koi-ed25519.pub" = mkSecret "prismatic-koi-ed25519.pub";
             "ssh/prismatic-koi-rsa" = mkSecret "prismatic-koi-rsa";
             "ssh/prismatic-koi-rsa.pub" = mkSecret "prismatic-koi-rsa.pub";
-            "config/cloudflared_domain" = {
-              owner = username;
-              mode = "0600";
-              sopsFile = sopsFile;
-            };
           };
-
-        environment.sessionVariables = {
-          CLOUDFLARED_DOMAIN = "$(cat ${config.sops.secrets."config/cloudflared_domain".path})";
-        };
 
         system.activationScripts.sshKeysFolderPermissions = ''
           mkdir -p ${homeDir}/.ssh
@@ -135,16 +137,7 @@ in
               "ssh/prismatic-koi-ed25519.pub" = mkSecret "prismatic-koi-ed25519.pub";
               "ssh/prismatic-koi-rsa" = mkSecret "prismatic-koi-rsa";
               "ssh/prismatic-koi-rsa.pub" = mkSecret "prismatic-koi-rsa.pub";
-              "config/cloudflared_domain" = {
-                sopsFile = sopsFile;
-              };
             };
-
-          home.sessionVariables = {
-            CLOUDFLARED_DOMAIN = "$(cat ${
-              config.home-manager.users.${username}.sops.secrets."config/cloudflared_domain".path
-            })";
-          };
         };
       })
     ]
