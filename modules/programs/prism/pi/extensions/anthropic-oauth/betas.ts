@@ -122,8 +122,20 @@ export function getModelBetas(
   // `anthropic.ts::createClient` ~789. Uses `filter` (not indexOf/splice)
   // so every occurrence goes, including a duplicate a user supplies via
   // `ANTHROPIC_BETA_FLAGS`.
+  //
+  // pi divergence #16 (issue #2918): the same models send
+  // `output_config: {effort}` (request-body.ts), and that field needs
+  // `effort-2025-11-24`. Keying both off the one compat flag is what stops
+  // the header and the body from disagreeing — upstream has no adaptive
+  // path, so its per-model list covers none of the models pi runs.
+  //
+  // `disableEffort` wins: transforms.ts strips effort from the body for
+  // those models, so promising the field in the header would be a lie.
   if (ctx?.forceAdaptiveThinking) {
     betas = betas.filter((beta) => beta !== "interleaved-thinking-2025-05-14")
+    if (!override?.disableEffort && !betas.includes("effort-2025-11-24")) {
+      betas.push("effort-2025-11-24")
+    }
   }
 
   // Filter out excluded betas (from previous failed requests due to long context errors)

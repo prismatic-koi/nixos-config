@@ -352,26 +352,77 @@ describe("getModelBetas — interleaved-thinking suppression for adaptive models
     )
   })
 
-  it("effort-2025-11-24 rides on per-model adds, not baseBetas (2.1.257)", () => {
-    // Claude CLI 2.1.257 moved effort-2025-11-24 out of baseBetas into
-    // per-model adds for opus-4-5 / 4-6 / 4-7. Models with no override entry
-    // — including claude-opus-4-8 and claude-fable-5-1 — no longer send it.
-    // This is upstream's shape, mirrored deliberately; see UPSTREAM.md #15.
-    assert.ok(
-      getModelBetas("claude-opus-4-7", undefined, {
-        forceAdaptiveThinking: true,
-      }).includes("effort-2025-11-24"),
-      "opus-4-7 must include effort-2025-11-24 via its per-model add",
-    )
+  // ── The header/body effort invariant (pi divergence #16, issue #2918) ────
+  //
+  // 2.1.257 took effort-2025-11-24 out of baseBetas and put it on per-model
+  // adds that match none of the models this repo runs. Upstream can afford
+  // that because it never sends output_config.effort. pi does, for every
+  // model with compat.forceAdaptiveThinking — so the beta is keyed off the
+  // same flag. Issue #2044 is what a mismatch on this path looks like.
+
+  it("sends effort-2025-11-24 for every adaptive model", () => {
+    // The four models profiles.nix actually runs. All carry
+    // compat.forceAdaptiveThinking, so all send output_config.effort.
     for (const model of [
       "claude-opus-4-8",
-      "claude-sonnet-4-5",
+      "claude-opus-5",
+      "claude-sonnet-5",
       "claude-fable-5-1",
     ]) {
       assert.ok(
-        !getModelBetas(model).includes("effort-2025-11-24"),
-        `${model} has no override entry and must not send effort-2025-11-24`,
+        getModelBetas(model, undefined, {
+          forceAdaptiveThinking: true,
+        }).includes("effort-2025-11-24"),
+        `${model} sends output_config.effort, so it must send the effort beta`,
       )
+    }
+  })
+
+  it("does not send effort-2025-11-24 for a non-adaptive model", () => {
+    // sonnet-4-5 is not adaptive and matches no override, so it takes the
+    // legacy budget-based body and needs no effort beta. Upstream agrees.
+    assert.ok(
+      !getModelBetas("claude-sonnet-4-5", undefined, {
+        forceAdaptiveThinking: false,
+      }).includes("effort-2025-11-24"),
+    )
+  })
+
+  it("keeps the per-model adds working for the models upstream names", () => {
+    assert.ok(
+      getModelBetas("claude-opus-4-7").includes("effort-2025-11-24"),
+      "opus-4-7 must include effort-2025-11-24 via its per-model add",
+    )
+  })
+
+  it("disableEffort beats the adaptive add — haiku sends neither", () => {
+    // transforms.ts strips output_config.effort for a disableEffort model, so
+    // the header must not promise it. This is the one case where the adaptive
+    // flag must NOT win.
+    const betas = getModelBetas("claude-haiku-4-5", undefined, {
+      forceAdaptiveThinking: true,
+    })
+    assert.ok(
+      !betas.includes("effort-2025-11-24"),
+      "haiku sets disableEffort; the body carries no effort, so nor may the header",
+    )
+  })
+
+  it("adds the effort beta exactly once when it is already present", () => {
+    const saved = process.env.ANTHROPIC_BETA_FLAGS
+    process.env.ANTHROPIC_BETA_FLAGS = "effort-2025-11-24,custom-beta"
+    try {
+      const betas = getModelBetas("claude-opus-5", undefined, {
+        forceAdaptiveThinking: true,
+      })
+      assert.equal(
+        betas.filter((b) => b === "effort-2025-11-24").length,
+        1,
+        "the adaptive add must not duplicate a beta the user already supplied",
+      )
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_BETA_FLAGS
+      else process.env.ANTHROPIC_BETA_FLAGS = saved
     }
   })
 })

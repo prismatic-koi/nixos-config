@@ -74,6 +74,11 @@ jobs:
               - '**/go.mod'
               - '**/go.sum'
               - '.github/workflows/pr-gate.yml'
+              # internal/usage/refresh.go is a hand-maintained mirror of the
+              # anthropic-oauth extension, and refresh_mirror_test.go is the
+              # drift guard. A port that changes only TypeScript is exactly
+              # the case that guard exists for, so it must run the Go suite.
+              - 'modules/programs/prism/pi/extensions/anthropic-oauth/**'
       - name: Set up Go
         if: steps.changes.outputs.go == 'true'
         uses: actions/setup-go@v7

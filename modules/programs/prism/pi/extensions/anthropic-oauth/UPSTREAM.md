@@ -253,9 +253,14 @@ request — both are declared only, because the token endpoint rejects a
     `model-config.ts::modelOverrides` that added `effort-2025-11-24` for
     the opus-4-8 substring. Griffinmartin 2.0.0 lifted `effort-2025-11-24`
     into `baseBetas`, so the per-model `4-6`/`4-7`/`4-8` overrides became
-    no-ops. The v2.0.0 port drops all three overrides (upstream still
-    carries `4-6`/`4-7` as dead entries; we don't). The haiku override
-    stays and still excludes `interleaved-thinking-2025-05-14`.
+    no-ops. The v2.0.0 port drops all three overrides.
+
+    Divergence #15 reverses both halves of that: v2.2.0 took
+    `effort-2025-11-24` back out of `baseBetas`, so `4-6` and `4-7` are
+    load-bearing again and are restored, and the haiku override now
+    excludes `effort-2025-11-24` rather than
+    `interleaved-thinking-2025-05-14`. Read #15 for the current shape; the
+    paragraph above is the v2.0.0 state only.
 
 11. **v1.5.1 auth parity (issue #2381) — ported**. griffinmartin PR #207
     (Claude Code 2.1.112 subscription-auth fingerprint) and PR #211
@@ -402,24 +407,19 @@ request — both are declared only, because the token endpoint rejects a
     per-model add did nothing. v2.2.0 took the beta out of the base list, so
     the overrides are load-bearing again and are restored verbatim.
 
-    **Blast radius: every model this repo runs stops sending
-    `effort-2025-11-24`.** The beta left `baseBetas` and now rides on the
-    three per-model adds, and no model in `profiles.nix` matches one:
+    **Blast radius.** The beta left `baseBetas` for three per-model adds
+    that match no model this repo runs. Taken alone that would have dropped
+    `effort-2025-11-24` from every profile. Divergence #16 restores it on
+    the adaptive path, so the net wire change is:
 
-    | Model | Used by | Effort beta |
-    |---|---|---|
-    | `claude-sonnet-5` | `light`, `standard`, `quick pr` | dropped |
-    | `claude-opus-5` | `heavy`, `max` | dropped |
-    | `claude-opus-4-8` | `standard`, `heavy` | dropped |
-    | `claude-fable-5-1` | `fable-low`, `fable-max` | dropped |
-    | `claude-opus-4-5` / `4-6` / `4-7` | nothing here | kept |
-
-    So every profile changes on the wire, not a corner case. This is
-    upstream's shape, mirrored deliberately — upstream pins it with an
-    "effort beta" test taken from 2.1.257 intercept traffic, and the model
-    names this repo runs post-date the CLI build that traffic came from. Do
-    not add a local override to "restore" the beta without intercept
-    evidence that the real client sends it for that model.
+    | Model | Used by | Adaptive | Effort beta |
+    |---|---|---|---|
+    | `claude-sonnet-5` | `light`, `standard`, `quick pr` | yes | kept, via #16 |
+    | `claude-opus-5` | `heavy`, `max` | yes | kept, via #16 |
+    | `claude-opus-4-8` | `standard`, `heavy` | yes | kept, via #16 |
+    | `claude-fable-5-1` | `fable-low`, `fable-max` | yes | kept, via #16 |
+    | `claude-haiku-4-5` | usage probe, titlegen | no | dropped, correctly — `disableEffort` means the body never carried it |
+    | `claude-sonnet-4-5` | nothing here | no | dropped; legacy body, no effort field |
 
     Derive this list from `profiles.nix`, not from the test files. The
     first version of this entry named `claude-sonnet-4-5`, which no profile
@@ -450,13 +450,63 @@ request — both are declared only, because the token endpoint rejects a
     override-exclude path and the divergence-#10 path). Both tests were
     revert-and-fail verified against an indexOf/splice implementation.
 
-    **Scope.** Only the files above were ported. Upstream shipped a
+    **Scope.** Only the files named above were ported. Upstream shipped a
     large amount of other work between `88b0f793` and this release —
     external credential rotation (`credentials.ts`, `keychain.ts`, new
-    `refresh-lock.ts` / `refresh-backoff.ts` / `http.ts`) and a
-    ~290-line `transforms.ts` change. None of it is ported. The keychain and
+    `refresh-lock.ts` / `refresh-backoff.ts` / `http.ts`) and a ~290-line
+    `transforms.ts` change. None of it is ported. The keychain and
     multi-account parts are out of scope permanently (divergence #6); the
     rest is unreviewed here. See the note under "Current sync commit SHAs".
+
+16. **Effort beta follows `forceAdaptiveThinking`, not a model list**
+    (issue #2918) — pi-only, and the sibling of divergence #10.
+    `getModelBetas` adds `effort-2025-11-24` when the caller passes
+    `ctx.forceAdaptiveThinking`, unless the model's override sets
+    `disableEffort`.
+
+    **Why upstream's list cannot serve.** Upstream has never implemented
+    adaptive thinking (divergence #9), so it never sends
+    `output_config: {effort}` and its per-model `add` list is a fingerprint
+    of a CLI that does not do what pi does. Its three keys — `opus-4-5`,
+    `4-6`, `4-7` — match none of `claude-opus-4-8`, `claude-opus-5`,
+    `claude-sonnet-5`, or `claude-fable-5-1`, all of which carry
+    `compat.forceAdaptiveThinking` and therefore DO send the effort field
+    through `request-body.ts`.
+
+    **The failure this prevents.** Issue #2044 is the recorded case of the
+    header and the body disagreeing on this path. Commit `48109a18` (issue
+    #2045) put it plainly: "opus-4-7 limped along because its
+    `effort-2025-11-24` beta header made the API tolerant of the legacy
+    shape; opus-4-8 had no override, no beta, and tipped into a degraded
+    state (random tool calls, fabricated PR numbers, phantom 'pushed'
+    commits, early no-op end_turn)." That fix added a LOCAL `"4-8"`
+    override, which divergence #12 then dropped as a no-op — correct at the
+    time, because v2.0.0 held the beta in `baseBetas`. v2.2.0 takes it back
+    out, so without this divergence the #2044 condition returns on the
+    model backing `standard` and `heavy`.
+
+    The likelier symptom now is quieter than #2044, because the body is no
+    longer malformed: an effort field the API ignores for want of its beta
+    means `max` and `fable-max` silently run at default effort. No error,
+    no failing test.
+
+    **Why the compat flag and not a model list.** One flag decides both
+    that the body carries `output_config.effort` and that the header
+    carries the beta, so the two cannot desynchronise, and a future
+    adaptive model needs no `model-config.ts` edit. This is the same
+    argument divergence #10 makes for the suppression half. `disableEffort`
+    takes priority because `transforms.ts` strips the effort field for
+    those models; adding the beta there would promise a field the body does
+    not carry.
+
+    `baseBetas` and `modelOverrides` stay byte-identical to upstream — this
+    divergence lives entirely in `betas.ts`.
+
+    Tests: `request-body.test.ts`, revert-and-fail verified on both halves
+    (remove the add, the adaptive test fails; remove the `disableEffort`
+    condition, the haiku test fails). NOT mirrored in
+    `internal/usage/refresh.go`: that path only ever requests a haiku, which
+    is neither adaptive nor effort-bearing.
 
 ## Port procedure for future upstream fixes
 
