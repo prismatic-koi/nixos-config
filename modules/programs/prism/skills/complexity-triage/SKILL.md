@@ -56,7 +56,7 @@ Read the issue body and the ACs before scoring. Score honestly — the rubric lo
 **Overrides on top of the score:**
 
 - Any `+2` from `security-sensitive surface` or `distributed-systems reasoning required` clamps the tier to `max` regardless of the numeric total. These are the two classes where "the model was fine, but it missed one thing" is expensive to recover from.
-- Any task explicitly marked as an A/B calibration run (`prism spawn --abtest tier-a,tier-b …`) bypasses this rubric — the whole point of the A/B is to measure, not to pre-select.
+- Any task explicitly marked as an A/B calibration run (`prism spawn --abtest tier-a --abtest tier-b …`) bypasses this rubric — the whole point of the A/B is to measure, not to pre-select.
 
 ---
 
@@ -135,7 +135,7 @@ Total: **+3** numerically → `heavy`. But the `security-sensitive` override cla
 The scoring rubric is a starting point, not a fixed truth. Empirical calibration uses `prism spawn --abtest`:
 
 ```bash
-prism spawn --abtest light,standard --branch <branch> --prompt-file <prompt>
+prism spawn --abtest light --abtest standard --branch <branch> --prompt-file <prompt>
 ```
 
 This spawns two workers on the same prompt with different profiles and records their outcomes side by side. After both finish, compare with:

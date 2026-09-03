@@ -897,7 +897,7 @@ An A/B test spawns two sibling sessions on the same prompt with different model 
 
 The workflow is:
 
-1. **Spawn the pair.** `prism spawn --abtest <profile-a>,<profile-b> --prompt '<the prompt>'` creates two sessions that share a single `abtest_pair_id` in `spawn_inputs`. Each leg runs in its own worktree on its own branch and opens its own PR when it finishes.
+1. **Spawn the pair.** `prism spawn --abtest <profile-a> --abtest <profile-b> --prompt '<the prompt>'` creates two sessions that share a single `abtest_pair_id` in `spawn_inputs`. Each leg runs in its own worktree on its own branch and opens its own PR when it finishes.
 2. **Wait for both workers to finish.** Each session lands in a terminal state (`finished`, `error`, or `interrupted`). You can watch them in `prism sessions list`; both legs will surface terminal-state notifications via the usual coordinator-notification surface (see *Worker terminal-state notifications* below).
 3. **Run `prism stats compare` for the merge-decision data.** Once both legs have transitioned to terminal state — *before* you merge either PR — compare them:
 
