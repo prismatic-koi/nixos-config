@@ -90,11 +90,7 @@ Load the `atlassian` skill for full tool usage. Reading a ticket to gather conte
 
 ## Comment discipline
 
-When you write a comment, apply the deletion test: delete the comment, and
-check whether the deletion could cause a wrong decision or let someone
-reintroduce a bug. If not, do not write the comment. Load the
-`comment-discipline` skill for the full rule set and worked examples, and
-the `simple-english` skill for STE mechanics.
+Before you write or edit a comment, load the `comment-discipline` skill.
 
 ## Quality gates
 

@@ -130,6 +130,14 @@ Corollary: splitting a rule into an always-on *action* line and an on-demand
 *rationale* block is the default shape whenever the rationale is longer than
 the instruction.
 
+The always-on file must carry the action, never a shortened form of the rule
+itself. An action line names the check to run or the step to take ("load
+skill X before Y", "run check Z when W"). A shortened rule states part of
+the rule's content — for example, one of several conditions — as if it were
+the whole rule. The agent cannot tell a shortened rule from a complete one
+from inside the role file, so it stops there and never loads the skill that
+holds the rest.
+
 ### Tool-surface changes — concept grep required
 
 When making a change to a tool surface — adding, removing, renaming, or gating a tool family — grep for the CONCEPT, not the tool name. Concept grep finds the prose that governs agent behaviour; name grep finds only call sites.
