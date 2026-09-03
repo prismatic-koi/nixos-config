@@ -33,6 +33,12 @@ let
     auto_reload_config -1
 
     symbol_map U+1f636,U+200D,U+1F32B,U+FE0F Noto Color Emoji
+    # nf-cod-* verdict icons (review_summary.go) are Private Use Area with
+    # a wide aspect ratio in JetBrainsMono Nerd Font. Force kitty to always
+    # spread them across 2 cells rather than deciding per repaint based on
+    # trailing spaces (kitty/options/definition.py:92) -- see the comment
+    # on renderIconCell for the full mechanism.
+    narrow_symbols U+EA60-U+EC1E 2
     prefer_color_emoji yes
     hide_window_decorations titlebar-only
     window_margin_width 10
