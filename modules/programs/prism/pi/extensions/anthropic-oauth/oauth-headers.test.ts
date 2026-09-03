@@ -6,6 +6,7 @@ import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import {
   getUserAgent,
+  getCliVersion,
   getStainlessHeaders,
   buildRequestUrl,
   buildOAuthHeaders,
@@ -46,6 +47,34 @@ describe("getUserAgent", () => {
       } else {
         process.env.ANTHROPIC_USER_AGENT = original
       }
+    }
+  })
+
+  // transforms.ts already read this env var for the billing header. The
+  // user-agent must resolve the version the same way, or one request reports
+  // two different CLI versions.
+  it("honours ANTHROPIC_CLI_VERSION in the user-agent", () => {
+    const savedUA = process.env.ANTHROPIC_USER_AGENT
+    const savedVersion = process.env.ANTHROPIC_CLI_VERSION
+    delete process.env.ANTHROPIC_USER_AGENT
+    process.env.ANTHROPIC_CLI_VERSION = "9.9.9"
+    try {
+      assert.equal(getCliVersion(), "9.9.9")
+      assert.equal(getUserAgent(), "claude-cli/9.9.9 (external, sdk-cli)")
+    } finally {
+      if (savedUA !== undefined) process.env.ANTHROPIC_USER_AGENT = savedUA
+      if (savedVersion === undefined) delete process.env.ANTHROPIC_CLI_VERSION
+      else process.env.ANTHROPIC_CLI_VERSION = savedVersion
+    }
+  })
+
+  it("falls back to config.ccVersion when ANTHROPIC_CLI_VERSION is unset", () => {
+    const saved = process.env.ANTHROPIC_CLI_VERSION
+    delete process.env.ANTHROPIC_CLI_VERSION
+    try {
+      assert.equal(getCliVersion(), config.ccVersion)
+    } finally {
+      if (saved !== undefined) process.env.ANTHROPIC_CLI_VERSION = saved
     }
   })
 })
@@ -200,5 +229,52 @@ describe("buildOAuthHeaders", () => {
     })
     assert.equal(headers.get("x-api-key"), null)
     assert.equal(headers.get("x-custom"), "keep-me")
+  })
+
+  it("sets X-Claude-Code-Session-Id, stable across requests", () => {
+    const first = buildOAuthHeaders(makeModel(), "token-xyz")
+    const second = buildOAuthHeaders(makeModel(), "token-xyz")
+    const id = first.get("x-claude-code-session-id")
+    assert.ok(id !== null && id.length > 0, "session id must be sent")
+    assert.equal(
+      second.get("x-claude-code-session-id"),
+      id,
+      "one id per process, not per request",
+    )
+  })
+
+  it("keeps x-client-request-id per-request, unlike the session id", () => {
+    const first = buildOAuthHeaders(makeModel(), "token-xyz")
+    const second = buildOAuthHeaders(makeModel(), "token-xyz")
+    assert.notEqual(
+      first.get("x-client-request-id"),
+      second.get("x-client-request-id"),
+    )
+  })
+
+  it("unions a caller's anthropic-beta with the model betas", () => {
+    const plain = buildOAuthHeaders(makeModel(), "token-xyz")
+    const ours = (plain.get("anthropic-beta") ?? "").split(",")
+    const merged = buildOAuthHeaders(makeModel(), "token-xyz", {
+      "anthropic-beta": "caller-beta-1",
+    })
+    const got = (merged.get("anthropic-beta") ?? "").split(",")
+    assert.ok(got.includes("caller-beta-1"), "caller beta must survive")
+    for (const beta of ours) {
+      assert.ok(got.includes(beta), `OAuth beta ${beta} must not be dropped`)
+    }
+  })
+
+  it("unions on a differently-cased anthropic-beta key and de-duplicates", () => {
+    const merged = buildOAuthHeaders(makeModel(), "token-xyz", {
+      "Anthropic-Beta": "oauth-2025-04-20, caller-beta-2",
+    })
+    const got = (merged.get("anthropic-beta") ?? "").split(",")
+    assert.ok(got.includes("caller-beta-2"))
+    assert.equal(
+      got.filter((b) => b === "oauth-2025-04-20").length,
+      1,
+      "a beta the caller repeats must appear once",
+    )
   })
 })

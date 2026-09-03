@@ -89,6 +89,7 @@ func clearRefreshEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("ANTHROPIC_USER_AGENT", "")
 	t.Setenv("ANTHROPIC_BETA_FLAGS", "")
+	t.Setenv("ANTHROPIC_CLI_VERSION", "")
 }
 
 func refreshAgainst(t *testing.T, srv *httptest.Server) (*SnapshotPayload, error) {
@@ -616,27 +617,35 @@ func TestSnapshotPayload_ToSnapshotSanitisesTheAccountName(t *testing.T) {
 // ── Betas, user-agent, base URL ──────────────────────────────────────────────
 
 // TestModelBetas_HaikuExcludesEveryOccurrence guards the reason the upstream
-// uses a filter rather than a remove-first: baseBetas carries a deliberate
-// duplicate of the interleaved-thinking beta.
+// uses a filter rather than a remove-first. $ANTHROPIC_BETA_FLAGS is
+// user-supplied and can name the same beta twice; a remove-first would leave
+// the second copy on the wire.
 func TestModelBetas_HaikuExcludesEveryOccurrence(t *testing.T) {
 	clearRefreshEnv(t)
+	t.Setenv("ANTHROPIC_BETA_FLAGS", "effort-2025-11-24,custom-beta,effort-2025-11-24")
+
+	got := modelBetas("claude-haiku-4-5")
+	for _, beta := range got {
+		if beta == "effort-2025-11-24" {
+			t.Fatalf("haiku must exclude every occurrence of the effort beta; got %v", got)
+		}
+	}
+	// The unrelated beta must survive, or the assertion above passes for the
+	// wrong reason — an exclude that dropped everything would also pass it.
+	if len(got) != 1 || got[0] != "custom-beta" {
+		t.Fatalf("betas = %v, want just the unrelated custom-beta", got)
+	}
+}
+
+// TestModelBetas_HaikuExcludesTheEffortBetaFromTheBaseList pins the override
+// target itself. The exclude list and baseBetas are mirrored separately, so a
+// half-applied port can leave them disagreeing.
+func TestModelBetas_HaikuExcludesTheEffortBetaFromTheBaseList(t *testing.T) {
+	clearRefreshEnv(t)
 	for _, beta := range modelBetas("claude-haiku-4-5") {
-		if beta == "interleaved-thinking-2025-05-14" {
-			t.Fatalf("haiku must exclude every occurrence of %q; got %v",
-				beta, modelBetas("claude-haiku-4-5"))
+		if beta == "effort-2025-11-24" {
+			t.Fatal("haiku must not send the effort beta")
 		}
-	}
-	// The base list must still carry both occurrences, or the test above
-	// would pass vacuously.
-	count := 0
-	for _, beta := range baseBetas {
-		if beta == "interleaved-thinking-2025-05-14" {
-			count++
-		}
-	}
-	if count != 2 {
-		t.Fatalf("baseBetas carries %d copies of the interleaved-thinking beta, want 2 "+
-			"(mirror of model-config.ts) — this test is vacuous otherwise", count)
 	}
 }
 
@@ -672,6 +681,42 @@ func TestUserAgent_EnvOverride(t *testing.T) {
 	t.Setenv("ANTHROPIC_USER_AGENT", "custom/1.0")
 	if ua := userAgent(); ua != "custom/1.0" {
 		t.Errorf("user-agent = %q, want the override", ua)
+	}
+}
+
+// TestUserAgent_HonoursCLIVersionOverride mirrors oauth-headers.ts::
+// getCliVersion. transforms.ts reads the same variable for the billing header,
+// so a user-agent that ignored it would report two versions on one request.
+func TestUserAgent_HonoursCLIVersionOverride(t *testing.T) {
+	clearRefreshEnv(t)
+	t.Setenv("ANTHROPIC_CLI_VERSION", "9.9.9")
+	if got := cliVersion(); got != "9.9.9" {
+		t.Errorf("cliVersion() = %q, want the override", got)
+	}
+	if ua := userAgent(); ua != "claude-cli/9.9.9 (external, sdk-cli)" {
+		t.Errorf("user-agent = %q, want the overridden version", ua)
+	}
+}
+
+// TestApplyOAuthHeaders_SessionIDIsStableAcrossRequests mirrors
+// oauth-headers.ts's module-scope sessionId. The API sees a run of requests
+// from one CLI session; a fresh id per request would not.
+func TestApplyOAuthHeaders_SessionIDIsStableAcrossRequests(t *testing.T) {
+	clearRefreshEnv(t)
+	first := http.Header{}
+	second := http.Header{}
+	applyOAuthHeaders(first, "token", refreshModelID)
+	applyOAuthHeaders(second, "token", refreshModelID)
+
+	id := first.Get("X-Claude-Code-Session-Id")
+	if id == "" {
+		t.Fatal("X-Claude-Code-Session-Id must be sent")
+	}
+	if got := second.Get("X-Claude-Code-Session-Id"); got != id {
+		t.Errorf("session id = %q then %q, want one id per process", id, got)
+	}
+	if first.Get("x-client-request-id") == second.Get("x-client-request-id") {
+		t.Error("x-client-request-id must stay per-request")
 	}
 }
 

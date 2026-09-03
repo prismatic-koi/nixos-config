@@ -170,9 +170,15 @@ async function main() {
   // A refreshed catalogue cache, as `pi update models` writes it. It feeds the
   // same base list as the bundled catalogue, so models.json must upsert over
   // it rather than append a second copy.
+  //
+  // `lastModified` is load-bearing: remote-catalog-provider.js drops any
+  // stored entry whose value is absent or older than the bundled manifest's
+  // generation time, so a fixture without it never reaches the upsert and 2c
+  // silently becomes a copy of 2b.
   const modelsStoreFixture = {
     anthropic: {
-      checkedAt: 0,
+      checkedAt: Date.now(),
+      lastModified: Date.now(),
       models: [
         {
           id: MODELS_JSON_MODEL_ID,
@@ -230,6 +236,18 @@ async function main() {
     )
   }
   const fromModelsJson = layered[0]
+
+  // 2c-control — the store fixture alone must land, or 2c below is just 2b
+  // again. This is what catches a future pi that changes the drop rule.
+  const storeOnly = await loadWithAgentDir("models-store only", {
+    "models-store.json": modelsStoreFixture,
+  })
+  if (storeOnly.length !== 1) {
+    throw new Error(
+      `expected the models-store fixture alone to register ${MODELS_JSON_MODEL_ID} once, got ` +
+        `${storeOnly.length} — pi discarded the fixture, so the upsert check below is vacuous`,
+    )
+  }
 
   // 2c — the id in pi.nix must match the catalogue's, or the upsert appends.
   const deduped = await loadWithAgentDir("models.json over models-store", {

@@ -96,7 +96,7 @@ const (
 
 	// ccVersion mirrors model-config.ts::config.ccVersion. It appears in the
 	// user-agent, which the WAF inspects. Bump it when model-config.ts bumps.
-	ccVersion = "2.1.185"
+	ccVersion = "2.1.257"
 
 	// stainlessPackageVersion mirrors oauth-headers.ts::getStainlessHeaders'
 	// `x-stainless-package-version`.
@@ -143,10 +143,6 @@ const (
 )
 
 // baseBetas mirrors model-config.ts::config.baseBetas, including the
-// deliberate duplicate of interleaved-thinking-2025-05-14 that the upstream
-// regenerated config carries. Do NOT de-duplicate it: the duplicate is why
-// the override path below filters every occurrence instead of removing the
-// first.
 var baseBetas = []string{
 	"claude-code-20250219",
 	"oauth-2025-04-20",
@@ -156,14 +152,12 @@ var baseBetas = []string{
 	"advisor-tool-2026-03-01",
 	"thinking-token-count-2026-05-13",
 	"extended-cache-ttl-2025-04-11",
-	"effort-2025-11-24",
-	"interleaved-thinking-2025-05-14",
 }
 
 // haikuExcludedBetas mirrors model-config.ts::config.modelOverrides.haiku's
 // `exclude` list. The override key is matched with a substring test against
 // the lowercased model id, exactly as getModelOverride does.
-var haikuExcludedBetas = []string{"interleaved-thinking-2025-05-14"}
+var haikuExcludedBetas = []string{"effort-2025-11-24"}
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -571,9 +565,22 @@ func applyOAuthHeaders(h http.Header, token, modelID string) {
 	h.Set("x-app", "cli")
 	h.Set("user-agent", userAgent())
 	h.Set("x-client-request-id", uuid.NewString())
+	h.Set("X-Claude-Code-Session-Id", sessionID)
 	for name, value := range stainlessHeaders() {
 		h.Set(name, value)
 	}
+}
+
+// sessionID mirrors oauth-headers.ts's module-scope `sessionId`: one id per
+// process, not per request.
+var sessionID = uuid.NewString()
+
+// cliVersion mirrors oauth-headers.ts::getCliVersion.
+func cliVersion() string {
+	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_CLI_VERSION")); v != "" {
+		return v
+	}
+	return ccVersion
 }
 
 // userAgent mirrors oauth-headers.ts::getUserAgent, including the
@@ -582,7 +589,7 @@ func userAgent() string {
 	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_USER_AGENT")); v != "" {
 		return v
 	}
-	return "claude-cli/" + ccVersion + " (external, sdk-cli)"
+	return "claude-cli/" + cliVersion() + " (external, sdk-cli)"
 }
 
 // stainlessHeaders mirrors oauth-headers.ts::getStainlessHeaders.
@@ -621,8 +628,12 @@ func stainlessHeaders() map[string]string {
 // per-model exclude list.
 //
 // The exclusion uses a filter over every occurrence, not a remove-first, for
-// the same reason the upstream does: baseBetas carries a deliberate duplicate
-// and removing only the first would leave the second behind.
+// the same reason the upstream does: $ANTHROPIC_BETA_FLAGS is user-supplied
+// and can name the same beta twice, and removing only the first would leave
+// the second on the wire.
+//
+// The add-overrides upstream carries for opus-4-5 / 4-6 / 4-7 are not
+// mirrored. This path only ever requests refreshModelID, which is a haiku.
 //
 // The excluded-beta cache and the long-context peel-off loop in betas.ts are
 // deliberately not mirrored. Both exist to recover from a long-context error
