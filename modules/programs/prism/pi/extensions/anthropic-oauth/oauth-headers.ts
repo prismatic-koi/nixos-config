@@ -16,10 +16,21 @@
 import { getExcludedBetas, getModelBetas } from "./betas.ts"
 import { config } from "./model-config.ts"
 
+// One id per process, as upstream does. The API sees a run of requests from
+// one CLI session; a fresh id per request would not.
+const sessionId = crypto.randomUUID()
+
+// transforms.ts reads $ANTHROPIC_CLI_VERSION for the billing header. Both
+// callers must resolve the version the same way, or the two report different
+// versions on one request.
+export function getCliVersion(): string {
+  return process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
+}
+
 export function getUserAgent(): string {
   return (
     process.env.ANTHROPIC_USER_AGENT ??
-    `claude-cli/${config.ccVersion} (external, sdk-cli)`
+    `claude-cli/${getCliVersion()} (external, sdk-cli)`
   )
 }
 
@@ -65,6 +76,10 @@ export function buildRequestUrl(input: string): string {
 // overrides our default — mirroring griffinmartin's `!headers.has(key)` guard
 // semantics. `x-api-key` is filtered from `optionsHeaders` because bearer-token
 // auth is authoritative on the OAuth path.
+//
+// `anthropic-beta` is the exception to that override: a caller's value is
+// unioned with the model betas rather than replacing them, so a caller asking
+// for one extra beta cannot drop the OAuth betas and break auth.
 export function buildOAuthHeaders(
   model: {
     id: string
@@ -78,19 +93,36 @@ export function buildOAuthHeaders(
   const betas = getModelBetas(model.id, excluded, {
     forceAdaptiveThinking: model.compat?.forceAdaptiveThinking === true,
   })
+  const incomingBeta = optionsHeaders
+    ? (Object.entries(optionsHeaders).find(
+        ([key]) => key.toLowerCase() === "anthropic-beta",
+      )?.[1] ?? "")
+    : ""
+  const mergedBetas = [
+    ...new Set([
+      ...betas,
+      ...incomingBeta
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ]),
+  ]
+
   headers.set("authorization", `Bearer ${token}`)
   headers.set("anthropic-version", "2023-06-01")
-  headers.set("anthropic-beta", betas.join(","))
+  headers.set("anthropic-beta", mergedBetas.join(","))
   headers.set("anthropic-dangerous-direct-browser-access", "true")
   headers.set("x-app", "cli")
   headers.set("user-agent", getUserAgent())
   headers.set("x-client-request-id", crypto.randomUUID())
+  headers.set("X-Claude-Code-Session-Id", sessionId)
   for (const [key, value] of Object.entries(getStainlessHeaders())) {
     headers.set(key, value)
   }
   if (optionsHeaders) {
     for (const [key, value] of Object.entries(optionsHeaders)) {
-      if (key.toLowerCase() === "x-api-key") continue
+      const lower = key.toLowerCase()
+      if (lower === "x-api-key" || lower === "anthropic-beta") continue
       headers.set(key, value)
     }
   }

@@ -236,29 +236,6 @@ const (
 	summaryFull
 )
 
-// reviewSummaryTrailingPad is the blank column run appended after the final
-// verdict icon on a collapsed review-group row.
-//
-// Every non-final icon already sits inside a run of blank columns: its own
-// renderIconCell padding (1 column, since these codicons measure a single
-// display column via lipgloss.Width — see renderIconCell) plus the
-// two-space separator before the next label (2 columns), for 3 blank
-// columns total before the next glyph starts. The final icon has no
-// separator after it, so its only blank-column run is renderIconCell's own
-// 1 column, unless this constant adds more. A one-column pad (the #2883
-// fix) brought the final icon to 2 blank columns — still short of the 3
-// every other icon gets, which is why #2911 could still reproduce it: a
-// terminal that needs the fuller 3-column run to draw the glyph at full
-// size renders the final icon scaled down exactly when it draws from a
-// buffer that only guarantees 2. Two columns here brings the final icon's
-// run to 3, matching every non-final icon exactly.
-//
-// This is the only place the trailing column count is written --
-// reviewSummaryLabelsWidth, reviewSummaryCompactWidth, renderLabels,
-// renderCompact, and plainSummaryForBudget (view.go) all reference this
-// constant rather than a literal.
-const reviewSummaryTrailingPad = "  "
-
 // reviewSummaryLabelsWidth returns the display-column width of the per-agent
 // verdict labels segment for the given summaries (e.g.
 // "code:  context:  goal:  qa:  sec:"). Used by
@@ -279,7 +256,6 @@ func reviewSummaryLabelsWidth(summaries []ReviewChildSummary) int {
 		}
 		w += lipgloss.Width(s.AgentShortName) + 1 + lipgloss.Width(renderIconCell(s.Verdict)) // "name" + ":" + icon
 	}
-	w += lipgloss.Width(reviewSummaryTrailingPad)
 	return w
 }
 
@@ -299,7 +275,6 @@ func reviewSummaryCompactWidth(summaries []ReviewChildSummary) int {
 		}
 		w += lipgloss.Width(renderIconCell(s.Verdict))
 	}
-	w += lipgloss.Width(reviewSummaryTrailingPad)
 	return w
 }
 
@@ -364,8 +339,23 @@ func colorForVerdict(v string) string {
 }
 
 // renderIconCell renders the verdict icon for v as a two-column cell: the
-// codicon in its verdict colour, padded to a fixed display width of 2 so it
-// renders at full size instead of being scaled down into a single column.
+// codicon in its verdict colour, padded to a fixed display width of 2.
+//
+// The pad exists for kitty, not for lipgloss layout. kitty's narrow_symbols
+// docstring (kitty/options/definition.py:92) says that for Private Use Area
+// glyphs with a wide aspect ratio in the active font -- which is what these
+// nf-cod-* verdict icons are in JetBrainsMono Nerd Font -- kitty spreads the
+// glyph across the cell(s) following it when they hold a space. Left as a
+// per-repaint decision, that spread flickered between one and two cells on
+// successive redraws of the same open popup. kittyconf now pins the
+// decision terminal-side with `narrow_symbols U+EA60-U+EC1E 2`, which forces
+// the wide render unconditionally and keeps the glyph's *grid advance* at 1
+// column (verified live with a column-ruler probe: no drift). This Width(2)
+// pad is the second cell kitty paints the widened sprite into -- remove it
+// and the sprite would spill onto whatever follows. (The narrow_symbols
+// value of 1, tested as a fallback, clips the glyph instead of scaling it,
+// and was rejected.)
+//
 // Callers measure the cell's contribution to the width budget with
 // lipgloss.Width on this rendered string rather than assuming a column
 // count, so the padding width is the only place a "2" is written.
@@ -426,7 +416,6 @@ func renderLabels(summaries []ReviewChildSummary) string {
 		b.WriteString(styleDim.Render(s.AgentShortName + ":"))
 		b.WriteString(renderIconCell(s.Verdict))
 	}
-	b.WriteString(reviewSummaryTrailingPad)
 	return b.String()
 }
 
@@ -443,6 +432,5 @@ func renderCompact(summaries []ReviewChildSummary) string {
 		}
 		b.WriteString(renderIconCell(s.Verdict))
 	}
-	b.WriteString(reviewSummaryTrailingPad)
 	return b.String()
 }
