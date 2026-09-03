@@ -32,10 +32,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 const extensionPath = fileURLToPath(new URL("./index.ts", import.meta.url))
 
-// The model pi.nix declares in the nix-managed ~/.pi/agent/models.json
-// (issue #2918). pi 0.84.4's bundled catalogue carries claude-fable-5 but not
-// claude-fable-5-1, so the profile `fable-low` / `fable-max` model exists only
-// because that file layers it in.
+// Declared by `piModels` in modules/programs/prism/pi.nix, not by pi itself.
 const MODELS_JSON_MODEL_ID = "claude-fable-5-1"
 
 function resolveInstallRoot() {
@@ -90,10 +87,8 @@ async function main() {
           "not awaited, or the registry API shape changed upstream (see issue #2428)",
       )
     }
-    // Every layer that can add a model (bundled catalogue, refreshed
-    // models-store, models.json) upserts by `id`. A repeated id means one of
-    // them appended instead, which surfaces as a duplicate row in the model
-    // picker and an ambiguous `--model` argument.
+    // Every layer that adds a model upserts by `id`. A repeat means one of
+    // them appended instead, giving a duplicate row in the model picker.
     const seen = new Set()
     const duplicates = models.map((m) => m.id).filter((id) => seen.size === seen.add(id).size)
     if (duplicates.length > 0) {
@@ -149,14 +144,9 @@ async function main() {
 
   // ── Pass 2: a models.json-only model (issue #2918) ───────────────────────
   //
-  // getAnthropicModels() reads pi's registry and nothing else, so a model pi
-  // does not bundle reaches a pi session only through the agent dir. Each
-  // sub-pass gets its own throwaway agent dir, so none of them can be
-  // satisfied by whatever the developer's or runner's real ~/.pi/agent holds.
-  //
-  // Source of truth for the real models.json is `piModels` in
-  // modules/programs/prism/pi.nix; these fixtures carry only the fields the
-  // assertions read.
+  // Each sub-pass gets a throwaway agent dir, so the real ~/.pi/agent cannot
+  // satisfy any of them. The fixtures carry only the fields the assertions
+  // read.
   const modelsJsonFixture = {
     providers: {
       anthropic: {
@@ -177,10 +167,8 @@ async function main() {
     },
   }
 
-  // A refreshed catalogue cache, as `pi update models` writes it. It is
-  // mutable, network-sourced, and absent on a fresh machine — which is why
-  // models.json is declared in nix rather than relying on this — but where it
-  // IS present it feeds the same base list, so models.json must upsert over
+  // A refreshed catalogue cache, as `pi update models` writes it. It feeds the
+  // same base list as the bundled catalogue, so models.json must upsert over
   // it rather than append a second copy.
   const modelsStoreFixture = {
     anthropic: {
@@ -221,9 +209,9 @@ async function main() {
     }
   }
 
-  // 2a — the control. Without the file the model must be absent, otherwise
-  // 2b proves nothing. If a future pi bundles the model this fails loudly:
-  // that is the moment to re-check whether pi.nix's entry is still needed.
+  // 2a — the control. The model must be absent without the file, or 2b proves
+  // nothing. A failure here means pi now bundles it, and pi.nix may not need
+  // to declare it.
   const control = await loadWithAgentDir("empty agent dir", {})
   if (control.length !== 0) {
     throw new Error(
@@ -243,9 +231,7 @@ async function main() {
   }
   const fromModelsJson = layered[0]
 
-  // 2c — models.json on top of a refreshed catalogue that already carries the
-  // same id upserts by id (provider-composer.js::applyModelsJson) and must
-  // still yield one entry, not a duplicate in the model picker.
+  // 2c — the id in pi.nix must match the catalogue's, or the upsert appends.
   const deduped = await loadWithAgentDir("models.json over models-store", {
     "models.json": modelsJsonFixture,
     "models-store.json": modelsStoreFixture,
@@ -257,10 +243,8 @@ async function main() {
     )
   }
 
-  // The extension must forward the fields the fable-* profiles depend on:
-  // thinkingLevelMap (xhigh must not degrade to effort "high") and the
-  // adaptive-thinking compat flag. It must NOT forward per-model headers —
-  // on the OAuth path every header comes from buildOAuthHeaders.
+  // thinkingLevelMap and the compat flag must survive registration, and
+  // per-model headers must not — buildOAuthHeaders owns the OAuth headers.
   if (fromModelsJson.thinkingLevelMap?.xhigh !== "xhigh") {
     throw new Error(
       `expected ${MODELS_JSON_MODEL_ID} thinkingLevelMap.xhigh to survive registration, got ` +
