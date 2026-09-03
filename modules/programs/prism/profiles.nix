@@ -201,13 +201,15 @@
 
             # ── A/B profiles (issue #2918) ────────────────────────────────────
             #
-            # `fable-low` and `fable-max` are NOT tiers. They are opt-in
-            # profiles for measuring claude-fable-5-1 against the four tiers
-            # with `prism spawn --abtest <tier>,fable-<x>`. The
-            # complexity-triage rubric selects from `light` / `standard` /
-            # `heavy` / `max` only and never returns one of these; an operator
-            # or a coordinator running a calibration must name them
-            # explicitly.
+            # `fable-low` and `fable-max` are NOT tiers. They exist for the
+            # operator to experiment with claude-fable-5-1, normally as an A/B
+            # leg against a tier (`prism spawn --abtest <tier>,fable-<x>`).
+            #
+            # They are deliberately absent from every agent-facing prompt and
+            # skill: `complexity-triage` scores to `light` / `standard` /
+            # `heavy` / `max` only, and no agent is told these two exist, so
+            # nothing selects one on its own. Do not document them there
+            # without asking first — the omission is the design, not a gap.
             #
             # Uniform across all ten roles by design: an A/B leg that mixed
             # models per role would not answer "how does this model do on this
