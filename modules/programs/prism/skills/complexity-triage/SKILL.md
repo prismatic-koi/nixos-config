@@ -53,12 +53,6 @@ Read the issue body and the ACs before scoring. Score honestly — the rubric lo
 | +1 to +3 | `heavy` |
 | ≥ +4 | `max` |
 
-These four are the only values this rubric returns. `profiles.json` also
-defines `fable-low` and `fable-max` — opt-in A/B profiles that run
-`claude-fable-5-1` on every role. They are not tiers, they are not on this
-scale, and no score selects one. Reach for them only under the calibration
-mechanism below.
-
 **Overrides on top of the score:**
 
 - Any `+2` from `security-sensitive surface` or `distributed-systems reasoning required` clamps the tier to `max` regardless of the numeric total. These are the two classes where "the model was fine, but it missed one thing" is expensive to recover from.
@@ -158,24 +152,6 @@ Signals worth tracking on the compared runs:
 - **Doom loops / escalations.** A `light` run that escalated on a task the rubric scored as `light` is a red flag on either the rubric or the score.
 
 Feed the results back into this skill by updating the score → tier mapping thresholds or the point values on individual signals. Do not calibrate on N=1 — two or three A/B runs of similarly-scoped tasks before adjusting a threshold.
-
-### The `fable-*` profiles
-
-`fable-low` and `fable-max` are the A/B legs for `claude-fable-5-1`. Both put
-that model on all ten roles — `fable-low` at thinking `low`, `fable-max` at
-`xhigh` — so one pair measures the model against a tier and a second measures
-what the effort setting is worth:
-
-```bash
-prism spawn --abtest max,fable-max --branch <branch> --prompt-file <prompt>
-prism spawn --abtest fable-low,fable-max --branch <branch> --prompt-file <prompt>
-```
-
-They are opt-in only. The rubric above never returns one, so a `fable-*`
-profile appears on a spawn only because a human asked for a calibration run,
-or because you started one deliberately and said so in the spawn prompt.
-Uniform-across-roles is the point: an A/B leg that mixed models per role
-would not answer "how does this model do on this task".
 
 ---
 

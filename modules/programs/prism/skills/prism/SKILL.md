@@ -895,8 +895,6 @@ Pi sessions block `git worktree prune` and `git worktree remove` at the extensio
 
 An A/B test spawns two sibling sessions on the same prompt with different model profiles (or other configuration), lets both run to completion, then compares the two outcomes to decide which one to merge.
 
-Any two profile names work as the pair. Two of them exist for this purpose alone: `fable-low` and `fable-max` put `claude-fable-5-1` on every role, at thinking `low` and `xhigh`. They are opt-in — the `complexity-triage` rubric selects from `light` / `standard` / `heavy` / `max` only and never returns a `fable-*` profile, so one appears on a spawn only when a calibration run is the intent.
-
 The workflow is:
 
 1. **Spawn the pair.** `prism spawn --abtest <profile-a>,<profile-b> --prompt '<the prompt>'` creates two sessions that share a single `abtest_pair_id` in `spawn_inputs`. Each leg runs in its own worktree on its own branch and opens its own PR when it finishes.
