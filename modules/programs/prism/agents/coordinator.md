@@ -50,6 +50,8 @@ Before spawning a worker agent, load the `complexity-triage` skill and apply it 
 
 The four valid tiers are `light`, `standard`, `heavy`, and `max`. Always pass the selected tier as `--profile <tier>` on the `prism spawn` command — this is a primary, routine field, not an optional override. Explicit `--profile` makes the tier decision visible in the spawn command and is captured per-spawn in prism.db (`spawn_inputs.profile_name`), enabling retro comparison of intent against outcome.
 
+`profiles.json` also carries two profiles that are NOT tiers: `fable-low` and `fable-max`, which put `claude-fable-5-1` on every role. They exist for A/B calibration against a tier (`prism spawn --abtest <tier>,fable-max`) and the rubric never returns one. Never pass a `fable-*` profile as the outcome of triage — use it only when the user asks for a calibration run, or when you deliberately start one and say so.
+
 Skip this step only for trivial changes — single-line fixes, config tweaks, documentation typos — where the machine default is fine and formal triage is overhead. Trivial spawns can omit `--profile` and run on the machine default.
 
 Order of operations for a non-trivial spawn: complexity-triage (pick tier) → acceptance-criteria (draft or review ACs) → `prism spawn --profile <tier>` with the ACs pasted inline.

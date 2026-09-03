@@ -1,4 +1,4 @@
-// Mirror of griffinmartin/opencode-claude-auth src/betas.ts (v2.0.0).
+// Mirror of griffinmartin/opencode-claude-auth src/betas.ts (v2.2.0).
 // Source: https://github.com/griffinmartin/opencode-claude-auth
 //
 // pi divergence preserved here: the `ctx.forceAdaptiveThinking` block in
@@ -9,9 +9,9 @@ import { config, getModelOverride } from "./model-config.ts"
 
 // Beta flags to try removing in order when "long context" errors occur.
 //
-// Retained per griffinmartin v2.0.0: while the plugin no longer sends
-// `context-1m-2025-08-07` by default, a user can still opt in manually via
-// `ANTHROPIC_BETA_FLAGS=...,context-1m-2025-08-07,...`; if that path 429s
+// Retained per griffinmartin v2.0.0, unchanged in v2.2.0: while the plugin no
+// longer sends `context-1m-2025-08-07` by default, a user can still opt in
+// manually via `ANTHROPIC_BETA_FLAGS=...,context-1m-2025-08-07,...`; if that 429s
 // with a long-context error we peel these betas off one at a time.
 export const LONG_CONTEXT_BETAS = config.longContextBetas
 
@@ -100,13 +100,14 @@ export function getModelBetas(
   // The legacy context-1m-2025-08-07 beta is never sent — the API supports
   // 1M context natively without it. (griffinmartin v2.0.0.)
 
-  // Apply per-model overrides (e.g. haiku excludes claude-code-20250219)
+  // Apply per-model overrides (e.g. haiku excludes effort-2025-11-24)
   const override = getModelOverride(modelId)
   if (override) {
     const { exclude, add } = override
     if (exclude) {
-      // Remove every occurrence — regenerated configs can contain duplicates
-      // (v2.0.0 baseBetas lists `interleaved-thinking-2025-05-14` twice).
+      // Remove every occurrence — regenerated configs can contain duplicates,
+      // and so can a user's `ANTHROPIC_BETA_FLAGS`. indexOf/splice would strip
+      // only the first and leave the beta on the wire.
       betas = betas.filter((beta) => !exclude.includes(beta))
     }
     if (add) {
@@ -118,9 +119,9 @@ export function getModelBetas(
 
   // pi divergence #10 (issue #2044): adaptive-thinking models have
   // interleaved thinking built in — drop the beta header. Mirrors pi-ai's
-  // `anthropic.ts::createClient` ~789. Uses `filter` (not
-  // indexOf/splice) so both occurrences from the v2.0.0 duplicate in
-  // `baseBetas` are removed.
+  // `anthropic.ts::createClient` ~789. Uses `filter` (not indexOf/splice)
+  // so every occurrence goes, including a duplicate a user supplies via
+  // `ANTHROPIC_BETA_FLAGS`.
   if (ctx?.forceAdaptiveThinking) {
     betas = betas.filter((beta) => beta !== "interleaved-thinking-2025-05-14")
   }

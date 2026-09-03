@@ -338,26 +338,40 @@ describe("getModelBetas — interleaved-thinking suppression for adaptive models
     )
   })
 
-  it("claude-opus-4-8 base betas include effort-2025-11-24 (via baseBetas, not per-model add)", () => {
-    // Griffinmartin v2.0.0 lifted `effort-2025-11-24` into `baseBetas` and
-    // removed the per-model `4-6`/`4-7`/`4-8` overrides that used to add it.
-    // The beta must still appear for 4-8 — the mechanism just changed.
-    const betas = getModelBetas("claude-opus-4-8", undefined, {
+  it("suppresses interleaved-thinking-2025-05-14 for claude-fable-5-1 (adaptive)", () => {
+    // Fable 5.1 is declared with compat.forceAdaptiveThinking in the
+    // nix-managed ~/.pi/agent/models.json, so it takes the same path as the
+    // opus adaptive models. The suppression is keyed off the compat flag at
+    // call time, not a substring, so a new model needs no model-config edit.
+    const betas = getModelBetas("claude-fable-5-1", undefined, {
       forceAdaptiveThinking: true,
     })
     assert.ok(
-      betas.includes("effort-2025-11-24"),
-      "effort-2025-11-24 must still be present for 4-8 (now via baseBetas)",
+      !betas.includes("interleaved-thinking-2025-05-14"),
+      "claude-fable-5-1 is adaptive; the interleaved-thinking beta is redundant",
     )
   })
 
-  it("effort-2025-11-24 is a base beta present for non-4-8 models too", () => {
-    // Proof that effort-2025-11-24 is base-level and not per-model:
-    // it must appear for models that never had a per-model override entry.
-    const sonnet = getModelBetas("claude-sonnet-4-5")
+  it("effort-2025-11-24 rides on per-model adds, not baseBetas (2.1.257)", () => {
+    // Claude CLI 2.1.257 moved effort-2025-11-24 out of baseBetas into
+    // per-model adds for opus-4-5 / 4-6 / 4-7. Models with no override entry
+    // — including claude-opus-4-8 and claude-fable-5-1 — no longer send it.
+    // This is upstream's shape, mirrored deliberately; see UPSTREAM.md #15.
     assert.ok(
-      sonnet.includes("effort-2025-11-24"),
-      "sonnet-4-5 (no per-model override) should also include effort-2025-11-24 from baseBetas",
+      getModelBetas("claude-opus-4-7", undefined, {
+        forceAdaptiveThinking: true,
+      }).includes("effort-2025-11-24"),
+      "opus-4-7 must include effort-2025-11-24 via its per-model add",
     )
+    for (const model of [
+      "claude-opus-4-8",
+      "claude-sonnet-4-5",
+      "claude-fable-5-1",
+    ]) {
+      assert.ok(
+        !getModelBetas(model).includes("effort-2025-11-24"),
+        `${model} has no override entry and must not send effort-2025-11-24`,
+      )
+    }
   })
 })

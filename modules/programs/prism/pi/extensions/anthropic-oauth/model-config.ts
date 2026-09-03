@@ -15,7 +15,7 @@ export interface ModelConfig {
 }
 
 export const config: ModelConfig = {
-  ccVersion: "2.1.185",
+  ccVersion: "2.1.257",
   baseBetas: [
     "claude-code-20250219",
     "oauth-2025-04-20",
@@ -25,21 +25,29 @@ export const config: ModelConfig = {
     "advisor-tool-2026-03-01",
     "thinking-token-count-2026-05-13",
     "extended-cache-ttl-2025-04-11",
-    "effort-2025-11-24",
-    // Duplicate is intentional and mirrors griffinmartin 2.0.0's regenerated
-    // config — do NOT de-dup. It's the reason getModelBetas' override-exclude
-    // uses `.filter()` (removes every occurrence) instead of
-    // indexOf/splice (removes only the first).
-    "interleaved-thinking-2025-05-14",
   ],
   longContextBetas: [
     "context-1m-2025-08-07",
     "interleaved-thinking-2025-05-14",
   ],
+  // NOTE: getModelOverride is first-match-wins. Keep "haiku" ahead of any
+  // "4-5" add so claude-haiku-4-5 never receives effort. "opus-4-5" is
+  // more specific than a bare "4-5" would be (sonnet-4-5 still omits
+  // effort). Pinned by the "effort beta" test in betas.test.ts from
+  // Claude CLI 2.1.257 intercept traffic.
   modelOverrides: {
     haiku: {
-      exclude: ["interleaved-thinking-2025-05-14"],
+      exclude: ["effort-2025-11-24"],
       disableEffort: true,
+    },
+    "opus-4-5": {
+      add: ["effort-2025-11-24"],
+    },
+    "4-6": {
+      add: ["effort-2025-11-24"],
+    },
+    "4-7": {
+      add: ["effort-2025-11-24"],
     },
   },
 }

@@ -198,6 +198,40 @@
                 thinking = "xhigh";
               };
             };
+
+            # ── A/B profiles (issue #2918) ────────────────────────────────────
+            #
+            # `fable-low` and `fable-max` are NOT tiers. They are opt-in
+            # profiles for measuring claude-fable-5-1 against the four tiers
+            # with `prism spawn --abtest <tier>,fable-<x>`. The
+            # complexity-triage rubric selects from `light` / `standard` /
+            # `heavy` / `max` only and never returns one of these; an operator
+            # or a coordinator running a calibration must name them
+            # explicitly.
+            #
+            # Uniform across all ten roles by design: an A/B leg that mixed
+            # models per role would not answer "how does this model do on this
+            # task". The pair brackets the effort range — `low` for the cheap
+            # end, `xhigh` for the strong end — so one A/B pair measures the
+            # model, and a second measures what the effort setting is worth.
+            #
+            # The model is declared in ~/.pi/agent/models.json, not in pi's
+            # bundled catalogue. See `piModels` in pi.nix.
+            fable-low = profileFromSlots {
+              _default = slot "worker" {
+                provider = "anthropic";
+                model = "anthropic/claude-fable-5-1";
+                thinking = "low";
+              };
+            };
+
+            fable-max = profileFromSlots {
+              _default = slot "worker" {
+                provider = "anthropic";
+                model = "anthropic/claude-fable-5-1";
+                thinking = "xhigh";
+              };
+            };
           };
 
           quickProfiles = {

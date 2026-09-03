@@ -421,6 +421,73 @@
             "${grafanaExtensionDir}/grafana/index.ts";
       };
 
+      # Pi agent models.json content — the user-config model layer pi reads
+      # from ~/.pi/agent/models.json on top of its bundled catalogue.
+      #
+      # Why this file exists (issue #2918): the anthropic-oauth extension's
+      # getAnthropicModels() calls registry.refresh() with no network, so the
+      # models it can offer are exactly the bundled catalogue plus this file.
+      # pi 0.84.4 bundles claude-fable-5 but not claude-fable-5-1, so without
+      # this entry the model cannot be selected at all.
+      #
+      # Merge semantics (pi dist/core/provider-composer.js::applyModelsJson):
+      # entries upsert into the built-in list by `id`, so declaring a model the
+      # catalogue already carries edits it rather than duplicating it. Once a
+      # future pi bundles claude-fable-5-1 itself, this entry keeps overriding
+      # it in place — revisit then rather than assuming it went inert.
+      #
+      # Values are from models.dev (`.anthropic.models["claude-fable-5-1"]`);
+      # the shape follows the bundled claude-fable-5 entry, which is the
+      # closest in-tree analogue.
+      piModels = {
+        providers.anthropic.models = [
+          {
+            id = "claude-fable-5-1";
+            name = "Claude Fable 5.1";
+            # modelFromJson inherits `api` and `baseUrl` from the first
+            # built-in anthropic model when they are absent, and THROWS when
+            # there is no built-in list to inherit from. Both are stated
+            # explicitly so a catalogue rename upstream cannot turn this into
+            # a hard extension-load failure.
+            api = "anthropic-messages";
+            baseUrl = "https://api.anthropic.com";
+            reasoning = true;
+            # Drives request-body.ts::mapThinkingLevelToEffort. Without the
+            # map, xhigh degrades to effort "high" and the fable-max profile
+            # silently runs weaker than it reads (same bug shape as #2053).
+            thinkingLevelMap = {
+              off = null;
+              xhigh = "xhigh";
+              max = "max";
+            };
+            input = [
+              "text"
+              "image"
+            ];
+            cost = {
+              input = 10;
+              output = 50;
+              cacheRead = 0.25;
+              cacheWrite = 12.5;
+            };
+            contextWindow = 1000000;
+            maxTokens = 128000;
+            compat = {
+              # Fable is an adaptive-thinking model: the request body must use
+              # `thinking: {type:"adaptive"}` + `output_config.effort`, and the
+              # interleaved-thinking beta must be suppressed. Both are driven
+              # off this flag at call time (UPSTREAM.md divergences #9 / #10).
+              forceAdaptiveThinking = true;
+              supportsStrictTools = true;
+            };
+            # No `headers` key, deliberately. Per-model headers from
+            # models.json are additive to the request the extension builds, so
+            # any entry here could collide with the OAuth auth header. On the
+            # anthropic path every header comes from buildOAuthHeaders.
+          }
+        ];
+      };
+
       colourLib = import ../../colour-scheme/lib.nix;
 
       piTheme =
@@ -531,6 +598,9 @@
         xdg.configFile."prism/skills".source = skillsDir;
 
         home.file.".pi/agent/settings.json".text = builtins.toJSON piSettings;
+        # Model catalogue additions layered over pi's bundled registry.
+        # See the piModels binding above for why this file is managed here.
+        home.file.".pi/agent/models.json".text = builtins.toJSON piModels;
         # Keybindings rebinding: app.message.followUp from alt+enter to ctrl+enter.
         # Alt+Enter is bound to something else at the OS level and never
         # reaches pi. Ctrl+Enter is available and works under tmux with extended

@@ -18,8 +18,18 @@ it is more actively maintained and is the source of the PR #193 fix.
 | Upstream | SHA | Date |
 |---|---|---|
 | `griffinmartin/opencode-claude-auth` main | `88b0f793` | 2026-07-08 (v2.0.0 merge commit for PR #240 — 1M-context opt-in removed, base betas regenerated) |
+| `griffinmartin/opencode-claude-auth` — `model-config.ts` + `betas.ts` ONLY | `09a13b4c` | 2026-09-01 (v2.2.0, PR #279 — Claude CLI 2.1.257 model config) |
 | `griffinmartin/opencode-claude-auth` PR #193 | `9420fbef60567968bcd21a260db21be9f7dd475b` | 2026-04-14 (the MD5 hash obfuscation approach) |
 | `leohenon/pi-anthropic-oauth` | `86d9d97829776a66aec58e3433900173ff7e184a` | 2026-04 (update readme) |
+
+> **Note on the two SHAs**: the main-line SHA is the last commit at which the
+> whole file set was reviewed. `model-config.ts` and `betas.ts` are ahead of it
+> at `09a13b4c` because divergence #15 ported those two files alone. Everything
+> upstream shipped between the two SHAs in `credentials.ts`, `transforms.ts`,
+> `index.ts`, `keychain.ts`, `http.ts`, `refresh-lock.ts`, and
+> `refresh-backoff.ts` is UNPORTED. Do not read the newer SHA as a whole-repo
+> sync point. Before you port any of those files, diff from `88b0f793`, not
+> from `09a13b4c`.
 
 > **Note on PR #193**: At the time of vendoring, griffinmartin PR #193 was open
 > but not yet merged into main. The MD5 hash-based tool name obfuscation from
@@ -329,6 +339,62 @@ it is more actively maintained and is the source of the PR #193 fix.
     guarantees). Live capture cannot be verified from a worktree — `pi.nix`
     mounts this directory as a read-only nix-store symlink, so a change
     needs `nh switch` first.
+
+15. **v2.2.0 model-config port (issue #2918) — ported, `model-config.ts` and
+    `betas.ts` only**. griffinmartin PR #279 (released as v2.2.0, commit
+    `09a13b4c`) regenerated the model config from Claude CLI 2.1.257
+    intercept traffic. The bump is not cosmetic: the Anthropic API rejects
+    `claude-fable-5-1` on subscription (OAuth) auth below Claude Code
+    2.1.251 with HTTP 400 `claude_code_version_too_old`, so this port is
+    what makes Fable 5.1 selectable at all.
+
+    Ported here in-place:
+
+    - `model-config.ts`: `ccVersion` `2.1.185` → `2.1.257`. `baseBetas`
+      regenerated to eight entries — `effort-2025-11-24` left the base list,
+      and the deliberate duplicate `interleaved-thinking-2025-05-14` that
+      v2.0.0 carried is gone. `modelOverrides` gained `opus-4-5`, `4-6`, and
+      `4-7` (each adding `effort-2025-11-24`), and the `haiku` entry now
+      excludes `effort-2025-11-24` instead of `interleaved-thinking-2025-05-14`.
+      The file is now byte-identical to upstream apart from our three-line
+      provenance header.
+    - `betas.ts`: comment-only. The logic already matched upstream; the
+      stale comments that named the removed `baseBetas` duplicate and the
+      wrong haiku exclude target were corrected.
+    - `betas.test.ts`, `request-body.test.ts`, `oauth-headers.test.ts`:
+      expectations regenerated — see "Test-visible behaviour changes" below.
+
+    **The `4-6`/`4-7` overrides come back.** Divergence #12 dropped them as
+    no-ops, correctly: v2.0.0 had `effort-2025-11-24` in `baseBetas`, so a
+    per-model add did nothing. v2.2.0 took the beta out of the base list, so
+    the overrides are load-bearing again and are restored verbatim.
+
+    **Test-visible behaviour changes.** Two models that used to receive
+    `effort-2025-11-24` from `baseBetas` no longer receive it, because
+    neither matches an override key: `claude-opus-4-8` and
+    `claude-sonnet-4-5`. `claude-fable-5-1` does not match one either. This
+    is upstream's shape, mirrored deliberately — upstream pins it with an
+    "effort beta" test taken from 2.1.257 intercept traffic, and
+    `4-8`-shaped names post-date the CLI build that traffic came from. Do
+    not add a local `4-8` or `fable` override to "restore" the beta without
+    intercept evidence that the real client sends it.
+
+    **Divergence #10 is retained** (AC of #2918). `getModelBetas` still
+    filters every occurrence of `interleaved-thinking-2025-05-14` when the
+    caller passes `ctx.forceAdaptiveThinking`. The `filter`-over-splice
+    choice outlives the duplicate that motivated it: `ANTHROPIC_BETA_FLAGS`
+    is user-supplied and can list a beta twice, so `betas.test.ts` now feeds
+    the duplicate in through the env var on both filter paths (the
+    override-exclude path and the divergence-#10 path). Both tests were
+    revert-and-fail verified against an indexOf/splice implementation.
+
+    **Scope.** Only the two files above were ported. Upstream shipped a
+    large amount of other work between `88b0f793` and this release —
+    external credential rotation (`credentials.ts`, `keychain.ts`, new
+    `refresh-lock.ts` / `refresh-backoff.ts` / `http.ts`) and a
+    ~290-line `transforms.ts` change. None of it is ported. The keychain and
+    multi-account parts are out of scope permanently (divergence #6); the
+    rest is unreviewed here. See the note under "Current sync commit SHAs".
 
 ## Port procedure for future upstream fixes
 
