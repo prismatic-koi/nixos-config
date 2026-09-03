@@ -474,8 +474,8 @@ request — both are declared only, because the token endpoint rejects a
     through `request-body.ts`.
 
     **The failure this prevents.** Issue #2044 is the recorded case of the
-    header and the body disagreeing on this path. Commit `48109a18` (issue
-    #2045) put it plainly: "opus-4-7 limped along because its
+    header and the body disagreeing on this path. Commit `48109a18` (PR
+    #2045, issue #2044) put it plainly: "opus-4-7 limped along because its
     `effort-2025-11-24` beta header made the API tolerant of the legacy
     shape; opus-4-8 had no override, no beta, and tipped into a degraded
     state (random tool calls, fabricated PR numbers, phantom 'pushed'

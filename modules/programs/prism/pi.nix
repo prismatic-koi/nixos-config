@@ -423,8 +423,10 @@
 
       # Model layer pi reads from ~/.pi/agent/models.json. pi 0.84.4 does not
       # bundle claude-fable-5-1, and the anthropic-oauth extension refreshes
-      # the registry with no network, so this file is the only way the model
-      # reaches a session. Values from models.dev.
+      # the registry with no network, so the bundled catalogue cannot supply
+      # the model. `pi update models` can, into models-store.json, but that is
+      # host-local cache state a reset clears. This file is the durable
+      # declaration. Values from models.dev.
       piModels = {
         providers.anthropic.models = [
           {
