@@ -198,6 +198,24 @@
                 thinking = "xhigh";
               };
             };
+
+            # Experiment-only, not tiers. Keep them out of the agent prompts
+            # and skills so nothing selects one on its own.
+            fable-low = profileFromSlots {
+              _default = slot "worker" {
+                provider = "anthropic";
+                model = "anthropic/claude-fable-5-1";
+                thinking = "low";
+              };
+            };
+
+            fable-max = profileFromSlots {
+              _default = slot "worker" {
+                provider = "anthropic";
+                model = "anthropic/claude-fable-5-1";
+                thinking = "xhigh";
+              };
+            };
           };
 
           quickProfiles = {

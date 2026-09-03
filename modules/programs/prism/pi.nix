@@ -421,6 +421,54 @@
             "${grafanaExtensionDir}/grafana/index.ts";
       };
 
+      # Model layer pi reads from ~/.pi/agent/models.json. pi 0.84.4 does not
+      # bundle claude-fable-5-1, and the anthropic-oauth extension refreshes
+      # the registry with no network, so the bundled catalogue cannot supply
+      # the model. `pi update models` can, into models-store.json, but that is
+      # host-local cache state a reset clears. This file is the durable
+      # declaration. Values from models.dev.
+      piModels = {
+        providers.anthropic.models = [
+          {
+            id = "claude-fable-5-1";
+            name = "Claude Fable 5.1";
+            # Both look redundant against the built-in anthropic models, but
+            # pi only inherits them from that list and throws when it is empty.
+            api = "anthropic-messages";
+            baseUrl = "https://api.anthropic.com";
+            reasoning = true;
+            # Without this, xhigh degrades to effort "high" and fable-max runs
+            # weaker than it reads (#2053).
+            thinkingLevelMap = {
+              off = null;
+              xhigh = "xhigh";
+              max = "max";
+            };
+            input = [
+              "text"
+              "image"
+            ];
+            cost = {
+              input = 10;
+              output = 50;
+              cacheRead = 0.25;
+              cacheWrite = 12.5;
+            };
+            contextWindow = 1000000;
+            maxTokens = 128000;
+            compat = {
+              # Selects the adaptive thinking request body and suppresses the
+              # interleaved-thinking beta (UPSTREAM.md #9 / #10).
+              forceAdaptiveThinking = true;
+              supportsStrictTools = true;
+            };
+            # Set no `headers` here: models.json headers are additive to the
+            # ones buildOAuthHeaders builds, and can collide with the auth
+            # header.
+          }
+        ];
+      };
+
       colourLib = import ../../colour-scheme/lib.nix;
 
       piTheme =
@@ -531,6 +579,7 @@
         xdg.configFile."prism/skills".source = skillsDir;
 
         home.file.".pi/agent/settings.json".text = builtins.toJSON piSettings;
+        home.file.".pi/agent/models.json".text = builtins.toJSON piModels;
         # Keybindings rebinding: app.message.followUp from alt+enter to ctrl+enter.
         # Alt+Enter is bound to something else at the OS level and never
         # reaches pi. Ctrl+Enter is available and works under tmux with extended

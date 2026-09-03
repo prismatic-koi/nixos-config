@@ -18,8 +18,18 @@ it is more actively maintained and is the source of the PR #193 fix.
 | Upstream | SHA | Date |
 |---|---|---|
 | `griffinmartin/opencode-claude-auth` main | `88b0f793` | 2026-07-08 (v2.0.0 merge commit for PR #240 — 1M-context opt-in removed, base betas regenerated) |
+| `griffinmartin/opencode-claude-auth` — `model-config.ts` + `betas.ts` ONLY | `09a13b4c` | 2026-09-01 (v2.2.0, PR #279 — Claude CLI 2.1.257 model config) |
 | `griffinmartin/opencode-claude-auth` PR #193 | `9420fbef60567968bcd21a260db21be9f7dd475b` | 2026-04-14 (the MD5 hash obfuscation approach) |
 | `leohenon/pi-anthropic-oauth` | `86d9d97829776a66aec58e3433900173ff7e184a` | 2026-04 (update readme) |
+
+> **Note on the two SHAs**: the main-line SHA is the last commit at which the
+> whole file set was reviewed. `model-config.ts` and `betas.ts` are ahead of it
+> at `09a13b4c` because divergence #15 ported those two files alone. Everything
+> upstream shipped between the two SHAs in `credentials.ts`, `transforms.ts`,
+> `index.ts`, `keychain.ts`, `http.ts`, `refresh-lock.ts`, and
+> `refresh-backoff.ts` is UNPORTED. Do not read the newer SHA as a whole-repo
+> sync point. Before you port any of those files, diff from `88b0f793`, not
+> from `09a13b4c`.
 
 > **Note on PR #193**: At the time of vendoring, griffinmartin PR #193 was open
 > but not yet merged into main. The MD5 hash-based tool name obfuscation from
@@ -34,6 +44,7 @@ it is more actively maintained and is the source of the PR #193 fix.
 | Our file | Primary upstream | griffinmartin file | leohenon file |
 |---|---|---|---|
 | `index.ts` | leohenon (pi-specific) | `src/index.ts` (different API, skip when porting) | `src/index.ts` |
+| `oauth-headers.ts` | griffinmartin | `src/index.ts` — `getCliVersion`, `getUserAgent`, `getStainlessHeaders`, `buildRequestHeaders`, `buildRequestUrl` ONLY | *(no equivalent)* |
 | `auth.ts` | leohenon | `src/credentials.ts` (OAuth helpers only, no callback server) | `src/auth.ts` |
 | `stream.ts` | leohenon | *(no equivalent — opencode uses different streaming)* | `src/stream.ts`, `src/convert.ts`, `src/prompt.ts` |
 | `request-body.ts` | pi-ai built-in | *(no equivalent — see divergence 9)* | *(no equivalent)* |
@@ -45,6 +56,34 @@ it is more actively maintained and is the source of the PR #193 fix.
 | `logger.ts` | griffinmartin | `src/logger.ts` | *(no equivalent)* |
 | `ratelimit.ts` | *(none — local addition, see divergence 14)* | *(no equivalent)* | *(no equivalent)* |
 | `anthropic-prompt.txt` | griffinmartin | `src/anthropic-prompt.txt` | *(no equivalent)* |
+
+**`oauth-headers.ts` is the exception to "skip `src/index.ts`"** (divergence
+#2). Upstream keeps its header construction inside `index.ts`, mixed in with
+opencode plugin wiring. Ours is extracted into `oauth-headers.ts`. The plugin
+wiring is still out of scope; the five header symbols named above are not.
+Check them on every port — they carry the WAF fingerprint.
+
+### Mirrors outside this directory
+
+Two Go files outside this extension mirror it and must change in the same
+commit. Go cannot import TypeScript, so both are hand-maintained:
+
+| Mirror | Mirrors | Checked by |
+|---|---|---|
+| `modules/programs/prism/prism/internal/usage/refresh.go` | `model-config.ts` (`ccVersion`, `baseBetas`, `modelOverrides`), `betas.ts::getModelBetas`, `oauth-headers.ts` (user-agent, stainless headers, session id), `stream.ts::CLAUDE_CODE_IDENTITY`, `ratelimit.ts` | `internal/usage/refresh_mirror_test.go` |
+| `modules/programs/prism/prism/internal/account/login.go` | `auth.ts` — `CLIENT_ID`, `AUTHORIZE_URL`, `TOKEN_URL`, `REDIRECT_URI`, `SCOPES`, `USER_AGENT`, `CALLBACK_PORT`, `CALLBACK_HOST`, and the retry constants | *(no mechanical check — read both)* |
+
+`refresh.go` builds the same signed request for `prism account usage` that the
+extension builds for a pi session. If the two disagree, the account probe
+presents a different fingerprint to the same WAF. The mirror test reads
+`model-config.ts` directly and fails on drift, but it covers the three
+model-config symbols only — the header symbols are still checked by hand.
+
+`login.go` runs the OAuth flow for `prism account login`. Its `oauthUserAgent`
+(`claude-code/2.1.97`) mirrors `auth.ts::USER_AGENT`. Neither is sent on any
+request — both are declared only, because the token endpoint rejects a
+`claude-code/*` user-agent (divergence #1). It is NOT `ccVersion`. Do not
+"align" the two when a port bumps `ccVersion`.
 
 ## Known divergences
 
@@ -214,9 +253,14 @@ it is more actively maintained and is the source of the PR #193 fix.
     `model-config.ts::modelOverrides` that added `effort-2025-11-24` for
     the opus-4-8 substring. Griffinmartin 2.0.0 lifted `effort-2025-11-24`
     into `baseBetas`, so the per-model `4-6`/`4-7`/`4-8` overrides became
-    no-ops. The v2.0.0 port drops all three overrides (upstream still
-    carries `4-6`/`4-7` as dead entries; we don't). The haiku override
-    stays and still excludes `interleaved-thinking-2025-05-14`.
+    no-ops. The v2.0.0 port drops all three overrides.
+
+    Divergence #15 reverses both halves of that: v2.2.0 took
+    `effort-2025-11-24` back out of `baseBetas`, so `4-6` and `4-7` are
+    load-bearing again and are restored, and the haiku override now
+    excludes `effort-2025-11-24` rather than
+    `interleaved-thinking-2025-05-14`. Read #15 for the current shape; the
+    paragraph above is the v2.0.0 state only.
 
 11. **v1.5.1 auth parity (issue #2381) — ported**. griffinmartin PR #207
     (Claude Code 2.1.112 subscription-auth fingerprint) and PR #211
@@ -330,6 +374,140 @@ it is more actively maintained and is the source of the PR #193 fix.
     mounts this directory as a read-only nix-store symlink, so a change
     needs `nh switch` first.
 
+15. **v2.2.0 model-config port (issue #2918) — ported, `model-config.ts` and
+    `betas.ts` only**. griffinmartin PR #279 (released as v2.2.0, commit
+    `09a13b4c`) regenerated the model config from Claude CLI 2.1.257
+    intercept traffic. The bump is not cosmetic: the Anthropic API rejects
+    `claude-fable-5-1` on subscription (OAuth) auth below Claude Code
+    2.1.251 with HTTP 400 `claude_code_version_too_old`, so this port is
+    what makes Fable 5.1 selectable at all.
+
+    Ported here in-place:
+
+    - `model-config.ts`: `ccVersion` `2.1.185` → `2.1.257`. `baseBetas`
+      regenerated to eight entries — `effort-2025-11-24` left the base list,
+      and the deliberate duplicate `interleaved-thinking-2025-05-14` that
+      v2.0.0 carried is gone. `modelOverrides` gained `opus-4-5`, `4-6`, and
+      `4-7` (each adding `effort-2025-11-24`), and the `haiku` entry now
+      excludes `effort-2025-11-24` instead of `interleaved-thinking-2025-05-14`.
+      The file is now byte-identical to upstream apart from our three-line
+      provenance header.
+    - `betas.ts`: comment-only. The logic already matched upstream; the
+      stale comments that named the removed `baseBetas` duplicate and the
+      wrong haiku exclude target were corrected.
+    - `oauth-headers.ts`: three header changes, see "Header parity" below.
+    - `internal/usage/refresh.go`: the Go mirror, updated in the same
+      commit, plus `refresh_mirror_test.go` which now reads
+      `model-config.ts` and fails on drift.
+    - `betas.test.ts`, `request-body.test.ts`, `oauth-headers.test.ts`:
+      expectations regenerated.
+
+    **The `4-6`/`4-7` overrides come back.** Divergence #12 dropped them as
+    no-ops, correctly: v2.0.0 had `effort-2025-11-24` in `baseBetas`, so a
+    per-model add did nothing. v2.2.0 took the beta out of the base list, so
+    the overrides are load-bearing again and are restored verbatim.
+
+    **Blast radius.** The beta left `baseBetas` for three per-model adds
+    that match no model this repo runs. Taken alone that would have dropped
+    `effort-2025-11-24` from every profile. Divergence #16 restores it on
+    the adaptive path, so the net wire change is:
+
+    | Model | Used by | Adaptive | Effort beta |
+    |---|---|---|---|
+    | `claude-sonnet-5` | `light`, `standard`, `quick pr` | yes | kept, via #16 |
+    | `claude-opus-5` | `heavy`, `max` | yes | kept, via #16 |
+    | `claude-opus-4-8` | `standard`, `heavy` | yes | kept, via #16 |
+    | `claude-fable-5-1` | `fable-low`, `fable-max` | yes | kept, via #16 |
+    | `claude-haiku-4-5` | usage probe, titlegen | no | dropped, correctly — `disableEffort` means the body never carried it |
+    | `claude-sonnet-4-5` | nothing here | no | dropped; legacy body, no effort field |
+
+    Derive this list from `profiles.nix`, not from the test files. The
+    first version of this entry named `claude-sonnet-4-5`, which no profile
+    uses, and missed `claude-sonnet-5` and `claude-opus-5`, which back
+    every tier.
+
+    **Header parity.** Checking upstream's `index.ts` for the symbols
+    `oauth-headers.ts` mirrors found three gaps, all ported here:
+
+    - `X-Claude-Code-Session-Id` is now sent, from a module-scope
+      `crypto.randomUUID()`. One id per process, unlike the per-request
+      `x-client-request-id`. It was absent entirely.
+    - `getCliVersion()` reads `$ANTHROPIC_CLI_VERSION`. `transforms.ts`
+      already read it for the billing header, so before this the two
+      reported different versions on one request when it was set.
+    - A caller's `anthropic-beta` is now unioned with the model betas
+      rather than replacing them. Every other caller header still
+      overrides ours.
+
+    `x-stainless-package-version` was checked and is unchanged at `0.81.0`.
+
+    **Divergence #10 is retained** (AC of #2918). `getModelBetas` still
+    filters every occurrence of `interleaved-thinking-2025-05-14` when the
+    caller passes `ctx.forceAdaptiveThinking`. The `filter`-over-splice
+    choice outlives the duplicate that motivated it: `ANTHROPIC_BETA_FLAGS`
+    is user-supplied and can list a beta twice, so `betas.test.ts` now feeds
+    the duplicate in through the env var on both filter paths (the
+    override-exclude path and the divergence-#10 path). Both tests were
+    revert-and-fail verified against an indexOf/splice implementation.
+
+    **Scope.** Only the files named above were ported. Upstream shipped a
+    large amount of other work between `88b0f793` and this release —
+    external credential rotation (`credentials.ts`, `keychain.ts`, new
+    `refresh-lock.ts` / `refresh-backoff.ts` / `http.ts`) and a ~290-line
+    `transforms.ts` change. None of it is ported. The keychain and
+    multi-account parts are out of scope permanently (divergence #6); the
+    rest is unreviewed here. See the note under "Current sync commit SHAs".
+
+16. **Effort beta follows `forceAdaptiveThinking`, not a model list**
+    (issue #2918) — pi-only, and the sibling of divergence #10.
+    `getModelBetas` adds `effort-2025-11-24` when the caller passes
+    `ctx.forceAdaptiveThinking`, unless the model's override sets
+    `disableEffort`.
+
+    **Why upstream's list cannot serve.** Upstream has never implemented
+    adaptive thinking (divergence #9), so it never sends
+    `output_config: {effort}` and its per-model `add` list is a fingerprint
+    of a CLI that does not do what pi does. Its three keys — `opus-4-5`,
+    `4-6`, `4-7` — match none of `claude-opus-4-8`, `claude-opus-5`,
+    `claude-sonnet-5`, or `claude-fable-5-1`, all of which carry
+    `compat.forceAdaptiveThinking` and therefore DO send the effort field
+    through `request-body.ts`.
+
+    **The failure this prevents.** Issue #2044 is the recorded case of the
+    header and the body disagreeing on this path. Commit `48109a18` (PR
+    #2045, issue #2044) put it plainly: "opus-4-7 limped along because its
+    `effort-2025-11-24` beta header made the API tolerant of the legacy
+    shape; opus-4-8 had no override, no beta, and tipped into a degraded
+    state (random tool calls, fabricated PR numbers, phantom 'pushed'
+    commits, early no-op end_turn)." That fix added a LOCAL `"4-8"`
+    override, which divergence #12 then dropped as a no-op — correct at the
+    time, because v2.0.0 held the beta in `baseBetas`. v2.2.0 takes it back
+    out, so without this divergence the #2044 condition returns on the
+    model backing `standard` and `heavy`.
+
+    The likelier symptom now is quieter than #2044, because the body is no
+    longer malformed: an effort field the API ignores for want of its beta
+    means `max` and `fable-max` silently run at default effort. No error,
+    no failing test.
+
+    **Why the compat flag and not a model list.** One flag decides both
+    that the body carries `output_config.effort` and that the header
+    carries the beta, so the two cannot desynchronise, and a future
+    adaptive model needs no `model-config.ts` edit. This is the same
+    argument divergence #10 makes for the suppression half. `disableEffort`
+    takes priority because `transforms.ts` strips the effort field for
+    those models; adding the beta there would promise a field the body does
+    not carry.
+
+    `baseBetas` and `modelOverrides` stay byte-identical to upstream — this
+    divergence lives entirely in `betas.ts`.
+
+    Tests: `request-body.test.ts`, revert-and-fail verified on both halves
+    (remove the add, the adaptive test fails; remove the `disableEffort`
+    condition, the haiku test fails). NOT mirrored in
+    `internal/usage/refresh.go`: that path only ever requests a haiku, which
+    is neither adaptive nor effort-bearing.
+
 ## Port procedure for future upstream fixes
 
 When griffinmartin ships a fix you want to port:
@@ -351,12 +529,23 @@ When griffinmartin ships a fix you want to port:
 3. **Update the SHA** in this file to the new griffinmartin HEAD (or the
    specific merge commit if the fix came via PR).
 
-4. **Run the nix build** to verify:
+4. **Update the Go mirror in the same commit.** `internal/usage/refresh.go`
+   mirrors the symbols listed under "Mirrors outside this directory" above.
+   `go test ./internal/usage/` fails when the three model-config symbols
+   drift; the header symbols have no mechanical check, so read them.
+
+   A concept grep is the fast way to find every copy of a beta list:
+
+   ```bash
+   rg -l 'claude-code-20250219' --glob '!**/node_modules/**'
+   ```
+
+5. **Run the nix build** to verify:
    ```bash
    nix build .#nixosConfigurations.navi.config.system.build.toplevel
    ```
 
-5. **Commit and PR** with `Closes #<issue>` in the body.
+6. **Commit and PR** with `Closes #<issue>` in the body.
 
 When leohenon ships a fix to the pi wrapper or auth flow:
 
