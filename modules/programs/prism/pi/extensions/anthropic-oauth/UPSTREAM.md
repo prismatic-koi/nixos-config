@@ -65,17 +65,25 @@ Check them on every port — they carry the WAF fingerprint.
 
 ### Mirrors outside this directory
 
-One file outside this extension mirrors it and must change in the same commit:
+Two Go files outside this extension mirror it and must change in the same
+commit. Go cannot import TypeScript, so both are hand-maintained:
 
 | Mirror | Mirrors | Checked by |
 |---|---|---|
 | `modules/programs/prism/prism/internal/usage/refresh.go` | `model-config.ts` (`ccVersion`, `baseBetas`, `modelOverrides`), `betas.ts::getModelBetas`, `oauth-headers.ts` (user-agent, stainless headers, session id), `stream.ts::CLAUDE_CODE_IDENTITY`, `ratelimit.ts` | `internal/usage/refresh_mirror_test.go` |
+| `modules/programs/prism/prism/internal/account/login.go` | `auth.ts` — `CLIENT_ID`, `AUTHORIZE_URL`, `TOKEN_URL`, `REDIRECT_URI`, `SCOPES`, `USER_AGENT`, `CALLBACK_PORT`, `CALLBACK_HOST`, and the retry constants | *(no mechanical check — read both)* |
 
 `refresh.go` builds the same signed request for `prism account usage` that the
 extension builds for a pi session. If the two disagree, the account probe
 presents a different fingerprint to the same WAF. The mirror test reads
 `model-config.ts` directly and fails on drift, but it covers the three
 model-config symbols only — the header symbols are still checked by hand.
+
+`login.go` runs the OAuth flow for `prism account login`. Its `oauthUserAgent`
+(`claude-code/2.1.97`) mirrors `auth.ts::USER_AGENT`. Neither is sent on any
+request — both are declared only, because the token endpoint rejects a
+`claude-code/*` user-agent (divergence #1). It is NOT `ccVersion`. Do not
+"align" the two when a port bumps `ccVersion`.
 
 ## Known divergences
 

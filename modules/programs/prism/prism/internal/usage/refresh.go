@@ -142,7 +142,8 @@ const (
 	discardLimit = 1 << 20 // 1 MiB
 )
 
-// baseBetas mirrors model-config.ts::config.baseBetas, including the
+// baseBetas mirrors model-config.ts::config.baseBetas. Order is part of the
+// wire form: the header is this list, comma-joined.
 var baseBetas = []string{
 	"claude-code-20250219",
 	"oauth-2025-04-20",
@@ -723,8 +724,8 @@ func MessagesURL(base string) (string, error) {
 // `anthropic-dangerous-direct-browser-access`, `anthropic-version`, the
 // per-model `anthropic-beta` list, and the bearer token.
 //
-// modelID selects the beta list (haiku excludes interleaved thinking), so
-// pass the model the request body actually names.
+// modelID selects the beta list (haiku excludes the effort beta), so pass
+// the model the request body actually names.
 //
 // The token is written to the `authorization` header and to nothing else.
 // This function does not log, retain, or return it.
