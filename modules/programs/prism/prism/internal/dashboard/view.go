@@ -156,7 +156,6 @@ func plainSummaryForBudget(summaries []ReviewChildSummary, mode summaryMode) str
 		}
 		b.WriteString(plainIconCell(sm.Verdict))
 	}
-	b.WriteString(reviewSummaryTrailingPad)
 	return b.String()
 }
 
