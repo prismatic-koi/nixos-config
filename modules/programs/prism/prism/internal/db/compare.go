@@ -127,7 +127,7 @@ func (d *DB) ResolveSessionArg(arg string, forceInstance bool) (*Session, error)
 
 // SessionIsTerminal reports whether sess is in a terminal state
 // (finished / error / interrupted / deleted) — the gate for computing
-// spawn_outcome on the fly when no persisted row exists yet.
+// spawn_outcome on the fly when no persisted row carries the aggregates yet.
 //
 // agent_status is the live source of truth while the row still exists. It
 // falls back to sessions.end_state for sessions whose agent_status row has

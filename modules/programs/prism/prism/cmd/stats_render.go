@@ -90,6 +90,51 @@ func spawnInputsJSON(si *db.SpawnInputs) map[string]any {
 	return m
 }
 
+// renderSessionStateAndTiming prints the state / started / ended / duration
+// lines shared by the host-direct and host-API-proxy detail renderers.
+//
+// It reads state and duration from the outcome first, and the sessions row
+// only as a fallback. That ordering is the point: `prism cleanup` writes
+// sessions.end_state and sessions.ended_at, so a session that has finished
+// but has not been cleaned up has neither, and this block used to report it
+// as "active" with a duration that grew until an operator ran cleanup and
+// then jumped to the interval up to that run. The outcome carries the
+// terminal-state transition instead, which is also what `prism stats
+// compare` reports — the two surfaces must not disagree about one session
+// (issue #2932).
+//
+// ended is derived as started + duration rather than printed from
+// sessions.ended_at, so the three lines stay arithmetically consistent. For a
+// session with no terminal transition the duration falls back to
+// sessions.ended_at, and the derived value is that same timestamp.
+func renderSessionStateAndTiming(styleLabel lipgloss.Style, sess *db.Session, outcome *db.SpawnOutcome, now time.Time) {
+	state := "active"
+	switch {
+	case outcome != nil && outcome.EndState != nil && *outcome.EndState != "":
+		state = *outcome.EndState
+	case sess.EndState != nil && *sess.EndState != "":
+		state = *sess.EndState
+	case sess.EndedAt != nil:
+		state = "ended"
+	}
+	fmt.Printf("%s %s\n", styleLabel.Render("state:"), stateStyle(state).Render(state))
+	fmt.Printf("%s %s\n", styleLabel.Render("started:"), sess.StartedAt.Format("2006-01-02 15:04:05"))
+
+	var dur time.Duration
+	switch {
+	case outcome != nil && outcome.DurationMs != nil:
+		dur = time.Duration(*outcome.DurationMs) * time.Millisecond
+	case sess.EndedAt != nil:
+		dur = sess.EndedAt.Sub(sess.StartedAt)
+	default:
+		// Still running: measure to now, and print no ended line.
+		fmt.Printf("%s %s\n", styleLabel.Render("duration:"), formatDurationLong(now.Sub(sess.StartedAt)))
+		return
+	}
+	fmt.Printf("%s %s\n", styleLabel.Render("ended:"), sess.StartedAt.Add(dur).Format("2006-01-02 15:04:05"))
+	fmt.Printf("%s %s\n", styleLabel.Render("duration:"), formatDurationLong(dur))
+}
+
 // renderIncarnationDetailFromSession renders the session detail for the proxy
 // path. outcome is the spawn_outcome row proxied alongside the session by
 // the host-API view=detail response — nil means the session
@@ -116,23 +161,7 @@ func renderIncarnationDetailFromSession(sess *db.Session, outcome *db.SpawnOutco
 		fmt.Printf("%s %s\n", styleLabel.Render("agent:"), *sess.AgentRole)
 	}
 
-	state := "active"
-	if sess.EndState != nil && *sess.EndState != "" {
-		state = *sess.EndState
-	} else if sess.EndedAt != nil {
-		state = "ended"
-	}
-	fmt.Printf("%s %s\n", styleLabel.Render("state:"), stateStyle(state).Render(state))
-
-	fmt.Printf("%s %s\n", styleLabel.Render("started:"), sess.StartedAt.Format("2006-01-02 15:04:05"))
-	if sess.EndedAt != nil {
-		fmt.Printf("%s %s\n", styleLabel.Render("ended:"), sess.EndedAt.Format("2006-01-02 15:04:05"))
-		dur := sess.EndedAt.Sub(sess.StartedAt)
-		fmt.Printf("%s %s\n", styleLabel.Render("duration:"), formatDurationLong(dur))
-	} else {
-		dur := now.Sub(sess.StartedAt)
-		fmt.Printf("%s %s\n", styleLabel.Render("duration:"), formatDurationLong(dur))
-	}
+	renderSessionStateAndTiming(styleLabel, sess, outcome, now)
 
 	if sess.ArchivePath != nil && *sess.ArchivePath != "" {
 		fmt.Printf("%s %s\n", styleLabel.Render("archive:"), *sess.ArchivePath)
@@ -206,6 +235,10 @@ func renderIncarnationDetail(d *db.DB, sess *db.Session) {
 
 	now := time.Now()
 
+	// The persisted-or-computed outcome, read up front: it is the source for
+	// the state and duration lines below as well as the Token Usage block.
+	outcome := d.CompareRunOutcome(sess)
+
 	fmt.Println(styleHeader.Render("incarnation: " + sess.InstanceID))
 	fmt.Println()
 
@@ -218,23 +251,7 @@ func renderIncarnationDetail(d *db.DB, sess *db.Session) {
 		fmt.Printf("%s %s\n", styleLabel.Render("agent:"), *sess.AgentRole)
 	}
 
-	state := "active"
-	if sess.EndState != nil && *sess.EndState != "" {
-		state = *sess.EndState
-	} else if sess.EndedAt != nil {
-		state = "ended"
-	}
-	fmt.Printf("%s %s\n", styleLabel.Render("state:"), stateStyle(state).Render(state))
-
-	fmt.Printf("%s %s\n", styleLabel.Render("started:"), sess.StartedAt.Format("2006-01-02 15:04:05"))
-	if sess.EndedAt != nil {
-		fmt.Printf("%s %s\n", styleLabel.Render("ended:"), sess.EndedAt.Format("2006-01-02 15:04:05"))
-		dur := sess.EndedAt.Sub(sess.StartedAt)
-		fmt.Printf("%s %s\n", styleLabel.Render("duration:"), formatDurationLong(dur))
-	} else {
-		dur := now.Sub(sess.StartedAt)
-		fmt.Printf("%s %s\n", styleLabel.Render("duration:"), formatDurationLong(dur))
-	}
+	renderSessionStateAndTiming(styleLabel, sess, outcome, now)
 
 	// Archive path.
 	if sess.ArchivePath != nil && *sess.ArchivePath != "" {
@@ -278,10 +295,9 @@ func renderIncarnationDetail(d *db.DB, sess *db.Session) {
 		fmt.Println()
 	}
 
-	// Token/cost totals: the persisted-or-computed spawn_outcome row, the
-	// same source used by the sandbox proxy path so the two paths render
-	// byte-identical output.
-	outcome := d.CompareRunOutcome(sess)
+	// Token/cost totals from the same outcome read at the top of this
+	// function, which is also what the sandbox proxy path receives — the two
+	// paths render byte-identical output.
 	renderTokenUsageBlock(styleHeader, styleLabel, styleDim, outcome)
 }
 

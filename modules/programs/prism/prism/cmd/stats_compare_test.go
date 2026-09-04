@@ -4,7 +4,8 @@ package cmd
 //
 // spawn_outcome aggregates must be available to `prism stats compare`
 // between terminal-state transition and `prism cleanup`. The read path falls
-// back to db.ComputeSpawnOutcome when no persisted row exists yet.
+// back to db.ComputeSpawnOutcome whenever no persisted row carries the
+// computed aggregates — no row at all, or a stub written by a partial writer.
 //
 //   Layer 2: the Spawn Inputs block must surface the values written at
 //   spawn time (profile_name, isolation, harness, branch, agent_role)
