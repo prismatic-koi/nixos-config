@@ -28,10 +28,10 @@ func (d *DB) WriteEvent(e Event) error {
 	// account_name.go for why. Never NULL on a new row.
 	accountName := d.resolveAccountName()
 
-	// Resolve the active profile the same way. See profile_name.go for why
+	// Resolve the session's profile the same way. See profile_name.go for why
 	// capture happens here rather than at scrape time, and why a coordinator —
 	// which has no spawn_inputs row — needs it. Never NULL on a new row.
-	profileName := d.resolveProfileName()
+	profileName := d.resolveProfileName(e.InstanceID)
 
 	tx, err := d.conn.Begin()
 	if err != nil {
@@ -597,7 +597,7 @@ func (d *DB) WriteEventReturningRowID(e Event) (int64, error) {
 	// Write-time account and profile resolution — see WriteEvent,
 	// account_name.go, and profile_name.go.
 	accountName := d.resolveAccountName()
-	profileName := d.resolveProfileName()
+	profileName := d.resolveProfileName(e.InstanceID)
 
 	tx, err := d.conn.Begin()
 	if err != nil {

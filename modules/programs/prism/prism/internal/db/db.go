@@ -59,6 +59,14 @@ type DB struct {
 	// across goroutines and a test may install its own.
 	profileResolverMu sync.RWMutex
 	profileResolver   *ProfileResolver
+
+	// spawnProfiles caches spawn_inputs.profile_name per instance_id for the
+	// event-write path — see profile_name.go. spawnProfileQueries counts
+	// lookups that reached SQLite; it backs the per-event-query assertion in
+	// tests. Both guarded by spawnProfileMu.
+	spawnProfileMu      sync.Mutex
+	spawnProfiles       map[string]spawnProfileEntry
+	spawnProfileQueries int
 }
 
 // Path returns the filesystem path of the database file.
@@ -86,12 +94,12 @@ CREATE TABLE IF NOT EXISTS agent_events (
   -- ("unknown" when the account store cannot be resolved). Records the NAME
   -- only — never any accounts/*.json token content.
   account_name       TEXT,
-  -- Active prism profile at the moment this row was written, recorded by
-  -- WriteEvent from the mtime-cached resolver. NULLABLE for
+  -- Profile this row's session ran at, recorded by WriteEvent: the
+  -- session's spawn_inputs.profile_name, or the machine-active profile for
+  -- a session with no spawn_inputs row (a coordinator). NULLABLE for
   -- back-compat with pre-migration rows; new rows always carry a value
   -- ("unknown" when no profile can be resolved). This is the tier the cost
-  -- counter attributes spend along. It exists BECAUSE a coordinator session
-  -- has no spawn_inputs row to join to — see profile_name.go and
+  -- counter attributes spend along — see profile_name.go and
   -- exporter/sql.go CostEventsTailSQL.
   profile_name       TEXT
 );
@@ -1470,15 +1478,15 @@ func migrateV40ToV41(conn sqlExecutor, version *int) error {
 
 // migrateV41ToV42 adds a nullable profile_name column to agent_events.
 //
-// The column records the active prism profile at the moment each event row is
-// written, so the cost counter can attribute spend to the real tier of
-// EVERY session — including a coordinator, which is never spawned and so has
-// no spawn_inputs row to join to. Without this column, CostEventsTailSQL
-// LEFT JOINs spawn_inputs for the profile; that join misses for every
-// coordinator and folds all of their spend to "default". It is written by
-// WriteEvent / WriteEventReturningRowID
-// from the mtime-cached resolver in profile_name.go. See that file for why
-// capture happens at write time rather than at scrape time.
+// The column records the profile each event row's session ran at, so the
+// cost counter can attribute spend to the real tier of EVERY session —
+// including a coordinator, which is never spawned and so has no spawn_inputs
+// row to join to. Without this column, CostEventsTailSQL LEFT JOINs
+// spawn_inputs for the profile; that join misses for every coordinator and
+// folds all of their spend to "default". It is written by WriteEvent /
+// WriteEventReturningRowID from profile_name.go. See that file for the
+// precedence and for why capture happens at write time rather than at scrape
+// time.
 //
 // No backfill — the same policy as migrateV40ToV41's account_name, and the
 // same answer used for the repo label. These are tail-cursor

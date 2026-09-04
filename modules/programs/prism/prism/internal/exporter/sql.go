@@ -133,8 +133,10 @@ const (
 	// write time — NOT through a spawn_inputs join. A spawn_inputs join is
 	// wrong: it misses for every session with no spawn_inputs row (a
 	// coordinator is never spawned), so all coordinator spend would fold to
-	// "default". Reading the write-time column attributes each row to its
-	// real tier. See db/profile_name.go.
+	// "default". The write path already applies spawn_inputs.profile_name
+	// for a spawned session and the machine-active profile for the rest, so
+	// the column attributes each row to its real tier. See
+	// db/profile_name.go.
 	//
 	// Counter-continuity: these are TAIL-CURSOR counters. A pre-migration
 	// row has profile_name NULL and folds to the explicit "unknown"

@@ -27,12 +27,22 @@
 // Precedence
 // ----------
 //
-// The recorded value uses the same precedence as config.ResolveActiveProfile:
-// flag, then state file, then the nix default. The `--profile` FLAG never
-// applies on the event-write path (the daemon writing events holds no spawn
-// flag), so precedence reduces to state file, then nix default. When neither
-// resolves, the value is the explicit "unknown" placeholder, never an empty
-// string.
+// A spawned session records the profile it was spawned at. SpawnSession
+// resolves `--profile` (or the active profile at spawn time) and writes the
+// name to spawn_inputs.profile_name; review agents and investigators inherit
+// their parent's value on the same row. That row is the session's own tier,
+// so it takes precedence: two sessions on one host under different `--profile`
+// flags record two different names, whatever the machine-active profile is.
+//
+// The machine-active resolution (state file, then nix default) applies only
+// when the session has no usable spawn_inputs row: a never-spawned
+// coordinator, or a row whose profile_name is NULL or empty. When neither
+// source resolves, the value is the explicit "unknown" placeholder, never an
+// empty string.
+//
+// The `--profile` FLAG itself is not consulted here: the process writing the
+// event holds no spawn flag. The flag reaches this path only through the
+// spawn_inputs row.
 //
 // The db -> config import decision
 // --------------------------------
@@ -53,9 +63,19 @@
 // The nix default is read once from profiles.json and cached for the life of
 // the process: a nixos rebuild regenerates profiles.json and restarts the
 // prism daemon, so a fresh process re-reads it.
+//
+// The spawn_inputs lookup is cached per instance_id on the DB handle, so a
+// session's events cost one query, not one query each. A spawn_inputs row is
+// written once (INSERT OR IGNORE) and never updated, so a row that resolved a
+// name is cached for the life of the handle. A miss is cached for
+// spawnProfileMissTTL and then re-queried: a coordinator costs one query per
+// TTL, and a session whose events reach the writer before its spawn_inputs
+// row is committed picks up the row on the next expiry.
 package db
 
 import (
+	"database/sql"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -235,9 +255,63 @@ func (d *DB) profileResolverFor() *ProfileResolver {
 	return ProcessProfileResolver()
 }
 
-// resolveProfileName resolves the active profile name for a write. It is the
-// single call site the event write paths share, so every row records the
-// profile by the same rule.
-func (d *DB) resolveProfileName() string {
+// spawnProfileMissTTL bounds how long a spawn_inputs miss (no row, or a row
+// with no profile_name) is trusted before the next event re-queries it.
+const spawnProfileMissTTL = time.Minute
+
+// spawnProfileEntry is one cached spawn_inputs lookup. name is "" on a miss.
+// A miss expires at expiresAt; a hit never expires because the row is
+// immutable.
+type spawnProfileEntry struct {
+	name      string
+	expiresAt time.Time
+}
+
+// spawnProfileFor returns spawn_inputs.profile_name for instanceID, or ""
+// when the session has no row, the row has no profile, or the lookup fails.
+// The result is cached per the rules in the file header.
+func (d *DB) spawnProfileFor(instanceID string) string {
+	now := time.Now()
+
+	d.spawnProfileMu.Lock()
+	defer d.spawnProfileMu.Unlock()
+
+	if ent, ok := d.spawnProfiles[instanceID]; ok {
+		if ent.name != "" || now.Before(ent.expiresAt) {
+			return ent.name
+		}
+	}
+
+	d.spawnProfileQueries++
+	var name sql.NullString
+	err := d.conn.QueryRow(`SELECT profile_name FROM spawn_inputs WHERE instance_id = ?`, instanceID).Scan(&name)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// A failed lookup must not drop the event write; the machine-active
+		// fallback applies until the next TTL expiry.
+		name = sql.NullString{}
+	}
+
+	ent := spawnProfileEntry{name: strings.TrimSpace(name.String)}
+	if ent.name == "" {
+		ent.expiresAt = now.Add(spawnProfileMissTTL)
+	}
+	if d.spawnProfiles == nil {
+		d.spawnProfiles = make(map[string]spawnProfileEntry)
+	}
+	d.spawnProfiles[instanceID] = ent
+	return ent.name
+}
+
+// resolveProfileName resolves the profile name recorded on a write for the
+// session identified by instanceID (nil when the event carries none). It is
+// the single call site the event write paths share, so every row records the
+// profile by the same rule: the session's own spawn_inputs profile first, then
+// the machine-active resolution.
+func (d *DB) resolveProfileName(instanceID *string) string {
+	if instanceID != nil && *instanceID != "" {
+		if name := d.spawnProfileFor(*instanceID); name != "" {
+			return name
+		}
+	}
 	return d.profileResolverFor().Name()
 }
