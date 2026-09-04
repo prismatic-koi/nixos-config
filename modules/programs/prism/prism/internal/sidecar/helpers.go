@@ -224,6 +224,61 @@ func extractPRNumberFromGhOutput(output string) (int, bool) {
 	return n, true
 }
 
+// prCreateCallsCap bounds Sidecar.prCreateCalls. A worker opens one PR; the
+// cap only has to absorb ids whose tool_result never arrived.
+const prCreateCallsCap = 16
+
+// trackPRCreateCall records the id of a socket-pipe tool_call frame when the
+// frame is a bash invocation of `gh pr create`. The wire shape is
+// {type, id, name, args:{command}} (payload.ToolCall). Frames for any other
+// tool or command, and frames with no id, are ignored. Must be called with
+// s.mu held.
+func (s *Sidecar) trackPRCreateCall(line []byte) {
+	var f struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Args struct {
+			Command string `json:"command"`
+		} `json:"args"`
+	}
+	if err := json.Unmarshal(line, &f); err != nil || f.ID == "" || f.Name != "bash" {
+		return
+	}
+	if isGhPRCreateCommand(f.Args.Command) {
+		s.prCreateCalls.set(f.ID, true)
+	}
+}
+
+// capturePRNumberFromResult is the socket-pipe twin of the SSE-path capture
+// in handleMessagePartUpdated: when a tool_result frame closes a tracked
+// `gh pr create` call and reports success, the PR number is read from the
+// output and persisted on this session's spawn_outcome row. A failed call,
+// or output with no PR URL, consumes the tracked id and writes nothing.
+// Must be called with s.mu held.
+func (s *Sidecar) capturePRNumberFromResult(line []byte) {
+	var f struct {
+		ID      string `json:"id"`
+		Success bool   `json:"success"`
+		Output  string `json:"output"`
+	}
+	if err := json.Unmarshal(line, &f); err != nil || f.ID == "" || !s.prCreateCalls.has(f.ID) {
+		return
+	}
+	s.prCreateCalls.del(f.ID)
+	if !f.Success || s.cfg.DB == nil || s.cfg.InstanceID == "" {
+		return
+	}
+	prNum, ok := extractPRNumberFromGhOutput(f.Output)
+	if !ok {
+		return
+	}
+	if err := s.cfg.DB.UpdateSpawnOutcomePR(s.cfg.InstanceID, prNum); err != nil {
+		s.logger().Printf("sidecar: UpdateSpawnOutcomePR(pr=%d): %v", prNum, err)
+		return
+	}
+	s.logger().Printf("sidecar: captured pr_number=%d from gh pr create output", prNum)
+}
+
 // extractMessageIDFromPayload returns the "messageId" field from a raw event
 // payload JSON string. Returns an empty string when the field is absent or the
 // JSON cannot be parsed. Used by the /checkin handler's turn-centric logic.

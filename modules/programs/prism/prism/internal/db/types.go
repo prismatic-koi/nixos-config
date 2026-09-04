@@ -253,4 +253,9 @@ type SpawnOutcome struct {
 	// Audit
 	ComputedAt    int64
 	SchemaVersion int
+	// AggregatedAt is the time WriteSpawnOutcome filled every column of the
+	// row. nil means only a partial writer (pr_number, pr_merged_at, review
+	// result) has touched the row: the aggregate columns are defaults, not
+	// measurements.
+	AggregatedAt *int64 // ms epoch
 }

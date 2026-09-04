@@ -12,14 +12,15 @@ package db
 // Data sources (see docs/retro.md):
 //
 //   - Per-session token/cost/waste data comes from CompareRunOutcome, which
-//     returns the persisted spawn_outcome row, or — for a terminal session
-//     with no row yet — an on-the-fly ComputeSpawnOutcome aggregation over
-//     agent_events. That fallback is what makes review-agent sessions countable
-//     even before `prism cleanup` writes their rows and for historical rows
-//     that have no spawn_outcome row: ComputeSpawnOutcome reads the same
-//     agent_events the aggregation requires, with COALESCE on every token
-//     field, so a NULL cache-read/-write field counts as zero rather than
-//     voiding the whole SUM.
+//     returns the persisted spawn_outcome row once cleanup has filled it
+//     (aggregated_at set), or — for a terminal session whose row is absent
+//     or is still a partial-writer stub — an on-the-fly ComputeSpawnOutcome
+//     aggregation over agent_events. That fallback is what makes review-agent
+//     sessions countable even before `prism cleanup` writes their rows and
+//     for historical rows that have no spawn_outcome row: ComputeSpawnOutcome
+//     reads the same agent_events the aggregation requires, with COALESCE on
+//     every token field, so a NULL cache-read/-write field counts as zero
+//     rather than voiding the whole SUM.
 //   - A live session (no terminal transition, no row) yields a nil outcome. It
 //     is counted as a member of its train but contributes no tokens and no
 //     waste signal — the difference between "not yet recorded" and "recorded

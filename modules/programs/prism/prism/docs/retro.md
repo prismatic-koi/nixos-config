@@ -208,11 +208,12 @@ stated.
    issue #2583 (this part carries `Closes #2529`, since #2585 — the original
    part 4 — was closed as not-planned). Per-session token/cost/waste data
    comes from `db.CompareRunOutcome`, which returns the persisted
-   `spawn_outcome` row or, for a terminal session with no row yet, an
-   on-the-fly `ComputeSpawnOutcome` aggregation over `agent_events`. That
-   fallback is what makes review-agent sessions countable regardless of
-   whether cleanup has written their rows (`WriteSpawnOutcomeCascade`, #2591)
-   or the rows predate that change.
+   `spawn_outcome` row once `prism cleanup` has filled it (`aggregated_at`
+   set) or, for a terminal session whose row is absent or is still a stub
+   from a partial writer, an on-the-fly `ComputeSpawnOutcome` aggregation
+   over `agent_events`. That fallback is what makes review-agent sessions
+   countable regardless of whether cleanup has written their rows
+   (`WriteSpawnOutcomeCascade`, #2591) or the rows predate that change.
 
 3. **Section 3, review-cycle detail.** Depended on
    [#2573](https://github.com/prismatic-koi/nixos-config/issues/2573) (merged

@@ -464,6 +464,13 @@ type Sidecar struct {
 	// Zero means "not yet seen" or "unavailable". Keyed by message ID.
 	// Same lifecycle as msgCreatedAtMs above, same bounded-LRU treatment.
 	ttftByMessage *boundedMap[int64]
+	// prCreateCalls holds the tool-call ids of in-flight `gh pr create` bash
+	// invocations on the socket-pipe transport. The tool_call frame carries
+	// the command and the tool_result frame carries the output, so the id is
+	// the only link between the two; the entry is added on the call and
+	// consumed on the result. Bounded so an id whose result never arrives
+	// cannot accumulate. Protected by s.mu.
+	prCreateCalls *boundedMap[bool]
 	// container is set when running in container mode.
 	// Protected by mu.
 	container *containerMgr
@@ -819,6 +826,7 @@ func New(cfg Config) *Sidecar {
 		textByMessage:   newBoundedMap[string](messageTrackingCap),
 		msgCreatedAtMs:  newBoundedMap[float64](messageTrackingCap),
 		ttftByMessage:   newBoundedMap[int64](messageTrackingCap),
+		prCreateCalls:   newBoundedMap[bool](prCreateCallsCap),
 		seenUnknown:     make(map[string]bool),
 		promptDedup:     newDeliveryDedup(deliveryDedupCapacity),
 	}
@@ -2808,8 +2816,15 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			s.maybeGenerateTitle(userFrame.Text)
 		}
 
-	case "tool_call", "tool_result",
-		"provider_error", "auto_retry_end":
+	case "tool_call":
+		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+		s.trackPRCreateCall(line)
+
+	case "tool_result":
+		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+		s.capturePRNumberFromResult(line)
+
+	case "provider_error", "auto_retry_end":
 		// Write raw JSON as event payload — the wire schema maps directly to
 		// the existing agent_events payload format (P2.WIRE §8.1).
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/verdict"
 )
 
@@ -279,11 +280,16 @@ SELECT COALESCE(JSON_EXTRACT(payload, '$.model'), ''),
 // It is the canonical aggregation pass shared by:
 //
 //   - WriteSpawnOutcome (the persist path called from `prism cleanup`)
-//   - prism stats compare (the read path that needs the same data shape
-//     between terminal-state transition and cleanup)
+//   - CompareRunOutcome (the read path behind `prism stats`, `prism stats
+//     compare`, and `prism retro`, which needs the same data shape for a
+//     terminal session whose row WriteSpawnOutcome has not filled yet)
 //
 // Returns (nil, nil) when the sessions row does not exist (pre-migration
 // or unknown instance) so callers can treat the result as a silent no-op.
+//
+// The returned value carries AggregatedAt nil: it is not a persisted row.
+// end_state and duration_ms come from sessionEnd, so they are available
+// before cleanup and measure to the terminal transition, not to cleanup.
 //
 // Both call sites must use this helper to guarantee byte-for-byte
 // identical aggregates: the on-the-fly compute path and the cleanup write
@@ -307,11 +313,12 @@ func (d *DB) ComputeSpawnOutcome(instanceID string) (*SpawnOutcome, error) {
 
 	// --- Process-level ---
 
-	out.EndState = sess.EndState
-	if sess.EndedAt != nil && sess.StartedAt.UnixMilli() > 0 {
-		dur := sess.EndedAt.Sub(sess.StartedAt).Milliseconds()
+	endState, endedAtMs := d.sessionEnd(instanceID, sess)
+	out.EndState = endState
+	if endedAtMs != nil && sess.StartedAt.UnixMilli() > 0 {
+		dur := *endedAtMs - sess.StartedAt.UnixMilli()
 		out.DurationMs = &dur
-		if sess.EndState != nil && *sess.EndState == "finished" {
+		if endState != nil && *endState == "finished" {
 			out.TimeToFinishedMs = &dur
 		}
 	}
@@ -460,6 +467,44 @@ SELECT group_id FROM session_groups
 	return &out, nil
 }
 
+// sessionEnd returns the end state and end time (ms epoch) that
+// ComputeSpawnOutcome measures the session against. Either value is nil when
+// no record of an end exists.
+//
+// The last state_change event wins when it carries a terminal state. The
+// sidecar writes that event at the agent's own terminal transition, and it
+// is the only record that does not move: sessions.ended_at is stamped by
+// whichever process closes the row — `prism cleanup`, the tmux session-closed
+// hook, or sidecar shutdown — so it records when the operator acted, not when
+// the agent stopped. A duration measured against sessions.ended_at grows
+// with the idle gap before cleanup and two A/B legs cleaned up together
+// always look identical.
+//
+// The sessions row is the fallback when the last state_change event is not
+// terminal (the session was closed while still active and no sidecar wrote
+// the interrupted transition) or when no state_change event carries this
+// instance_id at all.
+func (d *DB) sessionEnd(instanceID string, sess *Session) (*string, *int64) {
+	const q = `
+SELECT JSON_EXTRACT(payload, '$.state'), created_at
+  FROM agent_events
+ WHERE instance_id = ? AND type = 'state_change'
+ ORDER BY created_at DESC, rowid DESC
+ LIMIT 1`
+	var state sql.NullString
+	var createdAt int64
+	err := d.conn.QueryRow(q, instanceID).Scan(&state, &createdAt)
+	if err == nil && state.Valid && agent.IsTerminal(agent.AgentState(state.String)) {
+		return &state.String, &createdAt
+	}
+	var endedAtMs *int64
+	if sess.EndedAt != nil {
+		ms := sess.EndedAt.UnixMilli()
+		endedAtMs = &ms
+	}
+	return sess.EndState, endedAtMs
+}
+
 // WriteSpawnOutcome computes all aggregated columns for the given instanceID
 // from agent_events and sessions, then upserts a spawn_outcome row. The write
 // is idempotent (INSERT OR REPLACE). Calling it twice produces the same result.
@@ -501,7 +546,7 @@ INSERT OR REPLACE INTO spawn_outcome (
     tokens_cache_read_total, tokens_cache_write_total,
     cost_usd_total, tool_call_count, tool_error_count,
     msg_assistant_count, time_to_first_event_ms, time_to_finished_ms,
-    computed_at, schema_version
+    computed_at, schema_version, aggregated_at
 ) VALUES (
     ?,
     ?, ?, ?,
@@ -515,7 +560,7 @@ INSERT OR REPLACE INTO spawn_outcome (
     ?, ?,
     ?, ?, ?,
     ?, ?, ?,
-    ?, ?
+    ?, ?, ?
 )`
 	_, err = d.conn.Exec(insertQ,
 		out.InstanceID,
@@ -530,7 +575,7 @@ INSERT OR REPLACE INTO spawn_outcome (
 		out.TokensCacheReadTotal, out.TokensCacheWriteTotal,
 		out.CostUSDTotal, out.ToolCallCount, out.ToolErrorCount,
 		out.MsgAssistantCount, out.TimeToFirstEventMs, out.TimeToFinishedMs,
-		out.ComputedAt, out.SchemaVersion,
+		out.ComputedAt, out.SchemaVersion, out.ComputedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("db: write spawn outcome: insert: %w", err)
@@ -764,7 +809,7 @@ SELECT
     tokens_cache_read_total, tokens_cache_write_total,
     cost_usd_total, tool_call_count, tool_error_count,
     msg_assistant_count, time_to_first_event_ms, time_to_finished_ms,
-    computed_at, schema_version
+    computed_at, schema_version, aggregated_at
 FROM spawn_outcome
 WHERE instance_id = ?`
 	row := d.conn.QueryRow(q, instanceID)
@@ -910,7 +955,7 @@ func scanSpawnOutcome(row *sql.Row) (*SpawnOutcome, error) {
 		&out.TokensCacheReadTotal, &out.TokensCacheWriteTotal,
 		&out.CostUSDTotal, &out.ToolCallCount, &out.ToolErrorCount,
 		&out.MsgAssistantCount, &out.TimeToFirstEventMs, &out.TimeToFinishedMs,
-		&out.ComputedAt, &out.SchemaVersion,
+		&out.ComputedAt, &out.SchemaVersion, &out.AggregatedAt,
 	)
 	if err != nil {
 		return nil, err

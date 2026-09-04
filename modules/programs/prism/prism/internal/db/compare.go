@@ -152,18 +152,26 @@ func (d *DB) SessionIsTerminal(sess *Session) bool {
 }
 
 // CompareRunOutcome returns the spawn_outcome to display for sess: the
-// persisted spawn_outcome row when present, or — when the session has reached
-// a terminal state but no row has been written yet (the window between the
-// terminal transition and `prism cleanup`) — an on-the-fly computation via
-// ComputeSpawnOutcome. ComputeSpawnOutcome is the same aggregation
-// WriteSpawnOutcome uses internally, so the value agrees byte-for-byte with
-// the row cleanup will later persist. Returns nil for live sessions (the
-// renderer shows "—").
+// persisted spawn_outcome row when WriteSpawnOutcome has filled it
+// (AggregatedAt set), or — when the session has reached a terminal state but
+// no filled row exists yet (the window between the terminal transition and
+// `prism cleanup`) — an on-the-fly computation via ComputeSpawnOutcome.
+// ComputeSpawnOutcome is the same aggregation WriteSpawnOutcome uses
+// internally, so the value agrees byte-for-byte with the row cleanup will
+// later persist. Returns nil for live sessions (the renderer shows "—").
+//
+// A row with AggregatedAt nil is a stub from a partial writer
+// (UpdateSpawnOutcomePR, UpdateSpawnOutcomePRMergedAt,
+// UpdateSpawnOutcomeReviewResult): its aggregate columns are defaults, not
+// measurements. Every worker that ran a review round has such a stub before
+// cleanup, so the presence of a row is not the gate — the stamp is.
+// ComputeSpawnOutcome merges the stub's agent-level columns itself, so
+// nothing the stub carries is lost on the compute path.
 func (d *DB) CompareRunOutcome(sess *Session) *SpawnOutcome {
 	if sess == nil {
 		return nil
 	}
-	if out, _ := d.SpawnOutcomeByInstanceID(sess.InstanceID); out != nil {
+	if out, _ := d.SpawnOutcomeByInstanceID(sess.InstanceID); out != nil && out.AggregatedAt != nil {
 		return out
 	}
 	if d.SessionIsTerminal(sess) {

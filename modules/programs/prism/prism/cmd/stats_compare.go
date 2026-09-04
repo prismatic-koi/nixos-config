@@ -350,12 +350,12 @@ func renderComparison(cmd *cobra.Command, runs []compareRun) error {
 //
 // For each session it reads the spawn_outcome and spawn_inputs rows. When a
 // session has reached a terminal state (finished / error / interrupted)
-// but no spawn_outcome row exists yet — the window between the sidecar's
-// terminal-state transition and `prism cleanup` — the outcome is computed
-// on the fly from agent_events via db.ComputeSpawnOutcome. ComputeSpawnOutcome
-// is the same code path WriteSpawnOutcome uses internally, so the values
-// surfaced here agree byte-for-byte with the row the cleanup pass will
-// later write.
+// but `prism cleanup` has not filled its spawn_outcome row yet — the row is
+// absent, or is a stub from a partial writer such as the review-result
+// handler — the outcome is computed on the fly from agent_events via
+// db.ComputeSpawnOutcome. ComputeSpawnOutcome is the same code path
+// WriteSpawnOutcome uses internally, so the values surfaced here agree
+// byte-for-byte with the row the cleanup pass will later write.
 //
 // Live sessions (active / idle / reviewing / escalated) keep Outcome == nil
 // so the renderer shows “—” — the aggregates are not yet meaningful.
@@ -364,9 +364,9 @@ func loadCompareRuns(d *db.DB, sessions []*db.Session) []compareRun {
 	for i, sess := range sessions {
 		// db.AssembleCompareRun is the canonical assembly shared with the
 		// host-API proxy path (db.AssembleCompareRun → CompareRunOutcome →
-		// SessionIsTerminal): persisted spawn_outcome, or an on-the-fly
-		// ComputeSpawnOutcome when the session is terminal but not yet
-		// cleaned up, plus the best-effort spawn_inputs row.
+		// SessionIsTerminal): the cleanup-filled spawn_outcome, or an
+		// on-the-fly ComputeSpawnOutcome when the session is terminal but
+		// not yet cleaned up, plus the best-effort spawn_inputs row.
 		data[i] = d.AssembleCompareRun(sess)
 	}
 	return compareRunsFromData(data)

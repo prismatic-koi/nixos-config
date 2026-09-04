@@ -31,7 +31,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 43
+	currentSchemaVersion = 44
 )
 
 // DB wraps a SQLite connection.
@@ -274,7 +274,12 @@ CREATE TABLE IF NOT EXISTS spawn_outcome (
     time_to_finished_ms      INTEGER,
     -- Audit
     computed_at            INTEGER NOT NULL,
-    schema_version         INTEGER NOT NULL DEFAULT 1
+    schema_version         INTEGER NOT NULL DEFAULT 1,
+    -- Set by WriteSpawnOutcome only. NULL means only a partial writer
+    -- (pr_number, pr_merged_at, review result) has touched the row and the
+    -- aggregate columns are defaults, not measurements. Readers that need
+    -- the aggregates must compute them from agent_events while this is NULL.
+    aggregated_at          INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_spawn_outcome_end_state    ON spawn_outcome(end_state);
 CREATE INDEX IF NOT EXISTS idx_spawn_outcome_pr_number    ON spawn_outcome(pr_number);
@@ -1036,6 +1041,9 @@ func runMigrations(conn sqlExecutor) error {
 	if err := migrateV42ToV43(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV43ToV44(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -1561,6 +1569,50 @@ func migrateV42ToV43(conn sqlExecutor, version *int) error {
 		return fmt.Errorf("db: migration v42\u2192v43: bump version: %w", err)
 	}
 	*version = 43
+	return nil
+}
+
+// migrateV43ToV44 adds a nullable aggregated_at column to spawn_outcome.
+//
+// The column separates a row that WriteSpawnOutcome has filled from a row
+// that only a partial writer (UpdateSpawnOutcomePR, UpdateSpawnOutcomePRMergedAt,
+// UpdateSpawnOutcomeReviewResult) has created. Those writers insert a stub
+// row before cleanup, and every aggregate column on that stub is a default
+// (0 or NULL), not a measurement. CompareRunOutcome reads aggregated_at to
+// decide whether the row carries the aggregates or whether they must be
+// computed from agent_events.
+//
+// No backfill: a pre-migration row keeps aggregated_at NULL, so a reader
+// treats it as a stub and recomputes from agent_events when the session is
+// terminal. That is the correct outcome for those rows: a pre-migration
+// row carries a duration_ms measured to cleanup, not to the terminal
+// transition, and the recomputation replaces it.
+//
+// The ALTER TABLE is guarded by a pragma_table_info check so the migration is
+// idempotent: on a fresh database the declarative schema block above already
+// created the column, and a second run matches the guard and does nothing.
+// The column is nullable, so the ALTER TABLE adds it with an implicit NULL
+// default and does not rewrite existing rows or lose data on a populated
+// database.
+func migrateV43ToV44(conn sqlExecutor, version *int) error {
+	if *version >= 44 {
+		return nil
+	}
+	var exists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('spawn_outcome') WHERE name = 'aggregated_at'`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("db: migration v43\u2192v44: check spawn_outcome.aggregated_at column: %w", err)
+	}
+	if exists == 0 {
+		if _, err := conn.Exec(`ALTER TABLE spawn_outcome ADD COLUMN aggregated_at INTEGER`); err != nil {
+			return fmt.Errorf("db: migration v43\u2192v44: add spawn_outcome.aggregated_at: %w", err)
+		}
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 44`); err != nil {
+		return fmt.Errorf("db: migration v43\u2192v44: bump version: %w", err)
+	}
+	*version = 44
 	return nil
 }
 
