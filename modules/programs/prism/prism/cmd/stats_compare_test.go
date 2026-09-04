@@ -322,6 +322,54 @@ func TestLoadCompareRuns_TerminalThenCleanup(t *testing.T) {
 	}
 }
 
+// TestLoadCompareRuns_StubOutcomeRowStillReportsAggregates reproduces the
+// shape issue #2932 was found in: two finished, not-yet-cleaned-up A/B legs
+// that had each completed a review. The review-complete handler writes a
+// spawn_outcome row carrying only the verdict columns, and that stub used to
+// suppress the on-the-fly aggregation — every token axis, cost_usd, and
+// duration_ms rendered "—" until `prism cleanup` ran.
+func TestLoadCompareRuns_StubOutcomeRowStillReportsAggregates(t *testing.T) {
+	d := openStatsTestDB(t)
+	startedAt := time.Now().Add(-2 * time.Minute)
+
+	const sessionA = "repo@2932-leg-a"
+	const sessionB = "repo@2932-leg-b"
+	iidA := seedCompareSession(t, d, sessionA, startedAt, agent.StateFinished, nil)
+	iidB := seedCompareSession(t, d, sessionB, startedAt, agent.StateFinished, nil)
+
+	writeAssistantTurn(t, d, sessionA, iidA, startedAt.Add(10*time.Second), 1500, 700, 300, 150, 0.12)
+	writeAssistantTurn(t, d, sessionB, iidB, startedAt.Add(10*time.Second), 900, 400, 100, 50, 0.06)
+	writeToolCall(t, d, sessionA, iidA, "bash", startedAt.Add(20*time.Second))
+
+	// Both legs finished a review before anyone ran cleanup.
+	if err := d.UpdateSpawnOutcomeReviewResult(iidA, "pass", 5, 0); err != nil {
+		t.Fatalf("UpdateSpawnOutcomeReviewResult(A): %v", err)
+	}
+	if err := d.UpdateSpawnOutcomeReviewResult(iidB, "pass", 5, 0); err != nil {
+		t.Fatalf("UpdateSpawnOutcomeReviewResult(B): %v", err)
+	}
+
+	sessA, _ := d.SessionByInstanceID(iidA)
+	sessB, _ := d.SessionByInstanceID(iidB)
+	runs := loadCompareRuns(d, []*db.Session{sessA, sessB})
+
+	for i, run := range runs {
+		for _, axis := range []string{"tokens_input", "tokens_output", "cost_usd", "end_state", "duration_ms"} {
+			if got := axisValue(axis, run); got == "—" {
+				t.Errorf("run %d: axisValue(%q) = \"—\"; the review stub row must not suppress the aggregate", i, axis)
+			}
+		}
+		// The stub's own column must survive the fallback.
+		if got := axisValue("review_verdict", run); got != "pass" {
+			t.Errorf("run %d: axisValue(\"review_verdict\") = %q, want \"pass\"", i, got)
+		}
+	}
+	if runs[0].Outcome.TokensOutputTotal != 700 || runs[1].Outcome.TokensOutputTotal != 400 {
+		t.Errorf("TokensOutputTotal: A=%d B=%d, want 700 and 400",
+			runs[0].Outcome.TokensOutputTotal, runs[1].Outcome.TokensOutputTotal)
+	}
+}
+
 // TestLoadCompareRuns_ActiveSessionReturnsDash is the over-broad-fix negative
 // test: a session still in state=active must surface — for aggregate axes,
 // not stale numbers. Live sessions are excluded from the on-the-fly compute

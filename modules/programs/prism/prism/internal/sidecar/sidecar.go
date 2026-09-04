@@ -581,6 +581,17 @@ type Sidecar struct {
 	// Protected by s.mu.
 	pipeAccum *string
 
+	// prCreateToolCallID is the id of the in-flight `gh pr create` bash tool
+	// call on the socket-pipe transport, held between its tool_call frame and
+	// the matching tool_result frame so the PR number can be read out of the
+	// result (see capturePRNumberFromToolResult). Empty when no such call is in
+	// flight. Protected by s.mu.
+	//
+	// One id, not a set: `gh pr create` is a once-per-session command, and if a
+	// second one starts before the first result arrives, the second is the one
+	// worth keeping — pr_number is last-write-wins anyway.
+	prCreateToolCallID string
+
 	// assistantOutputSeen is set to true the first time any non-empty
 	// assistant text arrives on this session (across all transports:
 	// PI socket-pipe pipeAccum appends, stdio pipeAccum appends, and
@@ -2813,6 +2824,19 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// Write raw JSON as event payload — the wire schema maps directly to
 		// the existing agent_events payload format (P2.WIRE §8.1).
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+
+		// Capture pr_number from `gh pr create`. The SSE path does this from
+		// one `part` value that carries the command and its output together
+		// (events.go). PI splits them across two frames, so the capture is
+		// split too: note the tool-call id on the way in, read the URL out of
+		// the matching result. Without this, pr_number was never recorded for
+		// any PI session — every session prism spawns today (issue #2932).
+		switch frame.Type {
+		case "tool_call":
+			s.notePRCreateToolCall(line)
+		case "tool_result":
+			s.capturePRNumberFromToolResult(line)
+		}
 
 	case "tool_progress":
 		// Mid-tool heartbeat. The PI extension emits this frame on

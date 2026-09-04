@@ -1074,7 +1074,9 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 					s.logger().Printf("sidecar: audit: high-impact command recorded: %s", truncate(cmd, 120))
 				}
 				// Capture the PR number when the worker opens its PR via
-				// `gh pr create`. This is the worker-side capture path, chosen
+				// `gh pr create`. This is the SSE half of the worker-side capture
+				// path; notePRCreateToolCall / capturePRNumberFromToolResult
+				// below are the PI half. It is chosen
 				// because it writes at the natural event boundary — the moment
 				// the PR comes into existence — from the session whose
 				// spawn_outcome row holds the column the renderer reads. Other
@@ -1115,4 +1117,67 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 			}, nil)
 		}
 	}
+}
+
+// notePRCreateToolCall records the tool-call id of a `gh pr create` bash
+// invocation seen on the PI socket-pipe transport, so the matching
+// tool_result frame can be recognised when it arrives. Frames that are not a
+// bash `gh pr create` clear nothing and record nothing.
+//
+// Caller holds s.mu (handlePipeFrame).
+func (s *Sidecar) notePRCreateToolCall(line []byte) {
+	var frame struct {
+		ID   string          `json:"id"`
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal(line, &frame); err != nil || frame.ID == "" || frame.Name != "bash" {
+		return
+	}
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(frame.Args, &args); err != nil {
+		return
+	}
+	if isGhPRCreateCommand(args.Command) {
+		s.prCreateToolCallID = frame.ID
+	}
+}
+
+// capturePRNumberFromToolResult persists spawn_outcome.pr_number when the
+// given PI tool_result frame is the result of the `gh pr create` call noted by
+// notePRCreateToolCall. The id match is what keeps the capture honest: a
+// `gh pr view 4242` result also prints a /pull/N URL, and must not stamp this
+// session's row with another PR's number.
+//
+// A failed call (success=false) clears the pending id without writing, so a
+// later unrelated result cannot inherit it.
+//
+// Caller holds s.mu (handlePipeFrame).
+func (s *Sidecar) capturePRNumberFromToolResult(line []byte) {
+	if s.prCreateToolCallID == "" || s.cfg.DB == nil || s.cfg.InstanceID == "" {
+		return
+	}
+	var frame struct {
+		ID      string `json:"id"`
+		Success bool   `json:"success"`
+		Output  string `json:"output"`
+	}
+	if err := json.Unmarshal(line, &frame); err != nil || frame.ID != s.prCreateToolCallID {
+		return
+	}
+	s.prCreateToolCallID = ""
+	if !frame.Success {
+		return
+	}
+	prNum, ok := extractPRNumberFromGhOutput(frame.Output)
+	if !ok {
+		return
+	}
+	if err := s.cfg.DB.UpdateSpawnOutcomePR(s.cfg.InstanceID, prNum); err != nil {
+		s.logger().Printf("sidecar: UpdateSpawnOutcomePR(pr=%d): %v", prNum, err)
+		return
+	}
+	s.logger().Printf("sidecar: captured pr_number=%d from gh pr create output", prNum)
 }

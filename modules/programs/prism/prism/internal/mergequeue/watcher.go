@@ -541,8 +541,9 @@ func (w *Watcher) succeedAndNotify(ctx context.Context, head *db.PendingMerge, o
 	// and continues, never blocking or delaying the notification.
 	//
 	// The worker is located by joining via spawn_outcome.pr_number, which the
-	// worker-side capture path (events.go on `gh pr create` completion) wrote
-	// at PR open. When the worker died before that capture fired, the lookup
+	// worker-side capture path wrote at PR open — one capture per transport,
+	// both in internal/sidecar: the SSE `part` handler and the PI
+	// tool_call/tool_result pair. When the worker died before that capture fired, the lookup
 	// returns "" and the update is a no-op — we lose pr_merged_at for that
 	// session, but the merge still notifies.
 	if iid, err := w.db.InstanceIDForPRNumber(head.PR); err != nil {
