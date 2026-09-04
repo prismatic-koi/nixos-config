@@ -30,9 +30,16 @@
 // Two sources, in this order:
 //
 //  1. The session's OWN spawn. spawn_inputs.profile_name holds the tier the
-//     session was spawned at — the `--profile` value, or the tier a review
-//     agent or investigator inherited from its parent. The write path reads
-//     it by the event's instance_id.
+//     session was spawned at. cmd/spawn.go writes the RESOLVED profile there,
+//     not the raw flag, so the row is populated for a spawn that passed no
+//     `--profile` too. The write path reads it by the event's instance_id.
+//
+//     A spawned session is therefore pinned to its spawn-time tier for its
+//     whole life: a later `prism profile use` moves the machine-active
+//     profile but not this session's attribution. That is the correct
+//     reading. The session's slot and routing were resolved once, at spawn,
+//     and do not change under a running agent.
+//
 //  2. The MACHINE-ACTIVE profile, for a session with no usable spawn row.
 //     This is config.ResolveActiveProfile's precedence with an empty flag:
 //     the state file, then the nix default.
