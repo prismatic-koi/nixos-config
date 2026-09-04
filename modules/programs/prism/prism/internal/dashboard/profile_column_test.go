@@ -6,6 +6,7 @@ package dashboard_test
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/prismatic-koi/prism/internal/dashboard"
 )
@@ -78,6 +79,61 @@ func TestDashView_ProfileColumn_NullProfileRendersPlaceholder(t *testing.T) {
 	trimmed := strings.TrimSpace(afterState)
 	if trimmed == "" {
 		t.Errorf("expected non-blank content after the state cell (profile placeholder), got row: %q", dataLine)
+	}
+}
+
+// TestDashView_ProfileColumn_NineCharNameRendersInFull verifies that a
+// 9-character profile name renders in full, with no ellipsis — the column
+// width derives from the longest name present rather than a fixed 8-rune
+// budget (issue #2923).
+func TestDashView_ProfileColumn_NineCharNameRendersInFull(t *testing.T) {
+	const nineCharProfile = "nine-char" // len == 9; a neutral fixture, not an agent-facing profile name
+	sessions := []dashboard.AgentSession{
+		{Name: "nixos-config@feature", AgentState: "active", AgentName: "worker", ProfileName: nineCharProfile},
+	}
+	d := dashboard.Shared{Width: 120, Sessions: sessions}
+	d = dashboard.RefilterShared(d)
+
+	output := dashboard.DashView(d, "", false)
+	plain := stripANSI(output)
+
+	if !strings.Contains(plain, nineCharProfile) {
+		t.Errorf("expected the full 9-character profile name %q in output, got:\n%s", nineCharProfile, plain)
+	}
+	if strings.Contains(plain, "nine-cha\u2026") {
+		t.Errorf("expected no ellipsis truncation of the 9-character profile name, got:\n%s", plain)
+	}
+}
+
+// TestDashView_ProfileColumn_OverlongNameStillTruncates verifies that a
+// profile name longer than the derived column budget still truncates with
+// an ellipsis rather than breaking the row layout.
+func TestDashView_ProfileColumn_OverlongNameStillTruncates(t *testing.T) {
+	// Longer than ProfileColumnWidth's cap (20 runes), so the column itself
+	// clamps and this name must truncate within it.
+	const overlongProfile = "a-profile-name-that-is-way-too-long"
+	sessions := []dashboard.AgentSession{
+		{Name: "nixos-config@feature", AgentState: "active", AgentName: "worker", ProfileName: overlongProfile},
+	}
+	d := dashboard.Shared{Width: 120, Sessions: sessions}
+	d = dashboard.RefilterShared(d)
+
+	output := dashboard.DashView(d, "", false)
+	plain := stripANSI(output)
+
+	if strings.Contains(plain, overlongProfile) {
+		t.Errorf("expected the overlong profile name to be truncated, got the full name in output:\n%s", plain)
+	}
+	if !strings.Contains(plain, "\u2026") {
+		t.Errorf("expected an ellipsis marking truncation, got:\n%s", plain)
+	}
+
+	// The row layout itself must not break: every non-blank line should stay
+	// within the configured width.
+	for _, l := range strings.Split(plain, "\n") {
+		if w := utf8.RuneCountInString(l); w > d.Width {
+			t.Errorf("row exceeds configured width %d (got %d): %q", d.Width, w, l)
+		}
 	}
 }
 

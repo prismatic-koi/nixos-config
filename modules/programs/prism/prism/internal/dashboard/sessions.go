@@ -560,6 +560,41 @@ func SessionColumnWidth(sessions []AgentSession) int {
 	return maxW
 }
 
+// ProfileColumnWidth computes the profile column width (profileW) from the
+// longest ProfileName among the displayed sessions, clamped to
+// [profileWMin, profileWCap].
+//
+// profileWMin (7) matches the "profile" header so the header is never
+// truncated. profileWCap (20) bounds the column when a profile name is
+// unusually long — DashView still truncates any name past this width (see
+// RenderSessionRow), so a pathological name degrades the row rather than
+// breaking its layout.
+//
+// Virtual review-group rows (IsReviewGroup) always render a blank profile
+// cell (see RenderReviewGroupRow), so they do not contribute to the width.
+func ProfileColumnWidth(sessions []AgentSession) int {
+	const profileWMin = 7  // len("profile") — never truncate the column header
+	const profileWCap = 20 // maximum profile column width
+
+	maxW := 0
+	for _, s := range sessions {
+		if s.IsReviewGroup {
+			continue
+		}
+		if n := utf8.RuneCountInString(s.ProfileName); n > maxW {
+			maxW = n
+		}
+	}
+
+	if maxW < profileWMin {
+		return profileWMin
+	}
+	if maxW > profileWCap {
+		return profileWCap
+	}
+	return maxW
+}
+
 // FilterAgentSessions removes internal sessions (scratchpad, prism-dashboard)
 // from the slice.
 //
