@@ -1648,10 +1648,37 @@ type AbtestPairRow struct {
 	EndStateB     *string
 }
 
+// abtestRawRow is one session's row from the AbtestPairsAll query, before the
+// rows are grouped into pairs.
+type abtestRawRow struct {
+	pairID      string
+	instanceID  string
+	sessionName string
+	startedAt   int64
+	endedAt     sql.NullInt64
+	profile     string
+	turns       int
+	tokensIn    int64
+	tokensOut   int64
+	durationMs  sql.NullInt64
+	endState    sql.NullString
+}
+
 // AbtestPairsAll returns one AbtestPairRow per distinct abtest_pair_id.
 // Pairs are ordered by the started_at of their first session (oldest first).
-// Sessions that lack spawn_inputs or spawn_outcome rows are included but with
-// nil metric fields.
+// Sessions that lack spawn_inputs are included but with nil metric fields.
+//
+// The metric columns come from the spawn_outcome join when that row carries
+// the computed aggregates, and from CompareRunOutcome when it does not. The
+// join alone is not enough: this backs `prism stats --abtest`, whose entire
+// purpose is to compare two legs BEFORE either is merged, which is exactly
+// the window in which the row is absent or is a stub written by a partial
+// writer. Reading the join alone reported zero turns, zero tokens, and no
+// duration for both legs (issue #2932).
+//
+// The join stays as the fast path so a long history of cleaned-up pairs
+// still costs one query. Only a pair still inside that pre-cleanup window
+// pays for an aggregation, and only for its own two sessions.
 func (d *DB) AbtestPairsAll() ([]AbtestPairRow, error) {
 	// Fetch all (instance_id, session_name, started_at, ended_at, abtest_pair_id, profile_name)
 	// tuples ordered by pair_id, started_at. We then group by pair_id in Go.
@@ -1682,20 +1709,6 @@ ORDER BY si.abtest_pair_id ASC, s.started_at ASC`
 
 	// Accumulate into a map pair_id → AbtestPairRow (filling A slot first,
 	// then B). Order of insertion is preserved via pairOrder slice.
-	type abtestRawRow struct {
-		pairID      string
-		instanceID  string
-		sessionName string
-		startedAt   int64
-		endedAt     sql.NullInt64
-		profile     string
-		turns       int
-		tokensIn    int64
-		tokensOut   int64
-		durationMs  sql.NullInt64
-		endState    sql.NullString
-	}
-
 	var rawRows []abtestRawRow
 	for rows.Next() {
 		var r abtestRawRow
@@ -1709,6 +1722,14 @@ ORDER BY si.abtest_pair_id ASC, s.started_at ASC`
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("db: abtest_pairs_all: iterate: %w", err)
+	}
+	// rows must be closed before the per-row fallback issues its own queries:
+	// resolveAbtestRowMetrics reads while this cursor would otherwise still be
+	// open on the same connection.
+	rows.Close()
+
+	for i := range rawRows {
+		d.resolveAbtestRowMetrics(&rawRows[i])
 	}
 
 	// Group into pairs by pairID.
@@ -1778,6 +1799,43 @@ ORDER BY si.abtest_pair_id ASC, s.started_at ASC`
 		result = append(result, *pairMap[pid])
 	}
 	return result, nil
+}
+
+// resolveAbtestRowMetrics fills in one raw A/B row's metric fields from
+// CompareRunOutcome when the spawn_outcome join produced no computed
+// aggregates for it. It is a no-op for a row the join already answered, and
+// for a session that is still live (CompareRunOutcome returns nil).
+func (d *DB) resolveAbtestRowMetrics(r *abtestRawRow) {
+	joined := SpawnOutcome{
+		MsgAssistantCount: r.turns,
+		TokensInputTotal:  r.tokensIn,
+		TokensOutputTotal: r.tokensOut,
+	}
+	if r.durationMs.Valid {
+		v := r.durationMs.Int64
+		joined.DurationMs = &v
+	}
+	if joined.HasComputedAggregates() {
+		return
+	}
+
+	sess, err := d.SessionByInstanceID(r.instanceID)
+	if err != nil || sess == nil {
+		return
+	}
+	out := d.CompareRunOutcome(sess)
+	if out == nil {
+		return
+	}
+	r.turns = out.MsgAssistantCount
+	r.tokensIn = out.TokensInputTotal
+	r.tokensOut = out.TokensOutputTotal
+	if out.DurationMs != nil {
+		r.durationMs = sql.NullInt64{Int64: *out.DurationMs, Valid: true}
+	}
+	if out.EndState != nil {
+		r.endState = sql.NullString{String: *out.EndState, Valid: true}
+	}
 }
 
 // AbtestPairsForSessions returns a map of session_name → abtest_pair_id for

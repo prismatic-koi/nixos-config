@@ -177,6 +177,59 @@ func TestRenderIncarnationDetail_LiveSessionDuration(t *testing.T) {
 	}
 }
 
+// TestRenderStatsIncarnations_StateAndDurationBeforeCleanup covers the
+// listing table one level up from the detail view. It read sessions.end_state
+// and sessions.ended_at directly, so `prism stats` showed STATE active with a
+// still-growing duration for the same session `prism stats <session>` reported
+// as finished.
+//
+// The proxy twin (renderStatsIncarnationsFromSessions) keeps the old
+// semantics: it has no DB handle, and carrying a resolved state across the
+// host-API boundary changes the /stats?view=summary wire shape. Tracked in
+// issue #2935.
+func TestRenderStatsIncarnations_StateAndDurationBeforeCleanup(t *testing.T) {
+	d := openStatsTestDB(t)
+	startedAt := time.Now().Add(-40 * time.Minute)
+
+	const sessionName = "repo@2932-table-state"
+	iid := uuid.New().String()
+	if err := d.UpsertStatus(sessionName, "repo", "/wt/"+sessionName, "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetInstanceID(sessionName, iid); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	if err := d.InsertSession(db.Session{
+		InstanceID:  iid,
+		SessionName: sessionName,
+		Repo:        "repo",
+		Worktree:    "/wt/" + sessionName,
+		Harness:     "pi",
+		StartedAt:   startedAt,
+	}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+	writeAssistantTurn(t, d, sessionName, iid, startedAt.Add(time.Minute), 100, 50, 0, 0, 0.01)
+	writeStateChange(t, d, sessionName, iid, "finished", startedAt.Add(12*time.Minute))
+
+	sessions, err := d.AllSessions()
+	if err != nil {
+		t.Fatalf("AllSessions: %v", err)
+	}
+	out := captureStdout(t, func() {
+		if rerr := renderIncarnationsWithDB(d, sessions); rerr != nil {
+			t.Fatalf("renderIncarnationsWithDB: %v", rerr)
+		}
+	})
+
+	if !strings.Contains(out, "finished") {
+		t.Errorf("STATE column must report the terminal state before cleanup:\n%s", out)
+	}
+	if !strings.Contains(out, "12m 0s") {
+		t.Errorf("DURATION column must measure to the terminal transition:\n%s", out)
+	}
+}
+
 // TestRenderIncarnationDetail_NoTokenFields is the edge-case AC: a finished
 // session whose events carry no token fields prints the explicit no-data
 // marker rather than a fabricated zero row, and does not error.
