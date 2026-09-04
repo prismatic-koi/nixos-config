@@ -127,19 +127,22 @@ func (d *DB) ResolveSessionArg(arg string, forceInstance bool) (*Session, error)
 
 // SessionIsTerminal reports whether sess is in a terminal state
 // (finished / error / interrupted / deleted) — the gate for computing
-// spawn_outcome on the fly when no persisted row exists yet.
+// spawn_outcome on the fly when no filled row exists yet.
 //
-// agent_status is the live source of truth while the row still exists. It
-// falls back to sessions.end_state for sessions whose agent_status row has
-// already been cleaned away but whose sessions row still records a terminal
-// end_state. The "reset" marker is deliberately excluded — it can be set
-// before the more-specific UpdateSessionEnded call, when the aggregates are
-// not yet stable.
+// agent_status is the live source of truth while its row belongs to this
+// incarnation. The row is keyed by session_name, and a name is reused by
+// every later incarnation (each coordinator `@main` run, a re-spawned worker
+// branch), so the row is trusted only when its instance_id is sess's own or
+// is not recorded. Otherwise, and when no row exists, sessions.end_state
+// answers for the incarnation itself. The "reset" marker is deliberately
+// excluded — it can be set before the more-specific UpdateSessionEnded call,
+// when the aggregates are not yet stable.
 func (d *DB) SessionIsTerminal(sess *Session) bool {
 	if sess == nil {
 		return false
 	}
-	if st, err := d.CurrentStatus(sess.SessionName); err == nil && st != nil {
+	if st, err := d.CurrentStatus(sess.SessionName); err == nil && st != nil &&
+		(st.InstanceID == nil || *st.InstanceID == sess.InstanceID) {
 		return agent.IsTerminal(agent.AgentState(st.State))
 	}
 	if sess.EndState != nil {

@@ -13,6 +13,7 @@
 package db_test
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -201,6 +202,82 @@ func TestCompareRunOutcome_LiveSessionWithStubReturnsNil(t *testing.T) {
 	sess, _ := d.SessionByInstanceID(iid)
 	if out := d.CompareRunOutcome(sess); out != nil {
 		t.Errorf("CompareRunOutcome on a live session with a stub: got %+v, want nil", out)
+	}
+}
+
+// TestCompareRunOutcome_OldIncarnationUnderReusedLiveName covers the
+// pre-migration row of a past incarnation whose session name is live again
+// (every earlier coordinator `@main` run, a re-spawned worker branch). The
+// agent_status row for the name now belongs to the new incarnation and is
+// active. If SessionIsTerminal trusts that row for the old instance_id, the
+// old incarnation reads as live, CompareRunOutcome returns nil, and its
+// aggregates vanish.
+func TestCompareRunOutcome_OldIncarnationUnderReusedLiveName(t *testing.T) {
+	d := openTestDB(t)
+	startedAt := time.Now().Add(-3 * time.Hour)
+	sessionName, oldIID := seedFinishedWorker(t, d, "reused-name", startedAt, startedAt.Add(28*time.Minute))
+
+	// Cleanup fills the row, then the column is cleared to mirror a row
+	// written before the aggregated_at migration.
+	if err := d.SetEnded(sessionName); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+	if err := d.UpdateSessionEnded(oldIID, "finished"); err != nil {
+		t.Fatalf("UpdateSessionEnded: %v", err)
+	}
+	if err := d.WriteSpawnOutcome(oldIID); err != nil {
+		t.Fatalf("WriteSpawnOutcome: %v", err)
+	}
+	raw, err := sql.Open("sqlite", d.Path())
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	if _, err := raw.Exec(`UPDATE spawn_outcome SET aggregated_at = NULL WHERE instance_id = ?`, oldIID); err != nil {
+		raw.Close()
+		t.Fatalf("clear aggregated_at: %v", err)
+	}
+	raw.Close()
+
+	// The name is spawned again: a new incarnation, active, owns the
+	// agent_status row.
+	newIID := uuid.New().String()
+	if err := d.UpsertStatus(sessionName, "prism-test-repo", "/tmp/test-wt", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (respawn): %v", err)
+	}
+	if err := d.ClearEnded(sessionName); err != nil {
+		t.Fatalf("ClearEnded: %v", err)
+	}
+	if err := d.SetInstanceID(sessionName, newIID); err != nil {
+		t.Fatalf("SetInstanceID (respawn): %v", err)
+	}
+	if err := d.InsertSession(db.Session{
+		InstanceID: newIID, SessionName: sessionName, Repo: "prism-test-repo",
+		Worktree: "/tmp/test-wt", Harness: "pi", StartedAt: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("InsertSession (respawn): %v", err)
+	}
+
+	old, _ := d.SessionByInstanceID(oldIID)
+	if !d.SessionIsTerminal(old) {
+		t.Fatal("SessionIsTerminal(old incarnation) = false; the live row belongs to another instance_id and sessions.end_state is finished")
+	}
+	out := d.CompareRunOutcome(old)
+	if out == nil {
+		t.Fatal("CompareRunOutcome(old incarnation): nil; its aggregates vanished behind the reused name")
+	}
+	if out.TokensOutputTotal != 1000 {
+		t.Errorf("TokensOutputTotal: got %d, want 1000", out.TokensOutputTotal)
+	}
+	if out.EndState == nil || *out.EndState != "finished" {
+		t.Errorf("EndState: got %v, want finished", out.EndState)
+	}
+
+	current, _ := d.SessionByInstanceID(newIID)
+	if d.SessionIsTerminal(current) {
+		t.Error("SessionIsTerminal(live incarnation) = true, want false")
+	}
+	if got := d.CompareRunOutcome(current); got != nil {
+		t.Errorf("CompareRunOutcome(live incarnation): got %+v, want nil", got)
 	}
 }
 
