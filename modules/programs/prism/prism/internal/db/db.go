@@ -59,6 +59,11 @@ type DB struct {
 	// across goroutines and a test may install its own.
 	profileResolverMu sync.RWMutex
 	profileResolver   *ProfileResolver
+
+	// sessionProfiles caches each session's spawn-time profile, keyed by
+	// instance_id, so the event-write path issues no per-event query for it —
+	// see profile_name.go. The zero value is usable; it carries its own mutex.
+	sessionProfiles sessionProfileCache
 }
 
 // Path returns the filesystem path of the database file.
@@ -86,12 +91,13 @@ CREATE TABLE IF NOT EXISTS agent_events (
   -- ("unknown" when the account store cannot be resolved). Records the NAME
   -- only — never any accounts/*.json token content.
   account_name       TEXT,
-  -- Active prism profile at the moment this row was written, recorded by
-  -- WriteEvent from the mtime-cached resolver. NULLABLE for
+  -- Profile the session that wrote this row was running at, recorded by
+  -- WriteEvent: the session's own spawn_inputs.profile_name, or the
+  -- machine-active profile when the session was never spawned. NULLABLE for
   -- back-compat with pre-migration rows; new rows always carry a value
   -- ("unknown" when no profile can be resolved). This is the tier the cost
-  -- counter attributes spend along. It exists BECAUSE a coordinator session
-  -- has no spawn_inputs row to join to — see profile_name.go and
+  -- counter attributes spend along. The column exists BECAUSE a coordinator
+  -- session has no spawn_inputs row to join to — see profile_name.go and
   -- exporter/sql.go CostEventsTailSQL.
   profile_name       TEXT
 );
@@ -1476,9 +1482,10 @@ func migrateV40ToV41(conn sqlExecutor, version *int) error {
 // no spawn_inputs row to join to. Without this column, CostEventsTailSQL
 // LEFT JOINs spawn_inputs for the profile; that join misses for every
 // coordinator and folds all of their spend to "default". It is written by
-// WriteEvent / WriteEventReturningRowID
-// from the mtime-cached resolver in profile_name.go. See that file for why
-// capture happens at write time rather than at scrape time.
+// WriteEvent / WriteEventReturningRowID from the two-source resolver in
+// profile_name.go: the session's own spawn tier, then the machine-active
+// profile. See that file for why capture happens at write time rather than at
+// scrape time.
 //
 // No backfill — the same policy as migrateV40ToV41's account_name, and the
 // same answer used for the repo label. These are tail-cursor

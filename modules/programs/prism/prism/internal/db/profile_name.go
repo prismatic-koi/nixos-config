@@ -1,4 +1,4 @@
-// Active-profile resolution for the event-write path.
+// Profile resolution for the event-write path.
 //
 // Why this exists
 // ---------------
@@ -27,12 +27,32 @@
 // Precedence
 // ----------
 //
-// The recorded value uses the same precedence as config.ResolveActiveProfile:
-// flag, then state file, then the nix default. The `--profile` FLAG never
-// applies on the event-write path (the daemon writing events holds no spawn
-// flag), so precedence reduces to state file, then nix default. When neither
-// resolves, the value is the explicit "unknown" placeholder, never an empty
-// string.
+// Two sources, in this order:
+//
+//  1. The session's OWN spawn. spawn_inputs.profile_name holds the tier the
+//     session was spawned at. cmd/spawn.go writes the RESOLVED profile there,
+//     not the raw flag, so the row is populated for a spawn that passed no
+//     `--profile` too. The write path reads it by the event's instance_id.
+//
+//     A spawned session is therefore pinned to its spawn-time tier for its
+//     whole life: a later `prism profile use` moves the machine-active
+//     profile but not this session's attribution. That is the correct
+//     reading. The session's slot and routing were resolved once, at spawn,
+//     and do not change under a running agent.
+//
+//  2. The MACHINE-ACTIVE profile, for a session with no usable spawn row.
+//     This is config.ResolveActiveProfile's precedence with an empty flag:
+//     the state file, then the nix default.
+//
+// Source 1 is what makes a `--profile` override visible in telemetry: the
+// daemon writing the event holds no spawn flag, but the row that recorded the
+// flag is on disk and is keyed by the same instance_id the event carries.
+// Source 2 is the coordinator case above, and only that case. Applying source
+// 2 to a spawned session stamps the machine's tier rather than the tier the
+// session ran at, which folds every override into the host's default bucket.
+//
+// When neither source resolves, the value is the explicit "unknown"
+// placeholder, never an empty string.
 //
 // The db -> config import decision
 // --------------------------------
@@ -44,18 +64,26 @@
 // state-file path (config.ActiveProfilePath) that config.ResolveActiveProfile
 // uses.
 //
-// mtime-cached, not stat-and-read per event
-// ------------------------------------------
+// Cached, not read per event
+// --------------------------
 //
-// The event-write path is hot. This resolver stats the active-profile state
-// file for its mtime and reads the CONTENT only when the mtime changes (or on
-// the first resolution), exactly as account_name.go does for accounts/current.
+// The event-write path is hot, so neither source may add a read to every
+// event.
+//
+// Source 2 is mtime-cached. The resolver stats the active-profile state file
+// for its mtime and reads the CONTENT only when the mtime changes (or on the
+// first resolution), exactly as account_name.go does for accounts/current.
 // The nix default is read once from profiles.json and cached for the life of
 // the process: a nixos rebuild regenerates profiles.json and restarts the
 // prism daemon, so a fresh process re-reads it.
+//
+// Source 1 is cached per instance_id by sessionProfileCache below. A
+// spawn_inputs row is written once and never updated, so a resolved tier is
+// good for the life of the process.
 package db
 
 import (
+	"database/sql"
 	"os"
 	"strings"
 	"sync"
@@ -235,9 +263,91 @@ func (d *DB) profileResolverFor() *ProfileResolver {
 	return ProcessProfileResolver()
 }
 
-// resolveProfileName resolves the active profile name for a write. It is the
-// single call site the event write paths share, so every row records the
-// profile by the same rule.
-func (d *DB) resolveProfileName() string {
+// spawnProfileQuery reads the spawn-time profile of one session incarnation.
+const spawnProfileQuery = `SELECT profile_name FROM spawn_inputs WHERE instance_id = ?`
+
+// negativeSpawnProfileTTL bounds how long a "this session has no spawn-time
+// profile" answer is trusted before the cache asks the database again.
+//
+// A miss is not always permanent. internal/session/spawn.go writes the
+// spawn-intent event for a new instance_id just BEFORE it inserts that
+// session's spawn_inputs row, so the first lookup a spawning process makes
+// can miss a row that lands moments later. Without the TTL that process would
+// stamp the machine profile on every further event it writes for the session.
+const negativeSpawnProfileTTL = time.Minute
+
+// maxSessionProfileEntries caps the number of cached sessions. A sidecar
+// writes events for one session, but a process that spawns and monitors other
+// sessions writes events for each of them, so the map needs a bound. At the
+// cap the whole map is dropped rather than evicted one entry at a time: a
+// rebuild costs one query per live session, which an LRU does not improve on
+// at this size.
+const maxSessionProfileEntries = 1024
+
+// sessionProfileEntry is one cached answer. name is empty when the session has
+// no usable spawn-time profile. at is when the answer was read, and bounds an
+// empty answer by negativeSpawnProfileTTL.
+type sessionProfileEntry struct {
+	name string
+	at   time.Time
+}
+
+// sessionProfileCache caches spawn_inputs.profile_name per instance_id so the
+// event-write path issues no per-event query. It is safe for concurrent use
+// and its zero value is usable.
+type sessionProfileCache struct {
+	mu      sync.Mutex
+	entries map[string]sessionProfileEntry
+
+	// queries counts database lookups. It backs the performance assertion that
+	// N events for one session trigger one query, mirroring
+	// ProfileResolver.reads. Guarded by mu.
+	queries int
+}
+
+// name returns the spawn-time profile for instanceID, or "" when that session
+// has no spawn row, its row records no profile, or the read fails. All of
+// those mean the same thing to the caller: fall back to the machine-active
+// profile.
+func (c *sessionProfileCache) name(conn *sql.DB, instanceID string) string {
+	now := time.Now()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if e, ok := c.entries[instanceID]; ok && (e.name != "" || now.Sub(e.at) < negativeSpawnProfileTTL) {
+		return e.name
+	}
+
+	c.queries++
+	var resolved string
+	var profile sql.NullString
+	if err := conn.QueryRow(spawnProfileQuery, instanceID).Scan(&profile); err == nil {
+		resolved = strings.TrimSpace(profile.String)
+	}
+
+	if c.entries == nil || len(c.entries) >= maxSessionProfileEntries {
+		c.entries = make(map[string]sessionProfileEntry)
+	}
+	c.entries[instanceID] = sessionProfileEntry{name: resolved, at: now}
+	return resolved
+}
+
+// spawnProfileName returns the spawn-time profile of the session that owns
+// this event, or "" when the event carries no instance_id to look it up by.
+func (d *DB) spawnProfileName(instanceID *string) string {
+	if instanceID == nil || *instanceID == "" {
+		return ""
+	}
+	return d.sessionProfiles.name(d.conn, *instanceID)
+}
+
+// resolveProfileName resolves the profile name for a write: the session's own
+// spawn tier, then the machine-active profile. It is the single call site the
+// event write paths share, so every row records the profile by the same rule.
+func (d *DB) resolveProfileName(instanceID *string) string {
+	if name := d.spawnProfileName(instanceID); name != "" {
+		return name
+	}
 	return d.profileResolverFor().Name()
 }
