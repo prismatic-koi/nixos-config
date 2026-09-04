@@ -197,13 +197,13 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	const dotW = 2
 
 	// profileW is the width of the profile-tier column, sized to the longest
-	// valid tier name ("standard", 8 runes). Unlike stateW, profileW is NOT
-	// part of fixedCore: it competes with titleW for the leftover width after
-	// session+state, and is dropped first (see showProfile below) so that a
-	// narrow terminal degrades to session+state only — the fallback the title
-	// column already relies on. stateW stays in fixedCore and is never
-	// truncated.
-	const profileW = 8
+	// ProfileName among the displayed sessions (see ProfileColumnWidth).
+	// Unlike stateW, profileW is NOT part of fixedCore: it competes with
+	// titleW for the leftover width after session+state, and is dropped
+	// first (see showProfile below) so that a narrow terminal degrades to
+	// session+state only — the fallback the title column already relies on.
+	// stateW stays in fixedCore and is never truncated.
+	profileW := ProfileColumnWidth(d.Displayed)
 
 	// fixedCore is the non-negotiable fixed overhead: leading space + dot +
 	// treePrefixW + gap-before-state + stateW.
