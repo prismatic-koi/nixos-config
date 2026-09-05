@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/verdict"
 )
 
@@ -307,12 +308,31 @@ func (d *DB) ComputeSpawnOutcome(instanceID string) (*SpawnOutcome, error) {
 
 	// --- Process-level ---
 
+	// The terminal-state transition is the end of the run. sessions.ended_at
+	// is not: no path stamps it when the agent reaches its terminal state, so
+	// it holds the time `prism cleanup` ran and carries the whole idle gap in
+	// between (issue #2932).
+	terminalAtMs, terminalState, haveTerminal := d.terminalTransition(instanceID)
+
 	out.EndState = sess.EndState
-	if sess.EndedAt != nil && sess.StartedAt.UnixMilli() > 0 {
-		dur := sess.EndedAt.Sub(sess.StartedAt).Milliseconds()
-		out.DurationMs = &dur
-		if sess.EndState != nil && *sess.EndState == "finished" {
-			out.TimeToFinishedMs = &dur
+	if out.EndState == nil && haveTerminal {
+		st := terminalState
+		out.EndState = &st
+	}
+
+	var endedAtMs int64
+	switch {
+	case haveTerminal:
+		endedAtMs = terminalAtMs
+	case sess.EndedAt != nil:
+		endedAtMs = sess.EndedAt.UnixMilli()
+	}
+	if endedAtMs > 0 && sess.StartedAt.UnixMilli() > 0 {
+		if dur := endedAtMs - sess.StartedAt.UnixMilli(); dur >= 0 {
+			out.DurationMs = &dur
+			if out.EndState != nil && *out.EndState == "finished" {
+				out.TimeToFinishedMs = &dur
+			}
 		}
 	}
 
@@ -458,6 +478,36 @@ SELECT group_id FROM session_groups
 	}
 
 	return &out, nil
+}
+
+// terminalTransition returns the timestamp (Unix ms) and state of the most
+// recent state_change event for instanceID, when that transition moved the
+// session into a terminal state.
+//
+// ok is false in three cases, and every one of them means "this session has
+// no terminal transition to measure against": the session has written no
+// state_change events; its latest state_change is non-terminal (it resumed
+// after finishing, or it was killed while active); or the read failed.
+// Callers fall back to sessions.ended_at.
+//
+// The read is covered by idx_events_instance (instance_id, type, created_at),
+// so it costs one index seek plus one row fetch for the payload.
+func (d *DB) terminalTransition(instanceID string) (atMs int64, state string, ok bool) {
+	const q = `
+SELECT COALESCE(JSON_EXTRACT(payload,'$.state'), ''), created_at
+FROM agent_events
+WHERE instance_id = ? AND type = 'state_change'
+ORDER BY created_at DESC, rowid DESC
+LIMIT 1`
+	var st string
+	var createdAt int64
+	if err := d.conn.QueryRow(q, instanceID).Scan(&st, &createdAt); err != nil {
+		return 0, "", false
+	}
+	if !agent.IsTerminal(agent.AgentState(st)) {
+		return 0, "", false
+	}
+	return createdAt, st, true
 }
 
 // WriteSpawnOutcome computes all aggregated columns for the given instanceID

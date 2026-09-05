@@ -254,3 +254,31 @@ type SpawnOutcome struct {
 	ComputedAt    int64
 	SchemaVersion int
 }
+
+// HasComputedAggregates reports whether this row carries the event-derived
+// aggregate block — the columns only WriteSpawnOutcome ever writes.
+//
+// Three other writers touch spawn_outcome: UpdateSpawnOutcomePR,
+// UpdateSpawnOutcomePRMergedAt, and UpdateSpawnOutcomeReviewResult. Each is a
+// partial UPSERT that sets its own columns and leaves the aggregate block at
+// zero, so any of them can create the row long before `prism cleanup`
+// computes it. A reader that treats "a row exists" as "the aggregates exist"
+// therefore reports zero tokens, zero cost, and no duration for a session
+// whose events carry all three — issue #2932, where a review-verdict write
+// created the stub.
+//
+// A cleanup-written row for a session that produced no events at all also
+// reports false. That is harmless: the recomputation it triggers reads the
+// same empty event set and returns the same zeros.
+func (o *SpawnOutcome) HasComputedAggregates() bool {
+	if o == nil {
+		return false
+	}
+	return o.MsgAssistantCount > 0 || o.ToolCallCount > 0 || o.ToolErrorCount > 0 ||
+		o.InterruptedCount > 0 || o.CompactionCount > 0 || o.ErrorEventCount > 0 ||
+		o.PermissionAskCount > 0 || o.PermissionDeniedCount > 0 || o.DoomLoopCount > 0 ||
+		o.TokensInputTotal > 0 || o.TokensOutputTotal > 0 ||
+		o.TokensCacheReadTotal > 0 || o.TokensCacheWriteTotal > 0 ||
+		o.CostUSDTotal > 0 ||
+		o.DurationMs != nil || o.TimeToFirstEventMs != nil || o.TimeToFinishedMs != nil
+}

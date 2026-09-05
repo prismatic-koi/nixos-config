@@ -263,10 +263,11 @@ type compareRun struct {
 	Session *db.Session
 	// Outcome may be nil when the session is still in-progress (live state
 	// such as active/idle/reviewing). When a session has reached a terminal
-	// state (finished/error/interrupted) but no spawn_outcome row exists yet
-	// (the window between terminal transition and prism cleanup), Outcome is
-	// populated by an on-the-fly call to db.ComputeSpawnOutcome — see
-	// loadCompareRuns.
+	// state (finished/error/interrupted) but its spawn_outcome row does not
+	// yet carry the computed aggregates — no row at all, or a stub written by
+	// a partial writer, both of which occur in the window between terminal
+	// transition and prism cleanup — Outcome is populated by an on-the-fly
+	// call to db.ComputeSpawnOutcome — see loadCompareRuns.
 	Outcome *db.SpawnOutcome
 	// Inputs is the slim, non-sensitive spawn_inputs projection for this
 	// session, or nil when no row exists (spawns with no inputs row, or a
@@ -350,8 +351,10 @@ func renderComparison(cmd *cobra.Command, runs []compareRun) error {
 //
 // For each session it reads the spawn_outcome and spawn_inputs rows. When a
 // session has reached a terminal state (finished / error / interrupted)
-// but no spawn_outcome row exists yet — the window between the sidecar's
-// terminal-state transition and `prism cleanup` — the outcome is computed
+// but its spawn_outcome row does not yet carry the computed aggregates — no
+// row at all, or a stub written by a partial writer, both of which occur in
+// the window between the sidecar's terminal-state transition and
+// `prism cleanup` — the outcome is computed
 // on the fly from agent_events via db.ComputeSpawnOutcome. ComputeSpawnOutcome
 // is the same code path WriteSpawnOutcome uses internally, so the values
 // surfaced here agree byte-for-byte with the row the cleanup pass will
@@ -364,9 +367,10 @@ func loadCompareRuns(d *db.DB, sessions []*db.Session) []compareRun {
 	for i, sess := range sessions {
 		// db.AssembleCompareRun is the canonical assembly shared with the
 		// host-API proxy path (db.AssembleCompareRun → CompareRunOutcome →
-		// SessionIsTerminal): persisted spawn_outcome, or an on-the-fly
-		// ComputeSpawnOutcome when the session is terminal but not yet
-		// cleaned up, plus the best-effort spawn_inputs row.
+		// SessionIsTerminal): the persisted spawn_outcome when it carries the
+		// computed aggregates, or an on-the-fly ComputeSpawnOutcome when the
+		// session is terminal and it does not, plus the best-effort
+		// spawn_inputs row.
 		data[i] = d.AssembleCompareRun(sess)
 	}
 	return compareRunsFromData(data)

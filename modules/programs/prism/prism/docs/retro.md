@@ -208,7 +208,8 @@ stated.
    issue #2583 (this part carries `Closes #2529`, since #2585 — the original
    part 4 — was closed as not-planned). Per-session token/cost/waste data
    comes from `db.CompareRunOutcome`, which returns the persisted
-   `spawn_outcome` row or, for a terminal session with no row yet, an
+   `spawn_outcome` row or, for a terminal session whose row does not yet
+   carry the computed aggregates, an
    on-the-fly `ComputeSpawnOutcome` aggregation over `agent_events`. That
    fallback is what makes review-agent sessions countable regardless of
    whether cleanup has written their rows (`WriteSpawnOutcomeCascade`, #2591)

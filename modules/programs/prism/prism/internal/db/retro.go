@@ -13,7 +13,8 @@ package db
 //
 //   - Per-session token/cost/waste data comes from CompareRunOutcome, which
 //     returns the persisted spawn_outcome row, or — for a terminal session
-//     with no row yet — an on-the-fly ComputeSpawnOutcome aggregation over
+//     whose row does not yet carry the computed aggregates (no row at all, or
+//     a stub written by a partial writer) — an on-the-fly aggregation over
 //     agent_events. That fallback is what makes review-agent sessions countable
 //     even before `prism cleanup` writes their rows and for historical rows
 //     that have no spawn_outcome row: ComputeSpawnOutcome reads the same

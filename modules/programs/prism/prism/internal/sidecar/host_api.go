@@ -369,7 +369,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//   view=detail    → {"session":{...db.Session...},"outcome":{...db.SpawnOutcome...}|null}
 	//                    (single-session incarnation detail; outcome is the
 	//                    persisted-or-computed spawn_outcome row, nil for a
-	//                    still-live session with no row yet)
+	//                    still-live session)
 	//   view=compare   → {"runs":[...db.CompareRunData...]} one per id, in request order;
 	//                    404 if any id fails to resolve (atomic, mirrors the host CLI path)
 	//   view=abtest    → {"runs":[...db.CompareRunData...]} group members sorted by session_name
@@ -510,10 +510,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			}
 			// Include the spawn_outcome token/cost data alongside the session so
 			// the sandbox proxy path can render identical output to the
-			// host-direct path. CompareRunOutcome returns the
-			// persisted row, an on-the-fly computation for a terminal session
-			// with no row yet, or nil for a still-live session — the renderer
-			// treats nil as "not yet available", never as zero.
+			// host-direct path. CompareRunOutcome returns the persisted row when
+			// it carries the computed aggregates, an on-the-fly computation for a
+			// terminal session whose row does not, or nil for a still-live
+			// session — the renderer treats nil as "not yet available", never as
+			// zero.
 			outcome := s.cfg.DB.CompareRunOutcome(sess)
 			writeJSON(w, http.StatusOK, map[string]any{"session": sess, "outcome": outcome})
 

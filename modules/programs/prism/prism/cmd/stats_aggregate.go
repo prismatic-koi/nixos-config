@@ -113,17 +113,32 @@ func renderIncarnationsWithDB(d *db.DB, sessions []db.Session) error {
 			agentName = agentName[:wAgent-3] + "..."
 		}
 
+		// STATE and DURATION come from the outcome, and from the sessions row
+		// only as a fallback. sessions.end_state and sessions.ended_at are
+		// `prism cleanup` writes, so reading them first reported a finished
+		// session as "active" with a duration that grew until an operator ran
+		// cleanup — while `prism stats <session>` reported the real state and
+		// the terminal-transition duration for that same session (issue #2932).
+		sess := s
+		outcome := d.CompareRunOutcome(&sess)
+
 		state := "active"
-		if s.EndState != nil && *s.EndState != "" {
+		switch {
+		case outcome != nil && outcome.EndState != nil && *outcome.EndState != "":
+			state = *outcome.EndState
+		case s.EndState != nil && *s.EndState != "":
 			state = *s.EndState
-		} else if s.EndedAt != nil {
+		case s.EndedAt != nil:
 			state = "ended"
 		}
 
 		var dur time.Duration
-		if s.EndedAt != nil {
+		switch {
+		case outcome != nil && outcome.DurationMs != nil:
+			dur = time.Duration(*outcome.DurationMs) * time.Millisecond
+		case s.EndedAt != nil:
 			dur = s.EndedAt.Sub(s.StartedAt)
-		} else {
+		default:
 			dur = now.Sub(s.StartedAt)
 		}
 		durStr := formatDurationLong(dur)
@@ -169,6 +184,15 @@ func renderIncarnationsWithDB(d *db.DB, sessions []db.Session) error {
 // renderStatsIncarnationsFromSessions renders the incarnation table from a
 // pre-fetched sessions slice without DB access. Token/cost columns show '—'.
 // Used by the proxy path where DB access is not available.
+//
+// STATE and DURATION here come from the sessions row, so they carry the
+// pre-#2932 semantics: a finished session that has not been cleaned up shows
+// "active" and a still-growing duration. The host-direct twin above reads the
+// outcome and does not. Closing that gap needs the /stats?view=summary
+// response to carry a resolved state and duration per session, which changes
+// the endpoint's wire shape — tracked separately in issue #2935, deliberately
+// out of scope for #2932. This is the same class of gap the TOKENS and COST
+// columns already have on this path.
 func renderStatsIncarnationsFromSessions(sessions []db.Session) error {
 	if len(sessions) == 0 {
 		fmt.Println("no sessions yet")

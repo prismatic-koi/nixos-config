@@ -31,7 +31,15 @@ type AbtestPair struct {
 	InputsA *db.SpawnInputs
 	InputsB *db.SpawnInputs
 
-	// SpawnOutcome for each sibling (nil when outcome not yet computed or missing).
+	// SpawnOutcome for each sibling, from db.CompareRunOutcome: the persisted
+	// row when it carries the computed aggregates, or a live aggregation for a
+	// terminal session whose row does not (no row yet, or a stub written by a
+	// partial writer). nil only for a session that is still live.
+	//
+	// Not SpawnOutcomeByInstanceID. This is a pre-merge A/B comparison surface,
+	// so it reads during exactly the window in which the persisted row is
+	// absent or a stub — reading the row directly reported zero tokens, zero
+	// turns, and no duration for both legs (issue #2932).
 	OutcomeA *db.SpawnOutcome
 	OutcomeB *db.SpawnOutcome
 
@@ -68,14 +76,14 @@ func LoadAbtestPair(d *db.DB, pairID string) (*AbtestPair, error) {
 	sA := sessions[0]
 	pair.SessionA = &sA
 	pair.InputsA, _ = d.SpawnInputsByInstanceID(sA.InstanceID)
-	pair.OutcomeA, _ = d.SpawnOutcomeByInstanceID(sA.InstanceID)
+	pair.OutcomeA = d.CompareRunOutcome(&sA)
 
 	// Populate SessionB if present.
 	if len(sessions) >= 2 {
 		sB := sessions[1]
 		pair.SessionB = &sB
 		pair.InputsB, _ = d.SpawnInputsByInstanceID(sB.InstanceID)
-		pair.OutcomeB, _ = d.SpawnOutcomeByInstanceID(sB.InstanceID)
+		pair.OutcomeB = d.CompareRunOutcome(&sB)
 	} else {
 		pair.MissingB = true
 	}

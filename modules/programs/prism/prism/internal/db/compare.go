@@ -127,7 +127,7 @@ func (d *DB) ResolveSessionArg(arg string, forceInstance bool) (*Session, error)
 
 // SessionIsTerminal reports whether sess is in a terminal state
 // (finished / error / interrupted / deleted) — the gate for computing
-// spawn_outcome on the fly when no persisted row exists yet.
+// spawn_outcome on the fly when no persisted row carries the aggregates yet.
 //
 // agent_status is the live source of truth while the row still exists. It
 // falls back to sessions.end_state for sessions whose agent_status row has
@@ -152,26 +152,42 @@ func (d *DB) SessionIsTerminal(sess *Session) bool {
 }
 
 // CompareRunOutcome returns the spawn_outcome to display for sess: the
-// persisted spawn_outcome row when present, or — when the session has reached
-// a terminal state but no row has been written yet (the window between the
-// terminal transition and `prism cleanup`) — an on-the-fly computation via
-// ComputeSpawnOutcome. ComputeSpawnOutcome is the same aggregation
-// WriteSpawnOutcome uses internally, so the value agrees byte-for-byte with
-// the row cleanup will later persist. Returns nil for live sessions (the
-// renderer shows "—").
+// persisted spawn_outcome row when it carries the computed aggregate block,
+// or — when the session has reached a terminal state but no aggregate has
+// been written yet (the window between the terminal transition and
+// `prism cleanup`) — an on-the-fly computation via ComputeSpawnOutcome.
+// ComputeSpawnOutcome is the same aggregation WriteSpawnOutcome uses
+// internally, so the value agrees byte-for-byte with the row cleanup will
+// later persist. Returns nil for live sessions (the renderer shows "—").
+//
+// The gate is HasComputedAggregates, not "a row exists". A row can exist
+// with every aggregate at zero: three partial writers create one at the PR,
+// merge, and review-complete boundaries, all of which land before cleanup.
+// Gating on existence made those stub rows shadow the live computation, so
+// `prism stats` and `prism stats compare` reported no tokens, no cost, and no
+// duration for sessions whose events carried all three (issue #2932).
+//
+// Order matters in the other direction too. A persisted aggregate wins over a
+// recomputation, because agent_events is pruned at 90 days
+// (internal/db/maintenance.go) while spawn_outcome is not: for an old session
+// the persisted row is the only surviving record of what the run cost.
 func (d *DB) CompareRunOutcome(sess *Session) *SpawnOutcome {
 	if sess == nil {
 		return nil
 	}
-	if out, _ := d.SpawnOutcomeByInstanceID(sess.InstanceID); out != nil {
-		return out
+	persisted, _ := d.SpawnOutcomeByInstanceID(sess.InstanceID)
+	if persisted.HasComputedAggregates() {
+		return persisted
 	}
 	if d.SessionIsTerminal(sess) {
+		// ComputeSpawnOutcome folds the persisted agent-level columns
+		// (pr_number, pr_merged_at, review verdict/counts) back in, so nothing
+		// the stub row carried is lost by preferring the computation here.
 		if computed, err := d.ComputeSpawnOutcome(sess.InstanceID); err == nil && computed != nil {
 			return computed
 		}
 	}
-	return nil
+	return persisted
 }
 
 // AssembleCompareRun gathers the per-run data the comparison renderer needs

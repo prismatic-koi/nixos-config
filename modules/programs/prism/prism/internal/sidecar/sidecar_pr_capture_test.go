@@ -20,6 +20,10 @@ package sidecar
 //     is populated for the sidecar's InstanceID.
 //   - negative-mutation guard: a successful `gh pr view` (NOT create) must
 //     NOT trigger the write, even though its stdout contains a /pull/N URL.
+//   - the same flow on the PI socket-pipe transport, where the command and
+//     its output arrive in two separate frames (issue #2932). PI is the
+//     harness every session prism spawns today, and it had no capture at
+//     all: pr_number was `—` on every row.
 
 import (
 	"encoding/json"
@@ -316,6 +320,150 @@ func TestMessagePartUpdated_GhPRCreate_NoURL_NoWrite(t *testing.T) {
 	}
 	if out != nil && out.PRNumber != nil {
 		t.Errorf("PRNumber: got %d, want nil — no URL in output should mean no write", *out.PRNumber)
+	}
+}
+
+// ---------- PI socket-pipe transport (issue #2932) ----------
+
+// piToolCall builds a PI `tool_call` wire frame (P2.WIRE §5.3).
+func piToolCall(id, name, command string) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"type": "tool_call",
+		"id":   id,
+		"name": name,
+		"args": map[string]any{"command": command},
+	})
+	return b
+}
+
+// piToolResult builds a PI `tool_result` wire frame (P2.WIRE §5.4).
+func piToolResult(id string, success bool, output string) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"type":    "tool_result",
+		"id":      id,
+		"success": success,
+		"output":  output,
+	})
+	return b
+}
+
+// prNumberFor reads spawn_outcome.pr_number for instanceID, or nil when the
+// row or the column is absent.
+func prNumberFor(t *testing.T, d *db.DB, instanceID string) *int {
+	t.Helper()
+	out, err := d.SpawnOutcomeByInstanceID(instanceID)
+	if err != nil {
+		t.Fatalf("SpawnOutcomeByInstanceID: %v", err)
+	}
+	if out == nil {
+		return nil
+	}
+	return out.PRNumber
+}
+
+// TestPipeFrame_GhPRCreate_PersistsPRNumber is the PI-transport counterpart of
+// TestMessagePartUpdated_GhPRCreate_PersistsPRNumber. PI splits a tool call
+// across a tool_call frame (command) and a tool_result frame (output), so the
+// SSE-path capture — which reads both from one `part` value — never fired for
+// a PI session, and pr_number was never recorded (issue #2932).
+func TestPipeFrame_GhPRCreate_PersistsPRNumber(t *testing.T) {
+	d := openTestDB(t)
+	const sess = "test-repo@2932-pi-pr-capture"
+	iid := uuid.New().String()
+	sc := newWorkerSidecarWithInstance(t, d, sess, iid)
+	_ = d.UpsertStatus(sess, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	sc.handlePipeFrame(piToolCall("call_1", "bash", "gh pr create --title 'fix #2932' --body 'closes #2932'"))
+	sc.handlePipeFrame(piToolResult("call_1", true, "https://github.com/owner/test-repo/pull/2932\n"))
+
+	pr := prNumberFor(t, d, iid)
+	if pr == nil {
+		t.Fatal("PRNumber: nil — the PI-path capture did not write to spawn_outcome.pr_number")
+	}
+	if *pr != 2932 {
+		t.Errorf("PRNumber: got %d, want 2932", *pr)
+	}
+}
+
+// TestPipeFrame_GhPRView_DoesNotPersistPRNumber is the negative-mutation
+// guard for the PI path: a `gh pr view` result carries a /pull/N URL too, and
+// must not stamp this session's row with another PR's number. The tool-call
+// id is what separates the two — only the result of the noted `gh pr create`
+// call is read.
+func TestPipeFrame_GhPRView_DoesNotPersistPRNumber(t *testing.T) {
+	d := openTestDB(t)
+	const sess = "test-repo@2932-pi-pr-view"
+	iid := uuid.New().String()
+	sc := newWorkerSidecarWithInstance(t, d, sess, iid)
+	_ = d.UpsertStatus(sess, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	sc.handlePipeFrame(piToolCall("call_1", "bash", "gh pr view 4242 --json url -q .url"))
+	sc.handlePipeFrame(piToolResult("call_1", true, "https://github.com/owner/test-repo/pull/4242\n"))
+
+	if pr := prNumberFor(t, d, iid); pr != nil {
+		t.Errorf("PRNumber: got %d after gh pr view, want nil", *pr)
+	}
+}
+
+// TestPipeFrame_GhPRCreate_InterleavedToolResult verifies the id pairing
+// holds when another tool completes between the `gh pr create` call and its
+// own result — the normal case for a harness that runs tools concurrently.
+// The unrelated result must neither consume the pending id nor be scanned for
+// a URL.
+func TestPipeFrame_GhPRCreate_InterleavedToolResult(t *testing.T) {
+	d := openTestDB(t)
+	const sess = "test-repo@2932-pi-pr-interleaved"
+	iid := uuid.New().String()
+	sc := newWorkerSidecarWithInstance(t, d, sess, iid)
+	_ = d.UpsertStatus(sess, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	sc.handlePipeFrame(piToolCall("call_create", "bash", "gh pr create --fill"))
+	sc.handlePipeFrame(piToolCall("call_other", "bash", "git log --oneline -1"))
+	sc.handlePipeFrame(piToolResult("call_other", true, "see https://github.com/owner/test-repo/pull/1111 for context\n"))
+	if pr := prNumberFor(t, d, iid); pr != nil {
+		t.Fatalf("PRNumber: got %d from an unrelated tool result, want nil", *pr)
+	}
+
+	sc.handlePipeFrame(piToolResult("call_create", true, "https://github.com/owner/test-repo/pull/2932\n"))
+	pr := prNumberFor(t, d, iid)
+	if pr == nil || *pr != 2932 {
+		t.Fatalf("PRNumber: got %v, want 2932", pr)
+	}
+}
+
+// TestPipeFrame_GhPRCreate_FailedCall_NoWrite covers the two ways a
+// `gh pr create` produces no PR: the call fails, or it succeeds without
+// printing a parseable URL. Neither may write a pr_number.
+func TestPipeFrame_GhPRCreate_FailedCall_NoWrite(t *testing.T) {
+	cases := []struct {
+		name    string
+		success bool
+		output  string
+	}{
+		{name: "failed call", success: false, output: "pull request create failed: GraphQL: was submitted too quickly"},
+		{name: "no URL in output", success: true, output: "a pull request already exists for branch foo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			sess := "test-repo@2932-pi-" + tc.name
+			iid := uuid.New().String()
+			sc := newWorkerSidecarWithInstance(t, d, sess, iid)
+			_ = d.UpsertStatus(sess, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+			sc.handlePipeFrame(piToolCall("call_1", "bash", "gh pr create --fill"))
+			sc.handlePipeFrame(piToolResult("call_1", tc.success, tc.output))
+
+			if pr := prNumberFor(t, d, iid); pr != nil {
+				t.Errorf("PRNumber: got %d, want nil", *pr)
+			}
+			// The pending id must be cleared either way, so a later unrelated
+			// result cannot inherit it.
+			sc.handlePipeFrame(piToolResult("call_1", true, "https://github.com/owner/test-repo/pull/7777\n"))
+			if pr := prNumberFor(t, d, iid); pr != nil {
+				t.Errorf("PRNumber: got %d from a replayed id, want nil", *pr)
+			}
+		})
 	}
 }
 
