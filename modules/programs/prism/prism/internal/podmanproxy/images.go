@@ -30,9 +30,11 @@ package podmanproxy
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -164,21 +166,55 @@ func refCarriesTag(ref string) bool {
 //
 //   - policy:images/create:recorded:<ref> — the reference is in the
 //     ledger and the sweep will try to remove it.
+//   - policy:images/create:already_present — the image was in the
+//     upstream store BEFORE this request. Not recorded. See below.
+//   - policy:images/create:probe_failed — the proxy could not
+//     establish whether the image was already present. Not recorded.
 //   - policy:images/create:unrecordable — the request named no
 //     sweepable reference (bare fromSrc import, or a reference outside
-//     imageRefPattern). The pull still forwards; the image is simply
-//     not swept.
+//     imageRefPattern).
+//
+// In every case the pull itself forwards. The ledger never gates a
+// request; it only decides what cleanup removes later.
+//
+// # Why the already-present check exists
+//
+// The ledger drives `podman rmi` at cleanup, against a store the user
+// and every other session share. Recording the requested reference
+// alone would hand the agent a deferred deletion primitive: a pull of
+// an image the host already has would enrol that image for removal,
+// and prism — not the agent — would delete it after the session ended.
+// The issue scopes the sweep to "the images that the session pulled",
+// so an image that was already there is out of scope by definition.
+//
+// The probe is one read-only GET against the upstream. It is best
+// effort and it fails CLOSED: anything other than a confident "not
+// present" leaves the image unrecorded. An unrecorded image leaks
+// storage, which is the failure this whole feature exists to reduce.
+// A wrongly recorded one destroys someone else's data. The two are not
+// symmetric, so the tie goes to leaking.
+//
+// A concurrent pull of the same image by two sessions can record it
+// twice. That is acceptable: `podman rmi` on an image still in use
+// fails, and the sweep already ignores that failure.
 //
 // A write failure is swallowed on purpose. The ledger is a
 // housekeeping aid: losing a line leaks storage, while failing the
 // request would break a legitimate pull over a full disk.
-func (p *Proxy) recordPulledImage(query url.Values) string {
+func (p *Proxy) recordPulledImage(ctx context.Context, query url.Values) string {
 	ref := pulledImageRef(query)
 	if ref == "" {
 		return "policy:images/create:unrecordable"
 	}
 	if p.cfg.PulledImageWriter == nil {
 		return "policy:images/create:recorded:" + truncateForReason(ref)
+	}
+
+	switch present, err := p.imageExistsUpstream(ctx, ref); {
+	case err != nil:
+		return "policy:images/create:probe_failed:" + truncateForReason(ref)
+	case present:
+		return "policy:images/create:already_present:" + truncateForReason(ref)
 	}
 
 	encoded, err := json.Marshal(imageLedgerLine{Image: ref})
@@ -193,6 +229,54 @@ func (p *Proxy) recordPulledImage(query url.Values) string {
 	defer p.imageMu.Unlock()
 	_, _ = p.cfg.PulledImageWriter.Write(encoded)
 	return "policy:images/create:recorded:" + truncateForReason(ref)
+}
+
+// imageExistsUpstream reports whether ref already resolves to an image
+// in the upstream store, using the docker-compat inspect endpoint
+// (GET /images/{name}/json).
+//
+// The three outcomes are distinct and the caller treats them
+// differently:
+//
+//   - (false, nil) — the upstream answered 404. The image is not
+//     there, so this request is a genuine new pull.
+//   - (true, nil)  — the upstream answered 2xx. The image is already
+//     there.
+//   - (_, err)     — anything else: a transport failure, or a status
+//     the proxy cannot interpret. The caller must not record.
+//
+// ref is embedded in the path unescaped on purpose. A registry
+// reference carries '/' and ':' as structural separators and the
+// docker route matches the remainder of the path, so percent-encoding
+// them breaks the lookup. This is safe because the caller only reaches
+// here with a reference that already passed imageRefIsSweepable, which
+// admits no space, no '?', and no '#'.
+func (p *Proxy) imageExistsUpstream(ctx context.Context, ref string) (bool, error) {
+	if p.probeClient == nil {
+		return false, fmt.Errorf("podmanproxy: no upstream probe client")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"http://podman.sock/images/"+ref+"/json", nil)
+	if err != nil {
+		return false, fmt.Errorf("podmanproxy: build image probe: %w", err)
+	}
+	resp, err := p.probeClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("podmanproxy: image probe: %w", err)
+	}
+	defer resp.Body.Close()
+	// The body is not needed, but it must be drained for the connection
+	// to return to the idle pool.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return false, nil
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return true, nil
+	default:
+		return false, fmt.Errorf("podmanproxy: image probe: unexpected status %d", resp.StatusCode)
+	}
 }
 
 // ReadImageLedger reads the per-session image ledger at path and

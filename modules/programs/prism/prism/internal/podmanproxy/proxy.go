@@ -183,6 +183,15 @@ type Proxy struct {
 	cfg      Config
 	upstream *httputil.ReverseProxy
 
+	// probeClient issues the proxy's OWN read-only requests to the
+	// upstream, separate from the reverse-proxy path that carries a
+	// client's request. It shares the reverse proxy's Transport, so it
+	// dials the same Unix socket and reuses the same connection pool.
+	//
+	// One caller today: the image-ledger existence probe. See
+	// imageExistsUpstream in images.go.
+	probeClient *http.Client
+
 	// mu guards listener and server while Serve is initialising; once
 	// Serve enters its select loop, listener and server are read-only.
 	mu       sync.Mutex
@@ -243,6 +252,14 @@ func NewProxy(cfg Config) (*Proxy, error) {
 		// Allow long-lived streaming connections (attach, exec, logs
 		// follow=1) without a forced idle close.
 		IdleConnTimeout: 0,
+	}
+
+	p.probeClient = &http.Client{
+		Transport: transport,
+		// A probe must never outlive the request that triggered it by
+		// much. DialTimeout is the same budget the reverse-proxy path
+		// gives the upstream dial.
+		Timeout: cfg.DialTimeout,
 	}
 
 	p.upstream = &httputil.ReverseProxy{

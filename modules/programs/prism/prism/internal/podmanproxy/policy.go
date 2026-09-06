@@ -296,8 +296,10 @@ type createInspectionResult struct {
 // inspectCreate parses body as a containers/create request and
 // applies the HostConfig policy. Two-stage parse: first the
 // top-level body with DisallowUnknownFields (rejects unknown
-// top-level fields), then — if HostConfig is present — the
-// HostConfig with DisallowUnknownFields too.
+// top-level fields), then — if HostConfig carries bytes — the
+// HostConfig with DisallowUnknownFields too. The HostConfig POLICY
+// runs whether or not those bytes were there; see the comment on the
+// parse below for why that distinction matters.
 //
 // The two-stage parse exists because the JSON for HostConfig is
 // nested. A flat single-pass parser would accept ANY shape inside
@@ -324,16 +326,34 @@ func (p *Proxy) inspectCreate(body []byte, query url.Values) createInspectionRes
 		return createInspectionResult{decision: dec}
 	}
 
+	// HostConfig is parsed when present and left zero-valued when it is
+	// absent, null, or empty — but checkHostConfig runs EITHER WAY.
+	//
+	// Running it unconditionally is load-bearing, not tidiness. The
+	// resource-cap check lives inside checkHostConfig, and a configured
+	// cap makes its field mandatory on create. If the call were guarded
+	// on HostConfig being present, a body of `{"Image":"alpine"}` or
+	// `{"Image":"alpine","HostConfig":null}` would skip the cap check
+	// and create an uncapped host container — the exact bypass the caps
+	// exist to close (threat T14). `{"HostConfig":{}}` was already
+	// caught by the length test; the fully-absent and null forms were
+	// not.
+	//
+	// Every other branch of checkHostConfig is a no-op on the zero
+	// value: the slices and maps are empty, the pointers are nil, and
+	// "" is an admitted literal for NetworkMode and for the five simple
+	// namespace modes. So the only check that fires on an absent
+	// HostConfig is the cap check, and only when a cap is configured.
+	var hc hostConfig
 	if req.HostConfig != nil && len(*req.HostConfig) > 0 {
-		var hc hostConfig
 		if dec := decodeStrict(*req.HostConfig, &hc); !dec.allow {
 			dec.reason = "create_hostconfig:" + dec.reason
 			dec.message = "containers/create HostConfig: " + dec.message
 			return createInspectionResult{decision: dec}
 		}
-		if dec := p.checkHostConfig(&hc); !dec.allow {
-			return createInspectionResult{decision: dec}
-		}
+	}
+	if dec := p.checkHostConfig(&hc); !dec.allow {
+		return createInspectionResult{decision: dec}
 	}
 
 	// HostConfig (when present) is policy-clean. Apply the

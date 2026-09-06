@@ -121,16 +121,19 @@ func (p *Proxy) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 // is appended to the per-session image ledger first, so `prism
 // cleanup` can remove the image at session teardown.
 //
-// Recording runs BEFORE the forward so a pull whose response the proxy
-// never sees (upstream down, client disconnect, sidecar killed
-// mid-pull) still leaves a ledger line. See Config.PulledImageWriter
-// for why over-recording is the safe direction.
+// Recording runs BEFORE the forward for two reasons. It lets the proxy
+// ask the upstream whether the image is ALREADY there, which is what
+// keeps the sweep to "images this session pulled" rather than "images
+// this session named" (see recordPulledImage). And a pull whose
+// response the proxy never sees — upstream down, client disconnect,
+// sidecar killed mid-pull — still leaves its ledger line.
 //
 // The audit line is still exactly one per request: recordPulledImage
 // returns the reason string and emitAudit is called once, as in every
-// other branch.
+// other branch. The existence probe is the proxy's own request, not the
+// client's, so it emits no audit line of its own.
 func (p *Proxy) handleImageCreate(w http.ResponseWriter, r *http.Request) {
-	reason := p.recordPulledImage(r.URL.Query())
+	reason := p.recordPulledImage(r.Context(), r.URL.Query())
 	p.emitAudit(r, auditAllow, reason)
 	p.upstream.ServeHTTP(w, r)
 }

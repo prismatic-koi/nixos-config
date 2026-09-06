@@ -87,7 +87,7 @@ the rationale.
 | T21 | Build context smuggle via `POST /build` of arbitrary-content tar | No new escape: `build` is bounded by what the sandbox already exposes. Build endpoint is `endpointAllow` (query-only and opaque body). No size cap in v1. Revisit if abuse appears. | `endpoints.go` (build endpoint) |
 | T22 | Schema drift: a new docker-/podman-API field upstream introduces a new escape vector without anyone in this repo noticing | `json.Decoder.DisallowUnknownFields()` runs on every parsed body. A new unknown field rejects with 403 and audit reason `unknown_field:<json error>` until it is admitted via the field-admission process (§4). | `policy.go::decodeStrict`, plus every typed struct |
 | T23 | Proxy itself has a parsing bug | Default-deny — every unknown endpoint, unknown field, unknown enumerable value, malformed JSON, missing required value rejects before forwarding. Test suite exercises every documented escape and asserts it is blocked, plus a negative-control meta-test that verifies the positive tests are not no-ops. | `proxy_security_test.go::TestSecurity_NegativeControl_RootAllowlistPasses` |
-| T24 | Storage exhaustion after the session ends: a volume or an image the agent created outlives the session on the shared host | Volumes get the same per-session name prefix as containers (`Config.VolumeNamePrefix`), and `prism cleanup` removes every volume with that prefix. Images pulled through the proxy are recorded in a per-session ledger and removed one by one at cleanup. Neither sweep prunes the shared store. | `policy.go::applyVolumeNamePolicy`, `images.go` (`recordPulledImage`, `ReadImageLedger`), `cmd/cleanup_sweep.go` (`sweepVolumesWithRunner`, `sweepImagesWithRunner`) |
+| T24 | Storage exhaustion after the session ends: a volume or an image the agent created outlives the session on the shared host | PARTIAL. A volume created through `POST /volumes/create` gets the per-session name prefix (`Config.VolumeNamePrefix`), and `prism cleanup` removes every volume with that prefix. An image pulled through `POST /images/create` is recorded in a per-session ledger and removed at cleanup. Two gaps stay open — see §8.3. | `policy.go::applyVolumeNamePolicy`, `images.go` (`recordPulledImage`, `ReadImageLedger`), `cmd/cleanup_sweep.go` (`sweepVolumesWithRunner`, `sweepImagesWithRunner`) |
 
 **Network egress** is not restricted: containers get whatever network the
 host podman gives them (default: full internet). This is strictly broader
@@ -317,6 +317,7 @@ verify the format from the source.
 | Worker asks for more memory or more CPU than the cap allows | `memory_over_cap` / `nano_cpus_over_cap` (`checkOneResourceCap`) | Expected. Lower the request. If the workload genuinely needs more, that is a `Config.MaxMemoryBytes` / `Config.MaxNanoCpus` discussion — file an issue. |
 | Worker passes `--memory 0` or `--cpus 0` | `memory_nonpositive` / `nano_cpus_nonpositive` (`checkOneResourceCap`) | Expected. `0` means "unbounded" in docker semantics, which bypasses the cap. Pass a positive value. |
 | Worker runs `podman volume create <name>` with a name outside the session prefix | `volume_name_prefix_mismatch` (`policy.go::applyVolumeNamePolicy`) | Expected. Omit the name to receive an auto-prefixed one, or start the name with `prism-<session>-`. |
+| Worker runs `podman pull <image>` and gets 403 | `endpoint_not_allowed:POST images/pull` (`handler.go` default branch) | Pre-existing. The podman CLI pulls through the libpod endpoint `POST /images/pull`, which the endpoint allowlist does not admit. A docker-API client that pulls through `POST /images/create` works. See §8.3. |
 
 ### When to escalate
 
@@ -438,6 +439,48 @@ the reference against the same allowlist, because the reference is agent
 controlled and reaches a podman command line. A reference that does not
 start with an alphanumeric character is dropped, so no ledger entry can
 look like a command-line flag.
+
+The proxy records a reference only after it asks the upstream whether
+the image is already in the store. An image that was there before the
+request is not recorded. Without that check, an agent that "pulls" an
+image the user already has enrols that image for deletion. Prism then
+removes it after the session ends. The probe fails closed: any answer
+other than a definite "not present" leaves the image unrecorded. A
+leaked image costs disk. A wrongly removed one costs the user's data.
+
+### 8.3 What the sweep does not reach
+
+Two storage paths stay outside the sweep. Both are accepted for this
+version, in the same sense as the residual TOCTOU in §5.
+
+**A volume created implicitly by a container mount.** `checkHostConfig`
+admits a named volume as the source of a bind (`Binds:
+["myvol:/data"]`) and as a `Mounts` entry of `Type=volume`. Podman
+creates a named volume that does not yet exist when a container mounts
+it. That path never sends `POST /volumes/create`, so
+`applyVolumeNamePolicy` never runs and the volume carries no
+`prism-<session>-` prefix. `sweepVolumesWithRunner` matches on the
+prefix, so it never removes the volume. A command such as
+`podman run --memory 512m --cpus 1 -v leak:/data alpine true` therefore
+leaves a volume behind.
+
+To close this, the policy must reject a named-volume mount whose name
+is outside the prefix. That is a new deny path on an admitted field, so
+it needs the field-admission audit in §4 and its own issue.
+
+**An image pulled through the libpod endpoint.** The ledger hooks
+`POST /images/create`, which is the docker-compat pull surface. The
+podman CLI pulls through `POST /images/pull`, which the endpoint
+allowlist does not admit at all, so `podman pull` returns 403 before
+any ledger question arises. This is pre-existing behaviour and not a
+regression. The practical effect: `images_swept` stays 0 for a workflow
+that uses the podman CLI. It counts only for a client that speaks the
+docker API.
+
+To close this, `POST /images/pull` needs admission to the endpoint
+allowlist, and `pulledImageRef` needs to read the libpod `reference`
+parameter. Admitting an endpoint is a policy change, so it needs the §4
+audit and its own issue.
 
 ## 9. Linger decision
 

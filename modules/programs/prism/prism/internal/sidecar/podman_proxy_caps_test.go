@@ -51,6 +51,19 @@ func startStubPodmanUpstream(t *testing.T, dir string) string {
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.Copy(io.Discard, r.Body)
+			// The proxy probes GET /images/{ref}/json before it
+			// records a pull, and records only when the image is
+			// NOT already in the store. An empty store answers 404,
+			// which is what makes a pull through this stub a
+			// genuine new pull.
+			if r.Method == http.MethodGet &&
+				strings.HasPrefix(r.URL.Path, "/images/") &&
+				strings.HasSuffix(r.URL.Path, "/json") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"message":"No such image"}`))
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"Id":"stub"}`))
@@ -68,10 +81,20 @@ func startStubPodmanUpstream(t *testing.T, dir string) string {
 
 // capProbe is one containers/create request against the proxy plus the
 // outcome the caps must produce for it.
+//
+// hostConfig is wrapped in a pointer-shaped marker so a probe can
+// express three distinct bodies: a HostConfig with fields, an absent
+// HostConfig key, and an explicit `"HostConfig": null`. The last two
+// are the bypass shapes — see TestPodmanProxy_ResourceCaps_ prefixed
+// probes "host config absent" and "host config null".
 type capProbe struct {
 	name       string
 	hostConfig map[string]any
-	wantStatus int
+	// omitHostConfig drops the HostConfig key from the body entirely.
+	omitHostConfig bool
+	// nullHostConfig sets the HostConfig key to JSON null.
+	nullHostConfig bool
+	wantStatus     int
 	// wantReason is the exact audit reason token the request must
 	// produce. Empty means "do not assert on the reason" (the forward
 	// case, whose reason is an implementation detail of the allow
@@ -139,6 +162,34 @@ func TestPodmanProxy_ResourceCaps_WiredFromSidecar(t *testing.T) {
 	name := "prism-" + session + "-" // satisfies the name policy
 
 	probes := []capProbe{
+		{
+			// The cap check must NOT be reachable only through a
+			// present HostConfig. A body that omits the key entirely
+			// is the cheapest possible bypass: podman defaults every
+			// HostConfig field, so the container runs uncapped on the
+			// host. This probe fails if the HostConfig policy is ever
+			// put back behind a presence guard.
+			name:           "host config absent",
+			omitHostConfig: true,
+			wantStatus:     http.StatusForbidden,
+			wantReason:     "memory_required",
+		},
+		{
+			// The same bypass spelled as an explicit JSON null, which
+			// is a separate decode path from an absent key.
+			name:           "host config null",
+			nullHostConfig: true,
+			wantStatus:     http.StatusForbidden,
+			wantReason:     "memory_required",
+		},
+		{
+			// An empty object was already caught before this change.
+			// Kept so the three absent-ish shapes are pinned together.
+			name:       "host config empty object",
+			hostConfig: map[string]any{},
+			wantStatus: http.StatusForbidden,
+			wantReason: "memory_required",
+		},
 		{
 			name:       "memory absent",
 			hostConfig: map[string]any{"NanoCpus": okNanoCpus},
@@ -225,9 +276,16 @@ func TestPodmanProxy_ResourceCaps_WiredFromSidecar(t *testing.T) {
 	for i, probe := range probes {
 		t.Run(probe.name, func(t *testing.T) {
 			body := map[string]any{
-				"Image":      "alpine",
-				"Name":       fmt.Sprintf("%sprobe%d", name, i),
-				"HostConfig": probe.hostConfig,
+				"Image": "alpine",
+				"Name":  fmt.Sprintf("%sprobe%d", name, i),
+			}
+			switch {
+			case probe.omitHostConfig:
+				// leave the key out entirely
+			case probe.nullHostConfig:
+				body["HostConfig"] = nil
+			default:
+				body["HostConfig"] = probe.hostConfig
 			}
 			buf, err := json.Marshal(body)
 			if err != nil {

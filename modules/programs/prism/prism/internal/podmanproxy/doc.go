@@ -91,8 +91,11 @@
 //
 // PulledImageWriter records one JSON line per admitted
 // POST /images/create so the owner can remove the images the session
-// pulled. See images.go for the ledger format and ReadImageLedger for
-// the reader.
+// pulled. An image the upstream already holds is not recorded, so the
+// ledger names only what the session added. The endpoint allowlist does
+// not admit the libpod pull endpoint (POST /images/pull), so the ledger
+// covers the docker-compat pull surface only. See images.go for the
+// ledger format and ReadImageLedger for the reader.
 //
 // Streaming endpoints — /containers/{id}/attach, /exec/{id}/start, and
 // the follow=1 variant of /containers/{id}/logs — are forwarded without

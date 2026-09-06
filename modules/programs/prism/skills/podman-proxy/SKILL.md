@@ -82,13 +82,32 @@ request gets 403 (`name_prefix_mismatch_body` for a container,
 
 - containers matching `prism-<session>-<8 hex chars>`,
 - volumes whose name starts with `prism-<session>-`,
-- every image the session pulled through its own proxy.
+- images the session pulled through `POST /images/create`.
 
 The image sweep replays a per-session ledger. It is not a prune, because
 the image store is shared. An image another container still uses stays in
-place and cleanup continues. The three counts appear in the
-`prism cleanup --json` envelope as `containers_swept`, `volumes_swept`,
-and `images_swept`.
+place and cleanup continues. An image that was already on the host before
+the session asked for it is never recorded, so the sweep never removes
+it. The three counts appear in the `prism cleanup --json` envelope as
+`containers_swept`, `volumes_swept`, and `images_swept`.
+
+### Two storage paths the sweep does not reach
+
+Both are accepted for this version. `docs/podman-proxy.md` §8.3 carries
+the detail and the conditions to close each one.
+
+- **A volume created implicitly by a container mount.** `podman run -v
+  myvol:/data ...` makes podman create `myvol` without ever sending
+  `POST /volumes/create`, so the volume gets no prefix and the sweep
+  never finds it. Name your volumes explicitly with the
+  `prism-<session>-` prefix, or create them with `podman volume create`
+  first, and the sweep reaches them.
+- **`podman pull` returns 403.** The podman CLI pulls through the libpod
+  endpoint `POST /images/pull`, which the endpoint allowlist does not
+  admit. The audit reason is `endpoint_not_allowed:POST images/pull`.
+  This is pre-existing and not a regression. `images_swept` counts only
+  for a client that pulls through the docker-compat
+  `POST /images/create`.
 
 The flag flips two DB columns at spawn time —
 `spawn_inputs.containers_flag = 1` (audit) and

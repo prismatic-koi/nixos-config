@@ -181,6 +181,79 @@ func TestImageLedger_NewlineInQueryCannotForgeALine(t *testing.T) {
 	}
 }
 
+// TestImageLedger_AlreadyPresentImageIsNotRecorded is the security
+// assertion behind the existence probe. The ledger drives `podman rmi`
+// against a store the user and every other session share, so recording
+// the requested reference alone would let an agent enrol an image it
+// did NOT pull for deletion — a deferred deletion primitive that prism,
+// not the agent, would execute after the session ended.
+//
+// The pull must still forward. Only the ledger entry is withheld.
+func TestImageLedger_AlreadyPresentImageIsNotRecorded(t *testing.T) {
+	fu := newFakeUpstream(t)
+	fu.markImagePresent("alpine:3.19")
+	h, ledger := startProxyWithImageLedger(t, fu)
+
+	resp := postImageCreate(t, h.sock, "fromImage=alpine&tag=3.19")
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200 (body=%q) — the pull must still forward", resp.StatusCode, body)
+	}
+	if got := fu.captured(); got != 1 {
+		t.Errorf("upstream forwarded requests: got %d, want 1", got)
+	}
+	if lines := nonEmptyLines(ledger.String()); len(lines) != 0 {
+		t.Errorf("SECURITY: an image that was already on the host was enrolled for removal at cleanup: %q", ledger.String())
+	}
+	if !strings.Contains(h.audit.String(), "policy:images/create:already_present:alpine:3.19") {
+		t.Errorf("audit log does not explain why the image was not recorded; log=%s", h.audit.String())
+	}
+}
+
+// TestImageLedger_ProbeFailureDoesNotRecord pins the fail-closed
+// direction. When the proxy cannot establish whether the image was
+// already there, it must not record.
+//
+// The two failure modes are not symmetric: an unrecorded image leaks
+// storage, a wrongly recorded one destroys data the session did not
+// create. The tie goes to leaking.
+func TestImageLedger_ProbeFailureDoesNotRecord(t *testing.T) {
+	fu := newFakeUpstream(t)
+	fu.setProbeStatus(http.StatusInternalServerError)
+	h, ledger := startProxyWithImageLedger(t, fu)
+
+	resp := postImageCreate(t, h.sock, "fromImage=alpine&tag=3.19")
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200 (body=%q) — a probe failure must not fail the pull", resp.StatusCode, body)
+	}
+	if lines := nonEmptyLines(ledger.String()); len(lines) != 0 {
+		t.Errorf("an unresolvable probe must not record; ledger=%q", ledger.String())
+	}
+	if !strings.Contains(h.audit.String(), "policy:images/create:probe_failed") {
+		t.Errorf("audit log does not name the probe failure; log=%s", h.audit.String())
+	}
+}
+
+// TestImageLedger_ProbeIsNotAuditedSeparately pins the "exactly one
+// audit line per request" contract against the new probe: the probe is
+// the proxy's own request, so it must not add a second line.
+func TestImageLedger_ProbeIsNotAuditedSeparately(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h, _ := startProxyWithImageLedger(t, fu)
+
+	resp := postImageCreate(t, h.sock, "fromImage=alpine&tag=3.19")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	if got := fu.probes.Load(); got != 1 {
+		t.Fatalf("upstream probes: got %d, want 1", got)
+	}
+	if lines := nonEmptyLines(h.audit.String()); len(lines) != 1 {
+		t.Errorf("audit lines: got %d, want exactly 1 per request; log=%s", len(lines), h.audit.String())
+	}
+}
+
 // TestImageLedger_NilWriterIsSafe pins the documented degradation: no
 // ledger writer means no ledger lines and no failure. The sidecar takes
 // this path when the ledger file cannot be opened.
@@ -199,6 +272,11 @@ func TestImageLedger_NilWriterIsSafe(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status: got %d, want 200 (body=%q)", resp.StatusCode, body)
+	}
+	// With no ledger there is nothing to decide, so the proxy must not
+	// spend an upstream round-trip on the probe.
+	if got := fu.probes.Load(); got != 0 {
+		t.Errorf("upstream probes with no ledger writer: got %d, want 0", got)
 	}
 }
 
