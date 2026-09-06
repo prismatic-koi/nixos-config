@@ -1,6 +1,6 @@
 # Podman proxy — security spec
 
-<!-- doclint-ignore: CgroupBudget, MaxContainers -->
+<!-- doclint-ignore: CgroupBudget, MaxContainers, resource_limits -->
 <!-- doclint-ignore: networkmode_host, networkmode_colon, networkmode_slash, networkmode_whitespace -->
 <!-- doclint-ignore: pidmode_host, ipcmode_host, utsmode_host, usernsmode_host, cgroupnsmode_host -->
 <!-- doclint-ignore: AGENTS.md -->
@@ -17,6 +17,12 @@
     exist, when it records the missing container-count bound. Naming
     the absent knob is the point of that entry, so it must stay
     unresolvable until someone implements it.
+
+  - `resource_limits` is a libpod specgen field name. §8.3 cites it to
+    explain why the podman CLI's `--cpus` never reaches this proxy's
+    `NanoCpus` cap. It is deliberately absent from this source tree —
+    the libpod body shape is not admitted, which is the residual that
+    entry records.
 
   - `<field>_host` / `<field>_colon` / `<field>_slash` /
     `<field>_whitespace` are audit reason tokens constructed at runtime
@@ -317,11 +323,12 @@ verify the format from the source.
 | Worker tries a brand-new docker-/podman-API field this struct does not admit | `create_hostconfig:unknown_field:json: unknown field "NewField"` (or the matching `create_top:` / `update:` / `exec:` / `volumes_create:` / `networks_create:` prefix per endpoint) | Field-admission process (§4). |
 | Worker gets `503` with `"podman socket unavailable: ..."` envelope | Audit log shows `decision=allow` then nothing — the proxy accepted policy-wise but the upstream is not there | Bring the upstream up: Darwin `podman machine start`. NixOS `systemctl --user status podman.socket`. |
 | Worker gets `400` with `"malformed_body:empty"` or similar | `create_top:malformed_body:empty` (or the matching endpoint prefix) | Client is sending an empty / non-JSON `POST /containers/create` body. Bug in the client, not the proxy. |
-| Worker runs `podman run` with no `--memory` | `memory_required` (`checkOneResourceCap`) | Expected. Add `--memory <size>`, at or below 4 GiB. See §8.1. |
-| Worker runs `podman run` with no `--cpus` | `nano_cpus_required` (`checkOneResourceCap`) | Expected. Add `--cpus <n>`, at or below 2. See §8.1. |
-| Worker asks for more memory or more CPU than the cap allows | `memory_over_cap` / `nano_cpus_over_cap` (`checkOneResourceCap`) | Expected. Lower the request. If the workload genuinely needs more, that is a `Config.MaxMemoryBytes` / `Config.MaxNanoCpus` discussion — file an issue. |
-| Worker passes `--memory 0` or `--cpus 0` | `memory_nonpositive` / `nano_cpus_nonpositive` (`checkOneResourceCap`) | Expected. `0` means "unbounded" in docker semantics, which bypasses the cap. Pass a positive value. |
-| Worker runs `podman volume create <name>` with a name outside the session prefix | `volume_name_prefix_mismatch` (`policy.go::applyVolumeNamePolicy`) | Expected. Omit the name to receive an auto-prefixed one, or start the name with `prism-<session>-`. |
+| Worker runs `podman run` or `podman volume create` and gets 403 | `create_top:unknown_field:json: unknown field "command"` for a container, `volumes_create:unknown_field:json: unknown field "Label"` for a volume (`policy.go::decodeStrict`) | Pre-existing. The podman CLI posts a libpod body that the docker-shaped structs do not admit, so the request dies at the schema layer. The cap and name-prefix checks below are never reached. See §8.3. |
+| **docker-API client** posts `POST /containers/create` with no `HostConfig.Memory` | `memory_required` (`checkOneResourceCap`) | Expected. Set a memory limit at or below 4 GiB (`--memory` on a docker-API client). See §8.1. |
+| **docker-API client** posts `POST /containers/create` with no `HostConfig.NanoCpus` | `nano_cpus_required` (`checkOneResourceCap`) | Expected. Set a CPU limit at or below 2 (`--cpus` on a docker-API client). See §8.1. |
+| **docker-API client** asks for more memory or more CPU than the cap allows | `memory_over_cap` / `nano_cpus_over_cap` (`checkOneResourceCap`) | Expected. Lower the request. If the workload genuinely needs more, that is a `Config.MaxMemoryBytes` / `Config.MaxNanoCpus` discussion — file an issue. |
+| **docker-API client** sets `Memory` or `NanoCpus` to `0` | `memory_nonpositive` / `nano_cpus_nonpositive` (`checkOneResourceCap`) | Expected. `0` means "unbounded" in docker semantics, which bypasses the cap. Pass a positive value. |
+| **docker-API client** posts `POST /volumes/create` with a name outside the session prefix | `volume_name_prefix_mismatch` (`policy.go::applyVolumeNamePolicy`) | Expected. Omit the name to receive an auto-prefixed one, or start the name with `prism-<session>-`. |
 | Worker runs `podman pull <image>` and gets 403 | `endpoint_not_allowed:POST images/pull` (`handler.go` default branch) | Pre-existing. The podman CLI pulls through the libpod endpoint `POST /images/pull`, which the endpoint allowlist does not admit. A docker-API client that pulls through `POST /images/create` works. See §8.3. |
 
 ### When to escalate
@@ -375,17 +382,27 @@ sets:
 Out-of-tree callers can construct the `Config` differently. The proxy
 package itself imposes no policy beyond what the `Config` declares.
 
-### 8.1 Resource caps make `--memory` and `--cpus` mandatory
+### 8.1 Resource caps make memory and CPU limits mandatory
 
-**Every `podman run` through the proxy must pass `--memory` and
-`--cpus`. A command that omits either one gets a 403.**
+**Scope: this section describes the docker-compat surface only.** It
+applies to a client that posts a docker-API `POST /containers/create`
+body, which means `DOCKER_HOST` plus a docker-API client. The podman
+CLI does not reach these checks at all — its create request is rejected
+earlier, at the schema layer. Read §8.3 before you use the podman CLI
+against this proxy.
+
+**A docker-API `POST /containers/create` must set both
+`HostConfig.Memory` and `HostConfig.NanoCpus`. A body that omits either
+one gets a 403.** With a docker-API client, those are the `--memory`
+and `--cpus` flags.
 
 ```bash
-# Correct. Both caps are declared and both are within the limits.
-podman run --rm --memory 512m --cpus 1 alpine echo hello
+# Correct, with DOCKER_HOST and a docker-API client. Both caps are
+# declared and both are within the limits.
+docker run --rm --memory 512m --cpus 1 alpine echo hello
 
-# Rejected with 403. No --memory.
-podman run --rm --cpus 1 alpine echo hello
+# Rejected with 403. No memory limit.
+docker run --rm --cpus 1 alpine echo hello
 ```
 
 This is the cost of the cap, not a defect. A configured cap puts
@@ -397,12 +414,14 @@ reading is deliberate. In docker semantics `Memory: 0` means
 
 The two reason strings the audit log records for a missing field are
 `memory_required` and `nano_cpus_required`. See §7 for the full list.
+Every reason string in this section is reachable from the docker-compat
+surface only.
 
 **Why a container needs a cap at all.** A container the agent starts
 through the proxy is a host process. It runs outside the agent's bwrap
 or sandbox-exec sandbox, so no sandbox limit applies to it. The caps are
-the only bound on what ONE container consumes. Read §8.3 for the bound
-that does not exist.
+the only bound on what ONE container consumes, and only on the fields
+they name. Read §8.3 for the bounds that do not exist.
 
 **Why `MaxCPUQuota` stays 0.** `NanoCpus` and `CpuQuota` are two ways to
 express the same CPU limit. Docker and podman clients refuse to send
@@ -446,11 +465,45 @@ Two properties of the sweep:
 
 ### 8.3 Residuals
 
-Three residuals stay open. All three are accepted for this version, in
-the same sense as the residual TOCTOU in §5. The first is a storage path
-the sweep does not reach. The second is a whole class the sweep does not
-cover yet. The third is the one to read before `--containers` becomes
-the default.
+The residuals below are accepted for this version, in the same sense as
+the residual TOCTOU in §5. Read the first one before you use the podman
+CLI against this proxy at all, and the container-count one before
+`--containers` becomes the default.
+
+**The libpod create surface is not admitted, so the podman CLI cannot
+create a container or a volume.** This is the largest residual, and it
+sits underneath every other statement in §8.1 and §8.2.
+
+`normalisePath` strips the `libpod/` prefix, so a libpod request routes
+to the same classifier as its docker-compat twin. The BODY shapes do not
+match. `podman run` posts a libpod specgen body — `command`,
+`resource_limits`, no `HostConfig` — and `containerCreateBody` runs with
+`DisallowUnknownFields`, so the request is rejected at decode:
+
+```
+create_top:unknown_field:json: unknown field "command"
+```
+
+`podman volume create` fails the same way, on `Label`:
+
+```
+volumes_create:unknown_field:json: unknown field "Label"
+```
+
+The consequence is that the resource caps in §8.1 and the volume-name
+policy in §8.2 are reachable from the docker-compat surface only. Every
+reason string those sections name is unreachable from the podman CLI,
+because the request never survives the decode that precedes them.
+
+Note also that on the libpod surface `--cpus` maps to
+`resource_limits.cpu.{quota,period}` — the `CpuQuota` expression, not
+`NanoCpus`. So `MaxNanoCpus`, the CPU cap this proxy enforces, is the
+field the podman CLI never sends even when the body is admitted.
+
+To close this, the libpod specgen shape needs its own typed struct and a
+mapping from `resource_limits` onto the cap checks. That is an admission
+of a new body shape, so it needs the field-admission audit in §4 and its
+own issue.
 
 **A volume created implicitly by a container mount.** `checkHostConfig`
 admits a named volume as the source of a bind (`Binds:
@@ -519,6 +572,34 @@ SESSIONS, not containers per session, so it does not cover this path.
 
 Read this before you make `--containers` the default. The count cap is
 the part of the availability story that is still open.
+
+**`MemorySwap` is forwarded and uncapped.** It sits in the FORWARDED
+block of `hostConfig`. A body that passes the `Memory` cap can still set
+`--memory-swap -1` and take unbounded swap on top of the 4 GiB ceiling. T14 reads "active in production", and that is true of the
+fields the caps name, not of every memory-adjacent field.
+
+**`CpuQuota` is inspected but unenforced, and `CpuPeriod` is
+forwarded.** `MaxCPUQuota` stays 0, so `checkOneResourceCap` returns
+`policy:resource_cap_disabled` for that field. A body can carry an in-cap
+`NanoCpus` together with a large `CpuQuota` and `CpuPeriod` pair. Which
+of the two wins depends on podman's own CPU-limit precedence. That
+precedence is unverified. Confirm it before
+`--containers` becomes the default.
+
+**The sibling guard in §8.2 is cleanup correctness, not a defence.** It
+stops one session's cleanup from destroying a live sibling's volumes. It
+is not a control against a hostile agent. `POST /volumes/prune` and
+`DELETE /volumes/{name}` are plain allows in `endpoints.go`, so an agent
+can already remove any volume on the host by name. Do not read the guard
+as an isolation guarantee.
+
+**The name sanitiser can collide.** `NameForSession` folds `@`, `/`,
+`.`, and `~` all to `-`, so `repo@feat/x` and `repo@feat-x` produce the
+same prefix. `siblingVolumePrefixes` treats a prefix equal to its own as
+"this is me" and skips it, so a colliding live session's volumes are
+swept rather than spared. This is a pre-existing collision class — the
+sandbox container name already collides through the same helper — and it
+is not introduced here.
 
 ## 9. Linger decision
 

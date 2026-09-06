@@ -36,20 +36,44 @@ The train is tracked by #2317 and shipped as #2326, #2327, #2328, #2329,
 prism spawn --containers --prompt 'run the test suite against a throwaway postgres'
 ```
 
-## Resource caps: `--memory` and `--cpus` are mandatory
+## First: the podman CLI cannot create containers or volumes
 
-**Every `podman run` through the proxy must pass `--memory` and
-`--cpus`. A command that omits either one gets a 403.**
+**`podman run` and `podman volume create` return 403 through this
+proxy.** The podman CLI posts libpod bodies, and the proxy's typed
+structs model the docker-compat shapes, so the request is rejected at
+the schema layer:
+
+```
+podman run ...            -> create_top:unknown_field:json: unknown field "command"
+podman volume create ...  -> volumes_create:unknown_field:json: unknown field "Label"
+```
+
+This is pre-existing behaviour, not a regression. It means the resource
+caps and the volume-name policy below are reachable from the
+**docker-compat surface only** — `DOCKER_HOST` plus a docker-API client.
+Every reason string in the next two sections is unreachable from the
+podman CLI, because the request never survives the decode that precedes
+them. `docs/podman-proxy.md` §8.3 has the detail and the conditions to
+close it.
+
+## Resource caps: memory and CPU limits are mandatory
+
+**Scope: docker-compat surface only. See the section above.**
+
+**A docker-API `POST /containers/create` must set both
+`HostConfig.Memory` and `HostConfig.NanoCpus`. A body that omits either
+one gets a 403.** On a docker-API client those are `--memory` and
+`--cpus`.
 
 ```bash
-# Correct.
-podman run --rm --memory 512m --cpus 1 alpine echo hello
+# Correct, with DOCKER_HOST and a docker-API client.
+docker run --rm --memory 512m --cpus 1 alpine echo hello
 
 # Rejected: audit reason memory_required.
-podman run --rm --cpus 1 alpine echo hello
+docker run --rm --cpus 1 alpine echo hello
 
 # Rejected: audit reason nano_cpus_required.
-podman run --rm --memory 512m alpine echo hello
+docker run --rm --memory 512m alpine echo hello
 ```
 
 The two 403 reason strings for a missing field are **`memory_required`**
@@ -62,7 +86,9 @@ either gets `memory_nonpositive` or `nano_cpus_nonpositive`, because `0`
 means "unbounded" in docker semantics and bypasses the cap.
 
 A container started through the proxy is a host process. It runs outside
-the agent's sandbox, so the caps are the only bound on what it consumes.
+the agent's sandbox, so the caps are the only bound on what it consumes
+— and only on the fields they name. `MemorySwap` is forwarded and
+uncapped.
 
 **The caps are per container, and nothing caps the container COUNT.** N
 containers consume up to N × 4 GiB and N × 2 CPUs. Issue #872 is the
@@ -105,12 +131,14 @@ The two counts appear in the `prism cleanup --json` envelope as
 All three are accepted for this version. `docs/podman-proxy.md` §8.3
 carries the detail and the conditions to close each one.
 
-- **A volume created implicitly by a container mount.** `podman run -v
-  myvol:/data ...` makes podman create `myvol` without ever sending
-  `POST /volumes/create`, so the volume gets no prefix and the sweep
-  never finds it. Name your volumes explicitly with the
-  `prism-<session>-` prefix, or create them with `podman volume create`
-  first, and the sweep reaches them.
+- **A volume created implicitly by a container mount.** A docker-API
+  `run -v myvol:/data ...` makes the runtime create `myvol` without ever
+  sending `POST /volumes/create`, so the volume gets no prefix and the
+  sweep never finds it. Name the volume explicitly with the
+  `prism-<session>-` prefix instead, so the create goes through
+  `POST /volumes/create` and the sweep reaches it. `podman volume
+  create` is NOT a workaround — it returns 403 on the libpod body, per
+  the first section.
 - **Images are not swept.** An image you pull stays in the shared host
   image store after the session ends. Two things must land first: the
   libpod `POST /images/pull` endpoint needs admission (which is also why
