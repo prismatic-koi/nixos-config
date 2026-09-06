@@ -40,6 +40,40 @@ import (
 // override arrives through the same Config.PodmanMachineName field.
 const defaultPodmanMachineName = "podman-machine-default"
 
+// Per-container resource caps applied to every container the agent
+// creates through the proxy.
+//
+// A container started through the proxy is a HOST process. It runs
+// outside the agent's bwrap / sandbox-exec sandbox, so no sandbox limit
+// applies to it and nothing else in prism bounds what it consumes.
+// Without these caps, threat T14 (resource exhaustion) in
+// docs/podman-proxy.md has a mitigation in the proxy that never runs:
+// checkOneResourceCap short-circuits while the cap is 0.
+//
+// The values are sized against a 12-CPU / 31 GiB reference host. They
+// are PER CONTAINER, so a 2-CPU / 4-GiB ceiling still leaves the agent,
+// the editor, and a parallel session room to work.
+//
+// The cost of a configured cap is that the matching field becomes
+// MANDATORY on create: every `podman run` through the proxy must pass
+// --memory and --cpus or it gets a 403. That is recorded in
+// docs/podman-proxy.md and in the podman-proxy skill.
+const (
+	// podmanProxyMaxMemoryBytes caps HostConfig.Memory at 4 GiB.
+	podmanProxyMaxMemoryBytes int64 = 4 << 30
+
+	// podmanProxyMaxNanoCpus caps HostConfig.NanoCpus at 2 CPUs
+	// (cores * 1e9). This is the `--cpus` expression.
+	//
+	// MaxCPUQuota is deliberately NOT set alongside it. NanoCpus and
+	// CpuQuota are two ways to say the same thing, and docker/podman
+	// clients refuse to send both. Because a configured cap makes its
+	// field mandatory, setting both caps would make EVERY create
+	// request fail: whichever field the client sends, the other one is
+	// absent and returns 403 <field>_required. Enforce one CPU cap only.
+	podmanProxyMaxNanoCpus int64 = 2_000_000_000
+)
+
 // runPodmanProxyIfEnabled starts the per-session filtering podman API socket
 // proxy when the session's agent_status.containers_enabled gate is set. It
 // is called from (*Sidecar).Run after instance_id and the FK-guard row have
@@ -112,19 +146,34 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 	}
 
 	allowed := s.allowedPodmanBindSources()
+	// Per-session resource name prefix. The proxy auto-injects this
+	// prefix into containers/create and volumes/create requests with no
+	// Name field, and rejects any explicit Name that does not start
+	// with it. Cleanup (`cmd/cleanup_sweep.go`) sweeps any orphan
+	// container and volume matching the same prefix at session
+	// teardown.
+	//
+	// The prefix comes from container.ResourceNamePrefixForSession, NOT
+	// from the raw session name. A session name carries `@` (and `~`
+	// for a review child), which podman rejects in a container or
+	// volume name — an unsanitised prefix makes every create the proxy
+	// touches fail upstream and makes the sweep filter match nothing.
+	// That one helper is also what keeps this side and the sweep side
+	// in agreement.
+	namePrefix := container.ResourceNamePrefixForSession(s.cfg.SessionName)
 	cfg := podmanproxy.Config{
-		ListenerPath:       listenerPath,
-		UpstreamPath:       upstream,
-		AllowedBindSources: allowed,
-		// Per-session container name prefix. The proxy auto-injects this
-		// prefix into containers/create requests with no Name field, and
-		// rejects any explicit Name that does not start with it. Cleanup
-		// (`cmd/cleanup.go`) sweeps any orphan container matching the
-		// same prefix at session teardown.
-		ContainerNamePrefix: "prism-" + s.cfg.SessionName + "-",
-		// The default-deny policy applies: no AllowedCaps, no
-		// AllowedSecurityOpts, no MaxMemoryBytes. Every escape vector is
-		// rejected by default.
+		ListenerPath:        listenerPath,
+		UpstreamPath:        upstream,
+		AllowedBindSources:  allowed,
+		ContainerNamePrefix: namePrefix,
+		VolumeNamePrefix:    namePrefix,
+		// Resource caps. See the podmanProxyMax* constants above for the
+		// sizing rationale and for why MaxCPUQuota stays unset.
+		MaxMemoryBytes: podmanProxyMaxMemoryBytes,
+		MaxNanoCpus:    podmanProxyMaxNanoCpus,
+		// The default-deny policy applies to the escape vectors: no
+		// AllowedCaps and no AllowedSecurityOpts, so every capability
+		// and every security-opt is rejected by default.
 	}
 	if auditFile != nil {
 		cfg.AuditWriter = auditFile

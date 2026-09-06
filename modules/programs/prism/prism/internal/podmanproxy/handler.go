@@ -188,9 +188,14 @@ func (p *Proxy) handlePolicyNetworkCreate(w http.ResponseWriter, r *http.Request
 }
 
 // handlePolicyVolumeCreate is the body-inspecting branch for POST
-// /volumes/create. Same shape as handlePolicyUpdate: read body,
-// inspect for the local-driver bind-volume escape, restore body and
-// forward on allow.
+// /volumes/create. Read body, inspect for the local-driver
+// bind-volume escape and the volume-name prefix policy, restore body
+// and forward on allow.
+//
+// Same body-rewrite contract as handlePolicyCreate: the name-injection
+// branch returns a rewritten body that MUST be the one forwarded, with
+// ContentLength updated to match. This endpoint has no query channel,
+// so there is no rewrittenQuery to apply.
 func (p *Proxy) handlePolicyVolumeCreate(w http.ResponseWriter, r *http.Request) {
 	body, readDec := p.readBoundedBody(w, r)
 	if !readDec.allow {
@@ -198,15 +203,19 @@ func (p *Proxy) handlePolicyVolumeCreate(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, readDec.status, readDec.message)
 		return
 	}
-	dec := p.inspectVolumeCreate(body)
-	if !dec.allow {
-		p.emitAudit(r, auditDeny, dec.reason)
-		writeJSONError(w, dec.status, dec.message)
+	res := p.inspectVolumeCreate(body)
+	if !res.decision.allow {
+		p.emitAudit(r, auditDeny, res.decision.reason)
+		writeJSONError(w, res.decision.status, res.decision.message)
 		return
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-	p.emitAudit(r, auditAllow, dec.reason)
+	forwardBody := body
+	if res.rewrittenBody != nil {
+		forwardBody = res.rewrittenBody
+	}
+	r.Body = io.NopCloser(bytes.NewReader(forwardBody))
+	r.ContentLength = int64(len(forwardBody))
+	p.emitAudit(r, auditAllow, res.decision.reason)
 	p.upstream.ServeHTTP(w, r)
 }
 

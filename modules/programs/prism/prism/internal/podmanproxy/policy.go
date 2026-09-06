@@ -268,12 +268,16 @@ type containerExecBody struct {
 	ConsoleSize  json.RawMessage `json:"ConsoleSize"`
 }
 
-// createInspectionResult bundles the outputs of inspectCreate. When
-// allow is true the handler forwards using rewrittenBody (or the
-// original body if rewrittenBody is nil) and the URL query in
-// rewrittenQuery (or the original URL query if rewrittenQuery is
-// ""). When allow is false both rewritten fields are zero and the
-// handler must NOT forward.
+// createInspectionResult bundles the outputs of inspectCreate and
+// inspectVolumeCreate. When allow is true the handler forwards using
+// rewrittenBody (or the original body if rewrittenBody is nil) and the
+// URL query in rewrittenQuery (or the original URL query if
+// rewrittenQuery is ""). When allow is false both rewritten fields are
+// zero and the handler must NOT forward.
+//
+// The volumes/create path uses the body half only: that endpoint takes
+// its Name from the body alone, so rewrittenQuery and appliedToQuery
+// stay zero there.
 //
 // The two rewrite fields are coupled: the Name auto-injection
 // branch sets BOTH so the upstream sees a consistent name no matter
@@ -292,8 +296,10 @@ type createInspectionResult struct {
 // inspectCreate parses body as a containers/create request and
 // applies the HostConfig policy. Two-stage parse: first the
 // top-level body with DisallowUnknownFields (rejects unknown
-// top-level fields), then — if HostConfig is present — the
-// HostConfig with DisallowUnknownFields too.
+// top-level fields), then — if HostConfig carries bytes — the
+// HostConfig with DisallowUnknownFields too. The HostConfig POLICY
+// runs whether or not those bytes were there; see the comment on the
+// parse below for why that distinction matters.
 //
 // The two-stage parse exists because the JSON for HostConfig is
 // nested. A flat single-pass parser would accept ANY shape inside
@@ -320,16 +326,34 @@ func (p *Proxy) inspectCreate(body []byte, query url.Values) createInspectionRes
 		return createInspectionResult{decision: dec}
 	}
 
+	// HostConfig is parsed when present and left zero-valued when it is
+	// absent, null, or empty — but checkHostConfig runs EITHER WAY.
+	//
+	// Running it unconditionally is load-bearing, not tidiness. The
+	// resource-cap check lives inside checkHostConfig, and a configured
+	// cap makes its field mandatory on create. If the call were guarded
+	// on HostConfig being present, a body of `{"Image":"alpine"}` or
+	// `{"Image":"alpine","HostConfig":null}` would skip the cap check
+	// and create an uncapped host container — the exact bypass the caps
+	// exist to close (threat T14). `{"HostConfig":{}}` was already
+	// caught by the length test; the fully-absent and null forms were
+	// not.
+	//
+	// Every other branch of checkHostConfig is a no-op on the zero
+	// value: the slices and maps are empty, the pointers are nil, and
+	// "" is an admitted literal for NetworkMode and for the five simple
+	// namespace modes. So the only check that fires on an absent
+	// HostConfig is the cap check, and only when a cap is configured.
+	var hc hostConfig
 	if req.HostConfig != nil && len(*req.HostConfig) > 0 {
-		var hc hostConfig
 		if dec := decodeStrict(*req.HostConfig, &hc); !dec.allow {
 			dec.reason = "create_hostconfig:" + dec.reason
 			dec.message = "containers/create HostConfig: " + dec.message
 			return createInspectionResult{decision: dec}
 		}
-		if dec := p.checkHostConfig(&hc); !dec.allow {
-			return createInspectionResult{decision: dec}
-		}
+	}
+	if dec := p.checkHostConfig(&hc); !dec.allow {
+		return createInspectionResult{decision: dec}
 	}
 
 	// HostConfig (when present) is policy-clean. Apply the
@@ -823,19 +847,19 @@ const (
 // flag toggles the absent-field policy between the two.
 func (p *Proxy) checkResourceCaps(hc *hostConfig, ctx capContext) policyDecision {
 	if dec := p.checkOneResourceCap(
-		"Memory", hc.Memory, p.cfg.MaxMemoryBytes, ctx,
+		"Memory", "--memory", hc.Memory, p.cfg.MaxMemoryBytes, ctx,
 		"memory_required", "memory_nonpositive", "memory_over_cap",
 	); !dec.allow {
 		return dec
 	}
 	if dec := p.checkOneResourceCap(
-		"CpuQuota", hc.CpuQuota, p.cfg.MaxCPUQuota, ctx,
+		"CpuQuota", "--cpu-quota", hc.CpuQuota, p.cfg.MaxCPUQuota, ctx,
 		"cpu_quota_required", "cpu_quota_nonpositive", "cpu_quota_over_cap",
 	); !dec.allow {
 		return dec
 	}
 	if dec := p.checkOneResourceCap(
-		"NanoCpus", hc.NanoCpus, p.cfg.MaxNanoCpus, ctx,
+		"NanoCpus", "--cpus", hc.NanoCpus, p.cfg.MaxNanoCpus, ctx,
 		"nano_cpus_required", "nano_cpus_nonpositive", "nano_cpus_over_cap",
 	); !dec.allow {
 		return dec
@@ -847,8 +871,15 @@ func (p *Proxy) checkResourceCaps(hc *hostConfig, ctx capContext) policyDecision
 // strings are passed in so the audit log distinguishes which cap
 // fired and why — "memory_required" vs "memory_nonpositive" vs
 // "memory_over_cap".
+//
+// cliFlag is the podman/docker CLI flag that sets fieldName. It is named
+// in the client-facing message on purpose: the caller that hits this is
+// running the CLI, not writing a HostConfig by hand, so "HostConfig.Memory
+// is required" leaves it one translation step short of the fix. The
+// message is the surface that reaches the agent at the moment it needs
+// the answer.
 func (p *Proxy) checkOneResourceCap(
-	fieldName string, value *int64, cap int64, ctx capContext,
+	fieldName, cliFlag string, value *int64, cap int64, ctx capContext,
 	reasonRequired, reasonNonpositive, reasonOverCap string,
 ) policyDecision {
 	if cap <= 0 {
@@ -859,7 +890,7 @@ func (p *Proxy) checkOneResourceCap(
 		if ctx == capContextCreate {
 			return denyDecision(http.StatusForbidden,
 				reasonRequired,
-				fmt.Sprintf("HostConfig.%s is required when a cap is configured (set a positive value <= %d)", fieldName, cap))
+				fmt.Sprintf("HostConfig.%s is required when a cap is configured (set a positive value <= %d; on the podman/docker CLI pass %s)", fieldName, cap, cliFlag))
 		}
 		// Update: absent field means "not changing this". Allow.
 		return allowDecision("policy:resource_cap_absent_in_update")
@@ -867,12 +898,12 @@ func (p *Proxy) checkOneResourceCap(
 	if *value <= 0 {
 		return denyDecision(http.StatusForbidden,
 			reasonNonpositive,
-			fmt.Sprintf("HostConfig.%s=%d is invalid (must be > 0; 0 means unlimited and would bypass the cap)", fieldName, *value))
+			fmt.Sprintf("HostConfig.%s=%d is invalid (must be > 0; 0 means unlimited and would bypass the cap; on the podman/docker CLI pass a positive %s)", fieldName, *value, cliFlag))
 	}
 	if *value > cap {
 		return denyDecision(http.StatusForbidden,
 			reasonOverCap,
-			fmt.Sprintf("HostConfig.%s=%d exceeds cap %d", fieldName, *value, cap))
+			fmt.Sprintf("HostConfig.%s=%d exceeds cap %d (lower the %s value)", fieldName, *value, cap, cliFlag))
 	}
 	return allowDecision("policy:resource_cap_ok")
 }
@@ -906,7 +937,14 @@ func (p *Proxy) inspectUpdate(body []byte) policyDecision {
 // ClusterVolumeSpec is admitted opaque for swarm-mode requests we are
 // not policy-relevant for.
 type volumeCreateBody struct {
-	Name       string            `json:"Name"`       // INSPECTED (audit log only; no policy)
+	// INSPECTED when Config.VolumeNamePrefix is non-empty: missing /
+	// empty triggers auto-prefix injection; an explicit value must
+	// start with the configured prefix or the request is rejected.
+	// A plain string (not *string) is enough here because absent and
+	// explicitly-empty take the SAME branch — both inject. The
+	// container body needs the pointer only because its Name arrives
+	// through two channels; a volume Name has one.
+	Name       string            `json:"Name"`
 	Driver     string            `json:"Driver"`     // INSPECTED — deny local + opts
 	DriverOpts map[string]string `json:"DriverOpts"` // INSPECTED with Driver
 
@@ -946,27 +984,107 @@ type networkCreateBody struct {
 	NetworkDNSServers json.RawMessage `json:"network_dns_servers"`
 }
 
-// inspectVolumeCreate parses body as a volumes/create request and
-// rejects any DriverOpts on the local driver. The body also runs
-// with DisallowUnknownFields, so unknown volumes/create fields
-// reject.
-func (p *Proxy) inspectVolumeCreate(body []byte) policyDecision {
-	if len(bytes.TrimSpace(body)) == 0 {
-		return allowDecision("policy:volumes/create:empty")
-	}
+// inspectVolumeCreate parses body as a volumes/create request,
+// rejects any DriverOpts on the local driver, and then applies the
+// volume-name auto-prefix policy. The body also runs with
+// DisallowUnknownFields, so unknown volumes/create fields reject.
+//
+// Check order matches inspectCreate: the escape-vector check
+// (local-driver bind-volume) runs BEFORE the name policy, so the
+// audit log names the worst violation when a body carries both.
+//
+// An empty body is not a no-op when the prefix is configured: podman
+// would generate its own random volume name, which the cleanup sweep
+// cannot find. The empty body is treated as "{}" so the injection
+// branch fires on it too.
+func (p *Proxy) inspectVolumeCreate(body []byte) createInspectionResult {
+	empty := len(bytes.TrimSpace(body)) == 0
 	var req volumeCreateBody
-	if dec := decodeStrict(body, &req); !dec.allow {
-		dec.reason = "volumes_create:" + dec.reason
-		dec.message = "volumes/create: " + dec.message
-		return dec
+	if !empty {
+		if dec := decodeStrict(body, &req); !dec.allow {
+			dec.reason = "volumes_create:" + dec.reason
+			dec.message = "volumes/create: " + dec.message
+			return createInspectionResult{decision: dec}
+		}
+		driver := strings.ToLower(req.Driver)
+		if driver == "local" && len(req.DriverOpts) > 0 {
+			return createInspectionResult{decision: denyDecision(http.StatusForbidden,
+				"volume_local_driver_opts",
+				"volumes/create with Driver=local and DriverOpts is not permitted (local-driver bind-volume escape; use a containers/create Bind/Mount with an allowlisted Source instead)")}
+		}
 	}
-	driver := strings.ToLower(req.Driver)
-	if driver == "local" && len(req.DriverOpts) > 0 {
-		return denyDecision(http.StatusForbidden,
-			"volume_local_driver_opts",
-			"volumes/create with Driver=local and DriverOpts is not permitted (local-driver bind-volume escape; use a containers/create Bind/Mount with an allowlisted Source instead)")
+
+	if p.cfg.VolumeNamePrefix == "" {
+		if empty {
+			return createInspectionResult{decision: allowDecision("policy:volumes/create:empty")}
+		}
+		return createInspectionResult{decision: allowDecision("policy:volumes/create:ok")}
 	}
-	return allowDecision("policy:volumes/create:ok")
+	nameBody := body
+	if empty {
+		nameBody = []byte("{}")
+	}
+	return p.applyVolumeNamePolicy(nameBody, req.Name)
+}
+
+// applyVolumeNamePolicy implements the value-level Name check on
+// POST /volumes/create. It is the volume twin of
+// applyContainerNamePolicy and exists for the same reason: a resource
+// the agent creates through the proxy must carry the per-session
+// prefix, or `prism cleanup` cannot find it at teardown and it
+// outlives the session on the shared host.
+//
+// The volume surface is simpler than the container one in one
+// respect: docker and podman both take the volume name from the body
+// alone (there is no `?name=` query on this endpoint), so there is a
+// single channel to police and a single channel to inject into.
+//
+// Behaviour is gated on Config.VolumeNamePrefix:
+//
+//   - empty prefix → no-op; handled by the caller before this
+//     function is reached.
+//   - non-empty prefix, Name absent or empty → inject
+//     prefix + <8 hex chars> into the forwarded body.
+//   - non-empty prefix, Name set without the prefix → 403 deny
+//     (`volume_name_prefix_mismatch`).
+//   - non-empty prefix, Name set with the prefix → allow; body
+//     forwards unchanged.
+func (p *Proxy) applyVolumeNamePolicy(body []byte, name string) createInspectionResult {
+	prefix := p.cfg.VolumeNamePrefix
+
+	if name != "" {
+		if !strings.HasPrefix(name, prefix) {
+			return createInspectionResult{decision: denyDecision(http.StatusForbidden,
+				"volume_name_prefix_mismatch",
+				fmt.Sprintf("volumes/create body Name=%q does not start with the required prefix %q (the proxy is session-scoped; either omit Name to receive an auto-prefixed one, or supply a Name that begins with the required prefix)", name, prefix))}
+		}
+		return createInspectionResult{decision: allowDecision("policy:volumes/create:ok")}
+	}
+
+	suffix, err := randomHexSuffix(8)
+	if err != nil {
+		return createInspectionResult{decision: denyDecision(http.StatusInternalServerError,
+			"volume_name_inject_random_failed",
+			"could not generate random volume name suffix")}
+	}
+	injected := prefix + suffix
+	// injectNameIntoBody is shared with the container path: it strips
+	// every case-variant of the top-level "Name" key before adding the
+	// canonical one, so a body carrying `{"name":""}` cannot survive
+	// the rewrite and override the injected value on the upstream's
+	// case-insensitive decoder. See its doc comment for the bypass.
+	rewrittenBody, err := injectNameIntoBody(body, injected)
+	if err != nil {
+		return createInspectionResult{decision: denyDecision(http.StatusInternalServerError,
+			"volume_name_inject_marshal_failed",
+			"could not inject auto-prefixed volume name into request body")}
+	}
+	return createInspectionResult{
+		decision:      allowDecision("policy:volumes/create:name_injected"),
+		rewrittenBody: rewrittenBody,
+		injectedName:  injected,
+		appliedToBody: true,
+	}
 }
 
 // inspectNetworkCreate parses body as a networks/create request and

@@ -1,8 +1,20 @@
 package cmd
 
-// Orphan-container sweep for sessions with containers_enabled=1.
+// Orphan-resource sweep for sessions with containers_enabled=1.
 //
-// The sweep complements the per-mode container teardown that
+// Two resource classes are swept, in this order:
+//
+//  1. Containers matching the strict per-session auto-name shape.
+//  2. Volumes matching the per-session name prefix.
+//
+// Both are gated on the SAME agent_status.containers_enabled read, so a
+// session that never enabled containers issues no podman command at
+// all.
+//
+// Images the session pulled are NOT swept. See docs/podman-proxy.md
+// section 8.3 for the two conditions that work needs first.
+//
+// The container sweep complements the per-mode container teardown that
 // `removeContainerIfExists` already performs: that path removes the
 // SESSION'S OWN bwrap/podman/sandbox-exec container (the agent's
 // runtime), while this path sweeps any DERIVATIVE containers the
@@ -34,6 +46,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
@@ -92,22 +106,68 @@ func currentPodmanRunner() podmanRunner {
 	return execPodmanRunner{}
 }
 
-// sweepOrphanContainersForSession runs the orphan-container sweep
-// for sessionName, gated on the session's agent_status.containers_enabled
-// column. Returns:
+// sweepCounts carries the per-class outcome of one resource sweep.
+// Each field is the number of resources the sweep confirmed removed;
+// a failed podman invocation contributes 0 rather than a guess.
+type sweepCounts struct {
+	containers int
+	volumes    int
+}
+
+// sweepScope selects which resource classes a cleanup path sweeps. The
+// two values are NOT interchangeable, and the call site must name the
+// one that matches its teardown contract.
 //
-//	count : number of containers force-removed.
-//	ran   : true if the sweep ran (containers_enabled=1 and the DB
-//	        read succeeded); false if it was a no-op (containers_enabled=0,
-//	        row missing, or DB error).
+// The distinction is a container is stateless and a volume is not. A
+// soft close preserves the worktree, the branch, and the transcript so
+// the session can be reopened and resumed, so it must not destroy the
+// session's data either. A hard cleanup destroys the worktree and the
+// branch, so the volumes go with them.
 //
-// When ran is false the JSON envelope MUST omit the
-// "containers_swept" field entirely — this is the spec.
+// A soft-closed session still reaches hard cleanup eventually, and the
+// volume sweep runs then. So the cost of the narrow scope is a
+// temporarily leaked volume, not a permanently leaked one. That is the
+// same trade siblingVolumePrefixes already makes: a leaked volume is
+// cheaper than data the operator expected to survive.
+type sweepScope int
+
+const (
+	// sweepContainersOnly is the SOFT-close scope: `prism close`,
+	// coordinator and non-worktree sessions, and `--keep-worktree`.
+	// Sweeps containers, never volumes.
+	sweepContainersOnly sweepScope = iota
+
+	// sweepContainersAndVolumes is the HARD-cleanup scope: the paths
+	// that also remove the worktree and delete the branch.
+	sweepContainersAndVolumes
+)
+
+// sweepsVolumes reports whether this scope includes the volume sweep.
+func (s sweepScope) sweepsVolumes() bool { return s == sweepContainersAndVolumes }
+
+// sweepSessionResourcesForSession runs the container and volume sweeps
+// for sessionName, gated on the session's
+// agent_status.containers_enabled column. Returns:
+//
+//	counts : per-class number of resources removed.
+//	ran    : true if the sweep ran (containers_enabled=1 and the DB
+//	         read succeeded); false if it was a no-op (containers_enabled=0,
+//	         row missing, or DB error).
+//
+// When ran is false the JSON envelope MUST omit the containers_swept
+// and volumes_swept fields entirely — this is the spec, and it is what
+// makes "a session that never enabled containers issues no podman
+// command" observable from the outside.
+//
+// scope decides whether the volume sweep runs at all. Under
+// sweepContainersOnly no volume podman command is issued and
+// counts.volumes stays 0, which the caller must render as an ABSENT
+// volumes_swept key rather than a zero one.
 //
 // Errors from podman are NEVER fatal: they're surfaced as warnings
-// via proglog.Warnf and the function returns whatever count it
-// managed to confirm (0 on failure).
-func sweepOrphanContainersForSession(sessionName string) (count int, ran bool) {
+// via proglog.Warnf and the function returns whatever counts it
+// managed to confirm (0 per failed class).
+func sweepSessionResourcesForSession(sessionName string, scope sweepScope) (counts sweepCounts, ran bool) {
 	d, err := openDB()
 	if err != nil {
 		// DB unavailable. The cleanup caller logs the DB-open error
@@ -117,14 +177,20 @@ func sweepOrphanContainersForSession(sessionName string) (count int, ran bool) {
 		// "do not issue podman commands". This is the safe
 		// direction — we'd rather skip a sweep than spawn a
 		// spurious warning for a session that didn't use the proxy.
-		return 0, false
+		return sweepCounts{}, false
 	}
 	defer d.Close()
 	status, err := d.CurrentStatus(sessionName)
 	if err != nil || status == nil || !status.ContainersEnabled {
-		return 0, false
+		return sweepCounts{}, false
 	}
-	return sweepWithRunner(currentPodmanRunner(), sessionName), true
+
+	runner := currentPodmanRunner()
+	counts.containers = sweepWithRunner(runner, sessionName)
+	if scope.sweepsVolumes() {
+		counts.volumes = sweepVolumesWithRunner(runner, sessionName, siblingVolumePrefixes(d, sessionName))
+	}
+	return counts, true
 }
 
 // containerNamePattern returns the strict regex that matches the
@@ -146,8 +212,13 @@ func sweepOrphanContainersForSession(sessionName string) (count int, ran bool) {
 // design and is acceptable: the sweep is a safety net for orphan
 // auto-named containers, not a comprehensive teardown for all
 // possible naming patterns.
+//
+// The prefix comes from container.ResourceNamePrefixForSession, the
+// same helper the sidecar builds Config.ContainerNamePrefix from, so
+// the name the proxy injects and the name this sweep looks for cannot
+// drift.
 func containerNamePattern(sessionName string) *regexp.Regexp {
-	prefix := "prism-" + sessionName + "-"
+	prefix := container.ResourceNamePrefixForSession(sessionName)
 	return regexp.MustCompile("^" + regexp.QuoteMeta(prefix) + "[a-f0-9]{8}$")
 }
 
@@ -239,6 +310,175 @@ func sweepWithRunner(runner podmanRunner, sessionName string) int {
 		return 0
 	}
 	return len(names)
+}
+
+// volumeNamePrefix returns the per-session volume name prefix the
+// proxy enforces on POST /volumes/create:
+// `prism-<sessionName>-`.
+//
+// Unlike containerNamePattern, the volume sweep matches on the PREFIX,
+// not on the strict `<prefix><8 hex>` auto-name shape. The two differ
+// because the volume policy admits a user-supplied Name as long as it
+// carries the prefix, and a user-named volume holds data that outlives
+// the session unless the sweep removes it. Prefix matching is what
+// makes "every volume this session could have created" reachable.
+//
+// The looser match brings back the sibling-prefix ambiguity that
+// containerNamePattern's `[a-f0-9]{8}` anchor closes: session "foo"
+// and session "foo-bar" produce prefixes where one is a prefix of the
+// other. siblingVolumePrefixes supplies the guard for that case.
+//
+// Shares container.ResourceNamePrefixForSession with the sidecar for
+// the same reason containerNamePattern does: a volume name podman
+// accepts is a sanitised one, so a sweep filter built from the raw
+// session name matches nothing that can exist.
+func volumeNamePrefix(sessionName string) string {
+	return container.ResourceNamePrefixForSession(sessionName)
+}
+
+// siblingVolumePrefixes returns the volume-name prefixes of every OTHER
+// live session whose name extends sessionName — that is, every session
+// whose own prefix is a strict extension of this one's.
+//
+// Why this is needed: session "foo" has prefix "prism-foo-" and
+// session "foo-bar" has prefix "prism-foo-bar-". A volume named
+// "prism-foo-bar-data" starts with BOTH. Cleaning up "foo" with a
+// plain prefix match would destroy a live sibling session's data
+// volume.
+//
+// The name alone cannot resolve the ambiguity: session "foo" is
+// allowed to create a volume explicitly named "prism-foo-bar-data"
+// too. So the guard errs toward NOT deleting. A volume claimed by a
+// live sibling is left alone; the cost is a leaked volume when the
+// name really did belong to this session, and the benefit is that no
+// cleanup destroys another running session's data.
+//
+// A DB read failure returns nil, which degrades to the plain prefix
+// match. That is the documented sweep behaviour, not a silent
+// weakening: the guard is defence in depth over the prefix rule, not
+// the rule itself.
+// The comparison runs in SANITISED space, on the prefixes themselves
+// rather than on the raw session names. Sanitisation folds `@`, `/`,
+// `.`, and `~` all to `-`, so two raw names that look unrelated can
+// produce prefixes that nest — and it is the prefix, not the session
+// name, that a volume name actually carries.
+func siblingVolumePrefixes(d *db.DB, sessionName string) []string {
+	if d == nil {
+		return nil
+	}
+	statuses, err := d.AllActiveStatus()
+	if err != nil {
+		proglog.Warnf("[prism] warning: cleanup: volume sweep: list active sessions failed (%v) — sweeping on the name prefix alone\n", err)
+		return nil
+	}
+	ownPrefix := volumeNamePrefix(sessionName)
+	var prefixes []string
+	for _, st := range statuses {
+		otherPrefix := volumeNamePrefix(st.SessionName)
+		if otherPrefix == ownPrefix {
+			continue
+		}
+		if !strings.HasPrefix(otherPrefix, ownPrefix) {
+			continue
+		}
+		prefixes = append(prefixes, otherPrefix)
+	}
+	return prefixes
+}
+
+// sweepVolumesWithRunner removes every volume whose name starts with
+// the session's `prism-<sessionName>-` prefix, minus any name claimed
+// by one of siblingPrefixes. Returns the number of volumes removed.
+//
+// Flow mirrors sweepWithRunner:
+//
+//  1. `podman volume ls --filter name=^prism-<session>- --format
+//     {{.Name}}`. The anchored regex is the first line of defence —
+//     podman's libpod volume filter is regex-matched.
+//  2. Re-check the prefix in Go. This is the load-bearing check:
+//     the docker-compat surface can treat the same filter as a
+//     substring match, which would leak names like
+//     "user-prism-foo-data" into the removal batch. The re-check is
+//     a pure prefix test, with no further shape condition — every
+//     name the volume policy admits must be reachable here, or the
+//     volume outlives the session.
+//  3. Drop any name claimed by a live sibling session.
+//  4. `podman volume rm` the survivors in one batch. An empty list
+//     short-circuits with no rm invocation.
+//
+// Failures at any step log a warning and return what we have so far.
+// The cleanup flow continues regardless.
+func sweepVolumesWithRunner(runner podmanRunner, sessionName string, siblingPrefixes []string) int {
+	// A budget of its own, not a share of the container sweep's: a
+	// container sweep that burned its full 30 s must not leave the
+	// volume sweep with no time to run.
+	ctx, cancel := context.WithTimeout(context.Background(), podmanSweepBudget)
+	defer cancel()
+
+	prefix := volumeNamePrefix(sessionName)
+	// QuoteMeta for the same reason as the container filter: session
+	// names use only `@`, alphanumerics, hyphens, and dots today, but a
+	// future relaxation of the character set must not become a regex
+	// injection into podman's filter.
+	podmanFilter := "name=^" + regexp.QuoteMeta(prefix)
+
+	out, err := runner.Run(ctx, "volume", "ls",
+		"--filter", podmanFilter,
+		"--format", "{{.Name}}")
+	if err != nil {
+		proglog.Warnf("[prism] warning: cleanup: volume sweep: podman volume ls for %q failed (%v) — continuing cleanup\n",
+			sessionName, err)
+		return 0
+	}
+
+	var names []string
+	for _, line := range bytes.Split(out, []byte{'\n'}) {
+		name := strings.TrimSpace(string(line))
+		if name == "" {
+			continue
+		}
+		// Prefix match, and nothing more. The name that is EXACTLY
+		// the prefix is swept too: applyVolumeNamePolicy admits it
+		// (strings.HasPrefix(prefix, prefix) is true) and podman
+		// accepts a trailing dash, so an agent can create it. An
+		// earlier version of this guard excluded it on the premise
+		// that the policy could not produce it — that premise was
+		// false, and the exclusion leaked the volume permanently.
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		if claimedBySibling(name, siblingPrefixes) {
+			proglog.Warnf("[prism] warning: cleanup: volume sweep: leaving %q — the name is also claimed by a live sibling session\n", name)
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return 0
+	}
+
+	args := append([]string{"volume", "rm"}, names...)
+	if _, err := runner.Run(ctx, args...); err != nil {
+		proglog.Warnf("[prism] warning: cleanup: volume sweep: podman volume rm for %q failed (%v) — some volumes may remain\n",
+			sessionName, err)
+		// Same reasoning as the container sweep: we do not know how
+		// many of the batch were removed, so we report none rather
+		// than mislead the operator.
+		return 0
+	}
+	return len(names)
+}
+
+// claimedBySibling reports whether name falls inside one of the
+// sibling-session prefixes. See siblingVolumePrefixes for why a match
+// means "leave it alone".
+func claimedBySibling(name string, siblingPrefixes []string) bool {
+	for _, sp := range siblingPrefixes {
+		if strings.HasPrefix(name, sp) {
+			return true
+		}
+	}
+	return false
 }
 
 // formatPodmanArgs renders a slice of args into a single space-joined

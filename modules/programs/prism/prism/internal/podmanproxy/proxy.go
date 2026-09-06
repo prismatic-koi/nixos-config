@@ -85,12 +85,38 @@ type Config struct {
 	//     ContainerNamePrefix; otherwise the request is rejected with 403
 	//     and audit reason "name_prefix_mismatch".
 	//
-	// Production wires this from the sidecar to "prism-<sessionName>-"
-	// so the cleanup sweep can locate every container belonging to the
-	// session. Out-of-tree callers may leave it empty — the prefix logic
+	// Production wires this from the sidecar to
+	// container.ResourceNamePrefixForSession(sessionName) so the cleanup
+	// sweep can locate every container belonging to the session. That is
+	// NOT a plain "prism-" + sessionName + "-" concatenation: it folds
+	// "@", "/", ".", and "~" to "-", because podman validates a resource
+	// name against ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ and a session name is
+	// <repo>@<branch>. An out-of-tree caller that builds the prefix from
+	// a raw session name produces names podman refuses to create.
+	// Out-of-tree callers may leave it empty — the prefix logic
 	// is then a no-op, so a consumer that does not need session-scoped
 	// naming keeps the default behaviour.
 	ContainerNamePrefix string
+
+	// VolumeNamePrefix, when non-empty, activates the volume-name
+	// auto-prefix policy on POST /volumes/create. It mirrors
+	// ContainerNamePrefix one-for-one:
+	//
+	//   - A request body with no Name (or Name=""), and a request with
+	//     no body at all, gets a Name of VolumeNamePrefix + <8 hex
+	//     chars from crypto/rand> injected into the forwarded body.
+	//   - A request body with an explicit Name MUST start with
+	//     VolumeNamePrefix; otherwise the request is rejected with 403
+	//     and audit reason "volume_name_prefix_mismatch".
+	//
+	// Production wires this from the sidecar to the SAME value as
+	// ContainerNamePrefix — see that field for the sanitisation this
+	// value must carry — so the cleanup sweep can locate every volume
+	// belonging to the session with one prefix.
+	// It is a separate field rather than a reuse of ContainerNamePrefix
+	// so an out-of-tree caller can scope containers without scoping
+	// volumes, or the reverse. Empty leaves volume naming untouched.
+	VolumeNamePrefix string
 
 	// AllowedSecurityOpts is the set of HostConfig.SecurityOpt entries
 	// that may appear on a containers/create body. Comparison is

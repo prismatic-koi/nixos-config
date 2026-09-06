@@ -70,6 +70,32 @@
 //  4. The struct definition is the canonical spec. Audit a change by
 //     reading the struct, not by guessing what the proxy admits.
 //
+// # Per-session naming and resource caps
+//
+// Two Config knobs turn the proxy from a pure filter into a
+// session-scoped one. Both are optional; an empty value is a no-op, so
+// an out-of-tree caller keeps the plain filtering behaviour.
+//
+//   - ContainerNamePrefix and VolumeNamePrefix make the proxy inject
+//     <prefix><8 hex chars> into a create request that names no
+//     resource, and reject a create request that names one outside the
+//     prefix. The owner uses the prefix to find and remove the
+//     session's resources at teardown. The prefix reaches only the
+//     resources this proxy names: a container runtime creates a named
+//     volume implicitly when a container mounts one that does not
+//     exist, and that path sends no volumes/create, so the volume
+//     carries no prefix. docs/podman-proxy.md, section 8.3, records
+//     that residual among others. Read the section rather than this
+//     summary: several of the residuals it lists are safety-relevant,
+//     and a count here goes stale the next time one is added.
+//   - MaxMemoryBytes, MaxCPUQuota, and MaxNanoCpus cap the matching
+//     HostConfig fields. A configured cap is STRICT: the field becomes
+//     mandatory on create, because docker reads a zero value as
+//     "unbounded" and an absent field would otherwise bypass the cap.
+//     Do not configure MaxCPUQuota and MaxNanoCpus together — they
+//     express the same limit, clients refuse to send both, and with
+//     both caps set every create request fails on the absent field.
+//
 // Streaming endpoints — /containers/{id}/attach, /exec/{id}/start, and
 // the follow=1 variant of /containers/{id}/logs — are forwarded without
 // body parsing. They have no JSON body to inspect and the dangerous

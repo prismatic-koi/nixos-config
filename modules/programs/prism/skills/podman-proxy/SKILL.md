@@ -59,6 +59,122 @@ The `--containers` flag is independent of `--isolation`. Combining
 podman access already, the proxy is redundant) but does not error — see
 #2330 for the rationale.
 
+## First: the podman CLI cannot create containers or volumes
+
+**`podman run` and `podman volume create` return 403 through this
+proxy.** The podman CLI posts libpod bodies, and the proxy's typed
+structs model the docker-compat shapes, so the request is rejected at
+the schema layer:
+
+```
+podman run ...            -> create_top:unknown_field:json: unknown field "command"
+podman volume create ...  -> volumes_create:unknown_field:json: unknown field "Label"
+```
+
+This is pre-existing behaviour, not a regression. It means the resource
+caps and the volume-name policy below are reachable from the
+**docker-compat surface only** — `DOCKER_HOST` plus a docker-API client.
+Every reason string in the next two sections is unreachable from the
+podman CLI, because the request never survives the decode that precedes
+them. `docs/podman-proxy.md` §8.3 has the detail and the conditions to
+close it. The work is tracked in issue **#2946** — do not file a
+duplicate.
+
+## Resource caps: memory and CPU limits are mandatory
+
+**Scope: docker-compat surface only. See the section above.**
+
+**A docker-API `POST /containers/create` must set both
+`HostConfig.Memory` and `HostConfig.NanoCpus`. A body that omits either
+one gets a 403.** On a docker-API client those are `--memory` and
+`--cpus`.
+
+```bash
+# Correct, with DOCKER_HOST and a docker-API client.
+docker run --rm --memory 512m --cpus 1 alpine echo hello
+
+# Rejected: audit reason memory_required.
+docker run --rm --cpus 1 alpine echo hello
+
+# Rejected: audit reason nano_cpus_required.
+docker run --rm --memory 512m alpine echo hello
+```
+
+The two 403 reason strings for a missing field are **`memory_required`**
+and **`nano_cpus_required`**.
+
+The per-container caps are 4 GiB of memory (`MaxMemoryBytes`) and 2 CPUs
+(`MaxNanoCpus`). A request above a cap gets 403 with reason
+`memory_over_cap` or `nano_cpus_over_cap`. A request that passes `0` for
+either gets `memory_nonpositive` or `nano_cpus_nonpositive`, because `0`
+means "unbounded" in docker semantics and bypasses the cap.
+
+A container started through the proxy is a host process. It runs outside
+the agent's sandbox, so the caps are the only bound on what it consumes
+— and only on the fields they name. `MemorySwap` is forwarded and
+uncapped.
+
+**The caps are per container, and nothing caps the container COUNT.** N
+containers consume up to N × 4 GiB and N × 2 CPUs. Issue #872 is the
+post-mortem of a host crash that 15 concurrent containers caused, and
+its conclusion was that per-container caps do not address fan-out. Keep
+your container count small, and read `docs/podman-proxy.md` §8.3 before
+you rely on the caps alone.
+
+Do NOT add `--cpu-quota` alongside `--cpus`, and do not set
+`Config.MaxCPUQuota`. The two fields express the same limit, clients
+refuse to send both, and a configured cap makes its field mandatory — so
+a proxy with both caps set rejects every create request. See
+`docs/podman-proxy.md` §8.1.
+
+## Per-session naming and cleanup
+
+Containers and volumes both carry the per-session prefix
+`prism-<session>-`. Omit the name and the proxy injects
+`prism-<session>-<8 hex chars>`. Supply a name outside the prefix and the
+request gets 403 (`name_prefix_mismatch_body` for a container,
+`volume_name_prefix_mismatch` for a volume).
+
+`<session>` in that prefix is the FOLDED session name, not the raw one.
+The prefix comes from `container.ResourceNamePrefixForSession`, which
+folds `@`, `/`, `.`, and `~` to `-`, because podman validates a resource
+name against `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` and rejects the rest. So
+session `nixos-config@main` gets `prism-nixos-config-main-`. Use the
+folded form when you name a volume by hand.
+
+`prism cleanup` then removes, for a session that enabled containers:
+
+- containers matching `prism-<session>-<8 hex chars>`,
+- volumes whose name starts with `prism-<session>-`.
+
+The two counts appear in the `prism cleanup --json` envelope as
+`containers_swept` and `volumes_swept`.
+
+### Known gaps
+
+All three are accepted for this version. `docs/podman-proxy.md` §8.3
+carries the detail and the conditions to close each one.
+
+- **A volume created implicitly by a container mount.** A docker-API
+  `run -v myvol:/data ...` makes the runtime create `myvol` without ever
+  sending `POST /volumes/create`, so the volume gets no prefix and the
+  sweep never finds it. Give the volume a name that starts with
+  `prism-<session>-` instead. The runtime still creates it implicitly —
+  that does not change — but the sweep matches on the name prefix, so it
+  reaches the volume anyway. `podman volume create` is NOT a workaround:
+  it returns 403 on the libpod body, per the first section.
+- **Images are not swept.** An image you pull stays in the shared host
+  image store after the session ends. Two things must land first: the
+  libpod `POST /images/pull` endpoint needs admission (which is also why
+  `podman pull` returns 403 today, with audit reason
+  `endpoint_not_allowed:POST images/pull`, and which issue **#2946**
+  tracks), and the record of what to remove needs a home the agent
+  cannot write to. A file under the session work dir is not one, because
+  the Darwin sandbox grants the agent write access over that whole
+  subpath.
+- **No cap on the container count.** See the note above. The memory and
+  CPU caps bound one container each, not the session's total.
+
 ## Default-deny at six layers (summary)
 
 The proxy's job is to make the threat table in
@@ -85,7 +201,8 @@ to a class of finding in one of the six review-security cycles of PR #2326:
    namespaces, non-empty `Devices`/`DeviceCgroupRules`/`DeviceRequests`/
    `VolumesFrom`, present `MaskedPaths`/`ReadonlyPaths`, non-empty
    `Sysctls`, cap-add outside allowlist, `SecurityOpt` outside
-   allowlist, resource caps in strict mode).
+   allowlist, resource caps in strict mode — which is now the
+   production setting, see the section above).
 5. **Path-resolution layer** — `filepath.EvalSymlinks` on both bind
    sources AND allowlist entries before the prefix comparison.
    Relative paths, broken symlink chains, and non-existent sources all

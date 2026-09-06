@@ -436,7 +436,13 @@ func TestPodmanProxy_ContainerNamePrefix_WiredFromSession(t *testing.T) {
 	}
 
 	client := proxyClientFor(listenerPath)
-	body := strings.NewReader(`{"Image":"alpine","Name":"not-our-prefix"}`)
+	// The HostConfig carries in-cap Memory and NanoCpus on purpose. The
+	// resource-cap check runs before the name policy (worst violation
+	// wins), so a body with no HostConfig now denies with
+	// memory_required and never reaches the check this test is about.
+	body := strings.NewReader(
+		`{"Image":"alpine","Name":"not-our-prefix",` +
+			`"HostConfig":{"Memory":1073741824,"NanoCpus":1000000000}}`)
 	resp, err := client.Post("http://podman.sock/v1.41/containers/create",
 		"application/json", body)
 	if err != nil {
@@ -455,7 +461,7 @@ func TestPodmanProxy_ContainerNamePrefix_WiredFromSession(t *testing.T) {
 	if err := json.Unmarshal(respBody, &env); err != nil {
 		t.Fatalf("unmarshal envelope: %v (raw=%q)", err, respBody)
 	}
-	wantPrefix := "prism-" + session + "-"
+	wantPrefix := container.ResourceNamePrefixForSession(session)
 	if !strings.Contains(env.Message, wantPrefix) {
 		t.Errorf("envelope message does not name the wired prefix %q; got %q",
 			wantPrefix, env.Message)
