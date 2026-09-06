@@ -1464,15 +1464,15 @@ func (s *Sidecar) Shutdown() {
 		}
 	}
 
-	// Defensive close of the podman-proxy audit log. In the happy path the
+	// Defensive close of the podman-proxy audit log and image ledger. In the happy path the
 	// goNotify wrapper around proxy.Serve already closed it after Serve
 	// returned on ctx cancellation; this call is a no-op then (the handle
 	// is nilled under s.mu so a double close cannot occur). The defensive
 	// path covers Shutdown invocations that race with Run failure-modes
 	// where the goroutine was never spawned (for example, NewProxy returned an
-	// error after the file was opened) — closePodmanProxyAuditFile reads
+	// error after the file was opened) — closePodmanProxyFiles reads
 	// the handle under s.mu so the second writer is safe.
-	s.closePodmanProxyAuditFile()
+	s.closePodmanProxyFiles()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

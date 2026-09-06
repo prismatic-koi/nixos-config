@@ -599,7 +599,6 @@ func TestVolumeSweep_SubstringTrapNotSwept(t *testing.T) {
 	lsOut := strings.Join([]string{
 		"prism-foo-aaaaaaaa",      // legit
 		"user-prism-foo-bbbbbbbb", // substring trap — must NOT be swept
-		"prism-foo-",              // the bare prefix is not a valid name
 	}, "\n") + "\n"
 	r.script(
 		scriptedResponse{stdout: []byte(lsOut)},
@@ -612,9 +611,48 @@ func TestVolumeSweep_SubstringTrapNotSwept(t *testing.T) {
 	}
 	rmArgs := r.calls()[1][2:]
 	for _, name := range rmArgs {
-		if !strings.HasPrefix(name, "prism-foo-") || name == "prism-foo-" {
+		if !strings.HasPrefix(name, "prism-foo-") {
 			t.Errorf("SECURITY: volume sweep removed %q, which the session cannot own", name)
 		}
+	}
+}
+
+// TestVolumeSweep_BarePrefixNameIsSwept pins the agreement between the
+// create-side policy and the sweep.
+//
+// `applyVolumeNamePolicy` admits an explicit Name that equals the prefix
+// exactly — `strings.HasPrefix(prefix, prefix)` is true — and podman
+// accepts the resulting trailing dash, so `podman volume create
+// prism-<session>-` succeeds. The sweep must therefore reach it. An
+// earlier version excluded it, on the false premise that the policy
+// could not produce that name, and the volume leaked permanently.
+//
+// The general invariant this defends: every name the volume policy
+// admits must be reachable by the sweep.
+func TestVolumeSweep_BarePrefixNameIsSwept(t *testing.T) {
+	r := installFakeRunner(t)
+	lsOut := strings.Join([]string{
+		"prism-foo-",         // exactly the prefix — create admits it
+		"prism-foo-aaaaaaaa", // auto-injected shape
+	}, "\n") + "\n"
+	r.script(
+		scriptedResponse{stdout: []byte(lsOut)},
+		scriptedResponse{stdout: []byte("")},
+	)
+
+	got := sweepVolumesWithRunner(r, "foo", nil)
+	if got != 2 {
+		t.Fatalf("count: got %d, want 2 (the bare-prefix volume must be swept, not leaked)", got)
+	}
+	rmArgs := r.calls()[1][2:]
+	var sawBare bool
+	for _, name := range rmArgs {
+		if name == "prism-foo-" {
+			sawBare = true
+		}
+	}
+	if !sawBare {
+		t.Errorf("the bare-prefix volume was not passed to podman volume rm; args=%v", rmArgs)
 	}
 }
 

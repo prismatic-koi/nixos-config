@@ -226,22 +226,22 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 	//
 	// The audit file is closed inside this goroutine, AFTER Serve returns,
 	// so the last audit line is guaranteed flushed before fclose. Shutdown
-	// also calls closePodmanProxyAuditFile defensively in case Serve never
+	// also calls closePodmanProxyFiles defensively in case Serve never
 	// started (e.g. failure path before this branch was reached); both
 	// callers are guarded by an s.mu nil-check so a double close is safe.
 	s.goNotify(func() {
 		if err := proxy.Serve(ctx); err != nil {
 			s.logger().Printf("sidecar: podman-proxy: Serve: %v", err)
 		}
-		s.closePodmanProxyAuditFile()
+		s.closePodmanProxyFiles()
 	})
 }
 
-// closePodmanProxyAuditFile closes the audit log and image-ledger file
+// closePodmanProxyFiles closes the audit log and image-ledger file
 // handles if they were opened. Called from Shutdown after the proxy
 // goroutine has exited so the last audit line and the last ledger line
 // have already been written.
-func (s *Sidecar) closePodmanProxyAuditFile() {
+func (s *Sidecar) closePodmanProxyFiles() {
 	s.mu.Lock()
 	f := s.podmanProxyAuditFile
 	s.podmanProxyAuditFile = nil

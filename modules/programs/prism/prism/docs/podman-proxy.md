@@ -439,12 +439,12 @@ Three properties of the sweep:
   image that another container still uses returns a non-zero exit, and a
   batched command strands the rest of the list behind that one failure.
 
-The ledger is written by `recordPulledImage` (one JSON line per admitted
-`POST /images/create`) and read by `ReadImageLedger`. Both halves check
-the reference against the same allowlist, because the reference is agent
-controlled and reaches a podman command line. A reference that does not
-start with an alphanumeric character is dropped, so no ledger entry can
-look like a command-line flag.
+`recordPulledImage` writes one JSON line per admitted
+`POST /images/create`. `ReadImageLedger` reads the file back at cleanup.
+Both halves check the reference against the same allowlist, because the
+reference is agent-controlled and reaches a podman command line. A
+reference that does not start with an alphanumeric character is dropped,
+so no ledger entry can look like a command-line flag.
 
 The proxy records a reference only after it asks the upstream whether
 the image is already in the store. An image that was there before the
@@ -454,10 +454,12 @@ removes it after the session ends. The probe fails closed: any answer
 other than a definite "not present" leaves the image unrecorded. A
 leaked image costs disk. A wrongly removed one costs the user's data.
 
-### 8.3 What the sweep does not reach
+### 8.3 Residuals
 
-Two storage paths stay outside the sweep. Both are accepted for this
-version, in the same sense as the residual TOCTOU in §5.
+Three residuals stay open. All three are accepted for this version, in
+the same sense as the residual TOCTOU in §5. The first two are storage
+paths the sweep does not reach. The third is the one to read before
+`--containers` becomes the default.
 
 **A volume created implicitly by a container mount.** `checkHostConfig`
 admits a named volume as the source of a bind (`Binds:

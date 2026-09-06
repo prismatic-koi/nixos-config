@@ -80,7 +80,12 @@
 //     <prefix><8 hex chars> into a create request that names no
 //     resource, and reject a create request that names one outside the
 //     prefix. The owner uses the prefix to find and remove the
-//     session's resources at teardown.
+//     session's resources at teardown. The prefix reaches only the
+//     resources this proxy names: a container runtime creates a named
+//     volume implicitly when a container mounts one that does not
+//     exist, and that path sends no volumes/create, so the volume
+//     carries no prefix. docs/podman-proxy.md, section 8.3, records
+//     that residual and the two others.
 //   - MaxMemoryBytes, MaxCPUQuota, and MaxNanoCpus cap the matching
 //     HostConfig fields. A configured cap is STRICT: the field becomes
 //     mandatory on create, because docker reads a zero value as

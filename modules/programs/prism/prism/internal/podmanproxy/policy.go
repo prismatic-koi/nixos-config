@@ -847,19 +847,19 @@ const (
 // flag toggles the absent-field policy between the two.
 func (p *Proxy) checkResourceCaps(hc *hostConfig, ctx capContext) policyDecision {
 	if dec := p.checkOneResourceCap(
-		"Memory", hc.Memory, p.cfg.MaxMemoryBytes, ctx,
+		"Memory", "--memory", hc.Memory, p.cfg.MaxMemoryBytes, ctx,
 		"memory_required", "memory_nonpositive", "memory_over_cap",
 	); !dec.allow {
 		return dec
 	}
 	if dec := p.checkOneResourceCap(
-		"CpuQuota", hc.CpuQuota, p.cfg.MaxCPUQuota, ctx,
+		"CpuQuota", "--cpu-quota", hc.CpuQuota, p.cfg.MaxCPUQuota, ctx,
 		"cpu_quota_required", "cpu_quota_nonpositive", "cpu_quota_over_cap",
 	); !dec.allow {
 		return dec
 	}
 	if dec := p.checkOneResourceCap(
-		"NanoCpus", hc.NanoCpus, p.cfg.MaxNanoCpus, ctx,
+		"NanoCpus", "--cpus", hc.NanoCpus, p.cfg.MaxNanoCpus, ctx,
 		"nano_cpus_required", "nano_cpus_nonpositive", "nano_cpus_over_cap",
 	); !dec.allow {
 		return dec
@@ -871,8 +871,15 @@ func (p *Proxy) checkResourceCaps(hc *hostConfig, ctx capContext) policyDecision
 // strings are passed in so the audit log distinguishes which cap
 // fired and why — "memory_required" vs "memory_nonpositive" vs
 // "memory_over_cap".
+//
+// cliFlag is the podman/docker CLI flag that sets fieldName. It is named
+// in the client-facing message on purpose: the caller that hits this is
+// running the CLI, not writing a HostConfig by hand, so "HostConfig.Memory
+// is required" leaves it one translation step short of the fix. The
+// message is the surface that reaches the agent at the moment it needs
+// the answer.
 func (p *Proxy) checkOneResourceCap(
-	fieldName string, value *int64, cap int64, ctx capContext,
+	fieldName, cliFlag string, value *int64, cap int64, ctx capContext,
 	reasonRequired, reasonNonpositive, reasonOverCap string,
 ) policyDecision {
 	if cap <= 0 {
@@ -883,7 +890,7 @@ func (p *Proxy) checkOneResourceCap(
 		if ctx == capContextCreate {
 			return denyDecision(http.StatusForbidden,
 				reasonRequired,
-				fmt.Sprintf("HostConfig.%s is required when a cap is configured (set a positive value <= %d)", fieldName, cap))
+				fmt.Sprintf("HostConfig.%s is required when a cap is configured (set a positive value <= %d; on the podman/docker CLI pass %s)", fieldName, cap, cliFlag))
 		}
 		// Update: absent field means "not changing this". Allow.
 		return allowDecision("policy:resource_cap_absent_in_update")
@@ -891,12 +898,12 @@ func (p *Proxy) checkOneResourceCap(
 	if *value <= 0 {
 		return denyDecision(http.StatusForbidden,
 			reasonNonpositive,
-			fmt.Sprintf("HostConfig.%s=%d is invalid (must be > 0; 0 means unlimited and would bypass the cap)", fieldName, *value))
+			fmt.Sprintf("HostConfig.%s=%d is invalid (must be > 0; 0 means unlimited and would bypass the cap; on the podman/docker CLI pass a positive %s)", fieldName, *value, cliFlag))
 	}
 	if *value > cap {
 		return denyDecision(http.StatusForbidden,
 			reasonOverCap,
-			fmt.Sprintf("HostConfig.%s=%d exceeds cap %d", fieldName, *value, cap))
+			fmt.Sprintf("HostConfig.%s=%d exceeds cap %d (lower the %s value)", fieldName, *value, cap, cliFlag))
 	}
 	return allowDecision("policy:resource_cap_ok")
 }

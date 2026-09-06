@@ -378,7 +378,10 @@ func siblingVolumePrefixes(d *db.DB, sessionName string) []string {
 //  2. Re-check the prefix in Go. This is the load-bearing check:
 //     the docker-compat surface can treat the same filter as a
 //     substring match, which would leak names like
-//     "user-prism-foo-data" into the removal batch.
+//     "user-prism-foo-data" into the removal batch. The re-check is
+//     a pure prefix test, with no further shape condition — every
+//     name the volume policy admits must be reachable here, or the
+//     volume outlives the session.
 //  3. Drop any name claimed by a live sibling session.
 //  4. `podman volume rm` the survivors in one batch. An empty list
 //     short-circuits with no rm invocation.
@@ -414,9 +417,14 @@ func sweepVolumesWithRunner(runner podmanRunner, sessionName string, siblingPref
 		if name == "" {
 			continue
 		}
-		// Strict prefix, and something after it: the bare prefix is
-		// not a name this session's policy can produce.
-		if !strings.HasPrefix(name, prefix) || len(name) == len(prefix) {
+		// Prefix match, and nothing more. The name that is EXACTLY
+		// the prefix is swept too: applyVolumeNamePolicy admits it
+		// (strings.HasPrefix(prefix, prefix) is true) and podman
+		// accepts a trailing dash, so an agent can create it. An
+		// earlier version of this guard excluded it on the premise
+		// that the policy could not produce it — that premise was
+		// false, and the exclusion leaked the volume permanently.
+		if !strings.HasPrefix(name, prefix) {
 			continue
 		}
 		if claimedBySibling(name, siblingPrefixes) {
