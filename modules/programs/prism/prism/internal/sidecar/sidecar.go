@@ -776,6 +776,14 @@ type Sidecar struct {
 	// runPodmanProxyIfEnabled. Held only for log/diagnostic surfaces.
 	// Protected by s.mu.
 	podmanProxyAuditPath string
+
+	// podmanProxyImageFile is the open per-session image-ledger file handle
+	// held by the podman proxy. Same lifecycle as podmanProxyAuditFile: set
+	// by runPodmanProxyIfEnabled, closed after the proxy goroutine exits so
+	// the last ledger line is flushed before `prism cleanup` reads the file.
+	// nil when the proxy is not started or the ledger open failed.
+	// Protected by s.mu.
+	podmanProxyImageFile *os.File
 }
 
 // defaultReviewRecoveryInterval is how often the worker-sidecar recovery

@@ -77,7 +77,7 @@ the rationale.
 | T11 | Transitive mount inheritance via `HostConfig.VolumesFrom` | DENIED when non-empty — impossible to audit the source container's mounts transitively. | `policy.go::checkHostConfig` (VolumesFrom branch) |
 | T12 | Non-namespaced sysctl write via `HostConfig.Sysctls` | DENIED when non-empty. Some sysctls are not namespaced. | `policy.go::checkHostConfig` (Sysctls branch) |
 | T13 | Sandbox bypass via `HostConfig.SecurityOpt: [seccomp=unconfined]` / `apparmor=unconfined` / `no-new-privileges=false` / `label=disable` / `systempaths=unconfined` | Allowlisted against `Config.AllowedSecurityOpts`. Default empty = deny-all. | `policy.go::checkHostConfig` (SecurityOpt branch), `Config.AllowedSecurityOpts` |
-| T14 | Resource exhaustion via `HostConfig.Memory=10TB`, `CpuQuota=very-large`, `NanoCpus=very-large` | Cap-strict-mode: when the corresponding `Config.Max*` cap is set, the field MUST be present and a positive value within the cap. The docker-semantic "0 means unbounded" bypass is closed for all three. | `policy.go::checkHostConfig` (Memory, CpuQuota, NanoCpus branches), `Config.MaxMemoryBytes` / `MaxCPUQuota` / `MaxNanoCpus` |
+| T14 | Resource exhaustion via `HostConfig.Memory=10TB`, `CpuQuota=very-large`, `NanoCpus=very-large` | Cap-strict-mode: when the corresponding `Config.Max*` cap is set, the field MUST be present and a positive value within the cap. The docker-semantic "0 means unbounded" bypass is closed for all three. The sidecar sets `MaxMemoryBytes` and `MaxNanoCpus` for every session, so this mitigation is active in production. See §8.1 for the values and for the cost they put on the client. | `policy.go::checkHostConfig` (Memory, CpuQuota, NanoCpus branches), `Config.MaxMemoryBytes` / `MaxCPUQuota` / `MaxNanoCpus` |
 | T15 | Post-create cap relax via `POST /containers/{id}/update` resetting Memory to 0 | The `update` endpoint runs through the same cap-strict-mode check as `create`. | `endpoints.go::endpointPolicyUpdate`, `policy.go::inspectUpdate` |
 | T16 | Privilege escalation via `POST /containers/{id}/exec` body's own `Privileged: true` | `exec` body is parsed with `containerExecBody` and `Privileged: true` is rejected. | `policy.go::inspectExec`, `containerExecBody.Privileged` |
 | T17 | Log-driver shipping container logs off the host via `LogConfig.Type=syslog`/`splunk`/`fluentd`/`gelf`/`awslogs` | `LogConfig.Type` is value-allowlisted to local-only drivers `{json-file, none, journald, k8s-file, passthrough, passthrough-tty}`. | `policy.go::checkLogConfigType`, `logConfigTypeAllowlist` |
@@ -87,6 +87,7 @@ the rationale.
 | T21 | Build context smuggle via `POST /build` of arbitrary-content tar | No new escape: `build` is bounded by what the sandbox already exposes. Build endpoint is `endpointAllow` (query-only and opaque body). No size cap in v1. Revisit if abuse appears. | `endpoints.go` (build endpoint) |
 | T22 | Schema drift: a new docker-/podman-API field upstream introduces a new escape vector without anyone in this repo noticing | `json.Decoder.DisallowUnknownFields()` runs on every parsed body. A new unknown field rejects with 403 and audit reason `unknown_field:<json error>` until it is admitted via the field-admission process (§4). | `policy.go::decodeStrict`, plus every typed struct |
 | T23 | Proxy itself has a parsing bug | Default-deny — every unknown endpoint, unknown field, unknown enumerable value, malformed JSON, missing required value rejects before forwarding. Test suite exercises every documented escape and asserts it is blocked, plus a negative-control meta-test that verifies the positive tests are not no-ops. | `proxy_security_test.go::TestSecurity_NegativeControl_RootAllowlistPasses` |
+| T24 | Storage exhaustion after the session ends: a volume or an image the agent created outlives the session on the shared host | Volumes get the same per-session name prefix as containers (`Config.VolumeNamePrefix`), and `prism cleanup` removes every volume with that prefix. Images pulled through the proxy are recorded in a per-session ledger and removed one by one at cleanup. Neither sweep prunes the shared store. | `policy.go::applyVolumeNamePolicy`, `images.go` (`recordPulledImage`, `ReadImageLedger`), `cmd/cleanup_sweep.go` (`sweepVolumesWithRunner`, `sweepImagesWithRunner`) |
 
 **Network egress** is not restricted: containers get whatever network the
 host podman gives them (default: full internet). This is strictly broader
@@ -108,6 +109,24 @@ covers a class of escape that the other layers do not.
 | 4 | **Body-content** | `checkHostConfig` walks the parsed HostConfig and rejects dangerous values: `Privileged: true`, host-namespace modes, non-empty `Devices` / `DeviceCgroupRules` / `DeviceRequests` / `VolumesFrom`, present `MaskedPaths` / `ReadonlyPaths`, non-empty `Sysctls`, `Mounts[].VolumeOptions.DriverConfig` non-nil, `CapAdd` outside allowlist, `SecurityOpt` outside allowlist, resource caps in strict mode. |
 | 5 | **Path-resolution** | `filepath.EvalSymlinks` + lexical `filepath.Clean` on both bind sources AND allowlist entries before the prefix comparison. Relative paths, broken symlink chains, and non-existent sources all deny. This closes the class where the agent plants a symlink inside an allowed prefix pointing at `/etc/passwd`. Symlink resolution denies a planted source that a purely lexical prefix-match accepts. See §5 for the residual TOCTOU. |
 | 6 | **Query** | `PUT /containers/{id}/archive` `path` query parameter is checked against `AllowedBindSources` with the same canonicalised-prefix logic as `Binds`. The other endpoint with a security-relevant query (`POST /containers/create?name=<…>`) is covered by the container-name auto-prefix policy in `applyContainerNamePolicy`. |
+
+### Per-session naming
+
+Two endpoints carry a per-session name policy. Both work the same way,
+and both exist so `prism cleanup` can find what the session created:
+
+| Endpoint | Config field | Policy function | Deny reason |
+|---|---|---|---|
+| `POST /containers/create` | `ContainerNamePrefix` | `applyContainerNamePolicy` | `name_prefix_mismatch_query`, `name_prefix_mismatch_body` |
+| `POST /volumes/create` | `VolumeNamePrefix` | `applyVolumeNamePolicy` | `volume_name_prefix_mismatch` |
+
+The sidecar sets both fields to `prism-<sessionName>-`. A request with
+no name gets `prism-<sessionName>-<8 hex chars>`. A request with a name
+outside the prefix returns 403.
+
+The container endpoint takes its name from two channels (the `?name=`
+query and the body `Name`), so the policy checks and injects into both.
+The volume endpoint takes its name from the body alone.
 
 ## 4. Field-admission process
 
@@ -293,6 +312,11 @@ verify the format from the source.
 | Worker tries a brand-new docker-/podman-API field this struct does not admit | `create_hostconfig:unknown_field:json: unknown field "NewField"` (or the matching `create_top:` / `update:` / `exec:` / `volumes_create:` / `networks_create:` prefix per endpoint) | Field-admission process (§4). |
 | Worker gets `503` with `"podman socket unavailable: ..."` envelope | Audit log shows `decision=allow` then nothing — the proxy accepted policy-wise but the upstream is not there | Bring the upstream up: Darwin `podman machine start`. NixOS `systemctl --user status podman.socket`. |
 | Worker gets `400` with `"malformed_body:empty"` or similar | `create_top:malformed_body:empty` (or the matching endpoint prefix) | Client is sending an empty / non-JSON `POST /containers/create` body. Bug in the client, not the proxy. |
+| Worker runs `podman run` with no `--memory` | `memory_required` (`checkOneResourceCap`) | Expected. Add `--memory <size>`, at or below 4 GiB. See §8.1. |
+| Worker runs `podman run` with no `--cpus` | `nano_cpus_required` (`checkOneResourceCap`) | Expected. Add `--cpus <n>`, at or below 2. See §8.1. |
+| Worker asks for more memory or more CPU than the cap allows | `memory_over_cap` / `nano_cpus_over_cap` (`checkOneResourceCap`) | Expected. Lower the request. If the workload genuinely needs more, that is a `Config.MaxMemoryBytes` / `Config.MaxNanoCpus` discussion — file an issue. |
+| Worker passes `--memory 0` or `--cpus 0` | `memory_nonpositive` / `nano_cpus_nonpositive` (`checkOneResourceCap`) | Expected. `0` means "unbounded" in docker semantics, which bypasses the cap. Pass a positive value. |
+| Worker runs `podman volume create <name>` with a name outside the session prefix | `volume_name_prefix_mismatch` (`policy.go::applyVolumeNamePolicy`) | Expected. Omit the name to receive an auto-prefixed one, or start the name with `prism-<session>-`. |
 
 ### When to escalate
 
@@ -320,20 +344,100 @@ sets:
 
 - `AllowedBindSources` — the per-session worktree path, the bare repo
   path, and the per-session scratch directory.
-- `ContainerNamePrefix` — `"prism-" + sessionName + "-"`, which
-  activates the auto-prefix policy and lets the cleanup sweep
-  (`cmd/cleanup_sweep.go::sweepOrphanContainersForSession`, called
-  from `cmd/cleanup.go`) find every container belonging to the
-  session.
+- `ContainerNamePrefix` and `VolumeNamePrefix` — both
+  `"prism-" + sessionName + "-"`, which activates the auto-prefix
+  policy and lets the cleanup sweep
+  (`cmd/cleanup_sweep.go::sweepSessionResourcesForSession`, called
+  from `cmd/cleanup.go`) find every container and every volume that
+  belongs to the session.
 - `AllowedCaps` — empty by default. Deny-all.
 - `AllowedSecurityOpts` — empty by default. Deny-all.
-- `MaxMemoryBytes` / `MaxCPUQuota` / `MaxNanoCpus` — unset by default
-  (no cap-strict-mode). When set, the cap is enforced AND the field is
-  required.
+- `MaxMemoryBytes` — `4294967296` (4 GiB per container).
+- `MaxNanoCpus` — `2000000000` (2 CPUs per container).
+- `MaxCPUQuota` — left at `0`. Read §8.1 before you change this.
 - `AuditWriter` — the `os.File` for `<sessionDir>/podman-proxy.log`.
+- `PulledImageWriter` — the `os.File` for the per-session image
+  ledger at `<sessionDir>/podman-images.log`.
 
 Out-of-tree callers can construct the `Config` differently. The proxy
 package itself imposes no policy beyond what the `Config` declares.
+
+### 8.1 Resource caps make `--memory` and `--cpus` mandatory
+
+**Every `podman run` through the proxy must pass `--memory` and
+`--cpus`. A command that omits either one gets a 403.**
+
+```bash
+# Correct. Both caps are declared and both are within the limits.
+podman run --rm --memory 512m --cpus 1 alpine echo hello
+
+# Rejected with 403. No --memory.
+podman run --rm --cpus 1 alpine echo hello
+```
+
+This is the cost of the cap, not a defect. A configured cap puts
+`checkOneResourceCap` into strict mode: the matching `HostConfig` field
+becomes mandatory on create, and an absent field returns 403. The strict
+reading is deliberate. In docker semantics `Memory: 0` means
+"unbounded". If the cap rejected only the values above the limit,
+`Memory: 0` stays an open bypass.
+
+The two reason strings the audit log records for a missing field are
+`memory_required` and `nano_cpus_required`. See §7 for the full list.
+
+**Why a container needs a cap at all.** A container the agent starts
+through the proxy is a host process. It runs outside the agent's bwrap
+or sandbox-exec sandbox, so no sandbox limit applies to it. The caps are
+the only bound on what it consumes.
+
+**Why `MaxCPUQuota` stays 0.** `NanoCpus` and `CpuQuota` are two ways to
+express the same CPU limit. Docker and podman clients refuse to send
+`--cpus` together with `--cpu-quota`. A configured cap makes its field
+mandatory. Thus a proxy with both caps set rejects every create request.
+The client sends one of the two fields, the other one is absent, and the
+absent one returns 403. Enforce one CPU cap only.
+
+### 8.2 Volume and image sweep at cleanup
+
+`prism cleanup` removes three classes of resource for a session with
+`agent_status.containers_enabled = 1`. A session that never enabled
+containers issues no podman command at all.
+
+| Class | Match rule | podman command |
+|---|---|---|
+| Containers | Strict shape `prism-<session>-<8 hex chars>` | `podman rm -f`, one batch |
+| Volumes | Name prefix `prism-<session>-` | `podman volume rm`, one batch |
+| Images | Each reference in the per-session ledger | `podman rmi`, one command per image |
+
+The counts appear in the `prism cleanup --json` envelope as
+`containers_swept`, `volumes_swept`, and `images_swept`. The three keys
+are absent when the session did not enable containers.
+
+Three properties of the sweep:
+
+- **The volume rule is a prefix, the container rule is a strict shape.**
+  The volume policy admits a user-chosen name as long as it carries the
+  prefix, and such a volume holds data that must not outlive the
+  session. A prefix match reaches those names. The container sweep does
+  not need to, because a user-named container holds no data.
+- **A live sibling session keeps its volumes.** Session `foo` and
+  session `foo-bar` produce prefixes where one contains the other, so a
+  volume named `prism-foo-bar-data` matches both. The sweep reads the
+  live sessions from the database and leaves any name a sibling also
+  claims. The cost is a leaked volume. The alternative is the loss of
+  another session's data.
+- **The image sweep is not a prune.** The image store is shared with the
+  user and with every other session, so the sweep removes only the
+  references this session pulled. One `podman rmi` runs per image. An
+  image that another container still uses returns a non-zero exit, and a
+  batched command strands the rest of the list behind that one failure.
+
+The ledger is written by `recordPulledImage` (one JSON line per admitted
+`POST /images/create`) and read by `ReadImageLedger`. Both halves check
+the reference against the same allowlist, because the reference is agent
+controlled and reaches a podman command line. A reference that does not
+start with an alphanumeric character is dropped, so no ledger entry can
+look like a command-line flag.
 
 ## 9. Linger decision
 
@@ -363,5 +467,6 @@ that.
 - Canonical structs: [`internal/podmanproxy/policy.go`](../internal/podmanproxy/policy.go) (`hostConfig`, `containerCreateBody`, `containerExecBody`, `volumeCreateBody`, `networkCreateBody`).
 - Package doc: [`internal/podmanproxy/doc.go`](../internal/podmanproxy/doc.go) — the in-tree summary of the threat model. This document (§2) is the canonical threat table. `doc.go` is the inline summary.
 - Sidecar wiring: [`internal/sidecar/podman_proxy.go`](../internal/sidecar/podman_proxy.go) — `runPodmanProxyIfEnabled`.
-- Cleanup sweep: [`cmd/cleanup_sweep.go`](../cmd/cleanup_sweep.go) — `sweepOrphanContainersForSession` (called from `cmd/cleanup.go`).
+- Cleanup sweep: [`cmd/cleanup_sweep.go`](../cmd/cleanup_sweep.go) — `sweepSessionResourcesForSession` (called from `cmd/cleanup.go`).
+- Image ledger: [`internal/podmanproxy/images.go`](../internal/podmanproxy/images.go) — `recordPulledImage` and `ReadImageLedger`.
 - Sandbox-exec testing convention: [`docs/sandbox-exec-testing.md`](sandbox-exec-testing.md).

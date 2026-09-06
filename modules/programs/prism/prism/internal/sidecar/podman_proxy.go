@@ -40,6 +40,40 @@ import (
 // override arrives through the same Config.PodmanMachineName field.
 const defaultPodmanMachineName = "podman-machine-default"
 
+// Per-container resource caps applied to every container the agent
+// creates through the proxy.
+//
+// A container started through the proxy is a HOST process. It runs
+// outside the agent's bwrap / sandbox-exec sandbox, so no sandbox limit
+// applies to it and nothing else in prism bounds what it consumes.
+// Without these caps, threat T14 (resource exhaustion) in
+// docs/podman-proxy.md has a mitigation in the proxy that never runs:
+// checkOneResourceCap short-circuits while the cap is 0.
+//
+// The values are sized against a 12-CPU / 31 GiB reference host. They
+// are PER CONTAINER, so a 2-CPU / 4-GiB ceiling still leaves the agent,
+// the editor, and a parallel session room to work.
+//
+// The cost of a configured cap is that the matching field becomes
+// MANDATORY on create: every `podman run` through the proxy must pass
+// --memory and --cpus or it gets a 403. That is recorded in
+// docs/podman-proxy.md and in the podman-proxy skill.
+const (
+	// podmanProxyMaxMemoryBytes caps HostConfig.Memory at 4 GiB.
+	podmanProxyMaxMemoryBytes int64 = 4 << 30
+
+	// podmanProxyMaxNanoCpus caps HostConfig.NanoCpus at 2 CPUs
+	// (cores * 1e9). This is the `--cpus` expression.
+	//
+	// MaxCPUQuota is deliberately NOT set alongside it. NanoCpus and
+	// CpuQuota are two ways to say the same thing, and docker/podman
+	// clients refuse to send both. Because a configured cap makes its
+	// field mandatory, setting both caps would make EVERY create
+	// request fail: whichever field the client sends, the other one is
+	// absent and returns 403 <field>_required. Enforce one CPU cap only.
+	podmanProxyMaxNanoCpus int64 = 2_000_000_000
+)
+
 // runPodmanProxyIfEnabled starts the per-session filtering podman API socket
 // proxy when the session's agent_status.containers_enabled gate is set. It
 // is called from (*Sidecar).Run after instance_id and the FK-guard row have
@@ -111,23 +145,43 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 		auditPath = ""
 	}
 
+	// Open the per-session image ledger. Same failure posture as the
+	// audit log: a ledger the sidecar cannot open costs the cleanup
+	// sweep its list of images to remove (storage leaks) but must not
+	// stop the proxy from serving.
+	imageFile, imageErr := s.openPodmanProxyImageLedger()
+	if imageErr != nil {
+		s.logger().Printf("sidecar: podman-proxy: image ledger open: %v (pulled images will not be swept at cleanup)", imageErr)
+		imageFile = nil
+	}
+
 	allowed := s.allowedPodmanBindSources()
+	// Per-session resource name prefix. The proxy auto-injects this
+	// prefix into containers/create and volumes/create requests with no
+	// Name field, and rejects any explicit Name that does not start
+	// with it. Cleanup (`cmd/cleanup_sweep.go`) sweeps any orphan
+	// container and volume matching the same prefix at session
+	// teardown.
+	namePrefix := "prism-" + s.cfg.SessionName + "-"
 	cfg := podmanproxy.Config{
-		ListenerPath:       listenerPath,
-		UpstreamPath:       upstream,
-		AllowedBindSources: allowed,
-		// Per-session container name prefix. The proxy auto-injects this
-		// prefix into containers/create requests with no Name field, and
-		// rejects any explicit Name that does not start with it. Cleanup
-		// (`cmd/cleanup.go`) sweeps any orphan container matching the
-		// same prefix at session teardown.
-		ContainerNamePrefix: "prism-" + s.cfg.SessionName + "-",
-		// The default-deny policy applies: no AllowedCaps, no
-		// AllowedSecurityOpts, no MaxMemoryBytes. Every escape vector is
-		// rejected by default.
+		ListenerPath:        listenerPath,
+		UpstreamPath:        upstream,
+		AllowedBindSources:  allowed,
+		ContainerNamePrefix: namePrefix,
+		VolumeNamePrefix:    namePrefix,
+		// Resource caps. See the podmanProxyMax* constants above for the
+		// sizing rationale and for why MaxCPUQuota stays unset.
+		MaxMemoryBytes: podmanProxyMaxMemoryBytes,
+		MaxNanoCpus:    podmanProxyMaxNanoCpus,
+		// The default-deny policy applies to the escape vectors: no
+		// AllowedCaps and no AllowedSecurityOpts, so every capability
+		// and every security-opt is rejected by default.
 	}
 	if auditFile != nil {
 		cfg.AuditWriter = auditFile
+	}
+	if imageFile != nil {
+		cfg.PulledImageWriter = imageFile
 	}
 
 	proxy, err := podmanproxy.NewProxy(cfg)
@@ -135,6 +189,9 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 		s.logger().Printf("sidecar: podman-proxy: NewProxy: %v (proxy not started)", err)
 		if auditFile != nil {
 			_ = auditFile.Close()
+		}
+		if imageFile != nil {
+			_ = imageFile.Close()
 		}
 		return
 	}
@@ -148,6 +205,7 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 	s.mu.Lock()
 	s.podmanProxyAuditFile = auditFile
 	s.podmanProxyAuditPath = auditPath
+	s.podmanProxyImageFile = imageFile
 	s.mu.Unlock()
 	s.logger().Printf("sidecar: podman-proxy: listening on %s (audit=%s, allowed_bind_sources=%d)",
 		listenerPath, auditPath, len(allowed))
@@ -171,16 +229,22 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 	})
 }
 
-// closePodmanProxyAuditFile closes the audit log file handle if one was
-// opened. Called from Shutdown after the proxy goroutine has exited so the
-// last audit line has already been written.
+// closePodmanProxyAuditFile closes the audit log and image-ledger file
+// handles if they were opened. Called from Shutdown after the proxy
+// goroutine has exited so the last audit line and the last ledger line
+// have already been written.
 func (s *Sidecar) closePodmanProxyAuditFile() {
 	s.mu.Lock()
 	f := s.podmanProxyAuditFile
 	s.podmanProxyAuditFile = nil
+	img := s.podmanProxyImageFile
+	s.podmanProxyImageFile = nil
 	s.mu.Unlock()
 	if f != nil {
 		_ = f.Close()
+	}
+	if img != nil {
+		_ = img.Close()
 	}
 }
 
@@ -325,4 +389,32 @@ func (s *Sidecar) openPodmanProxyAuditFile() (*os.File, string, error) {
 		return nil, "", fmt.Errorf("open audit log: %w", err)
 	}
 	return f, auditPath, nil
+}
+
+// openPodmanProxyImageLedger opens the per-session image ledger in
+// append-only mode. The ledger records every image the session pulls
+// through its proxy so `prism cleanup` can remove those images at
+// teardown; see internal/podmanproxy/images.go.
+//
+// It lives in the same per-session work dir as the audit log, with the
+// same 0o700 / 0o600 permissions. Cleanup reads it BEFORE
+// RemoveSessionWorkDir wipes the directory, so the file needs no
+// separate lifetime of its own.
+func (s *Sidecar) openPodmanProxyImageLedger() (*os.File, error) {
+	if s.cfg.InstanceID == "" {
+		return nil, fmt.Errorf("instance ID is empty")
+	}
+	sessionDir, err := container.SessionWorkDirPath(s.cfg.InstanceID)
+	if err != nil {
+		return nil, fmt.Errorf("session work dir: %w", err)
+	}
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		return nil, fmt.Errorf("mkdir session dir: %w", err)
+	}
+	ledgerPath := filepath.Join(sessionDir, podmanproxy.ImageLedgerFileName)
+	f, err := os.OpenFile(ledgerPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open image ledger: %w", err)
+	}
+	return f, nil
 }

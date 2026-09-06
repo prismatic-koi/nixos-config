@@ -92,6 +92,25 @@ type Config struct {
 	// naming keeps the default behaviour.
 	ContainerNamePrefix string
 
+	// VolumeNamePrefix, when non-empty, activates the volume-name
+	// auto-prefix policy on POST /volumes/create. It mirrors
+	// ContainerNamePrefix one-for-one:
+	//
+	//   - A request body with no Name (or Name=""), and a request with
+	//     no body at all, gets a Name of VolumeNamePrefix + <8 hex
+	//     chars from crypto/rand> injected into the forwarded body.
+	//   - A request body with an explicit Name MUST start with
+	//     VolumeNamePrefix; otherwise the request is rejected with 403
+	//     and audit reason "volume_name_prefix_mismatch".
+	//
+	// Production wires this from the sidecar to the SAME value as
+	// ContainerNamePrefix ("prism-<sessionName>-") so the cleanup sweep
+	// can locate every volume belonging to the session with one prefix.
+	// It is a separate field rather than a reuse of ContainerNamePrefix
+	// so an out-of-tree caller can scope containers without scoping
+	// volumes, or the reverse. Empty leaves volume naming untouched.
+	VolumeNamePrefix string
+
 	// AllowedSecurityOpts is the set of HostConfig.SecurityOpt entries
 	// that may appear on a containers/create body. Comparison is
 	// case-sensitive and matches the full entry string (e.g.
@@ -105,6 +124,25 @@ type Config struct {
 	// AuditWriter receives exactly one JSON line per accepted or
 	// rejected request. Nil silently drops audit events.
 	AuditWriter io.Writer
+
+	// PulledImageWriter receives one JSON line per admitted
+	// POST /images/create, naming the image reference the request asked
+	// the upstream to pull. It is the per-session image ledger that
+	// `prism cleanup` replays to remove the images a session pulled
+	// through its own proxy. Nil silently drops ledger entries, which
+	// leaves the images on disk — a leak, not a security failure.
+	//
+	// The ledger records the REQUEST, not the outcome: an entry is
+	// written before the request reaches the upstream, so a pull that
+	// fails upstream still leaves a line behind. `podman rmi` on an
+	// image that was never pulled is a non-zero exit the sweep ignores,
+	// so recording early is the safe direction — the alternative would
+	// miss an image whose pull succeeded but whose response the proxy
+	// never saw.
+	//
+	// See ImageLedgerFileName and ReadImageLedger for the file name the
+	// sidecar uses and the reader the cleanup sweep uses.
+	PulledImageWriter io.Writer
 
 	// MaxBodyBytes caps the size of a body-bearing request that the
 	// proxy will buffer in memory for inspection. Zero uses
@@ -155,6 +193,12 @@ type Proxy struct {
 	// one JSON line per request, so interleaved writes from concurrent
 	// requests must not corrupt each other.
 	auditMu sync.Mutex
+
+	// imageMu serialises writes to PulledImageWriter for the same
+	// reason auditMu serialises the audit log: the ledger is parsed
+	// line by line, so two concurrent image pulls must not interleave
+	// their bytes.
+	imageMu sync.Mutex
 }
 
 // NewProxy validates cfg and returns a Proxy ready to be Served. The

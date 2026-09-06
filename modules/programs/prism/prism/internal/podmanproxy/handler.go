@@ -36,6 +36,9 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		p.emitAudit(r, auditAllow, "policy:endpoint_streaming:"+normPath)
 		p.upstream.ServeHTTP(w, r)
 
+	case endpointAllowImageCreate:
+		p.handleImageCreate(w, r)
+
 	case endpointPolicyCreate:
 		p.handlePolicyCreate(w, r)
 
@@ -109,6 +112,26 @@ func (p *Proxy) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 	r.ContentLength = int64(len(forwardBody))
 
 	p.emitAudit(r, auditAllow, res.decision.reason)
+	p.upstream.ServeHTTP(w, r)
+}
+
+// handleImageCreate is the ledger-recording branch for POST
+// /images/create. The request is forwarded unmodified — no field of
+// this endpoint is policy-relevant — but the image reference it names
+// is appended to the per-session image ledger first, so `prism
+// cleanup` can remove the image at session teardown.
+//
+// Recording runs BEFORE the forward so a pull whose response the proxy
+// never sees (upstream down, client disconnect, sidecar killed
+// mid-pull) still leaves a ledger line. See Config.PulledImageWriter
+// for why over-recording is the safe direction.
+//
+// The audit line is still exactly one per request: recordPulledImage
+// returns the reason string and emitAudit is called once, as in every
+// other branch.
+func (p *Proxy) handleImageCreate(w http.ResponseWriter, r *http.Request) {
+	reason := p.recordPulledImage(r.URL.Query())
+	p.emitAudit(r, auditAllow, reason)
 	p.upstream.ServeHTTP(w, r)
 }
 
@@ -188,9 +211,14 @@ func (p *Proxy) handlePolicyNetworkCreate(w http.ResponseWriter, r *http.Request
 }
 
 // handlePolicyVolumeCreate is the body-inspecting branch for POST
-// /volumes/create. Same shape as handlePolicyUpdate: read body,
-// inspect for the local-driver bind-volume escape, restore body and
-// forward on allow.
+// /volumes/create. Read body, inspect for the local-driver
+// bind-volume escape and the volume-name prefix policy, restore body
+// and forward on allow.
+//
+// Same body-rewrite contract as handlePolicyCreate: the name-injection
+// branch returns a rewritten body that MUST be the one forwarded, with
+// ContentLength updated to match. This endpoint has no query channel,
+// so there is no rewrittenQuery to apply.
 func (p *Proxy) handlePolicyVolumeCreate(w http.ResponseWriter, r *http.Request) {
 	body, readDec := p.readBoundedBody(w, r)
 	if !readDec.allow {
@@ -198,15 +226,19 @@ func (p *Proxy) handlePolicyVolumeCreate(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, readDec.status, readDec.message)
 		return
 	}
-	dec := p.inspectVolumeCreate(body)
-	if !dec.allow {
-		p.emitAudit(r, auditDeny, dec.reason)
-		writeJSONError(w, dec.status, dec.message)
+	res := p.inspectVolumeCreate(body)
+	if !res.decision.allow {
+		p.emitAudit(r, auditDeny, res.decision.reason)
+		writeJSONError(w, res.decision.status, res.decision.message)
 		return
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-	p.emitAudit(r, auditAllow, dec.reason)
+	forwardBody := body
+	if res.rewrittenBody != nil {
+		forwardBody = res.rewrittenBody
+	}
+	r.Body = io.NopCloser(bytes.NewReader(forwardBody))
+	r.ContentLength = int64(len(forwardBody))
+	p.emitAudit(r, auditAllow, res.decision.reason)
 	p.upstream.ServeHTTP(w, r)
 }
 

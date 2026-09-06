@@ -36,6 +36,60 @@ The train is tracked by #2317 and shipped as #2326, #2327, #2328, #2329,
 prism spawn --containers --prompt 'run the test suite against a throwaway postgres'
 ```
 
+## Resource caps: `--memory` and `--cpus` are mandatory
+
+**Every `podman run` through the proxy must pass `--memory` and
+`--cpus`. A command that omits either one gets a 403.**
+
+```bash
+# Correct.
+podman run --rm --memory 512m --cpus 1 alpine echo hello
+
+# Rejected: audit reason memory_required.
+podman run --rm --cpus 1 alpine echo hello
+
+# Rejected: audit reason nano_cpus_required.
+podman run --rm --memory 512m alpine echo hello
+```
+
+The two 403 reason strings for a missing field are **`memory_required`**
+and **`nano_cpus_required`**.
+
+The per-container caps are 4 GiB of memory (`MaxMemoryBytes`) and 2 CPUs
+(`MaxNanoCpus`). A request above a cap gets 403 with reason
+`memory_over_cap` or `nano_cpus_over_cap`. A request that passes `0` for
+either gets `memory_nonpositive` or `nano_cpus_nonpositive`, because `0`
+means "unbounded" in docker semantics and bypasses the cap.
+
+A container started through the proxy is a host process. It runs outside
+the agent's sandbox, so the caps are the only bound on what it consumes.
+
+Do NOT add `--cpu-quota` alongside `--cpus`, and do not set
+`Config.MaxCPUQuota`. The two fields express the same limit, clients
+refuse to send both, and a configured cap makes its field mandatory — so
+a proxy with both caps set rejects every create request. See
+`docs/podman-proxy.md` §8.1.
+
+## Per-session naming and cleanup
+
+Containers and volumes both carry the per-session prefix
+`prism-<session>-`. Omit the name and the proxy injects
+`prism-<session>-<8 hex chars>`. Supply a name outside the prefix and the
+request gets 403 (`name_prefix_mismatch_body` for a container,
+`volume_name_prefix_mismatch` for a volume).
+
+`prism cleanup` then removes, for a session that enabled containers:
+
+- containers matching `prism-<session>-<8 hex chars>`,
+- volumes whose name starts with `prism-<session>-`,
+- every image the session pulled through its own proxy.
+
+The image sweep replays a per-session ledger. It is not a prune, because
+the image store is shared. An image another container still uses stays in
+place and cleanup continues. The three counts appear in the
+`prism cleanup --json` envelope as `containers_swept`, `volumes_swept`,
+and `images_swept`.
+
 The flag flips two DB columns at spawn time —
 `spawn_inputs.containers_flag = 1` (audit) and
 `agent_status.containers_enabled = 1` (runtime gate). The sidecar reads
@@ -85,7 +139,8 @@ to a class of finding in one of the six review-security cycles of PR #2326:
    namespaces, non-empty `Devices`/`DeviceCgroupRules`/`DeviceRequests`/
    `VolumesFrom`, present `MaskedPaths`/`ReadonlyPaths`, non-empty
    `Sysctls`, cap-add outside allowlist, `SecurityOpt` outside
-   allowlist, resource caps in strict mode).
+   allowlist, resource caps in strict mode — which is now the
+   production setting, see the section above).
 5. **Path-resolution layer** — `filepath.EvalSymlinks` on both bind
    sources AND allowlist entries before the prefix comparison.
    Relative paths, broken symlink chains, and non-existent sources all
@@ -171,3 +226,7 @@ resolve the `<instance_id>` for a session by reading the
 WHERE session_name = '<session>'"`). The structured `reason` field names the
 specific policy check that fired; see `docs/podman-proxy.md` §7
 for the common rejection classes and how to read them.
+
+The same directory holds `podman-images.log`, the per-session image
+ledger. It carries one JSON line per admitted `POST /images/create`.
+Read it to find out which images `prism cleanup` will remove.

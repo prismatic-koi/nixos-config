@@ -268,12 +268,16 @@ type containerExecBody struct {
 	ConsoleSize  json.RawMessage `json:"ConsoleSize"`
 }
 
-// createInspectionResult bundles the outputs of inspectCreate. When
-// allow is true the handler forwards using rewrittenBody (or the
-// original body if rewrittenBody is nil) and the URL query in
-// rewrittenQuery (or the original URL query if rewrittenQuery is
-// ""). When allow is false both rewritten fields are zero and the
-// handler must NOT forward.
+// createInspectionResult bundles the outputs of inspectCreate and
+// inspectVolumeCreate. When allow is true the handler forwards using
+// rewrittenBody (or the original body if rewrittenBody is nil) and the
+// URL query in rewrittenQuery (or the original URL query if
+// rewrittenQuery is ""). When allow is false both rewritten fields are
+// zero and the handler must NOT forward.
+//
+// The volumes/create path uses the body half only: that endpoint takes
+// its Name from the body alone, so rewrittenQuery and appliedToQuery
+// stay zero there.
 //
 // The two rewrite fields are coupled: the Name auto-injection
 // branch sets BOTH so the upstream sees a consistent name no matter
@@ -906,7 +910,14 @@ func (p *Proxy) inspectUpdate(body []byte) policyDecision {
 // ClusterVolumeSpec is admitted opaque for swarm-mode requests we are
 // not policy-relevant for.
 type volumeCreateBody struct {
-	Name       string            `json:"Name"`       // INSPECTED (audit log only; no policy)
+	// INSPECTED when Config.VolumeNamePrefix is non-empty: missing /
+	// empty triggers auto-prefix injection; an explicit value must
+	// start with the configured prefix or the request is rejected.
+	// A plain string (not *string) is enough here because absent and
+	// explicitly-empty take the SAME branch — both inject. The
+	// container body needs the pointer only because its Name arrives
+	// through two channels; a volume Name has one.
+	Name       string            `json:"Name"`
 	Driver     string            `json:"Driver"`     // INSPECTED — deny local + opts
 	DriverOpts map[string]string `json:"DriverOpts"` // INSPECTED with Driver
 
@@ -946,27 +957,107 @@ type networkCreateBody struct {
 	NetworkDNSServers json.RawMessage `json:"network_dns_servers"`
 }
 
-// inspectVolumeCreate parses body as a volumes/create request and
-// rejects any DriverOpts on the local driver. The body also runs
-// with DisallowUnknownFields, so unknown volumes/create fields
-// reject.
-func (p *Proxy) inspectVolumeCreate(body []byte) policyDecision {
-	if len(bytes.TrimSpace(body)) == 0 {
-		return allowDecision("policy:volumes/create:empty")
-	}
+// inspectVolumeCreate parses body as a volumes/create request,
+// rejects any DriverOpts on the local driver, and then applies the
+// volume-name auto-prefix policy. The body also runs with
+// DisallowUnknownFields, so unknown volumes/create fields reject.
+//
+// Check order matches inspectCreate: the escape-vector check
+// (local-driver bind-volume) runs BEFORE the name policy, so the
+// audit log names the worst violation when a body carries both.
+//
+// An empty body is not a no-op when the prefix is configured: podman
+// would generate its own random volume name, which the cleanup sweep
+// cannot find. The empty body is treated as "{}" so the injection
+// branch fires on it too.
+func (p *Proxy) inspectVolumeCreate(body []byte) createInspectionResult {
+	empty := len(bytes.TrimSpace(body)) == 0
 	var req volumeCreateBody
-	if dec := decodeStrict(body, &req); !dec.allow {
-		dec.reason = "volumes_create:" + dec.reason
-		dec.message = "volumes/create: " + dec.message
-		return dec
+	if !empty {
+		if dec := decodeStrict(body, &req); !dec.allow {
+			dec.reason = "volumes_create:" + dec.reason
+			dec.message = "volumes/create: " + dec.message
+			return createInspectionResult{decision: dec}
+		}
+		driver := strings.ToLower(req.Driver)
+		if driver == "local" && len(req.DriverOpts) > 0 {
+			return createInspectionResult{decision: denyDecision(http.StatusForbidden,
+				"volume_local_driver_opts",
+				"volumes/create with Driver=local and DriverOpts is not permitted (local-driver bind-volume escape; use a containers/create Bind/Mount with an allowlisted Source instead)")}
+		}
 	}
-	driver := strings.ToLower(req.Driver)
-	if driver == "local" && len(req.DriverOpts) > 0 {
-		return denyDecision(http.StatusForbidden,
-			"volume_local_driver_opts",
-			"volumes/create with Driver=local and DriverOpts is not permitted (local-driver bind-volume escape; use a containers/create Bind/Mount with an allowlisted Source instead)")
+
+	if p.cfg.VolumeNamePrefix == "" {
+		if empty {
+			return createInspectionResult{decision: allowDecision("policy:volumes/create:empty")}
+		}
+		return createInspectionResult{decision: allowDecision("policy:volumes/create:ok")}
 	}
-	return allowDecision("policy:volumes/create:ok")
+	nameBody := body
+	if empty {
+		nameBody = []byte("{}")
+	}
+	return p.applyVolumeNamePolicy(nameBody, req.Name)
+}
+
+// applyVolumeNamePolicy implements the value-level Name check on
+// POST /volumes/create. It is the volume twin of
+// applyContainerNamePolicy and exists for the same reason: a resource
+// the agent creates through the proxy must carry the per-session
+// prefix, or `prism cleanup` cannot find it at teardown and it
+// outlives the session on the shared host.
+//
+// The volume surface is simpler than the container one in one
+// respect: docker and podman both take the volume name from the body
+// alone (there is no `?name=` query on this endpoint), so there is a
+// single channel to police and a single channel to inject into.
+//
+// Behaviour is gated on Config.VolumeNamePrefix:
+//
+//   - empty prefix → no-op; handled by the caller before this
+//     function is reached.
+//   - non-empty prefix, Name absent or empty → inject
+//     prefix + <8 hex chars> into the forwarded body.
+//   - non-empty prefix, Name set without the prefix → 403 deny
+//     (`volume_name_prefix_mismatch`).
+//   - non-empty prefix, Name set with the prefix → allow; body
+//     forwards unchanged.
+func (p *Proxy) applyVolumeNamePolicy(body []byte, name string) createInspectionResult {
+	prefix := p.cfg.VolumeNamePrefix
+
+	if name != "" {
+		if !strings.HasPrefix(name, prefix) {
+			return createInspectionResult{decision: denyDecision(http.StatusForbidden,
+				"volume_name_prefix_mismatch",
+				fmt.Sprintf("volumes/create body Name=%q does not start with the required prefix %q (the proxy is session-scoped; either omit Name to receive an auto-prefixed one, or supply a Name that begins with the required prefix)", name, prefix))}
+		}
+		return createInspectionResult{decision: allowDecision("policy:volumes/create:ok")}
+	}
+
+	suffix, err := randomHexSuffix(8)
+	if err != nil {
+		return createInspectionResult{decision: denyDecision(http.StatusInternalServerError,
+			"volume_name_inject_random_failed",
+			"could not generate random volume name suffix")}
+	}
+	injected := prefix + suffix
+	// injectNameIntoBody is shared with the container path: it strips
+	// every case-variant of the top-level "Name" key before adding the
+	// canonical one, so a body carrying `{"name":""}` cannot survive
+	// the rewrite and override the injected value on the upstream's
+	// case-insensitive decoder. See its doc comment for the bypass.
+	rewrittenBody, err := injectNameIntoBody(body, injected)
+	if err != nil {
+		return createInspectionResult{decision: denyDecision(http.StatusInternalServerError,
+			"volume_name_inject_marshal_failed",
+			"could not inject auto-prefixed volume name into request body")}
+	}
+	return createInspectionResult{
+		decision:      allowDecision("policy:volumes/create:name_injected"),
+		rewrittenBody: rewrittenBody,
+		injectedName:  injected,
+		appliedToBody: true,
+	}
 }
 
 // inspectNetworkCreate parses body as a networks/create request and
