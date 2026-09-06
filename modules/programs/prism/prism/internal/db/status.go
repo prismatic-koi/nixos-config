@@ -1697,7 +1697,12 @@ SELECT
     so.end_state
 FROM spawn_inputs si
 INNER JOIN sessions s ON s.instance_id = si.instance_id
-LEFT  JOIN spawn_outcome so ON so.instance_id = si.instance_id
+-- Only join a row WriteSpawnOutcome has filled (aggregated_at set). A
+-- partial-writer stub is excluded from the join, so its zero-token defaults
+-- never enter the sums; resolveAbtestRowMetrics then recomputes from
+-- agent_events for a terminal session, or leaves it live (#2936).
+LEFT  JOIN spawn_outcome so
+       ON so.instance_id = si.instance_id AND so.aggregated_at IS NOT NULL
 WHERE si.abtest_pair_id IS NOT NULL
 ORDER BY si.abtest_pair_id ASC, s.started_at ASC`
 

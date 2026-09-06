@@ -7782,8 +7782,11 @@ func TestComputeSpawnOutcome_MatchesWriteSpawnOutcome(t *testing.T) {
 
 	// Compare every aggregate column. ComputedAt is allowed to differ
 	// because each pass stamps its own clock read — the AC is data shape
-	// agreement, not snapshot-time agreement.
+	// agreement, not snapshot-time agreement. AggregatedAt is the persist
+	// stamp: WriteSpawnOutcome sets it, ComputeSpawnOutcome leaves it nil by
+	// contract, so it is normalised the same way.
 	written.ComputedAt = computed.ComputedAt
+	written.AggregatedAt = computed.AggregatedAt
 	if !reflect.DeepEqual(computed, written) {
 		t.Errorf("compute vs write drift\n  compute: %+v\n  written: %+v", computed, written)
 	}
@@ -8036,6 +8039,7 @@ func TestWriteSpawnOutcomeCascade_ParentRowUnchangedInValue(t *testing.T) {
 		t.Fatalf("SpawnOutcomeByInstanceID parent: out=%v err=%v", got, err)
 	}
 	got.ComputedAt = want.ComputedAt
+	got.AggregatedAt = want.AggregatedAt
 	if !reflect.DeepEqual(want, got) {
 		t.Errorf("parent row diverges from ComputeSpawnOutcome\n want: %+v\n got:  %+v", want, got)
 	}
@@ -8087,10 +8091,12 @@ func TestWriteSpawnOutcomeCascade_Idempotent(t *testing.T) {
 	}
 
 	secondParent.ComputedAt = firstParent.ComputedAt
+	secondParent.AggregatedAt = firstParent.AggregatedAt
 	if !reflect.DeepEqual(firstParent, secondParent) {
 		t.Errorf("parent row changed across idempotent cascades\n first:  %+v\n second: %+v", firstParent, secondParent)
 	}
 	secondChild.ComputedAt = firstChild.ComputedAt
+	secondChild.AggregatedAt = firstChild.AggregatedAt
 	if !reflect.DeepEqual(firstChild, secondChild) {
 		t.Errorf("child row changed across idempotent cascades\n first:  %+v\n second: %+v", firstChild, secondChild)
 	}
