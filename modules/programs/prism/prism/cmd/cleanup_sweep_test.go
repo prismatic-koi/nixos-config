@@ -29,10 +29,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
@@ -142,7 +144,8 @@ func TestSweep_FilterUsesAnchoredRegex(t *testing.T) {
 	if len(args) < 1 || args[0] != "ps" {
 		t.Fatalf("first arg should be \"ps\"; got %v", args)
 	}
-	if !containsArgValue(args, "--filter", "name=^prism-prism-test@filter-shape-[a-f0-9]{8}$") {
+	wantFilter := "name=^" + regexp.QuoteMeta(container.ResourceNamePrefixForSession(session)) + "[a-f0-9]{8}$"
+	if !containsArgValue(args, "--filter", wantFilter) {
 		t.Errorf("--filter not anchored to the strict per-session shape; args=%v", args)
 	}
 	if !containsArg(args, "--format") {
@@ -185,9 +188,9 @@ func TestSweep_MatchedContainersRemoved(t *testing.T) {
 	r := installFakeRunner(t)
 	// ps returns three valid names matching the strict shape.
 	psOut := strings.Join([]string{
-		"prism-prism-test@happy-aaaaaaaa",
-		"prism-prism-test@happy-bbbbbbbb",
-		"prism-prism-test@happy-cccccccc",
+		"prism-prism-test-happy-aaaaaaaa",
+		"prism-prism-test-happy-bbbbbbbb",
+		"prism-prism-test-happy-cccccccc",
 	}, "\n") + "\n"
 	r.script(
 		scriptedResponse{stdout: []byte(psOut)},
@@ -207,9 +210,9 @@ func TestSweep_MatchedContainersRemoved(t *testing.T) {
 		t.Fatalf("second invocation must start with \"rm -f\"; got %v", rm)
 	}
 	wantNames := []string{
-		"prism-prism-test@happy-aaaaaaaa",
-		"prism-prism-test@happy-bbbbbbbb",
-		"prism-prism-test@happy-cccccccc",
+		"prism-prism-test-happy-aaaaaaaa",
+		"prism-prism-test-happy-bbbbbbbb",
+		"prism-prism-test-happy-cccccccc",
 	}
 	got2 := rm[2:]
 	if len(got2) != len(wantNames) {
@@ -451,8 +454,8 @@ func TestHeadlessCleanup_ContainersEnabled_SweepReportsCount(t *testing.T) {
 	withNoopTmux(t)
 	r := installFakeRunner(t)
 	psOut := strings.Join([]string{
-		"prism-prism-test@swept-11111111",
-		"prism-prism-test@swept-22222222",
+		"prism-prism-test-swept-11111111",
+		"prism-prism-test-swept-22222222",
 	}, "\n") + "\n"
 	r.script(
 		scriptedResponse{stdout: []byte(psOut)},
@@ -526,7 +529,8 @@ func TestVolumeSweep_FilterAnchoredAtPrefix(t *testing.T) {
 	r := installFakeRunner(t)
 	r.script(scriptedResponse{stdout: []byte("")})
 
-	_ = sweepVolumesWithRunner(r, "prism-test@vol-filter", nil)
+	session := "prism-test@vol-filter"
+	_ = sweepVolumesWithRunner(r, session, nil)
 
 	calls := r.calls()
 	if len(calls) != 1 {
@@ -536,7 +540,8 @@ func TestVolumeSweep_FilterAnchoredAtPrefix(t *testing.T) {
 	if len(args) < 2 || args[0] != "volume" || args[1] != "ls" {
 		t.Fatalf("first invocation must be \"volume ls\"; got %v", args)
 	}
-	if !containsArgValue(args, "--filter", "name=^prism-prism-test@vol-filter-") {
+	wantFilter := "name=^" + regexp.QuoteMeta(container.ResourceNamePrefixForSession(session))
+	if !containsArgValue(args, "--filter", wantFilter) {
 		t.Errorf("--filter not anchored to the per-session prefix; args=%v", args)
 	}
 	if !containsArgValue(args, "--format", "{{.Name}}") {
@@ -676,6 +681,61 @@ func TestVolumeSweep_ZeroMatchesIssuesNoRemoval(t *testing.T) {
 	}
 	if len(r.calls()) != 1 {
 		t.Errorf("expected only the ls invocation; got %v", r.calls())
+	}
+}
+
+// TestSiblingVolumePrefixes_SelectsOnlyNestedLiveSessions covers the
+// guard's CALL SITE, which the sweepVolumesWithRunner tests do not
+// reach: they pass the sibling list in directly, so nothing pins how
+// that list is actually derived from the database.
+//
+// The comparison must run in SANITISED space. Sanitisation folds `@`,
+// `/`, `.`, and `~` all to `-`, so a raw-session-name comparison finds
+// different neighbours than the volume names actually carry.
+func TestSiblingVolumePrefixes_SelectsOnlyNestedLiveSessions(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	for _, s := range []string{
+		"repo@foo",         // the session being cleaned
+		"repo@foo-bar",     // nested: its prefix extends foo's
+		"repo@foo-bar-baz", // nested deeper, also a sibling
+		"repo@foobar",      // NOT nested: prefix is prism-repo-foobar-
+		"repo@other",       // unrelated
+	} {
+		seedContainerSession(t, dbFile, s, true)
+	}
+
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	got := siblingVolumePrefixes(d, "repo@foo")
+	want := map[string]bool{
+		"prism-repo-foo-bar-":     true,
+		"prism-repo-foo-bar-baz-": true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("sibling prefixes: got %v, want the two nested ones %v", got, want)
+	}
+	for _, p := range got {
+		if !want[p] {
+			t.Errorf("unexpected sibling prefix %q: a non-nested session must not suppress the sweep", p)
+		}
+		// The session being cleaned must never appear in its own
+		// sibling list, or the guard suppresses the entire sweep.
+		if p == "prism-repo-foo-" {
+			t.Error("the cleaned session's own prefix is in the sibling list; the sweep would remove nothing")
+		}
+	}
+}
+
+// TestSiblingVolumePrefixes_NilDBIsSafe pins the documented
+// degradation: without a database the guard contributes nothing and the
+// sweep falls back to the plain prefix match.
+func TestSiblingVolumePrefixes_NilDBIsSafe(t *testing.T) {
+	if got := siblingVolumePrefixes(nil, "repo@foo"); got != nil {
+		t.Errorf("got %v, want nil", got)
 	}
 }
 

@@ -37,6 +37,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -60,7 +61,7 @@ const maxImageLedgerBytes = 1 << 20
 // 256 bytes covers every realistic shape with room to spare.
 const maxImageRefLen = 256
 
-// imageRefPattern is the sweepable-reference allowlist. It is
+// imageRefPattern is the sweepable-reference character allowlist. It is
 // deliberately narrower than what a registry accepts:
 //
 //   - The first character MUST be alphanumeric. This is what makes a
@@ -73,6 +74,9 @@ const maxImageRefLen = 256
 // Anything else is dropped rather than sanitised. A reference the
 // proxy cannot represent exactly is a reference the sweep must not
 // guess at.
+//
+// The character set alone is NOT sufficient — see imageRefIsSweepable
+// for the structural check that has to run with it.
 var imageRefPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@-]*$`)
 
 // imageLedgerLine is the JSON shape of one ledger entry. JSON (rather
@@ -86,12 +90,40 @@ type imageLedgerLine struct {
 }
 
 // imageRefIsSweepable reports whether ref is safe to write to the
-// ledger and to pass to `podman rmi` as a positional argument.
+// ledger, to pass to `podman rmi` as a positional argument, AND to
+// embed in the path of the upstream existence probe.
+//
+// Two checks, and both are load-bearing:
+//
+//  1. The character allowlist (imageRefPattern). This is what stops a
+//     reference from looking like a command-line flag.
+//  2. A path-structure check. The character set admits `.` and `/`, so
+//     it admits dot segments: "a/../../libpod/secrets/x" passes check 1
+//     unchanged. imageExistsUpstream embeds the reference in a URL path
+//     on the privileged podman socket, Go transmits dot segments
+//     verbatim, and podman's router cleans the path and redirects — so
+//     a reference like that turns the probe into a GET against an
+//     endpoint the proxy's own allowlist denies, and the status code
+//     leaks back as an oracle. Requiring the reference to equal its own
+//     path.Clean, with no leading or trailing slash, removes every dot
+//     segment and every empty segment.
+//
+// A registry reference never legitimately contains a dot SEGMENT.
+// "alpine:3.19", "docker.io/library/alpine", and
+// "registry:5000/ns/img@sha256:abc" all satisfy path.Clean(ref) == ref.
 func imageRefIsSweepable(ref string) bool {
 	if ref == "" || len(ref) > maxImageRefLen {
 		return false
 	}
-	return imageRefPattern.MatchString(ref)
+	if !imageRefPattern.MatchString(ref) {
+		return false
+	}
+	// Structural check. path.Clean collapses ".", "..", and "//", so any
+	// reference carrying one of them differs from its cleaned form.
+	// A trailing slash is also removed by Clean, so it is caught here
+	// too; a leading slash cannot occur because check 1 requires an
+	// alphanumeric first character.
+	return path.Clean(ref) == ref
 }
 
 // pulledImageRef derives the image reference a POST /images/create
@@ -248,12 +280,23 @@ func (p *Proxy) recordPulledImage(ctx context.Context, query url.Values) string 
 // ref is embedded in the path unescaped on purpose. A registry
 // reference carries '/' and ':' as structural separators and the
 // docker route matches the remainder of the path, so percent-encoding
-// them breaks the lookup. This is safe because the caller only reaches
-// here with a reference that already passed imageRefIsSweepable, which
-// admits no space, no '?', and no '#'.
+// them breaks the lookup.
+//
+// That is only safe because imageRefIsSweepable has already run. It
+// rejects a reference carrying a space, '?', or '#' — which would
+// otherwise split the path — AND rejects one carrying a dot segment,
+// which would otherwise redirect this probe onto an endpoint the proxy
+// allowlist denies. Do not call this function with a reference that has
+// not passed that check.
+//
+// Redirects are not followed, as defence in depth behind that check: a
+// probe must resolve on the route it names or not at all.
 func (p *Proxy) imageExistsUpstream(ctx context.Context, ref string) (bool, error) {
 	if p.probeClient == nil {
 		return false, fmt.Errorf("podmanproxy: no upstream probe client")
+	}
+	if !imageRefIsSweepable(ref) {
+		return false, fmt.Errorf("podmanproxy: image probe: reference is not probe-safe")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		"http://podman.sock/images/"+ref+"/json", nil)

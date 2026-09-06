@@ -437,6 +437,26 @@ func containerName(sessionName string) string {
 	return NameForSession(sessionName)
 }
 
+// ResourceNamePrefixForSession returns the per-session name prefix the
+// podman proxy injects into the resources an agent creates through it:
+// containers (Config.ContainerNamePrefix) and volumes
+// (Config.VolumeNamePrefix). `prism cleanup` sweeps on the same prefix.
+//
+// It MUST be built on NameForSession, not on the raw session name. A
+// session name is `<repo>@<branch>` and can also carry `~` for a review
+// child, while podman validates a container or volume name against
+// `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` and rejects `@`, `/`, and `~`. A prefix
+// built from the raw name produces resource names podman refuses to
+// create, which makes the create endpoint unusable and the matching
+// sweep dead code.
+//
+// This is the single source of truth for the prefix. The sidecar builds
+// the proxy Config from it and cmd/cleanup_sweep.go builds its sweep
+// filters from it, so the create side and the sweep side cannot drift.
+func ResourceNamePrefixForSession(sessionName string) string {
+	return NameForSession(sessionName) + "-"
+}
+
 // Manager manages the lifecycle of a single agent session sandbox.
 type Manager struct {
 	cfg            Config

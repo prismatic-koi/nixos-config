@@ -64,6 +64,13 @@ means "unbounded" in docker semantics and bypasses the cap.
 A container started through the proxy is a host process. It runs outside
 the agent's sandbox, so the caps are the only bound on what it consumes.
 
+**The caps are per container, and nothing caps the container COUNT.** N
+containers consume up to N × 4 GiB and N × 2 CPUs. Issue #872 is the
+post-mortem of a host crash that 15 concurrent containers caused, and
+its conclusion was that per-container caps do not address fan-out. Keep
+your container count small, and read `docs/podman-proxy.md` §8.3 before
+you rely on the caps alone.
+
 Do NOT add `--cpu-quota` alongside `--cpus`, and do not set
 `Config.MaxCPUQuota`. The two fields express the same limit, clients
 refuse to send both, and a configured cap makes its field mandatory — so
@@ -91,10 +98,10 @@ the session asked for it is never recorded, so the sweep never removes
 it. The three counts appear in the `prism cleanup --json` envelope as
 `containers_swept`, `volumes_swept`, and `images_swept`.
 
-### Two storage paths the sweep does not reach
+### Known gaps
 
-Both are accepted for this version. `docs/podman-proxy.md` §8.3 carries
-the detail and the conditions to close each one.
+All three are accepted for this version. `docs/podman-proxy.md` §8.3
+carries the detail and the conditions to close each one.
 
 - **A volume created implicitly by a container mount.** `podman run -v
   myvol:/data ...` makes podman create `myvol` without ever sending
@@ -108,6 +115,8 @@ the detail and the conditions to close each one.
   This is pre-existing and not a regression. `images_swept` counts only
   for a client that pulls through the docker-compat
   `POST /images/create`.
+- **No cap on the container count.** See the note above. The memory and
+  CPU caps bound one container each, not the session's total.
 
 The flag flips two DB columns at spawn time —
 `spawn_inputs.containers_flag = 1` (audit) and

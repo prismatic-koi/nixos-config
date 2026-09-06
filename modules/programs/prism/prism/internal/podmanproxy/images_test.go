@@ -13,6 +13,7 @@ package podmanproxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -54,6 +55,22 @@ func TestPulledImageRef(t *testing.T) {
 		{"newline rejected", "fromImage=alpine%0A--force", ""},
 		{"semicolon rejected", "fromImage=alpine%3Brm", ""},
 		{"leading slash rejected", "fromImage=%2Fetc%2Fpasswd", ""},
+
+		// Path traversal. The character allowlist admits '.' and '/',
+		// so it admits dot segments on its own. The reference is
+		// embedded in the path of an upstream probe against the
+		// privileged podman socket, so a dot segment walks that probe
+		// onto an endpoint the proxy's allowlist denies.
+		{"parent traversal rejected", "fromImage=a%2F..%2F..%2Flibpod%2Fsecrets%2Fmysecret", ""},
+		{"single dot segment rejected", "fromImage=a%2F.%2Fb", ""},
+		{"double slash rejected", "fromImage=a%2F%2Fb", ""},
+		{"trailing slash rejected", "fromImage=alpine%2F", ""},
+		{"traversal via tag param rejected", "fromImage=alpine&tag=..%2F..%2Finfo", ""},
+
+		// Dots that are NOT segments stay legal — a registry host is
+		// full of them, so the structural check must not be a blanket
+		// ban on '.'.
+		{"registry host dots allowed", "fromImage=ghcr.io%2Fns%2Fimg&tag=1.2.3", "ghcr.io/ns/img:1.2.3"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -251,6 +268,86 @@ func TestImageLedger_ProbeIsNotAuditedSeparately(t *testing.T) {
 	}
 	if lines := nonEmptyLines(h.audit.String()); len(lines) != 1 {
 		t.Errorf("audit lines: got %d, want exactly 1 per request; log=%s", len(lines), h.audit.String())
+	}
+}
+
+// TestImageLedger_TraversalRefNeverReachesUpstream is the regression
+// test for the probe path-traversal hole.
+//
+// The proxy builds the existence-probe URL by splicing the
+// agent-controlled reference into a path on the privileged podman
+// socket. A reference carrying dot segments turns that probe into a GET
+// against an endpoint the proxy's own allowlist denies, and the status
+// code comes back as an oracle the agent can read.
+//
+// The assertion is on the RAW request-target the upstream received, not
+// on the handler's r.URL.Path: http.ServeMux cleans dot segments itself
+// and answers with a 301, so a normalised capture would show a harmless
+// path whether or not the bug is present.
+func TestImageLedger_TraversalRefNeverReachesUpstream(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h, ledger := startProxyWithImageLedger(t, fu)
+
+	const hostile = "a/../../libpod/secrets/mysecret"
+	resp := postImageCreate(t, h.sock, "fromImage="+url.QueryEscape(hostile))
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	for _, raw := range fu.capturedRawPaths() {
+		// Only the PATH component matters. The forwarded images/create
+		// request legitimately carries the reference in its query
+		// string, percent-encoded, where it is an opaque parameter
+		// value that podman resolves as an image name. The hazard is a
+		// reference spliced into the path, which is what routes the
+		// request somewhere else.
+		rawPath := raw
+		if i := strings.IndexByte(rawPath, '?'); i >= 0 {
+			rawPath = rawPath[:i]
+		}
+		if strings.Contains(rawPath, "..") {
+			t.Errorf("SECURITY: the proxy sent a traversal path upstream: %q", raw)
+		}
+		if strings.Contains(rawPath, "/secrets/") {
+			t.Errorf("SECURITY: the proxy probed a denied endpoint: %q", raw)
+		}
+	}
+	// The reference is rejected before the probe runs at all, so no
+	// probe should have been issued.
+	if got := fu.probes.Load(); got != 0 {
+		t.Errorf("probes issued for a non-probe-safe reference: got %d, want 0", got)
+	}
+	if lines := nonEmptyLines(ledger.String()); len(lines) != 0 {
+		t.Errorf("a traversal reference must not be recorded; ledger=%q", ledger.String())
+	}
+}
+
+// TestImageExistsUpstream_RefusesNonProbeSafeRef pins the guard at the
+// probe function itself, not only at its current caller. imageRefIsSweepable
+// runs inside imageExistsUpstream too, so a future caller that forgets
+// the check cannot reopen the hole.
+func TestImageExistsUpstream_RefusesNonProbeSafeRef(t *testing.T) {
+	fu := newFakeUpstream(t)
+	dir := shortSocketDir(t)
+	p, err := NewProxy(Config{
+		ListenerPath: filepath.Join(dir, "proxy.sock"),
+		UpstreamPath: fu.sockPath,
+	})
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+	for _, ref := range []string{
+		"a/../../libpod/secrets/x",
+		"a/./b",
+		"a//b",
+		"-f",
+		"",
+	} {
+		if _, err := p.imageExistsUpstream(context.Background(), ref); err == nil {
+			t.Errorf("imageExistsUpstream(%q): got nil error, want refusal", ref)
+		}
+	}
+	if got := fu.probes.Load(); got != 0 {
+		t.Errorf("a refused reference must not reach the upstream; probes=%d", got)
 	}
 }
 

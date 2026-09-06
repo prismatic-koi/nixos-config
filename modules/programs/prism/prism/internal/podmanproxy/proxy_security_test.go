@@ -100,6 +100,25 @@ type fakeUpstream struct {
 	// requests, so `requests` keeps meaning "requests the proxy
 	// forwarded on a client's behalf".
 	probes atomic.Int64
+
+	// rawPaths records the UNNORMALISED request-target of every request
+	// this upstream received, captured before http.ServeMux gets a
+	// chance to clean the path or answer it with a 301.
+	//
+	// This exists for the path-traversal tests. ServeMux collapses dot
+	// segments itself, so a test that asserts on r.URL.Path inside a
+	// mux handler cannot tell "the proxy never sent `..`" from "the mux
+	// cleaned it away". Only the raw target answers that.
+	rawMu    sync.Mutex
+	rawPaths []string
+}
+
+// capturedRawPaths returns every unnormalised request-target this
+// upstream has seen.
+func (fu *fakeUpstream) capturedRawPaths() []string {
+	fu.rawMu.Lock()
+	defer fu.rawMu.Unlock()
+	return append([]string(nil), fu.rawPaths...)
 }
 
 // markImagePresent makes the upstream report ref as already in its
@@ -178,7 +197,16 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"Id":"deadbeef"}`))
 	})
-	fu.server = &http.Server{Handler: mux}
+	// Record the raw request-target BEFORE the mux sees it. The mux
+	// cleans dot segments and answers with a 301, so a capture inside a
+	// handler would never observe a traversal attempt.
+	recordRaw := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fu.rawMu.Lock()
+		fu.rawPaths = append(fu.rawPaths, r.RequestURI)
+		fu.rawMu.Unlock()
+		mux.ServeHTTP(w, r)
+	})
+	fu.server = &http.Server{Handler: recordRaw}
 	go func() { _ = fu.server.Serve(ln) }()
 	t.Cleanup(func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

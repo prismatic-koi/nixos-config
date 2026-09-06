@@ -192,8 +192,13 @@ func imageLedgerPathForStatus(status *db.Status) string {
 // design and is acceptable: the sweep is a safety net for orphan
 // auto-named containers, not a comprehensive teardown for all
 // possible naming patterns.
+//
+// The prefix comes from container.ResourceNamePrefixForSession, the
+// same helper the sidecar builds Config.ContainerNamePrefix from, so
+// the name the proxy injects and the name this sweep looks for cannot
+// drift.
 func containerNamePattern(sessionName string) *regexp.Regexp {
-	prefix := "prism-" + sessionName + "-"
+	prefix := container.ResourceNamePrefixForSession(sessionName)
 	return regexp.MustCompile("^" + regexp.QuoteMeta(prefix) + "[a-f0-9]{8}$")
 }
 
@@ -302,8 +307,13 @@ func sweepWithRunner(runner podmanRunner, sessionName string) int {
 // containerNamePattern's `[a-f0-9]{8}` anchor closes: session "foo"
 // and session "foo-bar" produce prefixes where one is a prefix of the
 // other. siblingVolumePrefixes supplies the guard for that case.
+//
+// Shares container.ResourceNamePrefixForSession with the sidecar for
+// the same reason containerNamePattern does: a volume name podman
+// accepts is a sanitised one, so a sweep filter built from the raw
+// session name matches nothing that can exist.
 func volumeNamePrefix(sessionName string) string {
-	return "prism-" + sessionName + "-"
+	return container.ResourceNamePrefixForSession(sessionName)
 }
 
 // siblingVolumePrefixes returns the volume-name prefixes of every OTHER
@@ -327,6 +337,11 @@ func volumeNamePrefix(sessionName string) string {
 // match. That is the documented sweep behaviour, not a silent
 // weakening: the guard is defence in depth over the prefix rule, not
 // the rule itself.
+// The comparison runs in SANITISED space, on the prefixes themselves
+// rather than on the raw session names. Sanitisation folds `@`, `/`,
+// `.`, and `~` all to `-`, so two raw names that look unrelated can
+// produce prefixes that nest — and it is the prefix, not the session
+// name, that a volume name actually carries.
 func siblingVolumePrefixes(d *db.DB, sessionName string) []string {
 	if d == nil {
 		return nil
@@ -336,15 +351,17 @@ func siblingVolumePrefixes(d *db.DB, sessionName string) []string {
 		proglog.Warnf("[prism] warning: cleanup: volume sweep: list active sessions failed (%v) — sweeping on the name prefix alone\n", err)
 		return nil
 	}
+	ownPrefix := volumeNamePrefix(sessionName)
 	var prefixes []string
 	for _, st := range statuses {
-		if st.SessionName == sessionName {
+		otherPrefix := volumeNamePrefix(st.SessionName)
+		if otherPrefix == ownPrefix {
 			continue
 		}
-		if !strings.HasPrefix(st.SessionName, sessionName+"-") {
+		if !strings.HasPrefix(otherPrefix, ownPrefix) {
 			continue
 		}
-		prefixes = append(prefixes, volumeNamePrefix(st.SessionName))
+		prefixes = append(prefixes, otherPrefix)
 	}
 	return prefixes
 }

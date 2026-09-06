@@ -1,6 +1,6 @@
 # Podman proxy — security spec
 
-<!-- doclint-ignore: CgroupBudget -->
+<!-- doclint-ignore: CgroupBudget, MaxContainers -->
 <!-- doclint-ignore: networkmode_host, networkmode_colon, networkmode_slash, networkmode_whitespace -->
 <!-- doclint-ignore: pidmode_host, ipcmode_host, utsmode_host, usernsmode_host, cgroupnsmode_host -->
 <!-- doclint-ignore: AGENTS.md -->
@@ -12,6 +12,11 @@
     walkthrough in §4. It does not exist in the current struct and is
     not expected to; changing it to a real field would break the point
     of the walkthrough.
+
+  - `MaxContainers` is the name §8.3 gives to a cap that does NOT
+    exist, when it records the missing container-count bound. Naming
+    the absent knob is the point of that entry, so it must stay
+    unresolvable until someone implements it.
 
   - `<field>_host` / `<field>_colon` / `<field>_slash` /
     `<field>_whitespace` are audit reason tokens constructed at runtime
@@ -389,7 +394,8 @@ The two reason strings the audit log records for a missing field are
 **Why a container needs a cap at all.** A container the agent starts
 through the proxy is a host process. It runs outside the agent's bwrap
 or sandbox-exec sandbox, so no sandbox limit applies to it. The caps are
-the only bound on what it consumes.
+the only bound on what ONE container consumes. Read §8.3 for the bound
+that does not exist.
 
 **Why `MaxCPUQuota` stays 0.** `NanoCpus` and `CpuQuota` are two ways to
 express the same CPU limit. Docker and podman clients refuse to send
@@ -481,6 +487,24 @@ To close this, `POST /images/pull` needs admission to the endpoint
 allowlist, and `pulledImageRef` needs to read the libpod `reference`
 parameter. Admitting an endpoint is a policy change, so it needs the §4
 audit and its own issue.
+
+**No bound on the NUMBER of containers.** `MaxMemoryBytes` and
+`MaxNanoCpus` are per container. Nothing limits how many containers one
+session creates, so N containers consume up to N × 4 GiB and N × 2 CPUs.
+The proxy has no `MaxContainers` equivalent.
+
+This matters because the prior art is a host crash. Issue #872 carries
+the post-mortem of the crash on 2026-04-19, which 15 concurrent
+containers on a 32 GiB host caused. Its conclusion is explicit.
+Per-container caps do nothing about a fan-out pattern. The structural
+fix is "refusing to start the N+1'th container". The per-container caps
+in §8.1 raise the floor, and they do not close that gap.
+
+`DefaultBwrapConcurrencyCap` in `internal/config/config.go` bounds prism
+SESSIONS, not containers per session, so it does not cover this path.
+
+Read this before you make `--containers` the default. The count cap is
+the part of the availability story that is still open.
 
 ## 9. Linger decision
 

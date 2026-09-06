@@ -461,7 +461,7 @@ func TestPodmanProxy_ContainerNamePrefix_WiredFromSession(t *testing.T) {
 	if err := json.Unmarshal(respBody, &env); err != nil {
 		t.Fatalf("unmarshal envelope: %v (raw=%q)", err, respBody)
 	}
-	wantPrefix := "prism-" + session + "-"
+	wantPrefix := container.ResourceNamePrefixForSession(session)
 	if !strings.Contains(env.Message, wantPrefix) {
 		t.Errorf("envelope message does not name the wired prefix %q; got %q",
 			wantPrefix, env.Message)

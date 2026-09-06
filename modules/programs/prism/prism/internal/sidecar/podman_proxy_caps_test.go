@@ -23,7 +23,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -155,11 +157,14 @@ func TestPodmanProxy_ResourceCaps_WiredFromSidecar(t *testing.T) {
 
 	// Values that sit inside both caps, used wherever a probe needs a
 	// field it is not testing.
-	const okMemory = 1 << 30         // 1 GiB
-	const okNanoCpus = 1e9           // 1 CPU
-	const overMemory = 8 << 30       // 8 GiB — over the 4 GiB cap
-	const overNanoCpus = 4 * 1e9     // 4 CPUs — over the 2 CPU cap
-	name := "prism-" + session + "-" // satisfies the name policy
+	const okMemory = 1 << 30     // 1 GiB
+	const okNanoCpus = 1e9       // 1 CPU
+	const overMemory = 8 << 30   // 8 GiB — over the 4 GiB cap
+	const overNanoCpus = 4 * 1e9 // 4 CPUs — over the 2 CPU cap
+	// Built from the same helper the sidecar wires, not from the raw
+	// session name. A session name carries "@", which podman rejects in
+	// a resource name, so the prefix is the sanitised form.
+	name := container.ResourceNamePrefixForSession(session)
 
 	probes := []capProbe{
 		{
@@ -363,12 +368,111 @@ func TestPodmanProxy_VolumeNamePrefix_WiredFromSession(t *testing.T) {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		t.Fatalf("unmarshal envelope: %v (raw=%q)", err, raw)
 	}
-	if wantPrefix := "prism-" + session + "-"; !strings.Contains(env.Message, wantPrefix) {
+	wantPrefix := container.ResourceNamePrefixForSession(session)
+	if !strings.Contains(env.Message, wantPrefix) {
 		t.Errorf("envelope message does not name the wired prefix %q; got %q", wantPrefix, env.Message)
+	}
+	// The prefix the sidecar wired must be a name podman can actually
+	// create. A raw-session-name prefix carries "@" and fails here —
+	// the stub upstream accepts any name, so nothing else in this file
+	// would catch that.
+	if !podmanNameRegex.MatchString(wantPrefix + "a1b2c3d4") {
+		t.Errorf("wired volume prefix %q produces names podman rejects", wantPrefix)
 	}
 
 	cancel()
 	<-done
+}
+
+// podmanNameRegex is libpod's `define.NameRegex`. A container or volume
+// name that fails it is refused upstream, which makes the create
+// endpoint unusable and the matching cleanup sweep dead code.
+var podmanNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
+// TestPodmanProxy_InjectedVolumeName_IsPodmanSafe closes the gap the
+// stub upstreams leave open: they accept any name, so a proxy test that
+// asserts only "the upstream got a name" passes even when the name is
+// one real podman refuses.
+//
+// This drives a real session name (which contains "@") through the live
+// sidecar wiring and asserts the NAME THE UPSTREAM RECEIVED satisfies
+// podman's own validation regex.
+func TestPodmanProxy_InjectedVolumeName_IsPodmanSafe(t *testing.T) {
+	session := "prism-test@" + t.Name()
+	bus := sidecartest.NewIsolated(t, session)
+
+	var gotName atomic.Value
+	upstream := startNameCapturingUpstream(t, bus.XDGStateHome, &gotName)
+	sc, listenerPath := newPodmanProxyTestSidecar(t, bus, session, upstream)
+	setContainersEnabled(t, bus, session, true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := runSidecarBackground(t, sc, ctx)
+	if !waitForPath(listenerPath, 3*time.Second) {
+		t.Fatalf("podman.sock listener did not appear at %s", listenerPath)
+	}
+
+	client := proxyClientFor(listenerPath)
+	resp, err := client.Post("http://podman.sock/v1.41/volumes/create",
+		"application/json", strings.NewReader(`{"Driver":"local"}`))
+	if err != nil {
+		t.Fatalf("POST volumes/create: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+
+	cancel()
+	<-done
+
+	injected, _ := gotName.Load().(string)
+	if injected == "" {
+		t.Fatal("upstream received no volume Name")
+	}
+	if !podmanNameRegex.MatchString(injected) {
+		t.Errorf("injected volume name %q is not a valid podman name (podman's NameRegex is %s) — podman would refuse to create it",
+			injected, podmanNameRegex)
+	}
+	if !strings.HasPrefix(injected, container.ResourceNamePrefixForSession(session)) {
+		t.Errorf("injected volume name %q does not carry the per-session prefix", injected)
+	}
+}
+
+// startNameCapturingUpstream is startStubPodmanUpstream plus a capture
+// of the body's Name field, so a test can assert on the exact name the
+// proxy forwarded.
+func startNameCapturingUpstream(t *testing.T, dir string, into *atomic.Value) string {
+	t.Helper()
+	sockPath := filepath.Join(dir, "upstream.sock")
+	l, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen on stub upstream %s: %v", sockPath, err)
+	}
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			var parsed struct {
+				Name string `json:"Name"`
+			}
+			if json.Unmarshal(body, &parsed) == nil && parsed.Name != "" {
+				into.Store(parsed.Name)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"Name":"stub"}`))
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = srv.Serve(l) }()
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	})
+	return sockPath
 }
 
 // TestPodmanProxy_ImageLedger_WiredFromSidecar proves the sidecar opens

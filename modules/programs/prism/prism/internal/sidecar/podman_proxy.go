@@ -162,7 +162,15 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 	// with it. Cleanup (`cmd/cleanup_sweep.go`) sweeps any orphan
 	// container and volume matching the same prefix at session
 	// teardown.
-	namePrefix := "prism-" + s.cfg.SessionName + "-"
+	//
+	// The prefix comes from container.ResourceNamePrefixForSession, NOT
+	// from the raw session name. A session name carries `@` (and `~`
+	// for a review child), which podman rejects in a container or
+	// volume name — an unsanitised prefix makes every create the proxy
+	// touches fail upstream and makes the sweep filter match nothing.
+	// That one helper is also what keeps this side and the sweep side
+	// in agreement.
+	namePrefix := container.ResourceNamePrefixForSession(s.cfg.SessionName)
 	cfg := podmanproxy.Config{
 		ListenerPath:        listenerPath,
 		UpstreamPath:        upstream,

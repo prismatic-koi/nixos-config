@@ -260,6 +260,17 @@ func NewProxy(cfg Config) (*Proxy, error) {
 		// much. DialTimeout is the same budget the reverse-proxy path
 		// gives the upstream dial.
 		Timeout: cfg.DialTimeout,
+		// Never follow a redirect. A probe path is built from an
+		// agent-controlled image reference, and podman's router
+		// answers a path it wants to rewrite with a 301. Following one
+		// would let a crafted reference walk the probe onto an
+		// endpoint this proxy's own allowlist denies. The reference is
+		// already required to be free of dot segments
+		// (imageRefIsSweepable); this is the second lock on the same
+		// door.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 
 	p.upstream = &httputil.ReverseProxy{
