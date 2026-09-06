@@ -264,11 +264,14 @@ type SpawnOutcome struct {
 // HasComputedAggregates reports whether this row carries the event-derived
 // aggregate block — the columns only WriteSpawnOutcome ever writes.
 //
-// Since the v43→v44 migration the read paths gate on aggregated_at, not on
-// this predicate. HasComputedAggregates is retained solely as the backfill
-// predicate for that migration: the migration marks every pre-existing row
-// this returns true for. The SQL predicate in migrateV43ToV44 mirrors this
-// method column-for-column — keep the two in sync.
+// Since the v43→v44 migration the primary read paths (CompareRunOutcome,
+// --group-by, --abtest) gate on aggregated_at, not on this predicate. Its
+// main remaining role is the backfill predicate for that migration: the
+// migration marks every pre-existing row this returns true for, and the SQL
+// predicate in migrateV43ToV44 mirrors this method column-for-column — keep
+// the two in sync. One live read call also remains: resolveAbtestRowMetrics
+// (status.go) uses it on a struct rebuilt from the --abtest join output to
+// decide whether that join already answered or a recompute is needed.
 //
 // Three other writers touch spawn_outcome: UpdateSpawnOutcomePR,
 // UpdateSpawnOutcomePRMergedAt, and UpdateSpawnOutcomeReviewResult. Each is a
