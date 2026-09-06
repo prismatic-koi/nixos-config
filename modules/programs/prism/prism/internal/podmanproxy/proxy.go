@@ -125,25 +125,6 @@ type Config struct {
 	// rejected request. Nil silently drops audit events.
 	AuditWriter io.Writer
 
-	// PulledImageWriter receives one JSON line per admitted
-	// POST /images/create, naming the image reference the request asked
-	// the upstream to pull. It is the per-session image ledger that
-	// `prism cleanup` replays to remove the images a session pulled
-	// through its own proxy. Nil silently drops ledger entries, which
-	// leaves the images on disk — a leak, not a security failure.
-	//
-	// The ledger records the REQUEST, not the outcome: an entry is
-	// written before the request reaches the upstream, so a pull that
-	// fails upstream still leaves a line behind. `podman rmi` on an
-	// image that was never pulled is a non-zero exit the sweep ignores,
-	// so recording early is the safe direction — the alternative would
-	// miss an image whose pull succeeded but whose response the proxy
-	// never saw.
-	//
-	// See ImageLedgerFileName and ReadImageLedger for the file name the
-	// sidecar uses and the reader the cleanup sweep uses.
-	PulledImageWriter io.Writer
-
 	// MaxBodyBytes caps the size of a body-bearing request that the
 	// proxy will buffer in memory for inspection. Zero uses
 	// DefaultMaxBodyBytes. Bodies exceeding the cap are denied with
@@ -183,15 +164,6 @@ type Proxy struct {
 	cfg      Config
 	upstream *httputil.ReverseProxy
 
-	// probeClient issues the proxy's OWN read-only requests to the
-	// upstream, separate from the reverse-proxy path that carries a
-	// client's request. It shares the reverse proxy's Transport, so it
-	// dials the same Unix socket and reuses the same connection pool.
-	//
-	// One caller today: the image-ledger existence probe. See
-	// imageExistsUpstream in images.go.
-	probeClient *http.Client
-
 	// mu guards listener and server while Serve is initialising; once
 	// Serve enters its select loop, listener and server are read-only.
 	mu       sync.Mutex
@@ -202,12 +174,6 @@ type Proxy struct {
 	// one JSON line per request, so interleaved writes from concurrent
 	// requests must not corrupt each other.
 	auditMu sync.Mutex
-
-	// imageMu serialises writes to PulledImageWriter for the same
-	// reason auditMu serialises the audit log: the ledger is parsed
-	// line by line, so two concurrent image pulls must not interleave
-	// their bytes.
-	imageMu sync.Mutex
 }
 
 // NewProxy validates cfg and returns a Proxy ready to be Served. The
@@ -252,25 +218,6 @@ func NewProxy(cfg Config) (*Proxy, error) {
 		// Allow long-lived streaming connections (attach, exec, logs
 		// follow=1) without a forced idle close.
 		IdleConnTimeout: 0,
-	}
-
-	p.probeClient = &http.Client{
-		Transport: transport,
-		// A probe must never outlive the request that triggered it by
-		// much. DialTimeout is the same budget the reverse-proxy path
-		// gives the upstream dial.
-		Timeout: cfg.DialTimeout,
-		// Never follow a redirect. A probe path is built from an
-		// agent-controlled image reference, and podman's router
-		// answers a path it wants to rewrite with a 301. Following one
-		// would let a crafted reference walk the probe onto an
-		// endpoint this proxy's own allowlist denies. The reference is
-		// already required to be free of dot segments
-		// (imageRefIsSweepable); this is the second lock on the same
-		// door.
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
 	}
 
 	p.upstream = &httputil.ReverseProxy{

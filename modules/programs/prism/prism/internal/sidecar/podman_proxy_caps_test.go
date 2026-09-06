@@ -53,19 +53,6 @@ func startStubPodmanUpstream(t *testing.T, dir string) string {
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.Copy(io.Discard, r.Body)
-			// The proxy probes GET /images/{ref}/json before it
-			// records a pull, and records only when the image is
-			// NOT already in the store. An empty store answers 404,
-			// which is what makes a pull through this stub a
-			// genuine new pull.
-			if r.Method == http.MethodGet &&
-				strings.HasPrefix(r.URL.Path, "/images/") &&
-				strings.HasSuffix(r.URL.Path, "/json") {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusNotFound)
-				_, _ = w.Write([]byte(`{"message":"No such image"}`))
-				return
-			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"Id":"stub"}`))
@@ -473,54 +460,4 @@ func startNameCapturingUpstream(t *testing.T, dir string, into *atomic.Value) st
 		_ = srv.Shutdown(shutdownCtx)
 	})
 	return sockPath
-}
-
-// TestPodmanProxy_ImageLedger_WiredFromSidecar proves the sidecar opens
-// the per-session image ledger and hands it to the proxy, and that the
-// file lands where `prism cleanup` looks for it. Without this wiring the
-// image sweep has nothing to replay and every pulled image leaks.
-func TestPodmanProxy_ImageLedger_WiredFromSidecar(t *testing.T) {
-	session := "prism-test@" + t.Name()
-	bus := sidecartest.NewIsolated(t, session)
-
-	upstream := startStubPodmanUpstream(t, bus.XDGStateHome)
-	sc, listenerPath := newPodmanProxyTestSidecar(t, bus, session, upstream)
-	setContainersEnabled(t, bus, session, true)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	done := runSidecarBackground(t, sc, ctx)
-	if !waitForPath(listenerPath, 3*time.Second) {
-		t.Fatalf("podman.sock listener did not appear at %s", listenerPath)
-	}
-
-	client := proxyClientFor(listenerPath)
-	resp, err := client.Post("http://podman.sock/v1.41/images/create?fromImage=alpine&tag=3.19",
-		"application/json", nil)
-	if err != nil {
-		t.Fatalf("POST images/create: %v", err)
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status: got %d, want 200", resp.StatusCode)
-	}
-
-	// Cancel first: the ledger handle is closed after the proxy
-	// goroutine exits, which is what flushes the last line.
-	cancel()
-	<-done
-
-	sessionDir, err := container.SessionWorkDirPath(sc.cfg.InstanceID)
-	if err != nil {
-		t.Fatalf("SessionWorkDirPath: %v", err)
-	}
-	ledgerPath := filepath.Join(sessionDir, "podman-images.log")
-	raw, err := os.ReadFile(ledgerPath)
-	if err != nil {
-		t.Fatalf("read image ledger %s: %v — the sidecar did not wire PulledImageWriter", ledgerPath, err)
-	}
-	if !strings.Contains(string(raw), `"alpine:3.19"`) {
-		t.Errorf("image ledger does not record the pulled reference; got %q", raw)
-	}
 }

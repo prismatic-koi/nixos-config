@@ -92,7 +92,7 @@ the rationale.
 | T21 | Build context smuggle via `POST /build` of arbitrary-content tar | No new escape: `build` is bounded by what the sandbox already exposes. Build endpoint is `endpointAllow` (query-only and opaque body). No size cap in v1. Revisit if abuse appears. | `endpoints.go` (build endpoint) |
 | T22 | Schema drift: a new docker-/podman-API field upstream introduces a new escape vector without anyone in this repo noticing | `json.Decoder.DisallowUnknownFields()` runs on every parsed body. A new unknown field rejects with 403 and audit reason `unknown_field:<json error>` until it is admitted via the field-admission process (§4). | `policy.go::decodeStrict`, plus every typed struct |
 | T23 | Proxy itself has a parsing bug | Default-deny — every unknown endpoint, unknown field, unknown enumerable value, malformed JSON, missing required value rejects before forwarding. Test suite exercises every documented escape and asserts it is blocked, plus a negative-control meta-test that verifies the positive tests are not no-ops. | `proxy_security_test.go::TestSecurity_NegativeControl_RootAllowlistPasses` |
-| T24 | Storage exhaustion after the session ends: a volume or an image the agent created outlives the session on the shared host | PARTIAL. A volume created through `POST /volumes/create` gets the per-session name prefix (`Config.VolumeNamePrefix`), and `prism cleanup` removes every volume with that prefix. An image pulled through `POST /images/create` is recorded in a per-session ledger and removed at cleanup. Two gaps stay open — see §8.3. | `policy.go::applyVolumeNamePolicy`, `images.go` (`recordPulledImage`, `ReadImageLedger`), `cmd/cleanup_sweep.go` (`sweepVolumesWithRunner`, `sweepImagesWithRunner`) |
+| T24 | Storage exhaustion after the session ends: a volume or an image the agent created outlives the session on the shared host | PARTIAL. A volume created through `POST /volumes/create` gets the per-session name prefix (`Config.VolumeNamePrefix`), and `prism cleanup` removes every volume with that prefix. Images are NOT swept, and two volume gaps stay open — see §8.3. | `policy.go::applyVolumeNamePolicy`, `cmd/cleanup_sweep.go::sweepVolumesWithRunner` |
 
 **Network egress** is not restricted: containers get whatever network the
 host podman gives them (default: full internet). This is strictly broader
@@ -351,19 +351,26 @@ sets:
 - `AllowedBindSources` — the per-session worktree path, the bare repo
   path, and the per-session scratch directory.
 - `ContainerNamePrefix` and `VolumeNamePrefix` — both
-  `"prism-" + sessionName + "-"`, which activates the auto-prefix
-  policy and lets the cleanup sweep
+  `container.ResourceNamePrefixForSession(sessionName)`, which
+  activates the auto-prefix policy and lets the cleanup sweep
   (`cmd/cleanup_sweep.go::sweepSessionResourcesForSession`, called
   from `cmd/cleanup.go`) find every container and every volume that
   belongs to the session.
+
+  The helper is NOT a plain `"prism-" + sessionName + "-"`
+  concatenation. It builds on `container.NameForSession`, which folds
+  `@`, `/`, `.`, and `~` to `-`. Podman validates a container or volume
+  name against `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`, and a session name is
+  `<repo>@<branch>`, so an unsanitised prefix produces names podman
+  refuses to create. Session `nixos-config@main` therefore gets the
+  prefix `prism-nixos-config-main-`. Wherever this document writes
+  `prism-<session>-`, read `<session>` as the folded form.
 - `AllowedCaps` — empty by default. Deny-all.
 - `AllowedSecurityOpts` — empty by default. Deny-all.
 - `MaxMemoryBytes` — `4294967296` (4 GiB per container).
 - `MaxNanoCpus` — `2000000000` (2 CPUs per container).
 - `MaxCPUQuota` — left at `0`. Read §8.1 before you change this.
 - `AuditWriter` — the `os.File` for `<sessionDir>/podman-proxy.log`.
-- `PulledImageWriter` — the `os.File` for the per-session image
-  ledger at `<sessionDir>/podman-images.log`.
 
 Out-of-tree callers can construct the `Config` differently. The proxy
 package itself imposes no policy beyond what the `Config` declares.
@@ -404,9 +411,9 @@ mandatory. Thus a proxy with both caps set rejects every create request.
 The client sends one of the two fields, the other one is absent, and the
 absent one returns 403. Enforce one CPU cap only.
 
-### 8.2 Volume and image sweep at cleanup
+### 8.2 Volume sweep at cleanup
 
-`prism cleanup` removes three classes of resource for a session with
+`prism cleanup` removes two classes of resource for a session with
 `agent_status.containers_enabled = 1`. A session that never enabled
 containers issues no podman command at all.
 
@@ -414,52 +421,36 @@ containers issues no podman command at all.
 |---|---|---|
 | Containers | Strict shape `prism-<session>-<8 hex chars>` | `podman rm -f`, one batch |
 | Volumes | Name prefix `prism-<session>-` | `podman volume rm`, one batch |
-| Images | Each reference in the per-session ledger | `podman rmi`, one command per image |
+
+Images are NOT swept. See §8.3.
 
 The counts appear in the `prism cleanup --json` envelope as
-`containers_swept`, `volumes_swept`, and `images_swept`. The three keys
-are absent when the session did not enable containers.
+`containers_swept` and `volumes_swept`. Both keys are absent when the
+session did not enable containers.
 
-Three properties of the sweep:
+Two properties of the sweep:
 
 - **The volume rule is a prefix, the container rule is a strict shape.**
   The volume policy admits a user-chosen name as long as it carries the
   prefix, and such a volume holds data that must not outlive the
   session. A prefix match reaches those names. The container sweep does
-  not need to, because a user-named container holds no data.
+  not need to, because a user-named container holds no data. The
+  invariant that follows: every name the volume policy admits must be
+  reachable by the sweep, including the name that is exactly the prefix.
 - **A live sibling session keeps its volumes.** Session `foo` and
   session `foo-bar` produce prefixes where one contains the other, so a
   volume named `prism-foo-bar-data` matches both. The sweep reads the
   live sessions from the database and leaves any name a sibling also
   claims. The cost is a leaked volume. The alternative is the loss of
   another session's data.
-- **The image sweep is not a prune.** The image store is shared with the
-  user and with every other session, so the sweep removes only the
-  references this session pulled. One `podman rmi` runs per image. An
-  image that another container still uses returns a non-zero exit, and a
-  batched command strands the rest of the list behind that one failure.
-
-`recordPulledImage` writes one JSON line per admitted
-`POST /images/create`. `ReadImageLedger` reads the file back at cleanup.
-Both halves check the reference against the same allowlist, because the
-reference is agent-controlled and reaches a podman command line. A
-reference that does not start with an alphanumeric character is dropped,
-so no ledger entry can look like a command-line flag.
-
-The proxy records a reference only after it asks the upstream whether
-the image is already in the store. An image that was there before the
-request is not recorded. Without that check, an agent that "pulls" an
-image the user already has enrols that image for deletion. Prism then
-removes it after the session ends. The probe fails closed: any answer
-other than a definite "not present" leaves the image unrecorded. A
-leaked image costs disk. A wrongly removed one costs the user's data.
 
 ### 8.3 Residuals
 
 Three residuals stay open. All three are accepted for this version, in
-the same sense as the residual TOCTOU in §5. The first two are storage
-paths the sweep does not reach. The third is the one to read before
-`--containers` becomes the default.
+the same sense as the residual TOCTOU in §5. The first is a storage path
+the sweep does not reach. The second is a whole class the sweep does not
+cover yet. The third is the one to read before `--containers` becomes
+the default.
 
 **A volume created implicitly by a container mount.** `checkHostConfig`
 admits a named volume as the source of a bind (`Binds:
@@ -476,19 +467,40 @@ To close this, the policy must reject a named-volume mount whose name
 is outside the prefix. That is a new deny path on an admitted field, so
 it needs the field-admission audit in §4 and its own issue.
 
-**An image pulled through the libpod endpoint.** The ledger hooks
-`POST /images/create`, which is the docker-compat pull surface. The
-podman CLI pulls through `POST /images/pull`, which the endpoint
-allowlist does not admit at all, so `podman pull` returns 403 before
-any ledger question arises. This is pre-existing behaviour and not a
-regression. The practical effect: `images_swept` stays 0 for a workflow
-that uses the podman CLI. It counts only for a client that speaks the
-docker API.
+**Images are not swept at all. This work is deferred.** An image the
+agent pulls stays in the shared host image store after the session ends.
+Nothing in cleanup removes it.
 
-To close this, `POST /images/pull` needs admission to the endpoint
-allowlist, and `pulledImageRef` needs to read the libpod `reference`
-parameter. Admitting an endpoint is a policy change, so it needs the §4
-audit and its own issue.
+An earlier revision of this change carried an image sweep. It was cut
+because the design was not safe yet, and because it delivered almost
+nothing in practice. Two conditions must both be met before image
+sweeping returns:
+
+1. **The libpod pull endpoint needs admission.** The podman CLI pulls
+   through `POST /images/pull`, which the endpoint allowlist does not
+   admit, so `podman pull` returns 403 today. Only a client that speaks
+   the docker API reaches `POST /images/create`. A sweep built on the
+   docker-compat surface alone therefore removes nothing for the podman
+   workflow this repo mandates. Admitting an endpoint is a policy
+   change, so it needs the field-admission audit in §4 and its own
+   issue.
+
+2. **The record of what to remove must be somewhere the agent cannot
+   write.** The cut revision kept the record in a file under the
+   per-session work dir. On Darwin that is the wrong place: the
+   sandbox-exec profile grants `file-read* file-write*` over `(subpath
+   <sessionDir>)`, which is the session's only writable grant, so the
+   agent can append any reference it likes. Cleanup then runs
+   `podman rmi` on it against the shared store, after the session has
+   ended. That is a deferred arbitrary-image deletion primitive, and no
+   amount of validation at write time closes it, because the agent
+   bypasses the writer entirely. Linux is not affected — bwrap binds
+   only `<sessionDir>/container-scratch` — but the record must be safe
+   on both platforms.
+
+A database table satisfies condition 2 structurally, because the agent
+has no write path to the database. That is the expected shape when this
+returns.
 
 **No bound on the NUMBER of containers.** `MaxMemoryBytes` and
 `MaxNanoCpus` are per container. Nothing limits how many containers one
@@ -537,5 +549,4 @@ that.
 - Package doc: [`internal/podmanproxy/doc.go`](../internal/podmanproxy/doc.go) — the in-tree summary of the threat model. This document (§2) is the canonical threat table. `doc.go` is the inline summary.
 - Sidecar wiring: [`internal/sidecar/podman_proxy.go`](../internal/sidecar/podman_proxy.go) — `runPodmanProxyIfEnabled`.
 - Cleanup sweep: [`cmd/cleanup_sweep.go`](../cmd/cleanup_sweep.go) — `sweepSessionResourcesForSession` (called from `cmd/cleanup.go`).
-- Image ledger: [`internal/podmanproxy/images.go`](../internal/podmanproxy/images.go) — `recordPulledImage` and `ReadImageLedger`.
 - Sandbox-exec testing convention: [`docs/sandbox-exec-testing.md`](sandbox-exec-testing.md).

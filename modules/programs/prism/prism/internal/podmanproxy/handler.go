@@ -36,9 +36,6 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		p.emitAudit(r, auditAllow, "policy:endpoint_streaming:"+normPath)
 		p.upstream.ServeHTTP(w, r)
 
-	case endpointAllowImageCreate:
-		p.handleImageCreate(w, r)
-
 	case endpointPolicyCreate:
 		p.handlePolicyCreate(w, r)
 
@@ -112,29 +109,6 @@ func (p *Proxy) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 	r.ContentLength = int64(len(forwardBody))
 
 	p.emitAudit(r, auditAllow, res.decision.reason)
-	p.upstream.ServeHTTP(w, r)
-}
-
-// handleImageCreate is the ledger-recording branch for POST
-// /images/create. The request is forwarded unmodified — no field of
-// this endpoint is policy-relevant — but the image reference it names
-// is appended to the per-session image ledger first, so `prism
-// cleanup` can remove the image at session teardown.
-//
-// Recording runs BEFORE the forward for two reasons. It lets the proxy
-// ask the upstream whether the image is ALREADY there, which is what
-// keeps the sweep to "images this session pulled" rather than "images
-// this session named" (see recordPulledImage). And a pull whose
-// response the proxy never sees — upstream down, client disconnect,
-// sidecar killed mid-pull — still leaves its ledger line.
-//
-// The audit line is still exactly one per request: recordPulledImage
-// returns the reason string and emitAudit is called once, as in every
-// other branch. The existence probe is the proxy's own request, not the
-// client's, so it emits no audit line of its own.
-func (p *Proxy) handleImageCreate(w http.ResponseWriter, r *http.Request) {
-	reason := p.recordPulledImage(r.Context(), r.URL.Query())
-	p.emitAudit(r, auditAllow, reason)
 	p.upstream.ServeHTTP(w, r)
 }
 

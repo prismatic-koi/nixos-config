@@ -85,18 +85,20 @@ Containers and volumes both carry the per-session prefix
 request gets 403 (`name_prefix_mismatch_body` for a container,
 `volume_name_prefix_mismatch` for a volume).
 
+`<session>` in that prefix is the FOLDED session name, not the raw one.
+The prefix comes from `container.ResourceNamePrefixForSession`, which
+folds `@`, `/`, `.`, and `~` to `-`, because podman validates a resource
+name against `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` and rejects the rest. So
+session `nixos-config@main` gets `prism-nixos-config-main-`. Use the
+folded form when you name a volume by hand.
+
 `prism cleanup` then removes, for a session that enabled containers:
 
 - containers matching `prism-<session>-<8 hex chars>`,
-- volumes whose name starts with `prism-<session>-`,
-- images the session pulled through `POST /images/create`.
+- volumes whose name starts with `prism-<session>-`.
 
-The image sweep replays a per-session ledger. It is not a prune, because
-the image store is shared. An image another container still uses stays in
-place and cleanup continues. An image that was already on the host before
-the session asked for it is never recorded, so the sweep never removes
-it. The three counts appear in the `prism cleanup --json` envelope as
-`containers_swept`, `volumes_swept`, and `images_swept`.
+The two counts appear in the `prism cleanup --json` envelope as
+`containers_swept` and `volumes_swept`.
 
 ### Known gaps
 
@@ -109,12 +111,14 @@ carries the detail and the conditions to close each one.
   never finds it. Name your volumes explicitly with the
   `prism-<session>-` prefix, or create them with `podman volume create`
   first, and the sweep reaches them.
-- **`podman pull` returns 403.** The podman CLI pulls through the libpod
-  endpoint `POST /images/pull`, which the endpoint allowlist does not
-  admit. The audit reason is `endpoint_not_allowed:POST images/pull`.
-  This is pre-existing and not a regression. `images_swept` counts only
-  for a client that pulls through the docker-compat
-  `POST /images/create`.
+- **Images are not swept.** An image you pull stays in the shared host
+  image store after the session ends. Two things must land first: the
+  libpod `POST /images/pull` endpoint needs admission (which is also why
+  `podman pull` returns 403 today, with audit reason
+  `endpoint_not_allowed:POST images/pull`), and the record of what to
+  remove needs a home the agent cannot write to. A file under the
+  session work dir is not one, because the Darwin sandbox grants the
+  agent write access over that whole subpath.
 - **No cap on the container count.** See the note above. The memory and
   CPU caps bound one container each, not the session's total.
 
@@ -254,7 +258,3 @@ resolve the `<instance_id>` for a session by reading the
 WHERE session_name = '<session>'"`). The structured `reason` field names the
 specific policy check that fired; see `docs/podman-proxy.md` §7
 for the common rejection classes and how to read them.
-
-The same directory holds `podman-images.log`, the per-session image
-ledger. It carries one JSON line per admitted `POST /images/create`.
-Read it to find out which images `prism cleanup` will remove.

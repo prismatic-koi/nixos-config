@@ -145,16 +145,6 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 		auditPath = ""
 	}
 
-	// Open the per-session image ledger. Same failure posture as the
-	// audit log: a ledger the sidecar cannot open costs the cleanup
-	// sweep its list of images to remove (storage leaks) but must not
-	// stop the proxy from serving.
-	imageFile, imageErr := s.openPodmanProxyImageLedger()
-	if imageErr != nil {
-		s.logger().Printf("sidecar: podman-proxy: image ledger open: %v (pulled images will not be swept at cleanup)", imageErr)
-		imageFile = nil
-	}
-
 	allowed := s.allowedPodmanBindSources()
 	// Per-session resource name prefix. The proxy auto-injects this
 	// prefix into containers/create and volumes/create requests with no
@@ -188,18 +178,12 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 	if auditFile != nil {
 		cfg.AuditWriter = auditFile
 	}
-	if imageFile != nil {
-		cfg.PulledImageWriter = imageFile
-	}
 
 	proxy, err := podmanproxy.NewProxy(cfg)
 	if err != nil {
 		s.logger().Printf("sidecar: podman-proxy: NewProxy: %v (proxy not started)", err)
 		if auditFile != nil {
 			_ = auditFile.Close()
-		}
-		if imageFile != nil {
-			_ = imageFile.Close()
 		}
 		return
 	}
@@ -213,7 +197,6 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 	s.mu.Lock()
 	s.podmanProxyAuditFile = auditFile
 	s.podmanProxyAuditPath = auditPath
-	s.podmanProxyImageFile = imageFile
 	s.mu.Unlock()
 	s.logger().Printf("sidecar: podman-proxy: listening on %s (audit=%s, allowed_bind_sources=%d)",
 		listenerPath, auditPath, len(allowed))
@@ -226,33 +209,27 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 	//
 	// The audit file is closed inside this goroutine, AFTER Serve returns,
 	// so the last audit line is guaranteed flushed before fclose. Shutdown
-	// also calls closePodmanProxyFiles defensively in case Serve never
+	// also calls closePodmanProxyAuditFile defensively in case Serve never
 	// started (e.g. failure path before this branch was reached); both
 	// callers are guarded by an s.mu nil-check so a double close is safe.
 	s.goNotify(func() {
 		if err := proxy.Serve(ctx); err != nil {
 			s.logger().Printf("sidecar: podman-proxy: Serve: %v", err)
 		}
-		s.closePodmanProxyFiles()
+		s.closePodmanProxyAuditFile()
 	})
 }
 
-// closePodmanProxyFiles closes the audit log and image-ledger file
-// handles if they were opened. Called from Shutdown after the proxy
-// goroutine has exited so the last audit line and the last ledger line
-// have already been written.
-func (s *Sidecar) closePodmanProxyFiles() {
+// closePodmanProxyAuditFile closes the audit log file handle if one was
+// opened. Called from Shutdown after the proxy goroutine has exited so the
+// last audit line has already been written.
+func (s *Sidecar) closePodmanProxyAuditFile() {
 	s.mu.Lock()
 	f := s.podmanProxyAuditFile
 	s.podmanProxyAuditFile = nil
-	img := s.podmanProxyImageFile
-	s.podmanProxyImageFile = nil
 	s.mu.Unlock()
 	if f != nil {
 		_ = f.Close()
-	}
-	if img != nil {
-		_ = img.Close()
 	}
 }
 
@@ -397,32 +374,4 @@ func (s *Sidecar) openPodmanProxyAuditFile() (*os.File, string, error) {
 		return nil, "", fmt.Errorf("open audit log: %w", err)
 	}
 	return f, auditPath, nil
-}
-
-// openPodmanProxyImageLedger opens the per-session image ledger in
-// append-only mode. The ledger records every image the session pulls
-// through its proxy so `prism cleanup` can remove those images at
-// teardown; see internal/podmanproxy/images.go.
-//
-// It lives in the same per-session work dir as the audit log, with the
-// same 0o700 / 0o600 permissions. Cleanup reads it BEFORE
-// RemoveSessionWorkDir wipes the directory, so the file needs no
-// separate lifetime of its own.
-func (s *Sidecar) openPodmanProxyImageLedger() (*os.File, error) {
-	if s.cfg.InstanceID == "" {
-		return nil, fmt.Errorf("instance ID is empty")
-	}
-	sessionDir, err := container.SessionWorkDirPath(s.cfg.InstanceID)
-	if err != nil {
-		return nil, fmt.Errorf("session work dir: %w", err)
-	}
-	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
-		return nil, fmt.Errorf("mkdir session dir: %w", err)
-	}
-	ledgerPath := filepath.Join(sessionDir, podmanproxy.ImageLedgerFileName)
-	f, err := os.OpenFile(ledgerPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open image ledger: %w", err)
-	}
-	return f, nil
 }

@@ -109,18 +109,6 @@ const (
 	// of the prefix, leaving an orphan that the cleanup sweep cannot
 	// find.
 	endpointPolicyRename
-
-	// endpointAllowImageCreate means "forward without body inspection,
-	// but first record the requested image reference in the per-session
-	// image ledger". Used for POST /images/create.
-	//
-	// The permission is identical to endpointAllow — no field of this
-	// endpoint is policy-relevant, the whole surface is query
-	// parameters naming a registry reference. The separate kind exists
-	// only so `prism cleanup` can remove the images the session pulled:
-	// without a ledger, an agent that pulls a 2 GiB toolchain image
-	// leaves it on the shared image store forever. See images.go.
-	endpointAllowImageCreate
 )
 
 // normalisePath strips a leading docker/podman API version segment and
@@ -331,17 +319,9 @@ func classifyPOST(normPath string) endpointKind {
 		return endpointAllow
 	}
 
-	// Image lifecycle. images/create is split out from its siblings
-	// because it is the pull surface: the reference it names is what
-	// the cleanup sweep removes at session teardown. images/load,
-	// build, and commit produce local images whose identity is not
-	// derivable from the request, so they stay plain allows and are
-	// out of the ledger's scope.
-	if normPath == "images/create" {
-		return endpointAllowImageCreate
-	}
+	// Image lifecycle.
 	switch normPath {
-	case "images/load", "build", "commit":
+	case "images/create", "images/load", "build", "commit":
 		return endpointAllow
 	}
 	switch {

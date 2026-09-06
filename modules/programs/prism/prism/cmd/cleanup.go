@@ -628,14 +628,11 @@ type cleanupResult struct {
 	// run that produces zero matches still emits "containers_swept": 0.
 	ContainersSwept *int `json:"containers_swept,omitempty"`
 	// VolumesSwept reports the number of volumes (matching the
-	// prism-<session>- name prefix) removed by the same sweep, and
-	// ImagesSwept the number of images the session pulled through its
-	// proxy that podman confirmed removed. Both follow ContainersSwept's
-	// nil-means-omitted contract exactly: the three fields are written
-	// together from one containers_enabled read, so an envelope either
-	// carries all three or none.
+	// prism-<session>- name prefix) removed by the same sweep. It
+	// follows ContainersSwept's nil-means-omitted contract exactly: the
+	// two fields are written together from one containers_enabled read,
+	// so an envelope either carries both or neither.
 	VolumesSwept *int `json:"volumes_swept,omitempty"`
-	ImagesSwept  *int `json:"images_swept,omitempty"`
 }
 
 // applyDBLifecycleClears performs the agent_status lifecycle updates for
@@ -965,11 +962,11 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	return nil
 }
 
-// applySessionResourceSweep runs the orphan-resource sweep (containers,
-// volumes, and pulled images) for session and, when the sweep actually
-// ran (containers_enabled=1), records the three counts on result so
-// they surface in the --json envelope. When containers_enabled=0 the
-// fields stay nil and the JSON encoder omits them entirely.
+// applySessionResourceSweep runs the orphan-resource sweep (containers
+// and volumes) for session and, when the sweep actually ran
+// (containers_enabled=1), records both counts on result so they surface
+// in the --json envelope. When containers_enabled=0 the fields stay nil
+// and the JSON encoder omits them entirely.
 //
 // Errors inside the sweep are non-fatal and logged at warning level by
 // the sweep itself. The helper has no error path of its own.
@@ -979,10 +976,9 @@ func applySessionResourceSweep(session string, result *cleanupResult) {
 		return
 	}
 	if result != nil {
-		containers, volumes, images := counts.containers, counts.volumes, counts.images
+		containers, volumes := counts.containers, counts.volumes
 		result.ContainersSwept = &containers
 		result.VolumesSwept = &volumes
-		result.ImagesSwept = &images
 	}
 }
 

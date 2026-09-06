@@ -2,16 +2,17 @@ package cmd
 
 // Orphan-resource sweep for sessions with containers_enabled=1.
 //
-// Three resource classes are swept, in this order:
+// Two resource classes are swept, in this order:
 //
 //  1. Containers matching the strict per-session auto-name shape.
 //  2. Volumes matching the per-session name prefix.
-//  3. Images the session pulled through its own proxy, replayed from
-//     the per-session image ledger.
 //
-// All three are gated on the SAME agent_status.containers_enabled read,
-// so a session that never enabled containers issues no podman command
-// at all.
+// Both are gated on the SAME agent_status.containers_enabled read, so a
+// session that never enabled containers issues no podman command at
+// all.
+//
+// Images the session pulled are NOT swept. See docs/podman-proxy.md
+// section 8.3 for the two conditions that work needs first.
 //
 // The container sweep complements the per-mode container teardown that
 // `removeContainerIfExists` already performs: that path removes the
@@ -41,14 +42,12 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
-	"github.com/prismatic-koi/prism/internal/podmanproxy"
 	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
@@ -113,11 +112,10 @@ func currentPodmanRunner() podmanRunner {
 type sweepCounts struct {
 	containers int
 	volumes    int
-	images     int
 }
 
-// sweepSessionResourcesForSession runs the container, volume, and
-// image sweeps for sessionName, gated on the session's
+// sweepSessionResourcesForSession runs the container and volume sweeps
+// for sessionName, gated on the session's
 // agent_status.containers_enabled column. Returns:
 //
 //	counts : per-class number of resources removed.
@@ -125,10 +123,10 @@ type sweepCounts struct {
 //	         read succeeded); false if it was a no-op (containers_enabled=0,
 //	         row missing, or DB error).
 //
-// When ran is false the JSON envelope MUST omit the containers_swept,
-// volumes_swept, and images_swept fields entirely — this is the spec,
-// and it is what makes "a session that never enabled containers issues
-// no podman command" observable from the outside.
+// When ran is false the JSON envelope MUST omit the containers_swept
+// and volumes_swept fields entirely — this is the spec, and it is what
+// makes "a session that never enabled containers issues no podman
+// command" observable from the outside.
 //
 // Errors from podman are NEVER fatal: they're surfaced as warnings
 // via proglog.Warnf and the function returns whatever counts it
@@ -154,23 +152,7 @@ func sweepSessionResourcesForSession(sessionName string) (counts sweepCounts, ra
 	runner := currentPodmanRunner()
 	counts.containers = sweepWithRunner(runner, sessionName)
 	counts.volumes = sweepVolumesWithRunner(runner, sessionName, siblingVolumePrefixes(d, sessionName))
-	counts.images = sweepImagesWithRunner(runner, sessionName, imageLedgerPathForStatus(status))
 	return counts, true
-}
-
-// imageLedgerPathForStatus resolves the per-session image ledger path
-// from an agent_status row, or "" when the row carries no instance_id
-// (a session that never reached the point of having a work dir). An
-// empty path makes the image sweep a no-op with no podman invocation.
-func imageLedgerPathForStatus(status *db.Status) string {
-	if status == nil || status.InstanceID == nil || *status.InstanceID == "" {
-		return ""
-	}
-	sessionDir, err := container.SessionWorkDirPath(*status.InstanceID)
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(sessionDir, podmanproxy.ImageLedgerFileName)
 }
 
 // containerNamePattern returns the strict regex that matches the
@@ -459,57 +441,6 @@ func claimedBySibling(name string, siblingPrefixes []string) bool {
 		}
 	}
 	return false
-}
-
-// sweepImagesWithRunner removes the images the session pulled through
-// its own proxy, replayed from the per-session image ledger at
-// ledgerPath. Returns the number of images podman confirmed removed.
-//
-// Two properties this function must hold, both of them ACs:
-//
-//   - ONE podman invocation per image, not one batch. An image another
-//     container still uses makes `podman rmi` exit non-zero. Batched,
-//     that one failure would take the whole batch's outcome with it;
-//     per-image, the sweep removes the rest and reports the true count.
-//   - No podman invocation at all when the ledger is absent or empty.
-//     A session that enabled containers but never pulled an image
-//     leaves no ledger lines, and a session that never enabled
-//     containers never reaches this function.
-//
-// The sweep is deliberately NOT a `podman image prune`. The image
-// store is shared with the user and with every other session, so only
-// the references this session asked for may be removed.
-func sweepImagesWithRunner(runner podmanRunner, sessionName, ledgerPath string) int {
-	if ledgerPath == "" {
-		return 0
-	}
-	refs, err := podmanproxy.ReadImageLedger(ledgerPath)
-	if err != nil {
-		proglog.Warnf("[prism] warning: cleanup: image sweep: read ledger for %q failed (%v) — continuing cleanup\n",
-			sessionName, err)
-		return 0
-	}
-	if len(refs) == 0 {
-		return 0
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), podmanSweepBudget)
-	defer cancel()
-
-	removed := 0
-	for _, ref := range refs {
-		if _, err := runner.Run(ctx, "rmi", ref); err != nil {
-			// Expected and non-fatal: the image is still in use by
-			// another container, was never pulled successfully, or
-			// has already been removed. Best effort by design — keep
-			// going so one stuck image does not strand the rest.
-			proglog.Warnf("[prism] warning: cleanup: image sweep: podman rmi %q for %q failed (%v) — leaving it in place\n",
-				ref, sessionName, err)
-			continue
-		}
-		removed++
-	}
-	return removed
 }
 
 // formatPodmanArgs renders a slice of args into a single space-joined

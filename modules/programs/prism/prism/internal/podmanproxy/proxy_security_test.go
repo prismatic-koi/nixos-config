@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,75 +79,6 @@ type fakeUpstream struct {
 	// request. Used by the name-prefix tests that assert the `?name=`
 	// channel was rewritten alongside the body Name.
 	lastRawQuery atomic.Value // string
-
-	// presentImages names the image references this upstream reports as
-	// ALREADY in its store, answering the proxy's image-existence probe
-	// (GET /images/{ref}/json) with 200 instead of 404.
-	//
-	// The default — an empty map — means "the store is empty", so a
-	// pull through the proxy is a genuine new pull and lands in the
-	// image ledger. Tests that need the opposite call markImagePresent.
-	//
-	// probeStatusOverride, when non-zero, makes the probe route answer
-	// with that status instead, so a test can exercise the
-	// probe-failure path.
-	presentMu           sync.Mutex
-	presentImages       map[string]struct{}
-	probeStatusOverride int
-
-	// probes counts image-existence probes separately from forwarded
-	// requests, so `requests` keeps meaning "requests the proxy
-	// forwarded on a client's behalf".
-	probes atomic.Int64
-
-	// rawPaths records the UNNORMALISED request-target of every request
-	// this upstream received, captured before http.ServeMux gets a
-	// chance to clean the path or answer it with a 301.
-	//
-	// This exists for the path-traversal tests. ServeMux collapses dot
-	// segments itself, so a test that asserts on r.URL.Path inside a
-	// mux handler cannot tell "the proxy never sent `..`" from "the mux
-	// cleaned it away". Only the raw target answers that.
-	rawMu    sync.Mutex
-	rawPaths []string
-}
-
-// capturedRawPaths returns every unnormalised request-target this
-// upstream has seen.
-func (fu *fakeUpstream) capturedRawPaths() []string {
-	fu.rawMu.Lock()
-	defer fu.rawMu.Unlock()
-	return append([]string(nil), fu.rawPaths...)
-}
-
-// markImagePresent makes the upstream report ref as already in its
-// store when the proxy probes for it.
-func (fu *fakeUpstream) markImagePresent(ref string) {
-	fu.presentMu.Lock()
-	defer fu.presentMu.Unlock()
-	if fu.presentImages == nil {
-		fu.presentImages = map[string]struct{}{}
-	}
-	fu.presentImages[ref] = struct{}{}
-}
-
-// setProbeStatus forces every subsequent image-existence probe to
-// answer with status, so a test can drive the probe-failure branch.
-func (fu *fakeUpstream) setProbeStatus(status int) {
-	fu.presentMu.Lock()
-	defer fu.presentMu.Unlock()
-	fu.probeStatusOverride = status
-}
-
-// imageProbeRef returns the image reference an image-inspect path names
-// ("/images/<ref>/json"), or "" when the path is not a probe.
-func imageProbeRef(path string) string {
-	const prefix = "/images/"
-	const suffix = "/json"
-	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
-		return ""
-	}
-	return strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
 }
 
 func newFakeUpstream(t *testing.T) *fakeUpstream {
@@ -166,29 +96,6 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 	fu := &fakeUpstream{sockPath: sockPath, listener: ln}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Image-existence probe: the proxy's own read-only lookup,
-		// not a forwarded client request. Answer it from
-		// presentImages and do NOT count it in `requests`.
-		if ref := imageProbeRef(r.URL.Path); ref != "" && r.Method == http.MethodGet {
-			fu.probes.Add(1)
-			fu.presentMu.Lock()
-			override := fu.probeStatusOverride
-			_, present := fu.presentImages[ref]
-			fu.presentMu.Unlock()
-			switch {
-			case override != 0:
-				w.WriteHeader(override)
-			case present:
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{"Id":"sha256:already-here"}`))
-			default:
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusNotFound)
-				_, _ = w.Write([]byte(`{"message":"No such image"}`))
-			}
-			return
-		}
 		fu.requests.Add(1)
 		body, _ := io.ReadAll(r.Body)
 		fu.lastBody.Store(body)
@@ -197,16 +104,7 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"Id":"deadbeef"}`))
 	})
-	// Record the raw request-target BEFORE the mux sees it. The mux
-	// cleans dot segments and answers with a 301, so a capture inside a
-	// handler would never observe a traversal attempt.
-	recordRaw := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fu.rawMu.Lock()
-		fu.rawPaths = append(fu.rawPaths, r.RequestURI)
-		fu.rawMu.Unlock()
-		mux.ServeHTTP(w, r)
-	})
-	fu.server = &http.Server{Handler: recordRaw}
+	fu.server = &http.Server{Handler: mux}
 	go func() { _ = fu.server.Serve(ln) }()
 	t.Cleanup(func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

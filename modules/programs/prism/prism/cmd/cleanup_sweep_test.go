@@ -1,13 +1,12 @@
 package cmd
 
-// Tests for the orphan-resource sweep (containers, volumes, images).
+// Tests for the orphan-resource sweep (containers and volumes).
 //
 // The sweep is wired into the four cleanup paths via
 // applySessionResourceSweep; this file exercises each class in
 // isolation through its test-injectable inner function
-// (sweepWithRunner / sweepVolumesWithRunner / sweepImagesWithRunner)
-// and end-to-end through headlessCleanupWithJSON with a stub
-// podmanRunner.
+// (sweepWithRunner / sweepVolumesWithRunner) and end-to-end through
+// headlessCleanupWithJSON with a stub podmanRunner.
 //
 // End-to-end invocation counts in this file are exact on purpose. The
 // "a session that never enabled containers issues no podman command"
@@ -26,8 +25,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -407,14 +404,14 @@ func TestHeadlessCleanup_ContainersEnabled_EmptySweepReportsZero(t *testing.T) {
 		}
 	})
 
-	// All three sweep counts present and zero in the envelope. The
-	// three fields are written from one containers_enabled read, so an
-	// envelope carries all three or none.
+	// Both sweep counts present and zero in the envelope. The two
+	// fields are written from one containers_enabled read, so an
+	// envelope carries both or neither.
 	var env map[string]any
 	if err := json.Unmarshal([]byte(out), &env); err != nil {
 		t.Fatalf("unmarshal envelope: %v\nraw: %q", err, out)
 	}
-	for _, key := range []string{"containers_swept", "volumes_swept", "images_swept"} {
+	for _, key := range []string{"containers_swept", "volumes_swept"} {
 		got, present := env[key]
 		if !present {
 			t.Fatalf("%s key must be present (containers_enabled=1) in envelope=%v", key, env)
@@ -429,15 +426,13 @@ func TestHeadlessCleanup_ContainersEnabled_EmptySweepReportsZero(t *testing.T) {
 		}
 	}
 
-	// Two list invocations (container ps + volume ls), no removals. The
-	// image sweep issues nothing: the seeded row carries no instance_id,
-	// so there is no ledger to replay.
+	// Two list invocations (container ps + volume ls), no removals.
 	calls := r.calls()
 	if len(calls) != 2 {
 		t.Errorf("expected two podman invocations (ps + volume ls); got %d: %v", len(calls), calls)
 	}
 	for _, args := range calls {
-		if len(args) >= 1 && (args[0] == "rm" || args[0] == "rmi") {
+		if len(args) >= 1 && args[0] == "rm" {
 			t.Errorf("zero matches must not trigger a removal; got: %v", args)
 		}
 		if len(args) >= 2 && args[0] == "volume" && args[1] == "rm" {
@@ -776,222 +771,3 @@ func TestSiblingVolumePrefixes_NilDBIsSafe(t *testing.T) {
 		t.Errorf("got %v, want nil", got)
 	}
 }
-
-// ── sweepImagesWithRunner ─────────────────────────────────────────────────
-
-// writeImageLedger writes a ledger file holding one JSON line per
-// supplied reference and returns its path.
-func writeImageLedger(t *testing.T, refs ...string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "podman-images.log")
-	var b strings.Builder
-	for _, ref := range refs {
-		line, err := json.Marshal(map[string]string{"image": ref})
-		if err != nil {
-			t.Fatalf("marshal ledger line: %v", err)
-		}
-		b.Write(line)
-		b.WriteByte('\n')
-	}
-	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
-		t.Fatalf("write ledger: %v", err)
-	}
-	return path
-}
-
-// TestImageSweep_LedgerImagesRemoved is the AC: cleanup removes every
-// image the session pulled through its proxy. One `podman rmi` per
-// reference, never a host-wide prune — the image store is shared with
-// the user and with every other session.
-func TestImageSweep_LedgerImagesRemoved(t *testing.T) {
-	r := installFakeRunner(t)
-	r.script(
-		scriptedResponse{stdout: []byte("")},
-		scriptedResponse{stdout: []byte("")},
-	)
-	ledger := writeImageLedger(t, "alpine:3.19", "docker.io/library/busybox:latest")
-
-	got := sweepImagesWithRunner(r, "foo", ledger)
-	if got != 2 {
-		t.Errorf("count: got %d, want 2", got)
-	}
-	calls := r.calls()
-	if len(calls) != 2 {
-		t.Fatalf("expected one rmi per image; got %d: %v", len(calls), calls)
-	}
-	want := [][]string{
-		{"rmi", "alpine:3.19"},
-		{"rmi", "docker.io/library/busybox:latest"},
-	}
-	for i, w := range want {
-		if len(calls[i]) != 2 || calls[i][0] != w[0] || calls[i][1] != w[1] {
-			t.Errorf("invocation %d: got %v, want %v", i, calls[i], w)
-		}
-	}
-	for _, args := range calls {
-		if containsArg(args, "prune") {
-			t.Errorf("the image sweep must never prune the shared image store; got %v", args)
-		}
-	}
-}
-
-// TestImageSweep_InUseImageDoesNotStrandTheRest is the AC: when podman
-// refuses to remove one image because a container still uses it, cleanup
-// removes the rest and does not fail.
-//
-// This is why the sweep issues one rmi per image rather than one batched
-// call: a batch would report a single non-zero exit and the sweep could
-// not tell which images survived.
-func TestImageSweep_InUseImageDoesNotStrandTheRest(t *testing.T) {
-	r := installFakeRunner(t)
-	r.script(
-		scriptedResponse{stdout: []byte("")},
-		scriptedResponse{stdout: []byte("image is in use by a container"), err: errors.New("exit status 2")},
-		scriptedResponse{stdout: []byte("")},
-	)
-	ledger := writeImageLedger(t, "alpine:3.19", "postgres:16", "busybox:latest")
-
-	got := sweepImagesWithRunner(r, "foo", ledger)
-	if got != 2 {
-		t.Errorf("count: got %d, want 2 (the in-use image is skipped, the rest are removed)", got)
-	}
-	calls := r.calls()
-	if len(calls) != 3 {
-		t.Fatalf("a failed rmi must not stop the sweep; got %d invocations: %v", len(calls), calls)
-	}
-	if calls[2][1] != "busybox:latest" {
-		t.Errorf("the sweep did not continue past the failure; third invocation was %v", calls[2])
-	}
-}
-
-// TestImageSweep_NoLedgerIssuesNoPodmanCommand covers the session that
-// enabled containers but never pulled an image, and the session whose
-// row carries no instance_id (so no ledger path can be derived).
-func TestImageSweep_NoLedgerIssuesNoPodmanCommand(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		path string
-	}{
-		{"no instance id", ""},
-		{"ledger file absent", filepath.Join(t.TempDir(), "absent.log")},
-		{"ledger file empty", writeImageLedger(t)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := installFakeRunner(t)
-			if got := sweepImagesWithRunner(r, "foo", tc.path); got != 0 {
-				t.Errorf("count: got %d, want 0", got)
-			}
-			if calls := r.calls(); len(calls) != 0 {
-				t.Errorf("expected no podman invocation; got %v", calls)
-			}
-		})
-	}
-}
-
-// TestImageSweep_HostileLedgerEntriesNotPassedToPodman is the sweep-side
-// half of the argument-injection defence. A ledger is a file on disk;
-// the sweep must not hand its contents to podman unchecked.
-func TestImageSweep_HostileLedgerEntriesNotPassedToPodman(t *testing.T) {
-	r := installFakeRunner(t)
-	r.script(scriptedResponse{stdout: []byte("")})
-	ledger := writeImageLedger(t, "--all", "-f", "alpine:3.19")
-
-	got := sweepImagesWithRunner(r, "foo", ledger)
-	if got != 1 {
-		t.Errorf("count: got %d, want 1 (only the well-formed reference)", got)
-	}
-	for _, args := range r.calls() {
-		for _, a := range args[1:] {
-			if strings.HasPrefix(a, "-") {
-				t.Errorf("SECURITY: flag-shaped ledger entry %q reached the podman command line: %v", a, args)
-			}
-		}
-	}
-}
-
-// ── end-to-end: image sweep through headlessCleanup ───────────────────────
-
-// TestHeadlessCleanup_ImagesSweptFromLedger walks the whole path: a
-// containers-enabled session with an instance_id and a ledger on disk
-// gets its pulled image removed, and the count surfaces in the JSON
-// envelope.
-//
-// XDG_STATE_HOME is redirected so container.SessionWorkDirPath resolves
-// inside the test tempdir rather than the developer's real home (and so
-// the test survives the homeless-shelter nix sandbox).
-func TestHeadlessCleanup_ImagesSweptFromLedger(t *testing.T) {
-	t.Setenv("PRISM_HOST_API", "")
-	stateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", stateHome)
-	withNoopTmux(t)
-	r := installFakeRunner(t)
-	r.script(
-		scriptedResponse{stdout: []byte("")}, // container ps: nothing
-		scriptedResponse{stdout: []byte("")}, // volume ls: nothing
-		scriptedResponse{stdout: []byte("")}, // rmi alpine:3.19
-	)
-
-	dbFile := filepath.Join(t.TempDir(), "prism.db")
-	session := "prism-test@image-sweep"
-	instanceID := "instance-image-sweep"
-	seedContainerSession(t, dbFile, session, true)
-	setSessionInstanceID(t, dbFile, session, instanceID)
-
-	sessionDir := filepath.Join(stateHome, "prism", "sessions", instanceID)
-	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
-	ledger := filepath.Join(sessionDir, "podman-images.log")
-	if err := os.WriteFile(ledger, []byte(`{"image":"alpine:3.19"}`+"\n"), 0o600); err != nil {
-		t.Fatalf("write ledger: %v", err)
-	}
-
-	SetTestDBPath(dbFile)
-	t.Cleanup(func() { SetTestDBPath("") })
-
-	out := captureStdoutDuringFn(t, func() {
-		if err := headlessCleanupWithJSON(session, "image-sweep", "", "", true); err != nil {
-			t.Fatalf("headlessCleanupWithJSON: %v", err)
-		}
-	})
-
-	var env map[string]any
-	if err := json.Unmarshal([]byte(out), &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v\nraw: %q", err, out)
-	}
-	got, present := env["images_swept"]
-	if !present {
-		t.Fatalf("images_swept key must be present in envelope=%v", env)
-	}
-	if f := got.(float64); int(f) != 1 {
-		t.Errorf("images_swept: got %v, want 1", f)
-	}
-
-	var sawRmi bool
-	for _, args := range r.calls() {
-		if len(args) == 2 && args[0] == "rmi" && args[1] == "alpine:3.19" {
-			sawRmi = true
-		}
-	}
-	if !sawRmi {
-		t.Errorf("expected `podman rmi alpine:3.19`; got %v", r.calls())
-	}
-}
-
-// setSessionInstanceID stamps agent_status.instance_id so the cleanup
-// path can derive the per-session work dir (and therefore the image
-// ledger path).
-func setSessionInstanceID(t *testing.T, dbFile, session, instanceID string) {
-	t.Helper()
-	d, err := db.Open(dbFile)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer d.Close()
-	if err := d.SetInstanceID(session, instanceID); err != nil {
-		t.Fatalf("SetInstanceID(%q, %q): %v", session, instanceID, err)
-	}
-}
-
-// Compile-time guard: keep fmt imported for ad-hoc debugging.
-var _ = fmt.Sprintf

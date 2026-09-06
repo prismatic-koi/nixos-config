@@ -776,14 +776,6 @@ type Sidecar struct {
 	// runPodmanProxyIfEnabled. Held only for log/diagnostic surfaces.
 	// Protected by s.mu.
 	podmanProxyAuditPath string
-
-	// podmanProxyImageFile is the open per-session image-ledger file handle
-	// held by the podman proxy. Same lifecycle as podmanProxyAuditFile: set
-	// by runPodmanProxyIfEnabled, closed after the proxy goroutine exits so
-	// the last ledger line is flushed before `prism cleanup` reads the file.
-	// nil when the proxy is not started or the ledger open failed.
-	// Protected by s.mu.
-	podmanProxyImageFile *os.File
 }
 
 // defaultReviewRecoveryInterval is how often the worker-sidecar recovery
@@ -1464,15 +1456,15 @@ func (s *Sidecar) Shutdown() {
 		}
 	}
 
-	// Defensive close of the podman-proxy audit log and image ledger. In the happy path the
+	// Defensive close of the podman-proxy audit log. In the happy path the
 	// goNotify wrapper around proxy.Serve already closed it after Serve
 	// returned on ctx cancellation; this call is a no-op then (the handle
 	// is nilled under s.mu so a double close cannot occur). The defensive
 	// path covers Shutdown invocations that race with Run failure-modes
 	// where the goroutine was never spawned (for example, NewProxy returned an
-	// error after the file was opened) — closePodmanProxyFiles reads
+	// error after the file was opened) — closePodmanProxyAuditFile reads
 	// the handle under s.mu so the second writer is safe.
-	s.closePodmanProxyFiles()
+	s.closePodmanProxyAuditFile()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
