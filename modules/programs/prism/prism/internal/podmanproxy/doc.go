@@ -85,7 +85,9 @@
 //     volume implicitly when a container mounts one that does not
 //     exist, and that path sends no volumes/create, so the volume
 //     carries no prefix. docs/podman-proxy.md, section 8.3, records
-//     that residual and the two others.
+//     that residual among others. Read the section rather than this
+//     summary: several of the residuals it lists are safety-relevant,
+//     and a count here goes stale the next time one is added.
 //   - MaxMemoryBytes, MaxCPUQuota, and MaxNanoCpus cap the matching
 //     HostConfig fields. A configured cap is STRICT: the field becomes
 //     mandatory on create, because docker reads a zero value as

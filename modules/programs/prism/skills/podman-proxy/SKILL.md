@@ -54,7 +54,8 @@ caps and the volume-name policy below are reachable from the
 Every reason string in the next two sections is unreachable from the
 podman CLI, because the request never survives the decode that precedes
 them. `docs/podman-proxy.md` §8.3 has the detail and the conditions to
-close it.
+close it. The work is tracked in issue **#2946** — do not file a
+duplicate.
 
 ## Resource caps: memory and CPU limits are mandatory
 
@@ -143,10 +144,11 @@ carries the detail and the conditions to close each one.
   image store after the session ends. Two things must land first: the
   libpod `POST /images/pull` endpoint needs admission (which is also why
   `podman pull` returns 403 today, with audit reason
-  `endpoint_not_allowed:POST images/pull`), and the record of what to
-  remove needs a home the agent cannot write to. A file under the
-  session work dir is not one, because the Darwin sandbox grants the
-  agent write access over that whole subpath.
+  `endpoint_not_allowed:POST images/pull`, and which issue **#2946**
+  tracks), and the record of what to remove needs a home the agent
+  cannot write to. A file under the session work dir is not one, because
+  the Darwin sandbox grants the agent write access over that whole
+  subpath.
 - **No cap on the container count.** See the note above. The memory and
   CPU caps bound one container each, not the session's total.
 

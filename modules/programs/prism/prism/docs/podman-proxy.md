@@ -502,8 +502,8 @@ field the podman CLI never sends even when the body is admitted.
 
 To close this, the libpod specgen shape needs its own typed struct and a
 mapping from `resource_limits` onto the cap checks. That is an admission
-of a new body shape, so it needs the field-admission audit in §4 and its
-own issue.
+of a new body shape, so it needs the field-admission audit in §4. The
+issue is filed: [#2946](https://github.com/prismatic-koi/nixos-config/issues/2946).
 
 **A volume created implicitly by a container mount.** `checkHostConfig`
 admits a named volume as the source of a bind (`Binds:
@@ -512,9 +512,11 @@ creates a named volume that does not yet exist when a container mounts
 it. That path never sends `POST /volumes/create`, so
 `applyVolumeNamePolicy` never runs and the volume carries no
 `prism-<session>-` prefix. `sweepVolumesWithRunner` matches on the
-prefix, so it never removes the volume. A command such as
-`podman run --memory 512m --cpus 1 -v leak:/data alpine true` therefore
-leaves a volume behind.
+prefix, so it never removes the volume. A docker-API
+`run -v leak:/data alpine true` therefore leaves a volume behind.
+
+The podman CLI cannot reach this path at all. Its create request is
+rejected earlier, per the first residual above.
 
 To close this, the policy must reject a named-volume mount whose name
 is outside the prefix. That is a new deny path on an admitted field, so
@@ -535,8 +537,8 @@ sweeping returns:
    the docker API reaches `POST /images/create`. A sweep built on the
    docker-compat surface alone therefore removes nothing for the podman
    workflow this repo mandates. Admitting an endpoint is a policy
-   change, so it needs the field-admission audit in §4 and its own
-   issue.
+   change, so it needs the field-admission audit in §4. The issue is
+   filed: [#2946](https://github.com/prismatic-koi/nixos-config/issues/2946).
 
 2. **The record of what to remove must be somewhere the agent cannot
    write.** The cut revision kept the record in a file under the
