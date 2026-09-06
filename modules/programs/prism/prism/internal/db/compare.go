@@ -160,12 +160,14 @@ func (d *DB) SessionIsTerminal(sess *Session) bool {
 // internally, so the value agrees byte-for-byte with the row cleanup will
 // later persist. Returns nil for live sessions (the renderer shows "—").
 //
-// The gate is HasComputedAggregates, not "a row exists". A row can exist
-// with every aggregate at zero: three partial writers create one at the PR,
-// merge, and review-complete boundaries, all of which land before cleanup.
-// Gating on existence made those stub rows shadow the live computation, so
-// `prism stats` and `prism stats compare` reported no tokens, no cost, and no
-// duration for sessions whose events carried all three (issue #2932).
+// The gate is aggregated_at, not "a row exists" and not the value-inference
+// predicate HasComputedAggregates. A row can exist with every aggregate at
+// zero: three partial writers create one at the PR, merge, and
+// review-complete boundaries, all of which land before cleanup. Only
+// WriteSpawnOutcome stamps aggregated_at, so a non-NULL value is a fact that
+// the row carries the aggregate block, not an inference from its values
+// (issue #2936, on top of #2932). A stub row therefore falls through to the
+// live computation below.
 //
 // Order matters in the other direction too. A persisted aggregate wins over a
 // recomputation, because agent_events is pruned at 90 days
@@ -176,7 +178,7 @@ func (d *DB) CompareRunOutcome(sess *Session) *SpawnOutcome {
 		return nil
 	}
 	persisted, _ := d.SpawnOutcomeByInstanceID(sess.InstanceID)
-	if persisted.HasComputedAggregates() {
+	if persisted != nil && persisted.AggregatedAt != nil {
 		return persisted
 	}
 	if d.SessionIsTerminal(sess) {
@@ -186,8 +188,16 @@ func (d *DB) CompareRunOutcome(sess *Session) *SpawnOutcome {
 		if computed, err := d.ComputeSpawnOutcome(sess.InstanceID); err == nil && computed != nil {
 			return computed
 		}
+		// Compute failed (e.g. the sessions row vanished): fall back to whatever
+		// the stub carried rather than hiding a terminal session entirely.
+		return persisted
 	}
-	return persisted
+	// Live session: a persisted row here can only be a partial-writer stub
+	// (aggregated_at is NULL — the aggregated branch above already returned).
+	// A stub is not a complete aggregate and the session has not finished, so
+	// there is nothing authoritative to show. Return nil so the renderer shows
+	// "—" and --abtest excludes it from its sums (#2936).
+	return nil
 }
 
 // AssembleCompareRun gathers the per-run data the comparison renderer needs

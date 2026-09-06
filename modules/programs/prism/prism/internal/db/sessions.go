@@ -551,7 +551,7 @@ INSERT OR REPLACE INTO spawn_outcome (
     tokens_cache_read_total, tokens_cache_write_total,
     cost_usd_total, tool_call_count, tool_error_count,
     msg_assistant_count, time_to_first_event_ms, time_to_finished_ms,
-    computed_at, schema_version
+    computed_at, schema_version, aggregated_at
 ) VALUES (
     ?,
     ?, ?, ?,
@@ -565,7 +565,7 @@ INSERT OR REPLACE INTO spawn_outcome (
     ?, ?,
     ?, ?, ?,
     ?, ?, ?,
-    ?, ?
+    ?, ?, ?
 )`
 	_, err = d.conn.Exec(insertQ,
 		out.InstanceID,
@@ -580,7 +580,10 @@ INSERT OR REPLACE INTO spawn_outcome (
 		out.TokensCacheReadTotal, out.TokensCacheWriteTotal,
 		out.CostUSDTotal, out.ToolCallCount, out.ToolErrorCount,
 		out.MsgAssistantCount, out.TimeToFirstEventMs, out.TimeToFinishedMs,
-		out.ComputedAt, out.SchemaVersion,
+		// aggregated_at is stamped with computed_at: this write is the moment
+		// the event-derived aggregate block is filled, which is what the read
+		// paths gate on.
+		out.ComputedAt, out.SchemaVersion, out.ComputedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("db: write spawn outcome: insert: %w", err)
@@ -814,7 +817,7 @@ SELECT
     tokens_cache_read_total, tokens_cache_write_total,
     cost_usd_total, tool_call_count, tool_error_count,
     msg_assistant_count, time_to_first_event_ms, time_to_finished_ms,
-    computed_at, schema_version
+    computed_at, schema_version, aggregated_at
 FROM spawn_outcome
 WHERE instance_id = ?`
 	row := d.conn.QueryRow(q, instanceID)
@@ -882,6 +885,11 @@ func (d *DB) SpawnOutcomeGroupBy(axis string, sinceMs int64) ([]GroupByRow, erro
 		whereParts = append(whereParts, "s.started_at >= ?")
 		args = append(args, sinceMs)
 	}
+	// Exclude partial-writer stub rows: only rows WriteSpawnOutcome has
+	// filled carry a non-NULL aggregated_at. --group-by reads persisted rows
+	// only (no recompute), so a stub would otherwise fold its zero-token,
+	// zero-cost defaults into the sums and count as a real session (#2936).
+	whereParts = append(whereParts, "so.aggregated_at IS NOT NULL")
 
 	whereClause := ""
 	if len(whereParts) > 0 {
@@ -960,7 +968,7 @@ func scanSpawnOutcome(row *sql.Row) (*SpawnOutcome, error) {
 		&out.TokensCacheReadTotal, &out.TokensCacheWriteTotal,
 		&out.CostUSDTotal, &out.ToolCallCount, &out.ToolErrorCount,
 		&out.MsgAssistantCount, &out.TimeToFirstEventMs, &out.TimeToFinishedMs,
-		&out.ComputedAt, &out.SchemaVersion,
+		&out.ComputedAt, &out.SchemaVersion, &out.AggregatedAt,
 	)
 	if err != nil {
 		return nil, err

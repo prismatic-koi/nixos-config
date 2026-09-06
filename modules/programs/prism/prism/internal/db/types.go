@@ -253,10 +253,22 @@ type SpawnOutcome struct {
 	// Audit
 	ComputedAt    int64
 	SchemaVersion int
+	// AggregatedAt is the time WriteSpawnOutcome filled the event-derived
+	// aggregate block of this row (ms epoch). nil means only a partial writer
+	// (pr_number, pr_merged_at, review result) has touched the row: the
+	// aggregate columns are defaults, not measurements. The read paths key
+	// recompute-or-persisted off this field, not off HasComputedAggregates.
+	AggregatedAt *int64
 }
 
 // HasComputedAggregates reports whether this row carries the event-derived
 // aggregate block — the columns only WriteSpawnOutcome ever writes.
+//
+// Since the v43→v44 migration the read paths gate on aggregated_at, not on
+// this predicate. HasComputedAggregates is retained solely as the backfill
+// predicate for that migration: the migration marks every pre-existing row
+// this returns true for. The SQL predicate in migrateV43ToV44 mirrors this
+// method column-for-column — keep the two in sync.
 //
 // Three other writers touch spawn_outcome: UpdateSpawnOutcomePR,
 // UpdateSpawnOutcomePRMergedAt, and UpdateSpawnOutcomeReviewResult. Each is a

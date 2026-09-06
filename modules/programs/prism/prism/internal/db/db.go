@@ -31,7 +31,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 43
+	currentSchemaVersion = 44
 )
 
 // DB wraps a SQLite connection.
@@ -274,7 +274,13 @@ CREATE TABLE IF NOT EXISTS spawn_outcome (
     time_to_finished_ms      INTEGER,
     -- Audit
     computed_at            INTEGER NOT NULL,
-    schema_version         INTEGER NOT NULL DEFAULT 1
+    schema_version         INTEGER NOT NULL DEFAULT 1,
+    -- Set by WriteSpawnOutcome when it fills the event-derived aggregate
+    -- block. NULL means only a partial writer (pr_number, pr_merged_at,
+    -- review result) has touched the row, so its aggregate columns are
+    -- defaults, not measurements. Read paths key recompute-or-persisted off
+    -- this column rather than inferring it from the aggregate values.
+    aggregated_at          INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_spawn_outcome_end_state    ON spawn_outcome(end_state);
 CREATE INDEX IF NOT EXISTS idx_spawn_outcome_pr_number    ON spawn_outcome(pr_number);
@@ -1036,6 +1042,9 @@ func runMigrations(conn sqlExecutor) error {
 	if err := migrateV42ToV43(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV43ToV44(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -1561,6 +1570,74 @@ func migrateV42ToV43(conn sqlExecutor, version *int) error {
 		return fmt.Errorf("db: migration v42\u2192v43: bump version: %w", err)
 	}
 	*version = 43
+	return nil
+}
+
+// migrateV43ToV44 adds a nullable aggregated_at column to spawn_outcome and
+// backfills it for every pre-existing row that carries the event-derived
+// aggregate block.
+//
+// The column separates a row that WriteSpawnOutcome has filled from a row that
+// only a partial writer (UpdateSpawnOutcomePR, UpdateSpawnOutcomePRMergedAt,
+// UpdateSpawnOutcomeReviewResult) has created. Those writers insert a stub
+// row before cleanup, and every aggregate column on that stub is a default
+// (0 or NULL), not a measurement. The read paths (CompareRunOutcome,
+// --group-by, --abtest) key recompute-or-persisted off aggregated_at rather
+// than inferring it from the aggregate values.
+//
+// The backfill is the reason this migration exists rather than the no-backfill
+// column that PR #2934 proposed. agent_events is pruned at 90 days
+// (internal/db/maintenance.go) while spawn_outcome is not. A pre-migration row
+// whose events have passed the prune is the only surviving record of what the
+// run cost; treating it as un-aggregated would recompute it from an empty
+// event set and return zeros, discarding the real historical totals. The
+// backfill sets aggregated_at for exactly the rows HasComputedAggregates()
+// reports true for — the SQL predicate below mirrors that Go predicate
+// column-for-column — and leaves every stub row NULL. computed_at is the
+// backfill stamp: it is the time the aggregates were computed.
+//
+// The ALTER TABLE is guarded by a pragma_table_info check so the migration is
+// idempotent: on a fresh database the declarative schema block above already
+// created the column, and a second run matches the guard and does nothing. The
+// column is nullable, so the ALTER TABLE adds it with an implicit NULL default
+// and does not rewrite existing rows or lose data on a populated database. The
+// backfill UPDATE is itself idempotent (WHERE aggregated_at IS NULL).
+func migrateV43ToV44(conn sqlExecutor, version *int) error {
+	if *version >= 44 {
+		return nil
+	}
+	var exists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('spawn_outcome') WHERE name = 'aggregated_at'`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("db: migration v43\u2192v44: check spawn_outcome.aggregated_at column: %w", err)
+	}
+	if exists == 0 {
+		if _, err := conn.Exec(`ALTER TABLE spawn_outcome ADD COLUMN aggregated_at INTEGER`); err != nil {
+			return fmt.Errorf("db: migration v43\u2192v44: add spawn_outcome.aggregated_at: %w", err)
+		}
+	}
+	// Backfill: mark every row that HasComputedAggregates() reports true for.
+	// This predicate mirrors SpawnOutcome.HasComputedAggregates in types.go —
+	// keep the two in sync. exit_code is deliberately excluded (a partial
+	// writer never sets it, and it is not part of the aggregate block).
+	if _, err := conn.Exec(`
+UPDATE spawn_outcome SET aggregated_at = computed_at
+ WHERE aggregated_at IS NULL AND (
+     msg_assistant_count > 0 OR tool_call_count > 0 OR tool_error_count > 0 OR
+     interrupted_count > 0 OR compaction_count > 0 OR error_event_count > 0 OR
+     permission_ask_count > 0 OR permission_denied_count > 0 OR doom_loop_count > 0 OR
+     tokens_input_total > 0 OR tokens_output_total > 0 OR
+     tokens_cache_read_total > 0 OR tokens_cache_write_total > 0 OR
+     cost_usd_total > 0 OR
+     duration_ms IS NOT NULL OR time_to_first_event_ms IS NOT NULL OR time_to_finished_ms IS NOT NULL
+ )`); err != nil {
+		return fmt.Errorf("db: migration v43\u2192v44: backfill spawn_outcome.aggregated_at: %w", err)
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 44`); err != nil {
+		return fmt.Errorf("db: migration v43\u2192v44: bump version: %w", err)
+	}
+	*version = 44
 	return nil
 }
 
