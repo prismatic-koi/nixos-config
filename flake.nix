@@ -164,6 +164,9 @@
 
         # flux-local: agent sessions need it on PATH (issue #2941).
         flux-local = pkgs.callPackage ./pkgs/flux-local.nix { };
+
+        # flate: added beside flux-local, not a replacement (issue #2943).
+        flate = pkgs.callPackage ./pkgs/flate.nix { };
       });
 
       apps = forEachSystem (pkgs: {

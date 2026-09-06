@@ -97,6 +97,12 @@ rec {
       # derivation if/when that lands and nixpkgs picks it up.
       flux-local = final.callPackage ../pkgs/flux-local.nix { };
 
+      # flate: offline Flux GitOps validator/renderer, not yet in nixpkgs.
+      # Sits beside flux-local (issue #2943) — added, not a replacement;
+      # flux-local stays wired into kubetools.nix until home-ops CI
+      # migrates its rendering to flate.
+      flate = final.callPackage ../pkgs/flate.nix { };
+
       prism = final.callPackage ../pkgs/prism.nix { };
 
       # battery-monitor: Linux-only Go daemon (UPower + sysfs +
