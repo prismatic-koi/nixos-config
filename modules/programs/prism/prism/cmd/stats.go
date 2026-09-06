@@ -350,7 +350,7 @@ func runStatsProxy(cmd *cobra.Command, args []string, apiURL string, days int, d
 		return err
 	}
 	var resp struct {
-		Sessions []db.Session `json:"sessions"`
+		Rows []db.IncarnationSummaryRow `json:"rows"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return fmt.Errorf("stats proxy: unmarshal summary response: %w", err)
@@ -358,7 +358,7 @@ func runStatsProxy(cmd *cobra.Command, args []string, apiURL string, days int, d
 	if jsonMode {
 		return printJSON(raw)
 	}
-	return renderStatsIncarnationsFromSessions(resp.Sessions)
+	return renderStatsIncarnationsFromSessions(resp.Rows)
 }
 
 // printJSON writes raw JSON to stdout followed by a newline. Used by all

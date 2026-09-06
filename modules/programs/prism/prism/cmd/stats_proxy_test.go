@@ -91,7 +91,7 @@ func TestProxyStats_SendsCorrectQueryParams(t *testing.T) {
 
 // TestProxyStats_SummaryView verifies the view=summary query param is sent.
 func TestProxyStats_SummaryView(t *testing.T) {
-	respBody := `{"sessions":[]}`
+	respBody := `{"rows":[]}`
 	srv, apiURL := startFakeStatsServer(t, []byte(respBody))
 
 	_, err := proxyStats(apiURL, "summary", "", 0, "nixos-config", 0)
@@ -209,17 +209,21 @@ func TestRunStatsProxy_DoomloopsJSON(t *testing.T) {
 // TestRunStatsProxy_Summary verifies that prism stats (no flags) via proxy
 // renders a session table when PRISM_HOST_API is set.
 func TestRunStatsProxy_Summary(t *testing.T) {
-	sessions := []db.Session{
+	rows := []db.IncarnationSummaryRow{
 		{
-			InstanceID:  "aaaa1111-2222-3333-4444-555555555555",
-			SessionName: "nixos-config@main",
-			Repo:        "nixos-config",
-			Worktree:    "/tmp/w",
-			Harness:     "pi",
-			StartedAt:   time.Now().Add(-1 * time.Hour),
+			Session: &db.Session{
+				InstanceID:  "aaaa1111-2222-3333-4444-555555555555",
+				SessionName: "nixos-config@main",
+				Repo:        "nixos-config",
+				Worktree:    "/tmp/w",
+				Harness:     "pi",
+				StartedAt:   time.Now().Add(-1 * time.Hour),
+			},
+			State:      "active",
+			DurationMs: int64(time.Hour / time.Millisecond),
 		},
 	}
-	respBody, _ := json.Marshal(map[string]any{"sessions": sessions})
+	respBody, _ := json.Marshal(map[string]any{"rows": rows})
 
 	srv, apiURL := startFakeStatsServer(t, respBody)
 
@@ -243,17 +247,21 @@ func TestRunStatsProxy_Summary(t *testing.T) {
 // TestRunStatsProxy_SummaryJSON verifies that prism stats --json (no event flags)
 // emits the proxy response JSON.
 func TestRunStatsProxy_SummaryJSON(t *testing.T) {
-	sessions := []db.Session{
+	rows := []db.IncarnationSummaryRow{
 		{
-			InstanceID:  "bbbb1111-2222-3333-4444-555555555555",
-			SessionName: "nixos-config@feat",
-			Repo:        "nixos-config",
-			Worktree:    "/tmp/w",
-			Harness:     "pi",
-			StartedAt:   time.Now().Add(-2 * time.Hour),
+			Session: &db.Session{
+				InstanceID:  "bbbb1111-2222-3333-4444-555555555555",
+				SessionName: "nixos-config@feat",
+				Repo:        "nixos-config",
+				Worktree:    "/tmp/w",
+				Harness:     "pi",
+				StartedAt:   time.Now().Add(-2 * time.Hour),
+			},
+			State:      "active",
+			DurationMs: int64(2 * time.Hour / time.Millisecond),
 		},
 	}
-	respBody, _ := json.Marshal(map[string]any{"sessions": sessions})
+	respBody, _ := json.Marshal(map[string]any{"rows": rows})
 
 	_, apiURL := startFakeStatsServer(t, respBody)
 
@@ -273,8 +281,8 @@ func TestRunStatsProxy_SummaryJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
 		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", err, out)
 	}
-	if _, ok := parsed["sessions"]; !ok {
-		t.Errorf("--json output missing 'sessions' key; got: %s", out)
+	if _, ok := parsed["rows"]; !ok {
+		t.Errorf("--json output missing 'rows' key; got: %s", out)
 	}
 }
 

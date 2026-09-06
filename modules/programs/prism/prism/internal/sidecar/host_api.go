@@ -361,7 +361,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//   group    — session_groups.group_id (abtest only)
 	//
 	// Response shapes (all roles permitted — read-only):
-	//   view=summary → {"sessions":[...db.Session...]} with token/cost totals per-session
+	//   view=summary → {"rows":[...db.IncarnationSummaryRow...]}, one row per
+	//     session with state, duration_ms, total_tokens, and total_cost already
+	//     resolved on the host (db.AssembleIncarnationSummary) — the sandbox
+	//     proxy renderer and the host-direct renderer consume the same shape
+	//     (issue #2935)
 	//     when session is set: {"type":"detail","session":{...db.Session...}} (same as view=detail)
 	//   view=doomloops → {"events":[...db.Event...]}
 	//   view=denials   → {"events":[...db.Event...]}
@@ -478,10 +482,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
 				return
 			}
-			if sessions == nil {
-				sessions = []db.Session{}
+			rows := make([]db.IncarnationSummaryRow, 0, len(sessions))
+			for _, sess := range sessions {
+				sess := sess
+				rows = append(rows, s.cfg.DB.AssembleIncarnationSummary(&sess))
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+			writeJSON(w, http.StatusOK, map[string]any{"rows": rows})
 
 		case "detail":
 			if sessionFilter == "" {

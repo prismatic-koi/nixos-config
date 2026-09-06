@@ -59,149 +59,45 @@ func runStatsIncarnations(repoFilter string, sinceMs int64, jsonMode bool) error
 }
 
 // renderIncarnationsWithDB renders the incarnation table using DB-backed
-// token/cost lookup. Used by the direct-DB path only (d must be non-nil).
+// state/duration/token/cost resolution. Used by the direct-DB path only (d
+// must be non-nil). Assembles one db.IncarnationSummaryRow per session and
+// hands off to renderIncarnationSummaryRows, the renderer shared with the
+// sandbox proxy path (issue #2935).
 func renderIncarnationsWithDB(d *db.DB, sessions []db.Session) error {
-	if len(sessions) == 0 {
-		fmt.Println("no sessions yet")
-		return nil
-	}
-
-	styleHeader := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
-	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
-	now := time.Now()
-
-	const (
-		wID     = 8
-		wName   = 32
-		wAgent  = 14
-		wState  = 10
-		wDur    = 10
-		wTokens = 8
-		wCost   = 8
-	)
-
-	header := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %-*s  %*s  %*s",
-		wID, "INSTANCE",
-		wName, "SESSION_NAME",
-		wAgent, "AGENT",
-		wState, "STATE",
-		wDur, "DURATION",
-		wTokens, "TOKENS",
-		wCost, "COST",
-	)
-	fmt.Println(styleHeader.Render(header))
-	fmt.Println(styleDim.Render(strings.Repeat("─", len(header))))
-
+	rows := make([]db.IncarnationSummaryRow, 0, len(sessions))
 	for _, s := range sessions {
-		shortID := s.InstanceID
-		if len(shortID) > wID {
-			shortID = shortID[:wID]
-		}
-
-		sessionName := s.SessionName
-		if len(sessionName) > wName {
-			sessionName = sessionName[:wName-3] + "..."
-		}
-
-		agentName := "—"
-		if s.RootAgentName != nil && *s.RootAgentName != "" {
-			agentName = agentShortName(*s.RootAgentName)
-		} else if s.AgentRole != nil && *s.AgentRole != "" {
-			agentName = agentShortName(*s.AgentRole)
-		}
-		if len(agentName) > wAgent {
-			agentName = agentName[:wAgent-3] + "..."
-		}
-
-		// STATE and DURATION come from the outcome, and from the sessions row
-		// only as a fallback. sessions.end_state and sessions.ended_at are
-		// `prism cleanup` writes, so reading them first reported a finished
-		// session as "active" with a duration that grew until an operator ran
-		// cleanup — while `prism stats <session>` reported the real state and
-		// the terminal-transition duration for that same session (issue #2932).
 		sess := s
-		outcome := d.CompareRunOutcome(&sess)
-
-		state := "active"
-		switch {
-		case outcome != nil && outcome.EndState != nil && *outcome.EndState != "":
-			state = *outcome.EndState
-		case s.EndState != nil && *s.EndState != "":
-			state = *s.EndState
-		case s.EndedAt != nil:
-			state = "ended"
-		}
-
-		var dur time.Duration
-		switch {
-		case outcome != nil && outcome.DurationMs != nil:
-			dur = time.Duration(*outcome.DurationMs) * time.Millisecond
-		case s.EndedAt != nil:
-			dur = s.EndedAt.Sub(s.StartedAt)
-		default:
-			dur = now.Sub(s.StartedAt)
-		}
-		durStr := formatDurationLong(dur)
-
-		// Compute token/cost totals from agent_events for this instance_id.
-		turns, terr := d.SessionTurnTokens(s.InstanceID)
-		var totalTokens int
-		var totalCost float64
-		if terr == nil {
-			for _, t := range turns {
-				totalTokens += t.Input + t.Output
-				totalCost += computeTurnCost(t)
-			}
-		}
-
-		tokStr := "—"
-		if totalTokens > 0 {
-			tokStr = formatTokenCount(totalTokens)
-		}
-		costStr := "—"
-		if totalCost > 0 {
-			costStr = formatCost(totalCost)
-		}
-
-		stateStyled := stateStyle(state).Render(fmt.Sprintf("%-*s", wState, truncateStr(state, wState)))
-
-		fmt.Printf("%-*s  %-*s  %-*s  %s  %-*s  %*s  %*s\n",
-			wID, shortID,
-			wName, sessionName,
-			wAgent, agentName,
-			stateStyled,
-			wDur, durStr,
-			wTokens, tokStr,
-			wCost, costStr,
-		)
+		rows = append(rows, d.AssembleIncarnationSummary(&sess))
 	}
-
-	fmt.Println()
-	fmt.Println(styleDim.Render("run `prism stats <instance-id>` or `prism stats <session-name>` for detail"))
-	return nil
+	return renderIncarnationSummaryRows(rows)
 }
 
-// renderStatsIncarnationsFromSessions renders the incarnation table from a
-// pre-fetched sessions slice without DB access. Token/cost columns show '—'.
-// Used by the proxy path where DB access is not available.
+// renderStatsIncarnationsFromSessions renders the incarnation table from the
+// pre-resolved rows the host-API view=summary response carries. Used by the
+// sandbox proxy path, which has no DB handle of its own.
 //
-// STATE and DURATION here come from the sessions row, so they carry the
-// pre-#2932 semantics: a finished session that has not been cleaned up shows
-// "active" and a still-growing duration. The host-direct twin above reads the
-// outcome and does not. Closing that gap needs the /stats?view=summary
-// response to carry a resolved state and duration per session, which changes
-// the endpoint's wire shape — tracked separately in issue #2935, deliberately
-// out of scope for #2932. This is the same class of gap the TOKENS and COST
-// columns already have on this path.
-func renderStatsIncarnationsFromSessions(sessions []db.Session) error {
-	if len(sessions) == 0 {
+// State, duration, tokens, and cost are all resolved on the host by
+// db.AssembleIncarnationSummary before this function ever sees the data, so
+// this is the same renderer the host-direct path uses via
+// renderIncarnationsWithDB — the two no longer diverge on STATE/DURATION
+// semantics or on the TOKENS/COST '—' gap (issue #2935).
+func renderStatsIncarnationsFromSessions(rows []db.IncarnationSummaryRow) error {
+	return renderIncarnationSummaryRows(rows)
+}
+
+// renderIncarnationSummaryRows is the shared renderer behind
+// renderIncarnationsWithDB (host-direct) and renderStatsIncarnationsFromSessions
+// (sandbox proxy). Both paths assemble db.IncarnationSummaryRow on the host —
+// directly for the former, via the /stats?view=summary response for the
+// latter — so this function contains no path-specific logic.
+func renderIncarnationSummaryRows(rows []db.IncarnationSummaryRow) error {
+	if len(rows) == 0 {
 		fmt.Println("no sessions yet")
 		return nil
 	}
 
 	styleHeader := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
-	now := time.Now()
 
 	const (
 		wID     = 8
@@ -225,7 +121,12 @@ func renderStatsIncarnationsFromSessions(sessions []db.Session) error {
 	fmt.Println(styleHeader.Render(header))
 	fmt.Println(styleDim.Render(strings.Repeat("─", len(header))))
 
-	for _, s := range sessions {
+	for _, row := range rows {
+		s := row.Session
+		if s == nil {
+			continue
+		}
+
 		shortID := s.InstanceID
 		if len(shortID) > wID {
 			shortID = shortID[:wID]
@@ -246,24 +147,20 @@ func renderStatsIncarnationsFromSessions(sessions []db.Session) error {
 			agentName = agentName[:wAgent-3] + "..."
 		}
 
-		state := "active"
-		if s.EndState != nil && *s.EndState != "" {
-			state = *s.EndState
-		} else if s.EndedAt != nil {
-			state = "ended"
+		state := row.State
+		if state == "" {
+			state = "active"
 		}
+		durStr := formatDurationLong(time.Duration(row.DurationMs) * time.Millisecond)
 
-		var dur time.Duration
-		if s.EndedAt != nil {
-			dur = s.EndedAt.Sub(s.StartedAt)
-		} else {
-			dur = now.Sub(s.StartedAt)
-		}
-		durStr := formatDurationLong(dur)
-
-		// Proxy path: no DB available for token/cost lookup.
 		tokStr := "—"
+		if row.TotalTokens > 0 {
+			tokStr = formatTokenCount(row.TotalTokens)
+		}
 		costStr := "—"
+		if row.TotalCost > 0 {
+			costStr = formatCost(row.TotalCost)
+		}
 
 		stateStyled := stateStyle(state).Render(fmt.Sprintf("%-*s", wState, truncateStr(state, wState)))
 
