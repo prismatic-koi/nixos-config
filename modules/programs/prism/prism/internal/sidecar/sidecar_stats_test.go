@@ -202,19 +202,19 @@ func TestHostAPI_Stats_Summary_HappyPath(t *testing.T) {
 	}
 
 	var resp struct {
-		Sessions []db.Session `json:"sessions"`
+		Rows []db.IncarnationSummaryRow `json:"rows"`
 	}
 	decodeJSONBody(t, rr, &resp)
-	if len(resp.Sessions) != 1 {
-		t.Fatalf("got %d sessions, want 1", len(resp.Sessions))
+	if len(resp.Rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(resp.Rows))
 	}
-	if resp.Sessions[0].SessionName != "test-repo@main" {
-		t.Errorf("session name = %q, want test-repo@main", resp.Sessions[0].SessionName)
+	if resp.Rows[0].Session == nil || resp.Rows[0].Session.SessionName != "test-repo@main" {
+		t.Errorf("session name = %+v, want test-repo@main", resp.Rows[0].Session)
 	}
 }
 
 // TestHostAPI_Stats_Summary_EmptyResult verifies that an empty sessions table
-// returns {"sessions":[]} (not null).
+// returns {"rows":[]} (not null).
 func TestHostAPI_Stats_Summary_EmptyResult(t *testing.T) {
 	d := openTestDB(t)
 	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
@@ -225,11 +225,11 @@ func TestHostAPI_Stats_Summary_EmptyResult(t *testing.T) {
 	}
 
 	var resp struct {
-		Sessions []db.Session `json:"sessions"`
+		Rows []db.IncarnationSummaryRow `json:"rows"`
 	}
 	decodeJSONBody(t, rr, &resp)
-	if resp.Sessions == nil {
-		t.Error("sessions field should be an empty array, not null")
+	if resp.Rows == nil {
+		t.Error("rows field should be an empty array, not null")
 	}
 }
 

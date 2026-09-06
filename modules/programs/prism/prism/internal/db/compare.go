@@ -15,8 +15,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/pricing"
 )
 
 // CompareRunData is the wire/render shape for one run in `prism stats compare`:
@@ -72,6 +74,84 @@ type CompareInputs struct {
 	// the live runtime gate is agent_status.containers_enabled
 	// (Status.ContainersEnabled).
 	ContainersFlag bool `json:"containers_flag"`
+}
+
+// IncarnationSummaryRow is the wire/render shape for one row of the
+// per-incarnation summary table (`prism stats` with no argument). It carries
+// the sessions row plus state, duration, tokens, and cost already resolved on
+// the host, so the sandbox proxy path (GET /stats?view=summary) and the
+// host-direct path render from the same shape and therefore the same output
+// (issue #2935, on top of the view=compare precedent in CompareRunData).
+//
+// State and DurationMs come from CompareRunOutcome, not sessions.end_state /
+// sessions.ended_at directly, for the same reason CompareRunOutcome exists:
+// those columns are `prism cleanup` writes and lag the real terminal-state
+// transition. TotalTokens and TotalCost are summed from SessionTurnTokens
+// using the same per-turn cost resolution (TurnCost) the direct-DB renderer
+// used before this type existed, so a session's totals do not change
+// depending on which path rendered them.
+type IncarnationSummaryRow struct {
+	Session     *Session `json:"session"`
+	State       string   `json:"state"`
+	DurationMs  int64    `json:"duration_ms"`
+	TotalTokens int      `json:"total_tokens"`
+	TotalCost   float64  `json:"total_cost"`
+}
+
+// TurnCost computes the cost for a single msg_assistant turn. Uses the local
+// pricing table when the model is known; falls back to the event-reported
+// cost for unknown models (e.g. openrouter/*). Shared by AssembleIncarnationSummary
+// and the cmd-package per-session token/cost table so the two never diverge.
+func TurnCost(t TokenTurn) float64 {
+	return pricing.Cost(t.Model,
+		float64(t.Input), float64(t.Output),
+		float64(t.CacheRead), float64(t.CacheWrite),
+		t.EventCost)
+}
+
+// AssembleIncarnationSummary resolves one IncarnationSummaryRow for sess: the
+// state and duration CompareRunOutcome resolves, plus token/cost totals
+// summed from SessionTurnTokens. Called once per session, on the host, by
+// both the /stats?view=summary handler (proxy path) and the host-direct
+// `prism stats` renderer, so the two consume one shape instead of the direct
+// path re-deriving state/duration itself while the proxy path fell back to
+// raw sessions columns.
+func (d *DB) AssembleIncarnationSummary(sess *Session) IncarnationSummaryRow {
+	row := IncarnationSummaryRow{Session: sess}
+	if sess == nil {
+		return row
+	}
+
+	outcome := d.CompareRunOutcome(sess)
+
+	switch {
+	case outcome != nil && outcome.EndState != nil && *outcome.EndState != "":
+		row.State = *outcome.EndState
+	case sess.EndState != nil && *sess.EndState != "":
+		row.State = *sess.EndState
+	case sess.EndedAt != nil:
+		row.State = "ended"
+	default:
+		row.State = "active"
+	}
+
+	switch {
+	case outcome != nil && outcome.DurationMs != nil:
+		row.DurationMs = *outcome.DurationMs
+	case sess.EndedAt != nil:
+		row.DurationMs = sess.EndedAt.Sub(sess.StartedAt).Milliseconds()
+	default:
+		row.DurationMs = time.Since(sess.StartedAt).Milliseconds()
+	}
+
+	if turns, err := d.SessionTurnTokens(sess.InstanceID); err == nil {
+		for _, t := range turns {
+			row.TotalTokens += t.Input + t.Output
+			row.TotalCost += TurnCost(t)
+		}
+	}
+
+	return row
 }
 
 // ResolveSessionArg resolves a user-supplied argument to a sessions row.

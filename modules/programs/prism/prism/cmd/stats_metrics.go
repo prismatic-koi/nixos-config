@@ -237,14 +237,11 @@ func groupEventsByHarnessSessionID(events []db.Event) (map[string][]db.Event, []
 	return grouped, order
 }
 
-// computeTurnCost computes the cost for a single msg_assistant turn.
-// Uses the local pricing table when the model is known; falls back to
-// the event-reported cost for unknown models (e.g. openrouter/*).
+// computeTurnCost computes the cost for a single msg_assistant turn. Delegates
+// to db.TurnCost, the shared resolver AssembleIncarnationSummary also uses,
+// so a session's totals do not change depending on which path computed them.
 func computeTurnCost(t db.TokenTurn) float64 {
-	return pricing.Cost(t.Model,
-		float64(t.Input), float64(t.Output),
-		float64(t.CacheRead), float64(t.CacheWrite),
-		t.EventCost)
+	return db.TurnCost(t)
 }
 
 // modelMetrics tracks per-model metrics accumulated across turns.
