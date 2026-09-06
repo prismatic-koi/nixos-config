@@ -85,9 +85,15 @@ type Config struct {
 	//     ContainerNamePrefix; otherwise the request is rejected with 403
 	//     and audit reason "name_prefix_mismatch".
 	//
-	// Production wires this from the sidecar to "prism-<sessionName>-"
-	// so the cleanup sweep can locate every container belonging to the
-	// session. Out-of-tree callers may leave it empty — the prefix logic
+	// Production wires this from the sidecar to
+	// container.ResourceNamePrefixForSession(sessionName) so the cleanup
+	// sweep can locate every container belonging to the session. That is
+	// NOT a plain "prism-" + sessionName + "-" concatenation: it folds
+	// "@", "/", ".", and "~" to "-", because podman validates a resource
+	// name against ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ and a session name is
+	// <repo>@<branch>. An out-of-tree caller that builds the prefix from
+	// a raw session name produces names podman refuses to create.
+	// Out-of-tree callers may leave it empty — the prefix logic
 	// is then a no-op, so a consumer that does not need session-scoped
 	// naming keeps the default behaviour.
 	ContainerNamePrefix string
@@ -104,8 +110,9 @@ type Config struct {
 	//     and audit reason "volume_name_prefix_mismatch".
 	//
 	// Production wires this from the sidecar to the SAME value as
-	// ContainerNamePrefix ("prism-<sessionName>-") so the cleanup sweep
-	// can locate every volume belonging to the session with one prefix.
+	// ContainerNamePrefix — see that field for the sanitisation this
+	// value must carry — so the cleanup sweep can locate every volume
+	// belonging to the session with one prefix.
 	// It is a separate field rather than a reuse of ContainerNamePrefix
 	// so an out-of-tree caller can scope containers without scoping
 	// volumes, or the reverse. Empty leaves volume naming untouched.

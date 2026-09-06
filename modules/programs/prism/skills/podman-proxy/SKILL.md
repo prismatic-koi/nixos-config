@@ -36,6 +36,29 @@ The train is tracked by #2317 and shipped as #2326, #2327, #2328, #2329,
 prism spawn --containers --prompt 'run the test suite against a throwaway postgres'
 ```
 
+The flag flips two DB columns at spawn time —
+`spawn_inputs.containers_flag = 1` (audit) and
+`agent_status.containers_enabled = 1` (runtime gate). The sidecar reads
+the runtime gate on startup and conditionally:
+
+- binds a fourth Unix listener at
+  `<XDG_STATE_HOME>/prism/run/<sessionDirName>/podman.sock`,
+- exposes that socket inside the sandbox (bwrap bind / sandbox-exec
+  SBPL literal allow),
+- injects `CONTAINER_HOST=unix://<…>/podman.sock` and the matching
+  `DOCKER_HOST` env vars,
+- conditionally binds a per-session scratch dir at
+  `<sessionDir>/container-scratch/` into the sandbox, RW, so the agent
+  has a writable place to point bind mounts that does not need to live
+  in the worktree, and
+- opens an audit-log file at `<sessionDir>/podman-proxy.log` (one JSON
+  line per request: timestamp, method, endpoint, decision, reason).
+
+The `--containers` flag is independent of `--isolation`. Combining
+`--containers --isolation host` produces a warning (host mode has direct
+podman access already, the proxy is redundant) but does not error — see
+#2330 for the rationale.
+
 ## First: the podman CLI cannot create containers or volumes
 
 **`podman run` and `podman volume create` return 403 through this
@@ -135,11 +158,11 @@ carries the detail and the conditions to close each one.
 - **A volume created implicitly by a container mount.** A docker-API
   `run -v myvol:/data ...` makes the runtime create `myvol` without ever
   sending `POST /volumes/create`, so the volume gets no prefix and the
-  sweep never finds it. Name the volume explicitly with the
-  `prism-<session>-` prefix instead, so the create goes through
-  `POST /volumes/create` and the sweep reaches it. `podman volume
-  create` is NOT a workaround — it returns 403 on the libpod body, per
-  the first section.
+  sweep never finds it. Give the volume a name that starts with
+  `prism-<session>-` instead. The runtime still creates it implicitly —
+  that does not change — but the sweep matches on the name prefix, so it
+  reaches the volume anyway. `podman volume create` is NOT a workaround:
+  it returns 403 on the libpod body, per the first section.
 - **Images are not swept.** An image you pull stays in the shared host
   image store after the session ends. Two things must land first: the
   libpod `POST /images/pull` endpoint needs admission (which is also why
@@ -151,29 +174,6 @@ carries the detail and the conditions to close each one.
   subpath.
 - **No cap on the container count.** See the note above. The memory and
   CPU caps bound one container each, not the session's total.
-
-The flag flips two DB columns at spawn time —
-`spawn_inputs.containers_flag = 1` (audit) and
-`agent_status.containers_enabled = 1` (runtime gate). The sidecar reads
-the runtime gate on startup and conditionally:
-
-- binds a fourth Unix listener at
-  `<XDG_STATE_HOME>/prism/run/<sessionDirName>/podman.sock`,
-- exposes that socket inside the sandbox (bwrap bind / sandbox-exec
-  SBPL literal allow),
-- injects `CONTAINER_HOST=unix://<…>/podman.sock` and the matching
-  `DOCKER_HOST` env vars,
-- conditionally binds a per-session scratch dir at
-  `<sessionDir>/container-scratch/` into the sandbox, RW, so the agent
-  has a writable place to point bind mounts that does not need to live
-  in the worktree, and
-- opens an audit-log file at `<sessionDir>/podman-proxy.log` (one JSON
-  line per request: timestamp, method, endpoint, decision, reason).
-
-The `--containers` flag is independent of `--isolation`. Combining
-`--containers --isolation host` produces a warning (host mode has direct
-podman access already, the proxy is redundant) but does not error — see
-#2330 for the rationale.
 
 ## Default-deny at six layers (summary)
 

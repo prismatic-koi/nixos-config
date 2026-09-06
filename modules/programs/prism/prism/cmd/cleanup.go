@@ -326,7 +326,10 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			// surface a JSON envelope — the count goes into the warning log
 			// only. Passing result=nil keeps the helper safe even though
 			// there is nothing to record.
-			applySessionResourceSweep(m.session, nil)
+			//
+			// HARD cleanup: this path removes the worktree and deletes the
+			// branch, so the session's volumes go with them.
+			applySessionResourceSweep(m.session, nil, sweepContainersAndVolumes)
 			if releaseErr := d.ReleasePort(m.session); releaseErr != nil {
 				proglog.Errorf("[prism] doCleanup: release port: %v\n", releaseErr)
 			}
@@ -628,10 +631,13 @@ type cleanupResult struct {
 	// run that produces zero matches still emits "containers_swept": 0.
 	ContainersSwept *int `json:"containers_swept,omitempty"`
 	// VolumesSwept reports the number of volumes (matching the
-	// prism-<session>- name prefix) removed by the same sweep. It
-	// follows ContainersSwept's nil-means-omitted contract exactly: the
-	// two fields are written together from one containers_enabled read,
-	// so an envelope either carries both or neither.
+	// prism-<session>- name prefix) removed by the sweep. It follows
+	// ContainersSwept's nil-means-omitted convention, but NOT its
+	// condition: the volume sweep runs on the hard-cleanup paths only.
+	// A soft close preserves the worktree, the branch, and the
+	// transcript, so it must not destroy the session's data volumes
+	// either. On a soft close this field stays nil while
+	// ContainersSwept is set. See sweepScope in cleanup_sweep.go.
 	VolumesSwept *int `json:"volumes_swept,omitempty"`
 }
 
@@ -889,7 +895,10 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		// runtime container has already been torn down — the sweep
 		// only deals with DERIVATIVE containers the agent created
 		// via the proxy.
-		applySessionResourceSweep(session, &result)
+		//
+		// HARD cleanup: this path removes the worktree and deletes
+		// the branch, so the session's volumes go with them.
+		applySessionResourceSweep(session, &result, sweepContainersAndVolumes)
 		// Capture instance_id and isolation_mode before SetEnded clears the
 		// row's lifecycle fields. Done before applyDBLifecycleClears so the
 		// CurrentStatus reads inside instanceIDFromStatus still observe the
@@ -962,22 +971,34 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	return nil
 }
 
-// applySessionResourceSweep runs the orphan-resource sweep (containers
-// and volumes) for session and, when the sweep actually ran
-// (containers_enabled=1), records both counts on result so they surface
-// in the --json envelope. When containers_enabled=0 the fields stay nil
-// and the JSON encoder omits them entirely.
+// applySessionResourceSweep runs the orphan-resource sweep for session
+// and, when the sweep actually ran (containers_enabled=1), records the
+// counts on result so they surface in the --json envelope. When
+// containers_enabled=0 the fields stay nil and the JSON encoder omits
+// them entirely.
+//
+// scope MUST match the caller's teardown contract. Pass
+// sweepContainersAndVolumes from a hard-cleanup path, and
+// sweepContainersOnly from a soft close — a soft close keeps the
+// worktree and the branch, so it must keep the data volumes too. Under
+// sweepContainersOnly, VolumesSwept stays nil and the envelope omits
+// the key, so "this path did not consider volumes" and "this path found
+// no volumes" stay distinguishable.
 //
 // Errors inside the sweep are non-fatal and logged at warning level by
 // the sweep itself. The helper has no error path of its own.
-func applySessionResourceSweep(session string, result *cleanupResult) {
-	counts, ran := sweepSessionResourcesForSession(session)
+func applySessionResourceSweep(session string, result *cleanupResult, scope sweepScope) {
+	counts, ran := sweepSessionResourcesForSession(session, scope)
 	if !ran {
 		return
 	}
-	if result != nil {
-		containers, volumes := counts.containers, counts.volumes
-		result.ContainersSwept = &containers
+	if result == nil {
+		return
+	}
+	containers := counts.containers
+	result.ContainersSwept = &containers
+	if scope.sweepsVolumes() {
+		volumes := counts.volumes
 		result.VolumesSwept = &volumes
 	}
 }
@@ -1013,7 +1034,12 @@ func closeSession(session string) error {
 		// Orphan-resource sweep. closeSession is the interactive @main /
 		// non-worktree path and does not surface a JSON envelope — the helper
 		// records the count into the log only.
-		applySessionResourceSweep(session, nil)
+		//
+		// SOFT close: containers only. This function's own contract is that
+		// the worktree and the branch stay intact so the checkout survives,
+		// so it must not destroy the session's data volumes either. They are
+		// swept later, when this session reaches hard cleanup.
+		applySessionResourceSweep(session, nil, sweepContainersOnly)
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			proglog.Errorf("[prism] closeSession: release port: %v\n", releaseErr)
 		}
@@ -1138,7 +1164,12 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		// placement rationale — the gate is in sweepSessionResourcesForSession,
 		// so calling it on a non-container session (containers_enabled=0) is a
 		// fast DB read with no podman commands issued.
-		applySessionResourceSweep(session, &result)
+		//
+		// SOFT close: containers only. This path keeps the worktree, the
+		// branch, and the transcript so the session can be reopened, so it
+		// must keep the data volumes too. They are swept later, when this
+		// session reaches hard cleanup.
+		applySessionResourceSweep(session, &result, sweepContainersOnly)
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
 		// Apply the lifecycle clears — release harness_port and stamp

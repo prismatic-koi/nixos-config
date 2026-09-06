@@ -114,6 +114,37 @@ type sweepCounts struct {
 	volumes    int
 }
 
+// sweepScope selects which resource classes a cleanup path sweeps. The
+// two values are NOT interchangeable, and the call site must name the
+// one that matches its teardown contract.
+//
+// The distinction is a container is stateless and a volume is not. A
+// soft close preserves the worktree, the branch, and the transcript so
+// the session can be reopened and resumed, so it must not destroy the
+// session's data either. A hard cleanup destroys the worktree and the
+// branch, so the volumes go with them.
+//
+// A soft-closed session still reaches hard cleanup eventually, and the
+// volume sweep runs then. So the cost of the narrow scope is a
+// temporarily leaked volume, not a permanently leaked one. That is the
+// same trade siblingVolumePrefixes already makes: a leaked volume is
+// cheaper than data the operator expected to survive.
+type sweepScope int
+
+const (
+	// sweepContainersOnly is the SOFT-close scope: `prism close`,
+	// coordinator and non-worktree sessions, and `--keep-worktree`.
+	// Sweeps containers, never volumes.
+	sweepContainersOnly sweepScope = iota
+
+	// sweepContainersAndVolumes is the HARD-cleanup scope: the paths
+	// that also remove the worktree and delete the branch.
+	sweepContainersAndVolumes
+)
+
+// sweepsVolumes reports whether this scope includes the volume sweep.
+func (s sweepScope) sweepsVolumes() bool { return s == sweepContainersAndVolumes }
+
 // sweepSessionResourcesForSession runs the container and volume sweeps
 // for sessionName, gated on the session's
 // agent_status.containers_enabled column. Returns:
@@ -128,10 +159,15 @@ type sweepCounts struct {
 // makes "a session that never enabled containers issues no podman
 // command" observable from the outside.
 //
+// scope decides whether the volume sweep runs at all. Under
+// sweepContainersOnly no volume podman command is issued and
+// counts.volumes stays 0, which the caller must render as an ABSENT
+// volumes_swept key rather than a zero one.
+//
 // Errors from podman are NEVER fatal: they're surfaced as warnings
 // via proglog.Warnf and the function returns whatever counts it
 // managed to confirm (0 per failed class).
-func sweepSessionResourcesForSession(sessionName string) (counts sweepCounts, ran bool) {
+func sweepSessionResourcesForSession(sessionName string, scope sweepScope) (counts sweepCounts, ran bool) {
 	d, err := openDB()
 	if err != nil {
 		// DB unavailable. The cleanup caller logs the DB-open error
@@ -151,7 +187,9 @@ func sweepSessionResourcesForSession(sessionName string) (counts sweepCounts, ra
 
 	runner := currentPodmanRunner()
 	counts.containers = sweepWithRunner(runner, sessionName)
-	counts.volumes = sweepVolumesWithRunner(runner, sessionName, siblingVolumePrefixes(d, sessionName))
+	if scope.sweepsVolumes() {
+		counts.volumes = sweepVolumesWithRunner(runner, sessionName, siblingVolumePrefixes(d, sessionName))
+	}
 	return counts, true
 }
 

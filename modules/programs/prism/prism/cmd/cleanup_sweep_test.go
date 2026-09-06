@@ -771,3 +771,158 @@ func TestSiblingVolumePrefixes_NilDBIsSafe(t *testing.T) {
 		t.Errorf("got %v, want nil", got)
 	}
 }
+
+// ── soft close must not destroy data volumes ──────────────────────────────
+
+// A soft close preserves the worktree, the branch, and the transcript so
+// the session can be reopened and resumed. A container is stateless
+// runtime and is swept there (pre-existing, harmless). A VOLUME is not:
+// the volume sweep matches on a plain name prefix precisely so it reaches
+// user-named data volumes, so running it on a soft close destroys data on
+// a path whose whole contract is preservation.
+//
+// These two tests are the guard. They matter more than the fix, because
+// the defect they pin was introduced by replacing four call sites
+// mechanically without asking whether a stateful sweep belongs on a
+// preservative path. Both assert the podman commands issued, not just the
+// envelope, so a future refactor that reintroduces the volume sweep here
+// fails loudly.
+
+// assertNoVolumeCommand fails the test if any recorded podman invocation
+// touched a volume.
+func assertNoVolumeCommand(t *testing.T, calls [][]string) {
+	t.Helper()
+	for _, args := range calls {
+		if len(args) >= 1 && args[0] == "volume" {
+			t.Errorf("DATA-LOSS GUARD: soft close issued a podman volume command: %v", args)
+		}
+	}
+}
+
+// TestSoftClose_HeadlessCloseSession_SweepsNoVolume covers the
+// `prism close` / coordinator / non-worktree / --keep-worktree path
+// (headlessCloseSessionWithJSONTo).
+func TestSoftClose_HeadlessCloseSession_SweepsNoVolume(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	withNoopTmux(t)
+	r := installFakeRunner(t)
+	// Script a container ps hit so the container sweep genuinely runs.
+	// If the volume sweep also ran it would consume the next scripted
+	// response and issue a `volume ls`, which the assertions below catch.
+	r.script(
+		scriptedResponse{stdout: []byte("prism-prism-test-soft-close-aaaaaaaa\n")},
+		scriptedResponse{stdout: []byte("")},
+	)
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	session := "prism-test@soft-close"
+	seedContainerSession(t, dbFile, session, true)
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	out := captureStdoutDuringFn(t, func() {
+		if err := headlessCloseSessionWithJSON(session, true); err != nil {
+			t.Fatalf("headlessCloseSessionWithJSON: %v", err)
+		}
+	})
+
+	calls := r.calls()
+	assertNoVolumeCommand(t, calls)
+
+	// The container sweep still runs on this path.
+	var sawPs bool
+	for _, args := range calls {
+		if len(args) >= 1 && args[0] == "ps" {
+			sawPs = true
+		}
+	}
+	if !sawPs {
+		t.Errorf("expected the container sweep to still run on a soft close; got %v", calls)
+	}
+
+	var env map[string]any
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v\nraw: %q", err, out)
+	}
+	// volumes_swept must be ABSENT, not zero: "this path did not consider
+	// volumes" and "this path found no volumes" must stay distinguishable.
+	if _, present := env["volumes_swept"]; present {
+		t.Errorf("volumes_swept must be omitted on a soft close; envelope=%v", env)
+	}
+	if _, present := env["containers_swept"]; !present {
+		t.Errorf("containers_swept must still be present on a soft close; envelope=%v", env)
+	}
+}
+
+// TestSoftClose_CloseSession_SweepsNoVolume covers the interactive
+// closeSession path, which surfaces no JSON envelope, so the podman
+// invocations are the only observable.
+func TestSoftClose_CloseSession_SweepsNoVolume(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	withNoopTmux(t)
+	r := installFakeRunner(t)
+	r.script(
+		scriptedResponse{stdout: []byte("prism-prism-test-close-session-aaaaaaaa\n")},
+		scriptedResponse{stdout: []byte("")},
+	)
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	session := "prism-test@close-session"
+	seedContainerSession(t, dbFile, session, true)
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	if err := closeSession(session); err != nil {
+		t.Fatalf("closeSession: %v", err)
+	}
+
+	assertNoVolumeCommand(t, r.calls())
+}
+
+// TestHardCleanup_SweepsVolumes is the positive control for the two
+// tests above. Without it, deleting the volume sweep outright would make
+// them pass, so it is what proves they pin a SCOPE rather than an
+// absence.
+func TestHardCleanup_SweepsVolumes(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	withNoopTmux(t)
+	r := installFakeRunner(t)
+	r.script(
+		scriptedResponse{stdout: []byte("")},                          // container ps: nothing
+		scriptedResponse{stdout: []byte("prism-prism-test-hard-x\n")}, // volume ls
+		scriptedResponse{stdout: []byte("")},                          // volume rm
+	)
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	session := "prism-test@hard"
+	seedContainerSession(t, dbFile, session, true)
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	out := captureStdoutDuringFn(t, func() {
+		if err := headlessCleanupWithJSON(session, "hard", "", "", true); err != nil {
+			t.Fatalf("headlessCleanupWithJSON: %v", err)
+		}
+	})
+
+	var sawVolume bool
+	for _, args := range r.calls() {
+		if len(args) >= 1 && args[0] == "volume" {
+			sawVolume = true
+		}
+	}
+	if !sawVolume {
+		t.Fatalf("hard cleanup must sweep volumes; got %v", r.calls())
+	}
+
+	var env map[string]any
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v\nraw: %q", err, out)
+	}
+	if _, present := env["volumes_swept"]; !present {
+		t.Errorf("volumes_swept must be present on a hard cleanup; envelope=%v", env)
+	}
+}

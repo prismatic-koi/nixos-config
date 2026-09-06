@@ -436,16 +436,33 @@ absent one returns 403. Enforce one CPU cap only.
 `agent_status.containers_enabled = 1`. A session that never enabled
 containers issues no podman command at all.
 
-| Class | Match rule | podman command |
-|---|---|---|
-| Containers | Strict shape `prism-<session>-<8 hex chars>` | `podman rm -f`, one batch |
-| Volumes | Name prefix `prism-<session>-` | `podman volume rm`, one batch |
+| Class | Match rule | podman command | Runs on |
+|---|---|---|---|
+| Containers | Strict shape `prism-<session>-<8 hex chars>` | `podman rm -f`, one batch | every teardown path |
+| Volumes | Name prefix `prism-<session>-` | `podman volume rm`, one batch | hard cleanup only |
+
+**The volume sweep runs on the hard-cleanup paths only.** A soft close
+keeps the worktree, the branch, and the transcript, so the session can
+be reopened. It keeps the data volumes for the same reason. The soft
+paths are `prism close`, a coordinator session, a non-worktree session,
+and `--keep-worktree`.
+
+A container is stateless runtime, and it is swept on every path. A
+volume is not. The volume rule is a plain name prefix precisely so it
+reaches user-named data volumes.
+
+A soft-closed session reaches hard cleanup eventually, and the volume
+sweep runs then. So the cost of the narrower scope is a volume that
+leaks for longer, not one that leaks forever. That is the same trade the
+sibling guard makes below.
 
 Images are NOT swept. See §8.3.
 
 The counts appear in the `prism cleanup --json` envelope as
 `containers_swept` and `volumes_swept`. Both keys are absent when the
-session did not enable containers.
+session did not enable containers. `volumes_swept` is also absent on a
+soft close. That keeps "this path did not consider volumes"
+distinguishable from "this path found none".
 
 Two properties of the sweep:
 
