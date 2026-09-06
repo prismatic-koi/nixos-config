@@ -91,6 +91,12 @@ rec {
       # isolated from the user's Chrome.app).
       playwright-cli = final.callPackage ../pkgs/playwright-cli.nix { };
 
+      # flux-local: GitOps validation CLI for Flux, not yet in nixpkgs.
+      # Upstream sunset note: flux-local is being folded into flux2 itself
+      # per allenporter/flux-local upstream deprecation notes; revisit this
+      # derivation if/when that lands and nixpkgs picks it up.
+      flux-local = final.callPackage ../pkgs/flux-local.nix { };
+
       prism = final.callPackage ../pkgs/prism.nix { };
 
       # battery-monitor: Linux-only Go daemon (UPower + sysfs +
