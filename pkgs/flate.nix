@@ -6,8 +6,7 @@
   coreutils,
 }:
 
-# flate v0.6.5 pin: this must move in lockstep with the home-ops CI pin
-# once home-ops migrates its Flux rendering off flux-local onto flate.
+# flate v0.6.5 pin: this must move in lockstep with the home-ops CI pin.
 # Do not put this derivation on any automated update surface (e.g.
 # nix-update / renovate) — the version is intentionally hand-pinned to
 # match home-ops.
@@ -44,9 +43,8 @@ buildGoLatestModule {
   # source tree for os/exec: the only use is an optional `git diff
   # --no-index` fast path in pkg/change/detect.go, which falls back to
   # a pure-Go tree walker when git isn't on PATH. No PATH injection is
-  # needed here (contrast pkgs/flux-local.nix, which does shell out to
-  # helm/kustomize/flux) — makeWrapper is used below only to install the
-  # three guards from issue #2983.
+  # needed here — makeWrapper is used below only to install the three
+  # guards from issue #2983.
 
   nativeBuildInputs = [ makeWrapper ];
 
@@ -83,7 +81,7 @@ buildGoLatestModule {
           if [ -f "$_flate_guard_dir/.git" ]; then
             echo "flate: refusing to run from a linked git worktree ($_flate_guard_dir/.git is a file, not a directory)." >&2
             echo "flate cannot match a linked worktree checkout to its GitRepository object and will hang instead of exiting." >&2
-            echo "Use the home-ops render script, or flux-local, instead. Set FLATE_ALLOW_WORKTREE=1 to bypass this guard." >&2
+            echo "Use the home-ops render script instead, or run flate against a non-worktree checkout. Set FLATE_ALLOW_WORKTREE=1 to bypass this guard." >&2
             exit 1
           fi
           break
