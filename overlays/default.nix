@@ -91,16 +91,8 @@ rec {
       # isolated from the user's Chrome.app).
       playwright-cli = final.callPackage ../pkgs/playwright-cli.nix { };
 
-      # flux-local: GitOps validation CLI for Flux, not yet in nixpkgs.
-      # Upstream sunset note: flux-local is being folded into flux2 itself
-      # per allenporter/flux-local upstream deprecation notes; revisit this
-      # derivation if/when that lands and nixpkgs picks it up.
-      flux-local = final.callPackage ../pkgs/flux-local.nix { };
-
-      # flate: offline Flux GitOps validator/renderer, not yet in nixpkgs.
-      # Sits beside flux-local (issue #2943) — added, not a replacement;
-      # flux-local stays wired into kubetools.nix until home-ops CI
-      # migrates its rendering to flate.
+      # flate: offline Flux GitOps validator/renderer, not yet in nixpkgs
+      # (issue #2990).
       flate = final.callPackage ../pkgs/flate.nix { };
 
       prism = final.callPackage ../pkgs/prism.nix { };
