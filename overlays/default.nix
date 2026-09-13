@@ -26,7 +26,6 @@ rec {
       # packages where we use master by default for bleeding edge
 
       claude-code = masterPkgs.claude-code;
-      discord = masterPkgs.discord;
 
       # bitwarden-cli: pinned to nixpkgs-stable as the most-vetted source.
       # NOTE: pinning alone is no longer sufficient to prevent the `bw unlock
