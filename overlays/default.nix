@@ -23,10 +23,6 @@ rec {
       };
     in
     {
-      # packages where we use master by default for bleeding edge
-
-      claude-code = masterPkgs.claude-code;
-
       # bitwarden-cli: pinned to nixpkgs-stable as the most-vetted source.
       # NOTE: pinning alone is no longer sufficient to prevent the `bw unlock
       # --raw` bogus-session regression (bitwarden/clients#20703, issue #1894).
