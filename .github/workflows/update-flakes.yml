@@ -57,6 +57,17 @@ jobs:
         with:
           swap-storage: false
           tool-cache: true
+      - name: Free disk space (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          echo "Disk space before reclaim:"
+          df -h /
+          sudo rm -rf /Users/runner/Library/Android || true
+          sudo rm -rf /Users/runner/.ghcup || true
+          sudo rm -rf /Users/runner/Library/Developer/CoreSimulator || true
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes || true
+          echo "Disk space after reclaim:"
+          df -h /
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
         with:
