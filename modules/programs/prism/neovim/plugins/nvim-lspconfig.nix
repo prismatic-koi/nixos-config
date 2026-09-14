@@ -3,7 +3,7 @@
   home-manager.users.${config.nx.username} = {
     home.packages = with pkgs; [
       basedpyright
-      dockerfile-language-server-nodejs
+      dockerfile-language-server
       gopls
       helm-ls
       lua-language-server
@@ -36,39 +36,39 @@
             	-- cmd can be a string[] or a function (e.g. vim.lsp.rpc.connect).
             	-- Only check executability when cmd is a table; functions are always
             	-- accepted since we cannot inspect their target executable.
-            	local can_start = cmd ~= nil and (
-            		type(cmd) == 'function' or vim.fn.executable(cmd[1]) == 1
-            	)
+            	local can_start = cmd ~= nil and (type(cmd) == "function" or vim.fn.executable(cmd[1]) == 1)
             	if can_start then
-            		vim.lsp.config[name] = vim.tbl_extend('force', lsp_config or {}, options)
+            		vim.lsp.config[name] = vim.tbl_extend("force", lsp_config or {}, options)
             		vim.lsp.enable(name)
             	end
             end
 
-            add_lsp('cssls')
-            add_lsp('dockerls')
-            add_lsp('eslint')
-            add_lsp('gopls')
-            add_lsp('helm_ls')
-            add_lsp('html')
-            add_lsp('jsonls')
-            add_lsp('lua_ls')
-            add_lsp('nil_ls', {
-            	settings = { ["nil"] = {
-            		formatting = { command = { "nixfmt" } },
-            		nix = {
-            			maxMemoryMB = 8192,
-            			flake = {
-            				autoArchive = true,
-            				autoEvalInputs = true,
+            add_lsp("cssls")
+            add_lsp("dockerls")
+            add_lsp("eslint")
+            add_lsp("gopls")
+            add_lsp("helm_ls")
+            add_lsp("html")
+            add_lsp("jsonls")
+            add_lsp("lua_ls")
+            add_lsp("nil_ls", {
+            	settings = {
+            		["nil"] = {
+            			formatting = { command = { "nixfmt" } },
+            			nix = {
+            				maxMemoryMB = 8192,
+            				flake = {
+            					autoArchive = true,
+            					autoEvalInputs = true,
+            				},
             			},
             		},
-            	} },
+            	},
             })
-            add_lsp('basedpyright')
-            add_lsp('rust_analyzer')
-            add_lsp('ts_ls')
-            add_lsp('yamlls', {
+            add_lsp("basedpyright")
+            add_lsp("rust_analyzer")
+            add_lsp("ts_ls")
+            add_lsp("yamlls", {
             	settings = { ["yamlls"] = {
             		keyOrdering = false,
             	} },
