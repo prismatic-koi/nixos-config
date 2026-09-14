@@ -105,7 +105,6 @@
           with pkgs;
           [
             age
-            cachix
             curl
             dig
             direnv
