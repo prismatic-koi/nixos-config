@@ -15,6 +15,13 @@
         config =
           # lua
           ''
+            -- Neovim has no built-in `.tofu` extension mapping. Without this, `.tofu`
+            -- buffers get no filetype, so the opentofu entry below never matches.
+            vim.filetype.add({
+            	extension = {
+            		tofu = "opentofu",
+            	},
+            })
             require("conform").setup({
             	formatters_by_ft = {
             		lua = { "stylua" },
@@ -22,6 +29,8 @@
             		nix = { "nixfmt", "injected" },
             		json = { "jq" },
             		terraform = { "tofu_fmt" },
+            		-- .tfvars files get the `terraform-vars` filetype, not `terraform`.
+            		["terraform-vars"] = { "tofu_fmt" },
             		opentofu = { "tofu_fmt" },
             	},
             	formatters = {
