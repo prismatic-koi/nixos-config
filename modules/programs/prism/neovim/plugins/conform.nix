@@ -21,10 +21,15 @@
             		python = { "black" },
             		nix = { "nixfmt", "injected" },
             		json = { "jq" },
+            		terraform = { "tofu_fmt" },
+            		opentofu = { "tofu_fmt" },
             	},
             	formatters = {
             		nixfmt = {
             			command = "${pkgs.nixfmt}/bin/nixfmt",
+            		},
+            		tofu_fmt = {
+            			command = "${pkgs.opentofu}/bin/tofu",
             		},
             	},
             	format_on_save = {
