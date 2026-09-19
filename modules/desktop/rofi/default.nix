@@ -29,12 +29,12 @@ with config.theme;
         programs.rofi = {
           enable = true;
           package = pkgs.rofi;
-          font = "Noto Sans 14";
           plugins = with pkgs; [
             rofi-calc
             rofi-emoji
           ];
-          extraConfig = {
+          settings = {
+            font = "Noto Sans 14";
             steal-focus = true;
             show-icons = true;
             icon-theme = "Papirus-Dark";
