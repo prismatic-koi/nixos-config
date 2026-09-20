@@ -13,8 +13,17 @@
 
           vim.api.nvim_create_autocmd("FileType", {
             pattern = { "nix", "markdown" },
-            callback = function()
-              require("otter").activate(nil, true, false)
+            callback = function(args)
+              local buf = args.buf
+              if vim.bo[buf].buftype ~= "" then
+                return
+              end
+              if vim.api.nvim_buf_get_name(buf) == "" then
+                return
+              end
+              pcall(function()
+                require("otter").activate(nil, true, false)
+              end)
             end,
           })
         '';
