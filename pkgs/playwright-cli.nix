@@ -66,10 +66,18 @@ buildNpmPackage rec {
   dontNpmBuild = true;
 
   postFixup = ''
+    # Choose headed vs headless at run time rather than baking in a fixed
+    # default: a prism agent session has no DISPLAY/WAYLAND_DISPLAY, so a
+    # hard-coded "headed" default makes chromium exit 1 with "Missing X
+    # server or $DISPLAY" in every agent session. --set-default only sets
+    # a static value, so this uses --run instead, with an explicit
+    # PLAYWRIGHT_MCP_HEADLESS+x check so a caller-exported value still
+    # wins (matching --set-default semantics for the other variables).
+    headlessGuard='if [ -z "''${PLAYWRIGHT_MCP_HEADLESS+x}" ]; then if [ -n "''${DISPLAY:-}" ] || [ -n "''${WAYLAND_DISPLAY:-}" ]; then export PLAYWRIGHT_MCP_HEADLESS=false; else export PLAYWRIGHT_MCP_HEADLESS=true; fi; fi'
     wrapProgram $out/bin/playwright-cli \
       --set-default PLAYWRIGHT_MCP_EXECUTABLE_PATH ${chromiumExecutablePath} \
       --set-default PLAYWRIGHT_MCP_BROWSER chromium \
-      --set-default PLAYWRIGHT_MCP_HEADLESS false
+      --run "$headlessGuard"
   '';
 
   meta = {
