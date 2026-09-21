@@ -22,7 +22,7 @@ jobs:
             name: m4mac
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: jlumbroso/free-disk-space@v1.3.1
+      - uses: jlumbroso/free-disk-space@v2.0.0
         if: runner.os == 'Linux'
         with:
           swap-storage: false

@@ -52,7 +52,7 @@ jobs:
             os: macos-15
             target: darwinConfigurations.m4mac
     steps:
-      - uses: jlumbroso/free-disk-space@v1.3.1
+      - uses: jlumbroso/free-disk-space@v2.0.0
         if: runner.os == 'Linux'
         with:
           swap-storage: false
