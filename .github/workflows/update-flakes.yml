@@ -56,7 +56,7 @@ jobs:
         if: runner.os == 'Linux'
         with:
           swap-storage: false
-          tool-cache: true
+          preinstalled-runtimes: true
       - name: Free disk space (macOS)
         if: runner.os == 'macOS'
         run: |
