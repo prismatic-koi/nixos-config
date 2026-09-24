@@ -31,7 +31,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 const extensionPath = fileURLToPath(new URL("./index.ts", import.meta.url))
 
-// Once declared by `piModels` in modules/programs/prism/pi.nix; pi 0.87 bundles them.
+// pi.nix declared these models in a models.json until pi bundled them.
 const FORMERLY_DECLARED_MODEL_IDS = ["claude-fable-5-1", "claude-opus-5-5"]
 
 function resolveInstallRoot() {
@@ -152,7 +152,7 @@ async function main() {
     if (entries.length !== 1) {
       throw new Error(
         `expected bundled model ${id} to register exactly once, got ${entries.length} — ` +
-          "if pi dropped it, declare it in a models.json from pi.nix again",
+          "if pi dropped it, a models.json provider entry in pi.nix must list one or more models",
       )
     }
     const [model] = entries

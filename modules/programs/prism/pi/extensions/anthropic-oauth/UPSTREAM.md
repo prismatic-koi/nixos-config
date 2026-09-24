@@ -18,7 +18,7 @@ it is more actively maintained and is the source of the PR #193 fix.
 | Upstream | SHA | Date |
 |---|---|---|
 | `griffinmartin/opencode-claude-auth` main | `88b0f793` | 2026-07-08 (v2.0.0 merge commit for PR #240 — 1M-context opt-in removed, base betas regenerated) |
-| `griffinmartin/opencode-claude-auth` — `model-config.ts` + `betas.ts` ONLY | `09a13b4c` | 2026-09-01 (v2.2.0, PR #279 — Claude CLI 2.1.280 model config) |
+| `griffinmartin/opencode-claude-auth` — `model-config.ts` + `betas.ts` ONLY | `09a13b4c` | 2026-09-01 (v2.2.0, PR #279 — Claude CLI 2.1.257 model config) |
 | `griffinmartin/opencode-claude-auth` PR #193 | `9420fbef60567968bcd21a260db21be9f7dd475b` | 2026-04-14 (the MD5 hash obfuscation approach) |
 | `leohenon/pi-anthropic-oauth` | `86d9d97829776a66aec58e3433900173ff7e184a` | 2026-04 (update readme) |
 
@@ -376,7 +376,7 @@ request — both are declared only, because the token endpoint rejects a
 
 15. **v2.2.0 model-config port (issue #2918) — ported, `model-config.ts` and
     `betas.ts` only**. griffinmartin PR #279 (released as v2.2.0, commit
-    `09a13b4c`) regenerated the model config from Claude CLI 2.1.280
+    `09a13b4c`) regenerated the model config from Claude CLI 2.1.257
     intercept traffic. The bump is not cosmetic: the Anthropic API rejects
     `claude-fable-5-1` on subscription (OAuth) auth below Claude Code
     2.1.251 with HTTP 400 `claude_code_version_too_old`, so this port is
@@ -384,7 +384,7 @@ request — both are declared only, because the token endpoint rejects a
 
     Ported here in-place:
 
-    - `model-config.ts`: `ccVersion` `2.1.185` → `2.1.280`. `baseBetas`
+    - `model-config.ts`: `ccVersion` `2.1.185` → `2.1.257`. `baseBetas`
       regenerated to eight entries — `effort-2025-11-24` left the base list,
       and the deliberate duplicate `interleaved-thinking-2025-05-14` that
       v2.0.0 carried is gone. `modelOverrides` gained `opus-4-5`, `4-6`, and
@@ -526,6 +526,17 @@ request — both are declared only, because the token endpoint rejects a
 
     Tests: `request-body.test.ts` (`flattenTranscriptContext`). NOT
     mirrored in `internal/usage/refresh.go`, which sends no tools.
+
+18. **Local `ccVersion` bump to `2.1.280` (PR #3015)** — pi-only, not an
+    upstream port. `model-config.ts` and `internal/usage/refresh.go` pin
+    `ccVersion` at `2.1.280`. `baseBetas` and `modelOverrides` still come
+    from the Claude CLI 2.1.257 traffic that divergence #15 ported; PR
+    #3015 did not capture new 2.1.280 traffic for either list. The PR
+    #3015 description does not give a reason for the bump. The maintainer
+    gave the reason later: the Anthropic API did not support
+    `claude-opus-5-5` for Claude Code versions below 2.1.280, so pi
+    requests to that model failed. No exact minimum version and no HTTP
+    error code were captured.
 
 ## Port procedure for future upstream fixes
 
