@@ -152,7 +152,7 @@ async function main() {
     if (entries.length !== 1) {
       throw new Error(
         `expected bundled model ${id} to register exactly once, got ${entries.length} — ` +
-          "if pi dropped it, restore its piModels entry in pi.nix",
+          "if pi dropped it, declare it in a models.json from pi.nix again",
       )
     }
     const [model] = entries

@@ -340,8 +340,8 @@ describe("getModelBetas — interleaved-thinking suppression for adaptive models
   })
 
   it("suppresses interleaved-thinking-2025-05-14 for claude-fable-5-1 (adaptive)", () => {
-    // Fable 5.1 is declared with compat.forceAdaptiveThinking in the
-    // nix-managed ~/.pi/agent/models.json, so it takes the same path as the
+    // Fable 5.1 carries compat.forceAdaptiveThinking in pi's bundled
+    // catalogue, so it takes the same path as the
     // opus adaptive models. The suppression is keyed off the compat flag at
     // call time, not a substring, so a new model needs no model-config edit.
     const betas = getModelBetas("claude-fable-5-1", undefined, {

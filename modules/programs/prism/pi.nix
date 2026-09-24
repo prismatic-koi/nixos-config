@@ -421,10 +421,6 @@
             "${grafanaExtensionDir}/grafana/index.ts";
       };
 
-      piModels = {
-        providers.anthropic.models = [ ];
-      };
-
       colourLib = import ../../colour-scheme/lib.nix;
 
       piTheme =
@@ -535,7 +531,6 @@
         xdg.configFile."prism/skills".source = skillsDir;
 
         home.file.".pi/agent/settings.json".text = builtins.toJSON piSettings;
-        home.file.".pi/agent/models.json".text = builtins.toJSON piModels;
         # Keybindings rebinding: app.message.followUp from alt+enter to ctrl+enter.
         # Alt+Enter is bound to something else at the OS level and never
         # reaches pi. Ctrl+Enter is available and works under tmux with extended
