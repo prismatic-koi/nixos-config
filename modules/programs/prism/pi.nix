@@ -421,85 +421,8 @@
             "${grafanaExtensionDir}/grafana/index.ts";
       };
 
-      # Model layer pi reads from ~/.pi/agent/models.json. pi 0.84.4 does not
-      # bundle claude-fable-5-1, and the anthropic-oauth extension refreshes
-      # the registry with no network, so the bundled catalogue cannot supply
-      # the model. `pi update models` can, into models-store.json, but that is
-      # host-local cache state a reset clears. This file is the durable
-      # declaration. Values from models.dev.
       piModels = {
-        providers.anthropic.models = [
-          {
-            # pi 0.85.1's bundled anthropic catalogue tops out at
-            # claude-opus-5; claude-opus-5-5 is not yet in it, so it needs the
-            # same hand-rolled declaration as claude-fable-5-1 below.
-            id = "claude-opus-5-5";
-            name = "Claude Opus 5.5";
-            api = "anthropic-messages";
-            baseUrl = "https://api.anthropic.com";
-            reasoning = true;
-            thinkingLevelMap = {
-              off = null;
-              xhigh = "xhigh";
-              max = "max";
-            };
-            input = [
-              "text"
-              "image"
-            ];
-            cost = {
-              input = 4;
-              output = 20;
-              cacheRead = 0.2;
-              cacheWrite = 5;
-            };
-            contextWindow = 1000000;
-            maxTokens = 128000;
-            compat = {
-              supportsMidConvoEffort = true;
-              forceAdaptiveThinking = true;
-              supportsTemperature = false;
-              supportsStrictTools = true;
-            };
-          }
-          {
-            id = "claude-fable-5-1";
-            name = "Claude Fable 5.1";
-            # Both look redundant against the built-in anthropic models, but
-            # pi only inherits them from that list and throws when it is empty.
-            api = "anthropic-messages";
-            baseUrl = "https://api.anthropic.com";
-            reasoning = true;
-            # Without this, xhigh degrades to effort "high" and fable-max runs
-            # weaker than it reads (#2053).
-            thinkingLevelMap = {
-              off = null;
-              xhigh = "xhigh";
-              max = "max";
-            };
-            input = [
-              "text"
-              "image"
-            ];
-            cost = {
-              input = 10;
-              output = 50;
-              cacheRead = 0.25;
-              cacheWrite = 12.5;
-            };
-            contextWindow = 1000000;
-            maxTokens = 128000;
-            compat = {
-              # Selects the adaptive thinking request body and suppresses the
-              # interleaved-thinking beta (UPSTREAM.md #9 / #10).
-              forceAdaptiveThinking = true;
-              supportsStrictTools = true;
-            };
-            # Set no `headers` here: models.json headers are additive to the
-            # ones buildOAuthHeaders builds, and can collide with the auth
-            # header.
-          }
-        ];
+        providers.anthropic.models = [ ];
       };
 
       colourLib = import ../../colour-scheme/lib.nix;

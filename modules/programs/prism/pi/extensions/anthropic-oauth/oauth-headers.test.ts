@@ -26,7 +26,7 @@ describe("getUserAgent", () => {
       // Pinned literal, not just the interpolation: the Anthropic API
       // returns HTTP 400 `claude_code_version_too_old` for Fable 5.1 on
       // subscription auth below 2.1.251 (issue #2918).
-      assert.equal(ua, "claude-cli/2.1.257 (external, sdk-cli)")
+      assert.equal(ua, "claude-cli/2.1.280 (external, sdk-cli)")
       assert.ok(ua.includes("sdk-cli"))
       assert.ok(!ua.includes("(external, cli)"))
     } finally {

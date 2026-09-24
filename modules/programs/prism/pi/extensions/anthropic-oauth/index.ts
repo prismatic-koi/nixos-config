@@ -29,7 +29,7 @@ import { transformBody, transformResponseStream } from "./transforms.ts"
 import { streamSimpleAnthropic } from "@earendil-works/pi-ai"
 import { config } from "./model-config.ts"
 import { fromClaudeCodeToolName, parseSSEStream } from "./stream.ts"
-import { buildRequestBody } from "./request-body.ts"
+import { buildRequestBody, flattenTranscriptContext } from "./request-body.ts"
 import { buildOAuthHeaders, buildRequestUrl } from "./oauth-headers.ts"
 import { captureRateLimitSnapshot } from "./ratelimit.ts"
 
@@ -135,13 +135,13 @@ export default async function (pi: ExtensionAPI) {
     //   - Response stream deobfuscation (stripToolPrefix via transformResponseStream)
     //   - Automatic token refresh on 401
     //   - Manual SSE parsing (zero npm deps — no @anthropic-ai/sdk)
-    streamSimple: (model, context, options) => {
+    streamSimple: (model, transcriptContext, options) => {
       // Only intercept requests for the anthropic provider (Claude OAuth subscriptions).
       // For all other providers (github-copilot, openrouter, etc.) that also use the
       // anthropic-messages API type, delegate to pi's built-in handler which has
       // provider-specific logic (e.g. Copilot dynamic headers).
       if (model.provider !== "anthropic") {
-        return streamSimpleAnthropic(model, context, options)
+        return streamSimpleAnthropic(model, transcriptContext, options)
       }
 
       const { createAssistantMessageEventStream, calculateCost } =
@@ -177,6 +177,9 @@ export default async function (pi: ExtensionAPI) {
             return headers
           }
 
+          // pi 0.87+ carries the prompt and tools in system messages; see
+          // flattenTranscriptContext.
+          const context = flattenTranscriptContext(transcriptContext)
           const body = buildRequestBody(model, context, options, isOAuth)
           // NOTE: temperature is intentionally not set anywhere in body —
           // Anthropic rejects extended-thinking requests that also pass

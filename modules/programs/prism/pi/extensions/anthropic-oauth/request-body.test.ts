@@ -12,6 +12,7 @@ import assert from "node:assert/strict"
 import type { Context, Model } from "@earendil-works/pi-ai"
 import {
   buildRequestBody,
+  flattenTranscriptContext,
   mapThinkingLevelToEffort,
 } from "./request-body.ts"
 import { getModelBetas } from "./betas.ts"
@@ -424,5 +425,80 @@ describe("getModelBetas — interleaved-thinking suppression for adaptive models
       if (saved === undefined) delete process.env.ANTHROPIC_BETA_FLAGS
       else process.env.ANTHROPIC_BETA_FLAGS = saved
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// flattenTranscriptContext — pi 0.87 moved the prompt and tools into
+// role:"system" messages. Without flattening, requests went out tool-less.
+// ---------------------------------------------------------------------------
+
+describe("flattenTranscriptContext", () => {
+  const tool = (name: string) =>
+    ({ name, description: name, parameters: { type: "object" } }) as never
+
+  it("lifts the system prompt, sections and tools out of system messages", () => {
+    const flat = flattenTranscriptContext({
+      messages: [
+        {
+          role: "system",
+          content: "base",
+          sections: { tools: "<tools/>", gone: "x" },
+          toolsAdded: [tool("bash"), tool("read")],
+          timestamp: 0,
+        },
+        { role: "user", content: "hi", timestamp: 1 },
+        {
+          role: "system",
+          content: [{ type: "text", text: "later" }],
+          sections: { gone: null },
+          toolsRemoved: [{ name: "read" }],
+          toolsAdded: [tool("edit")],
+          timestamp: 2,
+        },
+      ],
+    } as unknown as Context)
+
+    assert.equal(flat.systemPrompt, "base\n\nlater\n\n<tools/>")
+    assert.deepEqual(
+      flat.tools?.map((t) => t.name),
+      ["bash", "edit"],
+    )
+    assert.deepEqual(
+      flat.messages.map((m) => m.role),
+      ["user"],
+    )
+  })
+
+  it("passes a legacy context through unchanged", () => {
+    const flat = flattenTranscriptContext({
+      systemPrompt: "legacy",
+      tools: [tool("bash")],
+      messages: [{ role: "user", content: "hi", timestamp: 1 }],
+    } as unknown as Context)
+    assert.equal(flat.systemPrompt, "legacy")
+    assert.deepEqual(flat.tools?.map((t) => t.name), ["bash"])
+    assert.equal(flat.messages.length, 1)
+  })
+
+  it("puts the tools on the request body", () => {
+    const body = buildRequestBody(
+      makeAdaptiveModel(),
+      flattenTranscriptContext({
+        messages: [
+          {
+            role: "system",
+            content: "p",
+            toolsAdded: [tool("bash")],
+            timestamp: 0,
+          },
+          { role: "user", content: "hi", timestamp: 1 },
+        ],
+      } as unknown as Context),
+      undefined,
+      false,
+    )
+    assert.equal((body.tools as unknown[]).length, 1)
+    assert.equal((body.messages as unknown[]).length, 1)
   })
 })
