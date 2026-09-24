@@ -54,7 +54,7 @@ describe("isLongContextError", () => {
 })
 
 // ---------------------------------------------------------------------------
-// model-config — griffinmartin v2.2.0 port, Claude CLI 2.1.257 (issue #2918).
+// model-config — griffinmartin v2.2.0 port, Claude CLI 2.1.280 (issue #2918).
 //
 // The Anthropic API rejects Fable 5.1 on subscription auth below Claude Code
 // 2.1.251 with HTTP 400 `claude_code_version_too_old`, so `ccVersion` is
@@ -63,8 +63,8 @@ describe("isLongContextError", () => {
 // on this machine, so pin the exact shape rather than a substring of it.
 // ---------------------------------------------------------------------------
 describe("model-config — Claude CLI 2.1.257 (griffinmartin v2.2.0)", () => {
-  it("pins ccVersion at 2.1.257", () => {
-    assert.equal(config.ccVersion, "2.1.257")
+  it("pins ccVersion at 2.1.280", () => {
+    assert.equal(config.ccVersion, "2.1.280")
   })
 
   it("declares baseBetas exactly as upstream: eight entries, no duplicate, no effort", () => {
@@ -108,7 +108,7 @@ describe("model-config — Claude CLI 2.1.257 (griffinmartin v2.2.0)", () => {
     }
   })
 
-  it("sends the effort beta only for the models 2.1.257 sends it for", () => {
+  it("sends the effort beta only for the models 2.1.280 sends it for", () => {
     // Upstream's "effort beta" test, mirrored. effort-2025-11-24 left
     // baseBetas in v2.2.0, so it now rides on per-model adds only.
     for (const model of [

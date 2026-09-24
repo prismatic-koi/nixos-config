@@ -96,7 +96,7 @@ const (
 
 	// ccVersion mirrors model-config.ts::config.ccVersion. It appears in the
 	// user-agent, which the WAF inspects. Bump it when model-config.ts bumps.
-	ccVersion = "2.1.257"
+	ccVersion = "2.1.280"
 
 	// stainlessPackageVersion mirrors oauth-headers.ts::getStainlessHeaders'
 	// `x-stainless-package-version`.
