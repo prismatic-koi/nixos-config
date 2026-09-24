@@ -508,6 +508,25 @@ request — both are declared only, because the token endpoint rejects a
     `internal/usage/refresh.go`: that path only ever requests a haiku, which
     is neither adaptive nor effort-bearing.
 
+17. **Transcript-shaped context is flattened before the request is built**
+    — pi-only. From pi 0.87, `streamSimple` receives a `TranscriptContext`:
+    the system prompt and tool declarations travel as `role: "system"`
+    messages (`content`, `sections`, `toolsAdded`, `toolsRemoved`), and
+    `context.systemPrompt` / `context.tools` are unset. `index.ts` runs
+    `flattenTranscriptContext` (in `request-body.ts`) first, which replays
+    those messages the way pi-ai's `getCurrentSystemMessage` does and hands
+    the legacy shape to `buildRequestBody` and `parseSSEStream`.
+
+    **The failure this prevents.** Without it every request went out with
+    no `tools` and only the Claude Code identity block as the system
+    prompt, so sessions answered "I don't have tool access" and never
+    called a tool. Mid-conversation system messages are collapsed into the
+    top-level system prompt, not sent in place — the same thing pi-ai does
+    for models without `supportsMidConvoSystemMessages`.
+
+    Tests: `request-body.test.ts` (`flattenTranscriptContext`). NOT
+    mirrored in `internal/usage/refresh.go`, which sends no tools.
+
 ## Port procedure for future upstream fixes
 
 When griffinmartin ships a fix you want to port:

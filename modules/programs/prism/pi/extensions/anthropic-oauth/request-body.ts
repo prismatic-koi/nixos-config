@@ -12,14 +12,77 @@ import type {
   AnthropicEffort,
   Context,
   Model,
+  Message,
   SimpleStreamOptions,
+  SystemMessage,
+  TextContent,
   ThinkingLevel,
+  Tool,
 } from "@earendil-works/pi-ai"
 import {
   buildAnthropicSystemPrompt,
   convertPiMessagesToAnthropic,
   convertPiToolsToAnthropic,
 } from "./stream.ts"
+
+/**
+ * Fold pi-ai's transcript-shaped context back into the legacy
+ * `{systemPrompt, tools, messages}` shape the rest of this extension reads.
+ *
+ * From pi 0.87, providers receive a `TranscriptContext`: the system prompt
+ * and tool declarations travel as `role: "system"` messages (`content`,
+ * `sections`, `toolsAdded`, `toolsRemoved`) instead of `context.systemPrompt`
+ * and `context.tools`. Reading only the legacy fields sent every request with
+ * no tools and no pi system prompt, so the model claimed it had no tools.
+ *
+ * Replays every system message the way pi-ai's `getCurrentSystemMessage` +
+ * `getSystemMessageText` do (utils/transcript.ts, utils/text.ts), inlined so
+ * this file keeps only type imports from pi-ai for `tsx --test`. Legacy
+ * fields, when a caller still sets them, seed the replay as pi-ai's
+ * `normalizeContext` would.
+ */
+export function flattenTranscriptContext(context: Context): Context {
+  const contentText = (content: string | TextContent[]): string =>
+    typeof content === "string"
+      ? content
+      : content
+          .filter((block) => block.type === "text")
+          .map((block) => block.text)
+          .join("\n")
+
+  const content: string[] = []
+  if (context.systemPrompt) content.push(context.systemPrompt)
+  const sections = new Map<string, string>()
+  const tools = new Map<string, Tool>()
+  for (const tool of context.tools ?? []) tools.set(tool.name, tool)
+
+  const messages: Message[] = []
+  for (const message of context.messages) {
+    if ((message as { role: string }).role !== "system") {
+      messages.push(message)
+      continue
+    }
+    const system = message as unknown as SystemMessage
+    const text = contentText(system.content)
+    if (text.length > 0) content.push(text)
+    for (const [name, value] of Object.entries(system.sections ?? {})) {
+      if (value === null) sections.delete(name)
+      else sections.set(name, value)
+    }
+    for (const tool of system.toolsRemoved ?? []) tools.delete(tool.name)
+    for (const tool of system.toolsAdded ?? []) tools.set(tool.name, tool)
+  }
+
+  const systemPrompt = [content.join("\n\n"), ...sections.values()]
+    .filter((part) => part.length > 0)
+    .join("\n\n")
+
+  return {
+    ...(systemPrompt ? { systemPrompt } : {}),
+    messages,
+    ...(tools.size > 0 ? { tools: [...tools.values()] } : {}),
+  }
+}
 
 /**
  * Map a pi reasoning level to an Anthropic effort string for the adaptive
