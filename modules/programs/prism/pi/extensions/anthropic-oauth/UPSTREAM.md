@@ -532,8 +532,11 @@ request — both are declared only, because the token endpoint rejects a
     `ccVersion` at `2.1.280`. `baseBetas` and `modelOverrides` still come
     from the Claude CLI 2.1.257 traffic that divergence #15 ported; PR
     #3015 did not capture new 2.1.280 traffic for either list. The PR
-    #3015 description does not give a reason for the bump. The reason is
-    not recorded.
+    #3015 description does not give a reason for the bump. The maintainer
+    gave the reason later: the Anthropic API did not support
+    `claude-opus-5-5` for Claude Code versions below 2.1.280, so pi
+    requests to that model failed. No exact minimum version and no HTTP
+    error code were captured.
 
 ## Port procedure for future upstream fixes
 
