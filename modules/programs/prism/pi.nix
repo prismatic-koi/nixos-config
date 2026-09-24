@@ -428,45 +428,7 @@
       # host-local cache state a reset clears. This file is the durable
       # declaration. Values from models.dev.
       piModels = {
-        providers.anthropic.models = [
-          {
-            id = "claude-fable-5-1";
-            name = "Claude Fable 5.1";
-            # Both look redundant against the built-in anthropic models, but
-            # pi only inherits them from that list and throws when it is empty.
-            api = "anthropic-messages";
-            baseUrl = "https://api.anthropic.com";
-            reasoning = true;
-            # Without this, xhigh degrades to effort "high" and fable-max runs
-            # weaker than it reads (#2053).
-            thinkingLevelMap = {
-              off = null;
-              xhigh = "xhigh";
-              max = "max";
-            };
-            input = [
-              "text"
-              "image"
-            ];
-            cost = {
-              input = 10;
-              output = 50;
-              cacheRead = 0.25;
-              cacheWrite = 12.5;
-            };
-            contextWindow = 1000000;
-            maxTokens = 128000;
-            compat = {
-              # Selects the adaptive thinking request body and suppresses the
-              # interleaved-thinking beta (UPSTREAM.md #9 / #10).
-              forceAdaptiveThinking = true;
-              supportsStrictTools = true;
-            };
-            # Set no `headers` here: models.json headers are additive to the
-            # ones buildOAuthHeaders builds, and can collide with the auth
-            # header.
-          }
-        ];
+        providers.anthropic.models = [ ];
       };
 
       colourLib = import ../../colour-scheme/lib.nix;
