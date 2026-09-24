@@ -430,39 +430,6 @@
       piModels = {
         providers.anthropic.models = [
           {
-            # pi 0.85.1's bundled anthropic catalogue tops out at
-            # claude-opus-5; claude-opus-5-5 is not yet in it, so it needs the
-            # same hand-rolled declaration as claude-fable-5-1 below.
-            id = "claude-opus-5-5";
-            name = "Claude Opus 5.5";
-            api = "anthropic-messages";
-            baseUrl = "https://api.anthropic.com";
-            reasoning = true;
-            thinkingLevelMap = {
-              off = null;
-              xhigh = "xhigh";
-              max = "max";
-            };
-            input = [
-              "text"
-              "image"
-            ];
-            cost = {
-              input = 4;
-              output = 20;
-              cacheRead = 0.2;
-              cacheWrite = 5;
-            };
-            contextWindow = 1000000;
-            maxTokens = 128000;
-            compat = {
-              supportsMidConvoEffort = true;
-              forceAdaptiveThinking = true;
-              supportsTemperature = false;
-              supportsStrictTools = true;
-            };
-          }
-          {
             id = "claude-fable-5-1";
             name = "Claude Fable 5.1";
             # Both look redundant against the built-in anthropic models, but
