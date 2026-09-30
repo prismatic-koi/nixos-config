@@ -394,6 +394,10 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 		*pendingStagger = false
 	}
 
+	if instanceID := startRestoredIncarnation(d, s, opts.Agent); instanceID != "" {
+		opts.InstanceID = instanceID
+	}
+
 	if err := session.Create(s.SessionName, directory, opts); err != nil {
 		return restoreOutcomeSkipped, fmt.Errorf("create session: %w", err)
 	}
@@ -402,4 +406,67 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 
 	fmt.Printf("session %q restored\n", s.SessionName)
 	return restoreOutcomeCreated, nil
+}
+
+// startRestoredIncarnation starts a new incarnation for a session that
+// restore recreates, and returns its instance ID. It returns "" when it
+// cannot record the new instance ID in agent_status.
+//
+// restore runs only when the tmux session is gone, so the incarnation that
+// agent_status names is over. kill-server and a reboot do not fire the
+// session-closed hook that ends it, and restore skips the tmux-session-start
+// seed that mints a new one. The old sidecar also stamps ended_at on its
+// instance when restore stops it. If restore keeps the old instance ID, the
+// restored sidecar writes every event with the instance ID of an ended
+// session (#3027).
+func startRestoredIncarnation(d *db.DB, s db.Status, agentRole string) string {
+	instanceID := uuid.New().String()
+	if err := d.SetInstanceID(s.SessionName, instanceID); err != nil {
+		fmt.Fprintf(os.Stderr, "restore %q: set instance_id: %v\n", s.SessionName, err)
+		return ""
+	}
+
+	var prev *db.Session
+	if s.InstanceID != nil && *s.InstanceID != "" {
+		p, err := d.SessionByInstanceID(*s.InstanceID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "restore %q: read previous incarnation: %v\n", s.SessionName, err)
+		}
+		prev = p
+		// No other path ends a sessions row that agent_status no longer
+		// names. If restore does not end it here, it stays open forever.
+		if prev != nil && prev.EndedAt == nil {
+			if err := d.UpdateSessionEnded(*s.InstanceID, "finished"); err != nil {
+				fmt.Fprintf(os.Stderr, "restore %q: end previous incarnation: %v\n", s.SessionName, err)
+			}
+		}
+	}
+
+	row := db.Session{
+		InstanceID:       instanceID,
+		SessionName:      s.SessionName,
+		RootAgentName:    s.RootAgentName,
+		Repo:             s.Repo,
+		Worktree:         s.Worktree,
+		HarnessSessionID: s.HarnessSessionID,
+		GroupID:          s.GroupID,
+	}
+	if s.Harness != nil {
+		row.Harness = *s.Harness
+	}
+	if agentRole != "" {
+		row.AgentRole = &agentRole
+	}
+	if prev != nil {
+		row.ParentSession = prev.ParentSession
+		if row.AgentRole == nil {
+			row.AgentRole = prev.AgentRole
+		}
+	}
+	// The sidecar inserts a row with fewer columns when none exists, so
+	// insert the full row before the sidecar starts.
+	if err := d.InsertSession(row); err != nil {
+		fmt.Fprintf(os.Stderr, "restore %q: insert session: %v\n", s.SessionName, err)
+	}
+	return instanceID
 }

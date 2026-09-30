@@ -82,12 +82,14 @@ const (
 	//
 	// The join is safe against the 90-day prune. sessions and agent_events
 	// are pruned inside the SAME Prune() transaction (internal/db/
-	// maintenance.go), sessions on ended_at and agent_events on created_at,
-	// and an event's created_at always precedes its session's ended_at. So
-	// whenever a sessions row is old enough to be pruned, every agent_events
-	// row for that instance_id is at least as old and is pruned in the same
-	// transaction: an agent_events row can never be tailed after its
-	// session row is gone. agent_status rows are pruned only once their own
+	// maintenance.go), sessions on ended_at and agent_events on created_at.
+	// An event's created_at normally precedes its session's ended_at, so
+	// every agent_events row of a pruned session is pruned in the same
+	// transaction. An event can outlive its session when a sidecar writes
+	// with the instance ID of an ended session (#3027). Prune keeps such a
+	// row but sets its instance_id to NULL in the same transaction, so the
+	// LEFT JOINs give NULL labels for it and never read a dangling
+	// reference. agent_status rows are pruned only once their own
 	// ended_at is old AND no live sessions row shares the instance_id — a
 	// strictly later condition than the sessions prune — so the same
 	// argument covers it. spawn_inputs is declared
@@ -95,9 +97,7 @@ const (
 	// db.go) and is deleted, if at all, by the very same
 	// `DELETE FROM sessions ...` statement in the same Prune() transaction
 	// — there is no separate spawn_inputs DELETE and no separate condition
-	// to check, so the sessions argument above applies to it unchanged: a
-	// spawn_inputs row cannot vanish while its agent_events row is still
-	// ahead of the cursor.
+	// to check, so the sessions argument above applies to it unchanged.
 	//
 	// None of the projected columns appear in the SQL boundary's forbidden
 	// list: repo, type are on agent_events; agent_role, end_state are on
