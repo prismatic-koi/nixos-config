@@ -369,22 +369,18 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 				fmt.Fprintf(os.Stderr, "restore %q: write event: %v\n", s.SessionName, err)
 			}
 		}
-
-		// Allocate a port unconditionally (regardless of whether
-		// RefreshWorktree succeeded). AllocatePort only needs the
-		// agent_status row to exist, which it does since we are restoring
-		// a previously-known session.
-		port, err := d.AllocatePort(s.SessionName)
-		if err != nil {
-			// Non-fatal: log and continue without a port.
-			fmt.Fprintf(os.Stderr, "restore %q: port allocation: %v\n", s.SessionName, err)
-		} else {
-			opts.Port = port
-		}
 	}
-	// When s.Repo == "", RefreshWorktree and AllocatePort are skipped. The
-	// session is still created with the full layout; it just won't have an
-	// agent serve port allocated.
+
+	// Allocate a port for every session, including root sessions with an
+	// empty repo (e.g. "obsidian"): setupFullLayout skips the sidecar when
+	// opts.Port is 0. AllocatePort only needs the agent_status row to exist;
+	// a missing row or allocation error is logged and the restore continues.
+	port, err := d.AllocatePort(s.SessionName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "restore %q: port allocation: %v\n", s.SessionName, err)
+	} else {
+		opts.Port = port
+	}
 
 	// Apply stagger delay: if a previous session was just created, sleep
 	// before starting this one. *pendingStagger is set by the Restore() loop
