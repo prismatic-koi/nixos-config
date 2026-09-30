@@ -23,6 +23,8 @@ rec {
       };
     in
     {
+      # bleeding edge
+      pi-coding-agent = masterPkgs.pi-coding-agent;
       # bitwarden-cli: pinned to nixpkgs-stable as the most-vetted source.
       # NOTE: pinning alone is no longer sufficient to prevent the `bw unlock
       # --raw` bogus-session regression (bitwarden/clients#20703, issue #1894).
