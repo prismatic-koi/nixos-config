@@ -18,7 +18,7 @@ let
 in
 {
   home-manager.users.${config.nx.username}.programs.neovim.plugins =
-    lib.mkIf (config.theme.name == "everforest")
+    lib.mkIf (config.theme.name == "everforest" || config.theme.name == "everforest-light")
       [
         {
           plugin = everforest-nvim;
@@ -26,6 +26,7 @@ in
           config =
             # lua
             ''
+              vim.o.background = "${if config.theme.type == "light" then "light" else "dark"}"
               local everforest = require("everforest")
               everforest.setup({
               	on_highlights = function(hl, palette)
