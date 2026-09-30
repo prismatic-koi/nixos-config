@@ -24,6 +24,15 @@
           			auto_brackets = { enabled = false },
           		},
           	},
+          	fuzzy = {
+          		max_typos = function(keyword)
+          			local ft = vim.bo.filetype
+          			if ft == "markdown" or ft == "text" or ft == "gitcommit" then
+          				return 0
+          			end
+          			return math.floor(#keyword / 4)
+          		end,
+          	},
           	snippets = { preset = "luasnip" },
           	sources = {
           		default = { "lsp", "snippets", "buffer", "path" },
