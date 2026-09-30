@@ -54,6 +54,11 @@ let
       # for zen-mode.nvim
       listen_on unix:/tmp/kitty
       allow_remote_control socket-only
+
+      # kitty >= 0.49.0 also restores the maximized state with the window
+      # size. Hyprland then maximizes each new window instead of tiling it.
+      # Hyprland sets the window size, so do not remember it.
+      remember_window_size no
     ''}
 
 

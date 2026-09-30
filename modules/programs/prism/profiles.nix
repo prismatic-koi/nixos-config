@@ -130,18 +130,18 @@
               {
                 coordinator = slot "coordinator" {
                   provider = "anthropic";
-                  model = "anthropic/claude-sonnet-5";
+                  model = "anthropic/claude-sonnet-5-5";
                   thinking = "low";
                 };
               }
               // reviewSlots {
                 provider = "anthropic";
-                model = "anthropic/claude-sonnet-5";
+                model = "anthropic/claude-sonnet-5-5";
                 thinking = "off";
               }
               // analyticalSlots {
                 provider = "anthropic";
-                model = "anthropic/claude-sonnet-5";
+                model = "anthropic/claude-sonnet-5-5";
                 thinking = "low";
               }
             );
@@ -156,12 +156,12 @@
               }
               // reviewSlots {
                 provider = "anthropic";
-                model = "anthropic/claude-sonnet-5";
+                model = "anthropic/claude-sonnet-5-5";
                 thinking = "low";
               }
               // analyticalSlots {
                 provider = "anthropic";
-                model = "anthropic/claude-sonnet-5";
+                model = "anthropic/claude-sonnet-5-5";
                 thinking = "low";
               }
             );
@@ -222,7 +222,7 @@
             pr = {
               # prism quick pr invokes `pi --print` (anthropic-oauth route).
               # See modules/programs/prism/prism/internal/quick/pr.go (#2118).
-              model = "anthropic/claude-sonnet-5";
+              model = "anthropic/claude-sonnet-5-5";
             };
           };
 

@@ -1,4 +1,37 @@
-{ config, pkgs, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
+let
+  theme = config.theme;
+  isEverforest = theme.name == "everforest-dark" || theme.name == "everforest-light";
+  # Explicit theme: "auto" resolves before the colour scheme loads and
+  # falls back to the dark default highlights.
+  everforestTheme =
+    # lua
+    ''
+      (function()
+      	local fg, bg = "${theme.neutrals.foreground}", "${theme.neutrals.background_1}"
+      	local function mode(accent)
+      		return {
+      			a = { fg = bg, bg = accent, gui = "bold" },
+      			b = { fg = fg, bg = bg },
+      			c = { fg = fg, bg = bg },
+      		}
+      	end
+      	return {
+      		normal = mode("${theme.roles.primary}"),
+      		insert = mode("${theme.hues.blue}"),
+      		visual = mode("${theme.hues.red}"),
+      		replace = mode("${theme.hues.yellow}"),
+      		command = mode("${theme.hues.green}"),
+      		inactive = mode("${theme.neutrals.foreground}"),
+      	}
+      end)()
+    '';
+in
 {
   home-manager.users.${config.nx.username}.programs.neovim.plugins = [
     # dependencies
@@ -12,7 +45,7 @@
           require("lualine").setup({
           	options = {
           		icons_enabled = true,
-          		theme = "auto",
+          		theme = ${if isEverforest then everforestTheme else ''"auto"''},
           		component_separators = "|",
           		section_separators = "",
           		refresh = {

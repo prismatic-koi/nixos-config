@@ -12,11 +12,11 @@ let
   # bright band, and a tailwind-inspired hue palette (Tailwind hue names,
   # with `brown` added and `maroon` reached via luminance). Each slot is a
   # plain hex string. The schemes live one per file in ./palettes/
-  # (edge.nix, everforest.nix, catppuccin-latte.nix, catppuccin-mocha.nix,
+  # (edge.nix, everforest.nix [light + dark], catppuccin-latte.nix, catppuccin-mocha.nix,
   # github-light.nix, gruvbox.nix, nightcity-kabuki.nix, onedark.nix); provenance
   # is recorded as inline comments in those files.
   colourLib = import ./lib.nix;
-  defaultTheme = import ./palettes/everforest.nix { inherit colourLib; };
+  defaultTheme = (import ./palettes/everforest.nix { inherit colourLib; }).dark;
 
   mkSlots =
     names:
@@ -145,7 +145,7 @@ let
 in
 {
   options = {
-    # base26 colour schema. Defaults to everforest; each scheme module
+    # base26 colour schema. Defaults to everforest-dark; each scheme module
     # overrides it via mkIf on nx.desktop.theme. edge, everforest,
     # catppuccin-latte, catppuccin-mocha, github-light, gruvbox (light + dark),
     # nightcity-kabuki and onedark populate it.
