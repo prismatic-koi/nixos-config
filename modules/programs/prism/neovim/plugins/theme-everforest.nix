@@ -18,7 +18,7 @@ let
 in
 {
   home-manager.users.${config.nx.username}.programs.neovim.plugins =
-    lib.mkIf (config.theme.name == "everforest" || config.theme.name == "everforest-light")
+    lib.mkIf (config.theme.name == "everforest-dark" || config.theme.name == "everforest-light")
       [
         {
           plugin = everforest-nvim;

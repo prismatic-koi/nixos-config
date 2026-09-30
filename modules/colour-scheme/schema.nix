@@ -145,7 +145,7 @@ let
 in
 {
   options = {
-    # base26 colour schema. Defaults to everforest; each scheme module
+    # base26 colour schema. Defaults to everforest-dark; each scheme module
     # overrides it via mkIf on nx.desktop.theme. edge, everforest,
     # catppuccin-latte, catppuccin-mocha, github-light, gruvbox (light + dark),
     # nightcity-kabuki and onedark populate it.

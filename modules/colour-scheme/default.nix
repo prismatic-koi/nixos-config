@@ -13,7 +13,7 @@ let
     catppuccin-latte = mk "catppuccin-latte";
     catppuccin-mocha = mk "catppuccin-mocha";
     edge = mk "edge";
-    everforest = everforest.dark;
+    everforest-dark = everforest.dark;
     everforest-light = everforest.light;
     github-light = mk "github-light";
     nightcity-kabuki = mk "nightcity-kabuki";
@@ -29,7 +29,7 @@ in
   ];
   options = {
     nx.desktop.theme = lib.mkOption {
-      default = "everforest";
+      default = "everforest-dark";
       type = lib.types.enum (builtins.attrNames byTheme);
     };
   };

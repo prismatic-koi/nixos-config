@@ -10,7 +10,7 @@ let
 in
 {
   dark = rec {
-    name = "everforest";
+    name = "everforest-dark";
     type = "dark";
 
     # Neutrals: background_0 is the primary/default background; background_dim

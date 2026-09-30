@@ -15,7 +15,7 @@ let
   colourLib = import ./lib.nix;
   schemes = {
     edge = import ./palettes/edge.nix { inherit colourLib; };
-    everforest = (import ./palettes/everforest.nix { inherit colourLib; }).dark;
+    everforest-dark = (import ./palettes/everforest.nix { inherit colourLib; }).dark;
     everforest-light = (import ./palettes/everforest.nix { inherit colourLib; }).light;
     catppuccin-latte = import ./palettes/catppuccin-latte.nix { inherit colourLib; };
     catppuccin-mocha = import ./palettes/catppuccin-mocha.nix { inherit colourLib; };
