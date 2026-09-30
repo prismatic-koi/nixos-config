@@ -8,11 +8,13 @@ let
   colourLib = import ./lib.nix;
   mk = name: import ./palettes/${name}.nix { inherit colourLib; };
   gruvbox = mk "gruvbox";
+  everforest = mk "everforest";
   byTheme = {
     catppuccin-latte = mk "catppuccin-latte";
     catppuccin-mocha = mk "catppuccin-mocha";
     edge = mk "edge";
-    everforest = mk "everforest";
+    everforest-dark = everforest.dark;
+    everforest-light = everforest.light;
     github-light = mk "github-light";
     nightcity-kabuki = mk "nightcity-kabuki";
     onedark = mk "onedark";
@@ -27,7 +29,7 @@ in
   ];
   options = {
     nx.desktop.theme = lib.mkOption {
-      default = "everforest";
+      default = "everforest-dark";
       type = lib.types.enum (builtins.attrNames byTheme);
     };
   };
