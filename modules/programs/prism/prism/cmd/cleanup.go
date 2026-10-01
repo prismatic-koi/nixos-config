@@ -1509,9 +1509,10 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 
 	// Resolve the podman-proxy audit log for this session's final
 	// incarnation (instanceID here is the incarnation being archived — a
-	// session that restarted has an earlier incarnation's audit dir left on
-	// disk under its own instance ID, which this archive step does not
-	// reach; see internal/container/podman_proxy_audit.go). A resolution
+	// session that was opened again after an earlier incarnation ended has
+	// that incarnation's audit dir left on disk under its own instance ID,
+	// which this archive step does not reach; see
+	// internal/container/podman_proxy_audit.go). A resolution
 	// error just means no audit log to attach (e.g. instanceID somehow
 	// empty here) and is non-fatal.
 	if auditLogPath, auditErr := container.PodmanProxyAuditLogPath(instanceID); auditErr == nil {

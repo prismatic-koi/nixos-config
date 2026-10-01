@@ -23,8 +23,9 @@ package cmd
 // could destroy a live sibling's data volume. See
 // internal/container/resource_identity.go and issue #2951.
 //
-// A session that restarts gets a NEW instance ID, so the owner carries
-// the token of EVERY incarnation of the session name, read from the
+// A session that is opened again after its previous incarnation ended
+// gets a NEW instance ID (a `prism restore` keeps the ID), so the owner
+// carries the token of EVERY incarnation of the session name, read from the
 // `sessions` table. Cleaning a session therefore reaches the volumes its
 // earlier incarnations created, which a single-token sweep would leak.
 //
@@ -295,8 +296,8 @@ type resourceOwner struct {
 	sessionName string
 
 	// instanceTokens holds the resource-name token of every incarnation
-	// of sessionName, most-recent-first. A session that restarted N
-	// times has N tokens and owns the resources of all of them.
+	// of sessionName, most-recent-first. A session name with N
+	// incarnations has N tokens and owns the resources of all of them.
 	instanceTokens []string
 
 	// legacyPrefix is the pre-identity name prefix,
