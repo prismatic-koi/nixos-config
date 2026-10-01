@@ -95,7 +95,7 @@ func TestPrune_EndedSessionWithEventsAfterThreshold(t *testing.T) {
 			writeInstanceEvent(t, d, sessionName, endedIID, now.Add(-time.Duration(i+1)*time.Hour)))
 	}
 
-	// The live incarnation that the restart started.
+	// The live incarnation that `prism switch` started.
 	liveIID := uuid.New().String()
 	insertSessionRow(t, d, liveIID, sessionName, now.Add(-2*day), time.Time{})
 	liveEventID := writeInstanceEvent(t, d, sessionName, liveIID, now.Add(-time.Hour))

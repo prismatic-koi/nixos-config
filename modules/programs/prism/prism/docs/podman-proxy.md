@@ -1038,7 +1038,7 @@ but it removes nothing: the volume still stays.
 
 The reachable case is a long-lived session name that is closed and opened
 again often and reaches hard cleanup rarely. A coordinator on `@main` that
-is closed and reopened over months is the clearest one. Before
+is closed and opened again over months is the clearest one. Before
 instance-ID naming the plain `prism-<session>-` rule swept such a volume
 whatever the database held, so this leak path is new.
 

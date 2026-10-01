@@ -180,10 +180,12 @@ func TestResourceIdentity_FoldedSessionNamesDoNotCollide(t *testing.T) {
 }
 
 // TestResourceIdentity_SameSessionNameDifferentIncarnations pins that
-// the identity is the INCARNATION, not the session name. A session that
-// restarts gets a new instance ID, so its old resources stop being owned
-// by the new incarnation — which is why cmd/cleanup_sweep.go sweeps the
-// union of every incarnation's token rather than just the current one.
+// the identity is the INCARNATION, not the session name. A session that is
+// opened again after its previous incarnation ended, or that the `prism
+// restore` fallback restarts, gets a new instance ID, so its old resources
+// stop being owned by the new incarnation — which is why
+// cmd/cleanup_sweep.go sweeps the union of every incarnation's token rather
+// than just the current one.
 func TestResourceIdentity_SameSessionNameDifferentIncarnations(t *testing.T) {
 	old := ResourceNamePrefixForOwner(iidA, "repo@main") + "pgdata"
 	if !ResourceIsOwnedBy(old, iidA) {

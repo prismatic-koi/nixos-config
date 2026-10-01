@@ -366,7 +366,8 @@ func newResourceOwner(sessionName string, instanceIDs, legacySiblings []string) 
 // the one a live session is creating resources under right now. The
 // `sessions` rows are the incarnations of the session name that the
 // database STILL HOLDS, which is what reaches a volume an earlier
-// incarnation created before a reopen minted a new instance ID.
+// incarnation created before the session was opened again after that
+// incarnation ended, which minted a new instance ID.
 //
 // # The union is not every incarnation that ever existed
 //

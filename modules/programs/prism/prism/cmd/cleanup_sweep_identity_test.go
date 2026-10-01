@@ -204,11 +204,12 @@ func TestVolumeSweep_FoldedSiblingVolumeNotSwept(t *testing.T) {
 
 // ── Incarnations ──────────────────────────────────────────────────────────
 
-// TestVolumeSweep_EveryIncarnationIsSwept pins that a restart does not
-// orphan the volumes the previous incarnation created. `prism restore`
-// mints a NEW instance ID for the same session name, so a sweep that
-// knew only the current token would leave the older volumes on the host
-// forever.
+// TestVolumeSweep_EveryIncarnationIsSwept pins that a new incarnation does
+// not orphan the volumes the previous incarnation created. A session that
+// is opened again after its previous incarnation ended (`prism switch`
+// after a close), or that the `prism restore` fallback restarts, gets a NEW
+// instance ID for the same session name. A sweep that knew only the current
+// token would leave the older volumes on the host forever.
 func TestVolumeSweep_EveryIncarnationIsSwept(t *testing.T) {
 	r := installFakeRunner(t)
 	current := prefixFor("repo@main", swIIDA) + "pgdata"
