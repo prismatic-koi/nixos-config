@@ -11,7 +11,10 @@ import (
 //
 // Tables that Prune touches:
 //
-//   - agent_events       — rows with created_at < threshold.
+//   - agent_events       — rows with created_at < threshold. A newer
+//     row that references a sessions row this
+//     Prune deletes keeps its data, but Prune
+//     sets its instance_id to NULL first.
 //   - bus_messages       — delivered rows (delivered_at
 //     IS NOT NULL AND delivered_at < threshold) or
 //     permanently failed rows (failed_at IS NOT NULL AND
@@ -94,6 +97,23 @@ func (d *DB) Prune(olderThan time.Duration) error {
 		"DELETE FROM bus_messages WHERE failed_at IS NOT NULL AND failed_at < ?", threshold,
 	); err != nil {
 		return fmt.Errorf("db: prune bus_messages (failed): %w", err)
+	}
+
+	// agent_events.instance_id references sessions(instance_id) with no ON
+	// DELETE action. An ended session can still own events newer than the
+	// threshold: a sidecar that holds the instance ID of an ended session
+	// continues to write events with it (#3027). Clear those references, or
+	// the sessions DELETE below fails with FOREIGN KEY constraint failed and
+	// rolls back the whole Prune.
+	if _, err := tx.Exec(`
+UPDATE agent_events
+   SET instance_id = NULL
+ WHERE instance_id IN (
+    SELECT instance_id FROM sessions
+    WHERE ended_at IS NOT NULL AND ended_at < ?
+)`, threshold,
+	); err != nil {
+		return fmt.Errorf("db: prune agent_events (detach from pruned sessions): %w", err)
 	}
 
 	// sessions: ON DELETE CASCADE removes the matching spawn_outcome and

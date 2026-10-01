@@ -363,6 +363,107 @@ func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 	return nil
 }
 
+// StopSidecar stops the sidecar of sessionName and reports whether it exited
+// inside timeout after SIGTERM. It also returns true when no sidecar of the
+// session runs: the PID file is absent, or its PID is gone or belongs to
+// another process.
+//
+// If the sidecar is still alive at the timeout, StopSidecar sends SIGKILL
+// and returns false. A sidecar that is slow to stop still writes to the
+// database: its Shutdown stamps sessions.ended_at and then writes a final
+// state event. prism restore must not reopen a row that such a sidecar can
+// end again, and the sidecar must not write an event after its row ended.
+// SIGKILL goes only to a PID that StopSidecar confirms as this session's
+// sidecar.
+func StopSidecar(sessionName string, timeout time.Duration) bool {
+	pid := readSidecarPID(sessionName)
+	// EPERM means another user owns pid. The sidecar runs as this user, so a
+	// stale PID file names that process.
+	if pid <= 0 || !sidecarProcessExists(pid) || sidecarPIDOwner(pid, sessionName) == pidOwnerOther ||
+		syscall.Kill(pid, 0) == syscall.EPERM {
+		if pidPath, err := SidecarPIDPath(sessionName); err == nil {
+			_ = os.Remove(pidPath)
+		}
+		return true
+	}
+	if err := KillSidecarAndWait(sessionName, timeout); err == nil {
+		return true
+	}
+	if sidecarPIDOwner(pid, sessionName) == pidOwnerSidecar {
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			fmt.Fprintf(os.Stderr, "warning: SIGKILL sidecar pid %d (session %q): %v\n", pid, sessionName, err)
+		}
+		deadline := time.Now().Add(timeout)
+		for sidecarProcessExists(pid) && time.Now().Before(deadline) {
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
+	if !sidecarProcessExists(pid) {
+		unlinkSidecarSockets(sessionName)
+	}
+	return false
+}
+
+// readSidecarPID returns the PID in the sidecar PID file of sessionName, or
+// 0 when the file is absent or does not hold a PID.
+func readSidecarPID(sessionName string) int {
+	pidPath, err := SidecarPIDPath(sessionName)
+	if err != nil {
+		return 0
+	}
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+type pidOwner int
+
+const (
+	pidOwnerUnknown pidOwner = iota
+	pidOwnerSidecar
+	pidOwnerOther
+)
+
+// procRoot is the procfs mount that sidecarPIDOwner reads. Tests point it at
+// a fake tree.
+var procRoot = "/proc"
+
+// sidecarPIDOwner reports whether pid runs `<binary> sidecar --session
+// <sessionName>`. It reads <procRoot>/<pid>/cmdline, and falls back to ps(1)
+// where /proc is absent (Darwin). It returns pidOwnerUnknown only when it
+// cannot read the command line of pid at all.
+//
+// A command line that is readable but empty is pidOwnerOther. A kernel
+// thread has an empty command line, and after a reboot the PID in a stale
+// PID file can belong to one. That is not a sidecar, so restore must not
+// wait for it to stop.
+func sidecarPIDOwner(pid int, sessionName string) pidOwner {
+	var argv []string
+	if data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "cmdline")); err == nil {
+		argv = strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
+	} else if out, err := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output(); err == nil {
+		argv = strings.Fields(string(out))
+	} else {
+		return pidOwnerUnknown
+	}
+	hasSidecar := false
+	for i, a := range argv {
+		if a == "sidecar" {
+			hasSidecar = true
+		}
+		if hasSidecar && a == "--session" && i+1 < len(argv) && argv[i+1] == sessionName {
+			return pidOwnerSidecar
+		}
+	}
+	return pidOwnerOther
+}
+
 // unlinkSidecarSockets removes the host-API and harness pipe socket files for
 // the given session, ignoring errors. Called from KillSidecarAndWait *after*
 // the sidecar process has been confirmed gone, so that a dial by path then

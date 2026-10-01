@@ -45,7 +45,9 @@ import (
 //
 //  1. Stub sidecar: when PRISM_CMD_TEST_STUB=1, the binary sleeps for 60
 //     seconds (simulating a long-running sidecar). The sleep is interruptible
-//     by SIGTERM, which is exactly what KillSidecar sends.
+//     by SIGTERM, which is exactly what KillSidecar sends. When
+//     PRISM_CMD_TEST_SLOW_STOP_DB is set, the binary is instead a sidecar
+//     that is slow to stop (see runSlowStopSidecarStub).
 //
 //  2. SIGTERM handler: when running as a real test binary, register a SIGTERM
 //     handler that kills all active cmdTestServers before exiting. This is a
@@ -106,6 +108,9 @@ import (
 //     60-second sleep. (The host-API re-exec subcommands — prompt, spawn,
 //     … — are intercepted by internal/sidecar's own TestMain.)
 func TestMain(m *testing.M) {
+	if os.Getenv(slowStopDBEnv) != "" {
+		os.Exit(runSlowStopSidecarStub())
+	}
 	if os.Getenv("PRISM_CMD_TEST_STUB") == "1" {
 		time.Sleep(60 * time.Second)
 		os.Exit(0)

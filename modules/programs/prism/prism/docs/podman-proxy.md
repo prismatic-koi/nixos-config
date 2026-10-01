@@ -474,8 +474,10 @@ retention as the rest of the session archive, under
 A session that never ran with `--containers` has no log to archive. The
 archive step skips it and writes no empty placeholder file.
 
-A session that restarted has one audit directory per incarnation on
-disk. Each directory is keyed by instance ID, not session name. The
+A session name that has had more than one incarnation has one audit
+directory per incarnation on disk. A `prism restart` does not start a new
+incarnation: `prism restore` continues the incarnation and keeps its
+instance ID. Each directory is keyed by instance ID, not session name. The
 archive step captures the final incarnation's log only — the one named
 by the `sessions` row being archived. This is the same scope
 `sess.InstanceID` already has for every other per-incarnation archive
@@ -661,13 +663,14 @@ per class serves both halves of the decision. So the sweep issues the
 same number of podman invocations as before. §3 has the reasoning and the
 containment invariant.
 
-**A session that restarted owns the resources of every incarnation the
-database still holds.** `prism restore` mints a new instance ID for the
-same session name. So the sweep reads every `sessions` row for the name,
-and holds the token of each. A sweep keyed on the current incarnation
-alone leaves an earlier incarnation's volumes on the host forever. A
-failed read of that table degrades to the current incarnation plus the
-legacy rule, with a warning.
+**A session owns the resources of every incarnation of its name that the
+database still holds.** A session name gets a new instance ID when it is
+opened again after its previous incarnation ended, for example by
+`prism switch` after a close. So the sweep reads every `sessions` row for
+the name, and holds the token of each. A sweep keyed on the current
+incarnation alone leaves an earlier incarnation's volumes on the host
+forever. A failed read of that table degrades to the current incarnation
+plus the legacy rule, with a warning.
 
 That set is not every incarnation that ever existed. `db.Prune` deletes a
 `sessions` row ninety days after the incarnation ended. The sweep then
@@ -675,18 +678,27 @@ skips that incarnation's resources, with a warning naming the resource,
 but the resource itself still leaks. §8.3 records the residual. Do not
 read this paragraph as a complete sweep.
 
-**A restart makes the session's earlier volumes unreachable by name.**
-This is the cost of keying ownership on the incarnation, and it is
-deliberate. `prism restart` ends the tmux session, which clears
-`agent_status.instance_id` (`cmd/event.go`). The next sidecar start mints
-a fresh UUID. So the new incarnation enforces a NEW prefix, and a mount
-that names a volume the previous incarnation created is refused. The
+**A restart keeps the prefix. A new incarnation makes the session's
+earlier volumes unreachable by name.** `prism restart` and a reboot run
+`prism restore`, which continues the incarnation: it keeps the instance
+ID and passes it to the new sidecar as `--instance-id` (`cmd/restore.go`).
+So the prefix, the volumes, and the container-scratch directory survive a
+restart.
+
+A new incarnation starts when the session is opened again after its
+previous incarnation ended. `prism event tmux-session-start`
+(`cmd/event.go`) mints a fresh UUID when `agent_status` has no instance
+ID, or when the `sessions` row of that instance has ended. `prism restore`
+also starts a new incarnation when the old sidecar does not stop inside
+its wait. The new incarnation enforces a NEW prefix, and a mount that
+names a volume the previous incarnation created is refused. This is the
+cost of keying ownership on the incarnation, and it is deliberate. The
 reason is one of the three mount-channel reasons the §3 table lists.
 
 The volume itself is untouched. It stays on the host, and cleanup of the
 session still removes it, because the sweep holds every incarnation's
 token. Only the attach is lost, and nothing recovers it. An agent that
-needs one dataset across a restart must not hold it in a proxy-named
+needs one dataset across incarnations must not hold it in a proxy-named
 volume.
 
 **The volume sweep runs on the hard-cleanup paths only.** A soft close
@@ -1010,9 +1022,10 @@ database row that has a retention window.
 
 `db.Prune` runs `DELETE FROM sessions WHERE ended_at IS NOT NULL AND
 ended_at < ?` (`internal/db/maintenance.go`). Both callers pass a
-ninety-day window (`cmd/event.go`, `cmd/restore.go`). `SetEnded` stamps
-`sessions.ended_at` on every close AND every restart. So the row of an
-incarnation that ended more than ninety days ago is gone.
+ninety-day window (`cmd/event.go`, `cmd/restore.go`). Every close stamps
+`sessions.ended_at`. A `prism restore` clears it again, because a restore
+continues the incarnation. So the row of an incarnation that ended more
+than ninety days ago is gone.
 
 `resourceOwnerForSession` builds its token set from those rows. A volume
 named `prism-<pruned token>-<session>-pgdata` therefore carries a token
@@ -1023,11 +1036,11 @@ name. `collectSweepable` warns for this shape. The warning names the
 volume and states that its owning incarnation is not in the database,
 but it removes nothing: the volume still stays.
 
-The reachable case is a long-lived session that restarts often and
-reaches hard cleanup rarely. A coordinator on `@main` across months of
-reboots is the clearest one. Before instance-ID naming the plain
-`prism-<session>-` rule swept such a volume whatever the database held,
-so this leak path is new.
+The reachable case is a long-lived session name that is closed and opened
+again often and reaches hard cleanup rarely. A coordinator on `@main` that
+is closed and opened again over months is the clearest one. Before
+instance-ID naming the plain `prism-<session>-` rule swept such a volume
+whatever the database held, so this leak path is new.
 
 Do NOT close it by falling back to the name when a token is unknown. That
 is the collision this whole section replaced. The warning above landed

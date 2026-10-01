@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -29,6 +30,12 @@ import (
 // sleeps for 60 seconds, interruptible by SIGTERM. This is used by tests that
 // exercise the KillSidecarAndWait wait path.
 //
+// When PRISM_TEST_SEED_PROBE is set, an `event` re-invocation acts as the
+// status seed stub and records what it saw (see runSeedProbe).
+//
+// When PRISM_TEST_STUB_IGNORE_TERM=1 the binary ignores SIGTERM and sleeps
+// for 60 seconds, so only SIGKILL stops it.
+//
 // The argv check is defence in depth for the recursion class: this
 // package's production code re-execs os.Executable() — in tests, THIS
 // binary — as `<self> sidecar …` (StartSidecarWithOpts) and `<self> event
@@ -45,10 +52,18 @@ import (
 // tmux_isolation_test.go for the full rationale and the regression guard.
 // The original environment is restored after m.Run().
 func TestMain(m *testing.M) {
+	if probe := os.Getenv(seedProbeEnvVar); probe != "" && len(os.Args) > 1 && os.Args[1] == "event" {
+		os.Exit(runSeedProbe(probe, os.Args[2:]))
+	}
 	if os.Getenv("PRISM_TEST_SUBPROCESS") == "1" {
 		// We are the child process acting as the sidecar stub.
 		// Sleep briefly so the parent can read the PID file, then exit.
 		time.Sleep(50 * time.Millisecond)
+		os.Exit(0)
+	}
+	if os.Getenv("PRISM_TEST_STUB_IGNORE_TERM") == "1" {
+		signal.Ignore(syscall.SIGTERM)
+		time.Sleep(60 * time.Second)
 		os.Exit(0)
 	}
 	if os.Getenv("PRISM_TEST_STUB_LONG") == "1" {

@@ -23,8 +23,9 @@ package cmd
 // could destroy a live sibling's data volume. See
 // internal/container/resource_identity.go and issue #2951.
 //
-// A session that restarts gets a NEW instance ID, so the owner carries
-// the token of EVERY incarnation of the session name, read from the
+// A session that is opened again after its previous incarnation ended
+// gets a NEW instance ID (a `prism restore` keeps the ID), so the owner
+// carries the token of EVERY incarnation of the session name, read from the
 // `sessions` table. Cleaning a session therefore reaches the volumes its
 // earlier incarnations created, which a single-token sweep would leak.
 //
@@ -295,8 +296,8 @@ type resourceOwner struct {
 	sessionName string
 
 	// instanceTokens holds the resource-name token of every incarnation
-	// of sessionName, most-recent-first. A session that restarted N
-	// times has N tokens and owns the resources of all of them.
+	// of sessionName, most-recent-first. A session name with N
+	// incarnations has N tokens and owns the resources of all of them.
 	instanceTokens []string
 
 	// legacyPrefix is the pre-identity name prefix,
@@ -365,15 +366,17 @@ func newResourceOwner(sessionName string, instanceIDs, legacySiblings []string) 
 // the one a live session is creating resources under right now. The
 // `sessions` rows are the incarnations of the session name that the
 // database STILL HOLDS, which is what reaches a volume an earlier
-// incarnation created before a restart minted a new instance ID.
+// incarnation created before the session was opened again after that
+// incarnation ended, which minted a new instance ID.
 //
 // # The union is not every incarnation that ever existed
 //
 // `db.Prune` runs `DELETE FROM sessions WHERE ended_at IS NOT NULL AND
 // ended_at < ?` (internal/db/maintenance.go), and both callers pass a
-// ninety-day window (cmd/event.go, cmd/restore.go). `SetEnded` stamps
-// `sessions.ended_at` on every close AND every restart, so the row of an
-// incarnation that ended more than ninety days ago is gone.
+// ninety-day window (cmd/event.go, cmd/restore.go). Every close stamps
+// `sessions.ended_at`, and a restore clears it again because a restore
+// continues the incarnation. So the row of an incarnation that ended more
+// than ninety days ago is gone.
 //
 // A resource created by a pruned incarnation therefore carries a token
 // this set does not hold. identityOwnership resolves it to
@@ -381,12 +384,13 @@ func newResourceOwner(sessionName string, instanceIDs, legacySiblings []string) 
 // not catch it either, because identityOwnership already answered for
 // the name. The resource leaks, and the skip is silent.
 //
-// A long-lived session that restarts often and reaches hard cleanup
-// rarely is the reachable case. Do NOT close this by falling back to the
-// name when a token is unknown — that is the collision issue #2951
-// closed. Issue #2972 carries the follow-up: a diagnostic warning for
-// the silent skip, and the prune-versus-ownership retention question
-// underneath it. docs/podman-proxy.md §8.3 records the residual.
+// A long-lived session name that is closed and opened again often, and
+// reaches hard cleanup rarely, is the reachable case. Do NOT close this
+// by falling back to the name when a token is unknown — that is the
+// collision issue #2951 closed. Issue #2972 carries the follow-up: a
+// diagnostic warning for the silent skip, and the prune-versus-ownership
+// retention question underneath it. docs/podman-proxy.md §8.3 records the
+// residual.
 //
 // A failed `sessions` read degrades to the current incarnation plus the
 // legacy rule, with a warning. That leaks an older incarnation's volumes
