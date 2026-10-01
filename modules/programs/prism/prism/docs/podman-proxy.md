@@ -666,11 +666,11 @@ containment invariant.
 **A session owns the resources of every incarnation of its name that the
 database still holds.** A session name gets a new instance ID when it is
 opened again after its previous incarnation ended, for example by
-`prism switch` after a close. So the sweep reads every `sessions` row for the name,
-and holds the token of each. A sweep keyed on the current incarnation
-alone leaves an earlier incarnation's volumes on the host forever. A
-failed read of that table degrades to the current incarnation plus the
-legacy rule, with a warning.
+`prism switch` after a close. So the sweep reads every `sessions` row for
+the name, and holds the token of each. A sweep keyed on the current
+incarnation alone leaves an earlier incarnation's volumes on the host
+forever. A failed read of that table degrades to the current incarnation
+plus the legacy rule, with a warning.
 
 That set is not every incarnation that ever existed. `db.Prune` deletes a
 `sessions` row ninety days after the incarnation ended. The sweep then
@@ -1038,9 +1038,9 @@ but it removes nothing: the volume still stays.
 
 The reachable case is a long-lived session name that is closed and opened
 again often and reaches hard cleanup rarely. A coordinator on `@main` that
-is closed and reopened over months is the clearest one. Before instance-ID naming the plain
-`prism-<session>-` rule swept such a volume whatever the database held,
-so this leak path is new.
+is closed and reopened over months is the clearest one. Before
+instance-ID naming the plain `prism-<session>-` rule swept such a volume
+whatever the database held, so this leak path is new.
 
 Do NOT close it by falling back to the name when a token is unknown. That
 is the collision this whole section replaced. The warning above landed

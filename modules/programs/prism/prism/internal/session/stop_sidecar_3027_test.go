@@ -106,3 +106,73 @@ func TestStopSidecar_OtherProcessNotSignalled(t *testing.T) {
 		t.Errorf("PID file still present after StopSidecar: %v", err)
 	}
 }
+
+// withFakeProcCmdline points procRoot at a fake tree where pid has the given
+// /proc/<pid>/cmdline content.
+func withFakeProcCmdline(t *testing.T, pid int, cmdline string) {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, strconv.Itoa(pid))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir fake proc: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cmdline"), []byte(cmdline), 0o644); err != nil {
+		t.Fatalf("write fake cmdline: %v", err)
+	}
+	prev := procRoot
+	procRoot = root
+	t.Cleanup(func() { procRoot = prev })
+}
+
+func TestSidecarPIDOwner(t *testing.T) {
+	const name = "prism-test@owner"
+	cases := []struct {
+		desc    string
+		cmdline string
+		want    pidOwner
+	}{
+		{"sidecar of the session", "/bin/prism\x00sidecar\x00--session\x00" + name + "\x00", pidOwnerSidecar},
+		{"sidecar of another session", "/bin/prism\x00sidecar\x00--session\x00other@x\x00", pidOwnerOther},
+		{"another program", "/usr/bin/sleep\x0030\x00", pidOwnerOther},
+		{"empty command line (kernel thread)", "", pidOwnerOther},
+	}
+	for i, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			pid := 4_000_000 + i
+			withFakeProcCmdline(t, pid, c.cmdline)
+			if got := sidecarPIDOwner(pid, name); got != c.want {
+				t.Errorf("sidecarPIDOwner = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// After a reboot, the PID in a stale PID file can belong to a kernel thread,
+// whose command line is empty. StopSidecar must treat that PID as another
+// process: return true at once, send no signal, and remove the PID file.
+// Restore then keeps the instance ID of the session.
+func TestStopSidecar_EmptyCmdlineIsNotASidecar(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	const name = "prism-test@stop-kthread"
+	pid, _ := startSidecarStub(t, name, []string{"not-a-sidecar"}, "PRISM_TEST_STUB_LONG=1")
+	withFakeProcCmdline(t, pid, "")
+
+	const timeout = 2 * time.Second
+	start := time.Now()
+	stopped := StopSidecar(name, timeout)
+	elapsed := time.Since(start)
+
+	if !stopped {
+		t.Error("StopSidecar = false, want true for a PID with an empty command line")
+	}
+	if elapsed >= timeout {
+		t.Errorf("StopSidecar took %v, want it to return without the %v wait", elapsed, timeout)
+	}
+	if !sidecarProcessExists(pid) {
+		t.Error("StopSidecar signalled a process that is not the session's sidecar")
+	}
+	pidPath, _ := SidecarPIDPath(name)
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Errorf("PID file still present after StopSidecar: %v", err)
+	}
+}

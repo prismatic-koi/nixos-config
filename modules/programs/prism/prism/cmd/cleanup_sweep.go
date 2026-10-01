@@ -384,11 +384,12 @@ func newResourceOwner(sessionName string, instanceIDs, legacySiblings []string) 
 // the name. The resource leaks, and the skip is silent.
 //
 // A long-lived session name that is closed and opened again often, and
-// reaches hard cleanup rarely, is the reachable case. Do NOT close this by falling back to the
-// name when a token is unknown — that is the collision issue #2951
-// closed. Issue #2972 carries the follow-up: a diagnostic warning for
-// the silent skip, and the prune-versus-ownership retention question
-// underneath it. docs/podman-proxy.md §8.3 records the residual.
+// reaches hard cleanup rarely, is the reachable case. Do NOT close this
+// by falling back to the name when a token is unknown — that is the
+// collision issue #2951 closed. Issue #2972 carries the follow-up: a
+// diagnostic warning for the silent skip, and the prune-versus-ownership
+// retention question underneath it. docs/podman-proxy.md §8.3 records the
+// residual.
 //
 // A failed `sessions` read degrades to the current incarnation plus the
 // legacy rule, with a warning. That leaks an older incarnation's volumes

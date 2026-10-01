@@ -172,8 +172,11 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		// will surface its own clear error if the old sidecar is truly stuck.
 		//
 		// Note: this is NOT a session teardown. SetEnded and PurgeBusMessages
-		// are intentionally omitted — the DB row (instance_id, repo, worktree,
-		// harness_port) is reused across the restart.
+		// are intentionally omitted — the agent_status row (repo, worktree,
+		// harness_port) is reused across the restart. The instance_id is not
+		// always reused: a live old sidecar ends its sessions row when it
+		// stops, and the tmux-session-start seed then mints a new instance
+		// ID.
 		proglog.Infof("[prism switch] stale-zombie session %q: killing old sidecar before restart\n", sessionName)
 		if waitErr := session.KillSidecarAndWait(sessionName, killSidecarTimeout); waitErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: %v\n", waitErr)

@@ -377,7 +377,10 @@ func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 // sidecar.
 func StopSidecar(sessionName string, timeout time.Duration) bool {
 	pid := readSidecarPID(sessionName)
-	if pid <= 0 || !sidecarProcessExists(pid) || sidecarPIDOwner(pid, sessionName) == pidOwnerOther {
+	// EPERM means another user owns pid. The sidecar runs as this user, so a
+	// stale PID file names that process.
+	if pid <= 0 || !sidecarProcessExists(pid) || sidecarPIDOwner(pid, sessionName) == pidOwnerOther ||
+		syscall.Kill(pid, 0) == syscall.EPERM {
 		if pidPath, err := SidecarPIDPath(sessionName); err == nil {
 			_ = os.Remove(pidPath)
 		}
@@ -427,20 +430,26 @@ const (
 	pidOwnerOther
 )
 
+// procRoot is the procfs mount that sidecarPIDOwner reads. Tests point it at
+// a fake tree.
+var procRoot = "/proc"
+
 // sidecarPIDOwner reports whether pid runs `<binary> sidecar --session
-// <sessionName>`. It reads /proc/<pid>/cmdline, and falls back to ps(1)
-// where /proc is absent (Darwin). It returns pidOwnerUnknown when it cannot
-// read the command line of pid.
+// <sessionName>`. It reads <procRoot>/<pid>/cmdline, and falls back to ps(1)
+// where /proc is absent (Darwin). It returns pidOwnerUnknown only when it
+// cannot read the command line of pid at all.
+//
+// A command line that is readable but empty is pidOwnerOther. A kernel
+// thread has an empty command line, and after a reboot the PID in a stale
+// PID file can belong to one. That is not a sidecar, so restore must not
+// wait for it to stop.
 func sidecarPIDOwner(pid int, sessionName string) pidOwner {
 	var argv []string
-	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
+	if data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "cmdline")); err == nil {
 		argv = strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
 	} else if out, err := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output(); err == nil {
 		argv = strings.Fields(string(out))
 	} else {
-		return pidOwnerUnknown
-	}
-	if len(argv) == 0 || (len(argv) == 1 && argv[0] == "") {
 		return pidOwnerUnknown
 	}
 	hasSidecar := false

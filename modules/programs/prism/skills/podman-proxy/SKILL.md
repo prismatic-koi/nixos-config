@@ -260,9 +260,10 @@ carries the detail and the conditions to close each one.
   and stating that its owning incarnation is not in the database — but
   the warning does not reach the resource; it still leaks. A
   long-lived session name that is closed and opened again often and is
-  hard-cleaned rarely is the case that reaches it. Remove such a volume by hand with `podman
-  volume rm`. Issue #2972 Part 1 shipped the warning; Part 2 tracks the
-  retention question that would let the resource be reached again.
+  hard-cleaned rarely is the case that reaches it. Remove such a volume
+  by hand with `podman volume rm`. Issue #2972 Part 1 shipped the
+  warning; Part 2 tracks the retention question that would let the
+  resource be reached again.
 
 - **A resource created BEFORE instance-ID naming cannot be attributed.**
   Its name carries the legacy prefix and no token, so nothing recovers
