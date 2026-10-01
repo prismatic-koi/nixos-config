@@ -365,15 +365,16 @@ func newResourceOwner(sessionName string, instanceIDs, legacySiblings []string) 
 // the one a live session is creating resources under right now. The
 // `sessions` rows are the incarnations of the session name that the
 // database STILL HOLDS, which is what reaches a volume an earlier
-// incarnation created before a restart minted a new instance ID.
+// incarnation created before a reopen minted a new instance ID.
 //
 // # The union is not every incarnation that ever existed
 //
 // `db.Prune` runs `DELETE FROM sessions WHERE ended_at IS NOT NULL AND
 // ended_at < ?` (internal/db/maintenance.go), and both callers pass a
-// ninety-day window (cmd/event.go, cmd/restore.go). `SetEnded` stamps
-// `sessions.ended_at` on every close AND every restart, so the row of an
-// incarnation that ended more than ninety days ago is gone.
+// ninety-day window (cmd/event.go, cmd/restore.go). Every close stamps
+// `sessions.ended_at`, and a restore clears it again because a restore
+// continues the incarnation. So the row of an incarnation that ended more
+// than ninety days ago is gone.
 //
 // A resource created by a pruned incarnation therefore carries a token
 // this set does not hold. identityOwnership resolves it to
@@ -381,8 +382,8 @@ func newResourceOwner(sessionName string, instanceIDs, legacySiblings []string) 
 // not catch it either, because identityOwnership already answered for
 // the name. The resource leaks, and the skip is silent.
 //
-// A long-lived session that restarts often and reaches hard cleanup
-// rarely is the reachable case. Do NOT close this by falling back to the
+// A long-lived session name that is closed and opened again often, and
+// reaches hard cleanup rarely, is the reachable case. Do NOT close this by falling back to the
 // name when a token is unknown — that is the collision issue #2951
 // closed. Issue #2972 carries the follow-up: a diagnostic warning for
 // the silent skip, and the prune-versus-ownership retention question

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -31,6 +32,9 @@ import (
 //
 // When PRISM_TEST_SEED_PROBE is set, an `event` re-invocation acts as the
 // status seed stub and records what it saw (see runSeedProbe).
+//
+// When PRISM_TEST_STUB_IGNORE_TERM=1 the binary ignores SIGTERM and sleeps
+// for 60 seconds, so only SIGKILL stops it.
 //
 // The argv check is defence in depth for the recursion class: this
 // package's production code re-execs os.Executable() — in tests, THIS
@@ -55,6 +59,11 @@ func TestMain(m *testing.M) {
 		// We are the child process acting as the sidecar stub.
 		// Sleep briefly so the parent can read the PID file, then exit.
 		time.Sleep(50 * time.Millisecond)
+		os.Exit(0)
+	}
+	if os.Getenv("PRISM_TEST_STUB_IGNORE_TERM") == "1" {
+		signal.Ignore(syscall.SIGTERM)
+		time.Sleep(60 * time.Second)
 		os.Exit(0)
 	}
 	if os.Getenv("PRISM_TEST_STUB_LONG") == "1" {

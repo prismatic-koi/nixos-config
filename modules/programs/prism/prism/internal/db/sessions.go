@@ -143,6 +143,18 @@ UPDATE sessions
 	return nil
 }
 
+// ReopenSession clears ended_at and end_state on the sessions row for
+// instanceID. prism restore calls it when it continues an incarnation that
+// its stopped sidecar marked as ended. It is a no-op when no row exists for
+// instanceID (returns nil).
+func (d *DB) ReopenSession(instanceID string) error {
+	const q = `UPDATE sessions SET ended_at = NULL, end_state = NULL WHERE instance_id = ?`
+	if _, err := d.conn.Exec(q, instanceID); err != nil {
+		return fmt.Errorf("db: reopen session: %w", err)
+	}
+	return nil
+}
+
 // UpdateSessionArchivePath sets archive_path on the sessions row for
 // instanceID. Called during prism cleanup after the archive copy completes
 // successfully. It is a no-op when no row exists for instanceID (returns nil).

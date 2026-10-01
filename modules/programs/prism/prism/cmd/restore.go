@@ -323,13 +323,13 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 		return restoreOutcomeSkipped, nil
 	}
 
-	// Kill any orphaned sidecar left over from a previous lifecycle (e.g. a
-	// reboot or crash without clean shutdown). KillSidecar is a no-op when
+	// Stop any sidecar left over from a previous lifecycle (e.g. `prism
+	// restart` kills tmux but not the sidecars). StopSidecar is a no-op when
 	// no PID file is present or the process is already gone, so it is safe
 	// to call unconditionally for both host-mode and container-mode sessions.
-	// Clearing the PID file here ensures StartSidecarWithOpts can write a
-	// fresh one below.
-	session.KillSidecar(s.SessionName)
+	// It removes the PID file, so StartSidecarWithOpts can write a fresh one
+	// below. restoredInstanceID needs to know whether the old sidecar stopped.
+	oldSidecarStopped := session.StopSidecar(s.SessionName, restoreSidecarStopTimeout)
 
 	// For container-mode sessions (none in current code — isoCaps.IsContainer
 	// is always false), also remove any stale container left over
@@ -394,7 +394,7 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 		*pendingStagger = false
 	}
 
-	if instanceID := startRestoredIncarnation(d, s, opts.Agent); instanceID != "" {
+	if instanceID := restoredInstanceID(d, s, opts.Agent, oldSidecarStopped); instanceID != "" {
 		opts.InstanceID = instanceID
 	}
 
@@ -408,17 +408,58 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	return restoreOutcomeCreated, nil
 }
 
+// restoreSidecarStopTimeout bounds the wait for the old sidecar of a
+// restored session to stop after SIGTERM. Tests shorten it.
+var restoreSidecarStopTimeout = killSidecarTimeout
+
+// restoredInstanceID returns the instance ID that a session which restore
+// recreates must run with. It returns "" when it cannot record one.
+//
+// A restore continues the incarnation that agent_status names. The instance
+// ID keys the spawn_inputs profile pin, spawn_outcome, the container-scratch
+// directory, and the podman resource names, so all of them must survive a
+// restart. The old sidecar stamps ended_at on its instance when it stops, so
+// restore clears ended_at and end_state again. Otherwise the restored sidecar
+// writes every event with the instance ID of an ended session (#3027).
+//
+// If the old sidecar did not stop inside the wait, StopSidecar sent it
+// SIGKILL, but restore cannot be sure that it is gone and cannot stamp
+// ended_at after a reopen. Restore then starts a new incarnation instead.
+func restoredInstanceID(d *db.DB, s db.Status, agentRole string, oldSidecarStopped bool) string {
+	if s.InstanceID == nil || *s.InstanceID == "" {
+		return startRestoredIncarnation(d, s, agentRole)
+	}
+	instanceID := *s.InstanceID
+	if !oldSidecarStopped {
+		fmt.Fprintf(os.Stderr, "warning: restore %q: the old sidecar did not stop within %v; starting a new incarnation instead of reopening instance %s\n",
+			s.SessionName, restoreSidecarStopTimeout, instanceID)
+		return startRestoredIncarnation(d, s, agentRole)
+	}
+	prev, err := d.SessionByInstanceID(instanceID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "restore %q: read incarnation %s: %v; starting a new incarnation\n", s.SessionName, instanceID, err)
+		return startRestoredIncarnation(d, s, agentRole)
+	}
+	if prev == nil {
+		// agent_status names an instance with no sessions row. Insert the
+		// full row, so the events of the restored sidecar have a live parent.
+		if err := d.InsertSession(restoredSessionRow(s, instanceID, agentRole, nil)); err != nil {
+			fmt.Fprintf(os.Stderr, "restore %q: insert session: %v\n", s.SessionName, err)
+		}
+		return instanceID
+	}
+	if prev.EndedAt != nil {
+		if err := d.ReopenSession(instanceID); err != nil {
+			fmt.Fprintf(os.Stderr, "restore %q: reopen incarnation %s: %v; starting a new incarnation\n", s.SessionName, instanceID, err)
+			return startRestoredIncarnation(d, s, agentRole)
+		}
+	}
+	return instanceID
+}
+
 // startRestoredIncarnation starts a new incarnation for a session that
 // restore recreates, and returns its instance ID. It returns "" when it
 // cannot record the new instance ID in agent_status.
-//
-// restore runs only when the tmux session is gone, so the incarnation that
-// agent_status names is over. kill-server and a reboot do not fire the
-// session-closed hook that ends it, and restore skips the tmux-session-start
-// seed that mints a new one. The old sidecar also stamps ended_at on its
-// instance when restore stops it. If restore keeps the old instance ID, the
-// restored sidecar writes every event with the instance ID of an ended
-// session (#3027).
 func startRestoredIncarnation(d *db.DB, s db.Status, agentRole string) string {
 	instanceID := uuid.New().String()
 	if err := d.SetInstanceID(s.SessionName, instanceID); err != nil {
@@ -442,6 +483,18 @@ func startRestoredIncarnation(d *db.DB, s db.Status, agentRole string) string {
 		}
 	}
 
+	// The sidecar inserts a row with fewer columns when none exists, so
+	// insert the full row before the sidecar starts.
+	if err := d.InsertSession(restoredSessionRow(s, instanceID, agentRole, prev)); err != nil {
+		fmt.Fprintf(os.Stderr, "restore %q: insert session: %v\n", s.SessionName, err)
+	}
+	return instanceID
+}
+
+// restoredSessionRow builds the sessions row for instanceID from the
+// agent_status row s. It copies parent_session, and agent_role when
+// agentRole is empty, from prev when prev is non-nil.
+func restoredSessionRow(s db.Status, instanceID, agentRole string, prev *db.Session) db.Session {
 	row := db.Session{
 		InstanceID:       instanceID,
 		SessionName:      s.SessionName,
@@ -463,10 +516,5 @@ func startRestoredIncarnation(d *db.DB, s db.Status, agentRole string) string {
 			row.AgentRole = prev.AgentRole
 		}
 	}
-	// The sidecar inserts a row with fewer columns when none exists, so
-	// insert the full row before the sidecar starts.
-	if err := d.InsertSession(row); err != nil {
-		fmt.Fprintf(os.Stderr, "restore %q: insert session: %v\n", s.SessionName, err)
-	}
-	return instanceID
+	return row
 }
