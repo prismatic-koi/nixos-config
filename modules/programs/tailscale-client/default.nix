@@ -96,6 +96,32 @@
 #     configuration.nix) to elevate. `sudo -n` is fail-fast — if
 #     NOPASSWD is ever removed, the agent errors out immediately rather
 #     than blocking on a password prompt.
+#
+# ── Control-server DNS route (Linux with systemd-resolved) ──────────────
+#
+# With MagicDNS, tailscaled puts `~.` on tailscale0. At boot, tailscaled
+# applies the cached DNS config before it has peers, so the lookup of the
+# control-server name goes to a MagicDNS upstream that it cannot reach yet.
+# This is a deadlock (#3038). This module gives each active ethernet and
+# Wi-Fi link the routing-only domain `~<control-server host>`. systemd-resolved
+# sends a query to the link with the longest matching routing domain, so
+# this one name resolves through the DHCP resolvers of the physical link.
+# All other names keep the `~.` route on tailscale0.
+#
+# The script reads the host from the login_server secret at runtime, so
+# the host is not in /nix/store. It applies the domain with
+# `nmcli device modify`. That command changes only the applied connection
+# on the device. It does not write the saved profile. Two triggers run the
+# script:
+#
+#   * a NetworkManager dispatcher script, for each new activation and DHCP
+#     lease change;
+#   * a oneshot unit ordered after NetworkManager-wait-online and before
+#     tailscaled, because the dispatcher is asynchronous and can run after
+#     tailscaled starts.
+#
+# Do not use `resolvectl domain` for this. NetworkManager replaces the
+# link domains in systemd-resolved on each DNS update.
 {
   config,
   lib,
@@ -121,6 +147,132 @@ let
     "--accept-dns=true"
   ];
   baselineFlagsStr = lib.concatStringsSep " " baselineFlags;
+
+  # Arguments: `--all` for each active link, or `<iface> <action>` from
+  # the NetworkManager dispatcher.
+  controlDnsScript = pkgs.writeShellApplication {
+    name = "tailscale-control-dns";
+    runtimeInputs = [
+      config.networking.networkmanager.package
+      config.systemd.package
+      pkgs.util-linux
+    ];
+    # No errexit: each failure path logs a warning and exits 0. A failure
+    # here must not stop a NetworkManager activation or tailscaled.
+    bashOptions = [
+      "nounset"
+      "pipefail"
+    ];
+    text = ''
+      secret_file=${lib.escapeShellArg config.sops.secrets."${loginServerKey}".path}
+      lock_file=/run/tailscale-control-dns.lock
+
+      log() {
+        logger -t tailscale-control-dns -p "daemon.$1" -- "$2"
+      }
+
+      target=""
+      if [[ "''${1:-}" != "--all" ]]; then
+        # Do not handle "reapply". `nmcli device modify` below causes a
+        # "reapply" event, so a handler for it makes a loop.
+        case "''${2:-}" in
+          up | dhcp4-change | dhcp6-change) ;;
+          *) exit 0 ;;
+        esac
+        target="''${DEVICE_IFACE:-''${1:-}}"
+        if [[ -z "$target" ]]; then
+          exit 0
+        fi
+      fi
+
+      if [[ ! -r "$secret_file" ]]; then
+        log warning "$secret_file is missing or unreadable. No routing domain added."
+        exit 0
+      fi
+      url=""
+      read -r url <"$secret_file"
+
+      # The secret holds a URL. Keep only the host.
+      host="''${url#*://}"
+      host="''${host%%[/?#]*}"
+      host="''${host##*@}"
+      if [[ "$host" == "["* ]]; then
+        log info "The login server is an IPv6 address. No routing domain is necessary."
+        exit 0
+      fi
+      host="''${host%:*}"
+      host="''${host%.}"
+      host="''${host,,}"
+      if [[ "$host" =~ ^[0-9.]+$ ]]; then
+        log info "The login server is an IPv4 address. No routing domain is necessary."
+        exit 0
+      fi
+      label='[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
+      if [[ ! "$host" =~ ^($label\.)+$label$ ]]; then
+        log warning "Cannot get a host name from $secret_file. No routing domain added."
+        exit 0
+      fi
+      domain="~$host"
+
+      # The dispatcher and the oneshot unit can run at the same time. Two
+      # concurrent `nmcli device modify` calls on one device fail with a
+      # version-id mismatch.
+      if ! exec 9>"$lock_file"; then
+        log warning "Cannot open $lock_file. No routing domain added."
+        exit 0
+      fi
+      if ! flock -w 20 9; then
+        log warning "Timeout on $lock_file. No routing domain added."
+        exit 0
+      fi
+
+      has_domain() {
+        local out d
+        local -a domains
+        out="$(resolvectl domain "$1" 2>/dev/null)" || return 1
+        read -r -a domains <<<"''${out#*:}"
+        for d in "''${domains[@]}"; do
+          if [[ "''${d,,}" == "$domain" ]]; then
+            return 0
+          fi
+        done
+        return 1
+      }
+
+      if ! devices="$(LC_ALL=C nmcli -t -f DEVICE,TYPE,STATE device status 2>&1)"; then
+        log warning "nmcli device status failed: $devices"
+        exit 0
+      fi
+
+      while IFS=: read -r dev type state; do
+        if [[ -n "$target" && "$dev" != "$target" ]]; then
+          continue
+        fi
+        # Allow-list of physical link types. tailscale0 (tun), lo
+        # (loopback), wg* (wireguard) and container links (bridge, veth)
+        # are not in it.
+        case "$type" in
+          ethernet | wifi) ;;
+          *) continue ;;
+        esac
+        if [[ "$state" != "connected" ]]; then
+          continue
+        fi
+        # The presence check also stops a loop if a reapply ever causes a
+        # DHCP change event.
+        if has_domain "$dev"; then
+          continue
+        fi
+        if out="$(nmcli --wait 10 device modify "$dev" +ipv4.dns-search "$domain" 2>&1)"; then
+          log info "Added the control-server routing domain to $dev."
+        else
+          log warning "nmcli device modify $dev failed: $out"
+        fi
+      done <<<"$devices"
+
+      exit 0
+    '';
+  };
 in
 {
   options.nx.programs.tailscaleClient = {
@@ -235,6 +387,32 @@ in
               sleep .5
             done
           '';
+        };
+      })
+
+      # ── Control-server DNS route (see the header) ───────────────────
+      (lib.mkIf (pkgs.stdenv.hostPlatform.isLinux && config.nx.system.systemdResolved.enable) {
+        networking.networkmanager.dispatcherScripts = [
+          { source = lib.getExe controlDnsScript; }
+        ];
+
+        systemd.services.tailscale-control-dns = {
+          description = "Add the tailscale control-server routing domain to active physical links";
+          wantedBy = [
+            "multi-user.target"
+            "tailscaled.service"
+          ];
+          # tailscaled orders itself after NetworkManager-wait-online but
+          # does not pull it in. The Wants makes sure that the wait occurs.
+          wants = [ "network-online.target" ];
+          after = [ "NetworkManager-wait-online.service" ];
+          before = [ "tailscaled.service" ];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = "${lib.getExe controlDnsScript} --all";
+            TimeoutStartSec = "60s";
+          };
         };
       })
 

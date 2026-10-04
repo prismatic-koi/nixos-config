@@ -196,6 +196,13 @@
       description = "Stub for networking.networkmanager.dns (darwin compatibility)";
     };
 
+    # Stub for darwin compatibility: networking.networkmanager.dispatcherScripts
+    networking.networkmanager.dispatcherScripts = lib.mkOption {
+      type = lib.types.listOf lib.types.anything;
+      default = [ ];
+      description = "Stub for networking.networkmanager.dispatcherScripts (darwin compatibility)";
+    };
+
     # Stub for darwin compatibility: services.resolved
     # systemd-resolved is Linux-only
     services.resolved.enable = lib.mkOption {
