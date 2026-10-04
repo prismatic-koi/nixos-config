@@ -154,7 +154,6 @@ let
     name = "tailscale-control-dns";
     runtimeInputs = [
       config.networking.networkmanager.package
-      config.systemd.package
       pkgs.util-linux
     ];
     # No errexit: each failure path logs a warning and exits 0. A failure
@@ -226,19 +225,6 @@ let
         exit 0
       fi
 
-      has_domain() {
-        local out d
-        local -a domains
-        out="$(resolvectl domain "$1" 2>/dev/null)" || return 1
-        read -r -a domains <<<"''${out#*:}"
-        for d in "''${domains[@]}"; do
-          if [[ "''${d,,}" == "$domain" ]]; then
-            return 0
-          fi
-        done
-        return 1
-      }
-
       if ! devices="$(LC_ALL=C nmcli -t -f DEVICE,TYPE,STATE device status 2>&1)"; then
         log warning "nmcli device status failed: $devices"
         exit 0
@@ -260,10 +246,41 @@ let
         fi
         # The presence check also stops a loop if a reapply ever causes a
         # DHCP change event.
-        if has_domain "$dev"; then
+        searches="$(LC_ALL=C nmcli -g IP4.SEARCHES device show "$dev" 2>/dev/null)"
+        read -r -a have <<<"''${searches//|/ }"
+        present=0
+        others=0
+        for h in "''${have[@]}"; do
+          if [[ "''${h,,}" == "$domain" ]]; then
+            present=1
+          else
+            others=1
+          fi
+        done
+        if ((present)); then
           continue
         fi
-        if out="$(nmcli --wait 10 device modify "$dev" +ipv4.dns-search "$domain" 2>&1)"; then
+
+        # NetworkManager sends the DHCP domain (IP4.DOMAIN) to
+        # systemd-resolved only while the link has no search domains. The
+        # routing domain is a search domain, so copy the DHCP domain into
+        # the list too. Then the link keeps its current domains.
+        add=""
+        if ((!others)); then
+          dhcp_domains="$(LC_ALL=C nmcli -g IP4.DOMAIN device show "$dev" 2>/dev/null)"
+          read -r -a dhcp <<<"''${dhcp_domains//|/ }"
+          for d in "''${dhcp[@]}"; do
+            d="''${d,,}"
+            d="''${d%.}"
+            # The DHCP server sets this value. Accept a plain domain only.
+            if [[ "$d" =~ ^($label\.)*$label$ ]]; then
+              add+="$d,"
+            fi
+          done
+        fi
+        add+="$domain"
+
+        if out="$(nmcli --wait 10 device modify "$dev" +ipv4.dns-search "$add" 2>&1)"; then
           log info "Added the control-server routing domain to $dev."
         else
           log warning "nmcli device modify $dev failed: $out"
