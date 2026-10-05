@@ -42,11 +42,18 @@ let
   '';
 
   # Yank filter: strip the single leading U+0020 (space) that pi's card
-  # rendering paints into every terminal buffer cell, but only when the
-  # entire selection looks like a pi card (every non-empty line begins with
-  # a space). When any non-empty line starts with a non-space character the
-  # whole selection is passed through verbatim so indented code, ls -la
-  # output, and other left-aligned content is never modified.
+  # rendering paints into every terminal buffer cell. Line 1 is excluded
+  # from the check because a `v` selection can start at any column. The
+  # strip applies only when every non-empty line after line 1 begins with
+  # a space; it then removes one leading space from every line that has one,
+  # line 1 included. When any non-empty line after line 1 starts with a
+  # non-space character the selection passes through verbatim, so indented
+  # code, ls -la output, and other left-aligned content is never modified.
+  # Empty lines stay in place.
+  #
+  # The binding uses copy-pipe-and-cancel -C -P, so tmux itself copies
+  # nothing. The filter output goes to `tmux load-buffer -w -`, which
+  # fills the paste buffer and sends the same text to the clipboard (OSC 52).
   #
   # Only U+0020 is handled. U+0009 (tab), U+00A0 (non-breaking space), and
   # box-drawing characters are treated as content and force the no-strip
@@ -55,7 +62,7 @@ let
   yankStripAwk = pkgs.writeText "prism-tmux-yank-strip.awk" ''
     {
       lines[NR] = $0
-      if ($0 != "" && substr($0, 1, 1) != " ") any_no_lead = 1
+      if (NR > 1 && $0 != "" && substr($0, 1, 1) != " ") any_no_lead = 1
     }
     END {
       for (i = 1; i <= NR; i++) {
@@ -64,8 +71,10 @@ let
       }
     }
   '';
+  # copy-pipe jobs inherit TMUX from the server, so load-buffer reaches the
+  # same server.
   yankStrip = pkgs.writeShellScript "prism-tmux-yank-strip" ''
-    exec ${pkgs.gawk}/bin/awk -f ${yankStripAwk}
+    ${pkgs.gawk}/bin/awk -f ${yankStripAwk} | ${pkgs.tmux}/bin/tmux load-buffer -w -
   '';
 
   # Host-side clipboard paste bridge script for sandboxed agent panes.
@@ -404,7 +413,7 @@ in
               set -g mode-keys vi
               bind-key -T copy-mode-vi 'v' send -X begin-selection
               bind-key -T copy-mode-vi 'V' send -X select-line
-              bind-key -T copy-mode-vi 'y' send -X copy-pipe-and-cancel "${yankStrip}"
+              bind-key -T copy-mode-vi 'y' send -X copy-pipe-and-cancel -C -P "${yankStrip}"
               bind-key -T copy-mode-vi 'q' send -X cancel
               bind-key -T copy-mode-vi Escape send -X cancel
             '';
