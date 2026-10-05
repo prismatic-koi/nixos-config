@@ -354,6 +354,8 @@
         theme = config.theme.name;
         treeFilterMode = "default";
         quietStartup = true;
+        tuiMode = "regular";
+        outputPad = 0;
         enableInstallTelemetry = false;
         warnings = {
           anthropicExtraUsage = false;
