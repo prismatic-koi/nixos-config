@@ -282,7 +282,7 @@ content as:
 ```
 
 The ticket description itself takes Markdown via `contentFormat: markdown`
-on the createJiraIssue / updateJiraIssue tools.
+on the createJiraIssue / editJiraIssue tools.
 
 ## Edits to an existing CR
 
