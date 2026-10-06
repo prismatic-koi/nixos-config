@@ -57,9 +57,7 @@
                 # purpose. The alias only reaches interactive shells; envVars is
                 # the channel that actually reaches prism-spawned agents (it is
                 # serialised as agent_env_vars in profiles.json and applied by
-                # all three isolators). ATLASSIAN_DEFAULT_CLOUD_ID goes through
-                # the alias and therefore does NOT reach spawned agents — a
-                # pre-existing gap this deliberately does not copy.
+                # all three isolators).
                 #
                 # Values are injected verbatim (internal/container/env.go — no
                 # shell in the loop), so a "~/" or "$HOME/" entry arrives
@@ -92,6 +90,18 @@
               )
               {
                 ATLASSIAN_MCP_EAGER_ROLES = lib.concatStringsSep ":" config.nx.programs.prism.pi.atlassian.eagerRoles;
+              }
+          //
+            # The zsh `pi` alias reaches interactive shells only. Without this
+            # entry, prism-spawned agents get no default and every Atlassian
+            # tool schema marks cloudId as required (issue #3052).
+            lib.optionalAttrs
+              (
+                config.nx.programs.prism.pi.atlassian.enable
+                && config.nx.programs.prism.pi.atlassian.defaultCloudId != ""
+              )
+              {
+                ATLASSIAN_DEFAULT_CLOUD_ID = config.nx.programs.prism.pi.atlassian.defaultCloudId;
               }
           //
             lib.optionalAttrs

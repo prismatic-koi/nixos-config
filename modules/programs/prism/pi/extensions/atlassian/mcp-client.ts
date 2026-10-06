@@ -16,7 +16,7 @@ const DEBUG = process.env.ATLASSIAN_MCP_DEBUG === "1"
 // Default cloudId (Issue #3)
 // ---------------------------------------------------------------------------
 
-// Set via ATLASSIAN_DEFAULT_CLOUD_ID (injected from Nix option nx.programs.prism.atlassian.defaultCloudId).
+// Set via ATLASSIAN_DEFAULT_CLOUD_ID (injected from Nix option nx.programs.prism.pi.atlassian.defaultCloudId).
 // When set, every tool call that omits cloudId has the default injected automatically.
 export function getDefaultCloudId(): string | undefined {
   return process.env.ATLASSIAN_DEFAULT_CLOUD_ID || undefined

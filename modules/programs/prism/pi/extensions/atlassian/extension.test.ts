@@ -83,6 +83,7 @@ function makeDeps(
     connectFails?: boolean
     env?: Record<string, string | undefined>
     defaultCloudId?: string
+    toolResponses?: Record<string, string>
   } = {},
 ): DepRecorder {
   const rec: DepRecorder = {
@@ -103,7 +104,8 @@ function makeDeps(
     },
     async callTool(name, args) {
       rec.toolCalls.push({ name, args })
-      return { content: [{ type: "text", text: `{"ok":"${name}"}` }] }
+      const text = overrides.toolResponses?.[name] ?? `{"ok":"${name}"}`
+      return { content: [{ type: "text", text }] }
     },
   }
 
@@ -230,6 +232,47 @@ describe("session_start defers everything behind activate_atlassian", () => {
       { name: "searchJiraIssuesUsingJql", args: { jql: "project = PLAT" } },
     ])
     assert.equal(result.isError, undefined)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// transitionJiraIssueByName argument shape (issue #3052)
+// ---------------------------------------------------------------------------
+
+describe("transitionJiraIssueByName", () => {
+  it("sends transition: { id } to transitionJiraIssue, not transitionId", async () => {
+    const rec = makeDeps({
+      defaultCloudId: "cloud-1",
+      toolResponses: {
+        getTransitionsForJiraIssue: JSON.stringify({
+          transitions: [
+            { id: "21", name: "In Progress" },
+            { id: "41", name: "Done" },
+          ],
+        }),
+      },
+    })
+    const ext = createAtlassianExtension(rec.deps)
+    const host = makeHost()
+    ext.onSessionStart(host.host, makeCtx().ctx)
+    await activateVia(host)
+
+    const byName = host.registered.find((t) => t.name === "transitionJiraIssueByName")
+    assert.ok(byName)
+    const result = await byName.execute(
+      "call-1",
+      { issueIdOrKey: "PLAT-1183", transitionName: "done" },
+      undefined,
+    )
+
+    assert.equal(result.isError, undefined)
+    const call = rec.toolCalls.find((c) => c.name === "transitionJiraIssue")
+    assert.ok(call, "the wrapper must call transitionJiraIssue")
+    assert.deepEqual(call.args, {
+      issueIdOrKey: "PLAT-1183",
+      transition: { id: "41" },
+      cloudId: "cloud-1",
+    })
   })
 })
 

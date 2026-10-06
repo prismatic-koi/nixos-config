@@ -417,7 +417,9 @@ function registerTransitionByNameTool(deps: ExtensionDeps, state: State, host: T
       // Step 3: call transitionJiraIssue with the resolved ID (auth-retry wrapped — #2389)
       let transitionResult: McpCallResult
       try {
-        const args: Record<string, unknown> = { issueIdOrKey, transitionId: match.id }
+        // The upstream schema requires `transition: { id }`. A top-level
+        // `transitionId` fails validation with "Required at transition".
+        const args: Record<string, unknown> = { issueIdOrKey, transition: { id: match.id } }
         if (cloudId) args["cloudId"] = cloudId
         transitionResult = await callToolWithAuthRetry(session, auth, "transitionJiraIssue", args)
       } catch (err) {
