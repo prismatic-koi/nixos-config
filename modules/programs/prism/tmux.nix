@@ -51,6 +51,12 @@ let
   # code, ls -la output, and other left-aligned content is never modified.
   # Empty lines stay in place.
   #
+  # Before either step, trailing U+0020 is removed from every line. Pi pads
+  # each rendered line with spaces to the pane width (pi-tui Markdown.render
+  # in components/markdown.js, and Text.render in components/text.js), so
+  # copied lines would otherwise carry that padding. A line that held only
+  # padding becomes empty.
+  #
   # The binding uses copy-pipe-and-cancel -C -P, so tmux itself copies
   # nothing. The filter output goes to `tmux load-buffer -w -`, which
   # fills the paste buffer and sends the same text to the clipboard (OSC 52).
@@ -61,6 +67,7 @@ let
   # glyph for its card left edge.
   yankStripAwk = pkgs.writeText "prism-tmux-yank-strip.awk" ''
     {
+      sub(/ +$/, "")
       lines[NR] = $0
       if (NR > 1 && $0 != "" && substr($0, 1, 1) != " ") any_no_lead = 1
     }
