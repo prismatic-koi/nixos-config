@@ -326,9 +326,8 @@ The allowlist is delivered through `nx.programs.prism.agent.envVars`, **not**
 the zsh alias. The alias only reaches interactive shells;
 `agent.envVars` is the channel that actually reaches prism-spawned agents (it
 is serialised as `agent_env_vars` in profiles.json and applied by all three
-isolators). `ATLASSIAN_DEFAULT_CLOUD_ID` goes through the alias and therefore
-does *not* reach spawned agents — that is a pre-existing gap in the Atlassian
-integration and a precedent this extension deliberately does not copy.
+isolators). `ATLASSIAN_DEFAULT_CLOUD_ID` uses the same channel, in addition to
+the alias (issue #3052).
 
 `process.cwd()` is used rather than `$PRISM_WORKTREE`: it says the same thing
 in every mode we run in (bwrap passes `--chdir <worktree>`; sandbox-exec and
