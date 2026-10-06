@@ -96,7 +96,7 @@ specific audience expectation.
 > the IDs as a snapshot, not a specification. Pattern worth remembering:
 > the ITSM-native fields (Change Risk, Approvers, Team, Start date) live
 > in the `customfield_100xx` range, while the custom CH change-management
-> fields live in the `customfield_111xx` range. Mixing the two ranges is
+> fields live in the `customfield_111xx` and `customfield_112xx` ranges. Mixing the two ranges is
 > the most common source of hard API failures when creating a CR.
 
 ### Change Category (`customfield_11130`)
@@ -134,39 +134,39 @@ Not ARNs.
 
 ### Business impact during change (`customfield_11133`)
 
-ADF format. One short paragraph. State whether users see anything, whether
+Rich text (markdown). One short paragraph. State whether users see anything, whether
 there is a service interruption, whether there are dropped requests, and
 the expected propagation window. Be specific about durations.
 
 ### Communication plan (`customfield_11134`)
 
-ADF format, numbered list. Cover: who is notified before the change, who
+Rich text (markdown), numbered list. Cover: who is notified before the change, who
 is notified at apply time, who is notified after, and whether customer
 communication is required. Include the channel (Slack, email, etc.).
 
 ### Pre-implementation Steps (`customfield_11135`)
 
-ADF format, numbered list. The engineer's prep work. Include the exact
+Rich text (markdown), numbered list. The engineer's prep work. Include the exact
 CLI commands as code blocks (`bash` language). Cover: dependencies on
 other tickets, downloading the current state for rollback, building the
 new state, attaching artefacts for peer review.
 
 ### Implementation steps (`customfield_11136`)
 
-ADF format, numbered list. The actual apply. Include the exact CLI
+Rich text (markdown), numbered list. The actual apply. Include the exact CLI
 commands as code blocks. Capture any returned tokens or IDs needed for
 rollback into the ticket as a step.
 
 ### Rollback Plan (`customfield_11137`)
 
-ADF format. Lead with how long rollback takes and whether it has any
+Rich text (markdown). Lead with how long rollback takes and whether it has any
 side effects. Include the exact CLI command. State explicitly what the
 post-rollback state is and that it does not introduce new risk - it
 returns the system to the current state, not to some untested third state.
 
 ### Pre-change testing (`customfield_11138`)
 
-ADF format. Describe where and how the change has been rehearsed. If the
+Rich text (markdown). Describe where and how the change has been rehearsed. If the
 change has been soaked in staging, name the period and cite CloudWatch
 or equivalent telemetry as evidence the change has been exercised, not
 just deployed. If the change has not been rehearsed, say so plainly and
@@ -174,7 +174,7 @@ justify why a CR is still appropriate.
 
 ### Post-change validation (`customfield_11139`)
 
-ADF format, numbered list. Each check must specify what is being
+Rich text (markdown), numbered list. Each check must specify what is being
 verified, where the evidence comes from, and a time window
 (e.g. "within 5 minutes of apply", "for 30 minutes after apply").
 Include at least one positive check (the thing we wanted to fix is
@@ -194,6 +194,48 @@ pointer in this field. Example: `See description for full conditions:
 PLAT-NNN prereqs recorded; peer reviewer signs off on diff; scope stays
 Normal.`
 
+### Security Impact Level (`customfield_11244`)
+
+Select list. The CH approver requires a value on every CR. The API exposes
+no allowed values, and it rejects `{"value": "Low"}` with `Specify a valid
+value`.
+
+Do not set this field. Ask the human to set it in the Jira UI. Keep this rule
+until a Jira admin configures the options.
+
+### Security Impact Description (`customfield_11245`)
+
+Text field. The CH approver requires a value on every CR. Write one or two
+sentences:
+
+- If the change has a security impact, state the impact. Then state why it
+  is acceptable, or which controls mitigate it.
+- If the change has no security impact, state why.
+- If the change widens access, do not write "none". Write "Minimal" and give
+  the reason.
+
+Example (CH-242): `Minimal. The change adds network access from cluster
+nodes to two internal services only: DNS on port 53 and the KEDA operator on
+port 9666. Nothing outside the cluster is opened.`
+
+### Fields the agent fills
+
+- Description
+- Change Category (`customfield_11130`)
+- Change Risk (`customfield_10006`)
+- Systems/Service Affected (`customfield_11132`)
+- Business impact during change (`customfield_11133`)
+- Communication plan (`customfield_11134`)
+- Pre-implementation Steps (`customfield_11135`)
+- Implementation steps (`customfield_11136`)
+- Rollback Plan (`customfield_11137`)
+- Pre-change testing (`customfield_11138`)
+- Post-change validation (`customfield_11139`)
+- Approval conditions (`customfield_11140`)
+- Security Impact Description (`customfield_11245`)
+- Security Impact Level (`customfield_11244`) - do not set it. Ask the human
+  to set it in the UI until a Jira admin configures the options.
+
 ### Fields the human must fill
 
 The agent must not guess these. Flag them in the response to the human
@@ -205,15 +247,21 @@ so they can fill in:
 - Target Implementation Date/Time (`customfield_11131`)
 - Start date (`customfield_10015`)
 - Team (`customfield_10001`)
+- Security Impact Level (`customfield_11244`) - see the field section above.
 - Related issues (`customfield_11142`) - optional. Link related Jira
   issues (typically the engineering PLAT-* ticket, or a parent CR)
   when the CR is part of a chain.
 
-## ADF formatting note
+## Rich-text field format
 
-Most CH custom text fields require Atlassian Document Format (ADF) JSON,
-not Markdown. The error message is `Operation value must be an Atlassian
-Document`. Wrap content as:
+By default, send the CH custom text fields as plain markdown strings with
+`contentFormat: "markdown"` on `createJiraIssue` or `editJiraIssue`. This
+worked for `customfield_11133` to `customfield_11139` on CH-235 to CH-238 and
+CH-242. Code blocks and numbered lists render.
+
+ADF is the fallback. If a field rejects markdown with `Operation value must
+be an Atlassian Document`, send Atlassian Document Format (ADF) JSON. Wrap
+content as:
 
 ```json
 {
@@ -234,8 +282,31 @@ Document`. Wrap content as:
 ```
 
 The ticket description itself takes Markdown via `contentFormat: markdown`
-on the createJiraIssue / updateJiraIssue tools. Only the custom fields
-need ADF.
+on the createJiraIssue / updateJiraIssue tools.
+
+## Edits to an existing CR
+
+CAUTION: An update to `description` replaces the whole field. It does not
+merge with the current text.
+
+If the ticket status is "under review", or a human is the assignee, do one
+of these:
+
+- Update only the custom fields. Do not send `description`.
+- Tell the human what you want to change in the description before you
+  change it.
+
+This prevents an overwrite of edits that the human made.
+
+## Done transition
+
+To close a CH ticket, call `transitionJiraIssue` with transition id `41`
+("Done"). Send no fields. The transition has a screen, but the call works
+without fields.
+
+```
+transitionJiraIssue(issueIdOrKey: "CH-242", transition: {"id": "41"})
+```
 
 If `createJiraIssue` is not in your tool list, the Atlassian family is
 deferred behind `activate_atlassian` (issue #2532) — call it once, with no
@@ -251,9 +322,30 @@ end-to-end before drafting a similar CR. It demonstrates:
 - Plain-English mechanism summary with full CLI in the custom fields.
 - "What's NOT changing" section calling out adjacent work tracked
   elsewhere (PLAT-328).
-- ADF for every custom text field, with `codeBlock` for CLI.
 - Approval conditions truncated to 255 chars in the field, full text in
   the description.
+
+CH-5 is a manual change with the AWS CLI. For a change that IaC or GitOps
+applies, the Implementation steps field must show how CI or Flux applies the
+change after merge. Do not show a local `tofu plan` or `tofu apply`. An agent
+cannot run them (see the `infrastructure-as-code` skill).
+
+OpenTofu repo on the shared workflow (current examples: CH-235, CH-236):
+
+1. Merge the pull request to main in the `<repo>` repo.
+2. CI starts the production OpenTofu apply job. Approve the production
+   GitHub Environment deployment when it asks.
+3. The apply job recomputes the plan and compares it with the reviewed plan
+   comment. If the two differ, the job does not apply. Do not re-run a
+   failed apply job. Open a new pull request.
+4. Record the apply result on this ticket.
+
+Flux path (current examples: CH-237, CH-238, CH-242):
+
+1. Merge the pull request to main in the `<repo>` repo.
+2. Flux applies the change. Make sure that the Flux Kustomization shows the
+   merge commit and that the HelmRelease or resource reports Ready.
+3. Record the result on this ticket.
 
 ## When NOT to load this skill
 

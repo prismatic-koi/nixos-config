@@ -64,7 +64,9 @@ Atlassian site). How you handle this depends on how the host is configured:
 
 If `nx.programs.prism.pi.atlassian.defaultCloudId` is set in the NixOS config
 (exposed as `ATLASSIAN_DEFAULT_CLOUD_ID`), the extension automatically injects
-the default cloud ID into every tool call that omits it. In this setup:
+the default cloud ID into every tool call that omits it. The variable reaches
+prism-spawned agents through `nx.programs.prism.agent.envVars`, and
+interactive `pi` through the zsh alias. In this setup:
 
 - **Do not pass `cloudId`** on tool calls — it is injected automatically.
 - **Do not call `getCloudId` or `getAccessibleAtlassianResources` first** —
@@ -79,8 +81,11 @@ getJiraIssue(issueIdOrKey: "PLAT-182")
 
 **Multi-site setup (no default configured)**
 
-If no default is configured, `cloudId` is required on every call. Discover
-valid cloud IDs with:
+If no default is configured, the tool schemas mark `cloudId` as required, and
+the tool descriptions do not mention a default. Pass `cloudId` on every call.
+For `thankyoupayroll.atlassian.net`, pass
+`08986a80-a6ed-4480-ae2d-4a439d50d71b`. For other sites, discover valid cloud
+IDs with:
 ```
 getAccessibleAtlassianResources()
 # or
@@ -146,7 +151,24 @@ the tool family" above.
 searchJiraIssuesUsingJql(jql: "project = FOO AND status != Done ORDER BY created DESC", maxResults: 20)
 
 # Fetch a specific issue
-getJiraIssue(issueKey: "FOO-123")
+getJiraIssue(issueIdOrKey: "FOO-123")
+```
+
+### Jira: find custom field IDs
+
+To find the ID of a custom field, call `getJiraIssueTypeMetaWithFields` with
+`requiredFieldsOnly: false`. Without this argument, the result can omit
+optional custom fields.
+
+```
+getJiraIssueTypeMetaWithFields(projectIdOrKey: "CH", issueTypeId: "10008", requiredFieldsOnly: false)
+```
+
+To find issues where a custom field has a value, use the JQL clause
+`cf[NNNNN] IS NOT EMPTY`, where `NNNNN` is the numeric part of the field ID:
+
+```
+searchJiraIssuesUsingJql(jql: "project = CH AND cf[11245] IS NOT EMPTY")
 ```
 
 ### Jira: create an issue
@@ -154,7 +176,7 @@ getJiraIssue(issueKey: "FOO-123")
 ```
 createJiraIssue(
   projectKey: "FOO",
-  issueType: "Task",
+  issueTypeName: "Task",
   summary: "Investigate memory leak in worker pool",
   description: "## What happened\n\nSaw OOM errors in production...",
 )
@@ -164,14 +186,14 @@ createJiraIssue(
 
 ```
 # Comment
-addCommentToJiraIssue(issueKey: "FOO-123", comment: "Confirmed fixed in staging.")
+addCommentToJiraIssue(issueIdOrKey: "FOO-123", commentBody: "Confirmed fixed in staging.")
 
 # Transition by name (preferred — no need to look up transition IDs)
 transitionJiraIssueByName(issueIdOrKey: "FOO-123", transitionName: "In Progress")
 
 # Or: list transitions, then transition by ID
-getTransitionsForJiraIssue(issueKey: "FOO-123")
-transitionJiraIssue(issueKey: "FOO-123", transitionId: "31")
+getTransitionsForJiraIssue(issueIdOrKey: "FOO-123")
+transitionJiraIssue(issueIdOrKey: "FOO-123", transition: {"id": "31"})
 ```
 
 The `transitionJiraIssueByName` tool resolves the transition name
