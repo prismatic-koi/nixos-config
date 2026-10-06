@@ -41,8 +41,14 @@ let
     esac
   '';
 
-  # Yank filter: strip the single leading U+0020 (space) that pi's card
-  # rendering paints into every terminal buffer cell. Line 1 is excluded
+  # Yank filter: strip the one leading U+0020 (space) of pi padding. Pi's
+  # default outputPad (1), markdown.codeBlockIndent = "" (set in pi.nix),
+  # and the hard-coded 1-cell padding in tool boxes make every line pi
+  # renders begin with exactly one space. The strip removes only that
+  # space, so code indentation stays. The pi.nix settings and this filter
+  # depend on each other: if one changes, check the other.
+  #
+  # Line 1 is excluded
   # from the check because a `v` selection can start at any column. The
   # strip applies only when every non-empty line after line 1 begins with
   # a space; it then removes one leading space from every line that has one,

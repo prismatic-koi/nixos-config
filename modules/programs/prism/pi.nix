@@ -355,7 +355,6 @@
         treeFilterMode = "default";
         quietStartup = true;
         tuiMode = "regular";
-        outputPad = 0;
         markdown.codeBlockIndent = "";
         enableInstallTelemetry = false;
         warnings = {
