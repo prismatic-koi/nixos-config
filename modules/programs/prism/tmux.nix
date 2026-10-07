@@ -41,21 +41,23 @@ let
     esac
   '';
 
-  # Yank filter: strip the one leading U+0020 (space) of pi padding. Pi's
+  # Yank filter: remove the common leading indent (U+0020 only). Pi's
   # default outputPad (1), markdown.codeBlockIndent = "" (set in pi.nix),
   # and the hard-coded 1-cell padding in tool boxes make every line pi
-  # renders begin with exactly one space. The strip removes only that
-  # space, so code indentation stays. The pi.nix settings and this filter
-  # depend on each other: if one changes, check the other.
+  # renders begin with at least one space. Nested blocks, such as a code
+  # block in a list item, add more indent to every line. The filter removes
+  # the minimum leading-space count, so relative indentation stays. The
+  # pi.nix settings and this filter depend on each other: if one changes,
+  # check the other.
   #
-  # Line 1 is excluded
-  # from the check because a `v` selection can start at any column. The
-  # strip applies only when every non-empty line after line 1 begins with
-  # a space; it then removes one leading space from every line that has one,
-  # line 1 included. When any non-empty line after line 1 starts with a
-  # non-space character the selection passes through verbatim, so indented
-  # code, ls -la output, and other left-aligned content is never modified.
-  # Empty lines stay in place.
+  # The minimum is taken over the non-empty lines that are counted. Lines
+  # 2..N are always counted. Line 1 is counted only if it starts with a
+  # space, because a `v` selection can start at any column. Each line then
+  # loses up to that many leading spaces (line 1 loses only what it has).
+  # When any counted line starts with a non-space character the minimum is
+  # 0 and the selection passes through verbatim, so ls -la output and other
+  # left-aligned content is never modified. Empty lines stay in place and
+  # do not affect the minimum.
   #
   # Before either step, trailing U+0020 is removed from every line. Pi pads
   # each rendered line with spaces to the pane width (pi-tui Markdown.render
@@ -72,15 +74,20 @@ let
   # branch. This is deliberate — revisit if pi ever uses a Unicode border
   # glyph for its card left edge.
   yankStripAwk = pkgs.writeText "prism-tmux-yank-strip.awk" ''
+    BEGIN { min = -1 }
     {
       sub(/ +$/, "")
       lines[NR] = $0
-      if (NR > 1 && $0 != "" && substr($0, 1, 1) != " ") any_no_lead = 1
+      if ($0 != "" && (NR > 1 || substr($0, 1, 1) == " ")) {
+        match($0, /^ */)
+        if (min < 0 || RLENGTH < min) min = RLENGTH
+      }
     }
     END {
+      if (min < 0) min = 0
       for (i = 1; i <= NR; i++) {
-        if (any_no_lead || substr(lines[i], 1, 1) != " ") print lines[i]
-        else print substr(lines[i], 2)
+        match(lines[i], /^ */)
+        print substr(lines[i], 1 + (RLENGTH < min ? RLENGTH : min))
       }
     }
   '';
