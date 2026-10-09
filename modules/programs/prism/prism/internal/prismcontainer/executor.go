@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -150,7 +151,55 @@ func scopeEnv() []string {
 	return env
 }
 
+// BuildPolicy is the signature policy of a Linux build. It rejects every
+// transport except a registry and the local store. The Containerfile
+// check refuses the other transports before podman runs. The policy also
+// covers what the check cannot see: an ONBUILD instruction of a base
+// image. The macOS podman client has no --signature-policy.
+const BuildPolicy = `{
+  "default": [{"type": "reject"}],
+  "transports": {
+    "docker": {"": [{"type": "insecureAcceptAnything"}]},
+    "containers-storage": {"": [{"type": "insecureAcceptAnything"}]}
+  }
+}
+`
+
+// writeBuildPolicy writes BuildPolicy into the prism-container state tree
+// and returns its path. A rename puts the file in place, so a build that
+// reads it at the same time reads a whole file.
+func writeBuildPolicy() (string, error) {
+	path, err := container.PrismContainerBuildPolicyPath()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".build-policy-")
+	if err != nil {
+		return "", err
+	}
+	_, werr := f.WriteString(BuildPolicy)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(f.Name(), path)
+	}
+	if werr != nil {
+		_ = os.Remove(f.Name())
+		return "", werr
+	}
+	return path, nil
+}
+
 func (e ScopeExecutor) Build(ctx context.Context, unit string, out io.Writer, args []string) (int, error) {
+	policy, err := writeBuildPolicy()
+	if err != nil {
+		return -1, fmt.Errorf("write the signature policy of the build: %w", err)
+	}
+	args = insertAfterBuild(args, "--signature-policy", policy)
 	runArgs := []string{
 		"--user", "--scope", "--collect", "--quiet",
 		"--unit", unit,

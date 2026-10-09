@@ -92,6 +92,12 @@ func newBuildSuffix() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+// buildName returns the name of the marker and of the context copy of one
+// build, with no file suffix.
+func buildName(instanceID, suffix string) string {
+	return instanceID + "." + suffix
+}
+
 // createBuildMarker creates and locks the marker of one build. The caller
 // holds the host lock, so that the next limit check counts the marker.
 //
@@ -116,7 +122,7 @@ func createBuildMarker(instanceID, suffix string) (*buildMarker, error) {
 		_ = os.Remove(f.Name())
 		return nil, fmt.Errorf("lock build marker: %w", err)
 	}
-	final := filepath.Join(dir, instanceID+"."+suffix+buildMarkerSuffix)
+	final := filepath.Join(dir, buildName(instanceID, suffix)+buildMarkerSuffix)
 	if err := os.Rename(f.Name(), final); err != nil {
 		_ = f.Close()
 		_ = os.Remove(f.Name())
@@ -136,10 +142,48 @@ func (m *buildMarker) release() {
 	m.f = nil
 }
 
+// markerHeld reports whether a build holds the marker at path. A missing
+// marker is not held. Any lock error other than success counts as held,
+// so that an error cannot open a place over the limit.
+func markerHeld(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return !errors.Is(err, fs.ErrNotExist)
+	}
+	defer f.Close()
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB) != nil
+}
+
+// removeStaleBuildCopies removes each context copy whose build marker is
+// not held. A build creates its marker before its copy and releases the
+// marker after it removes the copy, so a copy with no held marker belongs
+// to a build whose prism process has ended. The copies are listed before
+// the markers are read, so a build that starts during the scan is safe.
+func removeStaleBuildCopies() {
+	stageDir, err := container.PrismContainerBuildStageDirPath()
+	if err != nil {
+		return
+	}
+	lockDir, err := container.PrismContainerBuildLockDirPath()
+	if err != nil {
+		return
+	}
+	entries, err := os.ReadDir(stageDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !markerHeld(filepath.Join(lockDir, e.Name()+buildMarkerSuffix)) {
+			_ = os.RemoveAll(filepath.Join(stageDir, e.Name()))
+		}
+	}
+}
+
 // runningBuilds returns the instance ID of each build that runs now, one
-// entry for each build. It removes the markers of builds whose prism
-// process has ended.
+// entry for each build. It removes the markers and the context copies of
+// builds whose prism process has ended.
 func runningBuilds() ([]string, error) {
+	removeStaleBuildCopies()
 	dir, err := container.PrismContainerBuildLockDirPath()
 	if err != nil {
 		return nil, err
@@ -159,18 +203,11 @@ func runningBuilds() ([]string, error) {
 		}
 		id, _, _ := strings.Cut(name, ".")
 		path := filepath.Join(dir, name)
-		f, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		// Any lock error other than success counts as a running build, so
-		// that an error cannot open a place over the limit.
-		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err == nil {
-			_ = os.Remove(path)
-		} else {
+		if markerHeld(path) {
 			ids = append(ids, id)
+		} else {
+			_ = os.Remove(path)
 		}
-		_ = f.Close()
 	}
 	return ids, nil
 }

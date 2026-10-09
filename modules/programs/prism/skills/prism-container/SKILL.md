@@ -204,10 +204,39 @@ not a lower-case letter or a digit becomes `-`.
 | `124` | The `--timeout` expired. Prism stopped the build. |
 | `125` | Prism refused the request, or podman failed. The last line on stderr gives the reason. |
 
+### The image sources of a build
+
+A build reads images for `FROM`, for `COPY --from=`, and for
+`RUN --mount=from=`. Podman reads a source that starts with a transport
+name and `:` from that transport, and several transports read a path on
+the host. For example, `tarball:` takes any tar archive as a layer, and
+`atomic:` reads the kubeconfig of the host. Thus, before podman runs,
+prism reads the copy of the Containerfile and refuses a source that names
+one of these transports: `atomic`, `containers-storage`, `dir`,
+`docker-archive`, `docker-daemon`, `oci`, `oci-archive`, `ostree`, `sif`,
+and `tarball`. A registry image (`alpine`, `docker://alpine`,
+`quay.io/org/img`), a local image (`localhost/prism-...`), and a build
+stage are not refused.
+
+The check also refuses these forms, because it cannot read them:
+
+- A variable in a `--from` or `--mount` flag, for example
+  `COPY --from=$BUILDER`. A base image can set an environment variable of
+  any name. Use the stage name or the image name directly.
+- In a `FROM` line, any `$` other than `$VAR`, `${VAR}`, `${VAR:-word}`,
+  `${VAR-word}`, `${VAR:+word}`, and `${VAR+word}`. The check expands these
+  forms with every value that an `ARG`, an `ENV`, a `--build-arg`, or a
+  platform argument gives.
+- A parser directive `# escape=` with a character other than `\`.
+
+The check reads more than podman does. Thus it can refuse a line that
+podman does not read as an image source, for example a heredoc line that
+starts with `FROM`. The refusal names the line.
+
 ### What the Containerfile can do
 
-The Containerfile is yours, so prism does not limit its instructions.
-These facts apply:
+The Containerfile is yours, so prism does not limit its other
+instructions. These facts apply:
 
 - Each build step (`RUN`) has the memory, swap, CPU, and process limits of
   "Options that prism always sets".
@@ -225,11 +254,20 @@ same on Linux and on macOS. One fact is different:
 - On Linux, each build runs in a systemd user scope. At a timeout, and
   at `prism cleanup`, prism kills the scope. No process of the build
   continues.
+  The build also has a signature policy that refuses every image source
+  other than a registry and the local image store.
 - On macOS, the build runs in the podman machine VM. If a build step runs
   when the timeout expires, the step can continue inside the VM until it
   ends. Its memory and CPU limits still apply, and the VM size is the
   upper limit. `podman machine stop` removes it. `prism cleanup` cannot
-  stop it. Issue #3070 tracks a way to stop it.
+  stop it.
+- On macOS, the build has no signature policy. An `ONBUILD` instruction of
+  a base image runs instructions that are not in your Containerfile, so
+  the check cannot see them. Such an instruction can read a host path
+  through a transport. The podman machine mounts the macOS home directory
+  into the VM by default, so this can include macOS files.
+
+Issue #3070 tracks the two macOS differences.
 
 ## Options that prism always sets
 
@@ -269,6 +307,7 @@ outbound connections. It cannot publish a port.
 | `--layer-label` | `prism.instance-id=<instance ID>` | The owner of each intermediate image. |
 | `--tag` | `localhost/prism-...-<NAME>` | See "The image name". |
 | `--file`, `CONTEXT` | The copy on the host | See "The context copy". |
+| `--signature-policy` | A prism policy file on the host | Linux only. Refuses every image source other than a registry and the local store. See "The image sources of a build". |
 
 The process limit depends on the platform, because `podman build` has no
 `--pids-limit`:
@@ -391,6 +430,8 @@ markers. Like the audit directory, no sandbox can write them.
 | `refused: --tag ... is not a valid image tag` | Use a lower-case `NAME` or `NAME:TAG`. See "The image name". |
 | `refused: the build context holds more than 4 GiB` | Give a smaller `CONTEXT`, or list large directories in `.containerignore`. |
 | `refused: the build context changed while prism copied it` | Try again when nothing writes to the context. |
+| `refused: the Containerfile cannot be built: line N: ...` | Read the reason. Use a registry image, a local image, or a build stage, and give `--from` and `--mount` with no variable. See "The image sources of a build". |
+| `The signature policy of the build refused an image source` | A base image has an `ONBUILD` instruction that names a transport. Use a different base image. |
 
 ## How it works
 

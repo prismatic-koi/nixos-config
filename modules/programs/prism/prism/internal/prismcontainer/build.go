@@ -1,10 +1,12 @@
 package prismcontainer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/container"
@@ -127,25 +129,6 @@ func Build(ctx context.Context, d Deps, c Caller, req BuildRequest) BuildResult 
 		return finish(DecisionError, ExitRefused, false, "", msg)
 	}
 
-	// Check the limits before the copy, so that a refusal comes at once.
-	if msg, err := limitRefusal(runCtx, d.Runner, c.InstanceID, d.HostLimit); err != nil {
-		return limitCheckFailed(err)
-	} else if msg != "" {
-		return refuse(msg)
-	}
-
-	stage, err := stageBuild(runCtx, c.Worktree, paths)
-	if err != nil {
-		if runCtx.Err() != nil {
-			return stopped("")
-		}
-		return refuse(err.Error())
-	}
-	defer stage.remove()
-	for _, n := range stage.notes {
-		notes = joinMessages(notes, n)
-	}
-
 	lockPath, err := container.PrismContainerLockPath()
 	if err != nil {
 		return finish(DecisionError, ExitRefused, false, "", err.Error())
@@ -171,6 +154,28 @@ func Build(ctx context.Context, d Deps, c Caller, req BuildRequest) BuildResult 
 	}
 	defer marker.release()
 
+	// The copy gets the name of the marker and exists only while the
+	// marker is held, so a scan can remove the copy of a dead build.
+	stage, err := stageBuild(runCtx, c.Worktree, paths, buildName(c.InstanceID, suffix))
+	if err != nil {
+		if runCtx.Err() != nil {
+			return stopped("")
+		}
+		return refuse(err.Error())
+	}
+	defer stage.remove()
+	for _, n := range stage.notes {
+		notes = joinMessages(notes, n)
+	}
+	// Check the copy, which is what podman reads.
+	containerfile, err := os.ReadFile(stage.file)
+	if err != nil {
+		return finish(DecisionError, ExitRefused, false, "", "read the Containerfile copy: "+err.Error())
+	}
+	if err := checkContainerfile(containerfile, v.buildArgs); err != nil {
+		return refuse(err.Error())
+	}
+
 	args := buildArgs(c, v, image, stage.context, stage.file)
 	code, err := d.BuildExecutor.Build(runCtx, unit, output, args)
 	warning := ""
@@ -185,7 +190,11 @@ func Build(ctx context.Context, d Deps, c Caller, req BuildRequest) BuildResult 
 		return finish(DecisionError, ExitRefused, false, "", joinMessages("podman build did not complete: "+err.Error(), warning))
 	}
 	if code != 0 {
-		return finish(DecisionAllowed, code, true, "", joinMessages(fmt.Sprintf("the build failed: podman build exited %d", code), warning))
+		msg := fmt.Sprintf("the build failed: podman build exited %d", code)
+		if out, _ := output.snapshot(); bytes.Contains(out, []byte("rejected by policy")) {
+			msg += ". The signature policy of the build refused an image source: prism builds only from registry images, local images, and build stages. An ONBUILD instruction of a base image can name such a source"
+		}
+		return finish(DecisionAllowed, code, true, "", joinMessages(msg, warning))
 	}
 	return finish(DecisionAllowed, 0, true, image, warning)
 }

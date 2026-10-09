@@ -3,6 +3,7 @@ package prismcontainer
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/container"
 )
 
 // writeScript writes an executable shell script.
@@ -34,6 +37,7 @@ func fakeSystemd(t *testing.T) (ScopeExecutor, string) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("FAKE_SCOPE_DIR", dir)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	run := writeScript(t, dir, "systemd-run", `d=$FAKE_SCOPE_DIR
 printf '%s\n' "$@" > "$d/systemd-run.args"
 while [ "$#" -gt 0 ] && [ "$1" != prism-container-build ]; do shift; done
@@ -86,8 +90,12 @@ func TestScopeExecutor_Args(t *testing.T) {
 	if !slices.Equal(got[:len(want)], want) {
 		t.Errorf("systemd-run args = %q, want them to start with %q", got, want)
 	}
-	if podman := readLines(t, filepath.Join(dir, "podman.args")); !slices.Equal(podman, []string{"build", "--file", "/f", "/ctx"}) {
+	policy, _ := container.PrismContainerBuildPolicyPath()
+	if podman := readLines(t, filepath.Join(dir, "podman.args")); !slices.Equal(podman, []string{"build", "--signature-policy", policy, "--file", "/f", "/ctx"}) {
 		t.Errorf("podman args = %q", podman)
+	}
+	if data, err := os.ReadFile(policy); err != nil || string(data) != BuildPolicy {
+		t.Errorf("signature policy = %q, %v; want BuildPolicy", data, err)
 	}
 	// The scope is killed after every build, so that a build step that
 	// outlives podman stops too.
@@ -303,5 +311,87 @@ func TestRunningBuilds_StaleMarkerRemoved(t *testing.T) {
 	live.release()
 	if ids, _ := runningBuilds(); len(ids) != 0 {
 		t.Errorf("runningBuilds after release = %v, want none", ids)
+	}
+}
+
+// TestRunningBuilds_StaleCopyRemoved: a context copy whose build marker is
+// not held belongs to a dead build, and the next scan removes it. The copy
+// of a live build stays.
+func TestRunningBuilds_StaleCopyRemoved(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	const id = "0f0e0d0c-0b0a-4908-8706-050403020100"
+	live, err := createBuildMarker(id, "00000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer live.release()
+	stage, err := container.PrismContainerBuildStageDirPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveCopy := filepath.Join(stage, buildName(id, "00000001"))
+	deadCopy := filepath.Join(stage, buildName(id, "00000002"))
+	unlockedCopy := filepath.Join(stage, buildName(id, "00000003"))
+	for _, d := range []string{liveCopy, deadCopy, unlockedCopy} {
+		if err := os.MkdirAll(filepath.Join(d, "context"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lockDir, _ := container.PrismContainerBuildLockDirPath()
+	if err := os.WriteFile(filepath.Join(lockDir, buildName(id, "00000003")+buildMarkerSuffix), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runningBuilds(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(liveCopy); err != nil {
+		t.Errorf("copy of the live build removed: %v", err)
+	}
+	for _, d := range []string{deadCopy, unlockedCopy} {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Errorf("stale copy %s not removed: %v", d, err)
+		}
+	}
+}
+
+// TestBuildPolicy: the signature policy of a Linux build rejects every
+// transport except a registry and the local store.
+func TestBuildPolicy(t *testing.T) {
+	var policy struct {
+		Default []struct {
+			Type string `json:"type"`
+		} `json:"default"`
+		Transports map[string]map[string][]struct {
+			Type string `json:"type"`
+		} `json:"transports"`
+	}
+	if err := json.Unmarshal([]byte(BuildPolicy), &policy); err != nil {
+		t.Fatalf("BuildPolicy is not JSON: %v", err)
+	}
+	if len(policy.Default) != 1 || policy.Default[0].Type != "reject" {
+		t.Errorf("default = %+v, want [reject]", policy.Default)
+	}
+	var names []string
+	for name, scopes := range policy.Transports {
+		names = append(names, name)
+		if len(scopes) != 1 || len(scopes[""]) != 1 || scopes[""][0].Type != "insecureAcceptAnything" {
+			t.Errorf("transport %s = %+v, want one default scope that accepts", name, scopes)
+		}
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{"containers-storage", "docker"}) {
+		t.Errorf("accepted transports = %v, want [containers-storage docker]", names)
+	}
+	for _, refused := range buildRefusedTransports() {
+		// The build commits to the local store and reads local images
+		// from it, so the policy must accept containers-storage. The
+		// check refuses only a Containerfile that names it.
+		if refused == "containers-storage" {
+			continue
+		}
+		if _, ok := policy.Transports[refused]; ok {
+			t.Errorf("the policy accepts the refused transport %s", refused)
+		}
 	}
 }

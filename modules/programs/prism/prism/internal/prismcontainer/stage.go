@@ -113,9 +113,9 @@ func resolveBuildPaths(worktree string, v validBuild) (buildPaths, error) {
 }
 
 // stageBuild copies the Containerfile and the context of p from the
-// worktree into a new directory in the prism-container state tree. The
+// worktree into the directory name in the prism-container state tree. The
 // caller removes the copy.
-func stageBuild(ctx context.Context, worktree string, p buildPaths) (*stagedBuild, error) {
+func stageBuild(ctx context.Context, worktree string, p buildPaths, name string) (*stagedBuild, error) {
 	parent, err := container.PrismContainerBuildStageDirPath()
 	if err != nil {
 		return nil, err
@@ -123,8 +123,8 @@ func stageBuild(ctx context.Context, worktree string, p buildPaths) (*stagedBuil
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return nil, fmt.Errorf("create the build copy dir: %w", err)
 	}
-	dir, err := os.MkdirTemp(parent, "build-")
-	if err != nil {
+	dir := filepath.Join(parent, name)
+	if err := os.Mkdir(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create the build copy dir: %w", err)
 	}
 	s := &stagedBuild{

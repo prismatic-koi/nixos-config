@@ -20,7 +20,9 @@ import (
 // runs, so a session that never used `prism container` causes no podman
 // command and no warning. A failure is a warning, never a cleanup error. A
 // container that a failed sweep leaves behind still stops and removes
-// itself: podman's own --timeout and --rm are in its argument vector.
+// itself: podman's own --timeout and --rm are in its argument vector. An
+// image that a failed sweep leaves behind stays: cleanup removes the audit
+// dir whatever the sweep result, so no later cleanup finds the image.
 func sweepPrismContainersForSession(session string) {
 	d, err := openDB()
 	if err != nil {

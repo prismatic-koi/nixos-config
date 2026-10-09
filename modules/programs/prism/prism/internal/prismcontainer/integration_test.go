@@ -329,3 +329,34 @@ func TestIntegration_BuildImagesRemovedBySweep(t *testing.T) {
 		t.Errorf("images with the label of the session remain: %s", s)
 	}
 }
+
+// TestIntegration_BuildOnbuildTransportRefusedByPolicy: an ONBUILD
+// instruction of a base image names a tarball: source. The Containerfile
+// check cannot see it. On Linux the signature policy of the build refuses
+// it, and the result names the cause. On macOS it is a known residual.
+func TestIntegration_BuildOnbuildTransportRefusedByPolicy(t *testing.T) {
+	c := integrationCaller(t)
+	if runtime.GOOS != "linux" {
+		t.Skip("the signature policy applies to Linux builds only")
+	}
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret.tar")
+	cmd := exec.Command("tar", "-cf", secret, "-C", dir, ".")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("tar: %v: %s", err, out)
+	}
+	base := "localhost/prism-itest-onbuild-" + strings.ReplaceAll(c.InstanceID, "-", "")
+	baseFile := filepath.Join(dir, "Containerfile.base")
+	if err := os.WriteFile(baseFile, []byte("FROM alpine\nONBUILD COPY --from=tarball:"+secret+" / /leak\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("podman", "build", "--format", "docker", "-t", base, "-f", baseFile, dir).CombinedOutput(); err != nil {
+		t.Fatalf("build the base image: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("podman", "rmi", "--force", base).Run() })
+
+	res := buildReal(t, c, "FROM "+base+"\n", prismcontainer.BuildRequest{})
+	if res.ExitCode == 0 || !strings.Contains(res.Message, "signature policy of the build refused an image source") {
+		t.Errorf("build = %+v (output %s), want the policy refusal", res, res.Output)
+	}
+}

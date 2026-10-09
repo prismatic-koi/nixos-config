@@ -208,3 +208,25 @@ func TestHostAPI_ContainerBuild_GetNotAllowed(t *testing.T) {
 		t.Errorf("GET status = %d, want 405", rr.Code)
 	}
 }
+
+// TestHostAPI_ContainerBuild_TransportRefused: the Containerfile check
+// refuses a transport reference on the sidecar route, before podman runs.
+func TestHostAPI_ContainerBuild_TransportRefused(t *testing.T) {
+	fake := &prismcontainertest.Fake{}
+	sc := newContainerBuildTestSidecar(t, "worker", fake)
+	if err := os.WriteFile(filepath.Join(sc.cfg.Worktree, "Containerfile"), []byte("ARG SRC=tarball:/home/u/backup.tar.gz\nFROM ${SRC}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rr := doHostAPI(t, sc, http.MethodPost, "/container/build", `{}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var res prismcontainer.BuildResult
+	decodeJSONBody(t, rr, &res)
+	if res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, `the "tarball" transport`) {
+		t.Errorf("result = %+v, want the transport refusal", res)
+	}
+	if calls := fake.BuildCalls(); len(calls) != 0 {
+		t.Errorf("podman build ran: %q", calls)
+	}
+}

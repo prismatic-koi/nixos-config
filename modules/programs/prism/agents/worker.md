@@ -94,7 +94,7 @@ Before you write or edit a comment, load the `comment-discipline` skill.
 
 ## Containers
 
-Before you run a container, load the `prism-container` skill.
+Before you run a container or build an image, load the `prism-container` skill.
 
 ## Quality gates
 

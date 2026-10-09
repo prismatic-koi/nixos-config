@@ -9,6 +9,7 @@ package container
 //	<XDG_STATE_HOME>/prism/prism-container/cid/<per-run dir>/cid
 //	<XDG_STATE_HOME>/prism/prism-container/build-stage/<per-build dir>/
 //	<XDG_STATE_HOME>/prism/prism-container/build-lock/<instanceID>.<suffix>.lock
+//	<XDG_STATE_HOME>/prism/prism-container/build-policy.json
 //
 // No sandbox may write this tree. The agent is the subject of the audit
 // log. Podman writes the cidfile on the host and follows a symlink at its
@@ -16,7 +17,8 @@ package container
 // any file of the host user. Podman build reads the context copy while the
 // build runs, so a sandbox that can write the copy can put a symlink to a
 // host path in it. A sandbox that can remove a build marker can hide a
-// running build from the limits. The tree sits outside the session work dir and the per-session run dir,
+// running build from the limits. A sandbox that can write the build
+// signature policy can let a build read a host path through a transport. The tree sits outside the session work dir and the per-session run dir,
 // which are the only state paths the sandbox-exec profile grants for write.
 // bwrap binds nothing under it. Do not add a grant or a bind that reaches it.
 // TestGenerateProfile_PrismContainerState_OutsideWriteGrantedSubpaths and
@@ -36,6 +38,7 @@ const (
 	prismContainerCIDDirName    = "cid"
 	prismContainerStageDirName  = "build-stage"
 	prismContainerBuildLockDir  = "build-lock"
+	prismContainerBuildPolicy   = "build-policy.json"
 )
 
 // PrismContainerStateDir returns <XDG_STATE_HOME>/prism/prism-container.
@@ -84,6 +87,16 @@ func PrismContainerBuildLockDirPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, prismContainerBuildLockDir), nil
+}
+
+// PrismContainerBuildPolicyPath returns the path of the signature policy
+// that a Linux build uses.
+func PrismContainerBuildPolicyPath() (string, error) {
+	dir, err := PrismContainerStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, prismContainerBuildPolicy), nil
 }
 
 // PrismContainerAuditDirPath returns the audit directory of one session

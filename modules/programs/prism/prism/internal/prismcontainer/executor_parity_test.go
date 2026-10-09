@@ -126,9 +126,10 @@ func TestBuildExecutors_SameRequestSameResult(t *testing.T) {
 				t.Errorf("results differ:\nscope %+v\nplain %+v", scope, plain)
 			}
 
-			// Each executor adds only its own process limit.
+			// Each executor adds only its own options: the process limit, and on
+			// Linux the signature policy.
 			plainArgs := prismcontainertest.MaskBuildArgs(withoutOption(f.BuildCalls()[0], "--ulimit"))
-			scopeArgs := prismcontainertest.MaskBuildArgs(sf.podmanArgs(t))
+			scopeArgs := prismcontainertest.MaskBuildArgs(withoutOption(sf.podmanArgs(t), "--signature-policy"))
 			if !slices.Equal(plainArgs, scopeArgs) {
 				t.Errorf("podman argv differs:\nscope %q\nplain %q", scopeArgs, plainArgs)
 			}
@@ -163,5 +164,29 @@ func TestBuildExecutors_SameTimeoutResult(t *testing.T) {
 	unit := "prism-build-" + container.InstanceTokenForID(testInstanceID) + "-"
 	if log := sf.systemctlLog(t); !strings.Contains(log, "--user kill --signal=SIGKILL "+unit) {
 		t.Errorf("systemctl log %q holds no SIGKILL of a scope with prefix %s", log, unit)
+	}
+}
+
+func TestBuildExecutors_SameRefusal(t *testing.T) {
+	c := newCaller(t)
+	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\nCOPY --from=tarball:/home/u/x.tar / /x\n")
+	req := prismcontainer.BuildRequest{}
+
+	f := &prismcontainertest.Fake{}
+	plain := prismcontainer.Build(context.Background(), buildDeps(f), c, req)
+
+	sf := newScopeFake(t, "", "0", false)
+	d := deps(&prismcontainertest.Fake{})
+	d.BuildExecutor = sf.exe
+	scope := prismcontainer.Build(context.Background(), d, c, req)
+
+	if plain.ExitCode != prismcontainer.ExitRefused || !strings.Contains(plain.Message, `the "tarball" transport`) {
+		t.Fatalf("plain result = %+v, want the transport refusal", plain)
+	}
+	if scope.ExitCode != plain.ExitCode || scope.Message != plain.Message {
+		t.Errorf("refusals differ:\nscope %+v\nplain %+v", scope, plain)
+	}
+	if _, err := os.Stat(filepath.Join(sf.dir, "podman.args")); !os.IsNotExist(err) {
+		t.Errorf("the scope executor ran podman: %v", err)
 	}
 }

@@ -217,6 +217,7 @@ var (
 // reference that starts with "<transport>:" as that transport, and several
 // transports read a path on the host. Prism refuses them.
 var imageTransports = map[string]bool{
+	"atomic":             true,
 	"containers-storage": true,
 	"dir":                true,
 	"docker":             true,

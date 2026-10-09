@@ -131,9 +131,11 @@ func ownedSet(instanceIDs []string) map[string]bool {
 // SweepSession stops every running build, then removes every container,
 // then removes every built image, of the session incarnations instanceIDs.
 // The builds stop first, so that no build adds an image after the image
-// sweep. Each step runs even when an earlier one fails.
+// sweep. Each step runs even when an earlier one fails. It also removes
+// the context copies of dead builds of any session.
 func SweepSession(ctx context.Context, r Runner, e BuildExecutor, instanceIDs []string) error {
 	_, buildErr := StopBuilds(ctx, e, instanceIDs)
+	removeStaleBuildCopies()
 	_, ctrErr := SweepInstances(ctx, r, instanceIDs)
 	_, imgErr := SweepImages(ctx, r, instanceIDs)
 	return errors.Join(buildErr, ctrErr, imgErr)
