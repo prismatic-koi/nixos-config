@@ -42,7 +42,7 @@
     function rewriteUrl(url) {
         if (!url) return url;
         
-        const currentHost = window.location.hostname;
+        const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
         let rewrittenUrl = url;
         
         rewriteRules.forEach(function(rule) {
@@ -65,11 +65,44 @@
     // Apply rewrite rules to each URL in a srcset attribute value
     function rewriteSrcset(srcset) {
         if (!srcset) return srcset;
-        return srcset.split(',').map(function(entry) {
-            var parts = entry.trim().split(/\s+/);
-            parts[0] = rewriteUrl(parts[0]);
-            return parts.join(' ');
-        }).join(', ');
+        // Parse candidates with the HTML rules: a URL is a run of
+        // non-whitespace characters, so commas inside a URL are kept.
+        var candidates = [];
+        var changed = false;
+        var i = 0;
+        var n = srcset.length;
+        while (i < n) {
+            while (i < n && /[\s,]/.test(srcset[i])) i++;
+            if (i >= n) break;
+            var start = i;
+            while (i < n && !/\s/.test(srcset[i])) i++;
+            var url = srcset.slice(start, i);
+            var descriptors = '';
+            if (/,$/.test(url)) {
+                url = url.replace(/,+$/, '');
+            } else {
+                var dstart = i;
+                var depth = 0;
+                while (i < n && (srcset[i] !== ',' || depth > 0)) {
+                    if (srcset[i] === '(') depth++;
+                    else if (srcset[i] === ')' && depth > 0) depth--;
+                    i++;
+                }
+                descriptors = srcset.slice(dstart, i).trim();
+            }
+            var newUrl = rewriteUrl(url);
+            if (newUrl !== url) changed = true;
+            candidates.push(descriptors ? newUrl + ' ' + descriptors : newUrl);
+        }
+        if (!changed) return srcset;
+        return candidates.join(', ');
+    }
+
+    // Test hook: under Node there is no window, so expose the pure helpers
+    // and skip the browser-only setup below.
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = { rewriteUrl: rewriteUrl, rewriteSrcset: rewriteSrcset };
+        return;
     }
     
     // Intercept image requests
