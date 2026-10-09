@@ -280,9 +280,15 @@ In response, the sidecar sends:
 - `isolation_mode` (string, optional) — the effective isolation mode for
   this session: `"sandbox-exec"`, `"bwrap"`, or `"host"`. Absent (or
   empty string) when the sidecar is older and does not populate this
-  field. The extension treats absent/empty as `"host"`. Used by the
-  extension to show a `(host)` suffix in the status bar when the session
-  is running without a sandbox (see §5.11).
+  field. The extension treats absent/empty as `"host"`. The extension
+  uses the field for two things:
+  - The status bar shows a `(host)` suffix when the session runs without
+    a sandbox (see §5.11).
+  - The bash deny list applies the `container-cli-in-sandbox` entry
+    only when the value is `"bwrap"` or `"sandbox-exec"` (#3065). That
+    entry blocks a `podman` or `docker` command. If the sidecar sends
+    no value or a wrong value for a sandboxed session, the entry does
+    not block. Keep the value correct for every isolation mode.
 - `instance_id` (string, required) — the UUID for this session
   incarnation, matching the value the sidecar uses for `to_instance_id`
   on bus messages (`internal/sidecar/sidecar.go:Config.InstanceID`).
