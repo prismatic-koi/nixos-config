@@ -2,7 +2,9 @@ package prismcontainer
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -22,6 +24,7 @@ const (
 type AuditEntry struct {
 	Time           string   `json:"time"`
 	Session        string   `json:"session"`
+	InstanceID     string   `json:"instance_id"`
 	Command        string   `json:"command"`
 	Image          string   `json:"image"`
 	Args           []string `json:"args,omitempty"`
@@ -69,3 +72,30 @@ func (a *auditLog) write(e AuditEntry, now time.Time) error {
 }
 
 func (a *auditLog) close() { _ = a.f.Close() }
+
+// AppendAuditLog appends the audit log of incarnation from to the audit log
+// of incarnation to. Cleanup uses it to keep the record of an incarnation
+// or a review agent that has no archive of its own: the lines go into a log
+// that cleanup archives. Each line names its own session and instance ID.
+// A missing source log is not an error. After a nil return the caller can
+// remove the source directory.
+func AppendAuditLog(from, to string) error {
+	src, err := container.PrismContainerAuditLogPath(from)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(src)
+	if errors.Is(err, fs.ErrNotExist) || (err == nil && len(data) == 0) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	dst, err := openAuditLog(to)
+	if err != nil {
+		return err
+	}
+	defer dst.close()
+	_, err = dst.f.Write(data)
+	return err
+}

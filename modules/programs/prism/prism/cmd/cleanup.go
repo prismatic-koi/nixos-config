@@ -1519,6 +1519,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	if auditLogPath, auditErr := container.PodmanProxyAuditLogPath(instanceID); auditErr == nil {
 		params.PodmanProxyAuditLogPath = auditLogPath
 	}
+	gatherPrismContainerAuditLogs(d, sessionName, instanceID)
 	if auditLogPath, auditErr := container.PrismContainerAuditLogPath(instanceID); auditErr == nil {
 		params.PrismContainerAuditLogPath = auditLogPath
 	}

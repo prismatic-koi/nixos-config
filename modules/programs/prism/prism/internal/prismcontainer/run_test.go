@@ -409,3 +409,46 @@ func TestSweepInstances(t *testing.T) {
 		t.Errorf("left = %v, want [theirs unlabelled]", left)
 	}
 }
+
+// TestRun_SymlinkWorktreeRefused: a worktree path that is a symlink is
+// refused before podman runs, for both mount modes that mount it.
+func TestRun_SymlinkWorktreeRefused(t *testing.T) {
+	for _, mount := range []prismcontainer.Mount{prismcontainer.MountRO, prismcontainer.MountRW} {
+		t.Run(string(mount), func(t *testing.T) {
+			c := newCaller(t)
+			link := filepath.Join(t.TempDir(), "worktree")
+			if err := os.Symlink(c.Worktree, link); err != nil {
+				t.Fatal(err)
+			}
+			c.Worktree = link
+			f := &prismcontainertest.Fake{ImagePresent: true}
+			res := prismcontainer.Run(context.Background(), deps(f), c, prismcontainer.RunRequest{Image: "alpine", Mount: mount})
+			if res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, "symlink is refused") {
+				t.Errorf("result = %+v, want a refusal naming the symlink", res)
+			}
+			if len(f.Calls()) != 0 {
+				t.Errorf("podman called: %q", f.Calls())
+			}
+		})
+	}
+}
+
+// TestRun_CIDFileInStateDir: podman writes the cidfile on the host and
+// follows a symlink at its path, so the file must be in the prism-container
+// state tree, which no sandbox can write.
+func TestRun_CIDFileInStateDir(t *testing.T) {
+	c := newCaller(t)
+	f := &prismcontainertest.Fake{ImagePresent: true}
+	prismcontainer.Run(context.Background(), deps(f), c, prismcontainer.RunRequest{Image: "alpine"})
+	cidDir, err := container.PrismContainerCIDDirPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cids := optionValue(f.RunCalls()[0], "--cidfile")
+	if len(cids) != 1 || !strings.HasPrefix(cids[0], cidDir+string(filepath.Separator)) {
+		t.Errorf("--cidfile = %q, want one path under %s", cids, cidDir)
+	}
+	if _, err := os.Stat(filepath.Dir(cids[0])); !os.IsNotExist(err) {
+		t.Errorf("per-run cid dir still exists after the run: %v", err)
+	}
+}

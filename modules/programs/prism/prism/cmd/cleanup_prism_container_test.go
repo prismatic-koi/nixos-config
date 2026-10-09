@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,9 +12,10 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
 	"github.com/prismatic-koi/prism/internal/prismcontainer/prismcontainertest"
+	"github.com/prismatic-koi/prism/internal/review"
 )
 
-func writeFakePrismContainerAuditLog(t *testing.T, instanceID string) string {
+func writeFakePrismContainerAuditLog(t *testing.T, instanceID, session string) string {
 	t.Helper()
 	p, err := container.PrismContainerAuditLogPath(instanceID)
 	if err != nil {
@@ -22,7 +24,7 @@ func writeFakePrismContainerAuditLog(t *testing.T, instanceID string) string {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatalf("mkdir audit dir: %v", err)
 	}
-	content := `{"time":"2026-10-10T00:00:00Z","command":"run","image":"docker.io/library/alpine","decision":"allowed","exit_code":0}` + "\n"
+	content := `{"time":"2026-10-10T00:00:00Z","session":"` + session + `","instance_id":"` + instanceID + `","command":"run","image":"docker.io/library/alpine","decision":"allowed","exit_code":0}` + "\n"
 	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
 		t.Fatalf("write audit log: %v", err)
 	}
@@ -52,13 +54,30 @@ func TestHeadlessCleanup_PrismContainer_SweepsEveryIncarnation(t *testing.T) {
 		t.Fatalf("InsertSession earlier: %v", err)
 	}
 	d.Close()
-	auditContent := writeFakePrismContainerAuditLog(t, archiveOrderIID)
+	const childIID = "33333333-3333-4444-8555-666666666666"
+	child := f.session + "~review-1-review-qa"
+	d, err = db.Open(f.dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := d.UpsertStatus(child, archiveOrderRepo, f.worktree, "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus child: %v", err)
+	}
+	if err := d.SetInstanceID(child, childIID); err != nil {
+		t.Fatalf("SetInstanceID child: %v", err)
+	}
+	d.Close()
+	currentContent := writeFakePrismContainerAuditLog(t, archiveOrderIID, "current")
+	earlierContent := writeFakePrismContainerAuditLog(t, earlierIID, "earlier")
+	childContent := writeFakePrismContainerAuditLog(t, childIID, "child")
 
 	fake := &prismcontainertest.Fake{}
 	fake.Add(labelled("current", archiveOrderIID, "running"))
 	fake.Add(labelled("earlier", earlierIID, "exited"))
+	fake.Add(labelled("child", childIID, "running"))
 	fake.Add(labelled("other", otherIID, "running"))
 	installPrismContainerFake(t, fake)
+	t.Cleanup(review.SetChildPrismContainerRunnerForTest(fake))
 
 	if err := headlessCleanup(f.session, "prism-container-sweep", "", ""); err != nil {
 		t.Fatalf("headlessCleanup: %v", err)
@@ -74,11 +93,18 @@ func TestHeadlessCleanup_PrismContainer_SweepsEveryIncarnation(t *testing.T) {
 
 	archiveDir := assertTranscriptArchived(t, f)
 	got, err := os.ReadFile(filepath.Join(archiveDir, "prism-container-audit.log"))
-	if err != nil || string(got) != auditContent {
-		t.Errorf("archived prism-container-audit.log = %q (%v), want %q", got, err, auditContent)
+	if err != nil {
+		t.Fatalf("archive has no prism-container-audit.log: %v", err)
 	}
-	if container.PrismContainerAuditDirExists(archiveOrderIID) {
-		t.Errorf("prism-container audit dir still exists after cleanup")
+	for name, line := range map[string]string{"current": currentContent, "earlier": earlierContent, "review child": childContent} {
+		if !strings.Contains(string(got), line) {
+			t.Errorf("archived prism-container-audit.log lacks the %s incarnation line %q:\n%s", name, line, got)
+		}
+	}
+	for _, id := range []string{archiveOrderIID, earlierIID, childIID} {
+		if container.PrismContainerAuditDirExists(id) {
+			t.Errorf("prism-container audit dir of %s still exists after cleanup", id)
+		}
 	}
 }
 

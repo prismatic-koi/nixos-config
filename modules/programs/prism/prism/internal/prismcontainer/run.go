@@ -104,6 +104,7 @@ func Run(ctx context.Context, d Deps, c Caller, req RunRequest) RunResult {
 
 	entry := AuditEntry{
 		Session:        c.SessionName,
+		InstanceID:     c.InstanceID,
 		Command:        "run",
 		Image:          req.Image,
 		Args:           req.Command,
@@ -195,7 +196,7 @@ func Run(ctx context.Context, d Deps, c Caller, req RunRequest) RunResult {
 	if err != nil {
 		return finish(DecisionError, ExitRefused, false, err.Error())
 	}
-	cidDir, err := os.MkdirTemp("", "prism-container-")
+	cidDir, err := makeCIDDir()
 	if err != nil {
 		return finish(DecisionError, ExitRefused, false, "create cidfile dir: "+err.Error())
 	}
@@ -226,6 +227,20 @@ func Run(ctx context.Context, d Deps, c Caller, req RunRequest) RunResult {
 			joinMessages("podman run did not complete: "+outcome.err.Error(), removeWarning))
 	}
 	return finish(DecisionAllowed, outcome.code, true, removeWarning)
+}
+
+// makeCIDDir creates a per-run directory for the podman cidfile in the
+// prism-container state tree. It must not be os.TempDir(): the
+// sandbox-exec profile grants the agent write access there.
+func makeCIDDir() (string, error) {
+	parent, err := container.PrismContainerCIDDirPath()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(parent, "run-")
 }
 
 // ensureImage pulls image when the host does not have it. It returns the

@@ -46,6 +46,28 @@ func sweepPrismContainersForSession(session string) {
 	}
 }
 
+// gatherPrismContainerAuditLogs appends the prism-container audit log of
+// every earlier incarnation of session to the log of the final incarnation,
+// then removes the earlier audit dir.
+//
+// The archive copies the log of the final incarnation only. An earlier
+// incarnation can end with no cleanup of its own (the `prism restore`
+// fallback, or a new instance ID at session start). Without this step, its
+// log is never archived and its dir is never removed. An earlier dir whose
+// append fails stays on disk, and a warning names it.
+func gatherPrismContainerAuditLogs(d *db.DB, session, finalID string) {
+	for _, id := range incarnationInstanceIDs(d, session, nil) {
+		if id == finalID || !container.PrismContainerAuditDirExists(id) {
+			continue
+		}
+		if err := prismcontainer.AppendAuditLog(id, finalID); err != nil {
+			proglog.Warnf("[prism] warning: archive: keep the prism-container audit log of incarnation %s of %q: append failed (%v)\n", id, session, err)
+			continue
+		}
+		container.RemovePrismContainerAuditDir(id)
+	}
+}
+
 // incarnationInstanceIDs returns the instance ID of the current incarnation
 // of session and of every incarnation that the sessions table holds.
 func incarnationInstanceIDs(d *db.DB, session string, status *db.Status) []string {

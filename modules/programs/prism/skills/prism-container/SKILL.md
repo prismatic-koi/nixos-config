@@ -89,6 +89,12 @@ prism container run --mount none alpine -- sh -c 'apk add --no-cache curl && cur
 The mount source is always the worktree of the calling session. Prism
 resolves the worktree on the host. No input names a host path.
 
+Podman follows a symlink at the mount source. Thus prism refuses the
+request when the worktree path is a symlink. On macOS, the sandbox-exec
+profile also stops the agent from renaming, removing, or replacing the
+worktree directory itself, so the path cannot change to a symlink while
+podman starts the container.
+
 With `--mount rw`, a container that runs as root writes files that the host
 user owns. You can then edit or delete those files from the sandbox. Commit
 only the files that you intend to change.
@@ -110,7 +116,7 @@ does not work on `/workspace`. Run `git` in the sandbox.
 | `--name` | `prism-<instance token>-<folded session name>-<8 hex>` | The session prefix, for a human who reads `podman ps`. |
 | `--timeout` | The request timeout plus 60 seconds | Podman stops the container even if prism stops first. |
 | `--pull` | `never` | Prism pulls a missing image before the run, with `podman pull`. |
-| `--cidfile` | A temporary file on the host | Prism holds the host lock until podman creates the container. |
+| `--cidfile` | A file in the prism-container state dir on the host | Prism holds the host lock until podman writes this file. No sandbox can write the directory. |
 | `--volume`, `--workdir` | The worktree at `/workspace` | Only with `--mount ro` or `--mount rw`. |
 
 The argument vector never holds `--privileged`, `--cap-add`, `--device`, a
@@ -145,7 +151,8 @@ the machine VM is a second limit on memory and CPU.
   applies after a timeout and after a cancelled request.
 - `prism cleanup` removes every container that carries the label of any
   incarnation of the session. That is the current incarnation and each
-  earlier incarnation that the database holds.
+  earlier incarnation that the database holds. Cleanup issues podman
+  commands only when one of these incarnations has an audit directory.
 - Cleanup of a parent session also removes the containers of its review
   agents.
 - If prism stops before it removes a container, the podman `--timeout`
@@ -163,7 +170,7 @@ $XDG_STATE_HOME/prism/prism-container/audit/<instance ID>/audit.log
 
 The line holds these fields:
 
-- `time`, `session`, and `command` (`run`).
+- `time`, `session`, `instance_id`, and `command` (`run`).
 - `image`, with the Docker Hub prefix added to a short name.
 - `args` (the container command) and `env_keys`. The log never holds an
   `--env` value, because a value can be a secret.
@@ -172,9 +179,23 @@ The line holds these fields:
 - `exit_code`: the exit code, or `null` when no command ran to completion.
 
 No sandbox can write the audit directory. bwrap does not bind it, and the
-sandbox-exec profile grants no write access in it. `prism cleanup` copies
-the log into the session archive as `prism-container-audit.log`. Then
-cleanup removes the directory.
+sandbox-exec profile grants no write access in it.
+
+`prism cleanup` keeps every line in the session archive:
+
+1. Cleanup of a parent session appends the log of each review agent to the
+   log of the parent. A review agent has no archive of its own.
+2. Cleanup appends the log of each earlier incarnation of the session to
+   the log of the current incarnation.
+3. Cleanup copies the log into the session archive as
+   `prism-container-audit.log`, then removes the audit directories.
+
+If an append fails, cleanup keeps the source directory on disk and writes
+a warning that names it.
+
+The prism-container state tree also holds the host-wide lock file and the
+per-run cidfile directories. Like the audit directory, no sandbox can
+write them.
 
 ## Errors
 

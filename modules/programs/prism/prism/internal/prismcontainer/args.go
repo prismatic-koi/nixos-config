@@ -60,9 +60,13 @@ func (c Caller) validate(mount Mount) error {
 		strings.IndexFunc(c.Worktree, unicode.IsControl) >= 0 {
 		return fmt.Errorf("worktree path %q cannot be given to podman as a mount source: use --mount none", c.Worktree)
 	}
-	info, err := os.Stat(c.Worktree)
+	// Lstat, not Stat: podman follows a symlink at the mount source, so a
+	// worktree path that the agent replaced with a symlink must not pass.
+	// The sandbox-exec profile stops that swap. This check refuses one that
+	// happened before the request.
+	info, err := os.Lstat(c.Worktree)
 	if err != nil || !info.IsDir() {
-		return fmt.Errorf("worktree %q is not a directory: use --mount none", c.Worktree)
+		return fmt.Errorf("worktree %q is not a directory (a symlink is refused): use --mount none", c.Worktree)
 	}
 	return nil
 }

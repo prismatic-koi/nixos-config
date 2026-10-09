@@ -28,7 +28,11 @@ func prismContainerStatePaths(t *testing.T, instanceID string) []string {
 	if err != nil {
 		t.Fatalf("PrismContainerLockPath: %v", err)
 	}
-	return []string{root, auditDir, auditLog, lock}
+	cidDir, err := PrismContainerCIDDirPath()
+	if err != nil {
+		t.Fatalf("PrismContainerCIDDirPath: %v", err)
+	}
+	return []string{root, auditDir, auditLog, lock, cidDir}
 }
 
 // TestGenerateProfile_PrismContainerState_OutsideWriteGrantedSubpaths: no
@@ -100,4 +104,27 @@ func bwrapBindsReaching(args, paths []string) []string {
 		}
 	}
 	return hits
+}
+
+// TestGenerateProfile_WorktreeEntryDenyFollowsEveryAllow checks that the
+// sandbox-exec profile denies unlink and create on the worktree node, and
+// that no allow follows the deny. SBPL takes the later rule, so an allow
+// after the deny re-opens the worktree swap. The Darwin integration test
+// TestSandboxExecWorktreeEntry_CannotBeReplaced proves the effect.
+func TestGenerateProfile_WorktreeEntryDenyFollowsEveryAllow(t *testing.T) {
+	m := newAuditLocationTestManager(t)
+	profile := generateProfile(m)
+
+	deny := "(deny file-write-unlink file-write-create\n  (literal " + quoteSBPL(m.cfg.Worktree) + "))"
+	denyAt := strings.Index(profile, deny)
+	if denyAt < 0 {
+		t.Fatalf("profile has no worktree entry deny %q.\nprofile:\n%s", deny, profile)
+	}
+	if allowAt := strings.LastIndex(profile, "(allow "); allowAt > denyAt {
+		t.Errorf("an allow clause (offset %d) follows the worktree entry deny (offset %d); SBPL takes the later rule.\nprofile:\n%s",
+			allowAt, denyAt, profile)
+	}
+	if !strings.Contains(profile, "(subpath "+quoteSBPL(m.cfg.BareRoot)+")") {
+		t.Fatalf("fixture premise changed: the profile no longer grants (subpath BareRoot)")
+	}
 }

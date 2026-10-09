@@ -1,13 +1,16 @@
 package container
 
-// Host-side state of `prism container`: the host-wide limit lock and the
-// per-incarnation audit log.
+// Host-side state of `prism container`: the host-wide limit lock, the
+// per-incarnation audit log, and the podman cidfiles.
 //
 //	<XDG_STATE_HOME>/prism/prism-container/host-limit.lock
 //	<XDG_STATE_HOME>/prism/prism-container/audit/<instanceID>/audit.log
+//	<XDG_STATE_HOME>/prism/prism-container/cid/<per-run dir>/cid
 //
-// The agent is the subject of the audit log, so no sandbox may write this
-// tree. It sits outside the session work dir and the per-session run dir,
+// No sandbox may write this tree. The agent is the subject of the audit
+// log. Podman writes the cidfile on the host and follows a symlink at its
+// path, so a sandbox that can write the cid dir can make podman overwrite
+// any file of the host user. It sits outside the session work dir and the per-session run dir,
 // which are the only state paths the sandbox-exec profile grants for write.
 // bwrap binds nothing under it. Do not add a grant or a bind that reaches it.
 // TestGenerateProfile_PrismContainerState_OutsideWriteGrantedSubpaths and
@@ -24,6 +27,7 @@ const (
 	prismContainerLockFileName  = "host-limit.lock"
 	prismContainerAuditDirName  = "audit"
 	prismContainerAuditFileName = "audit.log"
+	prismContainerCIDDirName    = "cid"
 )
 
 // PrismContainerStateDir returns <XDG_STATE_HOME>/prism/prism-container.
@@ -42,6 +46,16 @@ func PrismContainerLockPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, prismContainerLockFileName), nil
+}
+
+// PrismContainerCIDDirPath returns the directory that holds the per-run
+// cidfile directories.
+func PrismContainerCIDDirPath() (string, error) {
+	dir, err := PrismContainerStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, prismContainerCIDDirName), nil
 }
 
 // PrismContainerAuditDirPath returns the audit directory of one session

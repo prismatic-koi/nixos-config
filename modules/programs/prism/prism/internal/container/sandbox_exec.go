@@ -1192,6 +1192,24 @@ func generateProfile(m *Manager) string {
 	// emits log warnings but continues; allowing it silences the denials.
 	sb.WriteString("(allow user-preference-read)\n")
 
+	// ── 21b. FINAL DENY — the worktree entry cannot be replaced ─
+	// Section 6 grants read-write on (subpath BareRoot), and that subpath
+	// holds the directory entry of the worktree. Without this deny, the agent
+	// can rename the worktree away and put a symlink at its path. `prism
+	// container run --mount` gives that path to podman on the host, and
+	// podman then mounts the symlink target: any directory that the podman
+	// machine shares, the whole home directory included.
+	//
+	// The deny matches the worktree node only, so files below it keep the
+	// section-6 grant. It must follow every allow, because SBPL resolves a
+	// conflict in favour of the later rule.
+	// TestGenerateProfile_WorktreeEntryDenyFollowsEveryAllow pins the order.
+	if m.cfg.Worktree != "" {
+		sb.WriteString("\n")
+		sb.WriteString("(deny file-write-unlink file-write-create\n")
+		sb.WriteString("  (literal " + quoteSBPL(m.cfg.Worktree) + "))\n")
+	}
+
 	// ── 22. FINAL DENIES — Go module cache is not executable ─
 	// The module cache holds downloaded dependency SOURCE. Section 5k grants
 	// it read-write because the toolchain must populate it. Without this deny,
