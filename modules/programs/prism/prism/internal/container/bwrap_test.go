@@ -190,6 +190,8 @@ func TestBwrapBuildArgs_BaselineFlags(t *testing.T) {
 	// SQLite WAL mmap coherency between concurrent sessions.
 	want := []string{
 		"--clearenv",
+		"--unshare-user",
+		"--disable-userns",
 		"--unshare-pid",
 		"--unshare-uts",
 		"--proc", "/proc",

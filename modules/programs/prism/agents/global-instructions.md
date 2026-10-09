@@ -47,7 +47,7 @@ When asked to find something without an explicit scope, ALWAYS search within the
 
 Avoid unnecessary `cd` at the start of commands; if you are already in the right directory, do not `cd` into it first.
 
-In a prism sandbox, run containers with `prism container`, not podman or docker. Load the `prism-container` skill first. In a host shell, use podman, not docker. On Darwin, run `podman machine start` before you use podman.
+In a prism sandbox, run containers with `prism container`. Load the `prism-container` skill first. In a host shell, use podman, not docker. On Darwin, run `podman machine start` before you use podman.
 
 ## Measure Once
 

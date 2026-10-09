@@ -39,6 +39,8 @@ import {
   checkBlockedBash,
   isWorkerClassRole,
   isReviewRole,
+  isSandboxedIsolation,
+  segmentRunsContainerCLI,
   stripCommandSubstitutions,
   newDoomLoopState,
   snapshotGuardState,
@@ -1955,8 +1957,18 @@ describe("isGitPush", () => {
 // ---------------------------------------------------------------------------
 
 describe("BLOCKED_BASH_PATTERNS", () => {
-  it("contains exactly nine entries", () => {
-    assert.equal(BLOCKED_BASH_PATTERNS.length, 9)
+  it("contains exactly ten entries", () => {
+    assert.equal(BLOCKED_BASH_PATTERNS.length, 10)
+  })
+
+  it("only the container-cli-in-sandbox entry is isolation-scoped (#3065)", () => {
+    for (const p of BLOCKED_BASH_PATTERNS) {
+      if (p.id === "container-cli-in-sandbox") {
+        assert.equal(p.appliesToIsolation, isSandboxedIsolation, p.id)
+      } else {
+        assert.equal(p.appliesToIsolation, undefined, p.id)
+      }
+    }
   })
 
   it("has the git-worktree-prune entry", () => {
@@ -3291,6 +3303,122 @@ describe("checkBlockedBash \u2014 gh-pr-review-approve reason string (#2410)", (
 })
 
 // ---------------------------------------------------------------------------
+// container-cli-in-sandbox (#3065)
+// ---------------------------------------------------------------------------
+
+describe("checkBlockedBash — podman and docker in a sandbox (#3065)", () => {
+  for (const mode of ["bwrap", "sandbox-exec"]) {
+    for (const cmd of ["podman ps", "docker ps"]) {
+      it(`blocks '${cmd}' in a ${mode} session`, () => {
+        const hit = checkBlockedBash(cmd, "worker", mode)
+        assert.notEqual(hit, null)
+        assert.equal(hit!.id, "container-cli-in-sandbox")
+      })
+    }
+  }
+
+  it("blocks every role, the coordinator included", () => {
+    for (const role of ["", "coordinator", "worker", "review-qa", "investigate"]) {
+      const hit = checkBlockedBash("podman ps", role, "bwrap")
+      assert.equal(hit?.id, "container-cli-in-sandbox", `role ${JSON.stringify(role)}`)
+    }
+  })
+
+  it("gives podman and docker one message that names prism container and the prism-container skill", () => {
+    const podman = checkBlockedBash("podman ps", "worker", "bwrap")
+    const docker = checkBlockedBash("docker ps", "worker", "sandbox-exec")
+    assert.notEqual(podman, null)
+    assert.notEqual(docker, null)
+    assert.equal(podman!.reason, docker!.reason)
+    assert.ok(podman!.reason.startsWith("blocked by prism extension:"))
+    assert.ok(podman!.reason.includes("`prism container`"), podman!.reason)
+    assert.ok(podman!.reason.includes("`prism-container` skill"), podman!.reason)
+  })
+
+  for (const cmd of [
+    "podman",
+    "podman run --rm alpine true",
+    "/run/current-system/sw/bin/podman ps",
+    "./docker ps",
+    "FOO=1 podman ps",
+    "env CONTAINER_HOST=unix:///x podman ps",
+    "env -i docker ps",
+    "sudo docker ps",
+    "exec podman ps",
+    "nohup podman ps",
+    "time podman ps",
+    "command podman ps",
+    "timeout 30 podman ps",
+    "timeout --signal=KILL 30 docker ps",
+    "cd /repo && podman ps",
+    "podman ps -q | xargs echo",
+    "echo $(podman ps -q)",
+    "(docker ps)",
+    "{ podman ps; }",
+  ]) {
+    it(`blocks '${cmd}'`, () => {
+      assert.equal(checkBlockedBash(cmd, "worker", "bwrap")?.id, "container-cli-in-sandbox")
+    })
+  }
+})
+
+describe("checkBlockedBash — podman and docker that the entry does not block (#3065)", () => {
+  it("does not block podman or docker in a host session", () => {
+    assert.equal(checkBlockedBash("podman ps", "worker", "host"), null)
+    assert.equal(checkBlockedBash("docker ps", "coordinator", "host"), null)
+  })
+
+  it("does not block when hello_ack has not given an isolation mode", () => {
+    assert.equal(checkBlockedBash("podman ps", "worker"), null)
+    assert.equal(checkBlockedBash("podman ps", "worker", ""), null)
+  })
+
+  for (const cmd of [
+    "rg -n podman docs/",
+    "cat modules/programs/podman.nix",
+    "ls /run/current-system/sw/bin/podman",
+    "grep -rn docker .",
+    "git log --grep podman",
+    "git commit -m 'run podman ps'",
+    'echo "docker ps"',
+    "which podman",
+    "type docker",
+    "command -v podman",
+    "man docker",
+    "prism container run alpine -- echo podman",
+  ]) {
+    it(`does not block '${cmd}' in a sandbox`, () => {
+      assert.equal(checkBlockedBash(cmd, "worker", "bwrap"), null)
+      assert.equal(checkBlockedBash(cmd, "worker", "sandbox-exec"), null)
+    })
+  }
+
+  // The deny list cannot see a quoted body. The sandbox stops this command
+  // instead (bwrap --disable-userns, sandbox-exec profile section 21c).
+  it("does not see podman inside a quoted sh -c body", () => {
+    assert.equal(checkBlockedBash("sh -c '/run/current-system/sw/bin/podman ps'", "worker", "bwrap"), null)
+  })
+})
+
+describe("segmentRunsContainerCLI — input that ends early (#3065)", () => {
+  for (const segment of ["", "env", "FOO=1", "timeout 30", "timeout", "sudo -E"]) {
+    it(`returns false for ${JSON.stringify(segment)}`, () => {
+      assert.equal(segmentRunsContainerCLI(segment), false)
+    })
+  }
+})
+
+describe("isSandboxedIsolation (#3065)", () => {
+  it("is true for bwrap and sandbox-exec only", () => {
+    assert.equal(isSandboxedIsolation("bwrap"), true)
+    assert.equal(isSandboxedIsolation("sandbox-exec"), true)
+    assert.equal(isSandboxedIsolation("host"), false)
+    assert.equal(isSandboxedIsolation(""), false)
+    assert.equal(isSandboxedIsolation("podman"), false)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // GIT_PUSH_REMINDER_MESSAGE
 // ---------------------------------------------------------------------------
 
@@ -4010,6 +4138,83 @@ describe("#2646: git-push reminder fires at most once per session", () => {
         })
       })
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #3065: the tool_call handler takes the isolation mode from hello_ack
+// ---------------------------------------------------------------------------
+//
+// End to end through the real handshake: a mock sidecar answers `hello`
+// with the given isolation_mode, and the test calls the registered tool_call
+// handler directly so that it can read the return value. The status bar
+// write that follows hello_ack signals that the handshake is complete, so a
+// host-mode null result cannot come from a handshake that did not finish.
+
+async function toolCallResultAfterHandshake3065(
+  isolationMode: string,
+  command: string,
+): Promise<unknown> {
+  const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-3065-"))
+  const sockPath = path.join(sockDir, "pipe.sock")
+  const savedName = process.env.PRISM_SESSION_NAME
+  const savedPipe = process.env.PRISM_HARNESS_PIPE
+  process.env.PRISM_SESSION_NAME = "test@main"
+  process.env.PRISM_HARNESS_PIPE = `unix://${sockPath}`
+
+  const acceptedConn: AcceptedConnRef = { current: null }
+  const server = net.createServer(trackConn(acceptedConn, (conn) => {
+    attachJsonlReader(conn, (line) => {
+      let f: Record<string, unknown>
+      try { f = JSON.parse(line) as Record<string, unknown> } catch { return }
+      if (f.type === "hello") {
+        conn.write(JSON.stringify({
+          type: "hello_ack", protocol_version: 2, session_name: "test@main",
+          session_role: "worker", isolation_mode: isolationMode,
+        }) + "\n")
+      }
+    })
+  }))
+
+  const { pi, trigger } = makeMockPI1554({ flagValues: { agent: "worker" } })
+  const toolCallHandlers: ((...args: unknown[]) => unknown)[] = []
+  const register = pi.on
+  pi.on = (event, handler) => {
+    if (event === "tool_call") toolCallHandlers.push(handler)
+    register(event, handler)
+  }
+  prismExtension(pi as never)
+  registerExtensionWiring({ trigger, server, acceptedConn })
+
+  let statusSet: () => void = () => {}
+  const statusSetPromise = new Promise<void>((res) => { statusSet = res })
+  const ctx = { ui: { setStatus: () => statusSet() } }
+  try {
+    await new Promise<void>((res) => server.listen(sockPath, () => res()))
+    await trigger("session_start", {}, ctx)
+    await statusSetPromise
+    assert.equal(toolCallHandlers.length, 1)
+    return await toolCallHandlers[0]({ toolName: "bash", input: { command } })
+  } finally {
+    process.env.PRISM_SESSION_NAME = savedName
+    process.env.PRISM_HARNESS_PIPE = savedPipe
+    await teardownExtensionWiring({ trigger, server, acceptedConn })
+    fs.rmSync(sockDir, { recursive: true, force: true })
+  }
+}
+
+describe("#3065: the tool_call handler scopes the podman block by hello_ack isolation_mode", () => {
+  for (const mode of ["bwrap", "sandbox-exec"]) {
+    it(`blocks 'podman ps' after a ${mode} hello_ack`, async () => {
+      const result = await toolCallResultAfterHandshake3065(mode, "podman ps") as
+        { block?: boolean; reason?: string } | undefined
+      assert.equal(result?.block, true)
+      assert.ok(result?.reason?.includes("`prism container`"), result?.reason)
+    })
+  }
+
+  it("does not block 'podman ps' after a host hello_ack", async () => {
+    assert.equal(await toolCallResultAfterHandshake3065("host", "podman ps"), undefined)
   })
 })
 

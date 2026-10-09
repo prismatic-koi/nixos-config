@@ -163,6 +163,50 @@ func standardSandboxEnvArgs() []string {
 	return args
 }
 
+// bwrapBaselineArgs returns the namespace flags that start every session
+// sandbox argument list.
+//
+// These establish the minimal sandbox: private PID and UTS namespaces;
+// a fresh /proc and /dev; a tmpfs on /tmp; and a guarantee that the
+// sandbox dies when the parent process exits.
+//
+// --clearenv (first) wipes the inherited environment so that nothing from
+// the invoking shell leaks into the sandbox. Every var the sandbox needs
+// must be re-introduced via an explicit --setenv in BuildArgs (see
+// standardSandboxEnvArgs and credentialEnvVars). Without --clearenv, bwrap
+// forwards the full host environment — which on a prism coordinator
+// includes role-specific GitHub tokens (PRISM_GITHUB_TOKEN_*) and other
+// credentials that must never reach a sandboxed agent. --clearenv gives
+// bwrap a pass-nothing-from-the-host baseline.
+//
+// --unshare-ipc is intentionally omitted: SQLite WAL mode uses a -shm
+// shared memory file that relies on mmap() coherency across processes.
+// --unshare-ipc creates a private IPC namespace which breaks that
+// coherency between concurrent bwrap sessions, causing subsequent
+// sessions to hang after DB migration completes.
+//
+// --disable-userns stops every process in the sandbox from creating a
+// user namespace. Rootless podman needs one for every container. Thus a
+// podman client that the pi deny list does not see cannot start a
+// container here (#3065). bwrap accepts the flag only with an explicit
+// --unshare-user. An unprivileged bwrap creates the user namespace anyway,
+// with the same uid and gid map, so --unshare-user changes nothing else.
+// A nested bwrap in the sandbox fails too. Tests that run bwrap probe it
+// and skip.
+func bwrapBaselineArgs() []string {
+	return []string{
+		"--clearenv",
+		"--unshare-user",
+		"--disable-userns",
+		"--unshare-pid",
+		"--unshare-uts",
+		"--proc", "/proc",
+		"--dev", "/dev",
+		"--tmpfs", "/tmp",
+		"--die-with-parent",
+	}
+}
+
 // BuildArgs constructs the bwrap argument list for the session sandbox:
 // bind-mounts (--ro-bind / --bind), environment injection (--setenv), and
 // namespace flags.
@@ -187,33 +231,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	}
 
 	// ── Baseline namespace flags ────────────────────────────────────────────
-	// These establish the minimal sandbox: private PID and UTS namespaces;
-	// a fresh /proc and /dev; a tmpfs on /tmp; and a guarantee that the
-	// sandbox dies when the parent process exits.
-	//
-	// --clearenv (first) wipes the inherited environment so that nothing from
-	// the invoking shell leaks into the sandbox. Every var the sandbox needs
-	// must be re-introduced via an explicit --setenv below (see
-	// standardSandboxEnvArgs and credentialEnvVars). Without --clearenv, bwrap
-	// forwards the full host environment — which on a prism coordinator
-	// includes role-specific GitHub tokens (PRISM_GITHUB_TOKEN_*) and other
-	// credentials that must never reach a sandboxed agent. --clearenv gives
-	// bwrap a pass-nothing-from-the-host baseline.
-	//
-	// --unshare-ipc is intentionally omitted: SQLite WAL mode uses a -shm
-	// shared memory file that relies on mmap() coherency across processes.
-	// --unshare-ipc creates a private IPC namespace which breaks that
-	// coherency between concurrent bwrap sessions, causing subsequent
-	// sessions to hang after DB migration completes.
-	args := []string{
-		"--clearenv",
-		"--unshare-pid",
-		"--unshare-uts",
-		"--proc", "/proc",
-		"--dev", "/dev",
-		"--tmpfs", "/tmp",
-		"--die-with-parent",
-	}
+	args := bwrapBaselineArgs()
 
 	// ── System binary roots (read-only, unconditional) ─────────────────────
 	// These mounts make all NixOS-managed binaries reachable inside the

@@ -1910,7 +1910,7 @@ func TestGenerateProfile_GoCacheModuleCacheExecDeny(t *testing.T) {
 	// The build cache must not be swept into the deny — denying execution
 	// there risks breaking a warm-cache `go test`, the very gate section 5k
 	// exists to enable.
-	denyAt := strings.Index(profile, "(deny process-exec*")
+	denyAt := strings.Index(profile, "(deny process-exec* file-map-executable")
 	if denyAt >= 0 && strings.Contains(profile[denyAt:], quoteSBPL(buildCache)) {
 		t.Errorf("the build cache %s appears in the exec deny — a warm-cache `go test` execs from it.\nfull profile:\n%s", buildCache, profile)
 	}
@@ -1955,7 +1955,7 @@ func TestGenerateProfile_GoCacheExecDenyFollowsProcessExecAllow(t *testing.T) {
 	if allowAt < 0 {
 		t.Fatalf("profile has no (allow process-exec* ...) clause — the deny's ordering premise changed.\nfull profile:\n%s", profile)
 	}
-	denyAt := strings.Index(profile, "(deny process-exec*")
+	denyAt := strings.Index(profile, "(deny process-exec* file-map-executable")
 	if denyAt < 0 {
 		t.Fatalf("profile has no (deny process-exec* ...) clause.\nfull profile:\n%s", profile)
 	}
@@ -1969,6 +1969,36 @@ func TestGenerateProfile_GoCacheExecDenyFollowsProcessExecAllow(t *testing.T) {
 	// same way.
 	if reAllow := strings.Index(profile[denyAt:], "(allow process-exec*"); reAllow >= 0 {
 		t.Errorf("a (allow process-exec* ...) clause is emitted AFTER the module-cache deny (offset %d) — it re-opens execution.\nfull profile:\n%s",
+			denyAt+reAllow, profile)
+	}
+}
+
+// TestGenerateProfile_ContainerCLIExecDenyFollowsProcessExecAllow: the
+// profile denies exec of the podman and docker binaries (section 21c), after
+// the section-9 allow and with no process-exec* allow after it. SBPL takes
+// the later rule, so a deny above section 9 has no effect.
+func TestGenerateProfile_ContainerCLIExecDenyFollowsProcessExecAllow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	m := newSandboxExecManager(Config{SessionName: "repo@container-cli", Worktree: t.TempDir()})
+	profile := generateProfile(m)
+
+	for _, name := range []string{"podman", "docker", `\.podman-wrapped`, `\.docker-wrapped`} {
+		if rule := `(regex #"/` + name + `$")`; !strings.Contains(containerCLIExecDeny, rule) {
+			t.Errorf("section-21c deny has no rule %s:\n%s", rule, containerCLIExecDeny)
+		}
+	}
+	denyAt := strings.Index(profile, containerCLIExecDeny)
+	if denyAt < 0 {
+		t.Fatalf("profile has no section-21c deny:\n%s\nfull profile:\n%s", containerCLIExecDeny, profile)
+	}
+	allowAt := strings.Index(profile, "(allow process-exec*")
+	if allowAt < 0 || denyAt < allowAt {
+		t.Errorf("the section-21c deny (offset %d) does not follow the section-9 process-exec* allow (offset %d).\nfull profile:\n%s",
+			denyAt, allowAt, profile)
+	}
+	if reAllow := strings.Index(profile[denyAt:], "(allow process-exec*"); reAllow >= 0 {
+		t.Errorf("a process-exec* allow (offset %d) follows the section-21c deny and re-opens it.\nfull profile:\n%s",
 			denyAt+reAllow, profile)
 	}
 }

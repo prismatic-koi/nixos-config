@@ -141,7 +141,7 @@ func newStdioSidecar(t *testing.T, d *db.DB, bwrapBin, harnessBinPath string) *s
 // NOTE: Does not call t.Parallel() — uses t.Setenv to set the fake harness
 // mode, which requires a non-parallel test.
 func TestRunStartupStdio_HappyPath(t *testing.T) {
-	bwrapBin := requireBwrap(t)
+	bwrapBin := requireUsableBwrap(t)
 
 	// Point PRISM_FAKE_STDIO_HARNESS=normal so the test binary writes the
 	// standard 3-frame sequence when invoked as the harness.
@@ -201,7 +201,7 @@ func TestRunStartupStdio_HappyPath(t *testing.T) {
 // NOTE: Does not call t.Parallel() — uses t.Setenv to set the fake harness
 // mode, which requires a non-parallel test.
 func TestRunStartupStdio_SilentExit(t *testing.T) {
-	bwrapBin := requireBwrap(t)
+	bwrapBin := requireUsableBwrap(t)
 
 	// Point PRISM_FAKE_STDIO_HARNESS=silent so the test binary exits
 	// immediately without writing any JSONL frames.

@@ -42,8 +42,13 @@
             # boundary — which it already is by design. The alternative
             # (granting RO to ~/Library/Keychains in the SBPL) was rejected on
             # security grounds: it would leak login keychain, Safari
-            # passwords, and iCloud tokens. Harmless no-op on Linux (chromium
-            # uses a different sandboxing mechanism under bwrap).
+            # passwords, and iCloud tokens.
+            #
+            # Linux needs the value too. The bwrap sandbox runs with
+            # --disable-userns (#3065), so chromium cannot create its
+            # namespace sandbox. It then tries its setuid helper, which is not
+            # set up, and aborts at start. Do not remove this value or make it
+            # Darwin-only: playwright-cli then fails in every bwrap worker.
             PLAYWRIGHT_MCP_SANDBOX = "false";
             GIT_EDITOR = "true";
           }
