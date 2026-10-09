@@ -133,7 +133,7 @@ func TestContainerRunHostMode_SameArgvAsDirectRun(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PRISM_CONFIG_FILE", filepath.Join(t.TempDir(), "absent.json"))
 	session := "prism-test@container-host"
-	worktree := t.TempDir()
+	worktree := prismcontainertest.RealTempDir(t)
 	t.Setenv("PRISM_SESSION_NAME", session)
 	seedContainerRunSession(t, session, worktree)
 

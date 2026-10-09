@@ -107,21 +107,34 @@ func bwrapBindsReaching(args, paths []string) []string {
 }
 
 // TestGenerateProfile_WorktreeEntryDenyFollowsEveryAllow checks that the
-// sandbox-exec profile denies unlink and create on the worktree node, and
-// that no allow follows the deny. SBPL takes the later rule, so an allow
-// after the deny re-opens the worktree swap. The Darwin integration test
-// TestSandboxExecWorktreeEntry_CannotBeReplaced proves the effect.
+// sandbox-exec profile denies unlink and create on the worktree and on every
+// ancestor of it, BareRoot included, and that no allow follows the deny.
+// SBPL takes the later rule, so an allow after the deny re-opens the swap.
+// The Darwin integration test TestSandboxExecWorktreeEntry_CannotBeReplaced
+// proves the effect.
 func TestGenerateProfile_WorktreeEntryDenyFollowsEveryAllow(t *testing.T) {
 	m := newAuditLocationTestManager(t)
 	profile := generateProfile(m)
 
-	deny := "(deny file-write-unlink file-write-create\n  (literal " + quoteSBPL(m.cfg.Worktree) + "))"
-	denyAt := strings.Index(profile, deny)
+	denyAt := strings.Index(profile, "(deny file-write-unlink file-write-create\n")
 	if denyAt < 0 {
-		t.Fatalf("profile has no worktree entry deny %q.\nprofile:\n%s", deny, profile)
+		t.Fatalf("profile has no worktree path deny.\nprofile:\n%s", profile)
+	}
+	clause := profile[denyAt:]
+	clause = clause[:strings.Index(clause, "))\n")+3]
+	for dir := m.cfg.Worktree; ; dir = filepath.Dir(dir) {
+		if !strings.Contains(clause, "(literal "+quoteSBPL(dir)+")") {
+			t.Errorf("worktree path deny does not list %s:\n%s", dir, clause)
+		}
+		if dir == filepath.Dir(dir) {
+			break
+		}
+	}
+	if !strings.Contains(clause, "(literal "+quoteSBPL(m.cfg.BareRoot)+")") {
+		t.Errorf("worktree path deny does not list BareRoot %s", m.cfg.BareRoot)
 	}
 	if allowAt := strings.LastIndex(profile, "(allow "); allowAt > denyAt {
-		t.Errorf("an allow clause (offset %d) follows the worktree entry deny (offset %d); SBPL takes the later rule.\nprofile:\n%s",
+		t.Errorf("an allow clause (offset %d) follows the worktree path deny (offset %d); SBPL takes the later rule.\nprofile:\n%s",
 			allowAt, denyAt, profile)
 	}
 	if !strings.Contains(profile, "(subpath "+quoteSBPL(m.cfg.BareRoot)+")") {

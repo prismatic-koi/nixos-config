@@ -2,24 +2,25 @@
 
 package integration_test
 
-// sandbox_exec_worktree_entry_darwin_test.go — the worktree entry guard of
+// sandbox_exec_worktree_entry_darwin_test.go — the worktree path guard of
 // the sandbox-exec profile (section 21b of generateProfile).
 //
 // The profile grants (subpath BareRoot) read-write, and the worktree is a
 // child of BareRoot. Without the guard, a sandboxed process can rename the
-// worktree away and put a symlink at its path. `prism container run
-// --mount` then gives that path to podman on the host, and podman mounts
-// the symlink target.
+// worktree, or BareRoot itself, away and put a symlink at its path. `prism
+// container run --mount` then gives the worktree path to podman on the
+// host, and podman mounts the symlink target.
 //
-// The positive test runs the swap under the production profile and expects
-// it to fail, while a write inside the worktree still works. The negative
-// test removes the guard and expects the same swap to succeed, which proves
-// that the guard is what stops it.
+// The positive test runs both swaps under the production profile and
+// expects them to fail, while a write inside the worktree still works. The
+// negative tests remove the guard and expect each swap to succeed, which
+// proves that the guard is what stops it.
 
 import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -75,17 +76,29 @@ func requireNixCoreutilsDir(t *testing.T) string {
 	return filepath.Dir(resolved)
 }
 
+// runWorktreeScript runs script under the profile with WT set to the
+// worktree, BARE to its parent (BareRoot), and DEST to a directory that the
+// profile grants for write (under TMPDIR, section 3b).
 func runWorktreeScript(t *testing.T, profilePath, worktree, script string) ([]byte, error) {
 	t.Helper()
 	nixBash := requireNixBash(t)
 	cmd := exec.Command(sandboxExecPath, "-f", profilePath, nixBash, "-c", script)
-	cmd.Env = append(os.Environ(), "WT="+worktree, "PATH="+requireNixCoreutilsDir(t))
+	cmd.Env = append(os.Environ(),
+		"WT="+worktree,
+		"BARE="+filepath.Dir(worktree),
+		"DEST="+t.TempDir(),
+		"PATH="+requireNixCoreutilsDir(t))
 	return cmd.CombinedOutput()
 }
 
+// worktreeDenyClause matches the section-21b deny with all its literals.
+var worktreeDenyClause = regexp.MustCompile(`(?s)\(deny file-write-unlink file-write-create\n.*?\)\)\n`)
+
+func withoutWorktreeDeny(p string) string { return worktreeDenyClause.ReplaceAllString(p, "") }
+
 // TestSandboxExecWorktreeEntry_CannotBeReplaced: under the production
-// profile a write inside the worktree works, and the worktree cannot be
-// renamed or removed.
+// profile a write inside the worktree works, and neither the worktree nor
+// BareRoot can be renamed or removed.
 func TestSandboxExecWorktreeEntry_CannotBeReplaced(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -97,12 +110,13 @@ func TestSandboxExecWorktreeEntry_CannotBeReplaced(t *testing.T) {
 
 	const script = `touch "$WT/probe" || exit 10
 mv "$WT" "$WT.moved" && exit 11
+mv "$BARE" "$DEST/saved" && exit 14
 rm -f "$WT/probe" || exit 13
 rmdir "$WT" && exit 12
 exit 0`
 	out, err := runWorktreeScript(t, profilePath, worktree, script)
 	if err != nil {
-		t.Fatalf("worktree swap was not blocked, or a write inside the worktree failed (exit 10/13).\nExit: %v\nOutput: %s\nProfile: %s",
+		t.Fatalf("a worktree or BareRoot swap was not blocked (exit 11/12/14), or a write inside the worktree failed (exit 10/13).\nExit: %v\nOutput: %s\nProfile: %s",
 			err, out, profilePath)
 	}
 	info, statErr := os.Lstat(worktree)
@@ -120,8 +134,7 @@ func TestSandboxExecWorktreeEntry_ReplaceableWithoutDeny(t *testing.T) {
 	}
 	requireSandboxExec(t)
 	m, worktree := newWorktreeEntryManager(t)
-	deny := "(deny file-write-unlink file-write-create\n  (literal " + sbplQuoteForTest(worktree) + "))"
-	profilePath := withMutatedProfile(t, m, func(p string) string { return strings.Replace(p, deny, "", 1) })
+	profilePath := withMutatedProfile(t, m, withoutWorktreeDeny)
 
 	out, err := runWorktreeScript(t, profilePath, worktree, `mv "$WT" "$WT.moved" && ln -s / "$WT"`)
 	if err != nil {
@@ -130,5 +143,26 @@ func TestSandboxExecWorktreeEntry_ReplaceableWithoutDeny(t *testing.T) {
 	}
 	if info, statErr := os.Lstat(worktree); statErr != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Errorf("without the deny the worktree path is not a symlink after the swap: %v", statErr)
+	}
+}
+
+// TestSandboxExecWorktreeEntry_BareRootReplaceableWithoutDeny is the paired
+// negative test for the ancestor case: with the deny removed, the sandbox
+// moves BareRoot away and puts a symlink at its path.
+func TestSandboxExecWorktreeEntry_BareRootReplaceableWithoutDeny(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	m, worktree := newWorktreeEntryManager(t)
+	profilePath := withMutatedProfile(t, m, withoutWorktreeDeny)
+
+	out, err := runWorktreeScript(t, profilePath, worktree, `mv "$BARE" "$DEST/saved" && ln -s / "$BARE"`)
+	if err != nil {
+		t.Fatalf("without the deny the BareRoot swap still failed, so the positive test proves nothing about BareRoot.\nExit: %v\nOutput: %s\nProfile: %s",
+			err, out, profilePath)
+	}
+	if info, statErr := os.Lstat(filepath.Dir(worktree)); statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("without the deny the BareRoot path is not a symlink after the swap: %v", statErr)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -60,13 +61,17 @@ func (c Caller) validate(mount Mount) error {
 		strings.IndexFunc(c.Worktree, unicode.IsControl) >= 0 {
 		return fmt.Errorf("worktree path %q cannot be given to podman as a mount source: use --mount none", c.Worktree)
 	}
-	// Lstat, not Stat: podman follows a symlink at the mount source, so a
-	// worktree path that the agent replaced with a symlink must not pass.
-	// The sandbox-exec profile stops that swap. This check refuses one that
-	// happened before the request.
+	// Podman follows a symlink in any component of the mount source, so a
+	// path that holds a symlink must not pass. The sandbox-exec profile
+	// stops an agent from putting one there (section 21b). This check
+	// refuses one that is there already. Run checks again under the host
+	// lock, just before podman starts.
 	info, err := os.Lstat(c.Worktree)
 	if err != nil || !info.IsDir() {
 		return fmt.Errorf("worktree %q is not a directory (a symlink is refused): use --mount none", c.Worktree)
+	}
+	if real, err := filepath.EvalSymlinks(c.Worktree); err != nil || real != filepath.Clean(c.Worktree) {
+		return fmt.Errorf("worktree path %q goes through a symlink (a symlink is refused): use --mount none", c.Worktree)
 	}
 	return nil
 }

@@ -30,7 +30,7 @@ func newCaller(t *testing.T) prismcontainer.Caller {
 	return prismcontainer.Caller{
 		SessionName: "prism-test@container-run",
 		InstanceID:  testInstanceID,
-		Worktree:    t.TempDir(),
+		Worktree:    prismcontainertest.RealTempDir(t),
 	}
 }
 
@@ -450,5 +450,48 @@ func TestRun_CIDFileInStateDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(cids[0])); !os.IsNotExist(err) {
 		t.Errorf("per-run cid dir still exists after the run: %v", err)
+	}
+}
+
+// TestRun_SymlinkParentRefused: a symlink in a parent directory of the
+// worktree redirects the mount source just as a symlink at the worktree
+// does, so prism refuses it.
+func TestRun_SymlinkParentRefused(t *testing.T) {
+	c := newCaller(t)
+	link := filepath.Join(prismcontainertest.RealTempDir(t), "bare")
+	if err := os.Symlink(filepath.Dir(c.Worktree), link); err != nil {
+		t.Fatal(err)
+	}
+	c.Worktree = filepath.Join(link, filepath.Base(c.Worktree))
+	f := &prismcontainertest.Fake{ImagePresent: true}
+	res := prismcontainer.Run(context.Background(), deps(f), c, prismcontainer.RunRequest{Image: "alpine"})
+	if res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, "goes through a symlink") {
+		t.Errorf("result = %+v, want a refusal naming the symlink", res)
+	}
+	if len(f.Calls()) != 0 {
+		t.Errorf("podman called: %q", f.Calls())
+	}
+}
+
+// TestRun_WorktreeSwappedDuringPullRefused: prism checks the worktree path
+// again under the host lock, so a swap during the pull is refused before
+// podman run.
+func TestRun_WorktreeSwappedDuringPullRefused(t *testing.T) {
+	c := newCaller(t)
+	f := &prismcontainertest.Fake{}
+	f.OnPull = func() {
+		if err := os.Rename(c.Worktree, c.Worktree+".moved"); err != nil {
+			t.Errorf("rename: %v", err)
+		}
+		if err := os.Symlink(t.TempDir(), c.Worktree); err != nil {
+			t.Errorf("symlink: %v", err)
+		}
+	}
+	res := prismcontainer.Run(context.Background(), deps(f), c, prismcontainer.RunRequest{Image: "alpine"})
+	if res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, "symlink is refused") {
+		t.Errorf("result = %+v, want a refusal after the swap", res)
+	}
+	if len(f.RunCalls()) != 0 {
+		t.Errorf("podman run called after the worktree swap")
 	}
 }

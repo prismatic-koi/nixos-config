@@ -191,6 +191,11 @@ func Run(ctx context.Context, d Deps, c Caller, req RunRequest) RunResult {
 	if msg := checkLimits(entries, c.InstanceID, d.HostLimit); msg != "" {
 		return refuse(msg)
 	}
+	// The pull and the lock wait can take minutes. Check the worktree path
+	// again as late as possible.
+	if err := c.validate(v.mount); err != nil {
+		return refuse(err.Error())
+	}
 
 	name, err := containerName(c)
 	if err != nil {

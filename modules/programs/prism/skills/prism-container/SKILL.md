@@ -89,11 +89,12 @@ prism container run --mount none alpine -- sh -c 'apk add --no-cache curl && cur
 The mount source is always the worktree of the calling session. Prism
 resolves the worktree on the host. No input names a host path.
 
-Podman follows a symlink at the mount source. Thus prism refuses the
-request when the worktree path is a symlink. On macOS, the sandbox-exec
-profile also stops the agent from renaming, removing, or replacing the
-worktree directory itself, so the path cannot change to a symlink while
-podman starts the container.
+Podman follows a symlink in any part of the mount source. Thus prism
+refuses the request when the worktree path goes through a symlink. Prism
+checks the path when the request arrives and again just before podman
+starts. On macOS, the sandbox-exec profile also stops the agent from
+renaming, removing, or replacing the worktree directory or any parent
+directory of it.
 
 With `--mount rw`, a container that runs as root writes files that the host
 user owns. You can then edit or delete those files from the sandbox. Commit

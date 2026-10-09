@@ -9,11 +9,25 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"testing"
 
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
 )
+
+// RealTempDir returns t.TempDir() with every symlink resolved. On macOS the
+// temp dir is under /var, a symlink to /private/var, and prismcontainer
+// refuses a worktree path that goes through a symlink.
+func RealTempDir(t testing.TB) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks(t.TempDir()): %v", err)
+	}
+	return dir
+}
 
 // Container is one container the fake holds.
 type Container struct {
@@ -39,6 +53,9 @@ type Fake struct {
 	// PullCode and PullStderr are the result of `podman pull`.
 	PullCode   int
 	PullStderr string
+	// OnPull runs during `podman pull`, for a test that changes the host
+	// while the pull is in progress.
+	OnPull func()
 	// PsErr makes `podman ps` fail as an unreachable podman does.
 	PsErr error
 	// OnRun is the container command. Nil exits 0 with no output.
@@ -104,6 +121,9 @@ func (f *Fake) Run(ctx context.Context, stdout, stderr io.Writer, args ...string
 		}
 		return 1, nil
 	case "pull":
+		if f.OnPull != nil {
+			f.OnPull()
+		}
 		_, _ = io.WriteString(stderr, f.PullStderr)
 		if f.PullCode == 0 {
 			f.mu.Lock()

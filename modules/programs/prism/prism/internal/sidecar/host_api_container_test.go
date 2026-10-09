@@ -21,7 +21,7 @@ func newContainerTestSidecar(t *testing.T, role string, fake *prismcontainertest
 	return New(Config{
 		SessionName:        "prism-test@container",
 		Repo:               "prism-test",
-		Worktree:           t.TempDir(),
+		Worktree:           prismcontainertest.RealTempDir(t),
 		HarnessURL:         "http://localhost:14000",
 		Clock:              newTestClock(),
 		AgentRole:          role,

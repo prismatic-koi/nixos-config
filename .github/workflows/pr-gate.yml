@@ -166,7 +166,9 @@ jobs:
   #
   # Selector scope: -run is scoped to the two carve-out test families named
   # in issue #2749 (TestSandboxExecGitLabToken_* and
-  # TestSandboxExecGrafanaConfig_*), not the full TestSandboxExec* family.
+  # TestSandboxExecGrafanaConfig_*), plus TestSandboxExecWorktreeEntry_*
+  # (#3061, the section-21b worktree path deny), not the full
+  # TestSandboxExec* family.
   # review-context (PR #2785, round 2) found that a wider '^TestSandboxExec'
   # selector deterministically SKIPs several other sandbox-exec suites on a
   # bare macos-15 runner (for example the playwright suite, because
@@ -223,12 +225,13 @@ jobs:
           authToken: ${{ secrets.CACHIX_TOKEN }}
           extraPullNames: nix-community
           name: lucidph3nx-nixos-config
-      - name: go test ./internal/integration -run '^TestSandboxExec(GitLabToken|GrafanaConfig)' -race
+      - name: go test ./internal/integration -run '^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry)' -race
         if: steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism
-        # Run inside `nix shell` so bash resolves to a /nix/store/... path
-        # on PATH, satisfying requireNixBash (the only requireNix* helper
-        # either of these two test files calls). The two target test files
+        # Run inside `nix shell` so bash and coreutils resolve to
+        # /nix/store/... paths on PATH, satisfying requireNixBash and
+        # requireNixCoreutilsDir (the only requireNix* helpers that the
+        # selected test files call). The two target test files
         # also check that TMPDIR resolves under /var/folders, because the
         # production secrets.d deny regexes are keyed to that path — a bare
         # macos-15 runner starts with TMPDIR under /private/tmp. `nix shell`
@@ -241,8 +244,8 @@ jobs:
         # visible in the Actions log.
         run: |
           set -o pipefail
-          nix shell --print-build-logs nixpkgs#bash \
-            --command bash -c 'TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"; export TMPDIR; go test -v ./internal/integration/ -run "^TestSandboxExec(GitLabToken|GrafanaConfig)" -race' 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
+          nix shell --print-build-logs nixpkgs#bash nixpkgs#coreutils \
+            --command bash -c 'TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"; export TMPDIR; go test -v ./internal/integration/ -run "^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry)" -race' 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
       # A SKIP must never read as a PASS (this was a review blocker on the
       # parent issue). go test exits 0 even when every selected test
       # skips (e.g. the /var/folders TMPDIR guard tripping on a runner
@@ -262,10 +265,10 @@ jobs:
             exit 1
           fi
 
-          run_count=$(grep -cE '^=== RUN   TestSandboxExec(GitLabToken|GrafanaConfig)' /tmp/go-test-macos-sandbox-exec.log || true)
-          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec(GitLabToken|GrafanaConfig)|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
+          run_count=$(grep -cE '^=== RUN   TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry)' /tmp/go-test-macos-sandbox-exec.log || true)
+          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry)|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
 
-          echo "TestSandboxExec(GitLabToken|GrafanaConfig)* tests run: ${run_count:-0}"
+          echo "TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry)* tests run: ${run_count:-0}"
           if [ -n "$skip_lines" ]; then
             echo "::error::one or more selected tests reported SKIP - a skip must not read as a pass:"
             echo "$skip_lines"

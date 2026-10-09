@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
+	"github.com/prismatic-koi/prism/internal/prismcontainer/prismcontainertest"
 )
 
 func integrationCaller(t *testing.T) prismcontainer.Caller {
@@ -33,7 +34,7 @@ func integrationCaller(t *testing.T) prismcontainer.Caller {
 	c := prismcontainer.Caller{
 		SessionName: "prism-test@integration",
 		InstanceID:  uuid.New().String(),
-		Worktree:    t.TempDir(),
+		Worktree:    prismcontainertest.RealTempDir(t),
 	}
 	t.Cleanup(func() { assertNoLabelledContainer(t, c.InstanceID) })
 	return c

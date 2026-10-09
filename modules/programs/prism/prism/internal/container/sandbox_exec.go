@@ -1192,22 +1192,33 @@ func generateProfile(m *Manager) string {
 	// emits log warnings but continues; allowing it silences the denials.
 	sb.WriteString("(allow user-preference-read)\n")
 
-	// ── 21b. FINAL DENY — the worktree entry cannot be replaced ─
-	// Section 6 grants read-write on (subpath BareRoot), and that subpath
-	// holds the directory entry of the worktree. Without this deny, the agent
-	// can rename the worktree away and put a symlink at its path. `prism
-	// container run --mount` gives that path to podman on the host, and
-	// podman then mounts the symlink target: any directory that the podman
-	// machine shares, the whole home directory included.
+	// ── 21b. FINAL DENY — the worktree path cannot be replaced ─
+	// Section 6 grants read-write on (subpath BareRoot). That rule covers
+	// the BareRoot node itself and every directory between BareRoot and the
+	// worktree. Without this deny, the agent can rename one of those
+	// directories away and put a symlink at its path. `prism container run
+	// --mount` gives the worktree path to podman on the host, and podman
+	// then mounts the symlink target: any directory that the podman machine
+	// shares, the whole home directory included.
 	//
-	// The deny matches the worktree node only, so files below it keep the
-	// section-6 grant. It must follow every allow, because SBPL resolves a
-	// conflict in favour of the later rule.
-	// TestGenerateProfile_WorktreeEntryDenyFollowsEveryAllow pins the order.
+	// The deny lists the worktree and every ancestor up to /. An ancestor
+	// that no grant covers is denied already. It is listed so that a later
+	// grant cannot re-open it. The rules match the directory nodes only, so
+	// files below the worktree keep the section-6 grant. The deny must
+	// follow every allow, because SBPL resolves a conflict in favour of the
+	// later rule. TestGenerateProfile_WorktreeEntryDenyFollowsEveryAllow
+	// pins the order.
 	if m.cfg.Worktree != "" {
+		var nodes []string
+		for dir := filepath.Clean(m.cfg.Worktree); ; dir = filepath.Dir(dir) {
+			nodes = append(nodes, "  (literal "+quoteSBPL(dir)+")")
+			if dir == filepath.Dir(dir) {
+				break
+			}
+		}
 		sb.WriteString("\n")
 		sb.WriteString("(deny file-write-unlink file-write-create\n")
-		sb.WriteString("  (literal " + quoteSBPL(m.cfg.Worktree) + "))\n")
+		sb.WriteString(strings.Join(nodes, "\n") + ")\n")
 	}
 
 	// ── 22. FINAL DENIES — Go module cache is not executable ─
