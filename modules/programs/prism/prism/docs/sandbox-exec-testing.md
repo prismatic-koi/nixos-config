@@ -223,6 +223,12 @@ integration test coverage exists for:
   configure it, denied when they do not, with `github_token` in the same
   generation dir denied in both cases, plus the paired negative that strips
   the exception. See `sandbox_exec_grafana_config_darwin_test.go`.
+- **The worktree path deny** — the final deny (section 21b) on unlink and
+  create of the worktree and of every ancestor of it, `BareRoot` included.
+  Under the production profile, a write inside the worktree works, and a
+  rename or removal of the worktree or of `BareRoot` fails. The paired
+  negatives strip the deny and replace each path with a symlink. See
+  `sandbox_exec_worktree_entry_darwin_test.go`.
 - **Network egress** — `(allow network*)` permits outbound TCP.
 
 Each positive case has a paired negative case that mutates the profile to
@@ -264,27 +270,32 @@ and `update-flakes.yml` already use. A `macos-15` runner is a bare macOS
 VM, not a nested prism sandbox. A top-level `sandbox-exec` profile applies
 there, so the tests execute rather than skip. See issue #2749.
 
-The test binary (`bash`) must resolve to a `/nix/store/...` path. See
-"Nix-store binary requirement" below. The job installs Nix with the
+The test binaries (`bash`, and `mv` with the other coreutils) must resolve
+to a `/nix/store/...` path. See "Nix-store binary requirement" below. The job installs Nix with the
 cachix/install-nix-action GitHub Action. Every other nix-using job in this
 workflow already uses that same action. The job then runs the tests inside
 `nix shell`:
 
 ```
-nix shell nixpkgs#bash \
-  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig)' -race
+nix shell nixpkgs#bash nixpkgs#coreutils \
+  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry)' -race
 ```
 
-The two selected tests also need `TMPDIR` to resolve under `/var/folders`.
+The tests in `sandbox_exec_gitlab_token_darwin_test.go` and
+`sandbox_exec_grafana_config_darwin_test.go` also need `TMPDIR` to resolve
+under `/var/folders`.
 The production secrets.d deny regexes key off that path. A bare `macos-15`
 runner starts with `TMPDIR` under `/private/tmp`, so the job exports
 `TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"` before it runs `go test`.
 
-**Selector scope: the two named carve-out families, not the whole
-`TestSandboxExec*` family.** Issue #2749's problem statement names exactly
-two affected files: `sandbox_exec_gitlab_token_darwin_test.go` and
-`sandbox_exec_grafana_config_darwin_test.go`. The `-run` selector matches
-only their `TestSandboxExecGitLabToken_*` and `TestSandboxExecGrafanaConfig_*`
+**Selector scope: three named families, not the whole `TestSandboxExec*`
+family.** Issue #2749's problem statement names exactly two affected files:
+`sandbox_exec_gitlab_token_darwin_test.go` and
+`sandbox_exec_grafana_config_darwin_test.go`. Issue #3061 adds a third file,
+`sandbox_exec_worktree_entry_darwin_test.go`, for the section-21b worktree
+path deny. Its only extra need on a bare `macos-15` runner is Nix coreutils.
+The `-run` selector matches only the `TestSandboxExecGitLabToken_*`,
+`TestSandboxExecGrafanaConfig_*`, and `TestSandboxExecWorktreeEntry_*`
 functions. A wider `^TestSandboxExec` selector was tried first. PR #2785
 (round-2 review) found that this selector skips several other sandbox-exec
 suites on a bare `macos-15` runner. For example, the playwright suite
@@ -338,11 +349,13 @@ default moves to `host` mode.
 
 ### Nix-store binary requirement
 
-`requireNixBash` is the only `requireNix*` helper either of the two
-selected test files calls (defined in
-`sandbox_exec_helpers_darwin_test.go`). It resolves `bash` through
-`exec.LookPath` and `filepath.EvalSymlinks`, then skips the test if the
-resolved path is not under `/nix/store/`. Apple-signed and Homebrew
+The selected test files call two Nix-store helpers. `requireNixBash`
+(defined in `sandbox_exec_helpers_darwin_test.go`) resolves `bash`.
+`requireNixCoreutilsDir` (defined in
+`sandbox_exec_worktree_entry_darwin_test.go`) resolves `mv`, and its
+directory supplies the other coreutils. Each helper resolves its binary
+through `exec.LookPath` and `filepath.EvalSymlinks`, then skips the test if
+the resolved path is not under `/nix/store/`. Apple-signed and Homebrew
 binaries fail with SIGABRT under the deny-default sandbox (see #1190). A
 bare `macos-15` runner has no Nix installed and no `/nix/store` binaries on
 `PATH` by default. Without the Nix-install step and the `nix shell`
@@ -353,7 +366,8 @@ through `nix shell` for this reason. It does not rely on
 whatever `bash` the bare runner image happens to ship. A future selector
 widening that pulls in a suite calling `requireNixGit`, `requireNixAws`,
 `requireNixKubectl`, or `requireNixSocat` must add the corresponding
-`nixpkgs#` package to this `nix shell` invocation.
+`nixpkgs#` package to this `nix shell` invocation. The job adds
+`nixpkgs#coreutils` for `requireNixCoreutilsDir` in the same way.
 
 ## Out of scope
 
