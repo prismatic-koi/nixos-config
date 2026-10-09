@@ -599,3 +599,38 @@ func TestRunPodmanProxyAuditLogUnreadable(t *testing.T) {
 		}
 	}
 }
+
+// TestRunPrismContainerAuditLog verifies that the prism-container audit log
+// is copied byte-identical, and that a missing log is skipped.
+func TestRunPrismContainerAuditLog(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveRoot := filepath.Join(tmpDir, "archive")
+
+	logContent := `{"time":"2026-10-10T01:02:03Z","command":"run","image":"docker.io/library/alpine","decision":"allowed","exit_code":0}` + "\n"
+	logPath := filepath.Join(tmpDir, "audit.log")
+	if err := os.WriteFile(logPath, []byte(logContent), 0o600); err != nil {
+		t.Fatalf("write audit.log: %v", err)
+	}
+
+	p := baseParams(archiveRoot)
+	p.InstanceID = "44445555-6666-7777-8888-999900001111"
+	p.PrismContainerAuditLogPath = logPath
+	archivePath, err := Run(p)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if got := readFile(t, filepath.Join(archivePath, "prism-container-audit.log")); got != logContent {
+		t.Errorf("prism-container-audit.log = %q, want %q", got, logContent)
+	}
+
+	p = baseParams(filepath.Join(tmpDir, "archive2"))
+	p.InstanceID = "55556666-7777-8888-9999-000011112222"
+	p.PrismContainerAuditLogPath = filepath.Join(tmpDir, "missing.log")
+	archivePath, err = Run(p)
+	if err != nil {
+		t.Fatalf("Run() with a missing log: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(archivePath, "prism-container-audit.log")); !os.IsNotExist(statErr) {
+		t.Errorf("prism-container-audit.log should not exist when the source is missing: %v", statErr)
+	}
+}

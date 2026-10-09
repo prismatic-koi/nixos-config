@@ -31,6 +31,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/archive"
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/prismcontainer"
 )
 
 // agentContextSchemaVersion is the schema version string. Bump on any
@@ -125,6 +126,9 @@ var enumFlagRegistry = map[enumFlagKey]flagEnumMeta{
 			return s
 		}(),
 		defaultSource: "~/.config/prism/config.json",
+	},
+	{commandUse: containerRunUse, flagName: "mount"}: {
+		values: prismcontainer.MountModes,
 	},
 	{commandUse: "sidecar", flagName: "isolation-mode"}: {
 		values: func() []string {

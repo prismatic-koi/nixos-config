@@ -10,6 +10,7 @@
 //	      manifest.json
 //	      agent-run.log  (when present)
 //	      podman-proxy.log  (when present)
+//	      prism-container-audit.log  (when present)
 //
 // The pre-fix layout placed `session.jsonl` under a `raw/` subdirectory and
 // ran a separate Export step that byte-copied it next to `manifest.json`.
@@ -116,6 +117,11 @@ type Params struct {
 	// for the archive the way the harness transcript is, and a permissions
 	// glitch on it must not block session teardown.
 	PodmanProxyAuditLogPath string
+	// PrismContainerAuditLogPath is the `prism container` audit log of the
+	// session's final incarnation. When the file exists it is copied into
+	// the archive as prism-container-audit.log. It follows the same
+	// missing-file and copy-failure rules as PodmanProxyAuditLogPath.
+	PrismContainerAuditLogPath string
 	// ArchiveRoot overrides the archive root (~/.local/share/prism/archive).
 	// When empty the XDG-derived default is used. Tests inject this.
 	ArchiveRoot string
@@ -238,6 +244,14 @@ func Run(p Params) (archivePath string, err error) {
 			dst := filepath.Join(tmpDir, "podman-proxy.log")
 			if copyErr := copyFile(p.PodmanProxyAuditLogPath, dst); copyErr != nil {
 				proglog.Warnf("[prism] archive: copy podman-proxy audit log: %v — continuing without it\n", copyErr)
+			}
+		}
+	}
+	if p.PrismContainerAuditLogPath != "" {
+		if _, statErr := os.Stat(p.PrismContainerAuditLogPath); statErr == nil {
+			dst := filepath.Join(tmpDir, "prism-container-audit.log")
+			if copyErr := copyFile(p.PrismContainerAuditLogPath, dst); copyErr != nil {
+				proglog.Warnf("[prism] archive: copy prism-container audit log: %v — continuing without it\n", copyErr)
 			}
 		}
 	}

@@ -8,11 +8,14 @@ package review
 // command — they have no dependency on prompt or result formatting.
 
 import (
+	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/prismcontainer"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -200,16 +203,78 @@ func cleanupAgentSession(d *db.DB, agentSession string, cause db.SessionReapCaus
 	_ = d.ReleasePort(agentSession)
 	_ = d.SetEnded(agentSession)
 	_ = d.PurgeBusMessages(agentSession)
-	// Remove the child's own instance-ID-keyed directory trees (work dir and
-	// podman-proxy audit dir). Every parent-cleanup path routes through this
-	// function for each review-agent child, so this is the single place that
-	// closes the gap where a child session's directories otherwise outlive
-	// its parent's cleanup (issue #2960). Both removals are non-fatal and
-	// idempotent — a host-isolation child has no work dir, and a child that
-	// never enabled containers has no audit dir.
+	// Remove the child's own instance-ID-keyed directory trees (work dir,
+	// podman-proxy audit dir, and prism-container audit dir). Every
+	// parent-cleanup path routes through this function for each review-agent
+	// child, so this is the single place that closes the gap where a child
+	// session's directories otherwise outlive its parent's cleanup (issue
+	// #2960). The removals are non-fatal and idempotent — a host-isolation
+	// child has no work dir, and a child that never used containers has no
+	// audit dir.
+	//
+	// A child that used `prism container` first gets its containers swept,
+	// while its audit dir still proves that it used them. Its audit log then
+	// goes to the parent, because a review agent has no archive of its own.
 	if lookupErr == nil && st != nil && st.InstanceID != nil && *st.InstanceID != "" {
-		container.RemoveSessionWorkDir(*st.InstanceID)
-		container.RemovePodmanProxyAuditDir(*st.InstanceID)
+		childID := *st.InstanceID
+		sweepChildPrismContainers(agentSession, childID)
+		container.RemoveSessionWorkDir(childID)
+		container.RemovePodmanProxyAuditDir(childID)
+		if handOverChildPrismContainerAudit(d, agentSession, childID) {
+			container.RemovePrismContainerAuditDir(childID)
+		}
+	}
+}
+
+// handOverChildPrismContainerAudit appends the prism-container audit log of
+// a review-agent child to the log of the current incarnation of its parent.
+// Every caller that can see a real log runs before the parent's archive
+// step, so the parent archive keeps the lines.
+//
+// It reports whether the child's audit dir can be removed: true when the
+// child has no log or the append worked. On false the dir stays on disk,
+// and a warning names it.
+func handOverChildPrismContainerAudit(d *db.DB, agentSession, childID string) bool {
+	if !container.PrismContainerAuditDirExists(childID) {
+		return true
+	}
+	parent, _, _ := strings.Cut(agentSession, "~")
+	st, err := d.CurrentStatus(parent)
+	if err != nil || st == nil || st.InstanceID == nil || *st.InstanceID == "" {
+		proglog.Warnf("[prism] warning: cleanup: keep the prism-container audit log of %q: parent %q has no instance ID\n", agentSession, parent)
+		return false
+	}
+	if err := prismcontainer.AppendAuditLog(childID, *st.InstanceID); err != nil {
+		proglog.Warnf("[prism] warning: cleanup: keep the prism-container audit log of %q: append to parent %q failed (%v)\n", agentSession, parent, err)
+		return false
+	}
+	return true
+}
+
+// childPrismContainerRunner runs podman for sweepChildPrismContainers.
+var childPrismContainerRunner prismcontainer.Runner = prismcontainer.ExecRunner{}
+
+// SetChildPrismContainerRunnerForTest replaces the podman runner of the
+// review-child container sweep until the returned restore runs. Tests in
+// other packages use it, so that a cleanup test never runs the real
+// podman. Production code must not call it.
+func SetChildPrismContainerRunnerForTest(r prismcontainer.Runner) (restore func()) {
+	prev := childPrismContainerRunner
+	childPrismContainerRunner = r
+	return func() { childPrismContainerRunner = prev }
+}
+
+// sweepChildPrismContainers removes the `prism container` containers of one
+// review-agent child. It issues no podman command when the child has no
+// prism-container audit dir.
+func sweepChildPrismContainers(agentSession, instanceID string) {
+	if !container.PrismContainerAuditDirExists(instanceID) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := prismcontainer.SweepInstances(ctx, childPrismContainerRunner, []string{instanceID}); err != nil {
+		proglog.Warnf("[prism] warning: cleanup: prism-container sweep for %q failed (%v) — continuing cleanup\n", agentSession, err)
 	}
 }
 

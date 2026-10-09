@@ -94,6 +94,7 @@ let
     # the hard cap from inside its sandbox. Host-mode agents are not capped.
     agent_max_open_files_soft = config.nx.programs.prism.agentMaxOpenFilesSoft;
     agent_max_open_files_hard = config.nx.programs.prism.agentMaxOpenFilesHard;
+    container_host_limit = config.nx.programs.prism.containerHostLimit;
     pi_extension_dir = config.nx.programs.prism.piExtensionDir;
     # github_token_path: absolute path to the sops-decrypted GitHub token file.
     # Last-resort fallback read by credentialEnvVars when the inherited
@@ -198,6 +199,18 @@ in
         hard limit are clamped to the host hard limit with a warning in the
         agent-run log. Zero or negative values fall back to the compiled-in
         default (16384). Host-mode agents are not capped.
+      '';
+    };
+
+    nx.programs.prism.containerHostLimit = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 4;
+      description = ''
+        Maximum number of `prism container` containers that run at the same
+        time on this host, across all sessions. When the limit is reached,
+        prism refuses a new container at once. Written to config.json as
+        container_host_limit. Each session can run one container at a time,
+        independent of this option.
       '';
     };
 

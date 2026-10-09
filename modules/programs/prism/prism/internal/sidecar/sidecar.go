@@ -57,6 +57,7 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/mergequeue"
 	"github.com/prismatic-koi/prism/internal/payload"
+	"github.com/prismatic-koi/prism/internal/prismcontainer"
 )
 
 // defaultNotifyHTTPClient is the HTTP client used for coordinator notification
@@ -389,6 +390,15 @@ type Config struct {
 	// Wired by cmd/sidecar.go from git.BareRoot(worktree). Read by
 	// runPodmanProxyIfEnabled.
 	BareRoot string
+
+	// ContainerRunner runs podman for POST /container/run. Nil selects
+	// prismcontainer.ExecRunner. Tests inject a fake.
+	ContainerRunner prismcontainer.Runner
+
+	// ContainerHostLimit overrides the host-wide container limit. Zero makes
+	// each request read the limit from config.json, so a changed Nix option
+	// takes effect without a sidecar restart.
+	ContainerHostLimit int
 
 	// PodmanProxyListenerPath is the Unix socket path the per-session
 	// filtering podman API socket proxy listens on when containers are

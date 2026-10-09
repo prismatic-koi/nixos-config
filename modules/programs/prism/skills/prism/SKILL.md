@@ -617,6 +617,16 @@ prism cleanup --yes --session <inv-session>
 
 ---
 
+## Running containers
+
+To run a container from a prism session, use `prism container`, not
+`podman` or `docker`. Before you run a container, load the
+`prism-container` skill. Also load it when a `prism container` command is
+refused or times out. The skill gives the command surface, the fixed
+options, the limits, ownership, cleanup, and the audit log.
+
+---
+
 ## Merge queue (coordinators only)
 
 > **Coordinators only.** The whole verb family is coordinator-only: the host-API `/merge`, `/merges`, and `/merges/cancel` endpoints each call `requireCoordinator`, so `prism merge`, `prism merges list`, and `prism merges cancel` return HTTP 403 for worker agents, container worker agents, bwrap worker agents, and review agents alike. If you are not a coordinator agent, skip this section.
