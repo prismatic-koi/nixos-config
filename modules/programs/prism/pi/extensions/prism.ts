@@ -782,6 +782,14 @@ function segmentIsGitPush(segment: string): boolean {
 // the five review roles are blocked, because ordinary workers use all three
 // commands legitimately. The `git-worktree-*` and
 // `nix-build-*` entries are unscoped: those hazards apply to coordinators too.
+//
+// Isolation scoping is a third axis. ONE entry carries `appliesToIsolation:
+// isSandboxedIsolation` — `container-cli-in-sandbox` (#3065). It applies to
+// every role, but only in a `bwrap` or `sandbox-exec` session. A `host`
+// session can reach the podman service of the host. The entry is guidance,
+// not the security boundary. The sandbox itself stops a podman client that
+// the deny list does not see (`--disable-userns` in
+// internal/container/bwrap.go, section 21c of the sandbox-exec profile).
 
 /**
  * One entry in the bash deny list. Each entry is matched against an
@@ -799,12 +807,16 @@ function segmentIsGitPush(segment: string): boolean {
  * session that loads the extension (the pre-existing convention — the
  * git-worktree-* and nix-build entries are unscoped because their hazards
  * apply to coordinators too).
+ *
+ * `appliesToIsolation` optionally scopes a pattern to isolation modes, in
+ * the same way. The predicate receives the `isolation_mode` of hello_ack.
  */
 export interface BlockedBashPattern {
   id: string
   match: (segment: string) => boolean
   reason: string
   appliesToRole?: (agentRole: string) => boolean
+  appliesToIsolation?: (isolationMode: string) => boolean
 }
 
 /**
@@ -874,6 +886,97 @@ const REVIEW_WORKING_TREE_REASON =
   "the PR branch use `git show origin/<branch>:<path>` (pipe it to a temp " +
   "file if you must run a command against it); to compare branches use " +
   "`git diff origin/main...origin/<branch>`. See issue #2648."
+
+/**
+ * Isolation predicate for the `container-cli-in-sandbox` entry (#3065).
+ *
+ * An empty mode means that hello_ack has not arrived or has no
+ * `isolation_mode` field. The predicate treats it as `host`, as
+ * `formatPrismStatus` does, so that the deny list never blocks a host
+ * session by mistake. In a sandbox the gap is small. hello_ack arrives
+ * over a local socket soon after session start, and the sandbox stops
+ * podman without the deny list.
+ *
+ * Exported for unit testing.
+ */
+export function isSandboxedIsolation(isolationMode: string): boolean {
+  return isolationMode === "bwrap" || isolationMode === "sandbox-exec"
+}
+
+const CONTAINER_CLI_NAMES: ReadonlySet<string> = new Set(["podman", "docker"])
+
+/**
+ * Words that run the next word as a command. `segmentRunsContainerCLI`
+ * skips them, and their `-` options, to find the command word.
+ */
+const COMMAND_RUNNER_WORDS: ReadonlySet<string> = new Set([
+  "command",
+  "env",
+  "exec",
+  "nohup",
+  "sudo",
+  "time",
+])
+
+/**
+ * Decide whether a tokenised command segment runs `podman` or `docker`.
+ *
+ * Only the command word counts. The match ignores a name in an argument
+ * or in a path argument, so `rg -n podman docs/` and
+ * `cat modules/programs/podman.nix` do not match. The command word can
+ * have a directory part (`/run/current-system/sw/bin/podman`). Before the
+ * command word, the matcher skips these tokens:
+ *
+ *   - `VAR=value` assignments, `{`, and `!`.
+ *   - A word in `COMMAND_RUNNER_WORDS` and its `-` options.
+ *   - `timeout`, its `-` options, and its duration.
+ *
+ * `command -v` and `command -V` only look up a name, so they do not match.
+ *
+ * Exported for unit testing.
+ */
+export function segmentRunsContainerCLI(segment: string): boolean {
+  const tokens = segment.split(/\s+/).filter((t) => t.length > 0)
+  let i = 0
+  while (i < tokens.length) {
+    const t = tokens[i]
+    if (t === "{" || t === "!" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
+      i++
+      continue
+    }
+    if (COMMAND_RUNNER_WORDS.has(t)) {
+      i++
+      while (i < tokens.length && tokens[i].startsWith("-")) {
+        if (t === "command" && (tokens[i] === "-v" || tokens[i] === "-V")) {
+          return false
+        }
+        i++
+      }
+      continue
+    }
+    if (t === "timeout") {
+      i++
+      while (i < tokens.length && tokens[i].startsWith("-")) i++
+      i++
+      continue
+    }
+    break
+  }
+  if (i >= tokens.length) return false
+  const word = tokens[i]
+  return CONTAINER_CLI_NAMES.has(word.slice(word.lastIndexOf("/") + 1))
+}
+
+/**
+ * `reason` for the `container-cli-in-sandbox` entry (#3065). One message
+ * for podman and docker. It names `prism container` and the
+ * `prism-container` skill, so the block also delivers the guidance.
+ */
+const CONTAINER_CLI_REASON =
+  "blocked by prism extension: podman and docker do not work in a prism " +
+  "sandbox. To run a container, use `prism container`: prism runs podman " +
+  "on the host with fixed options. Load the `prism-container` skill " +
+  "before you use it. See issue #3065."
 
 /**
  * Bash commands that the pi extension blocks before pi executes them.
@@ -1097,6 +1200,16 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
     appliesToRole: isReviewRole,
     reason: REVIEW_WORKING_TREE_REASON,
   },
+  {
+    // #3065 — `prism container` is the only supported way to run a
+    // container from a sandbox. A podman or docker command there only
+    // wastes turns. Scoped by isolation, not by role: see the header of
+    // this section.
+    id: "container-cli-in-sandbox",
+    match: segmentRunsContainerCLI,
+    appliesToIsolation: isSandboxedIsolation,
+    reason: CONTAINER_CLI_REASON,
+  },
 ]
 
 /**
@@ -1114,11 +1227,16 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
  * default of "" preserves the pre-#2202 behaviour for callers that do
  * not pass a role: unscoped patterns still fire, worker-scoped ones do not.
  *
+ * `isolationMode` is the `isolation_mode` of hello_ack. Patterns with an
+ * `appliesToIsolation` predicate are skipped when the mode does not
+ * satisfy it. The default of "" reads as `host`.
+ *
  * Exported for unit testing.
  */
 export function checkBlockedBash(
   command: string,
   agentRole: string = "",
+  isolationMode: string = "",
 ): { id: string; reason: string } | null {
   const stripped = stripQuotedAndHeredocRegions(command)
   // Two passes:
@@ -1141,6 +1259,12 @@ export function checkBlockedBash(
       if (
         pattern.appliesToRole !== undefined &&
         !pattern.appliesToRole(agentRole)
+      ) {
+        continue
+      }
+      if (
+        pattern.appliesToIsolation !== undefined &&
+        !pattern.appliesToIsolation(isolationMode)
       ) {
         continue
       }
@@ -3704,7 +3828,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
     // the first turn.
     const roleFlagValue = pi.getFlag("agent")
     const agentRole = typeof roleFlagValue === "string" ? roleFlagValue : ""
-    const hit = checkBlockedBash(command, agentRole)
+    const hit = checkBlockedBash(command, agentRole, sessionIsolationMode)
     if (hit !== null) {
       return { block: true, reason: hit.reason }
     }

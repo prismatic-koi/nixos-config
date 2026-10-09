@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -191,11 +192,23 @@ func runStdioSidecarAsync(sc *Sidecar) func() error {
 //
 // The skip message is loud and named — see the follow-up for
 // alternative-runner / privileged-container investigations.
+//
+// A prism bwrap sandbox runs with --disable-userns, so a bwrap on PATH
+// fails there in the same way. The live probe skips that case too.
 func requireUsableBwrap(t *testing.T) {
 	t.Helper()
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
 		t.Skipf("skipping on GitHub Actions ubuntu-latest: %s — see #1510",
 			"unprivileged userns uid-map setup is disallowed (kernel.apparmor_restrict_unprivileged_userns=1)")
+	}
+	bin, err := exec.LookPath("bwrap")
+	if err != nil {
+		return
+	}
+	probe := exec.Command(bin, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+		"--unshare-pid", "/bin/sh", "-c", "true")
+	if out, err := probe.CombinedOutput(); err != nil {
+		t.Skipf("bwrap is on PATH but cannot run here: %v — %s", err, out)
 	}
 }
 

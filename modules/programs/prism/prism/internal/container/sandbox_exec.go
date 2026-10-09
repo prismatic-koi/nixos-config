@@ -1221,6 +1221,24 @@ func generateProfile(m *Manager) string {
 		sb.WriteString(strings.Join(nodes, "\n") + ")\n")
 	}
 
+	// ── 21c. FINAL DENY — podman and docker binaries do not run ─
+	// `prism container` is the only supported way to run a container from
+	// the sandbox (#3065). The pi deny list blocks a `podman` or `docker`
+	// command that it can see. This deny also stops a client that the deny
+	// list cannot see: a script, `sh -c`, or an absolute path. SBPL matches
+	// the path after it resolves symlinks, so the deny also stops a symlink
+	// with another name. The nix wrapper of podman runs .podman-wrapped, so
+	// the deny lists that name too.
+	//
+	// The rule matches file names. A copy of the binary under another name
+	// still runs. The podman machine socket also stays reachable. #3066
+	// tracks that socket. The deny must follow the section-9 allow, because
+	// SBPL resolves a conflict in favour of the later rule.
+	// TestGenerateProfile_ContainerCLIExecDenyFollowsProcessExecAllow pins
+	// the order.
+	sb.WriteString("\n")
+	sb.WriteString(containerCLIExecDeny)
+
 	// ── 22. FINAL DENIES — Go module cache is not executable ─
 	// The module cache holds downloaded dependency SOURCE. Section 5k grants
 	// it read-write because the toolchain must populate it. Without this deny,
@@ -1283,6 +1301,13 @@ func generateProfile(m *Manager) string {
 
 	return sb.String()
 }
+
+// containerCLIExecDeny is the section-21c clause of generateProfile.
+const containerCLIExecDeny = "(deny process-exec*\n" +
+	"  (regex #\"/podman$\")\n" +
+	"  (regex #\"/docker$\")\n" +
+	"  (regex #\"/\\.podman-wrapped$\")\n" +
+	"  (regex #\"/\\.docker-wrapped$\"))\n"
 
 // collectSecretsDAllowlistNames returns the secrets.d-relative names of the
 // agent-needed secrets, derived from the stable host source paths the
