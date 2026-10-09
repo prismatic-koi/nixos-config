@@ -54,7 +54,17 @@ nix build --impure --no-link \
   --expr '(builtins.getFlake (toString ./.)).packages.x86_64-linux.prism.override { runChecks = true; }'
 ```
 
-The `go-tests` job catches race conditions and integration-test failures the nix sandbox masks (e.g. tests that `t.Skip` when bwrap is unavailable). The `nix-build-prism-checked` job catches the homeless-shelter failure class.
+The `go-tests` job catches race conditions and integration-test failures that the nix sandbox masks. The `nix-build-prism-checked` job catches the homeless-shelter failure class.
+
+## Live bwrap tests run only from a host shell
+
+The live bwrap tests start a real `bwrap`. Examples are `TestBwrapBaseline_*`, `TestBwrapUsageStateDir_*`, `TestBwrapGoCacheDirs_*`, `TestBwrapAgentRlimitNofile`, `TestRunStartupStdio_*`, and `TestStdio_*`. Three environments skip them:
+
+- A prism bwrap worker. The worker sandbox runs with `--disable-userns` (#3065), so a nested bwrap cannot start.
+- The `go-tests` CI job. The helpers skip when `GITHUB_ACTIONS=true` (#1510).
+- The `nix-build-prism-checked` CI job. bwrap is not on `PATH` in the nix build sandbox.
+
+A SKIP in these tests is not a PASS. If a change touches `internal/container/bwrap.go` or a live bwrap test, run the tests with `-v` from a host shell outside every sandbox. If you cannot, ask the user to run them. Record the result in the PR body. #3076 tracks a CI job that runs these tests.
 
 ## Test-suite isolation (issue #1608)
 
