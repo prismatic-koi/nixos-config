@@ -259,6 +259,26 @@ func TestAgentMaxOpenFilesAbsentKeepsDefaults(t *testing.T) {
 	}
 }
 
+// TestContainerHostLimit verifies the default, an explicit value, and the
+// fallback for a value below 1.
+func TestContainerHostLimit(t *testing.T) {
+	cases := map[string]int{
+		`{}`:                          4,
+		`{"container_host_limit": 9}`: 9,
+		`{"container_host_limit": 0}`: 4,
+	}
+	for raw, want := range cases {
+		cfgPath := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+		if got := config.LoadFresh().ContainerHostLimit; got != want {
+			t.Errorf("%s: ContainerHostLimit = %d, want %d", raw, got, want)
+		}
+	}
+}
+
 // TestSidecarCircuitBreakerThresholdSilentlyIgnored verifies the
 // [edge-case] AC: an existing config.json on a user's machine that still
 // carries a `sidecar_circuit_breaker_threshold` field (from an older prism

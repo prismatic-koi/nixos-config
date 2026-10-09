@@ -981,6 +981,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 // Errors inside the sweep are non-fatal and logged at warning level by
 // the sweep itself. The helper has no error path of its own.
 func applySessionResourceSweep(session string, result *cleanupResult, scope sweepScope) {
+	sweepPrismContainersForSession(session)
 	counts, ran := sweepSessionResourcesForSession(session, scope)
 	if !ran {
 		return
@@ -1518,6 +1519,9 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	if auditLogPath, auditErr := container.PodmanProxyAuditLogPath(instanceID); auditErr == nil {
 		params.PodmanProxyAuditLogPath = auditLogPath
 	}
+	if auditLogPath, auditErr := container.PrismContainerAuditLogPath(instanceID); auditErr == nil {
+		params.PrismContainerAuditLogPath = auditLogPath
+	}
 
 	archivePath, archiveErr := archive.Run(params)
 	if archiveErr != nil {
@@ -1778,25 +1782,28 @@ func archiveThenSeverPiResume(d *db.DB, sessionName, instanceID, isolationMode s
 // substantial refactoring.
 var severGateForceAlwaysSever bool
 
-// removeSessionInstanceDirs removes the two on-disk directory trees keyed
-// by a session's instance ID:
+// removeSessionInstanceDirs removes the on-disk directory trees keyed by a
+// session's instance ID:
 //
 //   - the per-session work dir, which also covers staging-HOME remnants
-//     that legacy sessions left nested at <sessionDir>/home/, and
+//     that legacy sessions left nested at <sessionDir>/home/,
 //   - the per-session podman-proxy audit dir, which sits outside the work
 //     dir so the agent has no write path to its own audit trail (see
 //     internal/container/podman_proxy_audit.go) and therefore needs its
-//     own removal here.
+//     own removal here, and
+//   - the per-session `prism container` audit dir, for the same reason
+//     (see internal/container/prism_container_state.go).
 //
-// Both removals are non-fatal and idempotent. A directory that does not
+// All removals are non-fatal and idempotent. A directory that does not
 // exist is silently skipped: a bwrap or host session has no work dir, and
-// a session that never enabled containers has no audit dir.
+// a session that never used containers has no audit dir.
 //
 // Every cleanup path that ends a session calls this. A new per-session
 // directory keyed by instance ID belongs here, not at the call sites.
 func removeSessionInstanceDirs(instanceID string) {
 	container.RemoveSessionWorkDir(instanceID)
 	container.RemovePodmanProxyAuditDir(instanceID)
+	container.RemovePrismContainerAuditDir(instanceID)
 }
 
 // instanceIDFromStatus returns the instance_id from the agent_status row for

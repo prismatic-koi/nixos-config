@@ -16,6 +16,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
+	"github.com/prismatic-koi/prism/internal/prismcontainer"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -122,6 +123,14 @@ func BuildDeliveryMessageWithCausesForTest(prNumber string, round int, formatted
 // so tests can pin that the reap record is guarded on ended_at.
 func CleanupAgentSessionForTest(d *db.DB, agentSession string, cause db.SessionReapCause, detail ...string) {
 	cleanupAgentSession(d, agentSession, cause, detail...)
+}
+
+// SetChildPrismContainerRunnerForTest replaces the podman runner of the
+// review-child container sweep until the returned restore runs.
+func SetChildPrismContainerRunnerForTest(r prismcontainer.Runner) (restore func()) {
+	prev := childPrismContainerRunner
+	childPrismContainerRunner = r
+	return func() { childPrismContainerRunner = prev }
 }
 
 // ExpectedRoundSetForTest is an exported wrapper around expectedRoundSet so

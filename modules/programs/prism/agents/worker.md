@@ -92,6 +92,10 @@ Load the `atlassian` skill for full tool usage. Reading a ticket to gather conte
 
 Before you write or edit a comment, load the `comment-discipline` skill.
 
+## Containers
+
+Before you run a container, load the `prism-container` skill.
+
 ## Quality gates
 
 After each meaningful code change, run the quality gates described in the repo's

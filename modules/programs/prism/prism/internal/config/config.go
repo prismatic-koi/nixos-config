@@ -162,6 +162,12 @@ type Config struct {
 	AgentMaxOpenFilesSoft int `json:"agent_max_open_files_soft"`
 	AgentMaxOpenFilesHard int `json:"agent_max_open_files_hard"`
 
+	// ContainerHostLimit is the number of `prism container` containers that
+	// may run at a time on this host, across all sessions. Set by the Nix
+	// option nx.programs.prism.containerHostLimit. Values below 1 select
+	// DefaultContainerHostLimit.
+	ContainerHostLimit int `json:"container_host_limit"`
+
 	// Project layout (JSON arrays).
 	WorktreeExclude  []string `json:"worktree_exclude"`
 	ProjectLocations []string `json:"project_locations"`
@@ -219,6 +225,7 @@ type parsedConfig struct {
 	SandboxExecConcurrencyCap *int               `json:"sandbox_exec_concurrency_cap"`
 	AgentMaxOpenFilesSoft     *int               `json:"agent_max_open_files_soft"`
 	AgentMaxOpenFilesHard     *int               `json:"agent_max_open_files_hard"`
+	ContainerHostLimit        *int               `json:"container_host_limit"`
 	WorktreeExclude           *[]string          `json:"worktree_exclude"`
 	ProjectLocations          *[]string          `json:"project_locations"`
 	ProjectSpecific           *[]string          `json:"project_specific"`
@@ -264,6 +271,9 @@ const (
 	DefaultAgentMaxOpenFilesHard = 16384
 )
 
+// DefaultContainerHostLimit is the compiled-in default of ContainerHostLimit.
+const DefaultContainerHostLimit = 4
+
 // defaults returns the compiled-in fallback Config (gruvbox-dark palette,
 // standard paths). These values are used whenever no config file is found.
 func defaults() Config {
@@ -285,6 +295,7 @@ func defaults() Config {
 		SandboxExecConcurrencyCap: DefaultSandboxExecConcurrencyCap,
 		AgentMaxOpenFilesSoft:     DefaultAgentMaxOpenFilesSoft,
 		AgentMaxOpenFilesHard:     DefaultAgentMaxOpenFilesHard,
+		ContainerHostLimit:        DefaultContainerHostLimit,
 		WorktreeExclude:           []string{"obsidian"},
 		ProjectLocations:          []string{"~/code"},
 		ProjectSpecific:           []string{"~/documents/obsidian"},
@@ -424,6 +435,9 @@ func load() Config {
 	}
 	if parsed.AgentMaxOpenFilesHard != nil {
 		cfg.AgentMaxOpenFilesHard = *parsed.AgentMaxOpenFilesHard
+	}
+	if parsed.ContainerHostLimit != nil && *parsed.ContainerHostLimit >= 1 {
+		cfg.ContainerHostLimit = *parsed.ContainerHostLimit
 	}
 
 	// For slice fields: nil pointer means absent (keep default); non-nil

@@ -1,0 +1,98 @@
+package cmd
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/prismcontainer"
+	"github.com/prismatic-koi/prism/internal/prismcontainer/prismcontainertest"
+)
+
+func writeFakePrismContainerAuditLog(t *testing.T, instanceID string) string {
+	t.Helper()
+	p, err := container.PrismContainerAuditLogPath(instanceID)
+	if err != nil {
+		t.Fatalf("PrismContainerAuditLogPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatalf("mkdir audit dir: %v", err)
+	}
+	content := `{"time":"2026-10-10T00:00:00Z","command":"run","image":"docker.io/library/alpine","decision":"allowed","exit_code":0}` + "\n"
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+	return content
+}
+
+func labelled(id, instanceID, state string) prismcontainertest.Container {
+	return prismcontainertest.Container{ID: id, State: state, Labels: map[string]string{prismcontainer.LabelInstanceID: instanceID}}
+}
+
+// TestHeadlessCleanup_PrismContainer_SweepsEveryIncarnation checks that
+// cleanup removes the labelled containers of the current incarnation and of
+// an earlier one, leaves another session's container, archives the audit
+// log, and then removes the audit dir.
+func TestHeadlessCleanup_PrismContainer_SweepsEveryIncarnation(t *testing.T) {
+	const earlierIID = "22222222-3333-4444-8555-666666666666"
+	const otherIID = "99999999-3333-4444-8555-666666666666"
+	f := setupArchiveOrderFixture(t, "prism-container-sweep", "")
+	d, err := db.Open(f.dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := d.InsertSession(db.Session{
+		InstanceID: earlierIID, SessionName: f.session, Repo: archiveOrderRepo,
+		Worktree: f.worktree, Harness: "pi", StartedAt: time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("InsertSession earlier: %v", err)
+	}
+	d.Close()
+	auditContent := writeFakePrismContainerAuditLog(t, archiveOrderIID)
+
+	fake := &prismcontainertest.Fake{}
+	fake.Add(labelled("current", archiveOrderIID, "running"))
+	fake.Add(labelled("earlier", earlierIID, "exited"))
+	fake.Add(labelled("other", otherIID, "running"))
+	installPrismContainerFake(t, fake)
+
+	if err := headlessCleanup(f.session, "prism-container-sweep", "", ""); err != nil {
+		t.Fatalf("headlessCleanup: %v", err)
+	}
+
+	var left []string
+	for _, c := range fake.Containers() {
+		left = append(left, c.ID)
+	}
+	if !slices.Equal(left, []string{"other"}) {
+		t.Errorf("containers left = %v, want [other]", left)
+	}
+
+	archiveDir := assertTranscriptArchived(t, f)
+	got, err := os.ReadFile(filepath.Join(archiveDir, "prism-container-audit.log"))
+	if err != nil || string(got) != auditContent {
+		t.Errorf("archived prism-container-audit.log = %q (%v), want %q", got, err, auditContent)
+	}
+	if container.PrismContainerAuditDirExists(archiveOrderIID) {
+		t.Errorf("prism-container audit dir still exists after cleanup")
+	}
+}
+
+// TestHeadlessCleanup_PrismContainer_UnusedIssuesNoPodman checks that a
+// session with no prism-container audit dir causes no podman command.
+func TestHeadlessCleanup_PrismContainer_UnusedIssuesNoPodman(t *testing.T) {
+	f := setupArchiveOrderFixture(t, "prism-container-unused", "")
+	fake := &prismcontainertest.Fake{}
+	installPrismContainerFake(t, fake)
+
+	if err := headlessCleanup(f.session, "prism-container-unused", "", ""); err != nil {
+		t.Fatalf("headlessCleanup: %v", err)
+	}
+	if calls := fake.Calls(); len(calls) != 0 {
+		t.Errorf("podman called for a session that never used prism container: %q", calls)
+	}
+}

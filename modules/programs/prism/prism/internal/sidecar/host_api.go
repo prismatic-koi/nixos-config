@@ -23,6 +23,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/feedback"
 	"github.com/prismatic-koi/prism/internal/harness"
 	investigatepkg "github.com/prismatic-koi/prism/internal/investigate"
+	"github.com/prismatic-koi/prism/internal/prismcontainer"
 	"github.com/prismatic-koi/prism/internal/review"
 	prismsession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/usage"
@@ -229,6 +230,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	POST /register-provider-direct — sidecar-to-sidecar provider push (all roles)
 //	POST /set-active-tools — set the active tool list on one session (role-scoped)
 //	POST /abort         — abort the current turn on one session (role-scoped)
+//	POST /container/run — run one command in a new container for this session (all roles)
 //
 // The permission label on each line above is the contract, not a comment:
 // "coordinator only" means the handler calls requireCoordinator, "role-scoped"
@@ -2747,6 +2749,26 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		s.logger().Printf("sidecar: host-API /feedback: entry appended to %s", path)
 		writeJSON(w, http.StatusOK, map[string]string{"path": path})
+	})
+
+	// POST /container/run
+	// Request:  prismcontainer.RunRequest
+	// Response: prismcontainer.RunResult, HTTP 200 for every decision,
+	//           refusals included.
+	//
+	// The request carries only the agent inputs. The caller identity, and so
+	// the label, the name prefix, and the mount source, come from this
+	// sidecar's own config, never from the request body.
+	mux.HandleFunc("/container/run", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		var req prismcontainer.RunRequest
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, s.runContainer(r.Context(), req))
 	})
 
 	// POST /usage/snapshot

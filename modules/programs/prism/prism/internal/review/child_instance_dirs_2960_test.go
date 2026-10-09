@@ -12,6 +12,8 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/prismcontainer"
+	"github.com/prismatic-koi/prism/internal/prismcontainer/prismcontainertest"
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
@@ -100,4 +102,40 @@ func TestCleanupAgentSession_NoInstanceID_NoError(t *testing.T) {
 	if st == nil || st.EndedAt == nil {
 		t.Fatalf("row not ended after cleanup: %+v", st)
 	}
+}
+
+// TestCleanupAgentSession_SweepsChildPrismContainers verifies that a child
+// that used `prism container` has its labelled containers removed and its
+// prism-container audit dir removed.
+func TestCleanupAgentSession_SweepsChildPrismContainers(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	d := openTestDB(t)
+	const session = "prism-test@3061-child~review-1-review-qa"
+	const instanceID = "30610000-0000-4000-8000-000000000001"
+	if err := d.UpsertStatus(session, "prism-test", "/code/prism-test/x", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetInstanceID(session, instanceID); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	auditDir, err := container.PrismContainerAuditDirPath(instanceID)
+	if err != nil {
+		t.Fatalf("PrismContainerAuditDirPath: %v", err)
+	}
+	if err := os.MkdirAll(auditDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	fake := &prismcontainertest.Fake{}
+	fake.Add(prismcontainertest.Container{ID: "child", State: "running", Labels: map[string]string{prismcontainer.LabelInstanceID: instanceID}})
+	fake.Add(prismcontainertest.Container{ID: "other", State: "running", Labels: map[string]string{prismcontainer.LabelInstanceID: "30610000-0000-4000-8000-000000000002"}})
+	t.Cleanup(review.SetChildPrismContainerRunnerForTest(fake))
+
+	review.CleanupAgentSessionForTest(d, session, db.ReapCauseParentCleanup)
+
+	if left := fake.Containers(); len(left) != 1 || left[0].ID != "other" {
+		t.Errorf("containers left = %+v, want only other", left)
+	}
+	mustNotExist(t, auditDir, "prism-container audit dir")
 }
