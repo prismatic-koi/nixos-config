@@ -19,9 +19,6 @@
           # Eden paths: src/common/fs/path_util.cpp (XDG_DATA_HOME/eden, XDG_CONFIG_HOME/eden)
           ".local/share/eden"
           ".config/eden"
-          # Old Yuzu keys, firmware, and saves, kept for import into Eden
-          ".local/share/yuzu"
-          ".config/yuzu"
         ];
       };
     };
