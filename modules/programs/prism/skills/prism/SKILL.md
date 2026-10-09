@@ -619,10 +619,10 @@ prism cleanup --yes --session <inv-session>
 
 ## Running containers
 
-To run a container from a prism session, use `prism container`, not
-`podman` or `docker`. Before you run a container, load the
-`prism-container` skill. Also load it when a `prism container` command is
-refused or times out. The skill gives the command surface, the fixed
+To run a container or build an image from a prism session, use
+`prism container`, not `podman` or `docker`. Before you run a container or
+build an image, load the `prism-container` skill. Also load it when a
+`prism container` command is refused or times out. The skill gives the command surface, the fixed
 options, the limits, ownership, cleanup, and the audit log.
 
 ---

@@ -206,11 +206,11 @@ in
       type = lib.types.ints.positive;
       default = 4;
       description = ''
-        Maximum number of `prism container` containers that run at the same
-        time on this host, across all sessions. When the limit is reached,
-        prism refuses a new container at once. Written to config.json as
-        container_host_limit. Each session can run one container at a time,
-        independent of this option.
+        Maximum number of `prism container` containers and image builds that
+        run at the same time on this host, across all sessions. When the
+        limit is reached, prism refuses a new container or build at once.
+        Written to config.json as container_host_limit. Each session can run
+        one container or build at a time, independent of this option.
       '';
     };
 

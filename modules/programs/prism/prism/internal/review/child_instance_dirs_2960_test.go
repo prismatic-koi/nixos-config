@@ -132,7 +132,7 @@ func TestCleanupAgentSession_SweepsChildPrismContainers(t *testing.T) {
 	fake := &prismcontainertest.Fake{}
 	fake.Add(prismcontainertest.Container{ID: "child", State: "running", Labels: map[string]string{prismcontainer.LabelInstanceID: instanceID}})
 	fake.Add(prismcontainertest.Container{ID: "other", State: "running", Labels: map[string]string{prismcontainer.LabelInstanceID: "30610000-0000-4000-8000-000000000002"}})
-	t.Cleanup(review.SetChildPrismContainerRunnerForTest(fake))
+	t.Cleanup(review.SetChildPrismContainerRunnerForTest(fake, fake))
 
 	review.CleanupAgentSessionForTest(d, session, db.ReapCauseParentCleanup)
 
@@ -166,7 +166,8 @@ func TestCleanupAgentSession_KeepsChildAuditLogWithoutParent(t *testing.T) {
 		t.Fatalf("SetInstanceID: %v", err)
 	}
 	writeChildAuditLog(t, instanceID)
-	t.Cleanup(review.SetChildPrismContainerRunnerForTest(&prismcontainertest.Fake{}))
+	fakePodman := &prismcontainertest.Fake{}
+	t.Cleanup(review.SetChildPrismContainerRunnerForTest(fakePodman, fakePodman))
 
 	review.CleanupAgentSessionForTest(d, session, db.ReapCauseParentCleanup)
 

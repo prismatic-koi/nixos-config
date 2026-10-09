@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -111,6 +113,98 @@ func TestHostAPI_ContainerRun_IdentityNotFromRequest(t *testing.T) {
 func TestHostAPI_ContainerRun_GetNotAllowed(t *testing.T) {
 	sc := newContainerTestSidecar(t, "worker", &prismcontainertest.Fake{})
 	if rr := doHostAPI(t, sc, http.MethodGet, "/container/run", ""); rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET status = %d, want 405", rr.Code)
+	}
+}
+
+func newContainerBuildTestSidecar(t *testing.T, role string, fake *prismcontainertest.Fake) *Sidecar {
+	t.Helper()
+	sc := newContainerTestSidecar(t, role, fake)
+	sc.cfg.ContainerBuildExecutor = fake
+	if err := os.WriteFile(filepath.Join(sc.cfg.Worktree, "Containerfile"), []byte("FROM alpine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return sc
+}
+
+func TestHostAPI_ContainerBuild_AllRoles(t *testing.T) {
+	for _, role := range []string{"worker", "coordinator", "review-code"} {
+		t.Run(role, func(t *testing.T) {
+			fake := &prismcontainertest.Fake{}
+			fake.OnBuild = func(_ context.Context, out io.Writer, _ []string) (int, error) {
+				_, _ = io.WriteString(out, "STEP 1/1: FROM alpine\n")
+				return 0, nil
+			}
+			sc := newContainerBuildTestSidecar(t, role, fake)
+
+			rr := doHostAPI(t, sc, http.MethodPost, "/container/build", `{"tag":"app","build_args":["A=1"]}`)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+			}
+			var res prismcontainer.BuildResult
+			decodeJSONBody(t, rr, &res)
+			if res.ExitCode != 0 || !strings.HasSuffix(res.Image, "-app") || string(res.Output) != "STEP 1/1: FROM alpine\n" {
+				t.Errorf("result = %+v", res)
+			}
+		})
+	}
+}
+
+// TestHostAPI_ContainerBuild_SameArgvAsDirectBuild pins the parity of the
+// two routes for a build. The host-mode route has the matching test in
+// cmd.
+func TestHostAPI_ContainerBuild_SameArgvAsDirectBuild(t *testing.T) {
+	viaSidecar := &prismcontainertest.Fake{}
+	sc := newContainerBuildTestSidecar(t, "worker", viaSidecar)
+	req := prismcontainer.BuildRequest{BuildArgs: []string{"A=$(id)"}, Tag: "app:v1", TimeoutSeconds: 600}
+	body, _ := json.Marshal(req)
+	rr := doHostAPI(t, sc, http.MethodPost, "/container/build", string(body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var viaRes prismcontainer.BuildResult
+	decodeJSONBody(t, rr, &viaRes)
+
+	direct := &prismcontainertest.Fake{}
+	directRes := prismcontainer.Build(context.Background(), prismcontainer.Deps{Runner: direct, BuildExecutor: direct, HostLimit: 4}, prismcontainer.Caller{
+		SessionName: sc.cfg.SessionName,
+		InstanceID:  sc.cfg.InstanceID,
+		Worktree:    sc.cfg.Worktree,
+	}, req)
+
+	if viaRes.Image != directRes.Image {
+		t.Errorf("sidecar image %q differs from direct %q", viaRes.Image, directRes.Image)
+	}
+	got, want := viaSidecar.BuildCalls(), direct.BuildCalls()
+	if len(got) != 1 || len(want) != 1 {
+		t.Fatalf("build calls: sidecar %d, direct %d; want 1 each", len(got), len(want))
+	}
+	if g, w := prismcontainertest.MaskBuildArgs(got[0]), prismcontainertest.MaskBuildArgs(want[0]); !slices.Equal(g, w) {
+		t.Errorf("sidecar argv differs from direct Build argv:\n got %q\nwant %q", g, w)
+	}
+}
+
+// TestHostAPI_ContainerBuild_IdentityNotFromRequest checks that the request
+// cannot name a session, an instance, a host path, or a podman option.
+func TestHostAPI_ContainerBuild_IdentityNotFromRequest(t *testing.T) {
+	for _, field := range []string{"session", "instance_id", "worktree", "label", "name", "volume", "secret", "network", "device", "cap_add", "image"} {
+		t.Run(field, func(t *testing.T) {
+			fake := &prismcontainertest.Fake{}
+			sc := newContainerBuildTestSidecar(t, "worker", fake)
+			rr := doHostAPI(t, sc, http.MethodPost, "/container/build", `{"`+field+`":"/etc"}`)
+			if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "unknown field") {
+				t.Errorf("status = %d, body = %s; want 400 unknown field", rr.Code, rr.Body.String())
+			}
+			if len(fake.Calls()) != 0 {
+				t.Errorf("podman called: %q", fake.Calls())
+			}
+		})
+	}
+}
+
+func TestHostAPI_ContainerBuild_GetNotAllowed(t *testing.T) {
+	sc := newContainerTestSidecar(t, "worker", &prismcontainertest.Fake{})
+	if rr := doHostAPI(t, sc, http.MethodGet, "/container/build", ""); rr.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET status = %d, want 405", rr.Code)
 	}
 }

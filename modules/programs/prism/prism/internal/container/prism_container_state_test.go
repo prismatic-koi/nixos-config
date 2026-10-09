@@ -32,7 +32,15 @@ func prismContainerStatePaths(t *testing.T, instanceID string) []string {
 	if err != nil {
 		t.Fatalf("PrismContainerCIDDirPath: %v", err)
 	}
-	return []string{root, auditDir, auditLog, lock, cidDir}
+	stageDir, err := PrismContainerBuildStageDirPath()
+	if err != nil {
+		t.Fatalf("PrismContainerBuildStageDirPath: %v", err)
+	}
+	buildLockDir, err := PrismContainerBuildLockDirPath()
+	if err != nil {
+		t.Fatalf("PrismContainerBuildLockDirPath: %v", err)
+	}
+	return []string{root, auditDir, auditLog, lock, cidDir, stageDir, buildLockDir}
 }
 
 // TestGenerateProfile_PrismContainerState_OutsideWriteGrantedSubpaths: no

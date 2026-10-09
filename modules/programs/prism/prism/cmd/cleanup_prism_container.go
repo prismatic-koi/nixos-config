@@ -9,9 +9,11 @@ import (
 	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
-// sweepPrismContainersForSession removes every `prism container` container
-// whose instance label names an incarnation of session: the current one and
-// every one that the sessions table holds.
+// sweepPrismContainersForSession stops every running `prism container`
+// build, then removes every container and every built image, of each
+// incarnation of session: the current one and every one that the sessions
+// table holds. Ownership is the instance label (the build unit name for a
+// running build), never the name.
 //
 // It issues podman commands only when one of those incarnations has a
 // prism-container audit dir. Every request creates that dir before podman
@@ -41,7 +43,7 @@ func sweepPrismContainersForSession(session string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), podmanSweepBudget)
 	defer cancel()
-	if _, err := prismcontainer.SweepInstances(ctx, currentPrismContainerRunner(), ids); err != nil {
+	if err := prismcontainer.SweepSession(ctx, currentPrismContainerRunner(), currentPrismContainerBuildExecutor(), ids); err != nil {
 		proglog.Warnf("[prism] warning: cleanup: prism-container sweep for %q failed (%v) — continuing cleanup\n", session, err)
 	}
 }

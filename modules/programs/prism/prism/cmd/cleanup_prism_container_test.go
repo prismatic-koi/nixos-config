@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -36,9 +38,10 @@ func labelled(id, instanceID, state string) prismcontainertest.Container {
 }
 
 // TestHeadlessCleanup_PrismContainer_SweepsEveryIncarnation checks that
-// cleanup removes the labelled containers of the current incarnation and of
-// an earlier one, leaves another session's container, archives the audit
-// log, and then removes the audit dir.
+// cleanup stops the builds and removes the labelled containers and images
+// of the current incarnation, of an earlier one, and of a review child,
+// leaves another session's container and image, archives the audit log,
+// and then removes the audit dir.
 func TestHeadlessCleanup_PrismContainer_SweepsEveryIncarnation(t *testing.T) {
 	const earlierIID = "22222222-3333-4444-8555-666666666666"
 	const otherIID = "99999999-3333-4444-8555-666666666666"
@@ -76,8 +79,11 @@ func TestHeadlessCleanup_PrismContainer_SweepsEveryIncarnation(t *testing.T) {
 	fake.Add(labelled("earlier", earlierIID, "exited"))
 	fake.Add(labelled("child", childIID, "running"))
 	fake.Add(labelled("other", otherIID, "running"))
+	for name, iid := range map[string]string{"current-img": archiveOrderIID, "earlier-img": earlierIID, "child-img": childIID, "other-img": otherIID} {
+		fake.AddImage(prismcontainertest.Image{ID: name, Labels: map[string]string{prismcontainer.LabelInstanceID: iid}})
+	}
 	installPrismContainerFake(t, fake)
-	t.Cleanup(review.SetChildPrismContainerRunnerForTest(fake))
+	t.Cleanup(review.SetChildPrismContainerRunnerForTest(fake, fake))
 
 	if err := headlessCleanup(f.session, "prism-container-sweep", "", ""); err != nil {
 		t.Fatalf("headlessCleanup: %v", err)
@@ -89,6 +95,22 @@ func TestHeadlessCleanup_PrismContainer_SweepsEveryIncarnation(t *testing.T) {
 	}
 	if !slices.Equal(left, []string{"other"}) {
 		t.Errorf("containers left = %v, want [other]", left)
+	}
+	var imagesLeft []string
+	for _, img := range fake.Images() {
+		imagesLeft = append(imagesLeft, img.ID)
+	}
+	if !slices.Equal(imagesLeft, []string{"other-img"}) {
+		t.Errorf("images left = %v, want [other-img]", imagesLeft)
+	}
+	stops := fake.StopPrefixes()
+	for _, iid := range []string{archiveOrderIID, earlierIID, childIID} {
+		if want := "prism-build-" + container.InstanceTokenForID(iid) + "-"; !slices.Contains(stops, want) {
+			t.Errorf("cleanup did not stop the builds of %s: stop prefixes %q", iid, stops)
+		}
+	}
+	if token := container.InstanceTokenForID(otherIID); slices.Contains(stops, "prism-build-"+token+"-") {
+		t.Errorf("cleanup stopped the builds of another session")
 	}
 
 	archiveDir := assertTranscriptArchived(t, f)
@@ -120,5 +142,43 @@ func TestHeadlessCleanup_PrismContainer_UnusedIssuesNoPodman(t *testing.T) {
 	}
 	if calls := fake.Calls(); len(calls) != 0 {
 		t.Errorf("podman called for a session that never used prism container: %q", calls)
+	}
+}
+
+// TestHeadlessCleanup_PrismContainer_StopsRunningBuild checks that a
+// cleanup that runs while a build of the session runs stops that build.
+func TestHeadlessCleanup_PrismContainer_StopsRunningBuild(t *testing.T) {
+	f := setupArchiveOrderFixture(t, "prism-container-build", "")
+	worktree := prismcontainertest.RealTempDir(t)
+	if err := os.WriteFile(filepath.Join(worktree, "Containerfile"), []byte("FROM alpine\nRUN sleep infinity\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := &prismcontainertest.Fake{}
+	started := make(chan struct{})
+	fake.OnBuild = func(ctx context.Context, _ io.Writer, _ []string) (int, error) {
+		close(started)
+		<-ctx.Done()
+		return -1, ctx.Err()
+	}
+	installPrismContainerFake(t, fake)
+
+	done := make(chan prismcontainer.BuildResult, 1)
+	go func() {
+		done <- prismcontainer.Build(context.Background(), prismcontainer.Deps{Runner: fake, BuildExecutor: fake, HostLimit: 4},
+			prismcontainer.Caller{SessionName: f.session, InstanceID: archiveOrderIID, Worktree: worktree},
+			prismcontainer.BuildRequest{})
+	}()
+	<-started
+
+	if err := headlessCleanup(f.session, "prism-container-build", "", ""); err != nil {
+		t.Fatalf("headlessCleanup: %v", err)
+	}
+	select {
+	case res := <-done:
+		if res.ExitCode == 0 {
+			t.Errorf("build after cleanup = %+v, want it stopped", res)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the build still runs after cleanup")
 	}
 }

@@ -162,10 +162,10 @@ type Config struct {
 	AgentMaxOpenFilesSoft int `json:"agent_max_open_files_soft"`
 	AgentMaxOpenFilesHard int `json:"agent_max_open_files_hard"`
 
-	// ContainerHostLimit is the number of `prism container` containers that
-	// may run at a time on this host, across all sessions. Set by the Nix
-	// option nx.programs.prism.containerHostLimit. Values below 1 select
-	// DefaultContainerHostLimit.
+	// ContainerHostLimit is the number of `prism container` containers and
+	// builds that can run at a time on this host, across all sessions. Set
+	// by the Nix option nx.programs.prism.containerHostLimit. Values below 1
+	// select DefaultContainerHostLimit.
 	ContainerHostLimit int `json:"container_host_limit"`
 
 	// Project layout (JSON arrays).

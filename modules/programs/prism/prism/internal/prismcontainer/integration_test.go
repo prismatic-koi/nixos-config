@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -217,5 +218,114 @@ func TestIntegration_FixedOptionsInPodman(t *testing.T) {
 	}
 	if res := <-done; res.ExitCode != 0 {
 		t.Errorf("result = %+v", res)
+	}
+}
+
+func buildReal(t *testing.T, c prismcontainer.Caller, containerfile string, req prismcontainer.BuildRequest) prismcontainer.BuildResult {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(c.Worktree, "Containerfile"), []byte(containerfile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := prismcontainer.SweepSession(ctx, prismcontainer.ExecRunner{}, prismcontainer.DefaultBuildExecutor(runtime.GOOS, nil), []string{c.InstanceID}); err != nil {
+			t.Errorf("sweep after the build: %v", err)
+		}
+	})
+	return prismcontainer.Build(context.Background(), prismcontainer.Deps{}, c, req)
+}
+
+func TestIntegration_BuildThenRun(t *testing.T) {
+	c := integrationCaller(t)
+	res := buildReal(t, c, "FROM alpine\nARG GREETING\nRUN echo \"$GREETING\" > /built\n",
+		prismcontainer.BuildRequest{BuildArgs: []string{"GREETING=hello from the build"}, Tag: "itest"})
+	if res.ExitCode != 0 || !strings.HasSuffix(res.Image, "-itest") {
+		t.Fatalf("build = %+v (output %s)", res, res.Output)
+	}
+	run := runReal(t, c, prismcontainer.RunRequest{Image: res.Image, Command: []string{"cat", "/built"}})
+	if run.ExitCode != 0 || string(run.Stdout) != "hello from the build\n" {
+		t.Errorf("run of the built image = %+v", run)
+	}
+}
+
+func TestIntegration_BuildFailure(t *testing.T) {
+	c := integrationCaller(t)
+	res := buildReal(t, c, "FROM alpine\nRUN echo failing-step >&2; exit 3\n", prismcontainer.BuildRequest{})
+	if res.ExitCode == 0 || res.Image != "" || !strings.Contains(string(res.Output), "failing-step") {
+		t.Errorf("build = %+v (output %s), want a failure with the output", res, res.Output)
+	}
+}
+
+// TestIntegration_BuildMemoryLimit: tail of /dev/zero reads one endless
+// line into memory, so the step must hit the 4 GiB limit and fail.
+func TestIntegration_BuildMemoryLimit(t *testing.T) {
+	c := integrationCaller(t)
+	res := buildReal(t, c, "FROM alpine\nRUN tail /dev/zero\n", prismcontainer.BuildRequest{TimeoutSeconds: 300})
+	if res.ExitCode == 0 || res.ExitCode == prismcontainer.ExitTimeout {
+		t.Errorf("build = %+v, want the step to fail on the memory limit", res)
+	}
+}
+
+func TestIntegration_BuildSymlinkNotInImage(t *testing.T) {
+	c := integrationCaller(t)
+	outside := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(outside, []byte("s3cr3t-outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(c.Worktree, "leak")); err != nil {
+		t.Fatal(err)
+	}
+	res := buildReal(t, c, "FROM alpine\nCOPY . /ctx\n", prismcontainer.BuildRequest{})
+	if res.ExitCode != 0 {
+		t.Fatalf("build = %+v (output %s)", res, res.Output)
+	}
+	run := runReal(t, c, prismcontainer.RunRequest{Image: res.Image, Mount: prismcontainer.MountNone,
+		Command: []string{"sh", "-c", "test ! -e /ctx/leak && ! grep -rq s3cr3t-outside /ctx"}})
+	if run.ExitCode != 0 {
+		t.Errorf("the image holds the symlink target: %+v", run)
+	}
+}
+
+// TestIntegration_BuildTimeoutStopsStep: after the timeout, no process of
+// the build step runs on the host. The check reads the host process list,
+// so it runs on Linux only. On macOS the step runs in the VM.
+func TestIntegration_BuildTimeoutStopsStep(t *testing.T) {
+	c := integrationCaller(t)
+	const marker = "613.317"
+	res := buildReal(t, c, "FROM alpine\nRUN sleep "+marker+"\n", prismcontainer.BuildRequest{TimeoutSeconds: 20})
+	if res.ExitCode != prismcontainer.ExitTimeout {
+		t.Fatalf("build = %+v, want the timeout", res)
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("the build step runs in the podman machine VM")
+	}
+	time.Sleep(2 * time.Second)
+	procs, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+	for _, p := range procs {
+		if data, err := os.ReadFile(p); err == nil && bytes.Contains(data, []byte(marker)) {
+			t.Errorf("a process of the build step still runs: %s %q", p, data)
+		}
+	}
+}
+
+func TestIntegration_BuildImagesRemovedBySweep(t *testing.T) {
+	c := integrationCaller(t)
+	if err := os.WriteFile(filepath.Join(c.Worktree, "Containerfile"), []byte("FROM alpine\nRUN echo layer > /l\nRUN echo second > /s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := prismcontainer.Build(context.Background(), prismcontainer.Deps{}, c, prismcontainer.BuildRequest{})
+	if res.ExitCode != 0 {
+		t.Fatalf("build = %+v", res)
+	}
+	if err := prismcontainer.SweepSession(context.Background(), prismcontainer.ExecRunner{}, prismcontainer.DefaultBuildExecutor(runtime.GOOS, nil), []string{c.InstanceID}); err != nil {
+		t.Fatalf("SweepSession: %v", err)
+	}
+	out, err := exec.Command("podman", "images", "--all", "--quiet", "--filter", "label="+prismcontainer.LabelInstanceID+"="+c.InstanceID).Output()
+	if err != nil {
+		t.Fatalf("podman images: %v", err)
+	}
+	if s := strings.TrimSpace(string(out)); s != "" {
+		t.Errorf("images with the label of the session remain: %s", s)
 	}
 }
