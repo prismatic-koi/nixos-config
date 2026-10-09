@@ -175,8 +175,8 @@ func TestBuild_FileAndContext(t *testing.T) {
 	}{
 		{"defaults", prismcontainer.BuildRequest{}, "Containerfile", "FROM root-file\n", "root.txt", ""},
 		{"context", prismcontainer.BuildRequest{Context: "app"}, "Containerfile", "FROM app-default\n", "sub/data", "root.txt"},
-		{"file", prismcontainer.BuildRequest{File: "docker/App.containerfile"}, "App.containerfile", "FROM chosen\n", "app/main.go", ""},
-		{"both", prismcontainer.BuildRequest{Context: "app/", File: "./docker/App.containerfile"}, "App.containerfile", "FROM chosen\n", "main.go", "root.txt"},
+		{"file", prismcontainer.BuildRequest{File: "docker/App.containerfile"}, "Containerfile", "FROM chosen\n", "app/main.go", ""},
+		{"both", prismcontainer.BuildRequest{Context: "app/", File: "./docker/App.containerfile"}, "Containerfile", "FROM chosen\n", "main.go", "root.txt"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -810,5 +810,23 @@ func TestBuild_StoppedByCleanup(t *testing.T) {
 	lockDir, _ := container.PrismContainerBuildLockDirPath()
 	if left, _ := os.ReadDir(lockDir); len(left) != 0 {
 		t.Errorf("build marker left: %v", left)
+	}
+}
+
+func TestBuild_UnreadableFileNamed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read a file with mode 000")
+	}
+	c := newCaller(t)
+	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\n")
+	writeFile(t, c.Worktree, "secret", "x")
+	if err := os.Chmod(filepath.Join(c.Worktree, "secret"), 0); err != nil {
+		t.Fatal(err)
+	}
+	f := &prismcontainertest.Fake{}
+	res := prismcontainer.Build(context.Background(), buildDeps(f), c, prismcontainer.BuildRequest{})
+	if res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, "cannot read a file of the build context") ||
+		strings.Contains(res.Message, "try again") {
+		t.Errorf("result = %+v, want a refusal that names the unreadable file", res)
 	}
 }

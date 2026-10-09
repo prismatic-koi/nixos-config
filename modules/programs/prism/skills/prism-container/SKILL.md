@@ -228,6 +228,9 @@ The check also refuses these forms, because it cannot read them:
   forms with every value that an `ARG`, an `ENV`, a `--build-arg`, or a
   platform argument gives.
 - A parser directive `# escape=` with a character other than `\`.
+- A `--file` whose name ends in `.in`. Podman runs such a file through the
+  C preprocessor on the host, and an `#include` then reads a host file.
+  Prism always gives podman the copy under the name `Containerfile`.
 
 The check reads more than podman does. Thus it can refuse a line that
 podman does not read as an image source, for example a heredoc line that
@@ -253,14 +256,16 @@ same on Linux and on macOS. One fact is different:
 
 - On Linux, each build runs in a systemd user scope. At a timeout, and
   at `prism cleanup`, prism kills the scope. No process of the build
-  continues.
+  continues. If prism stops during a build, systemd stops the scope when
+  the timeout plus 60 seconds has passed.
   The build also has a signature policy that refuses every image source
   other than a registry and the local image store.
 - On macOS, the build runs in the podman machine VM. If a build step runs
   when the timeout expires, the step can continue inside the VM until it
   ends. Its memory and CPU limits still apply, and the VM size is the
   upper limit. `podman machine stop` removes it. `prism cleanup` cannot
-  stop it.
+  stop it. If prism stops during a build, the build continues in the VM
+  and no longer counts toward a limit.
 - On macOS, the build has no signature policy. An `ONBUILD` instruction of
   a base image runs instructions that are not in your Containerfile, so
   the check cannot see them. Such an instruction can read a host path

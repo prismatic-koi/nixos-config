@@ -39,6 +39,11 @@ const maxSmallFileBytes int64 = 1 << 20
 // errContextChanged reports that the worktree changed while prism copied it.
 var errContextChanged = errors.New("the build context changed while prism copied it: try again")
 
+// stagedContainerfileName is the name of the Containerfile copy, whatever
+// the name of the original. A podman behaviour that depends on the name
+// (cpp for ".in") then cannot apply.
+const stagedContainerfileName = "Containerfile"
+
 // stagedBuild is the copy of one build.
 type stagedBuild struct {
 	dir     string
@@ -102,6 +107,13 @@ func resolveBuildPaths(worktree string, v validBuild) (buildPaths, error) {
 			return buildPaths{}, fmt.Errorf("CONTEXT %q holds no Containerfile or Dockerfile: add one, or use --file", v.context)
 		}
 	}
+	// Podman runs a Containerfile whose name ends in ".in" through cpp on
+	// the build host, and an #include then reads any file of the host
+	// user. The copy has a fixed name, so podman never sees the suffix.
+	// The refusal tells the agent why the file is not preprocessed.
+	if strings.HasSuffix(strings.ToLower(p.file), ".in") {
+		return buildPaths{}, fmt.Errorf("--file %q ends in \".in\": podman runs such a file through the C preprocessor on the host, and prism does not allow that. Rename the file", p.file)
+	}
 	fileReal, err := resolveInWorktree(worktree, "--file", p.file)
 	if err != nil {
 		return buildPaths{}, err
@@ -130,7 +142,7 @@ func stageBuild(ctx context.Context, worktree string, p buildPaths, name string)
 	s := &stagedBuild{
 		dir:     dir,
 		context: filepath.Join(dir, "context"),
-		file:    filepath.Join(dir, "containerfile", filepath.Base(p.file)),
+		file:    filepath.Join(dir, "containerfile", stagedContainerfileName),
 	}
 	ok := false
 	defer func() {
@@ -409,6 +421,9 @@ func (c *contextCopier) copy() error {
 		if errors.Is(err, errContextTooLarge) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
+		if errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("prism cannot read a file of the build context: %v. Make the file readable, or exclude it in .containerignore", err)
+		}
 		return fmt.Errorf("%w (%v)", errContextChanged, err)
 	}
 	return c.dropEscapingLinks()
@@ -451,7 +466,7 @@ func (c *contextCopier) dropEscapingLinks() error {
 		if err := os.Remove(filepath.Join(c.dst, filepath.FromSlash(rel))); err != nil {
 			return err
 		}
-		c.notes = append(c.notes, fmt.Sprintf("prism did not copy the symlink %s into the build context: it resolves outside the build context", rel))
+		c.notes = append(c.notes, fmt.Sprintf("prism did not copy the symlink %s into the build context: it resolves outside the build context, or it is a symlink loop", rel))
 	}
 	return nil
 }

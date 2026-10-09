@@ -215,7 +215,7 @@ func TestScopeScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("script: %v: %s", err, out)
 	}
-	want := []string{"build", "--cgroup-parent", scope + "/build", "--file", "/f", "--build-arg", "A=$(id)", "/ctx"}
+	want := []string{"--cgroup-manager=cgroupfs", "build", "--cgroup-parent", scope + "/build", "--file", "/f", "--build-arg", "A=$(id)", "/ctx"}
 	if got := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"); !slices.Equal(got, want) {
 		t.Errorf("podman args = %q, want %q", got, want)
 	}
@@ -393,5 +393,29 @@ func TestBuildPolicy(t *testing.T) {
 		if _, ok := policy.Transports[refused]; ok {
 			t.Errorf("the policy accepts the refused transport %s", refused)
 		}
+	}
+}
+
+// TestScopeExecutor_RuntimeMax: the scope stops on its own at the request
+// deadline plus the grace time, so a build stops when prism dies first.
+func TestScopeExecutor_RuntimeMax(t *testing.T) {
+	e, dir := fakeSystemd(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	if _, err := e.Build(ctx, "u", &bytes.Buffer{}, []string{"build", "/ctx"}); err != nil {
+		t.Fatal(err)
+	}
+	args := readLines(t, filepath.Join(dir, "systemd-run.args"))
+	var got string
+	for i, a := range args {
+		if a == "--" {
+			break
+		}
+		if a == "--property" && strings.HasPrefix(args[i+1], "RuntimeMaxSec=") {
+			got = args[i+1]
+		}
+	}
+	if got != "RuntimeMaxSec=1860" && got != "RuntimeMaxSec=1859" {
+		t.Errorf("RuntimeMaxSec property = %q, want 1860 (30m plus 60s)", got)
 	}
 }

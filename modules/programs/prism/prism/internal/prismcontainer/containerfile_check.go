@@ -88,16 +88,19 @@ func checkContainerfile(data []byte, buildArgs []string) error {
 		}
 	}
 
-	var lines []joinedLine
-	for i, line := range physical {
-		lines = append(lines, joinedLine{i + 1, line})
+	joined := append(joinContinuations(physical, true), joinContinuations(physical, false)...)
+	lookup := newVarResolver(joined, buildArgs).lookup
+	for _, l := range joined {
+		if err := checkInstruction(l.line, l.text, lookup, true); err != nil {
+			return err
+		}
 	}
-	lines = append(lines, joinContinuations(physical, true)...)
-	lines = append(lines, joinContinuations(physical, false)...)
-
-	lookup := newVarResolver(lines, buildArgs).lookup
-	for _, l := range lines {
-		if err := checkInstruction(l.line, l.text, lookup); err != nil {
+	// A physical line is read too, in case buildah joins lines in a way
+	// that the joins above do not. Most physical lines inside a joined
+	// line are not instructions (shell code, SQL), so only a definite
+	// transport reference is refused here, not a word that cannot be read.
+	for i, line := range physical {
+		if err := checkInstruction(i+1, line, lookup, false); err != nil {
 			return err
 		}
 	}
@@ -124,6 +127,11 @@ func joinContinuations(physical []string, skipComments bool) []joinedLine {
 		}
 		if !open {
 			start = i + 1
+			// A comment line ends at its own end, also with a "\" there.
+			if strings.HasPrefix(trimmed, "#") {
+				out = append(out, joinedLine{start, line})
+				continue
+			}
 		}
 		body := strings.TrimRight(line, " \t")
 		if strings.HasSuffix(body, `\`) {
@@ -230,8 +238,15 @@ func literalWord(s string) string {
 
 // checkInstruction checks one line. A FROM line has every word checked. In
 // every other line, the flag words at the start (after ONBUILD, when it is
-// there) have each --from and from= value checked.
-func checkInstruction(line int, text string, lookup func(string) []string) error {
+// there) have each --from and from= value checked. With strict false, a
+// word that the check cannot read is skipped instead of refused.
+func checkInstruction(line int, text string, lookup func(string) []string, strict bool) error {
+	unreadable := func(err error) error {
+		if strict {
+			return err
+		}
+		return nil
+	}
 	words := rawWords(text)
 	if len(words) == 0 || strings.HasPrefix(words[0], "#") {
 		return nil
@@ -246,7 +261,10 @@ func checkInstruction(line int, text string, lookup func(string) []string) error
 		for _, w := range words[1:] {
 			values, err := expandWord(w, lookup)
 			if err != nil {
-				return refuseFile(line, "prism cannot check the FROM word %q: %v", w, err)
+				if err := unreadable(refuseFile(line, "prism cannot check the FROM word %q: %v", w, err)); err != nil {
+					return err
+				}
+				continue
 			}
 			for _, v := range values {
 				if err := checkReference(line, v); err != nil {
@@ -265,19 +283,27 @@ func checkInstruction(line int, text string, lookup func(string) []string) error
 		if !strings.HasPrefix(w, "--") {
 			break
 		}
-		lower := strings.ToLower(w)
-		if !strings.HasPrefix(lower, "--mount") && !strings.Contains(lower, "from") {
+		// The parser removes quotes and backslashes from a flag word, so
+		// the flag name is read without them: --fr"om"= is --from=.
+		name := asciiLower(unquote(w))
+		if !strings.HasPrefix(name, "--mount") && !strings.Contains(name, "from") {
 			continue
 		}
 		values, err := expandWord(w, nil)
 		if err != nil {
-			return refuseFile(line, "prism cannot check the flag %q: %v. Give --mount and --from with no variable", w, err)
+			if err := unreadable(refuseFile(line, "prism cannot check the flag %q: %v. Give --mount and --from with no variable", w, err)); err != nil {
+				return err
+			}
+			continue
 		}
 		for _, v := range values {
-			if strings.EqualFold(v, "--from") && i+1 < len(flags) {
+			if asciiLower(v) == "--from" && i+1 < len(flags) {
 				next, err := expandWord(flags[i+1], nil)
 				if err != nil {
-					return refuseFile(line, "prism cannot check the --from value %q: %v. Give the value with no variable", flags[i+1], err)
+					if err := unreadable(refuseFile(line, "prism cannot check the --from value %q: %v. Give the value with no variable", flags[i+1], err)); err != nil {
+						return err
+					}
+					continue
 				}
 				for _, n := range next {
 					if err := checkReference(line, n); err != nil {
@@ -296,7 +322,9 @@ func checkInstruction(line int, text string, lookup func(string) []string) error
 // checkFromValues checks each from= value in one expanded flag word, up to
 // the next ",".
 func checkFromValues(line int, word string) error {
-	lower := strings.ToLower(word)
+	// asciiLower keeps every byte offset, so an offset in lower is the
+	// same offset in word.
+	lower := asciiLower(word)
 	for i := 0; ; {
 		at := strings.Index(lower[i:], "from=")
 		if at < 0 {
@@ -323,6 +351,42 @@ func checkReference(line int, ref string) error {
 		}
 	}
 	return nil
+}
+
+// asciiLower lower-cases the ASCII letters of s and keeps every other
+// byte. The result has the same length as s, byte for byte.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+// unquote removes the quotes and the backslashes of a word, and keeps
+// every "$" as text.
+func unquote(word string) string {
+	var out strings.Builder
+	var quote rune
+	escaped := false
+	for _, r := range word {
+		switch {
+		case escaped:
+			out.WriteRune(r)
+			escaped = false
+		case r == '\\' && quote != '\'':
+			escaped = true
+		case quote != 0 && r == quote:
+			quote = 0
+		case quote == 0 && (r == '\'' || r == '"'):
+			quote = r
+		default:
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
 }
 
 // rawWords splits text at whitespace outside quotes, with no expansion.

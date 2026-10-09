@@ -95,10 +95,12 @@ func (PlainExecutor) StopBuilds(context.Context, string) (int, error) { return 0
 // into a leaf cgroup of the scope and then runs podman build with
 // --cgroup-parent in the scope.
 //
-// Without --cgroup-parent, crun puts a rootless build step into a new
-// cgroup next to the cgroup of podman, which is outside the scope, and a
-// scope kill does not reach it. The scope cgroup must hold no process, or
-// the kernel does not let crun enable controllers for the build cgroup.
+// Without --cgroup-parent, crun puts a build step into a cgroup outside the
+// scope, and a scope kill does not reach it. The scope cgroup must hold no
+// process, or the kernel does not let crun enable controllers for the build
+// cgroup. --cgroup-manager=cgroupfs is mandatory: with the systemd manager,
+// podman build gives crun --systemd-cgroup, and crun then reads the
+// --cgroup-parent path as a systemd slice name, which it is not.
 const scopeScript = `cg=
 while IFS= read -r line; do
 	case $line in 0::*) cg=${line#0::} ;; esac
@@ -111,7 +113,7 @@ mkdir "/sys/fs/cgroup$cg/podman" || exit 125
 echo $$ > "/sys/fs/cgroup$cg/podman/cgroup.procs" || exit 125
 sub=$1
 shift
-exec podman "$sub" --cgroup-parent "$cg/build" "$@"
+exec podman --cgroup-manager=cgroupfs "$sub" --cgroup-parent "$cg/build" "$@"
 `
 
 // ScopeExecutor runs each build in a transient systemd user scope (Linux).
@@ -205,8 +207,15 @@ func (e ScopeExecutor) Build(ctx context.Context, unit string, out io.Writer, ar
 		"--unit", unit,
 		"--property", "Delegate=yes",
 		"--property", "TasksMax=" + PidsLimit,
-		"--", "/bin/sh", "-c", scopeScript, "prism-container-build",
 	}
+	// systemd stops the scope after the request timeout plus a grace time.
+	// This stops the build when the prism process dies first, as podman
+	// --timeout does for a run.
+	if deadline, ok := ctx.Deadline(); ok {
+		limit := time.Until(deadline) + conmonTimeoutGrace
+		runArgs = append(runArgs, "--property", fmt.Sprintf("RuntimeMaxSec=%d", int64((limit+time.Second-1)/time.Second)))
+	}
+	runArgs = append(runArgs, "--", "/bin/sh", "-c", scopeScript, "prism-container-build")
 	cmd := exec.Command(e.systemdRun(), append(runArgs, args...)...)
 	cmd.Stdout = out
 	cmd.Stderr = out

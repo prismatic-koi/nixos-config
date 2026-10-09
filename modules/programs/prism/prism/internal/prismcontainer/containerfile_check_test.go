@@ -86,6 +86,14 @@ func TestBuild_TransportRefusedThroughExpansion(t *testing.T) {
 		{"mount on a joined line", "FROM alpine\nRUN \\\n  --mount=type=bind,from=tarball:/x,target=/m true\n", nil},
 		{"CRLF", "FROM alpine\r\nCOPY --from=tarball:/x /a /b\r\n", nil},
 		{"byte order mark", "\ufeffFROM tarball:/x\n", nil},
+		{"quoted flag name", "FROM alpine\nCOPY --fr\"om\"=tarball:/x /a /b\n", nil},
+		{"escaped flag name", "FROM alpine\nCOPY --fr\\om=tarball:/x /a /b\n", nil},
+		{"quoted mount key", "FROM alpine\nRUN --mo\"unt\"=type=bind,fr\"om\"=tarball:/x,target=/m true\n", nil},
+		{"dotted I before from=", "FROM alpine\nRUN --mount=type=bind,target=/\u0130,from=tarball:/x true\n", nil},
+		{"Kelvin sign before from=", "FROM alpine\nRUN --mount=type=bind,target=/\u212a,from=tarball:/x true\n", nil},
+		{"longer lower case before from=", "FROM alpine\nRUN --mount=type=bind,target=/\u023a\u023a\u023a\u023a,from=tarball:/x true\n", nil},
+		{"invalid UTF-8 before from=", "FROM alpine\nRUN --mount=type=bind,target=/\xff\xfe\xfd,from=tarball:/x true\n", nil},
+		{"comment that ends in a backslash", "# a comment \\\nFROM tarball:/x\n", nil},
 		{"form feed", "\fFROM\vtarball:/x\n", nil},
 	}
 	for _, tc := range cases {
@@ -128,18 +136,20 @@ func TestBuild_UncheckableFormsRefused(t *testing.T) {
 // TestBuild_CommonContainerfilesPass: usual Containerfiles are not refused.
 func TestBuild_CommonContainerfilesPass(t *testing.T) {
 	cases := map[string]string{
-		"docker://":            "FROM docker://alpine\n",
-		"docker image":         "FROM docker:24-dind\n",
-		"registry with a port": "FROM localhost:5000/team/app:1\n",
-		"ARG in tag":           "ARG GO_VERSION=1.23\nFROM golang:${GO_VERSION} AS build\nRUN go version\n",
-		"multi-stage":          "FROM --platform=$BUILDPLATFORM golang:1.23 AS build\nRUN go build -o /app .\nFROM alpine\nCOPY --from=build /app /app\n",
-		"cache mount":          "FROM golang:1.23\nRUN --mount=type=cache,target=/root/.cache/go-build go build ./...\n",
-		"chown with variables": "FROM alpine\nARG UID=1000\nCOPY --chown=${UID}:${UID} . /src\n",
-		"shell code":           "FROM alpine\nRUN for f in $(ls /etc); do echo \"${f#x}\" $1; done\n",
-		"heredoc":              "FROM alpine\nRUN <<EOF\necho 'it'\\''s here'\nEOF\n",
-		"escape default":       "# escape=\\\nFROM alpine\n",
-		"default value":        "FROM ${BASE:-alpine}\n",
-		"ENV and ARG":          "FROM alpine\nENV PATH=/opt/bin:$PATH\nARG A=\"x y\"\n",
+		"docker://":                   "FROM docker://alpine\n",
+		"docker image":                "FROM docker:24-dind\n",
+		"registry with a port":        "FROM localhost:5000/team/app:1\n",
+		"ARG in tag":                  "ARG GO_VERSION=1.23\nFROM golang:${GO_VERSION} AS build\nRUN go version\n",
+		"multi-stage":                 "FROM --platform=$BUILDPLATFORM golang:1.23 AS build\nRUN go build -o /app .\nFROM alpine\nCOPY --from=build /app /app\n",
+		"cache mount":                 "FROM golang:1.23\nRUN --mount=type=cache,target=/root/.cache/go-build go build ./...\n",
+		"chown with variables":        "FROM alpine\nARG UID=1000\nCOPY --chown=${UID}:${UID} . /src\n",
+		"shell code":                  "FROM alpine\nRUN for f in $(ls /etc); do echo \"${f#x}\" $1; done\n",
+		"heredoc":                     "FROM alpine\nRUN <<EOF\necho 'it'\\''s here'\nEOF\n",
+		"escape default":              "# escape=\\\nFROM alpine\n",
+		"default value":               "FROM ${BASE:-alpine}\n",
+		"ENV and ARG":                 "FROM alpine\nENV PATH=/opt/bin:$PATH\nARG A=\"x y\"\n",
+		"SQL in a joined RUN":         "FROM postgres\nRUN psql -c \"SELECT * \\\nFROM users\"\n",
+		"shell flags on joined lines": "FROM alpine\nRUN kubectl create secret generic s \\\n  --from-literal=k=$V \\\n  && rsync -a \\\n  --exclude-from=$LIST /a /b\n",
 	}
 	for name, file := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -166,5 +176,24 @@ func TestBuild_PolicyRefusalNamed(t *testing.T) {
 	if res.ExitCode != 125 || !strings.Contains(res.Message, "signature policy of the build refused an image source") ||
 		!strings.Contains(res.Message, "ONBUILD") {
 		t.Errorf("result = %+v, want the policy refusal named", res)
+	}
+}
+
+// TestBuild_InFileRefused: podman runs a Containerfile whose name ends in
+// ".in" through cpp on the host, so prism refuses the name.
+func TestBuild_InFileRefused(t *testing.T) {
+	for _, name := range []string{"Containerfile.in", "build/app.IN"} {
+		t.Run(name, func(t *testing.T) {
+			c := newCaller(t)
+			writeFile(t, c.Worktree, name, "COPY <<EOF /s\n#include \"/etc/passwd\"\nEOF\n")
+			f := &prismcontainertest.Fake{}
+			res := prismcontainer.Build(context.Background(), buildDeps(f), c, prismcontainer.BuildRequest{File: name})
+			if res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, "C preprocessor") {
+				t.Errorf("result = %+v, want a refusal that names the preprocessor", res)
+			}
+			if len(f.BuildCalls()) != 0 {
+				t.Errorf("podman build ran")
+			}
+		})
 	}
 }
