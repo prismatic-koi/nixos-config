@@ -435,7 +435,7 @@
         # itself. grey2 is unused in this theme block.
         builtins.toJSON {
           "$schema" =
-            "https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json";
+            "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/schemas/theme.schema.json";
           name = config.theme.name;
           colors = {
             # Core UI
