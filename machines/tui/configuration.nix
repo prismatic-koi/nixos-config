@@ -119,7 +119,7 @@ in
     gaming = {
       enable = true;
       prismlauncher.enable = true;
-      yuzu.enable = true;
+      eden.enable = true;
     };
   };
 

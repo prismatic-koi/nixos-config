@@ -10,7 +10,7 @@
     ./pcsx2.nix
     ./prismlauncher.nix
     ./steam.nix
-    ./yuzu.nix
+    ./eden.nix
   ];
   options = {
     nx.gaming.enable = lib.mkEnableOption "enables gaming related modules" // {
