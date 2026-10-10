@@ -160,9 +160,10 @@ func runReview(cmd *cobra.Command, args []string) error {
 			agentNames[i] = ag.Name
 		}
 
-		// ignore-concurrency-cap is registered but never read by the host
-		// route, so it has no effect to mirror. Harness is forwarded only
-		// when explicitly set, matching the host route's default.
+		// Harness is forwarded only when explicitly set, matching the host
+		// route's default. ignore-concurrency-cap is forwarded so the host
+		// subprocess's checkConcurrencyCap sees it.
+		ignoreCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
 		extraHarness := ""
 		if cmd.Flags().Changed("harness") {
 			extraHarness = harnessFlag
@@ -187,6 +188,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 			Models:        modelsByRole,
 			DiffInlineMax: diffInlineMaxFlag,
 			Harness:       extraHarness,
+
+			IgnoreConcurrencyCap: ignoreCapFlag,
 		})
 		if err != nil {
 			return fmt.Errorf("prism review: host API: %w", err)
