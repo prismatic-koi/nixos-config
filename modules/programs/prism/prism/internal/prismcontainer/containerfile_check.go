@@ -57,7 +57,8 @@ func buildRefusedTransports() []string {
 }
 
 var (
-	escapeDirective = regexp.MustCompile(`(?i)^\s*#\s*escape\s*=\s*(\S*)`)
+	// escapeDirective matches a line after leading whitespace is removed.
+	escapeDirective = regexp.MustCompile(`(?i)^#\s*escape\s*=\s*(\S*)`)
 	// literalReference is an image reference, a stage name, or a stage
 	// index, written literally.
 	literalReference = regexp.MustCompile(`^(docker://)?[A-Za-z0-9._/:@-]+$`)
@@ -72,7 +73,12 @@ func refuseFile(line int, format string, args ...any) error {
 }
 
 // literalHint ends each refusal of a reference that is not literal.
-const literalHint = "Write the image literally: no ARG or other variable, quote, or backslash in FROM, --from, or --mount"
+const literalHint = "Write the image literally: no ARG or other variable, quote, or backslash in FROM, --from, or --mount. " + restructureHint
+
+// restructureHint ends each refusal that a physical line can cause. The
+// check reads every physical line as an instruction, also a line of shell
+// or SQL text in a RUN continuation or a heredoc.
+const restructureHint = "If the line is not an instruction (for example shell or SQL text that starts with FROM or with a flag), restructure the text so that the line does not start that way"
 
 // checkContainerfile refuses a Containerfile that can make podman read an
 // image from a transport other than a registry.
@@ -81,25 +87,39 @@ func checkContainerfile(data []byte) error {
 	text := strings.TrimPrefix(string(data), "\ufeff")
 	physical := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	for i, line := range physical {
-		if m := escapeDirective.FindStringSubmatch(line); m != nil && m[1] != `\` {
+		// The parser removes leading unicode.IsSpace characters before it
+		// reads a directive, \v and U+00A0 included.
+		if m := escapeDirective.FindStringSubmatch(strings.TrimLeftFunc(line, unicode.IsSpace)); m != nil && m[1] != `\` {
 			return refuseFile(i+1, "the escape directive %q is not supported: remove it, so that \\ is the escape character", m[1])
 		}
 	}
 	for _, l := range append(joinContinuations(physical, true), joinContinuations(physical, false)...) {
-		if err := checkInstruction(l.line, l.text, true); err != nil {
+		if err := checkInstruction(l.line, l.text); err != nil {
 			return err
 		}
 	}
-	// A physical line is read too, in case buildah joins lines in a way
-	// that the joins above do not. Most physical lines inside a joined
-	// line are not instructions (shell code, SQL), so only a definite
-	// transport reference is refused here.
+	// Buildah starts each instruction at the start of a physical line, so
+	// its keyword and its leading flags are on a physical line. Each
+	// physical line gets the full check too. Then a line that the joins
+	// above join in a way that buildah does not (a heredoc terminator that
+	// ends in "\", for example) cannot hide an image source.
 	for i, line := range physical {
-		if err := checkInstruction(i+1, line, false); err != nil {
+		if err := checkInstruction(i+1, physicalInstruction(line)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// physicalInstruction prepares one physical line for the check. It removes
+// leading unicode.IsSpace characters, as the parser does, and a trailing
+// continuation backslash, so that a FROM split over lines passes.
+func physicalInstruction(line string) string {
+	line = strings.TrimLeftFunc(line, unicode.IsSpace)
+	if body := strings.TrimRight(line, " \t"); strings.HasSuffix(body, `\`) {
+		return strings.TrimSuffix(body, `\`)
+	}
+	return line
 }
 
 type joinedLine struct {
@@ -146,12 +166,12 @@ func joinContinuations(physical []string, skipComments bool) []joinedLine {
 }
 
 // checkInstruction checks one line in the parser view and in the word
-// view. With strict false, only a literal transport reference is refused.
-func checkInstruction(line int, text string, strict bool) error {
-	if err := checkWordView(line, text, strict); err != nil {
+// view.
+func checkInstruction(line int, text string) error {
+	if err := checkWordView(line, text); err != nil {
 		return err
 	}
-	return checkParserView(line, text, strict)
+	return checkParserView(line, text)
 }
 
 // checkWordView checks one line split at whitespace runes. In a FROM line,
@@ -160,7 +180,7 @@ func checkInstruction(line int, text string, strict bool) error {
 // that starts with "from") get the transport check only. In every other
 // line, the flag words at the start (after ONBUILD, when it is there) are
 // read: the value of --from, and the from= values of --mount.
-func checkWordView(line int, text string, strict bool) error {
+func checkWordView(line int, text string) error {
 	words := rawWords(text)
 	if len(words) == 0 || strings.HasPrefix(words[0], "#") {
 		return nil
@@ -175,12 +195,12 @@ func checkWordView(line int, text string, strict bool) error {
 		image := true
 		for _, w := range words[1:] {
 			if strings.HasPrefix(w, "--") {
-				if strict && hasNonASCII(w) {
+				if hasNonASCII(w) {
 					return refuseNonASCIIFlag(line, w)
 				}
 				continue
 			}
-			if err := checkReference(line, w, strict && image); err != nil {
+			if err := checkReference(line, w, image); err != nil {
 				return err
 			}
 			image = false
@@ -198,12 +218,9 @@ func checkWordView(line int, text string, strict bool) error {
 		}
 		name, value, hasValue := strings.Cut(w, "=")
 		if !literalFlagName.MatchString(name) {
-			if strict {
-				return refuseFile(line, "the flag %q has a name that is not literal. Write flag names literally", w)
-			}
-			continue
+			return refuseFile(line, "the flag %q has a name that is not literal. Write flag names literally. %s", w, restructureHint)
 		}
-		if strict && hasNonASCII(w) {
+		if hasNonASCII(w) {
 			return refuseNonASCIIFlag(line, w)
 		}
 		switch asciiLower(name) {
@@ -214,11 +231,11 @@ func checkWordView(line int, text string, strict bool) error {
 				}
 				value = flags[i+1]
 			}
-			if err := checkReference(line, value, strict); err != nil {
+			if err := checkReference(line, value, true); err != nil {
 				return err
 			}
 		case "--mount":
-			if err := checkMount(line, value, strict); err != nil {
+			if err := checkMount(line, value); err != nil {
 				return err
 			}
 		}
@@ -230,7 +247,7 @@ func checkWordView(line int, text string, strict bool) error {
 // splits it. The parser has already removed the quotes and backslashes of
 // a flag, so the literal rule does not apply to a flag here. The word view
 // applies it.
-func checkParserView(line int, text string, strict bool) error {
+func checkParserView(line int, text string) error {
 	cmd, flags, args := splitParserLine(text)
 	var allFlags []string
 	allFlags = append(allFlags, flags...)
@@ -239,17 +256,17 @@ func checkParserView(line int, text string, strict bool) error {
 		allFlags = append(allFlags, flags...)
 	}
 	for _, f := range allFlags {
-		if strict && hasNonASCII(f) {
+		if hasNonASCII(f) {
 			return refuseNonASCIIFlag(line, f)
 		}
 		name, value, _ := strings.Cut(f, "=")
 		switch strings.ToLower(name) {
 		case "--from":
-			if err := checkReference(line, value, strict); err != nil {
+			if err := checkReference(line, value, true); err != nil {
 				return err
 			}
 		case "--mount":
-			if err := checkMount(line, value, strict); err != nil {
+			if err := checkMount(line, value); err != nil {
 				return err
 			}
 		}
@@ -259,7 +276,7 @@ func checkParserView(line int, text string, strict bool) error {
 			if w == "" {
 				continue
 			}
-			if err := checkReference(line, w, strict && i == 0); err != nil {
+			if err := checkReference(line, w, i == 0); err != nil {
 				return err
 			}
 		}
@@ -375,23 +392,20 @@ func hasNonASCII(s string) bool {
 }
 
 func refuseNonASCIIFlag(line int, flag string) error {
-	return refuseFile(line, "the flag %q holds a character that is not ASCII. Write flags in ASCII only", flag)
+	return refuseFile(line, "the flag %q holds a character that is not ASCII. Write flags in ASCII only. %s", flag, restructureHint)
 }
 
 // checkMount checks the from= values of one --mount value. A "$", a quote,
 // or a backslash anywhere in the value can build a key or a separator, so
 // it is refused.
-func checkMount(line int, value string, strict bool) error {
+func checkMount(line int, value string) error {
 	if strings.ContainsAny(value, "$\"'\\") {
-		if strict {
-			return refuseFile(line, "the --mount value %q holds a variable, a quote, or a backslash. %s", value, literalHint)
-		}
-		return nil
+		return refuseFile(line, "the --mount value %q holds a variable, a quote, or a backslash. %s", value, literalHint)
 	}
 	for _, field := range strings.Split(value, ",") {
 		key, ref, ok := strings.Cut(field, "=")
 		if ok && asciiLower(strings.TrimSpace(key)) == "from" {
-			if err := checkReference(line, ref, strict); err != nil {
+			if err := checkReference(line, ref, true); err != nil {
 				return err
 			}
 		}

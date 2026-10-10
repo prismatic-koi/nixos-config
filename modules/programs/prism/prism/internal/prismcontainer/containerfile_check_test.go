@@ -119,6 +119,39 @@ func TestBuild_ParserSplitRefused(t *testing.T) {
 	}
 }
 
+// TestBuild_PhysicalLineChecked: every physical line gets the full check,
+// so a line that prism joins and buildah does not cannot hide an image
+// source. The parser does not join a heredoc terminator, and it removes
+// leading unicode.IsSpace characters before it reads a directive.
+func TestBuild_PhysicalLineChecked(t *testing.T) {
+	const arg = "ARG X=tarball:/home/u/x.tar\nFROM alpine\n"
+	const heredoc = "RUN <<'T\\'\necho hi \\\nT\\\n"
+	cases := map[string]struct {
+		file string
+		line int
+		want string
+	}{
+		"heredoc terminator, FROM":        {arg + heredoc + "FROM $X\n", 6, "is not literal"},
+		"heredoc terminator, COPY":        {arg + heredoc + "COPY --from=$X / /x\n", 6, "is not literal"},
+		"heredoc terminator, mount":       {arg + heredoc + "RUN --mount=type=bind,from=$X,target=/m cat /m/f\n", 6, "--mount value"},
+		"dash heredoc terminator, FROM":   {arg + "RUN <<-'T\\'\necho hi\nT\\\nFROM \"$X\" AS y\n", 6, "is not literal"},
+		"vertical tab before FROM":        {arg + "\vFROM $X\n", 3, "is not literal"},
+		"vertical tab before escape":      {"\v# escape=`\n" + arg + "RUN echo a b \\\nFROM $X\n", 1, "escape directive"},
+		"no-break space before escape":    {"\u00a0# escape=`\nFROM alpine\n", 1, "escape directive"},
+		"ideographic space before escape": {"\u3000# escape=`\nFROM alpine\n", 1, "escape directive"},
+		"SQL text in a RUN continuation":  {"FROM postgres:16\nRUN psql -c \"SELECT * \\\nFROM users\"\n", 3, "restructure the text"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			res, f := buildFile(t, tc.file)
+			wantRefused(t, res, f, tc.want)
+			if want := fmt.Sprintf("line %d:", tc.line); !strings.Contains(res.Message, want) {
+				t.Errorf("message = %q, want it to name %s", res.Message, want)
+			}
+		})
+	}
+}
+
 // TestBuild_LiteralReferencesPass: literal references, stage names, stage
 // indexes, and the usual flags and shell code are not refused.
 func TestBuild_LiteralReferencesPass(t *testing.T) {
@@ -138,9 +171,9 @@ func TestBuild_LiteralReferencesPass(t *testing.T) {
 		"heredoc":               "FROM alpine\nRUN <<EOF\necho 'it'\\''s here'\nEOF\n",
 		"escape default":        "# escape=\\\nFROM alpine\n",
 		"ENV and ARG":           "FROM alpine\nENV PATH=/opt/bin:$PATH\nARG A=\"x y\"\n",
-		"SQL in a joined RUN":   "FROM postgres\nRUN psql -c \"SELECT * \\\nFROM users\"\n",
 		"shell flags on joined": "FROM alpine\nRUN kubectl create secret generic s \\\n  --from-literal=k=$V \\\n  && rsync -a \\\n  --exclude-from=$LIST /a /b\n",
 		"comment with a slash":  "# a comment \\\nFROM alpine\n",
+		"split literal FROM":    "FROM \\\n  --platform=$BUILDPLATFORM \\\n  golang:1.23 \\\n  AS build\nRUN true\n",
 		"heredoc Python import": "FROM python:3.12\nRUN <<EOF python3\nfrom typing import List, Dict\nfrom foo import *\nEOF\n",
 		"heredoc SQL":           "FROM postgres:16\nCOPY <<EOF /init.sql\nSELECT name\nFROM users WHERE id = 1;\nEOF\n",
 		"non-ASCII in RUN":      "FROM alpine\nRUN echo caf\u00e9 \u0160\n",

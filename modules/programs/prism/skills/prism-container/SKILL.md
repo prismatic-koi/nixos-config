@@ -245,11 +245,25 @@ Prism also refuses these:
   C preprocessor on the host, and an `#include` then reads a host file.
   Prism always gives podman the copy under the name `Containerfile`.
 
-The check reads more than podman does. Thus it can refuse a line that
-podman does not read as an image source. For example, a heredoc line that
-starts with `FROM` or `from` must have a literal first word:
-`from typing import List` passes, and `FROM $BASE` in a heredoc is
-refused. The refusal names the line.
+Prism checks each instruction, and it also checks each physical line as
+if it were an instruction. Thus it can refuse a line that podman does not
+read as an instruction: a line of shell or SQL text in a `RUN`
+continuation or in a heredoc. Such a line is refused when it starts with
+`FROM` and its next word is not literal, or when it starts with a flag
+that the rules above refuse. For example:
+
+```dockerfile
+# Refused: line 3 starts with FROM, and users" is not literal.
+RUN psql -c "SELECT * \
+FROM users"
+
+# Passes: the line does not start with FROM.
+RUN psql -c "SELECT * FROM users"
+```
+
+`from typing import List` in a heredoc passes, because `typing` is
+literal. The refusal names the line. Restructure the text so that the line
+does not start that way.
 
 ### What the Containerfile can do
 
