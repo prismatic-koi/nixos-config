@@ -10,12 +10,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -225,6 +227,13 @@ func TestIntegration_FixedOptionsInPodman(t *testing.T) {
 
 func buildReal(t *testing.T, c prismcontainer.Caller, containerfile string, req prismcontainer.BuildRequest) prismcontainer.BuildResult {
 	t.Helper()
+	// On macOS the build checks the podman machine mounts against the
+	// allowlist of the host config.
+	return buildRealDeps(t, c, containerfile, prismcontainer.Deps{MachineMountAllowlist: config.LoadFresh().MachineMountAllowlist()}, req)
+}
+
+func buildRealDeps(t *testing.T, c prismcontainer.Caller, containerfile string, deps prismcontainer.Deps, req prismcontainer.BuildRequest) prismcontainer.BuildResult {
+	t.Helper()
 	if err := os.WriteFile(filepath.Join(c.Worktree, "Containerfile"), []byte(containerfile), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -235,9 +244,7 @@ func buildReal(t *testing.T, c prismcontainer.Caller, containerfile string, req 
 			t.Errorf("sweep after the build: %v", err)
 		}
 	})
-	// On macOS the build checks the podman machine mounts against the
-	// allowlist of the host config.
-	return prismcontainer.Build(context.Background(), prismcontainer.Deps{MachineMountAllowlist: config.LoadFresh().MachineMountAllowlist()}, c, req)
+	return prismcontainer.Build(context.Background(), deps, c, req)
 }
 
 // wantBuildFailed fails the test unless podman build started and then
@@ -353,39 +360,76 @@ func TestIntegration_BuildImagesRemovedBySweep(t *testing.T) {
 	}
 }
 
-// onbuildBase builds a base image with plain podman, outside prism, whose
-// ONBUILD instruction is onbuild. The Containerfile check of prism cannot
-// see it. The image uses the docker format, because the OCI format drops
-// ONBUILD.
-func onbuildBase(t *testing.T, c prismcontainer.Caller, onbuild string) string {
-	t.Helper()
-	dir := t.TempDir()
-	base := "localhost/prism-itest-onbuild-" + strings.ReplaceAll(c.InstanceID, "-", "")
-	file := filepath.Join(dir, "Containerfile.base")
-	if err := os.WriteFile(file, []byte("FROM alpine\nONBUILD "+onbuild+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := exec.Command("podman", "build", "--format", "docker", "-t", base, "-f", file, dir).CombinedOutput(); err != nil {
-		t.Fatalf("build the base image: %v: %s", err, out)
-	}
-	t.Cleanup(func() { _ = exec.Command("podman", "rmi", "--force", base).Run() })
-	return base
+// pastCheck runs the real build executor after it replaces the Containerfile
+// of the build copy with containerfile. The Containerfile check of prism
+// reads the copy before the executor runs, so the build namespace gets a
+// source that the check refuses.
+type pastCheck struct {
+	prismcontainer.BuildExecutor
+	containerfile string
 }
 
-// homeTar writes a tar archive in the home dir of the host user, outside
-// every path that a build can see, and removes it after the test.
-func homeTar(t *testing.T) string {
+func (p pastCheck) Build(ctx context.Context, unit string, out io.Writer, args []string) (int, error) {
+	i := slices.Index(args, "--file")
+	if i < 0 || i+1 == len(args) {
+		return 125, errors.New("pastCheck: the build args hold no --file")
+	}
+	if err := os.WriteFile(args[i+1], []byte(p.containerfile), 0o600); err != nil {
+		return 125, err
+	}
+	return p.BuildExecutor.Build(ctx, unit, out, args)
+}
+
+// namespacedBuild runs containerfile through prism Build on Linux, past the
+// Containerfile check.
+func namespacedBuild(t *testing.T, c prismcontainer.Caller, containerfile string) prismcontainer.BuildResult {
 	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
+	ex := pastCheck{prismcontainer.DefaultBuildExecutor("linux", nil, nil), containerfile}
+	return buildRealDeps(t, c, "FROM alpine\n", prismcontainer.Deps{BuildExecutor: ex}, prismcontainer.BuildRequest{})
+}
+
+// leakFile copies the file /secret of the image source into a stage and
+// prints it, so a build that reads the source shows the secret.
+func leakFile(source string) string {
+	return "FROM " + source + "\nFROM alpine\nCOPY --from=0 /secret /leak\nRUN cat /leak\n"
+}
+
+// plainBuild is the control of a negative test. It runs containerfile with
+// plain podman build, outside the build namespace, with a policy that
+// accepts every source, in a throwaway store. The control must read the
+// source and print want. If it does not, the source fails for a cause other
+// than the namespace, and the negative test measures nothing.
+func plainBuild(t *testing.T, containerfile, want string) {
+	t.Helper()
+	dir := t.TempDir()
+	store := filepath.Join(dir, "store")
+	// The store holds files of sub-uids, so remove it in the user
+	// namespace of podman, before the cleanup of t.TempDir runs.
+	t.Cleanup(func() { _ = exec.Command("podman", "unshare", "rm", "-rf", store).Run() })
+	policy := filepath.Join(dir, "policy.json")
+	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dir, err := os.MkdirTemp(home, ".prism-itest-")
-	if err != nil {
+	file := filepath.Join(dir, "Containerfile")
+	if err := os.WriteFile(file, []byte(containerfile), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	if err := os.WriteFile(filepath.Join(dir, "secret"), []byte("s3cr3t-home"), 0o600); err != nil {
+	ctxDir := filepath.Join(dir, "context")
+	if err := os.Mkdir(ctxDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("podman", "--root", filepath.Join(store, "root"), "--runroot", filepath.Join(store, "run"), "--storage-driver", "vfs",
+		"build", "--signature-policy", policy, "--file", file, ctxDir).CombinedOutput()
+	if err != nil || !bytes.Contains(out, []byte(want)) {
+		t.Fatalf("control: plain podman build outside the build namespace did not print %q, so the test does not measure the namespace: %v\n%s", want, err, out)
+	}
+}
+
+// secretTar writes a tar archive in dir that holds the file secret with
+// the content s.
+func secretTar(t *testing.T, dir, s string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "secret"), []byte(s), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	tarPath := filepath.Join(dir, "secret.tar")
@@ -395,28 +439,42 @@ func homeTar(t *testing.T) string {
 	return tarPath
 }
 
-// TestIntegration_BuildHomeTarballNotReachable: an ONBUILD instruction of a
-// base image names a tar archive in the home dir. The check cannot see it.
-// On Linux the path does not exist in the mount namespace of the build, so
-// the source fails before the signature policy reads it.
+// TestIntegration_BuildHomeTarballNotReachable: a FROM source names a tar
+// archive in the home dir. On Linux the path does not exist in the mount
+// namespace of the build. The tarball transport opens the file when it
+// parses the reference, before the signature policy applies.
+//
+// The FROM form is used because buildah replaces each error of a COPY
+// --from source with "no stage or image found with that name"
+// (imagebuildah/stage_executor.go), so a COPY --from or ONBUILD form cannot
+// tell a missing path from a policy refusal.
 func TestIntegration_BuildHomeTarballNotReachable(t *testing.T) {
 	c := integrationCaller(t)
 	if runtime.GOOS != "linux" {
 		t.Skip("the build namespace applies to Linux builds only")
 	}
-	tarPath := homeTar(t)
-	base := onbuildBase(t, c, "COPY --from=tarball:"+tarPath+" / /leak")
-	res := buildReal(t, c, "FROM "+base+"\n", prismcontainer.BuildRequest{})
-	wantBuildFailed(t, res, regexp.MustCompile(regexp.QuoteMeta(tarPath)+`.*no such file or directory`))
-	if bytes.Contains(res.Output, []byte("rejected by policy")) {
-		t.Errorf("output = %s, want the source to be missing in the build namespace, not refused by the policy", res.Output)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
 	}
+	dir, err := os.MkdirTemp(home, ".prism-itest-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	tarPath := secretTar(t, dir, "s3cr3t-home")
+	cf := leakFile("tarball:" + tarPath)
+	plainBuild(t, cf, "s3cr3t-home")
+	res := namespacedBuild(t, c, cf)
+	p := regexp.QuoteMeta(tarPath)
+	wantBuildFailed(t, res, regexp.MustCompile(`error opening "`+p+`": open `+p+`: no such file or directory`))
 }
 
-// TestIntegration_BuildOtherStoreNotReachable: an ONBUILD instruction of a
-// base image names an image in another podman store of the host user. The
-// signature policy accepts containers-storage, so only the build namespace
-// stops it.
+// TestIntegration_BuildOtherStoreNotReachable: a FROM source names an image
+// in another podman store of the host user. The signature policy accepts
+// containers-storage, so only the build namespace stops it. The store root
+// does not exist in the namespace, so the storage library creates an empty
+// store in the tmpfs root of bwrap, or fails to open the store.
 func TestIntegration_BuildOtherStoreNotReachable(t *testing.T) {
 	c := integrationCaller(t)
 	if runtime.GOOS != "linux" {
@@ -437,23 +495,15 @@ func TestIntegration_BuildOtherStoreNotReachable(t *testing.T) {
 		// namespace of podman.
 		_ = exec.Command("podman", "unshare", "rm", "-rf", dir).Run()
 	})
-	if out, err := exec.Command("podman", append(other, "pull", "-q", "docker.io/library/alpine")...).CombinedOutput(); err != nil {
-		t.Fatalf("pull into the other store: %v: %s", err, out)
+	image := "localhost/prism-itest-other-" + strings.ReplaceAll(c.InstanceID, "-", "") + ":latest"
+	tarPath := secretTar(t, t.TempDir(), "s3cr3t-store")
+	if out, err := exec.Command("podman", append(other, "import", tarPath, image)...).CombinedOutput(); err != nil {
+		t.Fatalf("import into the other store: %v: %s", err, out)
 	}
-	// Control: the image is in the other store.
-	if err := exec.Command("podman", append(other, "image", "exists", "docker.io/library/alpine")...).Run(); err != nil {
-		t.Fatalf("control: the other store has no alpine image: %v", err)
-	}
-	src := "containers-storage:[vfs@" + root + "+" + runRoot + "]docker.io/library/alpine:latest"
-	base := onbuildBase(t, c, "COPY --from="+src+" /etc/alpine-release /leak")
-	res := buildReal(t, c, "FROM "+base+"\n", prismcontainer.BuildRequest{})
-	// The other store is not in the build namespace, so the image is not
-	// found there. The policy accepts containers-storage, so a policy
-	// refusal is a wrong cause.
-	wantBuildFailed(t, res, regexp.MustCompile(`(?i)(not known|not found|no such|does not exist|does not resolve|unknown image|identifier is not an image)`))
-	if bytes.Contains(res.Output, []byte("rejected by policy")) {
-		t.Errorf("output = %s, want the other store to be missing, not refused by the policy", res.Output)
-	}
+	cf := leakFile("containers-storage:[vfs@" + root + "+" + runRoot + "]" + image)
+	plainBuild(t, cf, "s3cr3t-store")
+	res := namespacedBuild(t, c, cf)
+	wantBuildFailed(t, res, regexp.MustCompile(regexp.QuoteMeta(root)+`[^\n]*(does not resolve to an image ID|no such file or directory)`))
 }
 
 // TestIntegration_BuildRunStepNetwork: a RUN step runs in the build
