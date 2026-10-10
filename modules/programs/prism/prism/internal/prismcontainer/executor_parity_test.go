@@ -46,7 +46,11 @@ func newScopeFake(t *testing.T, output string, code string, hang bool) scopeFake
 d=$FAKE_SCOPE_DIR
 while [ "$#" -gt 0 ] && [ "$1" != prism-container-build ]; do shift; done
 shift
+started=$1
+shift
 printf '%s\n' "$@" > "$d/podman.args"
+[ -f "$d/no-start" ] && { echo "prism: cannot move the build process into the cgroup /x/podman" >&2; exit 125; }
+: > "$started"
 cat "$d/output"
 [ -f "$d/hang" ] && exec sleep 30
 exit $(cat "$d/code")
@@ -199,5 +203,28 @@ func TestBuildExecutors_SameRefusal(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(sf.dir, "podman.args")); !os.IsNotExist(err) {
 		t.Errorf("the scope executor ran podman: %v", err)
+	}
+}
+
+// TestBuild_ScopeSetupFailureReported: when the scope script fails before
+// podman build starts, the result says that the build did not start and
+// gives the output of the script. It does not say that the build failed.
+func TestBuild_ScopeSetupFailureReported(t *testing.T) {
+	c := newCaller(t)
+	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\n")
+	sf := newScopeFake(t, "", "125", false)
+	if err := os.WriteFile(filepath.Join(sf.dir, "no-start"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := deps(&prismcontainertest.Fake{})
+	d.BuildExecutor = sf.exe
+	res := prismcontainer.Build(context.Background(), d, c, prismcontainer.BuildRequest{})
+	if res.ExitCode != prismcontainer.ExitRefused || !strings.HasPrefix(res.Message, "podman build did not start: the build scope did not start podman build") ||
+		!strings.Contains(res.Message, "cannot move the build process") || strings.Contains(res.Message, "the build failed") {
+		t.Errorf("result = %+v, want a not-started message with the script output", res)
+	}
+	lines := readAudit(t, testInstanceID)
+	if len(lines) != 1 || lines[0]["decision"] != prismcontainer.DecisionError {
+		t.Errorf("audit = %v, want one error line", lines)
 	}
 }

@@ -196,6 +196,9 @@ func Build(ctx context.Context, d Deps, c Caller, req BuildRequest) BuildResult 
 		if runCtx.Err() != nil {
 			return stopped(warning)
 		}
+		if ns := (*buildNotStartedError)(nil); errors.As(err, &ns) {
+			return finish(DecisionError, ExitRefused, false, "", joinMessages("podman build did not start: "+ns.detail, warning))
+		}
 		return finish(DecisionError, ExitRefused, false, "", joinMessages("podman build did not complete: "+err.Error(), warning))
 	}
 	if code != 0 {

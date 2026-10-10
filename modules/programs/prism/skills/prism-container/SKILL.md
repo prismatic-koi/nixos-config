@@ -513,6 +513,7 @@ markers. Like the audit directory, no sandbox can write them.
 | `refused: --tag ... is not a valid image tag` | Use a lower-case `NAME` or `NAME:TAG`. See "The image name". |
 | `refused: the build context holds more than 4 GiB` | Give a smaller `CONTEXT`, or list large directories in `.containerignore`. |
 | `refused: the build context changed while prism copied it` | Try again when nothing writes to the context. |
+| `podman build did not start: ...` | Prism could not set up the build on the host, so podman build did not run. Tell the user, and give the full message: it holds the cause. You cannot correct this from the sandbox. |
 | `refused: podman machine "..." mounts Mac paths that are not in the allowlist` | Tell the user. The message gives the `containers.conf` setting and the commands that recreate the machine. You cannot correct this from the sandbox. |
 | `refused: the Containerfile cannot be built: line N: ...` | Read the reason. Write each image source literally: a registry image, a local image, or a build stage, with no variable, quote, or backslash. If line N is shell or SQL text, restructure it. See "The image sources of a build". |
 | `The signature policy of the build refused an image source` | A base image has an `ONBUILD` instruction that names a transport. Use a different base image. |

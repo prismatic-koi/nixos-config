@@ -28,10 +28,11 @@ func writeScript(t *testing.T, dir, name, body string) string {
 }
 
 // fakeSystemd writes a fake systemd-run and a fake systemctl into a temp
-// dir. The fake systemd-run records its arguments, records the podman
-// argument vector that follows the scope script, and then acts as podman:
-// it prints dir/output, exits with the code in dir/code, or hangs
-// when dir/hang exists. The fake systemctl logs each call, prints dir/units
+// dir. The fake systemd-run records its arguments, creates the started
+// file as the scope script does (not when dir/no-start exists), records
+// the command that follows it, and then acts as podman: it prints
+// dir/output, exits with the code in dir/code, or hangs when dir/hang
+// exists. The fake systemctl logs each call, prints dir/units
 // for list-units, and fails a kill when dir/kill-fails exists.
 func fakeSystemd(t *testing.T) (ScopeExecutor, string) {
 	t.Helper()
@@ -42,8 +43,12 @@ func fakeSystemd(t *testing.T) (ScopeExecutor, string) {
 printf '%s\n' "$@" > "$d/systemd-run.args"
 while [ "$#" -gt 0 ] && [ "$1" != prism-container-build ]; do shift; done
 shift
+started=$1
+shift
 printf '%s\n' "$@" > "$d/podman.args"
 [ -f "$d/output" ] && cat "$d/output"
+[ -f "$d/no-start" ] && exit 125
+: > "$started"
 [ -f "$d/hang" ] && exec sleep 30
 [ -f "$d/signal" ] && kill -9 $$
 exit $(cat "$d/code" 2>/dev/null || echo 0)
@@ -272,11 +277,15 @@ func TestScopeScript(t *testing.T) {
 	echo := writeScript(t, t.TempDir(), "echo-args", `printf '%s\n' "$@"`+"\n")
 	script := strings.NewReplacer("/proc/self/cgroup", cgFile, "/sys/fs/cgroup", cgRoot).Replace(scopeScript)
 
-	in := []string{echo, "unshare", "--", "build", "--cgroup-parent", cgroupToken, "--build-arg", "A=$(id)", "--build-arg", "B=" + cgroupToken, "a b"}
+	started := filepath.Join(dir, "started")
+	in := []string{started, echo, "unshare", "--", "build", "--cgroup-parent", cgroupToken, "--build-arg", "A=$(id)", "--build-arg", "B=" + cgroupToken, "a b"}
 	cmd := exec.Command("/bin/sh", append([]string{"-c", script, "prism-container-build"}, in...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("script: %v: %s", err, out)
+	}
+	if _, err := os.Stat(started); err != nil {
+		t.Errorf("the script did not create the started file: %v", err)
 	}
 	want := []string{"unshare", "--", "build", "--cgroup-parent", scope + "/build", "--build-arg", "A=$(id)", "--build-arg", "B=" + cgroupToken, "a b"}
 	if got := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"); !slices.Equal(got, want) {
@@ -290,9 +299,78 @@ func TestScopeScript(t *testing.T) {
 	if err := os.WriteFile(cgFile, []byte("1:name=systemd:/x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd = exec.Command("/bin/sh", "-c", script, "prism-container-build", echo, "x")
+	notStarted := filepath.Join(dir, "not-started")
+	cmd = exec.Command("/bin/sh", "-c", script, "prism-container-build", notStarted, echo, "x")
 	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "no cgroup v2 path") {
 		t.Errorf("no cgroup v2 line: err = %v, output %q; want a refusal before the command", err, out)
+	}
+	if _, err := os.Stat(notStarted); !os.IsNotExist(err) {
+		t.Errorf("the started file exists after a refusal: %v", err)
+	}
+}
+
+// TestScopeScript_MoveFailureDiagnostics: when the script cannot move into
+// the leaf cgroup, it writes the cgroup and scheduler state, and it does
+// not create the started file. A mkdir wrapper puts a directory at
+// leaf/cgroup.procs, so the write fails as a refused move does.
+func TestScopeScript_MoveFailureDiagnostics(t *testing.T) {
+	dir := t.TempDir()
+	cgRoot := filepath.Join(dir, "cgroup")
+	scope := "/app.slice/prism-build-x.scope"
+	if err := os.MkdirAll(cgRoot+scope, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for f, v := range map[string]string{"cgroup.type": "domain", "cgroup.controllers": "cpu memory pids", "cgroup.subtree_control": ""} {
+		if err := os.WriteFile(filepath.Join(cgRoot+scope, f), []byte(v+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cgFile := filepath.Join(dir, "self-cgroup")
+	if err := os.WriteFile(cgFile, []byte("0::"+scope+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	realMkdir, err := exec.LookPath("mkdir")
+	if err != nil {
+		t.Skip("no mkdir in PATH")
+	}
+	bin := t.TempDir()
+	writeScript(t, bin, "mkdir", realMkdir+` "$1" && `+realMkdir+` "$1/cgroup.procs"`+"\n")
+	script := strings.NewReplacer("/proc/self/cgroup", cgFile, "/sys/fs/cgroup", cgRoot).Replace(scopeScript)
+	started := filepath.Join(dir, "started")
+	cmd := exec.Command("/bin/sh", "-c", script, "prism-container-build", started, "true")
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("script exit 0, want a failure; output %s", out)
+	}
+	for _, want := range []string{"prism: cannot move the build process into the cgroup", "prism: cgroup.type: domain", "prism: cgroup.controllers: cpu memory pids", "prism: sched:", "prism: kernel:"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(started); !os.IsNotExist(err) {
+		t.Errorf("the started file exists after a failed move: %v", err)
+	}
+}
+
+// TestScopeExecutor_NotStarted: when the scope ends with no started file,
+// podman build did not run, and the error says so with the scope output.
+func TestScopeExecutor_NotStarted(t *testing.T) {
+	e, dir := fakeSystemd(t)
+	for name, content := range map[string]string{
+		"no-start": "",
+		"output":   "prism: cannot move the build process into the cgroup /x/podman\n",
+		"code":     "125",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, err := e.Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", stageContext(t)})
+	var ns *buildNotStartedError
+	if code != -1 || !errors.As(err, &ns) || !strings.Contains(err.Error(), "did not start podman build") ||
+		!strings.Contains(err.Error(), "cannot move the build process") {
+		t.Errorf("Build = %d, %v; want a not-started error with the scope output", code, err)
 	}
 }
 
@@ -316,9 +394,9 @@ func TestScopeExecutor_PauseProcessFailure(t *testing.T) {
 	e, dir := fakeSystemd(t)
 	e.Runner = &podmanStub{unshareRC: 125}
 	_, err := e.Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", stageContext(t)})
-	var pe *podmanError
-	if !errors.As(err, &pe) || !strings.Contains(err.Error(), "podman unshare true failed") {
-		t.Errorf("err = %v, want a podman error", err)
+	var ns *buildNotStartedError
+	if !errors.As(err, &ns) || !strings.Contains(err.Error(), "podman unshare true failed") {
+		t.Errorf("err = %v, want a not-started error that names podman unshare", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "systemd-run.args")); !os.IsNotExist(err) {
 		t.Errorf("systemd-run ran: %v", err)

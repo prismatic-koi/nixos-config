@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -239,6 +240,23 @@ func buildReal(t *testing.T, c prismcontainer.Caller, containerfile string, req 
 	return prismcontainer.Build(context.Background(), prismcontainer.Deps{MachineMountAllowlist: config.LoadFresh().MachineMountAllowlist()}, c, req)
 }
 
+// wantBuildFailed fails the test unless podman build started and then
+// failed, and its output matches cause. A build that did not start (a
+// failure of the scope or the namespace setup) or that failed for another
+// reason must not pass a test that expects a failure.
+func wantBuildFailed(t *testing.T, res prismcontainer.BuildResult, cause *regexp.Regexp) {
+	t.Helper()
+	if strings.Contains(res.Message, "podman build did not start") {
+		t.Fatalf("podman build did not start, so the test proves nothing: %s (output %s)", res.Message, res.Output)
+	}
+	if res.ExitCode == 0 || res.Image != "" || !strings.Contains(res.Message, "the build failed") {
+		t.Fatalf("build = %+v (output %s), want podman build to start and fail", res, res.Output)
+	}
+	if !cause.Match(res.Output) {
+		t.Errorf("the build failed, but its output does not match %s, so it failed for another reason:\n%s", cause, res.Output)
+	}
+}
+
 func TestIntegration_BuildThenRun(t *testing.T) {
 	c := integrationCaller(t)
 	res := buildReal(t, c, "FROM alpine\nARG GREETING\nRUN echo \"$GREETING\" > /built\n",
@@ -255,9 +273,7 @@ func TestIntegration_BuildThenRun(t *testing.T) {
 func TestIntegration_BuildFailure(t *testing.T) {
 	c := integrationCaller(t)
 	res := buildReal(t, c, "FROM alpine\nRUN echo failing-step >&2; exit 3\n", prismcontainer.BuildRequest{})
-	if res.ExitCode == 0 || res.Image != "" || !strings.Contains(string(res.Output), "failing-step") {
-		t.Errorf("build = %+v (output %s), want a failure with the output", res, res.Output)
-	}
+	wantBuildFailed(t, res, regexp.MustCompile(`failing-step`))
 }
 
 // TestIntegration_BuildMemoryLimit: tail of /dev/zero reads one endless
@@ -265,9 +281,8 @@ func TestIntegration_BuildFailure(t *testing.T) {
 func TestIntegration_BuildMemoryLimit(t *testing.T) {
 	c := integrationCaller(t)
 	res := buildReal(t, c, "FROM alpine\nRUN tail /dev/zero\n", prismcontainer.BuildRequest{TimeoutSeconds: 300})
-	if res.ExitCode == 0 || res.ExitCode == prismcontainer.ExitTimeout {
-		t.Errorf("build = %+v, want the step to fail on the memory limit", res)
-	}
+	// The kernel OOM kill of the step gives exit status 137 (SIGKILL).
+	wantBuildFailed(t, res, regexp.MustCompile(`(?i)RUN tail /dev/zero[\s\S]*(137|killed|out of memory|oom)`))
 }
 
 func TestIntegration_BuildSymlinkNotInImage(t *testing.T) {
@@ -298,7 +313,12 @@ func TestIntegration_BuildTimeoutStopsStep(t *testing.T) {
 	const marker = "613.317"
 	res := buildReal(t, c, "FROM alpine\nRUN sleep "+marker+"\n", prismcontainer.BuildRequest{TimeoutSeconds: 20})
 	if res.ExitCode != prismcontainer.ExitTimeout {
-		t.Fatalf("build = %+v, want the timeout", res)
+		t.Fatalf("build = %+v (output %s), want the timeout", res, res.Output)
+	}
+	// Without the step in the output, the test cannot show that the step
+	// ran and then stopped.
+	if !bytes.Contains(res.Output, []byte("RUN sleep "+marker)) {
+		t.Fatalf("output %s, want the RUN step to have started before the timeout", res.Output)
 	}
 	if runtime.GOOS != "linux" {
 		t.Skip("the build step runs in the podman machine VM")
@@ -387,10 +407,8 @@ func TestIntegration_BuildHomeTarballNotReachable(t *testing.T) {
 	tarPath := homeTar(t)
 	base := onbuildBase(t, c, "COPY --from=tarball:"+tarPath+" / /leak")
 	res := buildReal(t, c, "FROM "+base+"\n", prismcontainer.BuildRequest{})
-	if res.ExitCode == 0 {
-		t.Fatalf("build = %+v (output %s), want a failure", res, res.Output)
-	}
-	if !bytes.Contains(res.Output, []byte("no such file or directory")) || bytes.Contains(res.Output, []byte("rejected by policy")) {
+	wantBuildFailed(t, res, regexp.MustCompile(regexp.QuoteMeta(tarPath)+`.*no such file or directory`))
+	if bytes.Contains(res.Output, []byte("rejected by policy")) {
 		t.Errorf("output = %s, want the source to be missing in the build namespace, not refused by the policy", res.Output)
 	}
 }
@@ -429,8 +447,12 @@ func TestIntegration_BuildOtherStoreNotReachable(t *testing.T) {
 	src := "containers-storage:[vfs@" + root + "+" + runRoot + "]docker.io/library/alpine:latest"
 	base := onbuildBase(t, c, "COPY --from="+src+" /etc/alpine-release /leak")
 	res := buildReal(t, c, "FROM "+base+"\n", prismcontainer.BuildRequest{})
-	if res.ExitCode == 0 {
-		t.Errorf("build = %+v (output %s), want a failure: the other store must not be reachable", res, res.Output)
+	// The other store is not in the build namespace, so the image is not
+	// found there. The policy accepts containers-storage, so a policy
+	// refusal is a wrong cause.
+	wantBuildFailed(t, res, regexp.MustCompile(`(?i)(not known|not found|no such|does not exist|does not resolve|unknown image|identifier is not an image)`))
+	if bytes.Contains(res.Output, []byte("rejected by policy")) {
+		t.Errorf("output = %s, want the other store to be missing, not refused by the policy", res.Output)
 	}
 }
 

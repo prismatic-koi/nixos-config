@@ -51,6 +51,17 @@ func (e *stopFailedError) Error() string {
 
 func (e *stopFailedError) Unwrap() []error { return []error{e.cause, e.err} }
 
+// buildNotStartedError reports that podman build did not start: a step of
+// the executor before podman failed. detail holds the cause and the output
+// of that step.
+type buildNotStartedError struct{ detail string }
+
+func (e *buildNotStartedError) Error() string { return e.detail }
+
+func notStarted(format string, args ...any) error {
+	return &buildNotStartedError{detail: fmt.Sprintf(format, args...)}
+}
+
 // DefaultBuildExecutor returns the executor for goos: ScopeExecutor on
 // Linux, PlainExecutor on every other platform. machineAllowlist is the
 // list of Mac paths that the podman machine can mount (PlainExecutor).
@@ -104,10 +115,13 @@ func (e PlainExecutor) Build(ctx context.Context, _ string, out io.Writer, args 
 
 func (PlainExecutor) StopBuilds(context.Context, string) (int, error) { return 0, nil }
 
-// scopeScript runs as the command of the systemd scope. It moves itself
-// into a leaf cgroup of the scope, puts the cgroup path of the build in
-// place of cgroupToken, and runs its arguments: the namespaced podman
-// build command (buildns.go).
+// scopeScript runs as the command of the systemd scope. Its first argument
+// is the started file. It moves itself into a leaf cgroup of the scope,
+// puts the cgroup path of the build in place of cgroupToken, creates the
+// started file, and runs its other arguments: the namespaced podman build
+// command (buildns.go). A missing started file after the scope ends means
+// that podman build did not start. When the move fails, the script writes
+// the cgroup and scheduler state to stderr, so that the cause is visible.
 //
 // Without --cgroup-parent, crun puts a build step into a cgroup outside the
 // scope, and a scope kill does not reach it. The scope cgroup must hold no
@@ -115,7 +129,9 @@ func (PlainExecutor) StopBuilds(context.Context, string) (int, error) { return 0
 // cgroup. --cgroup-manager=cgroupfs is mandatory: with the systemd manager,
 // podman build gives crun --systemd-cgroup, and crun then reads the
 // --cgroup-parent path as a systemd slice name, which it is not.
-const scopeScript = `cg=
+const scopeScript = `started=$1
+shift
+cg=
 while IFS= read -r line; do
 	case $line in 0::*) cg=${line#0::} ;; esac
 done < /proc/self/cgroup
@@ -123,14 +139,27 @@ if [ -z "$cg" ] || [ "$cg" = / ]; then
 	echo "prism: the build scope has no cgroup v2 path" >&2
 	exit 125
 fi
-mkdir "/sys/fs/cgroup$cg/podman" || exit 125
-echo $$ > "/sys/fs/cgroup$cg/podman/cgroup.procs" || exit 125
+d="/sys/fs/cgroup$cg"
+# A build must not inherit a realtime policy from the caller.
+chrt --other -p 0 $$ >/dev/null 2>&1
+mkdir "$d/podman" || { echo "prism: cannot create the cgroup $d/podman" >&2; exit 125; }
+if ! echo $$ > "$d/podman/cgroup.procs"; then
+	echo "prism: cannot move the build process into the cgroup $d/podman" >&2
+	for f in cgroup.type cgroup.controllers cgroup.subtree_control podman/cgroup.type podman/cgroup.controllers; do
+		echo "prism: $f: $(cat "$d/$f" 2>&1)" >&2
+	done
+	echo "prism: sched: $(grep -E '^(policy|prio) ' /proc/$$/sched 2>&1 | tr -s ' \n' ' ')" >&2
+	echo "prism: sched_ext: $(cat /sys/kernel/sched_ext/state 2>&1)" >&2
+	echo "prism: kernel: $(uname -r 2>&1)" >&2
+	exit 125
+fi
 n=$#
 for a; do
 	if [ "$a" = "` + cgroupToken + `" ]; then a="$cg/build"; fi
 	set -- "$@" "$a"
 done
 shift "$n"
+: > "$started" || exit 125
 exec "$@"
 `
 
@@ -312,9 +341,14 @@ func (e ScopeExecutor) Build(ctx context.Context, unit string, out io.Writer, ar
 	}
 	view, err := e.buildView(ctx, args[len(args)-1], policy)
 	if err != nil {
-		return -1, err
+		return -1, notStarted("%v", err)
 	}
 	command := namespacedBuildCommand(podman, bwrap, view, insertAfterBuild(args, "--signature-policy", policy))
+	// The scope script creates the started file just before it runs the
+	// build command. It is in the build copy dir, which only prism writes.
+	started := filepath.Join(view.StageDir, "started")
+	_ = os.Remove(started)
+	setupOut := newTailBuffer(4096)
 	runArgs := []string{
 		"--user", "--scope", "--collect", "--quiet",
 		"--unit", unit,
@@ -328,10 +362,10 @@ func (e ScopeExecutor) Build(ctx context.Context, unit string, out io.Writer, ar
 		limit := time.Until(deadline) + conmonTimeoutGrace
 		runArgs = append(runArgs, "--property", fmt.Sprintf("RuntimeMaxSec=%d", int64((limit+time.Second-1)/time.Second)))
 	}
-	runArgs = append(runArgs, "--", "/bin/sh", "-c", scopeScript, "prism-container-build")
+	runArgs = append(runArgs, "--", "/bin/sh", "-c", scopeScript, "prism-container-build", started)
 	cmd := exec.Command(e.systemdRun(), append(runArgs, command...)...)
-	cmd.Stdout = out
-	cmd.Stderr = out
+	cmd.Stdout = io.MultiWriter(out, setupOut)
+	cmd.Stderr = cmd.Stdout
 	cmd.Env = scopeEnv()
 	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Start(); err != nil {
@@ -346,6 +380,11 @@ func (e ScopeExecutor) Build(ctx context.Context, unit string, out io.Writer, ar
 		// build, so that nothing of the build keeps running.
 		stopErr := e.stopUnit(unit)
 		code, err := scopeExitCode(err)
+		if _, statErr := os.Stat(started); statErr != nil {
+			tail, _ := setupOut.snapshot()
+			err = notStarted("the build scope did not start podman build (systemd-run exit %d, %v): %s", code, err, strings.TrimSpace(string(tail)))
+			code = -1
+		}
 		if stopErr != nil {
 			return code, &stopFailedError{cause: err, err: stopErr}
 		}
