@@ -204,6 +204,24 @@ not a lower-case letter or a digit becomes `-`.
 | `124` | The `--timeout` expired. Prism stopped the build. |
 | `125` | Prism refused the request, or podman failed. The last line on stderr gives the reason. |
 
+### What a build can read
+
+A build cannot read host files other than the build context. This is the
+security boundary of `prism container build`:
+
+- On Linux, `podman build` runs in its own mount namespace and pid
+  namespace. The namespace holds only the podman binaries and config, the
+  podman image store, the build copy, and the cgroup tree of the build.
+  Your home directory, `/tmp`, and the other files of the host are not
+  there. Prism makes the namespace with `podman unshare` and `bwrap`.
+- On macOS, the build runs in the podman machine VM. Before each build,
+  prism reads the mounts of the default machine. If the machine mounts a
+  Mac path that is not in the allowlist, prism refuses the build. See
+  "Platform note".
+
+The Containerfile check below and the signature policy refuse most host
+sources earlier, with a clear message. They are not the boundary.
+
 ### The image sources of a build
 
 A build reads images for `FROM`, for `COPY --from` and `ADD --from`, and
@@ -227,9 +245,10 @@ source:
   local image (`localhost/prism-...`), a stage name (`--from=build`), and a
   stage index (`--from=0`) pass.
 - Prism refuses a `--mount` value that holds a `$`, a quote, or a
-  backslash, and a flag name that is not literal (for example
-  `--fr"om"=`). Other flags can hold variables, for example
-  `COPY --chown=${UID}:${UID}`.
+  backslash. On `FROM`, `COPY`, `ADD`, and `RUN`, prism refuses a flag
+  name that is not literal (for example `--fr"om"=` or `--from$X=`),
+  because podman expands the flag before it reads the name. The value of
+  other flags can hold variables, for example `COPY --chown=${UID}:${UID}`.
 - Write every flag (a word that starts with `--` before the arguments of
   an instruction) in ASCII. Prism refuses a flag with a character that is
   not ASCII. The Dockerfile parser reads flags byte by byte, and some
@@ -285,27 +304,51 @@ instructions. These facts apply:
 ### Platform note
 
 The command, the flags, the checks, the output, and the exit codes are the
-same on Linux and on macOS. One fact is different:
+same on Linux and on macOS. These facts are different.
 
-- On Linux, each build runs in a systemd user scope. At a timeout, and
-  at `prism cleanup`, prism kills the scope. No process of the build
+On Linux:
+
+- Each build runs in a systemd user scope. At a timeout, and at
+  `prism cleanup`, prism kills the scope. No process of the build
   continues. If prism stops during a build, systemd stops the scope when
   the timeout plus 60 seconds has passed.
-  The build also has a signature policy that refuses every image source
+- `podman build` runs in a mount namespace that holds only an allowlist of
+  host paths (see "What a build can read"). A source that names a host
+  path, also in an `ONBUILD` instruction of a base image, fails because
+  the path does not exist there. The allowlist includes the podman image
+  store, so a build can use every local image of the host user.
+- The build also has a signature policy that refuses every image source
   other than a registry and the local image store.
-- On macOS, the build runs in the podman machine VM. If a build step runs
-  when the timeout expires, the step can continue inside the VM until it
-  ends. Its memory and CPU limits still apply, and the VM size is the
-  upper limit. `podman machine stop` removes it. `prism cleanup` cannot
-  stop it. If prism stops during a build, the build continues in the VM
-  and no longer counts toward a limit.
-- On macOS, the build has no signature policy. An `ONBUILD` instruction of
-  a base image runs instructions that are not in your Containerfile, so
-  the check cannot see them. Such an instruction can read a host path
-  through a transport. The podman machine mounts the macOS home directory
-  into the VM by default, so this can include macOS files.
+- A `RUN --mount=type=cache` directory lasts for one build only.
 
-Issue #3070 tracks the two macOS differences.
+On macOS:
+
+- Before each build, prism reads the mounts of the default podman machine
+  from its config file. Prism refuses the build when a mount source is
+  not one of the allowlisted Mac paths or inside one. The allowlist is the
+  prism project locations (for example `~/code`), unless the Nix option
+  `nx.programs.prism.containerMachineMountAllowlist` sets it. Prism also
+  refuses the build when it cannot read the mounts.
+- By default, a podman machine mounts `/Users`, `/private`, and
+  `/var/folders`, so prism refuses every build until the user recreates
+  the machine. Tell the user. The refusal names each mount that is not
+  allowed, and gives the steps: set `volumes` in the `[machine]` section
+  of `~/.config/containers/containers.conf`, then
+  `podman machine stop`, `podman machine rm`, `podman machine init`, and
+  `podman machine start`. `podman machine rm` deletes the images and
+  containers in the machine.
+- A build can still read the files in the allowlisted paths, for example
+  another repository in `~/code`.
+- If a build step runs when the timeout expires, the step can continue
+  inside the VM until it ends. Its memory and CPU limits still apply, and
+  the VM size is the upper limit. `podman machine stop` removes it.
+  `prism cleanup` cannot stop it. If prism stops during a build, the build
+  continues in the VM and no longer counts toward a limit.
+- The build has no signature policy. An `ONBUILD` instruction of a base
+  image can name a transport source. It can read only the VM files and
+  the allowlisted Mac paths.
+
+Issue #3070 tracks the macOS step that continues after a timeout.
 
 ## Options that prism always sets
 
@@ -346,6 +389,7 @@ outbound connections. It cannot publish a port.
 | `--tag` | `localhost/prism-...-<NAME>` | See "The image name". |
 | `--file`, `CONTEXT` | The copy on the host | See "The context copy". |
 | `--signature-policy` | A prism policy file on the host | Linux only. Refuses every image source other than a registry and the local store. See "The image sources of a build". |
+| `podman unshare`, `bwrap` | The allowlist of host paths | Linux only. The mount namespace of the build. See "What a build can read". |
 
 The process limit depends on the platform, because `podman build` has no
 `--pids-limit`:
@@ -469,6 +513,7 @@ markers. Like the audit directory, no sandbox can write them.
 | `refused: --tag ... is not a valid image tag` | Use a lower-case `NAME` or `NAME:TAG`. See "The image name". |
 | `refused: the build context holds more than 4 GiB` | Give a smaller `CONTEXT`, or list large directories in `.containerignore`. |
 | `refused: the build context changed while prism copied it` | Try again when nothing writes to the context. |
+| `refused: podman machine "..." mounts Mac paths that are not in the allowlist` | Tell the user. The message gives the `containers.conf` setting and the commands that recreate the machine. You cannot correct this from the sandbox. |
 | `refused: the Containerfile cannot be built: line N: ...` | Read the reason. Write each image source literally: a registry image, a local image, or a build stage, with no variable, quote, or backslash. If line N is shell or SQL text, restructure it. See "The image sources of a build". |
 | `The signature policy of the build refused an image source` | A base image has an `ONBUILD` instruction that names a transport. Use a different base image. |
 
@@ -485,13 +530,17 @@ markers. Like the audit directory, no sandbox can write them.
 - Both routes call one function that builds the podman argument vector.
   Thus the two routes cannot differ.
 - For `build`, one internal part, the build executor, differs between
-  Linux and macOS. It adds options to the argument vector of the shared
-  builder, and changes nothing else:
-  - Linux: `--signature-policy` after `build`. The scope script then adds
-    the global option `--cgroup-manager=cgroupfs` before `build`, and
-    `--cgroup-parent <scope>/build` after `build`. The scope itself sets
-    `TasksMax`, `Delegate`, and `RuntimeMaxSec`.
-  - macOS: `--ulimit nproc=1024:1024` after `build`.
+  Linux and macOS. It checks the host before the build, and it adds
+  options to the argument vector of the shared builder. It changes
+  nothing else:
+  - Linux: `--signature-policy` after `build`. The command that runs is
+    `podman unshare bwrap <allowlist> -- podman --cgroup-manager=cgroupfs
+    build --cgroup-parent <scope>/build ...`, in a systemd scope with
+    `TasksMax`, `Delegate`, and `RuntimeMaxSec`. Before the scope starts,
+    prism runs `podman unshare true`, so that the pause process of podman
+    is not in the scope.
+  - macOS: the machine mount check before the build, and
+    `--ulimit nproc=1024:1024` after `build`.
 - The source is in `modules/programs/prism/prism/internal/prismcontainer/`.
 
 ## The podman proxy

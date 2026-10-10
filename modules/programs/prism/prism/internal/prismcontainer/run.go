@@ -49,11 +49,14 @@ type Deps struct {
 	// BuildExecutor runs podman build. Nil selects DefaultBuildExecutor
 	// for GOOS.
 	BuildExecutor BuildExecutor
-	HostLimit     int
-	GOOS          string
-	Now           func() time.Time
-	LockWait      time.Duration
-	CreateWait    time.Duration
+	// MachineMountAllowlist holds the Mac paths that the podman machine
+	// can mount, for the default macOS build executor.
+	MachineMountAllowlist []string
+	HostLimit             int
+	GOOS                  string
+	Now                   func() time.Time
+	LockWait              time.Duration
+	CreateWait            time.Duration
 }
 
 func (d Deps) withDefaults() Deps {
@@ -76,7 +79,7 @@ func (d Deps) withDefaults() Deps {
 		d.CreateWait = 30 * time.Second
 	}
 	if d.BuildExecutor == nil {
-		d.BuildExecutor = DefaultBuildExecutor(d.GOOS, d.Runner)
+		d.BuildExecutor = DefaultBuildExecutor(d.GOOS, d.Runner, d.MachineMountAllowlist)
 	}
 	return d
 }

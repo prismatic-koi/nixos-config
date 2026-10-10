@@ -168,6 +168,13 @@ type Config struct {
 	// select DefaultContainerHostLimit.
 	ContainerHostLimit int `json:"container_host_limit"`
 
+	// ContainerMachineMountAllowlist holds the Mac paths that the podman
+	// machine can mount, for `prism container build` on macOS. Nil selects
+	// ProjectLocations. Set by the Nix option
+	// nx.programs.prism.containerMachineMountAllowlist. Read it with
+	// MachineMountAllowlist.
+	ContainerMachineMountAllowlist []string `json:"container_machine_mount_allowlist"`
+
 	// Project layout (JSON arrays).
 	WorktreeExclude  []string `json:"worktree_exclude"`
 	ProjectLocations []string `json:"project_locations"`
@@ -226,6 +233,7 @@ type parsedConfig struct {
 	AgentMaxOpenFilesSoft     *int               `json:"agent_max_open_files_soft"`
 	AgentMaxOpenFilesHard     *int               `json:"agent_max_open_files_hard"`
 	ContainerHostLimit        *int               `json:"container_host_limit"`
+	ContainerMachineAllowlist *[]string          `json:"container_machine_mount_allowlist"`
 	WorktreeExclude           *[]string          `json:"worktree_exclude"`
 	ProjectLocations          *[]string          `json:"project_locations"`
 	ProjectSpecific           *[]string          `json:"project_specific"`
@@ -439,6 +447,9 @@ func load() Config {
 	if parsed.ContainerHostLimit != nil && *parsed.ContainerHostLimit >= 1 {
 		cfg.ContainerHostLimit = *parsed.ContainerHostLimit
 	}
+	if parsed.ContainerMachineAllowlist != nil {
+		cfg.ContainerMachineMountAllowlist = *parsed.ContainerMachineAllowlist
+	}
 
 	// For slice fields: nil pointer means absent (keep default); non-nil
 	// pointer (including pointer to empty slice) means use the parsed value.
@@ -502,6 +513,24 @@ func (c Config) IsolationOverrideForPath(path string) IsolationMode {
 		}
 	}
 	return ""
+}
+
+// MachineMountAllowlist returns the absolute Mac paths that the podman
+// machine can mount: ContainerMachineMountAllowlist, or ProjectLocations
+// when it is nil. A leading "~/" is expanded. A path that is not absolute
+// after the expansion is left out.
+func (c Config) MachineMountAllowlist() []string {
+	src := c.ContainerMachineMountAllowlist
+	if src == nil {
+		src = c.ProjectLocations
+	}
+	out := []string{}
+	for _, p := range src {
+		if p = filepath.Clean(expandHomePath(p)); filepath.IsAbs(p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // expandHomePath expands a leading "~/" in p to the user's home directory.

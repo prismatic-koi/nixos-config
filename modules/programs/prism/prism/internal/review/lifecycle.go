@@ -281,7 +281,7 @@ func sweepChildPrismContainers(agentSession, instanceID string) {
 	defer cancel()
 	executor := childPrismContainerBuildExecutor
 	if executor == nil {
-		executor = prismcontainer.DefaultBuildExecutor(runtime.GOOS, childPrismContainerRunner)
+		executor = prismcontainer.DefaultBuildExecutor(runtime.GOOS, childPrismContainerRunner, nil)
 	}
 	if err := prismcontainer.SweepSession(ctx, childPrismContainerRunner, executor, []string{instanceID}); err != nil {
 		proglog.Warnf("[prism] warning: cleanup: prism-container sweep for %q failed (%v) — continuing cleanup\n", agentSession, err)

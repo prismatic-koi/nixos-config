@@ -21,9 +21,13 @@ import (
 // executor the same argument vector and reads the same results back, so
 // the agent sees the same command on Linux and on macOS.
 type BuildExecutor interface {
+	// Preflight checks the host before a build. An error refuses the
+	// build, and its text tells the agent why.
+	Preflight(ctx context.Context) error
 	// Build runs podman with args, where args[0] is "build", and writes the
-	// podman output to out. unit names the build for StopBuilds. When ctx
-	// ends, Build stops the build and returns a non-nil error.
+	// podman output to out. The last element of args is the context dir of
+	// the build copy. unit names the build for StopBuilds. When ctx ends,
+	// Build stops the build and returns a non-nil error.
 	Build(ctx context.Context, unit string, out io.Writer, args []string) (int, error)
 	// StopBuilds stops every running build whose unit name starts with
 	// prefix, and returns the number of builds it stopped.
@@ -48,15 +52,16 @@ func (e *stopFailedError) Error() string {
 func (e *stopFailedError) Unwrap() []error { return []error{e.cause, e.err} }
 
 // DefaultBuildExecutor returns the executor for goos: ScopeExecutor on
-// Linux, PlainExecutor on every other platform.
-func DefaultBuildExecutor(goos string, r Runner) BuildExecutor {
-	if goos == "linux" {
-		return ScopeExecutor{}
-	}
+// Linux, PlainExecutor on every other platform. machineAllowlist is the
+// list of Mac paths that the podman machine can mount (PlainExecutor).
+func DefaultBuildExecutor(goos string, r Runner, machineAllowlist []string) BuildExecutor {
 	if r == nil {
 		r = ExecRunner{}
 	}
-	return PlainExecutor{Runner: r}
+	if goos == "linux" {
+		return ScopeExecutor{Runner: r}
+	}
+	return PlainExecutor{Runner: r, MountAllowlist: machineAllowlist}
 }
 
 // buildUnitPrefix returns the unit name prefix of every build of one
@@ -75,25 +80,34 @@ func insertAfterBuild(args []string, opts ...string) []string {
 
 // PlainExecutor runs podman build directly. It is the macOS executor: the
 // build runs in the podman machine VM, and the host has no handle on the
-// processes of a build step.
+// processes of a build step. Preflight refuses a build when the machine
+// mounts a Mac path outside MountAllowlist (machinecheck.go).
 //
 // A build step that runs when ctx ends can continue in the VM until it
 // exits. Its memory and CPU limits still apply, and the VM size bounds it.
 // StopBuilds cannot reach it, so it reports zero builds.
-type PlainExecutor struct{ Runner Runner }
+type PlainExecutor struct {
+	Runner Runner
+	// MountAllowlist holds the absolute Mac paths that the machine can
+	// mount: a mount source must be one of them or inside one.
+	MountAllowlist []string
+	// ReadFile reads the machine config file. Nil selects os.ReadFile.
+	ReadFile func(string) ([]byte, error)
+}
 
 // Build adds --ulimit nproc as the process limit: podman build has no
 // --pids-limit. RLIMIT_NPROC counts the processes of one user in the
 // rootless user namespace, so other containers of that user count too.
 func (e PlainExecutor) Build(ctx context.Context, _ string, out io.Writer, args []string) (int, error) {
-	return e.Runner.Run(ctx, out, out, insertAfterBuild(args, "--ulimit", "nproc="+PidsLimit+":"+PidsLimit)...)
+	return e.runner().Run(ctx, out, out, insertAfterBuild(args, "--ulimit", "nproc="+PidsLimit+":"+PidsLimit)...)
 }
 
 func (PlainExecutor) StopBuilds(context.Context, string) (int, error) { return 0, nil }
 
 // scopeScript runs as the command of the systemd scope. It moves itself
-// into a leaf cgroup of the scope and then runs podman build with
-// --cgroup-parent in the scope.
+// into a leaf cgroup of the scope, puts the cgroup path of the build in
+// place of cgroupToken, and runs its arguments: the namespaced podman
+// build command (buildns.go).
 //
 // Without --cgroup-parent, crun puts a build step into a cgroup outside the
 // scope, and a scope kill does not reach it. The scope cgroup must hold no
@@ -111,9 +125,13 @@ if [ -z "$cg" ] || [ "$cg" = / ]; then
 fi
 mkdir "/sys/fs/cgroup$cg/podman" || exit 125
 echo $$ > "/sys/fs/cgroup$cg/podman/cgroup.procs" || exit 125
-sub=$1
-shift
-exec podman --cgroup-manager=cgroupfs "$sub" --cgroup-parent "$cg/build" "$@"
+n=$#
+for a; do
+	if [ "$a" = "` + cgroupToken + `" ]; then a="$cg/build"; fi
+	set -- "$@" "$a"
+done
+shift "$n"
+exec "$@"
 `
 
 // ScopeExecutor runs each build in a transient systemd user scope (Linux).
@@ -126,6 +144,84 @@ type ScopeExecutor struct {
 	// names in PATH.
 	SystemdRun string
 	Systemctl  string
+	// Podman and Bwrap are absolute paths. Empty selects the binary in
+	// PATH, with every symlink resolved.
+	Podman string
+	Bwrap  string
+	// Runner runs `podman unshare true` and `podman info` before the
+	// build. Nil selects ExecRunner.
+	Runner Runner
+}
+
+// binary returns the absolute path of a binary: set, or name in PATH with
+// every symlink resolved, so that it works in the build namespace.
+func binary(set, name string) (string, error) {
+	if set != "" {
+		return set, nil
+	}
+	p, err := exec.LookPath(name)
+	if err != nil {
+		return "", fmt.Errorf("%s is not in PATH", name)
+	}
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %v", p, err)
+	}
+	return real, nil
+}
+
+// Preflight makes sure that the binaries of a Linux build exist.
+func (e ScopeExecutor) Preflight(context.Context) error {
+	for _, b := range []struct{ set, name string }{{e.SystemdRun, "systemd-run"}, {e.Podman, "podman"}, {e.Bwrap, "bwrap"}} {
+		if _, err := binary(b.set, b.name); err != nil {
+			return fmt.Errorf("a Linux build needs %s on the host: %v", b.name, err)
+		}
+	}
+	return nil
+}
+
+func (e ScopeExecutor) runner() Runner {
+	if e.Runner == nil {
+		return ExecRunner{}
+	}
+	return e.Runner
+}
+
+// buildView returns the file view of the build whose context dir is
+// contextDir. The context dir must be in the build copy dir of prism, so
+// that the executor never binds another host path.
+func (e ScopeExecutor) buildView(ctx context.Context, contextDir, policy string) (buildView, error) {
+	stageRoot, err := container.PrismContainerBuildStageDirPath()
+	if err != nil {
+		return buildView{}, err
+	}
+	stageDir := filepath.Dir(contextDir)
+	if filepath.Dir(stageDir) != stageRoot {
+		return buildView{}, fmt.Errorf("the build context %q is not in the build copy dir %s", contextDir, stageRoot)
+	}
+	// The pause process keeps the user namespace of podman. Start it now,
+	// outside the build scope, so that the scope kill does not stop it.
+	var stderr bytes.Buffer
+	if code, err := e.runner().Run(ctx, io.Discard, &stderr, "unshare", "true"); err != nil || code != 0 {
+		return buildView{}, &podmanError{detail: fmt.Sprintf("podman unshare true failed (exit %d, %v): %s", code, err, strings.TrimSpace(stderr.String()))}
+	}
+	graphroot, runroot, err := readPodmanStore(ctx, e.runner())
+	if err != nil {
+		return buildView{}, err
+	}
+	varTmp := filepath.Join(stageDir, "vartmp")
+	if err := os.MkdirAll(varTmp, 0o700); err != nil {
+		return buildView{}, err
+	}
+	return buildView{
+		Graphroot:  graphroot,
+		Runroot:    runroot,
+		RuntimeDir: runtimeDir(),
+		ConfigDir:  userContainersConfigDir(),
+		StageDir:   stageDir,
+		VarTmp:     varTmp,
+		Policy:     policy,
+	}, nil
 }
 
 func (e ScopeExecutor) systemdRun() string {
@@ -154,10 +250,15 @@ func scopeEnv() []string {
 }
 
 // BuildPolicy is the signature policy of a Linux build. It rejects every
-// transport except a registry and the local store. The Containerfile
-// check refuses the other transports before podman runs. The policy also
-// covers what the check cannot see: an ONBUILD instruction of a base
-// image. The macOS podman client has no --signature-policy.
+// transport except a registry and the local store. It is a second refusal
+// behind the Containerfile check. The build namespace (buildns.go) is the
+// boundary. The macOS podman client has no --signature-policy.
+//
+// The policy cannot accept containers-storage for the own store only. The
+// image that buildah commits has the policy identity "", which matches the
+// "" scope only, and a reference to another store falls back to that
+// scope too. Thus a scope per store refuses every commit. The build
+// namespace stops another store: its path does not exist there.
 const BuildPolicy = `{
   "default": [{"type": "reject"}],
   "transports": {
@@ -201,7 +302,19 @@ func (e ScopeExecutor) Build(ctx context.Context, unit string, out io.Writer, ar
 	if err != nil {
 		return -1, fmt.Errorf("write the signature policy of the build: %w", err)
 	}
-	args = insertAfterBuild(args, "--signature-policy", policy)
+	podman, err := binary(e.Podman, "podman")
+	if err != nil {
+		return -1, err
+	}
+	bwrap, err := binary(e.Bwrap, "bwrap")
+	if err != nil {
+		return -1, err
+	}
+	view, err := e.buildView(ctx, args[len(args)-1], policy)
+	if err != nil {
+		return -1, err
+	}
+	command := namespacedBuildCommand(podman, bwrap, view, insertAfterBuild(args, "--signature-policy", policy))
 	runArgs := []string{
 		"--user", "--scope", "--collect", "--quiet",
 		"--unit", unit,
@@ -216,7 +329,7 @@ func (e ScopeExecutor) Build(ctx context.Context, unit string, out io.Writer, ar
 		runArgs = append(runArgs, "--property", fmt.Sprintf("RuntimeMaxSec=%d", int64((limit+time.Second-1)/time.Second)))
 	}
 	runArgs = append(runArgs, "--", "/bin/sh", "-c", scopeScript, "prism-container-build")
-	cmd := exec.Command(e.systemdRun(), append(runArgs, args...)...)
+	cmd := exec.Command(e.systemdRun(), append(runArgs, command...)...)
 	cmd.Stdout = out
 	cmd.Stderr = out
 	cmd.Env = scopeEnv()

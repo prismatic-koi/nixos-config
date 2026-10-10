@@ -14,9 +14,10 @@ func (s *Sidecar) containerDeps() prismcontainer.Deps {
 		limit = config.LoadFresh().ContainerHostLimit
 	}
 	return prismcontainer.Deps{
-		Runner:        s.cfg.ContainerRunner,
-		BuildExecutor: s.cfg.ContainerBuildExecutor,
-		HostLimit:     limit,
+		Runner:                s.cfg.ContainerRunner,
+		BuildExecutor:         s.cfg.ContainerBuildExecutor,
+		HostLimit:             limit,
+		MachineMountAllowlist: config.LoadFresh().MachineMountAllowlist(),
 	}
 }
 

@@ -1,7 +1,7 @@
 // Package prismcontainertest holds a fake podman for tests of
 // `prism container`. It models the podman CLI calls that prismcontainer
 // makes: ps, image exists, pull, run, rm, container exists, build, images,
-// and rmi. It is also a prismcontainer.BuildExecutor that runs a build
+// rmi, machine list, machine inspect, info, and unshare. It is also a prismcontainer.BuildExecutor that runs a build
 // through the same fake podman.
 package prismcontainertest
 
@@ -81,7 +81,26 @@ type Fake struct {
 	// exits 0 adds an image with the --tag name and the --label labels,
 	// and an intermediate image with the --layer-label labels.
 	OnBuild BuildFunc
+	// PreflightErr is the result of Preflight.
+	PreflightErr error
+	// MachineList, MachineInspect, and Info are the JSON output of
+	// `podman machine list`, `podman machine inspect`, and `podman info`.
+	// Empty selects a default machine with config dir /fake/machine, and a
+	// store at /fake/graph and /fake/run.
+	MachineList    string
+	MachineInspect string
+	Info           string
 }
+
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+// Preflight implements prismcontainer.BuildExecutor.
+func (f *Fake) Preflight(context.Context) error { return f.PreflightErr }
 
 var (
 	_ prismcontainer.Runner        = (*Fake)(nil)
@@ -220,6 +239,20 @@ func (f *Fake) Run(ctx context.Context, stdout, stderr io.Writer, args ...string
 		return f.listImages(stdout)
 	case "rmi":
 		f.removeImages(args[1:])
+		return 0, nil
+	case "machine":
+		switch {
+		case len(args) > 1 && args[1] == "list":
+			_, _ = io.WriteString(stdout, orDefault(f.MachineList, `[{"Name":"fake-machine","Default":true}]`))
+			return 0, nil
+		case len(args) > 1 && args[1] == "inspect":
+			_, _ = io.WriteString(stdout, orDefault(f.MachineInspect, `[{"Name":"fake-machine","ConfigDir":{"Path":"/fake/machine"}}]`))
+			return 0, nil
+		}
+	case "info":
+		_, _ = io.WriteString(stdout, orDefault(f.Info, `{"store":{"graphRoot":"/fake/graph","runRoot":"/fake/run"}}`))
+		return 0, nil
+	case "unshare":
 		return 0, nil
 	case "pull":
 		if f.OnPull != nil {

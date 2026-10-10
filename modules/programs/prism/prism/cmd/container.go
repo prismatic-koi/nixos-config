@@ -287,5 +287,5 @@ func currentPrismContainerBuildExecutor() prismcontainer.BuildExecutor {
 	if prismContainerBuildExecutorForTest != nil {
 		return prismContainerBuildExecutorForTest
 	}
-	return prismcontainer.DefaultBuildExecutor(runtime.GOOS, currentPrismContainerRunner())
+	return prismcontainer.DefaultBuildExecutor(runtime.GOOS, currentPrismContainerRunner(), config.LoadFresh().MachineMountAllowlist())
 }

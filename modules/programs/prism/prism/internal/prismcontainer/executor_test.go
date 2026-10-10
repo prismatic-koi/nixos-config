@@ -57,7 +57,40 @@ if [ -f "$d/kill-fails" ]; then echo "Failed to connect to bus: No such file or 
 if [ -f "$d/not-loaded" ]; then echo "Failed to kill unit x.scope: Unit x.scope not loaded." >&2; exit 5; fi
 exit 0
 `)
-	return ScopeExecutor{SystemdRun: run, Systemctl: ctl}, dir
+	return ScopeExecutor{SystemdRun: run, Systemctl: ctl, Podman: "/fake/podman", Bwrap: "/fake/bwrap", Runner: &podmanStub{}}, dir
+}
+
+// podmanStub answers the podman calls of ScopeExecutor before the build:
+// `unshare true` and `info --format json`. It records them.
+type podmanStub struct {
+	calls     [][]string
+	unshareRC int
+}
+
+func (p *podmanStub) Run(_ context.Context, stdout, _ io.Writer, args ...string) (int, error) {
+	p.calls = append(p.calls, args)
+	switch args[0] {
+	case "unshare":
+		return p.unshareRC, nil
+	case "info":
+		_, _ = io.WriteString(stdout, `{"store":{"graphRoot":"/fake/graph","runRoot":"/fake/run"}}`)
+		return 0, nil
+	}
+	return 125, nil
+}
+
+// stageContext creates a context dir in the build copy dir and returns it.
+func stageContext(t *testing.T) string {
+	t.Helper()
+	root, err := container.PrismContainerBuildStageDirPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := filepath.Join(root, "0f0e0d0c-0b0a-4908-8706-050403020100.00000001", "context")
+	if err := os.MkdirAll(ctx, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return ctx
 }
 
 func readLines(t *testing.T, path string) []string {
@@ -75,7 +108,8 @@ func TestScopeExecutor_Args(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	code, err := e.Build(context.Background(), "prism-build-tok-0001", &out, []string{"build", "--file", "/f", "/ctx"})
+	ctxDir := stageContext(t)
+	code, err := e.Build(context.Background(), "prism-build-tok-0001", &out, []string{"build", "--file", "/f", ctxDir})
 	if code != 0 || err != nil || out.String() != "STEP 1/1\n" {
 		t.Fatalf("Build = %d, %v, output %q", code, err, out.String())
 	}
@@ -91,8 +125,36 @@ func TestScopeExecutor_Args(t *testing.T) {
 		t.Errorf("systemd-run args = %q, want them to start with %q", got, want)
 	}
 	policy, _ := container.PrismContainerBuildPolicyPath()
-	if podman := readLines(t, filepath.Join(dir, "podman.args")); !slices.Equal(podman, []string{"build", "--signature-policy", policy, "--file", "/f", "/ctx"}) {
-		t.Errorf("podman args = %q", podman)
+	podman := readLines(t, filepath.Join(dir, "podman.args"))
+	if !slices.Equal(podman[:3], []string{"/fake/podman", "unshare", "/fake/bwrap"}) {
+		t.Errorf("command = %q, want podman unshare bwrap", podman)
+	}
+	sep := slices.Index(podman, "--")
+	wantInner := []string{"/fake/podman", "--cgroup-manager=cgroupfs", "build", "--cgroup-parent", cgroupToken, "--signature-policy", policy, "--file", "/f", ctxDir}
+	if sep < 0 || !slices.Equal(podman[sep+1:], wantInner) {
+		t.Errorf("inner command = %q, want %q", podman[sep+1:], wantInner)
+	}
+	stageDir := filepath.Dir(ctxDir)
+	bw := podman[3:sep]
+	for _, bind := range [][]string{
+		{"--bind", "/fake/graph", "/fake/graph"},
+		{"--bind", "/fake/run", "/fake/run"},
+		{"--ro-bind", stageDir, stageDir},
+		{"--bind", filepath.Join(stageDir, "vartmp"), "/var/tmp"},
+		{"--ro-bind", policy, policy},
+	} {
+		if !containsSeq(bw, bind) {
+			t.Errorf("bwrap options lack %q: %q", bind, bw)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(stageDir, "vartmp")); err != nil || !info.IsDir() {
+		t.Errorf("the per-build /var/tmp dir was not created: %v", err)
+	}
+	// The pause process starts before the scope, so the scope kill does
+	// not stop it.
+	stub := e.Runner.(*podmanStub)
+	if len(stub.calls) != 2 || !slices.Equal(stub.calls[0], []string{"unshare", "true"}) || stub.calls[1][0] != "info" {
+		t.Errorf("podman calls before the build = %q, want unshare true, then info", stub.calls)
 	}
 	if data, err := os.ReadFile(policy); err != nil || string(data) != BuildPolicy {
 		t.Errorf("signature policy = %q, %v; want BuildPolicy", data, err)
@@ -109,7 +171,7 @@ func TestScopeExecutor_ExitCode(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "code"), []byte("3"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if code, err := e.Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", "/ctx"}); code != 3 || err != nil {
+	if code, err := e.Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", stageContext(t)}); code != 3 || err != nil {
 		t.Errorf("Build = %d, %v; want 3, nil", code, err)
 	}
 }
@@ -119,7 +181,7 @@ func TestScopeExecutor_KilledBySignalIsAnError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "signal"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := e.Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", "/ctx"})
+	_, err := e.Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", stageContext(t)})
 	if err == nil || !strings.Contains(err.Error(), "killed by signal") {
 		t.Errorf("err = %v, want a signal error", err)
 	}
@@ -135,7 +197,7 @@ func TestScopeExecutor_CancelKillsScope(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := e.Build(ctx, "prism-build-tok-0002", &bytes.Buffer{}, []string{"build", "/ctx"})
+	_, err := e.Build(ctx, "prism-build-tok-0002", &bytes.Buffer{}, []string{"build", stageContext(t)})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v, want the context error", err)
 	}
@@ -153,7 +215,8 @@ func TestScopeExecutor_StopFailureIsReported(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "kill-fails"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	code, err := e.Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", "/ctx"})
+	ctxDir := stageContext(t)
+	code, err := e.Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", ctxDir})
 	var sf *stopFailedError
 	if code != 0 || !errors.As(err, &sf) || sf.cause != nil || !strings.Contains(sf.err.Error(), "did not confirm") {
 		t.Errorf("Build = %d, %v; want exit 0 and a stop failure", code, err)
@@ -165,7 +228,7 @@ func TestScopeExecutor_StopFailureIsReported(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "not-loaded"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if code, err := e.Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", "/ctx"}); code != 0 || err != nil {
+	if code, err := e.Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", ctxDir}); code != 0 || err != nil {
 		t.Errorf("a scope that is gone: Build = %d, %v; want 0, nil", code, err)
 	}
 }
@@ -192,8 +255,9 @@ func TestScopeExecutor_StopBuilds(t *testing.T) {
 }
 
 // TestScopeScript runs the scope script with the cgroup paths moved into a
-// temp dir and a fake podman. The script moves itself into a leaf cgroup
-// and gives podman a --cgroup-parent inside the scope.
+// temp dir and a fake command. The script moves itself into a leaf cgroup,
+// puts the cgroup path of the build in place of cgroupToken, and runs its
+// arguments unchanged otherwise.
 func TestScopeScript(t *testing.T) {
 	dir := t.TempDir()
 	cgRoot := filepath.Join(dir, "cgroup")
@@ -205,19 +269,18 @@ func TestScopeScript(t *testing.T) {
 	if err := os.WriteFile(cgFile, []byte("0::"+scope+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bin := t.TempDir()
-	writeScript(t, bin, "podman", `printf '%s\n' "$@"`+"\n")
+	echo := writeScript(t, t.TempDir(), "echo-args", `printf '%s\n' "$@"`+"\n")
 	script := strings.NewReplacer("/proc/self/cgroup", cgFile, "/sys/fs/cgroup", cgRoot).Replace(scopeScript)
 
-	cmd := exec.Command("/bin/sh", "-c", script, "prism-container-build", "build", "--file", "/f", "--build-arg", "A=$(id)", "/ctx")
-	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	in := []string{echo, "unshare", "--", "build", "--cgroup-parent", cgroupToken, "--build-arg", "A=$(id)", "--build-arg", "B=" + cgroupToken, "a b"}
+	cmd := exec.Command("/bin/sh", append([]string{"-c", script, "prism-container-build"}, in...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("script: %v: %s", err, out)
 	}
-	want := []string{"--cgroup-manager=cgroupfs", "build", "--cgroup-parent", scope + "/build", "--file", "/f", "--build-arg", "A=$(id)", "/ctx"}
+	want := []string{"unshare", "--", "build", "--cgroup-parent", scope + "/build", "--build-arg", "A=$(id)", "--build-arg", "B=" + cgroupToken, "a b"}
 	if got := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"); !slices.Equal(got, want) {
-		t.Errorf("podman args = %q, want %q", got, want)
+		t.Errorf("command args = %q, want %q", got, want)
 	}
 	procs, err := os.ReadFile(filepath.Join(cgRoot+scope, "podman", "cgroup.procs"))
 	if err != nil || strings.TrimSpace(string(procs)) == "" {
@@ -227,11 +290,96 @@ func TestScopeScript(t *testing.T) {
 	if err := os.WriteFile(cgFile, []byte("1:name=systemd:/x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd = exec.Command("/bin/sh", "-c", script, "prism-container-build", "build", "/ctx")
-	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	cmd = exec.Command("/bin/sh", "-c", script, "prism-container-build", echo, "x")
 	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "no cgroup v2 path") {
-		t.Errorf("no cgroup v2 line: err = %v, output %q; want a refusal before podman", err, out)
+		t.Errorf("no cgroup v2 line: err = %v, output %q; want a refusal before the command", err, out)
 	}
+}
+
+// TestScopeExecutor_ContextOutsideStageRefused: the executor binds the
+// parent of the context dir, so it refuses a context dir that is not in
+// the build copy dir of prism.
+func TestScopeExecutor_ContextOutsideStageRefused(t *testing.T) {
+	e, dir := fakeSystemd(t)
+	for _, ctxDir := range []string{"/ctx", t.TempDir(), filepath.Join(filepath.Dir(stageContext(t)), "context", "deeper")} {
+		_, err := e.Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", ctxDir})
+		if err == nil || !strings.Contains(err.Error(), "not in the build copy dir") {
+			t.Errorf("context %s: err = %v, want a refusal", ctxDir, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "systemd-run.args")); !os.IsNotExist(err) {
+		t.Errorf("systemd-run ran: %v", err)
+	}
+}
+
+func TestScopeExecutor_PauseProcessFailure(t *testing.T) {
+	e, dir := fakeSystemd(t)
+	e.Runner = &podmanStub{unshareRC: 125}
+	_, err := e.Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", stageContext(t)})
+	var pe *podmanError
+	if !errors.As(err, &pe) || !strings.Contains(err.Error(), "podman unshare true failed") {
+		t.Errorf("err = %v, want a podman error", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "systemd-run.args")); !os.IsNotExist(err) {
+		t.Errorf("systemd-run ran: %v", err)
+	}
+}
+
+// TestBwrapArgs_Allowlist checks the file view of a Linux build: a new pid
+// namespace with its own /proc, and binds of the allowlist only. The home
+// dir, the root dir, /home, /tmp of the host, and /run/user as a whole are
+// not visible.
+func TestBwrapArgs_Allowlist(t *testing.T) {
+	v := buildView{
+		Graphroot: "/home/u/.local/share/containers/storage", Runroot: "/run/user/1000/containers",
+		RuntimeDir: "/run/user/1000", ConfigDir: "/home/u/.config/containers",
+		StageDir: "/s/build-stage/b", VarTmp: "/s/build-stage/b/vartmp", Policy: "/s/build-policy.json",
+	}
+	args := bwrapArgs(v)
+	if !containsSeq(args, []string{"--unshare-pid", "--proc", "/proc"}) {
+		t.Errorf("bwrap options lack a new pid namespace with its own /proc: %q", args)
+	}
+	for _, f := range []string{"--unshare-user", "--unshare-net", "--share-net"} {
+		if slices.Contains(args, f) {
+			t.Errorf("bwrap options hold %s: %q", f, args)
+		}
+	}
+	allowed := map[string]bool{
+		v.Graphroot: true, v.Runroot: true, v.ConfigDir: true, v.StageDir: true, v.VarTmp: true, v.Policy: true,
+		"/sys": true, "/sys/fs/cgroup": true, "/dev/net/tun": true, "/dev/fuse": true,
+	}
+	for _, p := range append(append([]string{}, systemPaths...), etcPaths...) {
+		allowed[p] = true
+	}
+	for _, d := range runtimeSubdirs {
+		allowed[filepath.Join(v.RuntimeDir, d)] = true
+	}
+	binds := map[string]bool{"--bind": true, "--bind-try": true, "--ro-bind": true, "--ro-bind-try": true, "--dev-bind": true, "--dev-bind-try": true}
+	for i := 0; i+2 < len(args); i++ {
+		if !binds[args[i]] {
+			continue
+		}
+		src := args[i+1]
+		if !allowed[src] {
+			t.Errorf("bwrap binds %s, which is not in the allowlist", src)
+		}
+		for _, never := range []string{"/", "/home", "/home/u", "/tmp", "/run", "/run/user/1000", "/proc", "/etc", "/var"} {
+			if src == never {
+				t.Errorf("bwrap binds %s", src)
+			}
+		}
+		i += 2
+	}
+}
+
+// containsSeq reports whether seq appears in s as consecutive elements.
+func containsSeq(s, seq []string) bool {
+	for i := 0; i+len(seq) <= len(s); i++ {
+		if slices.Equal(s[i:i+len(seq)], seq) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPlainExecutor_AddsNprocLimit(t *testing.T) {
@@ -255,10 +403,10 @@ func (r *recordRunner) Run(_ context.Context, _, _ io.Writer, args ...string) (i
 }
 
 func TestDefaultBuildExecutor(t *testing.T) {
-	if _, ok := DefaultBuildExecutor("linux", nil).(ScopeExecutor); !ok {
+	if _, ok := DefaultBuildExecutor("linux", nil, nil).(ScopeExecutor); !ok {
 		t.Errorf("linux executor is not ScopeExecutor")
 	}
-	if _, ok := DefaultBuildExecutor("darwin", nil).(PlainExecutor); !ok {
+	if _, ok := DefaultBuildExecutor("darwin", nil, nil).(PlainExecutor); !ok {
 		t.Errorf("darwin executor is not PlainExecutor")
 	}
 }
@@ -402,7 +550,7 @@ func TestScopeExecutor_RuntimeMax(t *testing.T) {
 	e, dir := fakeSystemd(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	if _, err := e.Build(ctx, "u", &bytes.Buffer{}, []string{"build", "/ctx"}); err != nil {
+	if _, err := e.Build(ctx, "u", &bytes.Buffer{}, []string{"build", stageContext(t)}); err != nil {
 		t.Fatal(err)
 	}
 	args := readLines(t, filepath.Join(dir, "systemd-run.args"))

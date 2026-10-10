@@ -129,6 +129,15 @@ func Build(ctx context.Context, d Deps, c Caller, req BuildRequest) BuildResult 
 		return finish(DecisionError, ExitRefused, false, "", msg)
 	}
 
+	// The executor checks the host. On macOS it refuses a podman machine
+	// that mounts Mac paths outside the allowlist.
+	if err := d.BuildExecutor.Preflight(runCtx); err != nil {
+		if runCtx.Err() != nil {
+			return stopped("")
+		}
+		return refuse(err.Error())
+	}
+
 	lockPath, err := container.PrismContainerLockPath()
 	if err != nil {
 		return finish(DecisionError, ExitRefused, false, "", err.Error())

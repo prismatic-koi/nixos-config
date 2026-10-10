@@ -55,16 +55,27 @@ exit $(cat "$d/code")
 echo "$*" >> "$FAKE_SCOPE_DIR/systemctl.log"
 exit 0
 `, 0o755)
-	return scopeFake{dir: dir, exe: prismcontainer.ScopeExecutor{SystemdRun: run, Systemctl: ctl}}
+	return scopeFake{dir: dir, exe: prismcontainer.ScopeExecutor{
+		SystemdRun: run, Systemctl: ctl,
+		Podman: "/fake/podman", Bwrap: "/fake/bwrap", Runner: &prismcontainertest.Fake{},
+	}}
 }
 
+// podmanArgs returns the podman build argument vector inside the command
+// that the scope runs: podman unshare bwrap <options> -- podman
+// --cgroup-manager=cgroupfs build --cgroup-parent <token> <args>.
 func (s scopeFake) podmanArgs(t *testing.T) []string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(s.dir, "podman.args"))
 	if err != nil {
 		t.Fatalf("the fake systemd-run did not run: %v", err)
 	}
-	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	cmd := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	sep := slices.Index(cmd, "--")
+	if len(cmd) < 3 || cmd[1] != "unshare" || sep < 0 || len(cmd) < sep+6 || cmd[sep+3] != "build" || cmd[sep+4] != "--cgroup-parent" {
+		t.Fatalf("scope command = %q, want podman unshare bwrap ... -- podman --cgroup-manager=cgroupfs build --cgroup-parent ...", cmd)
+	}
+	return append([]string{"build"}, cmd[sep+6:]...)
 }
 
 func (s scopeFake) systemctlLog(t *testing.T) string {

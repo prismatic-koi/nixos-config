@@ -3,6 +3,7 @@ package prismcontainer_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -19,9 +20,12 @@ import (
 	"github.com/prismatic-koi/prism/internal/prismcontainer/prismcontainertest"
 )
 
+// noMachineMounts is a podman machine config file with no mounts.
+func noMachineMounts(string) ([]byte, error) { return []byte(`{"Mounts":[]}`), nil }
+
 func buildDeps(f *prismcontainertest.Fake) prismcontainer.Deps {
 	d := deps(f)
-	d.BuildExecutor = prismcontainer.PlainExecutor{Runner: f}
+	d.BuildExecutor = prismcontainer.PlainExecutor{Runner: f, ReadFile: noMachineMounts}
 	return d
 }
 
@@ -382,7 +386,7 @@ func TestBuild_ContextSwappedToSymlinkDuringCopy(t *testing.T) {
 	}}
 	d := buildDeps(f)
 	d.Runner = swapper
-	d.BuildExecutor = prismcontainer.PlainExecutor{Runner: swapper}
+	d.BuildExecutor = prismcontainer.PlainExecutor{Runner: swapper, ReadFile: noMachineMounts}
 
 	res := prismcontainer.Build(context.Background(), d, c, prismcontainer.BuildRequest{Context: "app", File: "Containerfile"})
 	if !swapped {
@@ -828,5 +832,50 @@ func TestBuild_UnreadableFileNamed(t *testing.T) {
 	if res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, "cannot read a file of the build context") ||
 		strings.Contains(res.Message, "try again") {
 		t.Errorf("result = %+v, want a refusal that names the unreadable file", res)
+	}
+}
+
+// TestBuild_MachineMountsRefused: on macOS a podman machine that mounts Mac
+// paths outside the allowlist refuses the build before podman builds.
+func TestBuild_MachineMountsRefused(t *testing.T) {
+	c := newCaller(t)
+	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\n")
+	f := &prismcontainertest.Fake{}
+	d := deps(f)
+	d.BuildExecutor = prismcontainer.PlainExecutor{
+		Runner:         f,
+		MountAllowlist: []string{"/Users/u/code"},
+		ReadFile: func(string) ([]byte, error) {
+			return []byte(`{"Mounts":[{"Source":"/Users","Target":"/Users"},{"Source":"/Users/u/code","Target":"/Users/u/code"}]}`), nil
+		},
+	}
+	res := prismcontainer.Build(context.Background(), d, c, prismcontainer.BuildRequest{})
+	if res.ExitCode != prismcontainer.ExitRefused || !strings.HasPrefix(res.Message, `refused: podman machine "fake-machine" mounts Mac paths`) ||
+		!strings.Contains(res.Message, "/Users (mounted at /Users") || strings.Contains(res.Message, "/Users/u/code (mounted") {
+		t.Errorf("result = %+v, want a refusal that names /Users only", res)
+	}
+	if len(f.BuildCalls()) != 0 {
+		t.Errorf("podman build ran")
+	}
+	lines := readAudit(t, testInstanceID)
+	if len(lines) != 1 || lines[0]["decision"] != prismcontainer.DecisionRefused {
+		t.Errorf("audit = %v, want one refused line", lines)
+	}
+}
+
+// TestBuild_PreflightRefusal: a preflight error of any executor refuses the
+// build with its text.
+func TestBuild_PreflightRefusal(t *testing.T) {
+	c := newCaller(t)
+	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\n")
+	f := &prismcontainertest.Fake{PreflightErr: errors.New("a Linux build needs bwrap on the host")}
+	d := deps(f)
+	d.BuildExecutor = f
+	res := prismcontainer.Build(context.Background(), d, c, prismcontainer.BuildRequest{})
+	if res.ExitCode != prismcontainer.ExitRefused || res.Message != "refused: a Linux build needs bwrap on the host" {
+		t.Errorf("result = %+v, want the preflight refusal", res)
+	}
+	if len(f.BuildCalls()) != 0 {
+		t.Errorf("podman build ran")
 	}
 }

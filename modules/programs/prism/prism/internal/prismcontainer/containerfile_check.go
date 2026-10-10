@@ -11,6 +11,12 @@ package prismcontainer
 // a Containerfile that can name a transport other than a registry in any of
 // these places. It works the same on every platform.
 //
+// The check is the first refusal, with a clear message. It is not the
+// security boundary: on Linux the build runs in a mount namespace that
+// holds no host path to read (buildns.go), and on macOS prism refuses a
+// podman machine that mounts Mac paths outside an allowlist
+// (machinecheck.go).
+//
 // The check does not expand or unquote a reference. Buildah expands ARG
 // and ENV values, quotes, and escapes before it reads a reference, and a
 // copy of that word processing in prism can always differ from buildah in
@@ -43,8 +49,8 @@ package prismcontainer
 // the two ways to split a line cannot give different flags.
 //
 // An ONBUILD trigger of a base image runs instructions that are not in the
-// Containerfile, so this check cannot see them. On Linux the signature
-// policy of the build (ScopeExecutor) refuses those transports too.
+// Containerfile, so this check cannot see them. The boundary above covers
+// them.
 
 import (
 	"fmt"
