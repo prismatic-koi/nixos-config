@@ -110,17 +110,17 @@ func TestBuildAgentCmd_UsesAgent(t *testing.T) {
 		// Empty agent — no --agent flag.
 		{session.Opts{}, "pi"},
 		// Prompt with no special characters.
-		{session.Opts{Agent: "worker", Prompt: "fix the login bug"}, "pi --agent worker --prompt 'fix the login bug'"},
+		{session.Opts{Agent: "worker", Prompt: "fix the login bug"}, "pi --agent worker 'fix the login bug'"},
 		// Prompt containing a single quote — exercises shellQuote escaping.
-		{session.Opts{Agent: "worker", Prompt: "it's broken"}, "pi --agent worker --prompt 'it'\\''s broken'"},
+		{session.Opts{Agent: "worker", Prompt: "it's broken"}, "pi --agent worker 'it'\\''s broken'"},
 		// Prompt with shell metacharacters that are safe inside single quotes.
-		{session.Opts{Agent: "worker", Prompt: "run `make test` and fix $ERRORS"}, "pi --agent worker --prompt 'run `make test` and fix $ERRORS'"},
+		{session.Opts{Agent: "worker", Prompt: "run `make test` and fix $ERRORS"}, "pi --agent worker 'run `make test` and fix $ERRORS'"},
 		// SessionName set — PRISM_SESSION_NAME is prepended.
 		{session.Opts{Agent: "worker", SessionName: "myrepo@main"}, "PRISM_SESSION_NAME='myrepo@main' pi --agent worker"},
 		// SessionName with special characters.
 		{session.Opts{Agent: "worker", SessionName: "nixos_config@feature--my-branch"}, "PRISM_SESSION_NAME='nixos_config@feature--my-branch' pi --agent worker"},
 		// SessionName + Prompt.
-		{session.Opts{Agent: "worker", SessionName: "myrepo@main", Prompt: "do the thing"}, "PRISM_SESSION_NAME='myrepo@main' pi --agent worker --prompt 'do the thing'"},
+		{session.Opts{Agent: "worker", SessionName: "myrepo@main", Prompt: "do the thing"}, "PRISM_SESSION_NAME='myrepo@main' pi --agent worker 'do the thing'"},
 		// No SessionName — no PRISM_SESSION_NAME.
 		{session.Opts{Agent: "worker", SessionName: ""}, "pi --agent worker"},
 	}
