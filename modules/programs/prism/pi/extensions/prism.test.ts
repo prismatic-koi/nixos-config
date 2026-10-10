@@ -7508,9 +7508,34 @@ describe("#3088: buildSilentTurnRunError", () => {
     assert.match(String(frame.reason), /stop reason "length"/)
   })
 
-  it("returns null for a turn with text", () => {
+  it("returns a frame for a turn with text and stop reason error or length (#3100)", () => {
+    for (const stopReason of ["error", "length"]) {
+      const frame = buildSilentTurnRunError({
+        ...REFUSAL_MESSAGE,
+        content: [{ type: "text", text: "partial" }],
+        stopReason,
+      })
+      assert.ok(frame !== null)
+      assert.equal(frame.type, "run_error")
+      assert.equal(frame.stop_reason, stopReason)
+      assert.match(String(frame.reason), new RegExp(`stop reason "${stopReason}"`))
+    }
+  })
+
+  it("keeps the error message in the frame for a turn with text (#3100)", () => {
+    const frame = buildSilentTurnRunError({
+      ...REFUSAL_MESSAGE,
+      content: [{ type: "text", text: "partial" }],
+      stopReason: "error",
+      errorMessage: "boom",
+    })
+    assert.ok(frame !== null)
+    assert.match(String(frame.reason), /boom/)
+  })
+
+  it("returns null for a turn with text and stop reason stop (#3100)", () => {
     assert.equal(
-      buildSilentTurnRunError({ ...REFUSAL_MESSAGE, content: [{ type: "text", text: "partial" }] }),
+      buildSilentTurnRunError({ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" }),
       null,
     )
   })
@@ -7564,7 +7589,6 @@ describe("#3088: extension wiring", () => {
   for (const [label, message] of [
     ["text", { role: "assistant", content: [{ type: "text", text: "<verdict>PASS</verdict>" }], stopReason: "stop" }],
     ["tool call", { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "bash", arguments: {} }], stopReason: "toolUse" }],
-    ["text with an error stop", { ...REFUSAL_MESSAGE, content: [{ type: "text", text: "partial" }] }],
   ] as const) {
     it(`sends no run_error after a turn with ${label}`, async () => {
       const h = await setupReviewGuardHarness()
@@ -7583,6 +7607,26 @@ describe("#3088: extension wiring", () => {
       }
     })
   }
+
+  it("sends run_error on agent_settled after a turn with text and an error stop (#3100)", async () => {
+    const h = await setupReviewGuardHarness()
+    try {
+      await h.trigger("turn_start", {}, ctx)
+      await h.trigger(
+        "turn_end",
+        { message: { ...REFUSAL_MESSAGE, content: [{ type: "text", text: "partial" }] } },
+        ctx,
+      )
+      await h.trigger("agent_settled", { aborted: false }, ctx)
+      await syncWithExtension(h)
+      const runErrors = h.received().filter((f) => f.type === "run_error")
+      assert.equal(runErrors.length, 1)
+      assert.equal(runErrors[0].stop_reason, "error")
+      assert.match(String(runErrors[0].reason), /refused/)
+    } finally {
+      await h.cleanup()
+    }
+  })
 
   it("sends no run_error when the run settled because of an abort", async () => {
     const h = await setupReviewGuardHarness()
