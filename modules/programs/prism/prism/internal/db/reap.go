@@ -119,7 +119,8 @@ type SessionEndCause struct {
 	// ran, then went silent.
 	StallError string
 	// RunError is the reason from the latest run_error event: pi ended the
-	// run after a turn with no text and no tool call.
+	// run after a failed turn (no text and no tool call, or text with stop
+	// reason error or length).
 	RunError string
 	// TmuxSessionEnded reports whether a tmux_session_end event exists for
 	// the session — the tmux session-closed hook stamps ended_at without
