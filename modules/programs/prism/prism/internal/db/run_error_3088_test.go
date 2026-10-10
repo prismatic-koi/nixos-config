@@ -81,3 +81,22 @@ func TestSessionEndCauses_RunError(t *testing.T) {
 		t.Errorf("RunError = %q, want %q", c.RunError, wantRunErrorReason)
 	}
 }
+
+// A silent turn writes no msg_assistant row, so the run_error row is in the
+// tail that `prism checkin` shows. QueryTailEvents must return it.
+func TestQueryTailEvents_IncludesRunError(t *testing.T) {
+	d := openTestDB(t)
+	session := "nixos-config@feature~review-1-review-security"
+	writeRunErrorEvent(t, d, session)
+
+	events, err := d.QueryTailEvents(session, 10)
+	if err != nil {
+		t.Fatalf("QueryTailEvents: %v", err)
+	}
+	for _, ev := range events {
+		if ev.Type == "run_error" {
+			return
+		}
+	}
+	t.Errorf("QueryTailEvents did not return the run_error row: %+v", events)
+}
