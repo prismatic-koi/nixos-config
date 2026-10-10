@@ -571,3 +571,36 @@ func TestIsolationOverrideForPathEmptyMap(t *testing.T) {
 		t.Errorf("IsolationOverrideForPath(%q): got %q, want empty string (empty overrides map)", "~/documents/obsidian", got)
 	}
 }
+
+func TestMachineMountAllowlist(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cases := map[string]struct {
+		raw  string
+		want []string
+	}{
+		"absent: project locations": {`{"project_locations": ["~/code", "/srv/work"]}`, []string{filepath.Join(home, "code"), "/srv/work"}},
+		"null: project locations":   {`{"project_locations": ["~/code"], "container_machine_mount_allowlist": null}`, []string{filepath.Join(home, "code")}},
+		"set":                       {`{"project_locations": ["~/code"], "container_machine_mount_allowlist": ["~/repos/", "/Volumes/src"]}`, []string{filepath.Join(home, "repos"), "/Volumes/src"}},
+		"empty: nothing allowed":    {`{"project_locations": ["~/code"], "container_machine_mount_allowlist": []}`, []string{}},
+		"relative dropped":          {`{"container_machine_mount_allowlist": ["code", "~other", "/ok"]}`, []string{"/ok"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(p, []byte(tc.raw), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PRISM_CONFIG_FILE", p)
+			got := config.LoadFresh().MachineMountAllowlist()
+			if len(got) != len(tc.want) {
+				t.Fatalf("MachineMountAllowlist = %q, want %q", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("MachineMountAllowlist = %q, want %q", got, tc.want)
+				}
+			}
+		})
+	}
+}

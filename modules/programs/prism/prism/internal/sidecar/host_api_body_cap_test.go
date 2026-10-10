@@ -93,6 +93,7 @@ func TestHostAPI_BodyCap_Default(t *testing.T) {
 		"/set-active-tools",
 		"/abort",
 		"/container/run",
+		"/container/build",
 	}
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
@@ -173,6 +174,7 @@ func TestHostAPI_BodyCap_DisallowUnknownFields(t *testing.T) {
 		"/set-active-tools",
 		"/abort",
 		"/container/run",
+		"/container/build",
 	}
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
