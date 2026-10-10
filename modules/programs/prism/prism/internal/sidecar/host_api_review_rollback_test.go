@@ -481,3 +481,19 @@ exit 1
 		t.Errorf("after second call (success): reviewingInFlight = false, want true (handler holds the flag for the monitor)")
 	}
 }
+
+func TestReviewModelOverride_UnknownRole_Refused(t *testing.T) {
+	sc, d, sessionName := newReviewRollbackSidecar(t, "#!/bin/sh\nexit 0\n")
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review",
+		`{"pr_number":"123","model_overrides":{"review-bogus":"a/b"}}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "review-bogus") {
+		t.Errorf("body = %q, want role named", rr.Body.String())
+	}
+	if got := stateOf(t, d, sessionName); got != string(agent.StateActive) {
+		t.Errorf("post-call state = %q, want unchanged", got)
+	}
+}
