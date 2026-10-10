@@ -197,10 +197,6 @@ func runStdioSidecarAsync(sc *Sidecar) func() error {
 // fails there in the same way. The live probe skips that case too.
 func requireUsableBwrap(t *testing.T) {
 	t.Helper()
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Skipf("skipping on GitHub Actions ubuntu-latest: %s — see #1510",
-			"unprivileged userns uid-map setup is disallowed (kernel.apparmor_restrict_unprivileged_userns=1)")
-	}
 	bin, err := exec.LookPath("bwrap")
 	if err != nil {
 		return

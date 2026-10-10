@@ -44,9 +44,6 @@ import (
 // tests would fail for environmental reasons unrelated to the mount.
 func requireUsableBwrapForUsageTest(t *testing.T) string {
 	t.Helper()
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Skip("skipping on GitHub Actions: unprivileged userns uid-map setup is disallowed — see #1510")
-	}
 	bin, err := exec.LookPath("bwrap")
 	if err != nil {
 		t.Skip("bwrap not found in PATH")
