@@ -474,19 +474,110 @@ function convertToolResultContentToAnthropic(
 // SSE stream parsing (replaces @anthropic-ai/sdk streaming)
 // ──────────────────────────────────────────────
 
-function mapStopReason(reason: string | null | undefined): string {
+/**
+ * A failure of a streamed response. `partial` is the assistant message as it
+ * stood when the stream failed, so the caller can keep its usage and its raw
+ * stop reason on the `error` event.
+ */
+export class StreamFailure extends Error {
+  readonly partial: AssistantMessage
+
+  constructor(message: string, partial: AssistantMessage) {
+    super(message)
+    this.name = "StreamFailure"
+    this.partial = partial
+  }
+}
+
+// Mirrors pi-ai's built-in `mapStopReason` (`api/anthropic-messages.js`),
+// except that an unknown value becomes an `error` stop with a message
+// instead of a throw, so the usage of the turn is kept. pi's
+// `isRetryableAssistantError` and `isContextOverflow` classify the
+// `errorMessage`: keep it free of digits that are not an HTTP status.
+export function mapStopReason(
+  reason: string,
+  stopDetails?: { explanation?: string } | null,
+): { stopReason: string; errorMessage?: string } {
   switch (reason) {
     case "end_turn":
     case "pause_turn":
     case "stop_sequence":
-      return "stop"
+      return { stopReason: "stop" }
     case "max_tokens":
-      return "length"
+      return { stopReason: "length" }
     case "tool_use":
-      return "toolUse"
+      return { stopReason: "toolUse" }
+    case "refusal":
+      return {
+        stopReason: "error",
+        errorMessage:
+          stopDetails?.explanation || "The model refused to complete the request",
+      }
+    case "sensitive":
+      return { stopReason: "error", errorMessage: "Provider stopped with: sensitive" }
     default:
-      return "error"
+      return { stopReason: "error", errorMessage: `Unhandled stop reason: ${reason}` }
   }
+}
+
+/**
+ * The assistant message for pi's `error` event. pi copies `errorMessage` to
+ * the `turn_end` frame and classifies it for a retry.
+ *
+ * For a `StreamFailure`, the message keeps the usage and the raw stop reason
+ * of the partial output. The content stays empty, so that pi does not keep a
+ * partial tool call, and prism's `run_error` frame (issue #3088) still fires.
+ */
+export function buildStreamErrorMessage(
+  model: Model<Api>,
+  error: unknown,
+  errorMessage: string,
+  stopReason: "error" | "aborted",
+): AssistantMessage {
+  const partial = error instanceof StreamFailure ? error.partial : undefined
+  return {
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: partial
+      ? { ...partial.usage, cost: { ...partial.usage.cost } }
+      : {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+    stopReason,
+    ...(partial?.rawStopReason ? { rawStopReason: partial.rawStopReason } : {}),
+    errorMessage,
+    timestamp: Date.now(),
+  }
+}
+
+/**
+ * Text for an SSE `event: error` frame. The Anthropic payload is
+ * `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`.
+ * Only the error type and message are kept: other fields (for example a
+ * request ID) can hold digits that pi's retry classifier reads as an HTTP
+ * status.
+ */
+export function formatStreamErrorEvent(dataStr: string): string {
+  try {
+    const parsed = JSON.parse(dataStr) as {
+      error?: { type?: unknown; message?: unknown }
+    }
+    const type = typeof parsed.error?.type === "string" ? parsed.error.type : ""
+    const message =
+      typeof parsed.error?.message === "string" ? parsed.error.message : ""
+    if (type || message) {
+      return `Anthropic stream error: ${[type, message].filter(Boolean).join(": ")}`
+    }
+  } catch {}
+  return `Anthropic stream error: ${dataStr || "(empty error event)"}`
 }
 
 /**
@@ -527,10 +618,12 @@ export async function parseSSEStream(
 
   const blocks = output.content as IndexedBlock[]
 
-  // Diagnostic instrumentation (issue #2048): track whether the API ever
-  // emitted a terminal `message_stop` event. Observation only — NOT an
-  // assertion. The parser's behaviour is unchanged.
+  // A stream that starts a message and ends without `message_stop`, or
+  // without a stop reason, is a failed stream (issue #3090).
+  let sawMessageStart = false
   let sawMessageStop = false
+  let sawStopReason = false
+  let errorMessage: string | undefined
 
   const processEvent = (eventText: string) => {
     const lines = eventText.split("\n")
@@ -546,13 +639,10 @@ export async function parseSSEStream(
     }
 
     // Diagnostic instrumentation (issue #2048): log any `event: error` frame
-    // with its raw payload BEFORE deciding what to do with it. Today these
-    // frames silently fall through (no `error` arm in the switch below);
-    // that behaviour is intentionally preserved here — this is logging only.
-    // This is the single highest-signal line for distinguishing parser-side
-    // silent data loss from genuine model behaviour.
+    // with its raw payload. The frame ends the stream (issue #3090).
     if (eventType === "error") {
       log("sse_event_error", { data: dataStr })
+      throw new StreamFailure(formatStreamErrorEvent(dataStr), output)
     }
 
     if (!dataStr || dataStr === "[DONE]") return
@@ -565,6 +655,11 @@ export async function parseSSEStream(
     }
 
     const type = (event.type as string) ?? eventType
+
+    if (type === "error") {
+      log("sse_event_error", { data: dataStr })
+      throw new StreamFailure(formatStreamErrorEvent(dataStr), output)
+    }
 
     // Diagnostic instrumentation (issue #2048): per-event log of frame
     // metadata only. No request/response bodies, no message content — just
@@ -587,6 +682,7 @@ export async function parseSSEStream(
     }
 
     if (type === "message_start") {
+      sawMessageStart = true
       const msg = event.message as {
         usage?: {
           input_tokens?: number
@@ -739,14 +835,23 @@ export async function parseSSEStream(
     }
 
     if (type === "message_delta") {
-      const delta = event.delta as { stop_reason?: string }
+      const delta = event.delta as {
+        stop_reason?: string | null
+        stop_details?: { explanation?: string } | null
+      }
       const usage = event.usage as {
         input_tokens?: number
         output_tokens?: number
         cache_read_input_tokens?: number
         cache_creation_input_tokens?: number
       }
-      output.stopReason = mapStopReason(delta.stop_reason)
+      if (delta?.stop_reason) {
+        sawStopReason = true
+        output.rawStopReason = delta.stop_reason
+        const mapped = mapStopReason(delta.stop_reason, delta.stop_details)
+        output.stopReason = mapped.stopReason as AssistantMessage["stopReason"]
+        errorMessage = mapped.errorMessage
+      }
       if (usage) {
         output.usage.input = usage.input_tokens ?? output.usage.input
         output.usage.output = usage.output_tokens ?? output.usage.output
@@ -761,36 +866,11 @@ export async function parseSSEStream(
     }
 
     if (type === "message_stop") {
-      // Diagnostic instrumentation (issue #2048): observe terminal frame.
-      // No behavioural change — the parser already implicitly tolerated
-      // missing message_stop; this just records that we saw it.
       sawMessageStop = true
     }
   }
 
-  // Read the SSE stream chunk by chunk
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-
-    // Process complete SSE events (separated by \n\n)
-    for (;;) {
-      const boundary = buffer.indexOf("\n\n")
-      if (boundary === -1) break
-      const event = buffer.slice(0, boundary)
-      buffer = buffer.slice(boundary + 2)
-      if (event.trim()) processEvent(event)
-    }
-  }
-
-  // Process any remaining buffer
-  if (buffer.trim()) processEvent(buffer)
-
-  // Diagnostic instrumentation (issue #2048): terminal summary emitted
-  // exactly once immediately before returning. Frame metadata only — counts,
-  // stop_reason value, and whether message_stop was observed.
-  {
+  const logStreamEnd = () => {
     let toolCalls = 0
     for (const b of output.content) {
       if ((b as { type?: string }).type === "toolCall") toolCalls++
@@ -802,6 +882,62 @@ export async function parseSSEStream(
       sawMessageStop,
     })
   }
+
+  try {
+    // Read the SSE stream chunk by chunk
+    for (;;) {
+      let chunk: ReadableStreamReadResult<Uint8Array>
+      try {
+        chunk = await reader.read()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new StreamFailure(`Anthropic stream read failed: ${message}`, output)
+      }
+      const { done, value } = chunk
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      // Process complete SSE events (separated by \n\n)
+      for (;;) {
+        const boundary = buffer.indexOf("\n\n")
+        if (boundary === -1) break
+        const event = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+        if (event.trim()) processEvent(event)
+      }
+    }
+
+    // Process any remaining buffer
+    if (buffer.trim()) processEvent(buffer)
+
+    // The messages match pi-ai's built-in client, so pi classes them as
+    // retryable.
+    if (sawMessageStart && !sawMessageStop) {
+      throw new StreamFailure("Anthropic stream ended before message_stop", output)
+    }
+    if (!sawStopReason) {
+      throw new StreamFailure("Anthropic stream ended without a stop reason", output)
+    }
+    if (output.stopReason === "error") {
+      throw new StreamFailure(
+        errorMessage ?? "An unknown error occurred",
+        output,
+      )
+    }
+  } catch (error) {
+    if (error instanceof StreamFailure) {
+      output.stopReason = "error"
+      log("sse_stream_failure", { error: error.message })
+    }
+    logStreamEnd()
+    reader.cancel().catch(() => {})
+    throw error
+  }
+
+  // Diagnostic instrumentation (issue #2048): terminal summary emitted
+  // exactly once. Frame metadata only — counts, stop_reason value, and
+  // whether message_stop was observed.
+  logStreamEnd()
 
   return output
 }

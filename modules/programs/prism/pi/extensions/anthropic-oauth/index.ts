@@ -28,7 +28,11 @@ import { getCachedCredentials, repairCredentials } from "./credentials.ts"
 import { transformBody, transformResponseStream } from "./transforms.ts"
 import { streamSimpleAnthropic } from "@earendil-works/pi-ai"
 import { config } from "./model-config.ts"
-import { fromClaudeCodeToolName, parseSSEStream } from "./stream.ts"
+import {
+  fromClaudeCodeToolName,
+  buildStreamErrorMessage,
+  parseSSEStream,
+} from "./stream.ts"
 import { buildRequestBody, flattenTranscriptContext } from "./request-body.ts"
 import { buildOAuthHeaders, buildRequestUrl } from "./oauth-headers.ts"
 import { captureRateLimitSnapshot } from "./ratelimit.ts"
@@ -270,34 +274,17 @@ export default async function (pi: ExtensionAPI) {
           const errorMessage =
             error instanceof Error ? error.message : String(error)
           log("stream_error", { error: errorMessage })
-          stream.push({
-            type: "error",
-            reason: stopReason,
-            error: {
-              role: "assistant",
-              content: [],
-              api: model.api,
-              provider: model.provider,
-              model: model.id,
-              usage: {
-                input: 0,
-                output: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-                totalTokens: 0,
-                cost: {
-                  input: 0,
-                  output: 0,
-                  cacheRead: 0,
-                  cacheWrite: 0,
-                  total: 0,
-                },
-              },
-              stopReason,
-              errorMessage,
-              timestamp: Date.now(),
-            },
-          })
+          const failed = buildStreamErrorMessage(
+            model,
+            error,
+            errorMessage,
+            stopReason,
+          )
+          // If calculateCost throws here, the stream stays open and the turn hangs.
+          try {
+            calculateCost(model, failed.usage)
+          } catch {}
+          stream.push({ type: "error", reason: stopReason, error: failed })
           stream.end()
         }
       })()

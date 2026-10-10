@@ -24,9 +24,15 @@ import {
   buildAnthropicSystemPrompt,
   parseSSEStream,
   convertPiMessagesToAnthropic,
+  buildStreamErrorMessage,
+  StreamFailure,
 } from "./stream.ts"
-import type { Message } from "@earendil-works/pi-ai"
+import type { AssistantMessage, Message } from "@earendil-works/pi-ai"
 import { initLogger, closeLogger } from "./logger.ts"
+import { execFileSync } from "node:child_process"
+import { realpathSync } from "node:fs"
+import path from "node:path"
+import { pathToFileURL } from "node:url"
 
 // ---------------------------------------------------------------------------
 // Helper: reference implementation of the *prior* sanitizeSystemText behaviour
@@ -526,16 +532,7 @@ describe("parseSSEStream — diagnostic instrumentation (#2048)", () => {
       const { model, context } = makeModelAndContext()
       const fakeStream = makeFakeStream()
 
-      // Include a mid-stream `event: error` frame to assert the error-arm log.
-      // The parser's silent-fall-through behaviour for errors is preserved
-      // (no error arm in the switch); we only assert that the raw payload was
-      // logged BEFORE that fall-through.
-      const transcriptWithError = [
-        ...HEALTHY_TRANSCRIPT.slice(0, 3),
-        'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"x"}}\n\n',
-        ...HEALTHY_TRANSCRIPT.slice(3),
-      ]
-      const response = makeSSEResponse(transcriptWithError)
+      const response = makeSSEResponse(HEALTHY_TRANSCRIPT)
 
       const out = await parseSSEStream(
         response,
@@ -563,10 +560,6 @@ describe("parseSSEStream — diagnostic instrumentation (#2048)", () => {
           "message_start",
           "content_block_start",
           "content_block_delta",
-          // NOTE: event:error frame is logged separately as sse_event_error;
-          // it ALSO produces a per-event log because the parser still JSON-
-          // parses the data and routes through the switch with type "error".
-          "error",
           "content_block_stop",
           "content_block_start",
           "content_block_delta",
@@ -599,15 +592,6 @@ describe("parseSSEStream — diagnostic instrumentation (#2048)", () => {
       const msgDeltas = perEvent.filter((l) => l.t === "message_delta")
       assert.equal(msgDeltas.length, 1)
       assert.equal(msgDeltas[0].sr, "tool_use", "message_delta log includes sr field")
-
-      // event:error frame produces a dedicated sse_event_error log with raw data.
-      const errLogs = lines.filter((l) => l.event === "sse_event_error")
-      assert.equal(errLogs.length, 1, "exactly one sse_event_error log expected")
-      assert.equal(typeof errLogs[0].data, "string")
-      assert.ok(
-        (errLogs[0].data as string).includes("overloaded_error"),
-        "raw error payload should be captured",
-      )
 
       // Terminal summary: exactly one, emitted last.
       const ends = lines.filter((l) => l.event === "sse_stream_end")
@@ -653,12 +637,15 @@ describe("parseSSEStream — diagnostic instrumentation (#2048)", () => {
       const fakeStream = makeFakeStream()
       const response = makeSSEResponse(truncated)
 
-      await parseSSEStream(
-        response,
-        model,
-        context,
-        false,
-        fakeStream as unknown as Parameters<typeof parseSSEStream>[4],
+      await assert.rejects(
+        parseSSEStream(
+          response,
+          model,
+          context,
+          false,
+          fakeStream as unknown as Parameters<typeof parseSSEStream>[4],
+        ),
+        /Anthropic stream ended before message_stop/,
       )
 
       const lines = parseLogLines(captured)
@@ -672,6 +659,194 @@ describe("parseSSEStream — diagnostic instrumentation (#2048)", () => {
     } finally {
       closeLogger()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseSSEStream — failed streams carry an error message (issue #3090)
+//
+// A failed stream must reach pi as an `error` event whose `errorMessage`
+// names the cause. pi copies that text to the `turn_end` frame, and pi's own
+// `isRetryableAssistantError` decides from it whether to retry the turn. The
+// retry assertions load that classifier from the installed pi, so a change to
+// pi's patterns shows up here.
+// ---------------------------------------------------------------------------
+
+// The pi install root, found the same way as verify-extension-loads.mjs.
+function piInstallRoot(): string {
+  if (process.env.PI_INSTALL_ROOT) return process.env.PI_INSTALL_ROOT
+  const piBin = execFileSync("/bin/sh", ["-c", "command -v pi"]).toString().trim()
+  return path.dirname(path.dirname(realpathSync(piBin)))
+}
+
+type RetryClassifier = (message: AssistantMessage) => boolean
+let retryClassifier: Promise<RetryClassifier> | undefined
+function loadPiRetryClassifier(): Promise<RetryClassifier> {
+  retryClassifier ??= (async () => {
+    const retryJs = path.join(
+      piInstallRoot(),
+      "lib/node_modules/pi-monorepo/node_modules/@earendil-works/pi-ai/dist/utils/retry.js",
+    )
+    const mod = (await import(pathToFileURL(retryJs).href)) as {
+      isRetryableAssistantError: RetryClassifier
+    }
+    return mod.isRetryableAssistantError
+  })()
+  return retryClassifier
+}
+
+const START = HEALTHY_TRANSCRIPT[0]
+const TEXT_BLOCK = HEALTHY_TRANSCRIPT.slice(1, 4)
+const MESSAGE_STOP = HEALTHY_TRANSCRIPT[HEALTHY_TRANSCRIPT.length - 1]
+
+function messageDelta(stopReason: string | null, extra = ""): string {
+  const sr = stopReason === null ? "null" : JSON.stringify(stopReason)
+  return `event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":${sr}${extra}},"usage":{"output_tokens":13804}}\n\n`
+}
+
+// Runs parseSSEStream and returns the StreamFailure it throws, turned into
+// the assistant message that index.ts pushes on the `error` event.
+async function failedMessage(
+  body: ReadableStream<Uint8Array> | string[],
+): Promise<{ failure: StreamFailure; message: AssistantMessage }> {
+  const { model, context } = makeModelAndContext()
+  const response = Array.isArray(body)
+    ? makeSSEResponse(body)
+    : new Response(body, { status: 200 })
+  let caught: unknown
+  try {
+    await parseSSEStream(
+      response,
+      model,
+      context,
+      false,
+      makeFakeStream() as unknown as Parameters<typeof parseSSEStream>[4],
+    )
+  } catch (error) {
+    caught = error
+  }
+  assert.ok(caught instanceof StreamFailure, `expected a StreamFailure, got ${String(caught)}`)
+  const message = buildStreamErrorMessage(model, caught, caught.message, "error")
+  return { failure: caught, message }
+}
+
+describe("parseSSEStream — failed streams carry an error message (#3090)", () => {
+  it("a refusal stop names the refusal, keeps the raw stop reason and the usage, and is not retried", async () => {
+    const { message } = await failedMessage([
+      START,
+      ...TEXT_BLOCK,
+      messageDelta("refusal"),
+      MESSAGE_STOP,
+    ])
+    assert.equal(message.stopReason, "error")
+    assert.equal(message.rawStopReason, "refusal")
+    assert.equal(message.errorMessage, "The model refused to complete the request")
+    assert.equal(message.usage.output, 13804)
+    assert.deepEqual(message.content, [])
+    assert.equal((await loadPiRetryClassifier())(message), false)
+  })
+
+  it("a refusal stop uses the provider explanation when one is sent", async () => {
+    const { message } = await failedMessage([
+      START,
+      messageDelta("refusal", ',"stop_details":{"explanation":"policy"}'),
+      MESSAGE_STOP,
+    ])
+    assert.equal(message.errorMessage, "policy")
+  })
+
+  it("an unknown stop reason names the raw value", async () => {
+    const { message } = await failedMessage([
+      START,
+      messageDelta("brand_new_reason"),
+      MESSAGE_STOP,
+    ])
+    assert.equal(message.rawStopReason, "brand_new_reason")
+    assert.equal(message.errorMessage, "Unhandled stop reason: brand_new_reason")
+  })
+
+  it("a mid-stream overloaded_error event names the provider error type and is retried", async () => {
+    const sink = new PassThrough()
+    let captured = ""
+    sink.on("data", (chunk) => {
+      captured += chunk.toString()
+    })
+    initLogger({ stream: sink })
+    try {
+      const { message } = await failedMessage([
+        START,
+        ...TEXT_BLOCK,
+        'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n',
+        messageDelta("end_turn"),
+        MESSAGE_STOP,
+      ])
+      assert.equal(message.errorMessage, "Anthropic stream error: overloaded_error: Overloaded")
+      assert.equal((await loadPiRetryClassifier())(message), true)
+
+      const lines = parseLogLines(captured)
+      const errLogs = lines.filter((l) => l.event === "sse_event_error")
+      assert.equal(errLogs.length, 1, "exactly one sse_event_error log expected")
+      assert.ok((errLogs[0].data as string).includes("overloaded_error"))
+      const ends = lines.filter((l) => l.event === "sse_stream_end")
+      assert.equal(ends.length, 1, "the terminal summary is still written once")
+      assert.equal(ends[0].stopReason, "error")
+    } finally {
+      closeLogger()
+    }
+  })
+
+  it("a non-retryable stream error event is not retried, and digits outside the error do not make it retryable", async () => {
+    // The request ID holds "500", which pi's classifier reads as an HTTP status.
+    const { message } = await failedMessage([
+      START,
+      'event: error\ndata: {"type":"error","error":{"type":"invalid_request_error","message":"bad"},"request_id":"req_0115009"}\n\n',
+    ])
+    assert.equal(message.errorMessage, "Anthropic stream error: invalid_request_error: bad")
+    assert.equal((await loadPiRetryClassifier())(message), false)
+  })
+
+  it("a stream that ends before message_stop is retried", async () => {
+    const { message } = await failedMessage([START, ...TEXT_BLOCK])
+    assert.equal(message.errorMessage, "Anthropic stream ended before message_stop")
+    assert.equal((await loadPiRetryClassifier())(message), true)
+  })
+
+  it("a stream with no stop reason is retried", async () => {
+    const { message } = await failedMessage([START, messageDelta(null), MESSAGE_STOP])
+    assert.equal(message.errorMessage, "Anthropic stream ended without a stop reason")
+    assert.equal((await loadPiRetryClassifier())(message), true)
+  })
+
+  it("a dropped connection after output started names the transport error and is retried", async () => {
+    const encoder = new TextEncoder()
+    let sent = false
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!sent) {
+          sent = true
+          controller.enqueue(encoder.encode([START, ...TEXT_BLOCK].join("")))
+          return
+        }
+        controller.error(new TypeError("terminated"))
+      },
+    })
+    const { message } = await failedMessage(body)
+    assert.equal(message.errorMessage, "Anthropic stream read failed: terminated")
+    assert.equal((await loadPiRetryClassifier())(message), true)
+  })
+
+  it("a healthy stream still returns its stop reason and raw stop reason", async () => {
+    const { model, context } = makeModelAndContext()
+    const out = await parseSSEStream(
+      makeSSEResponse(HEALTHY_TRANSCRIPT),
+      model,
+      context,
+      false,
+      makeFakeStream() as unknown as Parameters<typeof parseSSEStream>[4],
+    )
+    assert.equal(out.stopReason, "toolUse")
+    assert.equal(out.rawStopReason, "tool_use")
+    assert.equal(out.errorMessage, undefined)
   })
 })
 

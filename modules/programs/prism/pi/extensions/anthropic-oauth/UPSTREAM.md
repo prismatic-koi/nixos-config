@@ -538,6 +538,32 @@ request — both are declared only, because the token endpoint rejects a
     requests to that model failed. No exact minimum version and no HTTP
     error code were captured.
 
+19. **A failed stream ends as a pi `error` event with a message (issue
+    #3090)** — pi-only, not an upstream port. leohenon has no equivalent.
+    `parseSSEStream` in `stream.ts` follows the stop-reason and failure
+    rules of the built-in pi-ai client (`api/anthropic-messages.js` in
+    `@earendil-works/pi-ai`):
+
+    - `mapStopReason` returns an `errorMessage` for `refusal`, `sensitive`,
+      and an unknown value. The parser records the provider value as
+      `rawStopReason`.
+    - An SSE `event: error` frame ends the stream. The message names the
+      provider error type and the provider message.
+    - A stream that ends before `message_stop`, or without a stop reason,
+      fails. The messages are the same as the messages of pi-ai.
+    - A failed body read names the transport error.
+
+    Each failure throws `StreamFailure`. `index.ts` sends it to pi as an
+    `error` event, with `errorMessage` and the usage of the partial output.
+    pi copies `errorMessage` to the `turn_end` frame. pi also uses
+    `errorMessage` to decide if it retries the turn. The one difference
+    from pi-ai: an unknown stop reason gives an `error` stop, not a throw,
+    so that the usage of the turn stays on the message.
+
+    Tests: `stream.test.ts` (`failed streams carry an error message`). The
+    retry assertions load `isRetryableAssistantError` from the installed
+    pi.
+
 ## Port procedure for future upstream fixes
 
 When griffinmartin ships a fix you want to port:
