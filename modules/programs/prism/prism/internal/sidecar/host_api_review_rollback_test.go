@@ -507,7 +507,7 @@ func TestReviewForwardsFlagsToSubprocess(t *testing.T) {
 		"#!/bin/sh\nprintf '%s\\n' \"$@\" > "+argsFile+"\nexit 0\n")
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/review",
-		`{"pr_number":"123","model_overrides":{"review-security":"anthropic/claude-sonnet-5-5"},"diff_inline_max":321,"harness":"pi"}`)
+		`{"pr_number":"123","model_overrides":{"review-security":"anthropic/claude-sonnet-5-5"},"diff_inline_max":321,"harness":"pi","ignore_concurrency_cap":true}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 	}
@@ -532,5 +532,14 @@ func TestReviewForwardsFlagsToSubprocess(t *testing.T) {
 		if !hasPair(p[0], p[1]) {
 			t.Errorf("subprocess args %q lack %s %s", args, p[0], p[1])
 		}
+	}
+	found := false
+	for _, a := range args {
+		if a == "--ignore-concurrency-cap" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("subprocess args %q lack --ignore-concurrency-cap", args)
 	}
 }
