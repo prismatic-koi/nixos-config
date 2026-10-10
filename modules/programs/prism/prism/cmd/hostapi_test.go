@@ -1212,7 +1212,7 @@ func TestProxyReviewAsync_LinesArrivedProgressively(t *testing.T) {
 	var stdout string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "123", nil, "", false, false)
+		_, callErr = proxyReviewAsync(srv.apiURL(), "123", nil, "", false, false, reviewProxyExtras{})
 	})
 
 	if callErr != nil {
@@ -1253,7 +1253,7 @@ func TestProxyReviewAsync_QuietStdoutSuppressesStreaming(t *testing.T) {
 	var stdout, ack string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		ack, callErr = proxyReviewAsync(srv.apiURL(), "1", nil, "", false, true /* quietStdout */)
+		ack, callErr = proxyReviewAsync(srv.apiURL(), "1", nil, "", false, true /* quietStdout */, reviewProxyExtras{})
 	})
 	if callErr != nil {
 		t.Fatalf("proxyReviewAsync: %v", callErr)
@@ -1278,7 +1278,7 @@ func TestProxyReviewAsync_SentinelConsumedNotEchoed(t *testing.T) {
 	var stdout string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "42", nil, "", false, false)
+		_, callErr = proxyReviewAsync(srv.apiURL(), "42", nil, "", false, false, reviewProxyExtras{})
 	})
 
 	if callErr != nil {
@@ -1311,7 +1311,7 @@ func TestProxyReviewAsync_FailedSentinelProducesError(t *testing.T) {
 	var stdout string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "99", nil, "", false, false)
+		_, callErr = proxyReviewAsync(srv.apiURL(), "99", nil, "", false, false, reviewProxyExtras{})
 	})
 
 	// proxyReviewAsync must return a non-nil error when sentinel says failed.
@@ -1346,7 +1346,7 @@ func TestProxyReviewAsync_MidStreamDisconnectReportsError(t *testing.T) {
 
 	var callErr error
 	_ = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "77", nil, "", false, false)
+		_, callErr = proxyReviewAsync(srv.apiURL(), "77", nil, "", false, false, reviewProxyExtras{})
 	})
 
 	if callErr == nil {
@@ -1369,7 +1369,7 @@ func TestProxyReviewAsync_HTTP500BeforeStreamReturnsError(t *testing.T) {
 
 	var callErr error
 	_ = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "55", nil, "", false, false)
+		_, callErr = proxyReviewAsync(srv.apiURL(), "55", nil, "", false, false, reviewProxyExtras{})
 	})
 
 	if callErr == nil {

@@ -481,3 +481,56 @@ exit 1
 		t.Errorf("after second call (success): reviewingInFlight = false, want true (handler holds the flag for the monitor)")
 	}
 }
+
+func TestReviewModelOverride_UnknownRole_Refused(t *testing.T) {
+	sc, d, sessionName := newReviewRollbackSidecar(t, "#!/bin/sh\nexit 0\n")
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review",
+		`{"pr_number":"123","model_overrides":{"review-bogus":"a/b"}}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "review-bogus") {
+		t.Errorf("body = %q, want role named", rr.Body.String())
+	}
+	if got := stateOf(t, d, sessionName); got != string(agent.StateActive) {
+		t.Errorf("post-call state = %q, want unchanged", got)
+	}
+}
+
+// TestReviewForwardsFlagsToSubprocess is the #3096 regression test: every
+// flag the sandboxed route sends must reach the host subprocess arguments
+// with its value.
+func TestReviewForwardsFlagsToSubprocess(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "args")
+	sc, _, _ := newReviewRollbackSidecar(t,
+		"#!/bin/sh\nprintf '%s\\n' \"$@\" > "+argsFile+"\nexit 0\n")
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review",
+		`{"pr_number":"123","model_overrides":{"review-security":"anthropic/claude-sonnet-5-5"},"diff_inline_max":321,"harness":"pi"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	args := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	hasPair := func(flag, val string) bool {
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == flag && args[i+1] == val {
+				return true
+			}
+		}
+		return false
+	}
+	for _, p := range [][2]string{
+		{"--model-override", "review-security=anthropic/claude-sonnet-5-5"},
+		{"--diff-inline-max", "321"},
+		{"--harness", "pi"},
+	} {
+		if !hasPair(p[0], p[1]) {
+			t.Errorf("subprocess args %q lack %s %s", args, p[0], p[1])
+		}
+	}
+}
