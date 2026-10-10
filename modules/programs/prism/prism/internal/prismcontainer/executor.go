@@ -123,6 +123,11 @@ func (PlainExecutor) StopBuilds(context.Context, string) (int, error) { return 0
 // that podman build did not start. When the move fails, the script writes
 // the cgroup and scheduler state to stderr, so that the cause is visible.
 //
+// The script holds no $$, as a second guard to --expand-environment=no: an
+// expanding systemd-run reads $$ as an escaped $. The script writes 0 (the
+// writing process) to cgroup.procs, and gets its own PID from
+// /proc/self/stat in the builtin read, which runs in the shell process.
+//
 // Without --cgroup-parent, crun puts a build step into a cgroup outside the
 // scope, and a scope kill does not reach it. The scope cgroup must hold no
 // process, or the kernel does not let crun enable controllers for the build
@@ -140,15 +145,16 @@ if [ -z "$cg" ] || [ "$cg" = / ]; then
 	exit 125
 fi
 d="/sys/fs/cgroup$cg"
+read -r self _ < /proc/self/stat
 # A build must not inherit a realtime policy from the caller.
-chrt --other -p 0 $$ >/dev/null 2>&1
+chrt --other -p 0 "$self" >/dev/null 2>&1
 mkdir "$d/podman" || { echo "prism: cannot create the cgroup $d/podman" >&2; exit 125; }
-if ! echo $$ > "$d/podman/cgroup.procs"; then
+if ! echo 0 > "$d/podman/cgroup.procs"; then
 	echo "prism: cannot move the build process into the cgroup $d/podman" >&2
 	for f in cgroup.type cgroup.controllers cgroup.subtree_control podman/cgroup.type podman/cgroup.controllers; do
 		echo "prism: $f: $(cat "$d/$f" 2>&1)" >&2
 	done
-	echo "prism: sched: $(grep -E '^(policy|prio) ' /proc/$$/sched 2>&1 | tr -s ' \n' ' ')" >&2
+	echo "prism: sched: $(grep -E '^(policy|prio) ' "/proc/$self/sched" 2>&1 | tr -s ' \n' ' ')" >&2
 	echo "prism: sched_ext: $(cat /sys/kernel/sched_ext/state 2>&1)" >&2
 	echo "prism: kernel: $(uname -r 2>&1)" >&2
 	exit 125
@@ -351,6 +357,9 @@ func (e ScopeExecutor) Build(ctx context.Context, unit string, out io.Writer, ar
 	setupOut := newTailBuffer(4096)
 	runArgs := []string{
 		"--user", "--scope", "--collect", "--quiet",
+		// systemd-run expands ${VAR} and $$ in the command arguments by
+		// default, also with --scope, which changes the scope script.
+		"--expand-environment=no",
 		"--unit", unit,
 		"--property", "Delegate=yes",
 		"--property", "TasksMax=" + PidsLimit,

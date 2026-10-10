@@ -120,6 +120,7 @@ func TestScopeExecutor_Args(t *testing.T) {
 	}
 	want := []string{
 		"--user", "--scope", "--collect", "--quiet",
+		"--expand-environment=no",
 		"--unit", "prism-build-tok-0001",
 		"--property", "Delegate=yes",
 		"--property", "TasksMax=1024",
@@ -292,8 +293,11 @@ func TestScopeScript(t *testing.T) {
 		t.Errorf("command args = %q, want %q", got, want)
 	}
 	procs, err := os.ReadFile(filepath.Join(cgRoot+scope, "podman", "cgroup.procs"))
-	if err != nil || strings.TrimSpace(string(procs)) == "" {
-		t.Errorf("the script did not move itself into the leaf cgroup: %q, %v", procs, err)
+	if err != nil || string(procs) != "0\n" {
+		t.Errorf("cgroup.procs of the leaf = %q, %v; want 0 (the writing process)", procs, err)
+	}
+	if strings.Contains(scopeScript, "$$") {
+		t.Error("the scope script holds $$, which an expanding systemd-run changes to $")
 	}
 
 	if err := os.WriteFile(cgFile, []byte("1:name=systemd:/x\n"), 0o600); err != nil {
