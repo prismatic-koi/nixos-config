@@ -18,6 +18,20 @@ package prismcontainer
 // characters of an image reference, with no "$", quote, or backslash.
 // Then nothing can build a transport prefix that the check does not see.
 //
+// Each line is read in two ways, and both must pass:
+//
+//   - The parser view copies how the Dockerfile parser of buildah splits a
+//     line (splitCommand and extractBuilderFlags in imagebuilder): the
+//     keyword at ASCII whitespace, then the flags byte by byte. The parser
+//     reads the bytes 0x85 and 0xA0 as spaces, also inside a UTF-8
+//     character, and it lower-cases the keyword with strings.ToLower, so
+//     "ONBUİLD" is ONBUILD. This view finds every flag that buildah finds.
+//   - The word view splits at whitespace runes and keeps quotes and
+//     backslashes. The literal rule uses it.
+//
+// In both views, a flag that holds a byte above 0x7F is refused, so that
+// the two ways to split a line cannot give different flags.
+//
 // An ONBUILD trigger of a base image runs instructions that are not in the
 // Containerfile, so this check cannot see them. On Linux the signature
 // policy of the build (ScopeExecutor) refuses those transports too.
@@ -49,6 +63,8 @@ var (
 	literalReference = regexp.MustCompile(`^(docker://)?[A-Za-z0-9._/:@-]+$`)
 	// literalFlagName is the name part of a flag, written literally.
 	literalFlagName = regexp.MustCompile(`^--[A-Za-z0-9-]+$`)
+	// parserWhitespace is tokenWhitespace of the Dockerfile parser.
+	parserWhitespace = regexp.MustCompile(`[\t\v\f\r ]+`)
 )
 
 func refuseFile(line int, format string, args ...any) error {
@@ -129,30 +145,45 @@ func joinContinuations(physical []string, skipComments bool) []joinedLine {
 	return out
 }
 
-// checkInstruction checks one line. In a FROM line, every word that is not
-// a flag is a reference. In every other line, the flag words at the start
-// (after ONBUILD, when it is there) are read: the value of --from, and the
-// from= values of --mount. With strict false, only a literal transport
-// reference is refused.
+// checkInstruction checks one line in the parser view and in the word
+// view. With strict false, only a literal transport reference is refused.
 func checkInstruction(line int, text string, strict bool) error {
+	if err := checkWordView(line, text, strict); err != nil {
+		return err
+	}
+	return checkParserView(line, text, strict)
+}
+
+// checkWordView checks one line split at whitespace runes. In a FROM line,
+// the first word that is not a flag is the image, and it must be literal.
+// The later words (AS and the stage name, or the text of a heredoc line
+// that starts with "from") get the transport check only. In every other
+// line, the flag words at the start (after ONBUILD, when it is there) are
+// read: the value of --from, and the from= values of --mount.
+func checkWordView(line int, text string, strict bool) error {
 	words := rawWords(text)
 	if len(words) == 0 || strings.HasPrefix(words[0], "#") {
 		return nil
 	}
-	if asciiLower(words[0]) == "onbuild" {
+	if strings.ToLower(words[0]) == "onbuild" {
 		words = words[1:]
 	}
 	if len(words) == 0 {
 		return nil
 	}
-	if asciiLower(words[0]) == "from" {
+	if strings.ToLower(words[0]) == "from" {
+		image := true
 		for _, w := range words[1:] {
 			if strings.HasPrefix(w, "--") {
+				if strict && hasNonASCII(w) {
+					return refuseNonASCIIFlag(line, w)
+				}
 				continue
 			}
-			if err := checkReference(line, w, strict); err != nil {
+			if err := checkReference(line, w, strict && image); err != nil {
 				return err
 			}
+			image = false
 		}
 		return nil
 	}
@@ -172,6 +203,9 @@ func checkInstruction(line int, text string, strict bool) error {
 			}
 			continue
 		}
+		if strict && hasNonASCII(w) {
+			return refuseNonASCIIFlag(line, w)
+		}
 		switch asciiLower(name) {
 		case "--from":
 			if !hasValue {
@@ -190,6 +224,158 @@ func checkInstruction(line int, text string, strict bool) error {
 		}
 	}
 	return nil
+}
+
+// checkParserView checks one line as the Dockerfile parser of buildah
+// splits it. The parser has already removed the quotes and backslashes of
+// a flag, so the literal rule does not apply to a flag here. The word view
+// applies it.
+func checkParserView(line int, text string, strict bool) error {
+	cmd, flags, args := splitParserLine(text)
+	var allFlags []string
+	allFlags = append(allFlags, flags...)
+	if cmd == "onbuild" {
+		cmd, flags, args = splitParserLine(args)
+		allFlags = append(allFlags, flags...)
+	}
+	for _, f := range allFlags {
+		if strict && hasNonASCII(f) {
+			return refuseNonASCIIFlag(line, f)
+		}
+		name, value, _ := strings.Cut(f, "=")
+		switch strings.ToLower(name) {
+		case "--from":
+			if err := checkReference(line, value, strict); err != nil {
+				return err
+			}
+		case "--mount":
+			if err := checkMount(line, value, strict); err != nil {
+				return err
+			}
+		}
+	}
+	if cmd == "from" {
+		for i, w := range parserWhitespace.Split(args, -1) {
+			if w == "" {
+				continue
+			}
+			if err := checkReference(line, w, strict && i == 0); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// splitParserLine splits one line as splitCommand of the Dockerfile parser
+// does: the keyword (lower case), the flags, and the rest.
+func splitParserLine(text string) (string, []string, string) {
+	parts := parserWhitespace.Split(strings.TrimSpace(text), 2)
+	cmd := strings.ToLower(parts[0])
+	if len(parts) < 2 {
+		return cmd, nil, ""
+	}
+	args, flags := extractParserFlags(parts[1])
+	return cmd, flags, strings.TrimSpace(args)
+}
+
+// extractParserFlags is a copy of extractBuilderFlags of the Dockerfile
+// parser (openshift/imagebuilder, dockerfile/parser/split_command.go). It
+// reads the line byte by byte, as the parser does. Do not change it to
+// read runes: then it no longer finds the flags that buildah finds.
+func extractParserFlags(line string) (string, []string) {
+	const (
+		inSpaces = iota
+		inWord
+		inQuote
+	)
+	var words []string
+	phase := inSpaces
+	word := ""
+	quote := '\000'
+	blankOK := false
+	var ch rune
+	for pos := 0; pos <= len(line); pos++ {
+		if pos != len(line) {
+			ch = rune(line[pos])
+		}
+		if phase == inSpaces {
+			if pos == len(line) {
+				break
+			}
+			if unicode.IsSpace(ch) {
+				continue
+			}
+			if ch != '-' || pos+1 == len(line) || rune(line[pos+1]) != '-' {
+				return line[pos:], words
+			}
+			phase = inWord
+		}
+		if (phase == inWord || phase == inQuote) && pos == len(line) {
+			if word != "--" && (blankOK || len(word) > 0) {
+				words = append(words, word)
+			}
+			break
+		}
+		if phase == inWord {
+			if unicode.IsSpace(ch) {
+				phase = inSpaces
+				if word == "--" {
+					return line[pos:], words
+				}
+				if blankOK || len(word) > 0 {
+					words = append(words, word)
+				}
+				word = ""
+				blankOK = false
+				continue
+			}
+			if ch == '\'' || ch == '"' {
+				quote = ch
+				blankOK = true
+				phase = inQuote
+				continue
+			}
+			if ch == '\\' {
+				if pos+1 == len(line) {
+					continue
+				}
+				pos++
+				ch = rune(line[pos])
+			}
+			word += string(ch)
+			continue
+		}
+		if phase == inQuote {
+			if ch == quote {
+				phase = inWord
+				continue
+			}
+			if ch == '\\' {
+				if pos+1 == len(line) {
+					phase = inWord
+					continue
+				}
+				pos++
+				ch = rune(line[pos])
+			}
+			word += string(ch)
+		}
+	}
+	return "", words
+}
+
+func hasNonASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] > 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func refuseNonASCIIFlag(line int, flag string) error {
+	return refuseFile(line, "the flag %q holds a character that is not ASCII. Write flags in ASCII only", flag)
 }
 
 // checkMount checks the from= values of one --mount value. A "$", a quote,

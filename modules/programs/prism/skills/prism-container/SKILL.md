@@ -230,6 +230,11 @@ source:
   backslash, and a flag name that is not literal (for example
   `--fr"om"=`). Other flags can hold variables, for example
   `COPY --chown=${UID}:${UID}`.
+- Write every flag (a word that starts with `--` before the arguments of
+  an instruction) in ASCII. Prism refuses a flag with a character that is
+  not ASCII. The Dockerfile parser reads flags byte by byte, and some
+  bytes inside a UTF-8 character count as spaces there. Text that is not
+  ASCII in other places, for example in a `RUN` command, passes.
 - `--platform=$BUILDPLATFORM` on `FROM` is not an image source, so prism
   does not check it.
 
@@ -241,8 +246,10 @@ Prism also refuses these:
   Prism always gives podman the copy under the name `Containerfile`.
 
 The check reads more than podman does. Thus it can refuse a line that
-podman does not read as an image source, for example a heredoc line that
-starts with `FROM`. The refusal names the line.
+podman does not read as an image source. For example, a heredoc line that
+starts with `FROM` or `from` must have a literal first word:
+`from typing import List` passes, and `FROM $BASE` in a heredoc is
+refused. The refusal names the line.
 
 ### What the Containerfile can do
 

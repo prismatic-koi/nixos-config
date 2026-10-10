@@ -85,12 +85,35 @@ func TestBuild_NonLiteralReferenceRefused(t *testing.T) {
 		"variable mount from":     {file: "FROM alpine\nRUN --mount=type=bind,from=$SRC,target=/m true\n", want: "--mount value"},
 		"empty --from":            {file: "FROM alpine\nCOPY --from= /a /b\n", want: "is not literal"},
 		"non-ASCII in reference":  {file: "FROM alpine\u0130:1\n", want: "is not literal"},
-		"invalid UTF-8 in --from": {file: "FROM alpine\nCOPY --from=\xff\xfe /a /b\n", want: "is not literal"},
+		"invalid UTF-8 in --from": {file: "FROM alpine\nCOPY --from=\xff\xfe /a /b\n", want: "not ASCII"},
 		"escape directive":        {file: "# escape=`\nFROM alpine\n", want: "escape directive"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			res, f := buildFile(t, tc.file, tc.buildArgs...)
+			wantRefused(t, res, f, tc.want)
+		})
+	}
+}
+
+// TestBuild_ParserSplitRefused: the Dockerfile parser reads the flags of a
+// line byte by byte, so the bytes 0x85 and 0xA0 split a flag word, also
+// inside a UTF-8 character (U+0160 is C5 A0, U+0105 is C4 85). It also
+// lower-cases the keyword with strings.ToLower, so "ONBUİLD" is ONBUILD.
+// Each of these lines gives buildah a tarball: source.
+func TestBuild_ParserSplitRefused(t *testing.T) {
+	cases := map[string]struct{ file, want string }{
+		"COPY --exclude then --from": {"FROM alpine\nCOPY --exclude=x\u0160--from=tarball:/p /a /b\n", "not ASCII"},
+		"COPY --chown then --from":   {"FROM alpine\nCOPY --chown=0\u0105--from=tarball:/p /a /b\n", "not ASCII"},
+		"RUN --network then --mount": {"FROM alpine\nRUN --network=none\u0160--mount=type=bind,from=tarball:/p,target=/m true\n", "not ASCII"},
+		"FROM --platform then image": {"FROM --platform=linux/amd64\u0160tarball:/p\n", "not ASCII"},
+		"lone 0x85 before --from":    {"FROM alpine\nCOPY \x85--from=tarball:/p /a /b\n", `the "tarball" transport`},
+		"lone 0xA0 before --mount":   {"FROM alpine\nRUN \xa0--mount=type=bind,from=tarball:/p,target=/m true\n", `the "tarball" transport`},
+		"dotted I in ONBUILD":        {"FROM alpine\nONBU\u0130LD COPY --from=tarball:/p /a /b\n", `the "tarball" transport`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			res, f := buildFile(t, tc.file)
 			wantRefused(t, res, f, tc.want)
 		})
 	}
@@ -118,6 +141,9 @@ func TestBuild_LiteralReferencesPass(t *testing.T) {
 		"SQL in a joined RUN":   "FROM postgres\nRUN psql -c \"SELECT * \\\nFROM users\"\n",
 		"shell flags on joined": "FROM alpine\nRUN kubectl create secret generic s \\\n  --from-literal=k=$V \\\n  && rsync -a \\\n  --exclude-from=$LIST /a /b\n",
 		"comment with a slash":  "# a comment \\\nFROM alpine\n",
+		"heredoc Python import": "FROM python:3.12\nRUN <<EOF python3\nfrom typing import List, Dict\nfrom foo import *\nEOF\n",
+		"heredoc SQL":           "FROM postgres:16\nCOPY <<EOF /init.sql\nSELECT name\nFROM users WHERE id = 1;\nEOF\n",
+		"non-ASCII in RUN":      "FROM alpine\nRUN echo caf\u00e9 \u0160\n",
 	}
 	for name, file := range cases {
 		t.Run(name, func(t *testing.T) {
