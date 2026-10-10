@@ -75,6 +75,8 @@ import (
 //     Reports before/after/final/child_pid/restore_err via stdout.
 func runSuperviseHelper() int {
 	switch os.Getenv("PRISM_TEST_SUPERVISE_MODE") {
+	case "signal-child":
+		return runSuperviseSignalChild()
 	case "foreground":
 		return runSuperviseForegroundHelper()
 	default:
@@ -87,21 +89,39 @@ func runSuperviseHelper() int {
 func runSuperviseSignalHelper() int {
 	forwardWinch := os.Getenv("PRISM_TEST_SUPERVISE_FORWARD_WINCH") == "1"
 
-	cmd := exec.Command("sleep", "30")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "helper: start sleep: %v\n", err)
+	// The child is this binary, not sleep(1): a child that inherits an
+	// ignored SIGHUP would survive the forwarded signal.
+	self, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "helper: os.Executable: %v\n", err)
 		return 10
 	}
-
-	// Tell the parent our PID so it can signal us.
-	fmt.Printf("pid=%d\n", os.Getpid())
+	cmd := exec.Command(self)
+	cmd.Env = append(os.Environ(), "PRISM_TEST_SUPERVISE_MODE=signal-child")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	childOut, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "helper: stdout pipe: %v\n", err)
+		return 10
+	}
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "helper: start child: %v\n", err)
+		return 10
+	}
+	// Wait until the child has subscribed to its signals.
+	var ready [8]byte
+	if _, err := childOut.Read(ready[:]); err != nil {
+		fmt.Fprintf(os.Stderr, "helper: child readiness: %v\n", err)
+		return 10
+	}
 
 	// Use a non-TTY fd: stdin under exec.Cmd default is /dev/null,
 	// which is fine — tcsetpgrpForeground silently no-ops on
 	// non-TTY.
 	waitErr := SuperviseChild(cmd, int(os.Stdin.Fd()), SuperviseOpts{
 		ForwardWinch: forwardWinch,
+		// Report the PID only once signal.Notify is active.
+		onSubscribed: func() { fmt.Printf("pid=%d\n", os.Getpid()) },
 	})
 
 	// Expectation: a forwarded signal terminated the sleep child,
@@ -117,6 +137,21 @@ func runSuperviseSignalHelper() int {
 		return 12
 	}
 	return 0
+}
+
+// runSuperviseSignalChild is the supervised child of the signal helper.
+// It subscribes to the forwarded signals, reports ready, and exits 1 on
+// the first signal. Subscribing replaces any inherited ignore.
+func runSuperviseSignalChild() int {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	fmt.Println("ready")
+	select {
+	case <-ch:
+		return 1
+	case <-time.After(30 * time.Second):
+		return 0
+	}
 }
 
 // runSuperviseForegroundHelper is the foreground-pgid helper body.
@@ -229,13 +264,8 @@ func startSuperviseHelper(t *testing.T, forwardWinch bool) (*exec.Cmd, int) {
 		fmt.Sprintf("PRISM_TEST_SUPERVISE_FORWARD_WINCH=%s", boolFlag(forwardWinch)),
 	})
 
-	// Read the first line ("pid=%d\n") to get the helper's PID.
-	// This also synchronises with helper startup: we know the
-	// helper has reached the point in runSuperviseHelper just
-	// before SuperviseChild, so its signal.Notify subscription is
-	// about to come up. We add a tiny delay after the read to
-	// cover the small window between fmt.Printf and signal.Notify
-	// inside SuperviseChild.
+	// The helper prints "pid=%d\n" only after signal.Notify is active,
+	// so reading it is the readiness signal.
 	var buf [64]byte
 	n, err := stdout.Read(buf[:])
 	if err != nil {
@@ -245,12 +275,6 @@ func startSuperviseHelper(t *testing.T, forwardWinch bool) (*exec.Cmd, int) {
 	if _, err := fmt.Sscanf(string(buf[:n]), "pid=%d", &pid); err != nil {
 		t.Fatalf("parse helper pid line %q: %v", string(buf[:n]), err)
 	}
-
-	// Give the helper a moment to enter signal.Notify inside
-	// SuperviseChild. The pid line is printed *before*
-	// SuperviseChild is called, so a brief sleep here covers the
-	// gap.
-	time.Sleep(100 * time.Millisecond)
 
 	return helper, pid
 }
