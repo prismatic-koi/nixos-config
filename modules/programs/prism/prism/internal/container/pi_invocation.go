@@ -159,10 +159,21 @@ func PIInvocation(cfg Config) []string {
 	}
 
 	if cfg.InitialPrompt != "" {
-		args = append(args, cfg.InitialPrompt)
+		args = append(args, PIPromptLead(cfg.InitialPrompt)+cfg.InitialPrompt)
 	}
 
 	return args
+}
+
+// PIPromptLead returns the prefix to put before a prompt passed to pi as a
+// positional argument. pi has no `--` terminator and reads a leading `-` as
+// an option and a leading `@` as a file reference. One leading space makes
+// pi read the prompt as text. The result is "" for any other prompt.
+func PIPromptLead(prompt string) string {
+	if strings.HasPrefix(prompt, "-") || strings.HasPrefix(prompt, "@") {
+		return " "
+	}
+	return ""
 }
 
 // ResolvePIResumeSession returns true when the on-disk pi session JSONL for
