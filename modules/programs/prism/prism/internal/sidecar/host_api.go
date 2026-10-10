@@ -825,7 +825,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				}
 				events = merged
 			}
-			// If no assistant events exist, events stays nil → returned as [].
+			// Frames after the last msg_assistant row: the turn that was in
+			// progress (e.g. when the agent stalled). Only for the newest
+			// page — a --before/--after cursor asks for an older or later window.
+			if beforePtr == nil && afterPtr == nil {
+				if tail, terr := s.cfg.DB.QueryTailEvents(targetSession, db.CheckinTailLimit); terr == nil {
+					events = append(events, tail...)
+				}
+			}
 		}
 
 		// Ensure empty arrays rather than null.

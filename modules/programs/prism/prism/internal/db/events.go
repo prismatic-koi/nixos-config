@@ -694,3 +694,63 @@ UPDATE agent_status
 	}
 	return rowID, nil
 }
+
+// TailEventTypes lists the event types QueryTailEvents returns: the frames a
+// session wrote after its last msg_assistant row. msg_assistant is written
+// only at turn_end, so a session that stalls mid-turn has no row for the turn
+// that was in progress; these types are the record of that turn.
+var TailEventTypes = []string{
+	"turn_start", "turn_end", "tool_call", "tool_result", "thinking",
+	"permission_ask", "permission_denied", "state_change",
+	"stall_error", "startup_error", "error",
+}
+
+// CheckinTailLimit caps the tail events the default checkin view appends.
+const CheckinTailLimit = 50
+
+// QueryTailEvents returns up to limit of the newest TailEventTypes events
+// written after the session's last msg_assistant row (all of them when the
+// session has no msg_assistant row), in chronological order.
+func (d *DB) QueryTailEvents(sessionName string, limit int) ([]Event, error) {
+	placeholders := make([]string, len(TailEventTypes))
+	args := []any{sessionName, sessionName}
+	for i, t := range TailEventTypes {
+		placeholders[i] = "?"
+		args = append(args, t)
+	}
+	args = append(args, sessionName)
+	q := `SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id
+FROM agent_events
+WHERE session_name = ?
+  AND created_at > COALESCE((SELECT MAX(created_at) FROM agent_events WHERE session_name = ? AND type = 'msg_assistant'), -1)
+  AND type IN (` + strings.Join(placeholders, ",") + `)
+  AND COALESCE(JSON_EXTRACT(payload, '$.parentMessageId'), JSON_EXTRACT(payload, '$.messageId'), '') NOT IN (
+        SELECT JSON_EXTRACT(payload, '$.messageId') FROM agent_events
+         WHERE session_name = ? AND type = 'msg_assistant' AND JSON_EXTRACT(payload, '$.messageId') IS NOT NULL)
+ORDER BY created_at DESC, rowid DESC`
+	if limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: query tail events: %w", err)
+	}
+	defer rows.Close()
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var createdAt int64
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
+			return nil, fmt.Errorf("db: scan tail event: %w", err)
+		}
+		e.CreatedAt = time.UnixMilli(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate tail events: %w", err)
+	}
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
+	}
+	return events, nil
+}
