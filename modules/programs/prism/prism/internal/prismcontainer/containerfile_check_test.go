@@ -110,6 +110,17 @@ func TestBuild_ParserSplitRefused(t *testing.T) {
 		"lone 0x85 before --from":    {"FROM alpine\nCOPY \x85--from=tarball:/p /a /b\n", `the "tarball" transport`},
 		"lone 0xA0 before --mount":   {"FROM alpine\nRUN \xa0--mount=type=bind,from=tarball:/p,target=/m true\n", `the "tarball" transport`},
 		"dotted I in ONBUILD":        {"FROM alpine\nONBU\u0130LD COPY --from=tarball:/p /a /b\n", `the "tarball" transport`},
+		// review-security round 9: the word view ends its flag zone early,
+		// and ProcessWord turns the next flag into --from or --mount.
+		"zone desync, escaped from":  {"FROM alpine\nCOPY --exclude='\\'\\' z' --from\\\\=tarball:/x /etc/passwd /out\n", "name that is not literal"},
+		"zone desync, escaped mount": {"FROM alpine\nRUN --network='\\'\\' z' --mou\\\\nt=type=bind,from=tarball:/x,target=/t true\n", "name that is not literal"},
+		"zone desync, variable from": {"FROM alpine\nCOPY --exclude='\\'\\' z' --from$E=tarball:/x /a /b\n", "name that is not literal"},
+		// review-qa round 9: a flag after a lone 0x85 or 0xA0 byte, which
+		// only the parser view sees.
+		"lone 0xA0, variable in mount": {"FROM alpine\nRUN \xa0--mo${X}unt=type=bind,from=tarball:/home/u/x.tar,target=/m cat /m/f\n", "name that is not literal"},
+		"lone 0xA0, quotes in mount":   {"FROM alpine\nRUN \xa0--mou'\"nt\"'=type=bind,from=tarball:/home/u/x.tar,target=/m cat /m/f\n", "name that is not literal"},
+		"lone 0x85, escape in mount":   {"FROM alpine\nRUN \x85--mou\\\\nt=type=bind,from=tarball:/home/u/x.tar,target=/m cat /m/f\n", "name that is not literal"},
+		"lone 0xA0, variable in from":  {"FROM alpine\nCOPY \xa0--fr${X}om=tarball:/home/u/x.tar /a /b\n", "name that is not literal"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

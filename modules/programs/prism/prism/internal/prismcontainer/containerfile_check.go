@@ -274,9 +274,15 @@ func checkWordView(line int, text string) error {
 }
 
 // checkParserView checks one instruction text as the Dockerfile parser of
-// buildah splits it. The parser has already removed the quotes and
-// backslashes of a flag, so the literal rule does not apply to a flag
-// here. The word view applies it.
+// buildah splits it. The parser view finds every flag that buildah finds,
+// so it is a complete check of the flags by itself.
+//
+// imagebuilder runs ProcessWord on each flag after it extracts the flag,
+// so a "$", a quote, or a backslash in a flag can still change it. Thus
+// the name of a flag must be literal here too: ProcessWord then leaves the
+// name as it is, and a later "=" from an expansion comes after the name.
+// The values of --from and --mount get the literal rule in checkReference
+// and checkMount.
 func checkParserView(line int, text string) error {
 	cmd, rest := splitParserKeyword(text)
 	if cmd == "onbuild" {
@@ -294,6 +300,9 @@ func checkParserView(line int, text string) error {
 			return refuseNonASCIIFlag(line, f)
 		}
 		name, value, _ := strings.Cut(f, "=")
+		if !literalFlagName.MatchString(name) {
+			return refuseFile(line, "the flag %q has a name that is not literal. Write flag names literally. %s", f, restructureHint)
+		}
 		switch strings.ToLower(name) {
 		case "--from":
 			if err := checkReference(line, value, true); err != nil {
