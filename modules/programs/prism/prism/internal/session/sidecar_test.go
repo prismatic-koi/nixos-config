@@ -79,8 +79,16 @@ func TestMain(m *testing.M) {
 	}
 
 	restoreTmuxEnv := isolateSuiteFromHostTmux()
+	// Host-mode command building reads profiles.json. Point it at an empty
+	// dir so the suite never sees the developer's real profiles.
+	cfgDir, mkErr := os.MkdirTemp("", "prism-session-cfg-")
+	if mkErr != nil {
+		panic(mkErr)
+	}
+	os.Setenv("XDG_CONFIG_HOME", cfgDir)
 	code := m.Run()
 	restoreTmuxEnv()
+	os.RemoveAll(cfgDir)
 	os.Exit(code)
 }
 

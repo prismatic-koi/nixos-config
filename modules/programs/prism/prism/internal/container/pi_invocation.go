@@ -58,6 +58,66 @@ const (
 	piExtensionFilename = "prism.ts"
 )
 
+// PIOverrides carries the per-spawn overrides for the pi model axes. An
+// empty field means "no override". AgentModel is the per-role
+// `--model-override` entry and outranks Model, the session-wide `--model`.
+type PIOverrides struct {
+	Provider   string
+	Model      string
+	AgentModel string
+	Variant    string
+}
+
+// PIModelAxes is the resolved provider, model, and thinking level for pi.
+type PIModelAxes struct {
+	Provider string
+	Model    string
+	Thinking string
+}
+
+// ResolvePIModelAxes applies the overrides to a profile slot. It is the
+// single place that decides the provider, model, and thinking level for
+// every isolation mode: populatePIConfig (bwrap, sandbox-exec) and the
+// host-mode command builder both call it. Precedence for the model:
+// AgentModel, then Model, then slot.Model.
+func ResolvePIModelAxes(slot config.RoleSlot, ov PIOverrides) PIModelAxes {
+	axes := PIModelAxes{Provider: slot.Provider, Model: slot.Model, Thinking: slot.Thinking}
+	if ov.Provider != "" {
+		axes.Provider = ov.Provider
+	}
+	if ov.Model != "" {
+		axes.Model = ov.Model
+	}
+	if ov.AgentModel != "" {
+		axes.Model = ov.AgentModel
+	}
+	if ov.Variant != "" {
+		axes.Thinking = ov.Variant
+	}
+	return axes
+}
+
+// PIModelFlags renders the --provider, --model, and --thinking flags, in
+// that order, and omits any flag whose value is empty. agentModel, when
+// non-empty, wins over model. PIInvocation and the host-mode command
+// builder both render through this function.
+func PIModelFlags(provider, agentModel, model, thinking string) []string {
+	var args []string
+	if provider != "" {
+		args = append(args, "--provider", provider)
+	}
+	if agentModel != "" {
+		model = agentModel
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if thinking != "" {
+		args = append(args, "--thinking", thinking)
+	}
+	return args
+}
+
 // PIInvocation returns the trailing arg slice that launches PI with the
 // profile-derived flags. It is the PI analogue of HarnessInvocation.
 //
@@ -102,25 +162,7 @@ func PIInvocation(cfg Config) []string {
 	}
 	args := []string{binary}
 
-	if cfg.PIProvider != "" {
-		args = append(args, "--provider", cfg.PIProvider)
-	}
-	// Model axis, highest rung first. cfg.AgentModel carries the
-	// `prism spawn --model-override <role>=<model>` entry for THIS session's
-	// role; cfg.PIModel carries the profile slot value that populatePIConfig
-	// has already replaced with `prism agent-run --model` when that was set.
-	// A per-role entry therefore beats the session-wide flag, which beats the
-	// slot — the chain `prism agent-context` publishes as precedence["model"].
-	model := cfg.PIModel
-	if cfg.AgentModel != "" {
-		model = cfg.AgentModel
-	}
-	if model != "" {
-		args = append(args, "--model", model)
-	}
-	if cfg.PIThinking != "" {
-		args = append(args, "--thinking", cfg.PIThinking)
-	}
+	args = append(args, PIModelFlags(cfg.PIProvider, cfg.AgentModel, cfg.PIModel, cfg.PIThinking)...)
 
 	// Extension path inside the sandbox (directory + filename).
 	extensionSandboxDir := cfg.PIExtensionSandboxDir

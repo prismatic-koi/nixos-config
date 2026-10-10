@@ -151,8 +151,17 @@ func TestMain(m *testing.M) {
 	// so the suite controls its full environment surface.
 	restoreSandboxEnv := isolateSuiteFromSandboxEnv()
 
+	// Host-mode command building reads profiles.json. Point it at an empty
+	// dir so the suite never sees the developer's real profiles.
+	cfgDir, mkErr := os.MkdirTemp("", "prism-cmd-cfg-")
+	if mkErr != nil {
+		panic(mkErr)
+	}
+	os.Setenv("XDG_CONFIG_HOME", cfgDir)
+
 	code := m.Run()
 
+	os.RemoveAll(cfgDir)
 	restoreSandboxEnv()
 	restoreTmuxEnv()
 

@@ -571,6 +571,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		// modes) plus each `-e KEY=VALUE` env entry. previewOpts is the
 		// minimal shape BuildAgentCmd needs for the sandbox mode.
 		previewOpts := Opts{
+			ProfileName:   opts.ProfileName,
 			Prompt:        opts.Prompt,
 			Agent:         opts.AgentRole,
 			SessionName:   opts.SessionName,
@@ -990,6 +991,7 @@ func resolveLayoutIsolationMode(opts SpawnOpts) string {
 // in practice.
 func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 	return Opts{
+		ProfileName:         opts.ProfileName,
 		Prompt:              opts.Prompt,
 		PromptFilePath:      promptFilePath,
 		Agent:               opts.AgentRole,
@@ -1157,6 +1159,7 @@ func agentOnlyAgentEnvVars(opts SpawnOpts) map[string]string {
 // before it gets here, and the resolved value is what must reach BuildAgentCmd.
 func buildOptsForAgentOnlyLayout(opts SpawnOpts, port int, mode string) Opts {
 	return Opts{
+		ProfileName:    opts.ProfileName,
 		Prompt:         opts.Prompt,
 		PromptFilePath: opts.PromptFilePath, // set by SpawnSession; keeps agentCmd O(1) in prompt size for host mode
 		Agent:          opts.AgentRole,
