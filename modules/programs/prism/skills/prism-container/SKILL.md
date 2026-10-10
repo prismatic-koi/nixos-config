@@ -370,8 +370,9 @@ session cannot run at the same time.
      uses the image. Do not run an image that another session built.
 - Cleanup issues podman commands only when one of these incarnations has
   an audit directory.
-- Cleanup of a parent session also removes the containers of its review
-  agents.
+- Cleanup of a parent session does the same three steps for each of its
+  review agents: it stops their builds, and it removes their containers
+  and their images.
 - If prism stops before it removes a container, the podman `--timeout`
   stops the container and `--rm` removes it.
 - Images that prism pulls stay in the shared image store of the host. Prism
@@ -451,8 +452,13 @@ markers. Like the audit directory, no sandbox can write them.
 - Both routes call one function that builds the podman argument vector.
   Thus the two routes cannot differ.
 - For `build`, one internal part, the build executor, differs between
-  Linux (systemd scope) and macOS (plain `podman build`). It adds only the
-  process limit.
+  Linux and macOS. It adds options to the argument vector of the shared
+  builder, and changes nothing else:
+  - Linux: `--signature-policy` after `build`. The scope script then adds
+    the global option `--cgroup-manager=cgroupfs` before `build`, and
+    `--cgroup-parent <scope>/build` after `build`. The scope itself sets
+    `TasksMax`, `Delegate`, and `RuntimeMaxSec`.
+  - macOS: `--ulimit nproc=1024:1024` after `build`.
 - The source is in `modules/programs/prism/prism/internal/prismcontainer/`.
 
 ## The podman proxy

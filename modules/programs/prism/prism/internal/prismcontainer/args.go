@@ -170,8 +170,11 @@ func imageNamePrefix(c Caller) string {
 
 // buildArgs builds the podman argument vector of `prism container build`.
 // It is the only builder: the host-API route and the host-mode route both
-// reach it through Build. The build executor adds its process limit
-// after "build" and changes nothing else.
+// reach it through Build. The build executor adds options and changes
+// nothing else. ScopeExecutor (Linux) adds --signature-policy after
+// "build", and its scope script adds --cgroup-manager=cgroupfs before
+// "build" and --cgroup-parent after it. PlainExecutor (macOS) adds
+// --ulimit nproc after "build".
 //
 // The agent controls only v. Every path is a prism-owned copy, never an
 // agent path. A --build-arg value is one argument after its flag, so it
