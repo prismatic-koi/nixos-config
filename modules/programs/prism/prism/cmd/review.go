@@ -114,6 +114,12 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// (empty CSV, unknown names) is consistent across both paths and no
 	// sessions are spawned before we know the agent list is valid.
 	allAgents := agentsForHarness(harnessFlag)
+	for role := range modelsByRole {
+		if !containsString(agentNameStrings(allAgents), role) {
+			return fmt.Errorf("prism review: unknown --model-override role %q: valid roles: %s",
+				role, strings.Join(agentNameStrings(allAgents), ", "))
+		}
+	}
 	var agents []review.Agent
 	if onlyChanged {
 		// --only was explicitly set. Validate it produces at least one token.
@@ -154,6 +160,13 @@ func runReview(cmd *cobra.Command, args []string) error {
 			agentNames[i] = ag.Name
 		}
 
+		// ignore-concurrency-cap is registered but never read by the host
+		// route, so it has no effect to mirror. Harness is forwarded only
+		// when explicitly set, matching the host route's default.
+		extraHarness := ""
+		if cmd.Flags().Changed("harness") {
+			extraHarness = harnessFlag
+		}
 		timeoutStr := ""
 		if timeoutFlag > 0 {
 			timeoutStr = timeoutFlag.String()
@@ -170,7 +183,11 @@ func runReview(cmd *cobra.Command, args []string) error {
 		// the JSON terminal status is the only thing on stdout. The Ack is
 		// still buffered in ackOutput so we can parse the group_id from it.
 		quietStdout := waitFlag && jsonFlag
-		ackOutput, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr, rebaseFlag, quietStdout)
+		ackOutput, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr, rebaseFlag, quietStdout, reviewProxyExtras{
+			Models:        modelsByRole,
+			DiffInlineMax: diffInlineMaxFlag,
+			Harness:       extraHarness,
+		})
 		if err != nil {
 			return fmt.Errorf("prism review: host API: %w", err)
 		}
@@ -631,4 +648,13 @@ Wait for the finish notification from that spawned session before reporting back
 See: modules/programs/prism/agents/coordinator.md`)
 	}
 	return nil
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

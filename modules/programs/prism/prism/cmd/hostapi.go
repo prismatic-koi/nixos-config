@@ -625,6 +625,14 @@ func promptdeliveryOutcomeForProxy(buffered, replayed bool) promptdelivery.Deliv
 	}
 }
 
+// reviewProxyExtras carries the `prism review` flags beyond agents, timeout,
+// and rebase that the sandboxed route forwards to the sidecar.
+type reviewProxyExtras struct {
+	Models        map[string]string
+	DiffInlineMax int
+	Harness       string
+}
+
 // proxyReviewAsync proxies an async review request to the host-API sidecar
 // when running inside a container (PRISM_HOST_API is set). It sends POST /review
 // to the sidecar, which runs `prism review` on the host where tmux is available,
@@ -650,7 +658,7 @@ func promptdeliveryOutcomeForProxy(buffered, replayed bool) promptdelivery.Deliv
 // the in-sandbox `prism review --wait --json` path to honour the
 // JSON-exclusive contract: otherwise the streamed Ack lines would
 // land on stdout before waitForReviewTerminal emits its JSON object.
-func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, rebase bool, quietStdout bool) (string, error) {
+func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, rebase bool, quietStdout bool, extras reviewProxyExtras) (string, error) {
 	// Build request body.
 	body := map[string]any{
 		"pr_number": prNumber,
@@ -663,6 +671,15 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, 
 	}
 	if rebase {
 		body["rebase"] = true
+	}
+	if len(extras.Models) > 0 {
+		body["model_overrides"] = extras.Models
+	}
+	if extras.DiffInlineMax > 0 {
+		body["diff_inline_max"] = extras.DiffInlineMax
+	}
+	if extras.Harness != "" {
+		body["harness"] = extras.Harness
 	}
 
 	// The sidecar streams output as it arrives and closes the response body

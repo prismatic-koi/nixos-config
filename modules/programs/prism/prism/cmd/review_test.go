@@ -8,6 +8,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
+	"github.com/spf13/pflag"
 )
 
 // TestAgentsForHarness_ReturnsAllFive verifies that agentsForHarness always
@@ -576,5 +577,28 @@ func TestRejectIfCoordinator_NameHeuristicMainBlocked(t *testing.T) {
 	err := rejectIfCoordinator()
 	if err == nil {
 		t.Fatal("rejectIfCoordinator: expected error for @main session with no DB row, got nil")
+	}
+}
+
+// TestRunReview_UnknownModelOverrideRole_Refused covers the host route of
+// #3096: an unknown --model-override role is refused with an error naming
+// the role, before any session state is created.
+func TestRunReview_UnknownModelOverrideRole_Refused(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	if err := reviewCmd.Flags().Set("model-override", "review-bogus=a/b"); err != nil {
+		t.Fatalf("set flag: %v", err)
+	}
+	t.Cleanup(func() {
+		if sv, ok := reviewCmd.Flags().Lookup("model-override").Value.(pflag.SliceValue); ok {
+			_ = sv.Replace(nil)
+		}
+	})
+
+	err := runReview(reviewCmd, []string{"1"})
+	if err == nil {
+		t.Fatal("runReview: want error for unknown role, got nil")
+	}
+	if !strings.Contains(err.Error(), "review-bogus") {
+		t.Errorf("error %q does not name the role", err)
 	}
 }

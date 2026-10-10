@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1875,6 +1876,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Agents   []string `json:"agents"`
 			Timeout  string   `json:"timeout"`
 			Rebase   bool     `json:"rebase"`
+
+			ModelOverrides map[string]string `json:"model_overrides"`
+			DiffInlineMax  int               `json:"diff_inline_max"`
+			Harness        string            `json:"harness"`
 		}
 		// /review body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
@@ -1900,6 +1905,29 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			if !isKnownReviewAgent(name) {
 				writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown agent name %q — must be one of: %s",
 					name, strings.Join(knownReviewAgentNames(), ", ")))
+				return
+			}
+		}
+
+		for role, model := range req.ModelOverrides {
+			if !isKnownReviewAgent(role) {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown --model-override role %q — must be one of: %s",
+					role, strings.Join(knownReviewAgentNames(), ", ")))
+				return
+			}
+			if model == "" || strings.HasPrefix(model, "-") || strings.ContainsAny(model, "=\n") {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid --model-override model %q for role %q", model, role))
+				return
+			}
+		}
+		if req.DiffInlineMax < 0 {
+			writeError(w, http.StatusBadRequest, "diff_inline_max must be >= 0")
+			return
+		}
+		if req.Harness != "" {
+			if _, ok := harness.Lookup(req.Harness); !ok {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown harness %q: valid harnesses: %s",
+					req.Harness, strings.Join(harness.Names(), ", ")))
 				return
 			}
 		}
@@ -2039,6 +2067,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// the host-side subprocess runs the gate with --rebase. The gate
 			// itself runs in the host subprocess.
 			args = append(args, "--rebase")
+		}
+		roles := make([]string, 0, len(req.ModelOverrides))
+		for role := range req.ModelOverrides {
+			roles = append(roles, role)
+		}
+		sort.Strings(roles)
+		for _, role := range roles {
+			args = append(args, "--model-override", role+"="+req.ModelOverrides[role])
+		}
+		if req.DiffInlineMax > 0 {
+			args = append(args, "--diff-inline-max", strconv.Itoa(req.DiffInlineMax))
+		}
+		if req.Harness != "" {
+			args = append(args, "--harness", req.Harness)
 		}
 
 		s.logger().Printf("sidecar: host-API /review: prism %s", strings.Join(args, " "))
