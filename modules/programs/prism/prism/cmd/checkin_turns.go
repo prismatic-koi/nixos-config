@@ -56,6 +56,7 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 	fmt.Printf("state: %s\n\n", state)
 
 	if len(assistantEvents) == 0 {
+		renderCheckinTail(d, session)
 		fmt.Println("── end of event log ──")
 		return nil
 	}
@@ -355,6 +356,7 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 		fmt.Println()
 	}
 
+	renderCheckinTail(d, session)
 	fmt.Println("── end of event log ──")
 	return nil
 }
@@ -371,4 +373,65 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm %ds", mins, secs)
 	}
 	return fmt.Sprintf("%ds", secs)
+}
+
+// renderCheckinTail prints the frames written after the session's last
+// msg_assistant row. msg_assistant is written at turn_end, so a session that
+// stalls mid-turn has no row for that turn; without this section its tool
+// calls and its stall_error are invisible. A tool_call with no later
+// tool_result, or a turn_start with no later turn_end, is marked as in
+// progress at the end of the log.
+func renderCheckinTail(d *db.DB, session string) {
+	tail, err := d.QueryTailEvents(session, 50)
+	if err != nil || len(tail) == 0 {
+		return
+	}
+	fmt.Println("events after the last assistant turn:")
+	renderTailEvents(tail)
+	fmt.Println()
+}
+
+// renderTailEvents prints tail events one per line and flags the tool call or
+// model request still in progress at the end of the slice.
+func renderTailEvents(tail []db.Event) {
+	resolved := map[string]bool{}
+	turnOpen := false
+	for _, e := range tail {
+		switch e.Type {
+		case "tool_result":
+			var p payload.ToolResult
+			if json.Unmarshal([]byte(e.Payload), &p) == nil {
+				resolved[p.ID] = true
+			}
+		case "turn_start":
+			turnOpen = true
+		case "turn_end":
+			turnOpen = false
+		}
+	}
+	for _, e := range tail {
+		ts := e.CreatedAt.Local().Format("15:04:05")
+		switch e.Type {
+		case "tool_call":
+			var p payload.ToolCall
+			if json.Unmarshal([]byte(e.Payload), &p) == nil && p.ID != "" && !resolved[p.ID] {
+				args := displayArgs(p.Args)
+				if len(args) > 80 {
+					args = args[:80] + "..."
+				}
+				fmt.Printf("[%s]   → %s: %s [in progress: no result]\n", ts, p.Name, args)
+				continue
+			}
+			fmt.Printf("[%s]", ts)
+			renderChildEvent("tool_call", e.Payload, false, "")
+		case "tool_result", "thinking", "permission_ask", "permission_denied":
+			fmt.Printf("[%s]", ts)
+			renderChildEvent(e.Type, e.Payload, false, "")
+		default:
+			fmt.Printf("[%s] %s: %s\n", ts, e.Type, e.Payload)
+		}
+	}
+	if turnOpen {
+		fmt.Println("model request in progress: last turn_start has no turn_end")
+	}
 }
