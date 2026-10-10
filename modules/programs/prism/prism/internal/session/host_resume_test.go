@@ -76,12 +76,12 @@ func TestBuildDirectAgentCmd_HostMode_AppendsSessionWhenFileExists(t *testing.T)
 	if !strings.Contains(cmd, want) {
 		t.Errorf("buildDirectAgentCmd missing %q\ngot: %s", want, cmd)
 	}
-	// --session must appear before --prompt so the flag pair stays adjacent to
+	// --session must appear before the prompt so the flag pair stays adjacent to
 	// the binary and the prompt remains the trailing argument.
 	sessionIdx := strings.Index(cmd, "--session")
-	promptIdx := strings.Index(cmd, "--prompt")
+	promptIdx := strings.Index(cmd, "'hello'")
 	if sessionIdx == -1 || promptIdx == -1 || sessionIdx > promptIdx {
-		t.Errorf("--session must appear before --prompt; got: %s", cmd)
+		t.Errorf("--session must appear before the prompt; got: %s", cmd)
 	}
 }
 

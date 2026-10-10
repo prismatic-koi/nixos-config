@@ -1494,7 +1494,7 @@ func writeProfile(m *Manager) (string, error) {
 
 // BuildArgs constructs the sandbox-exec argument list:
 //
-//	sandbox-exec -f <profile_path> pi [--agent X] [--prompt Y]
+//	sandbox-exec -f <profile_path> pi [--agent X] [Y]
 //
 // The first element ("sandbox-exec") is argv[0]; the caller invokes
 // syscall.Exec("/usr/bin/sandbox-exec", args, env). After -f and the profile
@@ -1508,7 +1508,7 @@ func writeProfile(m *Manager) (string, error) {
 //   - --hostname 127.0.0.1: same rationale as bwrap (host network namespace
 //     is shared on both modes; binding 0.0.0.0 would be overly broad).
 //   - --agent <role>: appended when cfg.AgentRole is non-empty.
-//   - --prompt <text>: appended when cfg.InitialPrompt is non-empty.
+//   - <text>: bare positional argument, appended when cfg.InitialPrompt is non-empty.
 //
 // HOME and the rest of the sandbox env are not wired through the profile
 // generator — the dispatcher (cmd/agent_run_sandbox_exec_darwin.go) builds

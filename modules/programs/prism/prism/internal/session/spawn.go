@@ -87,7 +87,7 @@ type SpawnOpts struct {
 	AgentRole string
 
 	// Prompt is the initial prompt delivered to the agent on startup.
-	// Passed via the agent's --prompt CLI flag (host mode) or via the sidecar
+	// Passed as the positional CLI argument (host mode) or via the sidecar
 	// (container/bwrap mode).
 	Prompt string
 
@@ -110,7 +110,7 @@ type SpawnOpts struct {
 	// should leave this empty; SpawnSession populates it from opts.Prompt
 	// before the layout-specific spawn runs.
 	//
-	// For LayoutFull + host: BuildAgentCmd emits `--prompt "$(cat
+	// For LayoutFull + host: BuildAgentCmd emits `"$(cat
 	// <path>)"` rather than inlining the prompt body.
 	//
 	// For LayoutAgentOnly + bwrap/sandbox-exec: spawnAgentPaneEnvVars sets
@@ -433,7 +433,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// inlining the prompt body into the tmux command.
 	//
 	//   - LayoutFull + host: buildDirectAgentCmd emits
-	//     `--prompt "$(cat <path>)"` so tmux's `sh -c <cmd>` stays small.
+	//     `"$(cat <path>)"` so tmux's `sh -c <cmd>` stays small.
 	//   - LayoutFull / LayoutAgentOnly + bwrap or sandbox-exec: carrying the
 	//     prompt as `-e PRISM_INITIAL_PROMPT=<huge>` on the tmux new-window
 	//     argv can push role-prompt + boilerplate + bind paths past tmux's
@@ -441,7 +441,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	//     `-e PRISM_INITIAL_PROMPT_FILE=<path>` env var keeps the launch
 	//     command's size O(1) in prompt size; `prism agent-run` reads the file
 	//     when it sees the env var and feeds the contents to the
-	//     bwrap/sandbox-exec --prompt path.
+	//     bwrap/sandbox-exec prompt path.
 	//
 	// All modes (host and sandbox) write the prompt file regardless of
 	// layout — see the needsPromptFile gate below.
@@ -1099,7 +1099,7 @@ func spawnFullLayout(d *db.DB, opts SpawnOpts, port int) error {
 // When opts.PromptFilePath is non-empty, PRISM_INITIAL_PROMPT_FILE carries
 // the path to the prompt file and the prompt body itself is NOT inlined into
 // tmux's argv. `prism agent-run` reads the file when it sees the env var and
-// feeds the contents to the agent's --prompt path. This keeps the tmux launch
+// feeds the contents to the agent as the initial prompt. This keeps the tmux launch
 // command O(1) in prompt size.
 //
 // SpawnSession always writes the prompt file when there is a non-empty prompt,

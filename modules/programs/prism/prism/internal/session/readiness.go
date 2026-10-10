@@ -127,7 +127,7 @@ type ReadinessOpts struct {
 	//   - a turn_start, msg_user, or msg_assistant event has been
 	//     written, OR
 	//   - harness_session_id is set (agent session.created — implies
-	//     the agent received the prompt via --prompt CLI flag), OR
+	//     the agent received the prompt as a positional CLI argument), OR
 	//   - state_change observed a non-"active" terminal transition
 	//     ("finished", "interrupted", "error") — the agent ran to
 	//     completion or failed in a way that is now visible.
@@ -178,7 +178,7 @@ func WaitForReady(d *db.DB, sessionName string, timeout time.Duration) error {
 //   - a state_change to a non-"active" terminal state, OR
 //   - agent_status.harness_session_id is non-NULL — this fires when the agent
 //     emits session.created, which (for the agent in CLI-prompt mode) means
-//     the agent parsed --prompt and accepted the message.
+//     the agent received the prompt and accepted the message.
 //
 // On timeout returns *ReadinessTimeoutError. DB-error returns are transient.
 func WaitForReadyWithOpts(d *db.DB, sessionName string, opts ReadinessOpts) error {
@@ -228,7 +228,7 @@ func WaitForReadyWithOpts(d *db.DB, sessionName string, opts ReadinessOpts) erro
 func promptReadinessSatisfied(d *db.DB, sessionName string, requirePromptDelivered bool) bool {
 	// Secondary (and strict-condition) signal: harness_session_id non-NULL.
 	// the agent writes session.created → sidecar updates harness_session_id
-	// when it parses --prompt and accepts the message; for the strict path
+	// when it receives the prompt and accepts the message; for the strict path
 	// this is enough proof the prompt landed. For the loose path it is
 	// belt-and-braces alongside state_change.
 	st, stErr := d.CurrentStatus(sessionName)

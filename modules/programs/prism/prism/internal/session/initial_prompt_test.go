@@ -151,7 +151,7 @@ func TestWriteInitialPrompt_OverwritesStaleFile(t *testing.T) {
 // ── BuildAgentCmd: host mode + prompt file ──────────────────────────────
 
 // TestBuildAgentCmd_HostMode_PromptFile verifies that BuildAgentCmd in
-// host mode with PromptFilePath set emits `--prompt "$(cat <quoted path>)"`
+// host mode with PromptFilePath set emits `"$(cat <quoted path>)"`
 // and does NOT inline the prompt body. This is the core change: the launch
 // command size becomes O(1) in prompt size.
 func TestBuildAgentCmd_HostMode_PromptFile(t *testing.T) {
@@ -172,7 +172,7 @@ func TestBuildAgentCmd_HostMode_PromptFile(t *testing.T) {
 	// The command must reference the file via $(cat …) — operators (and
 	// the size guard) rely on this contract so the launch command size
 	// stays O(1) in prompt size.
-	wantSubstr := `--prompt "$(cat '/var/state/prism/run/myrepo@feat/initial-prompt.txt')"`
+	wantSubstr := ` "$(cat '/var/state/prism/run/myrepo@feat/initial-prompt.txt')"`
 	if !strings.Contains(cmd, wantSubstr) {
 		t.Errorf("host-mode cmd does not contain %q\ngot: %q", wantSubstr, cmd)
 	}
@@ -488,4 +488,32 @@ func buildLargePrompt(size int) string {
 func sha256hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+func TestBuildAgentCmd_HostMode_NoPromptFlagAndLeadingDash(t *testing.T) {
+	base := Opts{IsolationMode: "host", Agent: "worker", Port: 14000, SessionName: "myrepo@feat"}
+
+	inline := base
+	inline.Prompt = "-rf is a prompt"
+	cmd, err := BuildAgentCmd(inline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cmd, "--prompt") {
+		t.Errorf("cmd has --prompt token: %q", cmd)
+	}
+	if !strings.HasSuffix(cmd, "' -rf is a prompt'") {
+		t.Errorf("leading-dash prompt not guarded: %q", cmd)
+	}
+
+	file := base
+	file.Prompt = "-x"
+	file.PromptFilePath = "/run/p.txt"
+	cmd, err = BuildAgentCmd(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(cmd, ` " $(cat '/run/p.txt')"`) || strings.Contains(cmd, "--prompt") {
+		t.Errorf("leading-dash file prompt not guarded: %q", cmd)
+	}
 }

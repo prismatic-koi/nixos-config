@@ -181,12 +181,12 @@ func TestBuildDirectAgentCmd_ProviderBeforePrompt(t *testing.T) {
 	}
 	cmd := buildDirectAgentCmd(opts)
 	providerIdx := strings.Index(cmd, "--provider")
-	promptIdx := strings.Index(cmd, "--prompt")
+	promptIdx := strings.Index(cmd, "'do the thing'")
 	if providerIdx == -1 || promptIdx == -1 {
-		t.Fatalf("expected --provider and --prompt both present; got %q", cmd)
+		t.Fatalf("expected --provider and the prompt both present; got %q", cmd)
 	}
 	if providerIdx > promptIdx {
-		t.Errorf("--provider (at %d) must appear before --prompt (at %d) in %q", providerIdx, promptIdx, cmd)
+		t.Errorf("--provider (at %d) must appear before the prompt (at %d) in %q", providerIdx, promptIdx, cmd)
 	}
 }
 
@@ -268,14 +268,14 @@ func TestBuildDirectAgentCmd_OverrideFlagsBeforePrompt(t *testing.T) {
 
 	modelIdx := strings.Index(cmd, "--model")
 	thinkingIdx := strings.Index(cmd, "--thinking")
-	promptIdx := strings.Index(cmd, "--prompt")
+	promptIdx := strings.Index(cmd, "'do the thing'")
 	if modelIdx == -1 || thinkingIdx == -1 || promptIdx == -1 {
-		t.Fatalf("expected --model, --thinking, and --prompt all present; got %q", cmd)
+		t.Fatalf("expected --model, --thinking, and the prompt all present; got %q", cmd)
 	}
 	if modelIdx > promptIdx {
-		t.Errorf("--model (at %d) must appear before --prompt (at %d) in %q", modelIdx, promptIdx, cmd)
+		t.Errorf("--model (at %d) must appear before the prompt (at %d) in %q", modelIdx, promptIdx, cmd)
 	}
 	if thinkingIdx > promptIdx {
-		t.Errorf("--thinking (at %d) must appear before --prompt (at %d) in %q", thinkingIdx, promptIdx, cmd)
+		t.Errorf("--thinking (at %d) must appear before the prompt (at %d) in %q", thinkingIdx, promptIdx, cmd)
 	}
 }
