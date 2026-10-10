@@ -32,7 +32,8 @@
 //                         → turn_end (no state_change, other cases)
 //                            turn_end carries stop_reason (issue #3088)
 //   agent_settled         → run_error (last turn had no text and no tool
-//                            call, and stopReason was not stop/aborted)
+//                            call, and stopReason was not stop/aborted; or
+//                            had text and stopReason error/length, #3100)
 //   message_start (role=user)
 //                         → msg_user            (prompt text, truncated)
 //   message_update        → msg_assistant       (text_delta only, truncated)
@@ -2943,6 +2944,7 @@ export function buildSilentTurnRunError(
 ): Record<string, unknown> | null {
   if (message === null || typeof message !== "object") return null
   const content = (message as { content?: unknown }).content
+  let hasOutput = false
   if (Array.isArray(content)) {
     for (const block of content) {
       if (block === null || typeof block !== "object") continue
@@ -2950,19 +2952,27 @@ export function buildSilentTurnRunError(
       if (type === "toolCall") return null
       if (type === "text") {
         const text = (block as { text?: unknown }).text
-        if (typeof text === "string" && text.trim() !== "") return null
+        if (typeof text === "string" && text.trim() !== "") hasOutput = true
       }
     }
   }
   const fields = deriveTurnEndStopFields(message)
   const stopReason = fields.stop_reason ?? ""
   if (stopReason === "stop" || stopReason === "aborted") return null
+  // A turn with text ends the run in error only for `error` or `length`
+  // (issue #3100). Other stop reasons with text are not failures.
+  if (hasOutput && stopReason !== "error" && stopReason !== "length") {
+    return null
+  }
 
   let detail = `stop reason "${stopReason === "" ? "unknown" : stopReason}"`
   if (fields.raw_stop_reason !== undefined) {
     detail += `, provider stop reason "${fields.raw_stop_reason}"`
   }
-  let reason = `the model ended its turn with no text and no tool call (${detail})`
+  const what = hasOutput
+    ? "the model ended its turn after text with a failure"
+    : "the model ended its turn with no text and no tool call"
+  let reason = `${what} (${detail})`
   if (fields.error_message !== undefined) {
     reason += `: ${fields.error_message}`
   }
@@ -3279,7 +3289,8 @@ export default function prismExtension(pi: ExtensionAPI): void {
   let pendingReviewCall = false
 
   // The run_error frame for the last turn, when that turn had no text and no
-  // tool call. Written on agent_settled (issue #3088).
+  // tool call, or had text and stop reason error/length. Written on
+  // agent_settled (issues #3088, #3100).
   let lastTurnRunError: Record<string, unknown> | null = null
 
   // ── Connection state ──────────────────────────────────────────────────

@@ -760,8 +760,9 @@ Introduced in #1761.
 {"type":"run_error","stop_reason":"error","raw_stop_reason":"refusal","error_message":"The model refused to complete the request","reason":"the model ended its turn with no text and no tool call (stop reason \"error\", provider stop reason \"refusal\"): The model refused to complete the request"}
 ```
 
-The extension sends this frame when pi ends the agent run after a turn
-with no text and no tool call (issue #3088). After such a turn, pi sends
+The extension sends this frame when pi ends the agent run after a bad
+turn. A bad turn has no text and no tool call (issue #3088). It can also
+have text and stop reason `error` or `length` (issue #3100). After such a turn, pi sends
 no event. Without this frame, the session stays `active` until the
 inactivity watchdog fires.
 
@@ -773,8 +774,9 @@ inactivity watchdog fires.
 The extension sends the frame on the pi `agent_settled` event, when all
 of these conditions are true:
 
-1. The last `turn_end` of the run had no text block with non-blank text
-   and no `toolCall` block.
+1. The last `turn_end` of the run had no `toolCall` block. It had no
+   text block with non-blank text, or its `stopReason` was `error` or
+   `length`.
 2. The `stopReason` of that turn was not `stop` and not `aborted`. A
    `stop` turn already ends the run with `state_change{finished}` (§5.2).
    An `aborted` turn ends it with `state_change{interrupted}`.
@@ -782,8 +784,9 @@ of these conditions are true:
 
 The pi `agent_settled` event fires only after pi decides not to retry,
 compact, or start a queued continuation. Thus a retryable error turn does not cause
-this frame. A turn with text, or with a tool call, does not cause this
-frame, whatever its stop reason.
+this frame. A turn with a tool call does not cause this frame. A turn
+with text and a stop reason other than `error` or `length` does not
+cause it either.
 
 **Sidecar behaviour:** the sidecar writes the frame as a `run_error` row
 in `agent_events`, then moves the session to `StateError`. The
