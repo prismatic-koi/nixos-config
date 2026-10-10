@@ -564,6 +564,14 @@ request — both are declared only, because the token endpoint rejects a
     retry assertions load `isRetryableAssistantError` from the installed
     pi.
 
+20. **A bad or unfinished `tool_use` block fails the turn (issue #3103)** —
+    pi-only, not an upstream port. At `content_block_stop`, a tool input
+    that is not valid JSON throws `StreamFailure`. The message names the
+    tool and the parse error. An empty input stays `{}`. A stream that
+    ends with a `tool_use` block not yet closed throws `StreamFailure`
+    that names the tool. Before this change, the parser kept the empty
+    arguments and the turn ended with a `toolUse` stop.
+
 ## Port procedure for future upstream fixes
 
 When griffinmartin ships a fix you want to port:

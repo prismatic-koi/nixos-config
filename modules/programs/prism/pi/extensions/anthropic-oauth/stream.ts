@@ -817,12 +817,17 @@ export async function parseSSEStream(
         })
       } else if (block.type === "toolCall") {
         const tb = block as ToolCall & { index?: number; partialJson?: string }
-        try {
-          tb.arguments = JSON.parse(tb.partialJson ?? "") as Record<
-            string,
-            unknown
-          >
-        } catch {}
+        const raw = tb.partialJson ?? ""
+        if (raw.trim() !== "") {
+          try {
+            tb.arguments = JSON.parse(raw) as Record<string, unknown>
+          } catch (e) {
+            throw new StreamFailure(
+              `Anthropic tool_use block for tool "${tb.name}" has input that is not valid JSON: ${e instanceof Error ? e.message : String(e)}`,
+              output,
+            )
+          }
+        }
         delete tb.partialJson
         stream.push({
           type: "toolcall_end",
@@ -912,6 +917,15 @@ export async function parseSSEStream(
 
     // The messages match pi-ai's built-in client, so pi classes them as
     // retryable.
+    const open = blocks.find(
+      (b) => b.type === "toolCall" && (b as { index?: number }).index !== undefined,
+    )
+    if (open) {
+      throw new StreamFailure(
+        `Anthropic stream ended inside a tool_use block for tool "${(open as ToolCall).name}"`,
+        output,
+      )
+    }
     if (sawMessageStart && !sawMessageStop) {
       throw new StreamFailure("Anthropic stream ended before message_stop", output)
     }

@@ -631,6 +631,8 @@ type reviewProxyExtras struct {
 	Models        map[string]string
 	DiffInlineMax int
 	Harness       string
+
+	IgnoreConcurrencyCap bool
 }
 
 // proxyReviewAsync proxies an async review request to the host-API sidecar
@@ -680,6 +682,9 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, 
 	}
 	if extras.Harness != "" {
 		body["harness"] = extras.Harness
+	}
+	if extras.IgnoreConcurrencyCap {
+		body["ignore_concurrency_cap"] = true
 	}
 
 	// The sidecar streams output as it arrives and closes the response body
