@@ -572,13 +572,8 @@ func buildDirectAgentCmd(opts Opts) string {
 		// characters in the per-session run dir cannot be interpreted as
 		// shell metacharacters.
 		//
-		// pi has no `--` terminator and reads a leading `-` or `@` as an
-		// option or file argument. A single leading space makes the prompt
-		// positional.
-		lead := ""
-		if strings.HasPrefix(opts.Prompt, "-") || strings.HasPrefix(opts.Prompt, "@") {
-			lead = " "
-		}
+		// See container.PIPromptLead for why a prompt needs protection.
+		lead := container.PIPromptLead(opts.Prompt)
 		if opts.PromptFilePath != "" {
 			cmd += ` "` + lead + `$(cat ` + shellQuote(opts.PromptFilePath) + `)"`
 		} else {
