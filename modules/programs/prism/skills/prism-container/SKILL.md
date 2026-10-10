@@ -206,27 +206,35 @@ not a lower-case letter or a digit becomes `-`.
 
 ### The image sources of a build
 
-A build reads images for `FROM`, for `COPY --from=`, and for
-`RUN --mount=from=`. Podman reads a source that starts with a transport
-name and `:` from that transport, and several transports read a path on
-the host. For example, `tarball:` takes any tar archive as a layer, and
-`atomic:` reads the kubeconfig of the host. Thus, before podman runs,
-prism reads the copy of the Containerfile and refuses a source that names
-one of these transports: `atomic`, `containers-storage`, `dir`,
-`docker-archive`, `docker-daemon`, `oci`, `oci-archive`, `ostree`, `sif`,
-and `tarball`. A registry image (`alpine`, `docker://alpine`,
-`quay.io/org/img`), a local image (`localhost/prism-...`), and a build
-stage are not refused.
+A build reads images for `FROM`, for `COPY --from` and `ADD --from`, and
+for `RUN --mount=from=`. Podman reads a source that starts with a
+transport name and `:` from that transport, and several transports read a
+path on the host. For example, `tarball:` takes any tar archive as a
+layer, and `atomic:` reads the kubeconfig of the host. Thus, before podman
+runs, prism reads the copy of the Containerfile and checks each image
+source:
 
-The check also refuses these forms, because it cannot read them:
+- Write each image source literally. It can hold only letters, digits,
+  `.`, `_`, `-`, `/`, `:`, and `@`, with an optional `docker://` at the
+  start. Prism refuses a `$`, a quote, or a backslash there, because
+  podman expands `ARG` and `ENV` values, quotes, and escapes before it
+  reads the source. For example, prism refuses `FROM golang:${GO_VERSION}`.
+  Write `FROM golang:1.23`.
+- Prism refuses a source that names one of these transports: `atomic`,
+  `containers-storage`, `dir`, `docker-archive`, `docker-daemon`, `oci`,
+  `oci-archive`, `ostree`, `sif`, and `tarball`.
+- A registry image (`alpine`, `docker://alpine`, `quay.io/org/img:1`), a
+  local image (`localhost/prism-...`), a stage name (`--from=build`), and a
+  stage index (`--from=0`) pass.
+- Prism refuses a `--mount` value that holds a `$`, a quote, or a
+  backslash, and a flag name that is not literal (for example
+  `--fr"om"=`). Other flags can hold variables, for example
+  `COPY --chown=${UID}:${UID}`.
+- `--platform=$BUILDPLATFORM` on `FROM` is not an image source, so prism
+  does not check it.
 
-- A variable in a `--from` or `--mount` flag, for example
-  `COPY --from=$BUILDER`. A base image can set an environment variable of
-  any name. Use the stage name or the image name directly.
-- In a `FROM` line, any `$` other than `$VAR`, `${VAR}`, `${VAR:-word}`,
-  `${VAR-word}`, `${VAR:+word}`, and `${VAR+word}`. The check expands these
-  forms with every value that an `ARG`, an `ENV`, a `--build-arg`, or a
-  platform argument gives.
+Prism also refuses these:
+
 - A parser directive `# escape=` with a character other than `\`.
 - A `--file` whose name ends in `.in`. Podman runs such a file through the
   C preprocessor on the host, and an `#include` then reads a host file.
@@ -436,7 +444,7 @@ markers. Like the audit directory, no sandbox can write them.
 | `refused: --tag ... is not a valid image tag` | Use a lower-case `NAME` or `NAME:TAG`. See "The image name". |
 | `refused: the build context holds more than 4 GiB` | Give a smaller `CONTEXT`, or list large directories in `.containerignore`. |
 | `refused: the build context changed while prism copied it` | Try again when nothing writes to the context. |
-| `refused: the Containerfile cannot be built: line N: ...` | Read the reason. Use a registry image, a local image, or a build stage, and give `--from` and `--mount` with no variable. See "The image sources of a build". |
+| `refused: the Containerfile cannot be built: line N: ...` | Read the reason. Write each image source literally: a registry image, a local image, or a build stage, with no variable, quote, or backslash. See "The image sources of a build". |
 | `The signature policy of the build refused an image source` | A base image has an `ONBUILD` instruction that names a transport. Use a different base image. |
 
 ## How it works

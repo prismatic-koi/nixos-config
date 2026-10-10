@@ -34,13 +34,18 @@ func wantRefused(t *testing.T, res prismcontainer.BuildResult, f *prismcontainer
 }
 
 // TestBuild_TransportRefused: each transport that is not a registry is
-// refused in FROM, in COPY --from=, and in RUN --mount=from=.
+// refused in FROM, in COPY and ADD --from, and in RUN --mount=from=.
 func TestBuild_TransportRefused(t *testing.T) {
 	transports := []string{"atomic", "containers-storage", "dir", "docker-archive", "docker-daemon", "oci", "oci-archive", "ostree", "sif", "tarball"}
 	places := map[string]string{
-		"FROM":        "FROM %s:/home/u/x.tar\n",
-		"COPY --from": "FROM alpine\nCOPY --from=%s:/home/u/x.tar /a /b\n",
-		"mount from":  "FROM alpine\nRUN --mount=type=bind,from=%s:/home/u/x.tar,target=/m cat /m/f\n",
+		"FROM":               "FROM %s:/home/u/x.tar\n",
+		"FROM with platform": "FROM --platform=$BUILDPLATFORM %s:/home/u/x.tar AS base\n",
+		"COPY --from=":       "FROM alpine\nCOPY --from=%s:/home/u/x.tar /a /b\n",
+		"COPY --from value":  "FROM alpine\nCOPY --from %s:/home/u/x.tar /a /b\n",
+		"ADD --from=":        "FROM alpine\nADD --from=%s:/home/u/x.tar /a /b\n",
+		"mount from=":        "FROM alpine\nRUN --mount=type=bind,from=%s:/home/u/x.tar,target=/m cat /m/f\n",
+		"ONBUILD":            "FROM alpine\nONBUILD COPY --from=%s:/home/u/x.tar /a /b\n",
+		"joined line":        "FROM alpine\nRUN \\\n  --mount=type=bind,from=%s:/home/u/x.tar,target=/m true\n",
 	}
 	for _, tr := range transports {
 		for place, format := range places {
@@ -52,104 +57,67 @@ func TestBuild_TransportRefused(t *testing.T) {
 	}
 }
 
-// TestBuild_TransportRefusedThroughExpansion: each expansion form that the
-// check reads can build a transport reference, and the check refuses it.
-func TestBuild_TransportRefusedThroughExpansion(t *testing.T) {
-	cases := []struct {
-		name      string
+// TestBuild_NonLiteralReferenceRefused: a reference that is not literal is
+// refused, because buildah expands, unquotes, and unescapes it, and the
+// result can name a transport. The first four cases are the ARG forms that
+// got past the expanding check of an earlier revision.
+func TestBuild_NonLiteralReferenceRefused(t *testing.T) {
+	cases := map[string]struct {
 		file      string
 		buildArgs []string
+		want      string
 	}{
-		{"$VAR", "ARG B=tarball:/x\nFROM $B\n", nil},
-		{"${VAR}", "ARG B=tarball:/x\nFROM ${B}\n", nil},
-		{"${VAR:-word}", "FROM ${UNSET:-tarball:/x}\n", nil},
-		{"${VAR-word}", "FROM ${UNSET-tarball:/x}\n", nil},
-		{"${VAR:+word}", "ARG S=1\nFROM ${S:+tarball:/x}\n", nil},
-		{"${VAR+word}", "ARG S=1\nFROM ${S+tarball:/x}\n", nil},
-		{"build-arg", "ARG B\nFROM $B\n", []string{"B=tarball:/x"}},
-		{"build-arg override", "ARG B=alpine\nFROM $B\n", []string{"B=tarball:/x"}},
-		{"joined variables", "ARG A=tar\nARG C=ball\nFROM ${A}${C}:/x\n", nil},
-		{"nested ARG", "ARG A=tarball\nARG B=${A}:/x\nFROM $B\n", nil},
-		{"nested default", "ARG A=tarball\nFROM ${UNSET:-${A}:/x}\n", nil},
-		{"platform arg", "FROM tarball${TARGETVARIANT}:/x\n", nil},
-		{"double quotes", "FROM \"tarball:/x\"\n", nil},
-		{"single quotes", "FROM 'tar'ball:/x\n", nil},
-		{"backslash", "FROM tar\\ball:/x\n", nil},
-		{"lower case", "from tarball:/x\n", nil},
-		{"platform flag first", "FROM --platform=linux/amd64 tarball:/x AS base\n", nil},
-		{"continuation", "FROM \\\n  tarball:/x\n", nil},
-		{"continuation with comment", "FROM \\\n# a comment\n  tarball:/x\n", nil},
-		{"ONBUILD", "FROM alpine\nONBUILD COPY --from=tarball:/x /a /b\n", nil},
-		{"--from with a space", "FROM alpine\nCOPY --from tarball:/x /a /b\n", nil},
-		{"--FROM upper case", "FROM alpine\nCOPY --FROM=tarball:/x /a /b\n", nil},
-		{"quoted mount", "FROM alpine\nRUN --mount=type=bind,\"from=tarball:/x\",target=/m true\n", nil},
-		{"mount on a joined line", "FROM alpine\nRUN \\\n  --mount=type=bind,from=tarball:/x,target=/m true\n", nil},
-		{"CRLF", "FROM alpine\r\nCOPY --from=tarball:/x /a /b\r\n", nil},
-		{"byte order mark", "\ufeffFROM tarball:/x\n", nil},
-		{"quoted flag name", "FROM alpine\nCOPY --fr\"om\"=tarball:/x /a /b\n", nil},
-		{"escaped flag name", "FROM alpine\nCOPY --fr\\om=tarball:/x /a /b\n", nil},
-		{"quoted mount key", "FROM alpine\nRUN --mo\"unt\"=type=bind,fr\"om\"=tarball:/x,target=/m true\n", nil},
-		{"dotted I before from=", "FROM alpine\nRUN --mount=type=bind,target=/\u0130,from=tarball:/x true\n", nil},
-		{"Kelvin sign before from=", "FROM alpine\nRUN --mount=type=bind,target=/\u212a,from=tarball:/x true\n", nil},
-		{"longer lower case before from=", "FROM alpine\nRUN --mount=type=bind,target=/\u023a\u023a\u023a\u023a,from=tarball:/x true\n", nil},
-		{"invalid UTF-8 before from=", "FROM alpine\nRUN --mount=type=bind,target=/\xff\xfe\xfd,from=tarball:/x true\n", nil},
-		{"comment that ends in a backslash", "# a comment \\\nFROM tarball:/x\n", nil},
-		{"form feed", "\fFROM\vtarball:/x\n", nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			res, f := buildFile(t, tc.file, tc.buildArgs...)
-			wantRefused(t, res, f, `the "tarball" transport`)
-		})
-	}
-}
-
-// TestBuild_UncheckableFormsRefused: a form that the check cannot expand
-// is refused, because buildah can expand it to a transport reference.
-func TestBuild_UncheckableFormsRefused(t *testing.T) {
-	cases := map[string]struct {
-		file string
-		want string
-	}{
-		"${VAR#pattern}":           {"ARG B=xtarball:/x\nFROM ${B#x}\n", "is not supported"},
-		"${VAR:?word}":             {"FROM ${B:?missing}\n", "is not supported"},
-		"${VAR/a/b}":               {"ARG B=x:/x\nFROM ${B/x/tarball}\n", "is not supported"},
-		"${#VAR}":                  {"FROM ${#B}\n", "is not supported"},
-		"command substitution":     {"FROM $(echo tarball:/x)\n", "not followed by a variable name"},
-		"$1":                       {"FROM $1tarball:/x\n", "not followed by a variable name"},
-		"open quote":               {"FROM \"tarball:/x\n", "quote is not closed"},
-		"unexpandable ARG":         {"ARG B=$(id)\nFROM $B\n", "cannot check"},
-		"ARG loop":                 {"ARG A=${B}\nARG B=${A}\nFROM $A\n", "cannot check"},
-		"variable in --from":       {"FROM alpine\nCOPY --from=$SRC /a /b\n", "cannot check the flag"},
-		"variable in mount":        {"FROM alpine\nRUN --mount=type=bind,from=${SRC},target=/m true\n", "cannot check the flag"},
-		"variable in --from value": {"FROM alpine\nCOPY --from ${SRC} /a /b\n", "cannot check the --from value"},
-		"escape directive":         {"# escape=`\nFROM alpine\n", "escape directive"},
+		"quoted ARG word":         {file: "ARG \"B=tarball:/x\"\nFROM $B\n", want: "is not literal"},
+		"escaped ARG equals":      {file: "ARG B\\=tarball:/x\nFROM $B\n", want: "is not literal"},
+		"ARG name from variable":  {file: "ARG N=B\nARG ${N}=tarball:/x\nFROM $B\n", want: "is not literal"},
+		"ARG from variable":       {file: "ARG V=B=tarball:/x\nARG $V\nFROM $B\n", want: "is not literal"},
+		"build-arg":               {file: "ARG B\nFROM ${B}\n", buildArgs: []string{"B=tarball:/x"}, want: "is not literal"},
+		"variable in a tag":       {file: "ARG GO=1.23\nFROM golang:${GO}\n", want: "Write the image literally"},
+		"quoted FROM":             {file: "FROM \"tarball:/x\"\n", want: "is not literal"},
+		"backslash in FROM":       {file: "FROM tar\\ball:/x\n", want: "is not literal"},
+		"quoted --from value":     {file: "FROM alpine\nCOPY --from=\"tarball:/x\" /a /b\n", want: "is not literal"},
+		"backslash --from value":  {file: "FROM alpine\nCOPY --from=tar\\ball:/x /a /b\n", want: "is not literal"},
+		"variable --from value":   {file: "FROM alpine\nCOPY --from=$SRC /a /b\n", want: "is not literal"},
+		"quoted flag name":        {file: "FROM alpine\nCOPY --fr\"om\"=tarball:/x /a /b\n", want: "name that is not literal"},
+		"escaped flag name":       {file: "FROM alpine\nCOPY --fr\\om=tarball:/x /a /b\n", want: "name that is not literal"},
+		"quoted mount field":      {file: "FROM alpine\nRUN --mount=type=bind,\"from=tarball:/x\",target=/m true\n", want: "--mount value"},
+		"variable mount key":      {file: "FROM alpine\nRUN --mount=type=bind,${K}=tarball:/x,target=/m true\n", want: "--mount value"},
+		"variable mount from":     {file: "FROM alpine\nRUN --mount=type=bind,from=$SRC,target=/m true\n", want: "--mount value"},
+		"empty --from":            {file: "FROM alpine\nCOPY --from= /a /b\n", want: "is not literal"},
+		"non-ASCII in reference":  {file: "FROM alpine\u0130:1\n", want: "is not literal"},
+		"invalid UTF-8 in --from": {file: "FROM alpine\nCOPY --from=\xff\xfe /a /b\n", want: "is not literal"},
+		"escape directive":        {file: "# escape=`\nFROM alpine\n", want: "escape directive"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			res, f := buildFile(t, tc.file)
+			res, f := buildFile(t, tc.file, tc.buildArgs...)
 			wantRefused(t, res, f, tc.want)
 		})
 	}
 }
 
-// TestBuild_CommonContainerfilesPass: usual Containerfiles are not refused.
-func TestBuild_CommonContainerfilesPass(t *testing.T) {
+// TestBuild_LiteralReferencesPass: literal references, stage names, stage
+// indexes, and the usual flags and shell code are not refused.
+func TestBuild_LiteralReferencesPass(t *testing.T) {
 	cases := map[string]string{
-		"docker://":                   "FROM docker://alpine\n",
-		"docker image":                "FROM docker:24-dind\n",
-		"registry with a port":        "FROM localhost:5000/team/app:1\n",
-		"ARG in tag":                  "ARG GO_VERSION=1.23\nFROM golang:${GO_VERSION} AS build\nRUN go version\n",
-		"multi-stage":                 "FROM --platform=$BUILDPLATFORM golang:1.23 AS build\nRUN go build -o /app .\nFROM alpine\nCOPY --from=build /app /app\n",
-		"cache mount":                 "FROM golang:1.23\nRUN --mount=type=cache,target=/root/.cache/go-build go build ./...\n",
-		"chown with variables":        "FROM alpine\nARG UID=1000\nCOPY --chown=${UID}:${UID} . /src\n",
-		"shell code":                  "FROM alpine\nRUN for f in $(ls /etc); do echo \"${f#x}\" $1; done\n",
-		"heredoc":                     "FROM alpine\nRUN <<EOF\necho 'it'\\''s here'\nEOF\n",
-		"escape default":              "# escape=\\\nFROM alpine\n",
-		"default value":               "FROM ${BASE:-alpine}\n",
-		"ENV and ARG":                 "FROM alpine\nENV PATH=/opt/bin:$PATH\nARG A=\"x y\"\n",
-		"SQL in a joined RUN":         "FROM postgres\nRUN psql -c \"SELECT * \\\nFROM users\"\n",
-		"shell flags on joined lines": "FROM alpine\nRUN kubectl create secret generic s \\\n  --from-literal=k=$V \\\n  && rsync -a \\\n  --exclude-from=$LIST /a /b\n",
+		"registry image":        "FROM docker.io/library/alpine:3.20\n",
+		"docker://":             "FROM docker://alpine\n",
+		"docker image":          "FROM docker:24-dind\n",
+		"registry with a port":  "FROM localhost:5000/team/app:1\n",
+		"digest":                "FROM alpine@sha256:" + strings.Repeat("a", 64) + "\n",
+		"scratch":               "FROM scratch\nCOPY . /\n",
+		"stage name":            "FROM --platform=$BUILDPLATFORM golang:1.23 AS build\nRUN go build -o /app .\nFROM alpine\nCOPY --from=build /app /app\n",
+		"stage index":           "FROM golang:1.23\nRUN true\nFROM alpine\nCOPY --from=0 /x /x\n",
+		"mount from a stage":    "FROM alpine AS src\nFROM alpine\nRUN --mount=type=bind,from=src,source=/etc,target=/m ls /m\n",
+		"cache mount":           "FROM golang:1.23\nRUN --mount=type=cache,target=/root/.cache/go-build go build ./...\n",
+		"chown with variables":  "FROM alpine\nARG UID=1000\nCOPY --chown=${UID}:${UID} . /src\n",
+		"shell code":            "FROM alpine\nRUN for f in $(ls /etc); do echo \"${f#x}\" $1; done\n",
+		"heredoc":               "FROM alpine\nRUN <<EOF\necho 'it'\\''s here'\nEOF\n",
+		"escape default":        "# escape=\\\nFROM alpine\n",
+		"ENV and ARG":           "FROM alpine\nENV PATH=/opt/bin:$PATH\nARG A=\"x y\"\n",
+		"SQL in a joined RUN":   "FROM postgres\nRUN psql -c \"SELECT * \\\nFROM users\"\n",
+		"shell flags on joined": "FROM alpine\nRUN kubectl create secret generic s \\\n  --from-literal=k=$V \\\n  && rsync -a \\\n  --exclude-from=$LIST /a /b\n",
+		"comment with a slash":  "# a comment \\\nFROM alpine\n",
 	}
 	for name, file := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -157,6 +125,27 @@ func TestBuild_CommonContainerfilesPass(t *testing.T) {
 			if res.ExitCode != 0 {
 				t.Errorf("result = %+v, want the build to run", res)
 			}
+		})
+	}
+}
+
+// TestBuild_TransportRefusedOnAnyLine: a transport reference is refused on
+// a line that the joins do not present as an instruction, and in odd
+// whitespace and encodings.
+func TestBuild_TransportRefusedOnAnyLine(t *testing.T) {
+	cases := map[string]string{
+		"comment that ends in a backslash": "# a comment \\\nFROM tarball:/x\n",
+		"byte order mark":                  "\ufeffFROM tarball:/x\n",
+		"form feed and vertical tab":       "\fFROM\vtarball:/x\n",
+		"CRLF":                             "FROM alpine\r\nCOPY --from=tarball:/x /a /b\r\n",
+		"lower case":                       "from tarball:/x\n",
+		"upper case flag":                  "FROM alpine\nCOPY --FROM=tarball:/x /a /b\n",
+		"continuation with comment":        "FROM \\\n# a comment\n  tarball:/x\n",
+	}
+	for name, file := range cases {
+		t.Run(name, func(t *testing.T) {
+			res, f := buildFile(t, file)
+			wantRefused(t, res, f, `the "tarball" transport`)
 		})
 	}
 }

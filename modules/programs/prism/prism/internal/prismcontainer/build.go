@@ -172,7 +172,7 @@ func Build(ctx context.Context, d Deps, c Caller, req BuildRequest) BuildResult 
 	if err != nil {
 		return finish(DecisionError, ExitRefused, false, "", "read the Containerfile copy: "+err.Error())
 	}
-	if err := checkContainerfile(containerfile, v.buildArgs); err != nil {
+	if err := checkContainerfile(containerfile); err != nil {
 		return refuse(err.Error())
 	}
 

@@ -210,7 +210,8 @@ func TestHostAPI_ContainerBuild_GetNotAllowed(t *testing.T) {
 }
 
 // TestHostAPI_ContainerBuild_TransportRefused: the Containerfile check
-// refuses a transport reference on the sidecar route, before podman runs.
+// refuses a reference built from an ARG on the sidecar route, before
+// podman runs.
 func TestHostAPI_ContainerBuild_TransportRefused(t *testing.T) {
 	fake := &prismcontainertest.Fake{}
 	sc := newContainerBuildTestSidecar(t, "worker", fake)
@@ -223,8 +224,8 @@ func TestHostAPI_ContainerBuild_TransportRefused(t *testing.T) {
 	}
 	var res prismcontainer.BuildResult
 	decodeJSONBody(t, rr, &res)
-	if res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, `the "tarball" transport`) {
-		t.Errorf("result = %+v, want the transport refusal", res)
+	if res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, "is not literal") {
+		t.Errorf("result = %+v, want the refusal of a reference that is not literal", res)
 	}
 	if calls := fake.BuildCalls(); len(calls) != 0 {
 		t.Errorf("podman build ran: %q", calls)
