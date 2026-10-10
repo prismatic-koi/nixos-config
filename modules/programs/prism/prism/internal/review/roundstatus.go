@@ -420,7 +420,8 @@ func ClassifyRoundWithCauses(
 //  2. state "error" + stall_error → mid-run stall. The state check
 //     keeps a stale stall_error on a member that later resumed and finished
 //     from relabelling a real verdict.
-//  3. state "error" otherwise → mid-run crash.
+//  3. state "error" otherwise → mid-run crash. A run_error reason, when
+//     present, names the stop reason of the turn that ended the run.
 //  4. state "finished" → verdict, no output, or unparseable output.
 //  5. anything else → non-terminal at group completion.
 func classifyMember(mr db.GroupMemberResult) (NoVerdictClass, string, VerdictKind) {
@@ -430,6 +431,9 @@ func classifyMember(mr db.GroupMemberResult) (NoVerdictClass, string, VerdictKin
 	if mr.State == "error" {
 		if mr.StallError != "" {
 			return NoVerdictStalled, mr.StallError, VerdictNone
+		}
+		if mr.RunError != "" {
+			return NoVerdictCrashed, mr.RunError, VerdictNone
 		}
 		return NoVerdictCrashed, "agent did not complete cleanly (state: error)", VerdictNone
 	}
@@ -495,6 +499,11 @@ func classifyAbsentMember(session string, endedRows map[string]db.Status, causes
 	//    stall came first, and it is what the operator must act on.
 	if cause.StallError != "" {
 		return NoVerdictStalled, fmt.Sprintf("%s — %s", cause.StallError, closedAt)
+	}
+	// 2a. pi ended the run after a turn with no text and no tool call. The
+	//     reason names the stop reason.
+	if cause.RunError != "" {
+		return NoVerdictCrashed, fmt.Sprintf("%s — %s", cause.RunError, closedAt)
 	}
 	// 3. The state the row was left in already explains itself. "finished"
 	//    means the agent completed and the row closed before the results were

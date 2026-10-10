@@ -162,6 +162,8 @@ func emitReviewWaitTerminalAgg(prNumber, groupID string, allMembers []db.Status,
 					// Mid-run stall: the reason already begins with
 					// "stalled mid-run after …".
 					row.Error = mr.StallError
+				} else if mr.RunError != "" {
+					row.Error = mr.RunError
 				}
 				allPass = false
 			default:

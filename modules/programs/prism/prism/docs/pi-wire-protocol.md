@@ -480,11 +480,21 @@ rows. The payload schema matches `internal/payload/payload.go:MsgAssistant`.
 **Edge cases:**
 
 - If `turn_end` arrives with no preceding `msg_assistant` frames (empty
-  accumulator), a `msg_assistant` row is still written with empty `text`.
+  accumulator), the sidecar writes no `msg_assistant` row for the turn.
+  The `turn_end` row holds the stop reason of the turn (§5.7).
 - If `session_shutdown` or a connection drop arrives with a non-empty
   accumulator, a partial `msg_assistant` row is written with the accumulated
   text and zero token/cost fields — the partial text is not silently
   discarded.
+- If the inactivity watchdog fires with a non-empty accumulator, the
+  sidecar writes the same partial `msg_assistant` row before it writes
+  `stall_error`. An empty accumulator writes no row (issue #3088).
+- The extension writes every `msg_assistant` frame of a turn before it
+  writes the `turn_end` frame of that turn, and the socket keeps the
+  order. Thus, when `turn_end` arrives, no text of that turn is still
+  outside the sidecar. The `msg_assistant` row and the `turn_end` row of
+  one turn usually have the same `created_at` millisecond. Sort by
+  `rowid` to see the write order.
 - The accumulator resets on each `turn_start`. Multiple turns in a single
   session each produce their own single `msg_assistant` event.
 
@@ -532,8 +542,25 @@ this as a `turn_start` event row.
 ### 5.7 `turn_end`
 
 ```json
-{"type":"turn_end","model":"anthropic/claude-sonnet-4-6","usage":{"input":100,"output":50,"cache_read":40,"cache_write":5,"cost":0.0015}}
+{"type":"turn_end","model":"anthropic/claude-sonnet-4-6","stop_reason":"stop","usage":{"input":100,"output":50,"cache_read":40,"cache_write":5,"cost":0.0015}}
 ```
+
+- `stop_reason` (string, optional) — the stop reason of the model
+  response: the `stopReason` field of the pi `AssistantMessage`. pi uses
+  `stop`, `toolUse`, `length`, `error`, `aborted`, `pending`, and
+  `deferred`. The extension copies the value without a change. It omits
+  the field only when the message has no stop reason (issue #3088).
+- `raw_stop_reason` (string, optional) — the stop reason that the
+  provider sent, before pi normalised it. For example, pi maps the
+  Anthropic value `refusal` to `stop_reason` `error`, and `pause_turn` to
+  `stop`. Absent when pi does not record it.
+- `error_message` (string, optional) — the pi error text for an `error`
+  stop, for example "The model refused to complete the request".
+  Truncated at 8 KiB (§5.3).
+
+The sidecar does not read the three stop-reason fields. They reach the
+`turn_end` row in `agent_events` because the sidecar writes the frame
+without a change.
 
 - `model` (string, optional) — the model this turn ran on, in
   `providerID/modelID` form (for example `anthropic/claude-sonnet-4-6`).
@@ -726,6 +753,43 @@ signal between the extension and the sidecar. See `handlePipeFrame`'s
 explicit `tool_progress` case for the no-op-on-events contract.
 
 Introduced in #1761.
+
+### 5.13 `run_error`
+
+```json
+{"type":"run_error","stop_reason":"error","raw_stop_reason":"refusal","error_message":"The model refused to complete the request","reason":"the model ended its turn with no text and no tool call (stop reason \"error\", provider stop reason \"refusal\"): The model refused to complete the request"}
+```
+
+The extension sends this frame when pi ends the agent run after a turn
+with no text and no tool call (issue #3088). After such a turn, pi sends
+no event. Without this frame, the session stays `active` until the
+inactivity watchdog fires.
+
+- `reason` (string, required) — a sentence that names the stop reason.
+  The review report shows this text for the agent.
+- `stop_reason`, `raw_stop_reason`, `error_message` (string, optional) —
+  the same values as on the `turn_end` frame of the turn (§5.7).
+
+The extension sends the frame on the pi `agent_settled` event, when all
+of these conditions are true:
+
+1. The last `turn_end` of the run had no text block with non-blank text
+   and no `toolCall` block.
+2. The `stopReason` of that turn was not `stop` and not `aborted`. A
+   `stop` turn already ends the run with `state_change{finished}` (§5.2).
+   An `aborted` turn ends it with `state_change{interrupted}`.
+3. The settled run was not aborted.
+
+The pi `agent_settled` event fires only after pi decides not to retry,
+compact, or start a queued continuation. Thus a retryable error turn does not cause
+this frame. A turn with text, or with a tool call, does not cause this
+frame, whatever its stop reason.
+
+**Sidecar behaviour:** the sidecar writes the frame as a `run_error` row
+in `agent_events`, then moves the session to `StateError`. The
+inactivity watchdog then finds the session terminal and does nothing.
+The review report reads the `reason` of the latest `run_error` row. It
+shows the agent in the "ended in error state" class, with this reason.
 
 ## 6. Frame catalogue — sidecar → extension
 
@@ -1101,6 +1165,7 @@ The frame schema is designed to translate cleanly into the existing
 | `provider_error` | `provider_error` | new event type — see §9.2. |
 | `auto_retry_start` | `auto_retry_start` | new event type — see §9.2. |
 | `auto_retry_end` | `auto_retry_end` | new event type — see §9.2. |
+| `run_error` | `run_error` | direct map. Also moves the session to `StateError` (§5.13). |
 | `session_shutdown` | (no row) | drives the sidecar's terminal-state write only. |
 
 Any **PI-side renaming** (translating PI's camelCase hook event names

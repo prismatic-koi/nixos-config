@@ -702,7 +702,7 @@ UPDATE agent_status
 var TailEventTypes = []string{
 	"turn_start", "turn_end", "tool_call", "tool_result", "thinking",
 	"permission_ask", "permission_denied", "state_change",
-	"stall_error", "startup_error", "error",
+	"stall_error", "startup_error", "run_error", "error",
 }
 
 // CheckinTailLimit caps the tail events the default checkin view appends.

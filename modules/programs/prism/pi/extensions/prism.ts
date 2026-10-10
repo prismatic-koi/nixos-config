@@ -30,6 +30,9 @@
 //                            (stopReason=stop, no pending, not reviewing)
 //                         → turn_end + state_change:interrupted (stopReason=aborted)
 //                         → turn_end (no state_change, other cases)
+//                            turn_end carries stop_reason (issue #3088)
+//   agent_settled         → run_error (last turn had no text and no tool
+//                            call, and stopReason was not stop/aborted)
 //   message_start (role=user)
 //                         → msg_user            (prompt text, truncated)
 //   message_update        → msg_assistant       (text_delta only, truncated)
@@ -2891,6 +2894,81 @@ export function deriveTurnEndModel(message: unknown): string | undefined {
   return provider + "/" + modelId
 }
 
+/**
+ * Stop-reason fields of a `turn_end` frame (issue #3088), in wire form.
+ *
+ * `stop_reason` is pi's normalised `AssistantMessage.stopReason`.
+ * `raw_stop_reason` is the provider's own value (for example Anthropic's
+ * `refusal`), which pi folds into `error` or `stop`. `error_message` is pi's
+ * text for an `error` stop. Each field is present only when the message
+ * carries it as a non-empty string.
+ *
+ * Exported for unit testing.
+ */
+export function deriveTurnEndStopFields(
+  message: unknown,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (message === null || typeof message !== "object") return out
+  const m = message as Record<string, unknown>
+  if (typeof m.stopReason === "string" && m.stopReason !== "") {
+    out.stop_reason = m.stopReason
+  }
+  if (typeof m.rawStopReason === "string" && m.rawStopReason !== "") {
+    out.raw_stop_reason = m.rawStopReason
+  }
+  if (typeof m.errorMessage === "string" && m.errorMessage !== "") {
+    out.error_message = truncateString(m.errorMessage).text
+  }
+  return out
+}
+
+/**
+ * Build the `run_error` frame for a turn that ended the agent run with no
+ * text and no tool call (issue #3088), or return `null` when the turn is not
+ * such a turn.
+ *
+ * pi ends its run after this kind of turn and emits no further event, so
+ * without this frame the session stays `active` until the sidecar's
+ * inactivity watchdog fires.
+ *
+ * A `stop` turn returns `null`: `resolveTurnEndSignal` already ends the run
+ * with `state_change{finished}`. An `aborted` turn returns `null`: it already
+ * ends with `state_change{interrupted}`.
+ *
+ * Exported for unit testing.
+ */
+export function buildSilentTurnRunError(
+  message: unknown,
+): Record<string, unknown> | null {
+  if (message === null || typeof message !== "object") return null
+  const content = (message as { content?: unknown }).content
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (block === null || typeof block !== "object") continue
+      const type = (block as { type?: unknown }).type
+      if (type === "toolCall") return null
+      if (type === "text") {
+        const text = (block as { text?: unknown }).text
+        if (typeof text === "string" && text.trim() !== "") return null
+      }
+    }
+  }
+  const fields = deriveTurnEndStopFields(message)
+  const stopReason = fields.stop_reason ?? ""
+  if (stopReason === "stop" || stopReason === "aborted") return null
+
+  let detail = `stop reason "${stopReason === "" ? "unknown" : stopReason}"`
+  if (fields.raw_stop_reason !== undefined) {
+    detail += `, provider stop reason "${fields.raw_stop_reason}"`
+  }
+  let reason = `the model ended its turn with no text and no tool call (${detail})`
+  if (fields.error_message !== undefined) {
+    reason += `: ${fields.error_message}`
+  }
+  return { type: "run_error", ...fields, reason }
+}
+
 // ---------------------------------------------------------------------------
 // Activation guard — exported for unit testing.
 // ---------------------------------------------------------------------------
@@ -3199,6 +3277,10 @@ export default function prismExtension(pi: ExtensionAPI): void {
   // when a `prompt` inbound frame arrives (review-complete delivery) so
   // that subsequent turns can go idle normally.
   let pendingReviewCall = false
+
+  // The run_error frame for the last turn, when that turn had no text and no
+  // tool call. Written on agent_settled (issue #3088).
+  let lastTurnRunError: Record<string, unknown> | null = null
 
   // ── Connection state ──────────────────────────────────────────────────
   let socket: net.Socket | null = null
@@ -3683,6 +3765,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
   pi.on("turn_start", async (_event, ctx) => {
     lastCtx = ctx
+    lastTurnRunError = null
     if (writer && handshakeComplete) {
       writer.write({ type: "turn_start" })
     }
@@ -3746,6 +3829,8 @@ export default function prismExtension(pi: ExtensionAPI): void {
       // the sidecar tolerates its absence (wire spec §5.7).
       const model = deriveTurnEndModel(message)
       if (model !== undefined) turnEndFrame.model = model
+      Object.assign(turnEndFrame, deriveTurnEndStopFields(message))
+      lastTurnRunError = buildSilentTurnRunError(message)
       if (usage && typeof usage === "object") {
         const u: Record<string, unknown> = {}
         if (typeof usage.input === "number") u.input = usage.input
@@ -3803,6 +3888,18 @@ export default function prismExtension(pi: ExtensionAPI): void {
         console.error("[prism-extension] turn_end signal resolution failed:", err)
       }
     }
+  })
+
+  // agent_settled fires only when pi will run no retry, compaction, or queued
+  // continuation. A retryable error turn is therefore not reported here.
+  pi.on("agent_settled", async (event, ctx) => {
+    lastCtx = ctx
+    const frame = lastTurnRunError
+    lastTurnRunError = null
+    if (frame === null) return
+    if ((event as { aborted?: unknown }).aborted === true) return
+    if (!writer || !handshakeComplete) return
+    writer.write(frame)
   })
 
   // Pre-tool-call bash deny list (#1528). Runs on the `tool_call` event
