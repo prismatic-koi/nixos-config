@@ -6785,6 +6785,23 @@ function setupReviewGuardHarness(): Promise<{
   })
 }
 
+// Round-trips a malformed set_active_tools frame. The extension reads inbound
+// frames in order and writes outbound frames in order, so the resulting
+// "error" frame proves every earlier inbound frame was dispatched and every
+// earlier outbound frame has reached the socket.
+async function syncWithExtension(h: {
+  pushInbound: (frame: Record<string, unknown>) => void
+  received: () => Record<string, unknown>[]
+}): Promise<void> {
+  const before = h.received().filter((f) => f.type === "error").length
+  h.pushInbound({ type: "set_active_tools" })
+  const end = Date.now() + 5000
+  while (h.received().filter((f) => f.type === "error").length <= before) {
+    if (Date.now() > end) throw new Error("timeout: no error frame from sync barrier")
+    await new Promise((r) => setTimeout(r, 5))
+  }
+}
+
 describe("#2050: review-guard — sequence A (no review, turn_end → finished)", () => {
   it("emits state_change:finished on turn_end when no review has been signalled", async () => {
     const h = await setupReviewGuardHarness()
@@ -6795,8 +6812,7 @@ describe("#2050: review-guard — sequence A (no review, turn_end → finished)"
         isIdle: () => true,
         hasPendingMessages: () => false,
       })
-      // Allow the writer to flush across the socket.
-      await new Promise((r) => setTimeout(r, 30))
+      await syncWithExtension(h)
 
       const stateChanges = h.received().filter((f) => f.type === "state_change")
       // First frame should be the initial "active" emitted by before_agent_start
@@ -6822,7 +6838,7 @@ describe("#2050: review-guard — sequence B (mid-review, turn_end suppressed)",
       // detection that #2050 removed).
       h.pushInbound({ type: "reviewing_state", in_flight: true })
       // Let the inbound frame dispatch.
-      await new Promise((r) => setTimeout(r, 20))
+      await syncWithExtension(h)
 
       // Now turn_end fires (e.g. the worker took a brief idle turn while
       // the review monitor pollled). state_change must NOT be emitted.
@@ -6830,7 +6846,7 @@ describe("#2050: review-guard — sequence B (mid-review, turn_end suppressed)",
         isIdle: () => true,
         hasPendingMessages: () => false,
       })
-      await new Promise((r) => setTimeout(r, 30))
+      await syncWithExtension(h)
 
       const stateChanges = h.received().filter((f) => f.type === "state_change")
       assert.equal(
@@ -6849,14 +6865,14 @@ describe("#2050: review-guard — sequence C (completed-review, turn_end → fin
     try {
       // Mid-review: guard is armed.
       h.pushInbound({ type: "reviewing_state", in_flight: true })
-      await new Promise((r) => setTimeout(r, 20))
+      await syncWithExtension(h)
 
       // Confirm a turn_end during this window emits nothing.
       await h.trigger("turn_end", { message: { stopReason: "stop" } }, {
         isIdle: () => true,
         hasPendingMessages: () => false,
       })
-      await new Promise((r) => setTimeout(r, 30))
+      await syncWithExtension(h)
       const midReviewSC = h.received().filter((f) => f.type === "state_change")
       assert.equal(
         midReviewSC.length, 0,
@@ -6870,7 +6886,7 @@ describe("#2050: review-guard — sequence C (completed-review, turn_end → fin
       // clear can be lost while the bash-substring set-trigger
       // (now removed) re-latched the guard.
       h.pushInbound({ type: "reviewing_state", in_flight: false })
-      await new Promise((r) => setTimeout(r, 20))
+      await syncWithExtension(h)
 
       // The worker takes its final handing-off turn. turn_end must emit
       // state_change:finished so the sidecar starts the finished debounce
@@ -6879,7 +6895,7 @@ describe("#2050: review-guard — sequence C (completed-review, turn_end → fin
         isIdle: () => true,
         hasPendingMessages: () => false,
       })
-      await new Promise((r) => setTimeout(r, 30))
+      await syncWithExtension(h)
 
       const postClearSC = h.received().filter((f) => f.type === "state_change")
       assert.equal(
@@ -6896,18 +6912,18 @@ describe("#2050: review-guard — sequence C (completed-review, turn_end → fin
     const h = await setupReviewGuardHarness()
     try {
       h.pushInbound({ type: "reviewing_state", in_flight: true })
-      await new Promise((r) => setTimeout(r, 20))
+      await syncWithExtension(h)
 
       // Simulate the review-complete prompt arriving (the other release
       // path the extension keeps as defence in depth).
       h.pushInbound({ type: "prompt", text: "review complete!", deliver_as: "nextTurn" })
-      await new Promise((r) => setTimeout(r, 20))
+      await syncWithExtension(h)
 
       await h.trigger("turn_end", { message: { stopReason: "stop" } }, {
         isIdle: () => true,
         hasPendingMessages: () => false,
       })
-      await new Promise((r) => setTimeout(r, 30))
+      await syncWithExtension(h)
 
       const stateChanges = h.received().filter((f) => f.type === "state_change")
       assert.equal(
