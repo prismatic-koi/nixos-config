@@ -1880,6 +1880,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			ModelOverrides map[string]string `json:"model_overrides"`
 			DiffInlineMax  int               `json:"diff_inline_max"`
 			Harness        string            `json:"harness"`
+
+			IgnoreConcurrencyCap bool `json:"ignore_concurrency_cap"`
 		}
 		// /review body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
@@ -2075,6 +2077,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		sort.Strings(roles)
 		for _, role := range roles {
 			args = append(args, "--model-override", role+"="+req.ModelOverrides[role])
+		}
+		if req.IgnoreConcurrencyCap {
+			args = append(args, "--ignore-concurrency-cap")
 		}
 		if req.DiffInlineMax > 0 {
 			args = append(args, "--diff-inline-max", strconv.Itoa(req.DiffInlineMax))
