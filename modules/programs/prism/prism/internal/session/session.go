@@ -49,17 +49,17 @@ func openDB() (*db.DB, error) {
 
 // Opts carries optional parameters for session creation.
 type Opts struct {
-	// Prompt is passed to the agent via --prompt at startup.
+	// Prompt is passed to the agent as the last positional argument at startup.
 	//
 	// In host mode, when PromptFilePath is also set, BuildAgentCmd
-	// emits `--prompt "$(cat <quoted PromptFilePath>)"` rather than
+	// emits `"$(cat <quoted PromptFilePath>)"` rather than
 	// inlining Prompt onto the launch command. Prompt is still required
 	// (non-empty) to enable the substitution; the field's value is not
 	// embedded in the command in that case.
 	Prompt string
 	// PromptFilePath, when non-empty AND IsolationMode is "host" AND Prompt
 	// is non-empty, makes buildDirectAgentCmd emit
-	// `--prompt "$(cat <PromptFilePath>)"` so the prompt content does not
+	// `"$(cat <PromptFilePath>)"` so the prompt content does not
 	// travel through the tmux command line. The file at PromptFilePath must
 	// already contain the prompt bytes (caller-owned: see
 	// session.WriteInitialPrompt). Ignored for non-host isolation modes —
@@ -459,7 +459,7 @@ func roleModelOverride(opts Opts) string {
 // Host-mode pi-resume: when opts.HarnessSessionID is non-empty
 // and the harness is pi, the launcher calls container.ResolvePIResumeSession
 // to look up the on-disk session JSONL under ~/.pi/agent/sessions and, if
-// found, appends `--session <id>` immediately before any --prompt argument so
+// found, appends `--session <id>` immediately before any positional prompt so
 // pi reopens the prior conversation. Missing file falls back silently to a
 // fresh conversation (the resolver writes a tagged warning to the per-session
 // agent-run.log). Non-pi harnesses and empty IDs skip the resume path
@@ -546,8 +546,8 @@ func buildDirectAgentCmd(opts Opts) string {
 	//     sessions-root layout is pi-specific.
 	//  3. HarnessSessionID != "" — empty IDs are a silent no-op.
 	//
-	// Inserted before --prompt so the flag pair stays adjacent to the binary
-	// and the positional prompt (if any) remains the last token.
+	// Inserted before the prompt so the positional prompt (if any) remains
+	// the last token.
 	if effectiveIsolationMode(opts) == "host" &&
 		opts.HarnessSessionID != "" &&
 		(opts.HarnessName == "pi" || opts.HarnessName == "") {
@@ -571,10 +571,18 @@ func buildDirectAgentCmd(opts Opts) string {
 		// word-splitting; the file path is single-quoted so any unusual
 		// characters in the per-session run dir cannot be interpreted as
 		// shell metacharacters.
+		//
+		// pi has no `--` terminator and reads a leading `-` or `@` as an
+		// option or file argument. A single leading space makes the prompt
+		// positional.
+		lead := ""
+		if strings.HasPrefix(opts.Prompt, "-") || strings.HasPrefix(opts.Prompt, "@") {
+			lead = " "
+		}
 		if opts.PromptFilePath != "" {
-			cmd += ` --prompt "$(cat ` + shellQuote(opts.PromptFilePath) + `)"`
+			cmd += ` "` + lead + `$(cat ` + shellQuote(opts.PromptFilePath) + `)"`
 		} else {
-			cmd += " --prompt " + shellQuote(opts.Prompt)
+			cmd += " " + shellQuote(lead+opts.Prompt)
 		}
 	}
 	if opts.SessionName != "" {
@@ -825,7 +833,7 @@ func Create(name, directory string, opts Opts) error {
 // When opts.PromptFilePath is non-empty, PRISM_INITIAL_PROMPT_FILE carries
 // the path to the prompt file and the prompt body itself is NOT inlined into
 // tmux's argv. `prism agent-run` reads the file when it sees the env var and
-// feeds the contents to the agent's --prompt path. This keeps the
+// feeds the contents to the agent as the initial prompt. This keeps the
 // launch-command size O(1) in prompt size.
 //
 // SpawnSession always writes the prompt file when there is a non-empty
@@ -985,7 +993,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// tmux's command parser — semicolons in the readiness-wait script are
 	// delivered verbatim to the shell instead of being consumed by tmux.
 	// agentPaneEnvVars returns PRISM_INITIAL_PROMPT when a prompt is set,
-	// enabling bwrap's --prompt delivery path via prism agent-run.
+	// enabling the bwrap prompt delivery path via prism agent-run.
 	//
 	// The agent window IS the session — if this call fails, the session has
 	// no usable pane and callers that later WaitForReady will silently time

@@ -326,7 +326,7 @@ type Config struct {
 
 	// InitialPrompt is the initial prompt to deliver to the agent at startup.
 	// When non-empty, it is appended to the agent command as
-	// --agent <AgentRole> --prompt <text> so that the agent starts the session
+	// --agent <AgentRole> <text> so that the agent starts the session
 	// with the prompt already in flight, visible in the TUI from the start.
 	InitialPrompt string
 
