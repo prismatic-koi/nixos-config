@@ -530,8 +530,8 @@ WHERE group_id = ?`
 		return results, nil
 	}
 
-	// Batched event fetch: pull every msg_assistant, startup_error, and
-	// stall_error event for the entire member set in a single query, ordered
+	// Batched event fetch: pull every msg_assistant, startup_error,
+	// stall_error, and run_error event for the entire member set in a single query, ordered
 	// so that the most recent row per (session_name, type) comes first. The
 	// Go-side reduction below keeps only that first row per pair.
 	names := make([]string, 0, len(results))
@@ -544,7 +544,7 @@ WHERE group_id = ?`
 SELECT session_name, type, payload
 FROM agent_events
 WHERE session_name IN (` + placeholders + `)
-  AND type IN ('msg_assistant', 'startup_error', 'stall_error')
+  AND type IN ('msg_assistant', 'startup_error', 'stall_error', 'run_error')
 ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 	args := make([]any, 0, len(names))
 	for _, n := range names {
@@ -627,6 +627,8 @@ ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 					r.StallError = payload
 				}
 			}
+		case "run_error":
+			r.RunError = reasonFromPayload(payload)
 		}
 		results[sessName] = r
 	}

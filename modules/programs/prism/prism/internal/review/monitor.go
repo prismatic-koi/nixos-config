@@ -949,6 +949,14 @@ func monitorResultFor(ag Agent, agentSession string, groupData map[string]db.Gro
 				IsError: true,
 			}
 		}
+		if mr.RunError != "" {
+			return AgentResult{
+				Agent:   ag,
+				Passed:  false,
+				Output:  fmt.Sprintf("ERROR: agent did not complete cleanly (state: %s): %s", mr.State, mr.RunError),
+				IsError: true,
+			}
+		}
 		return AgentResult{
 			Agent:   ag,
 			Passed:  false,

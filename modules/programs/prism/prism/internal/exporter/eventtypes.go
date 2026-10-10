@@ -86,6 +86,7 @@ var knownEventTypes = map[string]struct{}{
 	"permission_ask":     {},
 	"permission_denied":  {},
 	"provider_error":     {},
+	"run_error":          {},
 	"session.escalated":  {},
 	// review.verdict_pass / review.verdict_fail /
 	// review.verdict_pass_with_disagreement are written by

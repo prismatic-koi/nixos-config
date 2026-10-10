@@ -118,6 +118,9 @@ type SessionEndCause struct {
 	// StallError is the reason from the latest stall_error event: the agent
 	// ran, then went silent.
 	StallError string
+	// RunError is the reason from the latest run_error event: pi ended the
+	// run after a turn with no text and no tool call.
+	RunError string
 	// TmuxSessionEnded reports whether a tmux_session_end event exists for
 	// the session — the tmux session-closed hook stamps ended_at without
 	// rewriting state.
@@ -126,7 +129,7 @@ type SessionEndCause struct {
 
 // Recorded reports whether any explanatory record exists for the session.
 func (c SessionEndCause) Recorded() bool {
-	return c.Cause != "" || c.StartupError != "" || c.StallError != "" || c.TmuxSessionEnded
+	return c.Cause != "" || c.StartupError != "" || c.StallError != "" || c.RunError != "" || c.TmuxSessionEnded
 }
 
 // sessionReapPayload is the JSON shape of a session_reaped event payload.
@@ -246,7 +249,7 @@ func (d *DB) SessionEndCauses(sessionNames []string) (map[string]SessionEndCause
 SELECT session_name, type, payload
 FROM agent_events
 WHERE session_name IN (` + placeholders + `)
-  AND type IN ('` + SessionReapEventType + `', 'startup_error', 'stall_error', '` + tmuxSessionEndEventType + `')
+  AND type IN ('` + SessionReapEventType + `', 'startup_error', 'stall_error', 'run_error', '` + tmuxSessionEndEventType + `')
 ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 
 	args := make([]any, 0, len(names))
@@ -284,6 +287,8 @@ ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 			c.StartupError = reasonFromPayload(payload)
 		case "stall_error":
 			c.StallError = reasonFromPayload(payload)
+		case "run_error":
+			c.RunError = reasonFromPayload(payload)
 		case tmuxSessionEndEventType:
 			c.TmuxSessionEnded = true
 		}
@@ -304,7 +309,7 @@ ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 }
 
 // reasonFromPayload extracts the "reason" field from a startup_error /
-// stall_error payload, falling back to the raw payload when the JSON does not
+// stall_error / run_error payload, falling back to the raw payload when the JSON does not
 // carry one. Mirrors the extraction GroupResults performs for live rows so the
 // two read paths report identical text.
 func reasonFromPayload(payload string) string {

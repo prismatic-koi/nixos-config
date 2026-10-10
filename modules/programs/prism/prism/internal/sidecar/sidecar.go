@@ -2598,21 +2598,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			s.writeEvent("state_change", map[string]string{"state": string(st)}, nil)
 			s.handleSessionFinished()
 		case agent.StateError:
-			// Cancel any in-flight timers and record lastErrorAt before
-			// writing StateError, so that (a) a stale debounce cannot overwrite
-			// the error state, and (b) a subsequent turn_start within
-			// ErrorResumeDebounce is treated as churn, not a genuine resume.
-			s.cancelIdleTimer()
-			s.cancelRecoveryTimer()
-			s.lastErrorAt = s.cfg.Clock.Now()
-			// Terminal exit while escalated is permitted by the state machine
-			// (escalated→error); release the escalate guard so it does not
-			// outlive the session's escalated window.
-			s.escalatedInFlight = false
-			s.logger().Printf("sidecar: transition -> error (cause=pi_state_change)")
-			s.upsertState(st, nil, nil)
-			s.writeStateChange(st)
-			s.lastState = st
+			s.enterPiErrorState("pi_state_change")
 		case agent.StateWaiting:
 			// Cancel finished debounce so the session does not spuriously
 			// transition to finished while waiting for user input (permission prompt).
@@ -2807,6 +2793,14 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			s.lastInvestigatorText = text
 		}
 
+	case "run_error":
+		// The extension sends this when pi ended its run after a turn with no
+		// text and no tool call (wire spec §5.13). pi sends nothing after it,
+		// so the session must end here, not at the inactivity watchdog. The
+		// event row holds the reason that the review report shows.
+		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+		s.enterPiErrorState("run_error")
+
 	case "auto_retry_start":
 		// Cancel any in-flight finished debounce so the session does not
 		// spuriously finish during the retry window.
@@ -2939,6 +2933,26 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 	}
 	return false
+}
+
+// enterPiErrorState moves a PI socket-pipe session to StateError. Must be
+// called with s.mu held.
+func (s *Sidecar) enterPiErrorState(cause string) {
+	// Cancel any in-flight timers and record lastErrorAt before writing
+	// StateError, so that (a) a stale debounce cannot overwrite the error
+	// state, and (b) a subsequent turn_start within ErrorResumeDebounce is
+	// treated as churn, not a genuine resume.
+	s.cancelIdleTimer()
+	s.cancelRecoveryTimer()
+	s.lastErrorAt = s.cfg.Clock.Now()
+	// Terminal exit while escalated is permitted by the state machine
+	// (escalated→error); release the escalate guard so it does not outlive
+	// the session's escalated window.
+	s.escalatedInFlight = false
+	s.logger().Printf("sidecar: transition -> error (cause=%s)", cause)
+	s.upsertState(agent.StateError, nil, nil)
+	s.writeStateChange(agent.StateError)
+	s.lastState = agent.StateError
 }
 
 // markAssistantOutputSeen latches the assistantOutputSeen flag to true when

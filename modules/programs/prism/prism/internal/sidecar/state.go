@@ -133,6 +133,13 @@ func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 	lastFrameAt := s.lastInboundFrameAt
 
 	s.logger().Printf("sidecar: inactivity watchdog fired after %v — transition -> error (cause=inactivity_timeout, inbound_frames=%d)", timeout, frames)
+	// Text of a turn that has no turn_end yet is held only in pipeAccum.
+	// Write it now, or the stall discards it. An empty accumulator writes no
+	// row: the review report reads the latest msg_assistant row as the
+	// agent's last message.
+	if s.pipeAccum != nil && *s.pipeAccum != "" {
+		s.flushPipeAccum()
+	}
 	s.cancelIdleTimer()
 	s.cancelRecoveryTimer()
 	s.upsertState(agent.StateError, nil, nil)

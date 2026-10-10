@@ -60,6 +60,9 @@ import {
   resolveTurnEndSignal,
   // turn_end model derivation (issue #2727)
   deriveTurnEndModel,
+  // turn_end stop reason and silent-turn run_error (issue #3088)
+  deriveTurnEndStopFields,
+  buildSilentTurnRunError,
   // Frame writer
   makeFrameWriter,
   type FrameWriter,
@@ -7449,5 +7452,162 @@ describe("#2589: registry accessors", () => {
 
   it("builds the marker in the documented form", () => {
     assert.equal(redactionMarker("GITHUB_TOKEN"), "[redacted:GITHUB_TOKEN]")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #3088: turn_end stop reason, and run_error for a silent final turn
+// ---------------------------------------------------------------------------
+
+const REFUSAL_MESSAGE = {
+  role: "assistant",
+  content: [{ type: "thinking", thinking: "considering the request" }],
+  stopReason: "error",
+  rawStopReason: "refusal",
+  errorMessage: "The model refused to complete the request",
+}
+
+describe("#3088: deriveTurnEndStopFields", () => {
+  it("maps stopReason, rawStopReason, and errorMessage to wire fields", () => {
+    assert.deepEqual(deriveTurnEndStopFields(REFUSAL_MESSAGE), {
+      stop_reason: "error",
+      raw_stop_reason: "refusal",
+      error_message: "The model refused to complete the request",
+    })
+  })
+
+  it("omits absent and empty fields", () => {
+    assert.deepEqual(deriveTurnEndStopFields({ stopReason: "stop", rawStopReason: "" }), {
+      stop_reason: "stop",
+    })
+    assert.deepEqual(deriveTurnEndStopFields(undefined), {})
+  })
+})
+
+describe("#3088: buildSilentTurnRunError", () => {
+  it("builds a run_error that names the stop reason for a silent error turn", () => {
+    const frame = buildSilentTurnRunError(REFUSAL_MESSAGE)
+    assert.ok(frame !== null)
+    assert.equal(frame.type, "run_error")
+    assert.equal(frame.stop_reason, "error")
+    assert.equal(frame.raw_stop_reason, "refusal")
+    const reason = String(frame.reason)
+    assert.match(reason, /no text and no tool call/)
+    assert.match(reason, /stop reason "error"/)
+    assert.match(reason, /provider stop reason "refusal"/)
+    assert.match(reason, /refused/)
+  })
+
+  it("builds a run_error for a thinking-only length turn", () => {
+    const frame = buildSilentTurnRunError({
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "..." }, { type: "text", text: "  \n" }],
+      stopReason: "length",
+    })
+    assert.ok(frame !== null)
+    assert.match(String(frame.reason), /stop reason "length"/)
+  })
+
+  it("returns null for a turn with text", () => {
+    assert.equal(
+      buildSilentTurnRunError({ ...REFUSAL_MESSAGE, content: [{ type: "text", text: "partial" }] }),
+      null,
+    )
+  })
+
+  it("returns null for a turn with a tool call", () => {
+    assert.equal(
+      buildSilentTurnRunError({
+        role: "assistant",
+        content: [{ type: "toolCall", id: "c1", name: "bash", arguments: {} }],
+        stopReason: "length",
+      }),
+      null,
+    )
+  })
+
+  it("returns null for a stop or aborted turn, which already end the run", () => {
+    assert.equal(buildSilentTurnRunError({ role: "assistant", content: [], stopReason: "stop" }), null)
+    assert.equal(buildSilentTurnRunError({ role: "assistant", content: [], stopReason: "aborted" }), null)
+  })
+})
+
+describe("#3088: extension wiring", () => {
+  const ctx = {
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    sessionManager: { getSessionId: () => "ses_3088" },
+    ui: { setStatus: () => {} },
+  }
+
+  it("stamps the stop reason on turn_end and sends run_error on agent_settled after a silent turn", async () => {
+    const h = await setupReviewGuardHarness()
+    try {
+      await h.trigger("turn_start", {}, ctx)
+      await h.trigger("turn_end", { message: REFUSAL_MESSAGE }, ctx)
+      await h.trigger("agent_settled", { aborted: false }, ctx)
+      await syncWithExtension(h)
+
+      const turnEnd = h.received().find((f) => f.type === "turn_end")
+      assert.ok(turnEnd, "no turn_end frame")
+      assert.equal(turnEnd.stop_reason, "error")
+      assert.equal(turnEnd.raw_stop_reason, "refusal")
+
+      const runErrors = h.received().filter((f) => f.type === "run_error")
+      assert.equal(runErrors.length, 1, `want 1 run_error, got ${JSON.stringify(runErrors)}`)
+      assert.match(String(runErrors[0].reason), /stop reason "error"/)
+    } finally {
+      await h.cleanup()
+    }
+  })
+
+  for (const [label, message] of [
+    ["text", { role: "assistant", content: [{ type: "text", text: "<verdict>PASS</verdict>" }], stopReason: "stop" }],
+    ["tool call", { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "bash", arguments: {} }], stopReason: "toolUse" }],
+    ["text with an error stop", { ...REFUSAL_MESSAGE, content: [{ type: "text", text: "partial" }] }],
+  ] as const) {
+    it(`sends no run_error after a turn with ${label}`, async () => {
+      const h = await setupReviewGuardHarness()
+      try {
+        await h.trigger("turn_start", {}, ctx)
+        await h.trigger("turn_end", { message }, ctx)
+        await h.trigger("agent_settled", { aborted: false }, ctx)
+        await syncWithExtension(h)
+
+        const turnEnd = h.received().find((f) => f.type === "turn_end")
+        assert.equal(turnEnd?.stop_reason, message.stopReason)
+        const runErrors = h.received().filter((f) => f.type === "run_error")
+        assert.equal(runErrors.length, 0, `unexpected run_error: ${JSON.stringify(runErrors)}`)
+      } finally {
+        await h.cleanup()
+      }
+    })
+  }
+
+  it("sends no run_error when the run settled because of an abort", async () => {
+    const h = await setupReviewGuardHarness()
+    try {
+      await h.trigger("turn_start", {}, ctx)
+      await h.trigger("turn_end", { message: REFUSAL_MESSAGE }, ctx)
+      await h.trigger("agent_settled", { aborted: true }, ctx)
+      await syncWithExtension(h)
+      assert.equal(h.received().filter((f) => f.type === "run_error").length, 0)
+    } finally {
+      await h.cleanup()
+    }
+  })
+
+  it("sends no run_error when a later turn starts before the run settles", async () => {
+    const h = await setupReviewGuardHarness()
+    try {
+      await h.trigger("turn_start", {}, ctx)
+      await h.trigger("turn_end", { message: REFUSAL_MESSAGE }, ctx)
+      await h.trigger("turn_start", {}, ctx)
+      await h.trigger("agent_settled", { aborted: false }, ctx)
+      await syncWithExtension(h)
+      assert.equal(h.received().filter((f) => f.type === "run_error").length, 0)
+    } finally {
+      await h.cleanup()
+    }
   })
 })
