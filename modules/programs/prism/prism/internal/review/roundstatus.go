@@ -500,7 +500,7 @@ func classifyAbsentMember(session string, endedRows map[string]db.Status, causes
 	if cause.StallError != "" {
 		return NoVerdictStalled, fmt.Sprintf("%s — %s", cause.StallError, closedAt)
 	}
-	// 2a. pi ended the run after a turn with no text and no tool call. The
+	// 2a. pi ended the run after a failed turn (issues #3088, #3100). The
 	//     reason names the stop reason.
 	if cause.RunError != "" {
 		return NoVerdictCrashed, fmt.Sprintf("%s — %s", cause.RunError, closedAt)
