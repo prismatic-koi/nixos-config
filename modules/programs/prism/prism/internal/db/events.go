@@ -705,6 +705,9 @@ var TailEventTypes = []string{
 	"stall_error", "startup_error", "error",
 }
 
+// CheckinTailLimit caps the tail events the default checkin view appends.
+const CheckinTailLimit = 50
+
 // QueryTailEvents returns up to limit of the newest TailEventTypes events
 // written after the session's last msg_assistant row (all of them when the
 // session has no msg_assistant row), in chronological order.

@@ -35,6 +35,13 @@ import (
 // are collapsed into a single summary line in default mode. In verbose mode they
 // are shown inline with a visual indent prefix.
 func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, verbose bool) error {
+	return renderCheckinTurnsOpts(session, d, assistantEvents, verbose, true)
+}
+
+// renderCheckinTurnsOpts is renderCheckinTurns with control over the tail
+// section. Callers that page with --before or --after pass showTail=false:
+// the newest tail does not belong under an older or later window.
+func renderCheckinTurnsOpts(session string, d *db.DB, assistantEvents []db.Event, verbose, showTail bool) error {
 	// Fetch state from DB; fall back to tmux if not found.
 	state := ""
 	var rootAgentName string
@@ -56,7 +63,9 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 	fmt.Printf("state: %s\n\n", state)
 
 	if len(assistantEvents) == 0 {
-		renderCheckinTail(d, session)
+		if showTail {
+			renderCheckinTail(d, session)
+		}
 		fmt.Println("── end of event log ──")
 		return nil
 	}
@@ -356,7 +365,9 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 		fmt.Println()
 	}
 
-	renderCheckinTail(d, session)
+	if showTail {
+		renderCheckinTail(d, session)
+	}
 	fmt.Println("── end of event log ──")
 	return nil
 }
@@ -382,7 +393,7 @@ func formatDuration(d time.Duration) string {
 // tool_result, or a turn_start with no later turn_end, is marked as in
 // progress at the end of the log.
 func renderCheckinTail(d *db.DB, session string) {
-	tail, err := d.QueryTailEvents(session, 50)
+	tail, err := d.QueryTailEvents(session, db.CheckinTailLimit)
 	if err != nil || len(tail) == 0 {
 		return
 	}

@@ -191,7 +191,7 @@ func runCheckinSession(session string, limit int, before, after *string, types [
 		// Primary query: fetch last N msg_assistant events to get N assistant turns.
 		assistantEvents, qerr := d.QueryEvents(session, limit, before, after, []string{"msg_assistant"})
 		if qerr == nil && len(assistantEvents) > 0 {
-			return renderCheckinTurns(session, d, assistantEvents, verbose)
+			return renderCheckinTurnsOpts(session, d, assistantEvents, verbose, before == nil && after == nil)
 		}
 		// If DB is open but no msg_assistant rows exist, check whether there are
 		// any events at all (e.g. a session with only msg_user). In that case show
@@ -200,7 +200,7 @@ func runCheckinSession(session string, limit int, before, after *string, types [
 			anyEvents, aerr := d.QueryEvents(session, 1, nil, nil, nil)
 			if aerr == nil && len(anyEvents) > 0 {
 				// Session has events but no assistant turns yet — render header only.
-				return renderCheckinTurns(session, d, nil, verbose)
+				return renderCheckinTurnsOpts(session, d, nil, verbose, before == nil && after == nil)
 			}
 		}
 	}
@@ -286,6 +286,12 @@ func runCheckinSessionJSON(session string, limit int, before, after *string, typ
 				}
 			}
 			events = merged
+		}
+		// Frames after the last msg_assistant row — same rule as the host-API handler.
+		if before == nil && after == nil {
+			if tail, terr := d.QueryTailEvents(session, db.CheckinTailLimit); terr == nil {
+				events = append(events, tail...)
+			}
 		}
 	}
 

@@ -33,3 +33,17 @@ func TestCheckinTurns_StalledMidTurnShowsTail(t *testing.T) {
 		t.Errorf("only the unresolved call must be flagged:\n%s", out)
 	}
 }
+
+func TestCheckinTurns_CursorSkipsTail(t *testing.T) {
+	d := openCheckinTestDB(t)
+	s := "repo@main~review-2-review-security"
+	writeEvent(t, d, "e1", s, "stall_error", `{"reason":"x"}`, time.Now())
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurnsOpts(s, d, nil, false, false); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(out, "stall_error") {
+		t.Errorf("tail shown despite showTail=false:\n%s", out)
+	}
+}

@@ -829,7 +829,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// progress (e.g. when the agent stalled). Only for the newest
 			// page — a --before/--after cursor asks for an older or later window.
 			if beforePtr == nil && afterPtr == nil {
-				if tail, terr := s.cfg.DB.QueryTailEvents(targetSession, checkinTailLimit); terr == nil {
+				if tail, terr := s.cfg.DB.QueryTailEvents(targetSession, db.CheckinTailLimit); terr == nil {
 					events = append(events, tail...)
 				}
 			}
@@ -4179,7 +4179,3 @@ func defaultHostAPISocketPath(sessionName string) (string, error) {
 // hostAPILoadProfiles loads the profiles file for the /apply-profile endpoint.
 // Package-level variable so tests can inject a fake.
 var hostAPILoadProfiles = config.LoadProfiles
-
-// checkinTailLimit caps the in-progress-turn events the default /checkin view
-// appends after the last assistant turn.
-const checkinTailLimit = 50
