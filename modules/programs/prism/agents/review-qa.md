@@ -82,6 +82,7 @@ Run validation in priority order. Stop and report if a P0 scenario fails — do 
 | NixOS/nix config | `nix build <target>`, `nixfmt .`, `nix flake check` |
 | Go source | `go build ./...`, `go test ./...`, `go vet ./...` |
 | TypeScript/JavaScript | `npm test`, `npx tsc --noEmit`, linter checks |
+| Pi extension tests (`modules/programs/prism/pi/extensions/`) | `tsx --test` from that directory. `node`, `npm`, and `npx` are not on `PATH` in any prism sandbox; `tsx` runs because its shebang names the node store path |
 | Python | `pytest`, `mypy`, linter checks |
 | CLI tool | Run with various args; verify exit codes and output |
 | Kubernetes | `kubectl --dry-run=client`, schema validation |
