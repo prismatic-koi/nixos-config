@@ -58,6 +58,9 @@ type SuperviseOpts struct {
 	// when ForwardWinch is true — without subscription the supervisor
 	// never receives SIGWINCH and cannot invoke the callback).
 	OnWinch func()
+
+	// onSubscribed, when non-nil, is called once signal.Notify is active.
+	onSubscribed func()
 }
 
 // SuperviseChild runs cmd as the foreground process group on stdinFd. The
@@ -117,6 +120,9 @@ func superviseForwardSignals(proc *os.Process, stopCh <-chan struct{}, opts Supe
 	}
 	signal.Notify(sigCh, signals...)
 	defer signal.Stop(sigCh)
+	if opts.onSubscribed != nil {
+		opts.onSubscribed()
+	}
 
 	for {
 		select {
