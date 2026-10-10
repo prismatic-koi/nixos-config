@@ -244,13 +244,17 @@ Prism also refuses these:
 - A `--file` whose name ends in `.in`. Podman runs such a file through the
   C preprocessor on the host, and an `#include` then reads a host file.
   Prism always gives podman the copy under the name `Containerfile`.
+- An instruction that continues over more than 200 lines. Split it into
+  smaller instructions.
 
-Prism checks each instruction, and it also checks each physical line as
-if it were an instruction. Thus it can refuse a line that podman does not
-read as an instruction: a line of shell or SQL text in a `RUN`
-continuation or in a heredoc. Such a line is refused when it starts with
-`FROM` and its next word is not literal, or when it starts with a flag
-that the rules above refuse. For example:
+Prism reads an instruction from every line of the Containerfile: the
+line, joined with its continuation lines. Thus it can refuse a line that
+podman does not read as an instruction: a line of shell or SQL text in a
+`RUN` continuation or in a heredoc. Such a line is refused when it starts
+with `FROM` and its next word is not literal, or when it starts with
+`COPY`, `ADD`, or `RUN` and a flag that the rules above refuse. A line
+that starts with another word, or with a flag, is not read as an
+instruction. For example:
 
 ```dockerfile
 # Refused: line 3 starts with FROM, and users" is not literal.
@@ -465,7 +469,7 @@ markers. Like the audit directory, no sandbox can write them.
 | `refused: --tag ... is not a valid image tag` | Use a lower-case `NAME` or `NAME:TAG`. See "The image name". |
 | `refused: the build context holds more than 4 GiB` | Give a smaller `CONTEXT`, or list large directories in `.containerignore`. |
 | `refused: the build context changed while prism copied it` | Try again when nothing writes to the context. |
-| `refused: the Containerfile cannot be built: line N: ...` | Read the reason. Write each image source literally: a registry image, a local image, or a build stage, with no variable, quote, or backslash. See "The image sources of a build". |
+| `refused: the Containerfile cannot be built: line N: ...` | Read the reason. Write each image source literally: a registry image, a local image, or a build stage, with no variable, quote, or backslash. If line N is shell or SQL text, restructure it. See "The image sources of a build". |
 | `The signature policy of the build refused an image source` | A base image has an `ONBUILD` instruction that names a transport. Use a different base image. |
 
 ## How it works

@@ -18,7 +18,17 @@ package prismcontainer
 // characters of an image reference, with no "$", quote, or backslash.
 // Then nothing can build a transport prefix that the check does not see.
 //
-// Each line is read in two ways, and both must pass:
+// Buildah starts an instruction at a physical line and joins the
+// continuation lines that follow it. A heredoc body is read raw and starts
+// no instruction. Prism does not track heredocs. It reads an instruction
+// from every physical line instead, joined with its continuation lines as
+// the parser joins them (instructionTexts). The check refuses an escape
+// character other than "\", so the joins agree. Each instruction that
+// buildah parses is then one of the texts that prism checks. A heredoc body line
+// is checked too, which can refuse a line that buildah does not read as an
+// instruction.
+//
+// Each text is read in two ways, and both must pass:
 //
 //   - The parser view copies how the Dockerfile parser of buildah splits a
 //     line (splitCommand and extractBuilderFlags in imagebuilder): the
@@ -41,6 +51,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // buildRefusedTransports are the transport names that a build must not
@@ -63,7 +74,7 @@ var (
 	// index, written literally.
 	literalReference = regexp.MustCompile(`^(docker://)?[A-Za-z0-9._/:@-]+$`)
 	// literalFlagName is the name part of a flag, written literally.
-	literalFlagName = regexp.MustCompile(`^--[A-Za-z0-9-]+$`)
+	literalFlagName = regexp.MustCompile(`^--[A-Za-z0-9_-]+$`)
 	// parserWhitespace is tokenWhitespace of the Dockerfile parser.
 	parserWhitespace = regexp.MustCompile(`[\t\v\f\r ]+`)
 )
@@ -76,9 +87,18 @@ func refuseFile(line int, format string, args ...any) error {
 const literalHint = "Write the image literally: no ARG or other variable, quote, or backslash in FROM, --from, or --mount. " + restructureHint
 
 // restructureHint ends each refusal that a physical line can cause. The
-// check reads every physical line as an instruction, also a line of shell
-// or SQL text in a RUN continuation or a heredoc.
-const restructureHint = "If the line is not an instruction (for example shell or SQL text that starts with FROM or with a flag), restructure the text so that the line does not start that way"
+// check reads an instruction from every physical line, also from a line of
+// shell or SQL text in a RUN continuation or a heredoc.
+const restructureHint = "If the line is not an instruction (for example shell or SQL text that starts with FROM, COPY, ADD, or RUN), restructure the text so that the line does not start that way"
+
+// maxContinuationLines limits one instruction and its continuation lines.
+// The check reads an instruction from each line of a chain, so its cost
+// grows with the square of the chain length.
+const maxContinuationLines = 200
+
+// maxFromWords is the number of words after the flags of FROM that the
+// check reads: the image, AS, and the stage name. Buildah refuses more.
+const maxFromWords = 3
 
 // checkContainerfile refuses a Containerfile that can make podman read an
 // image from a transport other than a registry.
@@ -93,33 +113,18 @@ func checkContainerfile(data []byte) error {
 			return refuseFile(i+1, "the escape directive %q is not supported: remove it, so that \\ is the escape character", m[1])
 		}
 	}
-	for _, l := range append(joinContinuations(physical, true), joinContinuations(physical, false)...) {
-		if err := checkInstruction(l.line, l.text); err != nil {
+	for _, skipComments := range []bool{true, false} {
+		texts, err := instructionTexts(physical, skipComments)
+		if err != nil {
 			return err
 		}
-	}
-	// Buildah starts each instruction at the start of a physical line, so
-	// its keyword and its leading flags are on a physical line. Each
-	// physical line gets the full check too. Then a line that the joins
-	// above join in a way that buildah does not (a heredoc terminator that
-	// ends in "\", for example) cannot hide an image source.
-	for i, line := range physical {
-		if err := checkInstruction(i+1, physicalInstruction(line)); err != nil {
-			return err
+		for _, t := range texts {
+			if err := checkInstruction(t.line, t.text); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
-}
-
-// physicalInstruction prepares one physical line for the check. It removes
-// leading unicode.IsSpace characters, as the parser does, and a trailing
-// continuation backslash, so that a FROM split over lines passes.
-func physicalInstruction(line string) string {
-	line = strings.TrimLeftFunc(line, unicode.IsSpace)
-	if body := strings.TrimRight(line, " \t"); strings.HasSuffix(body, `\`) {
-		return strings.TrimSuffix(body, `\`)
-	}
-	return line
 }
 
 type joinedLine struct {
@@ -127,46 +132,66 @@ type joinedLine struct {
 	text string
 }
 
-// joinContinuations joins each line that ends in "\" with the next line.
-// With skipComments, a comment line or an empty line inside a joined line
-// is left out, as the Dockerfile parser does.
-func joinContinuations(physical []string, skipComments bool) []joinedLine {
+// instructionTexts returns an instruction text for each physical line
+// that can start an instruction: the line joined with its continuation
+// lines, with the continuation backslashes removed. This is how the
+// Dockerfile parser joins lines (Parse in imagebuilder):
+//
+//   - A line that is empty or a comment, after its leading whitespace is
+//     removed, starts no instruction.
+//   - A line continues when it ends in "\" and spaces or tabs.
+//   - With skipComments, an empty line and a comment line inside the
+//     chain are left out, as the parser does. Without it, they are kept.
+//     That second reading only adds texts to check.
+//
+// The text of a line inside a chain is a suffix of the text of the chain,
+// so the texts share one string.
+func instructionTexts(physical []string, skipComments bool) ([]joinedLine, error) {
 	var out []joinedLine
-	var cur strings.Builder
-	start := 0
-	open := false
+	var chain strings.Builder
+	type start struct{ line, off int }
+	var starts []start
+	chainStart := -1
+	flush := func() {
+		text := chain.String()
+		for _, st := range starts {
+			out = append(out, joinedLine{st.line, text[st.off:]})
+		}
+		chain.Reset()
+		starts = starts[:0]
+		chainStart = -1
+	}
 	for i, line := range physical {
 		trimmed := strings.TrimSpace(line)
-		if open && skipComments && (trimmed == "" || strings.HasPrefix(trimmed, "#")) {
-			continue
-		}
-		if !open {
-			start = i + 1
-			// A comment line ends at its own end, also with a "\" there.
-			if strings.HasPrefix(trimmed, "#") {
-				out = append(out, joinedLine{start, line})
+		blank := trimmed == "" || strings.HasPrefix(trimmed, "#")
+		if chainStart < 0 {
+			if blank {
 				continue
 			}
-		}
-		body := strings.TrimRight(line, " \t")
-		if strings.HasSuffix(body, `\`) {
-			cur.WriteString(strings.TrimSuffix(body, `\`))
-			open = true
+			chainStart = i
+		} else if skipComments && blank {
 			continue
 		}
-		cur.WriteString(body)
-		out = append(out, joinedLine{start, cur.String()})
-		cur.Reset()
-		open = false
+		if i-chainStart >= maxContinuationLines {
+			return nil, refuseFile(chainStart+1, "the instruction continues over more than %d lines. Split it into smaller instructions", maxContinuationLines)
+		}
+		starts = append(starts, start{i + 1, chain.Len()})
+		body := strings.TrimRight(line, " \t")
+		if strings.HasSuffix(body, `\`) {
+			chain.WriteString(strings.TrimSuffix(body, `\`))
+			continue
+		}
+		chain.WriteString(line)
+		flush()
 	}
-	if open {
-		out = append(out, joinedLine{start, cur.String()})
+	if chainStart >= 0 {
+		flush()
 	}
-	return out
+	return out, nil
 }
 
-// checkInstruction checks one line in the parser view and in the word
-// view.
+// checkInstruction checks one instruction text in the parser view and in
+// the word view.
 func checkInstruction(line int, text string) error {
 	if err := checkWordView(line, text); err != nil {
 		return err
@@ -174,48 +199,54 @@ func checkInstruction(line int, text string) error {
 	return checkParserView(line, text)
 }
 
-// checkWordView checks one line split at whitespace runes. In a FROM line,
-// the first word that is not a flag is the image, and it must be literal.
-// The later words (AS and the stage name, or the text of a heredoc line
-// that starts with "from") get the transport check only. In every other
-// line, the flag words at the start (after ONBUILD, when it is there) are
-// read: the value of --from, and the from= values of --mount.
+// imageInstructions are the instructions with flags that can name an
+// image: COPY and ADD --from, and RUN --mount from=. FROM is checked on its
+// own. Buildah ignores an instruction that it does not know, and the other
+// instructions pull no image, so their flags are not read.
+var imageInstructions = map[string]bool{"copy": true, "add": true, "run": true}
+
+// checkWordView checks one instruction text split at whitespace runes. In
+// FROM, the first word that is not a flag is the image, and it must be
+// literal. The next words (AS and the stage name, or the text of a heredoc
+// line that starts with "from") get the transport check only. In COPY,
+// ADD, and RUN, the flags at the start are read: the value of --from, and
+// the from= values of --mount. The scan stops after the words that the
+// check needs, so a long instruction costs little.
 func checkWordView(line int, text string) error {
-	words := rawWords(text)
-	if len(words) == 0 || strings.HasPrefix(words[0], "#") {
+	ws := &wordScanner{text: text}
+	keyword, ok := ws.next()
+	if !ok || strings.HasPrefix(keyword, "#") {
 		return nil
 	}
-	if strings.ToLower(words[0]) == "onbuild" {
-		words = words[1:]
+	if strings.ToLower(keyword) == "onbuild" {
+		// ONBUILD has flags of its own before the instruction.
+		for keyword, ok = ws.next(); ok && strings.HasPrefix(keyword, "--"); keyword, ok = ws.next() {
+		}
+		if !ok {
+			return nil
+		}
 	}
-	if len(words) == 0 {
-		return nil
-	}
-	if strings.ToLower(words[0]) == "from" {
-		image := true
-		for _, w := range words[1:] {
+	keyword = strings.ToLower(keyword)
+	if keyword == "from" {
+		words := 0
+		for w, ok := ws.next(); ok && words < maxFromWords; w, ok = ws.next() {
 			if strings.HasPrefix(w, "--") {
 				if hasNonASCII(w) {
 					return refuseNonASCIIFlag(line, w)
 				}
 				continue
 			}
-			if err := checkReference(line, w, image); err != nil {
+			if err := checkReference(line, w, words == 0); err != nil {
 				return err
 			}
-			image = false
+			words++
 		}
 		return nil
 	}
-	// A physical line inside a joined line can start with a flag.
-	flags := words
-	if !strings.HasPrefix(words[0], "--") {
-		flags = words[1:]
+	if !imageInstructions[keyword] {
+		return nil
 	}
-	for i, w := range flags {
-		if !strings.HasPrefix(w, "--") {
-			break
-		}
+	for w, ok := ws.next(); ok && strings.HasPrefix(w, "--") && w != "--"; w, ok = ws.next() {
 		name, value, hasValue := strings.Cut(w, "=")
 		if !literalFlagName.MatchString(name) {
 			return refuseFile(line, "the flag %q has a name that is not literal. Write flag names literally. %s", w, restructureHint)
@@ -226,10 +257,9 @@ func checkWordView(line int, text string) error {
 		switch asciiLower(name) {
 		case "--from":
 			if !hasValue {
-				if i+1 >= len(flags) {
-					continue
+				if value, ok = ws.next(); !ok {
+					return nil
 				}
-				value = flags[i+1]
 			}
 			if err := checkReference(line, value, true); err != nil {
 				return err
@@ -243,19 +273,23 @@ func checkWordView(line int, text string) error {
 	return nil
 }
 
-// checkParserView checks one line as the Dockerfile parser of buildah
-// splits it. The parser has already removed the quotes and backslashes of
-// a flag, so the literal rule does not apply to a flag here. The word view
-// applies it.
+// checkParserView checks one instruction text as the Dockerfile parser of
+// buildah splits it. The parser has already removed the quotes and
+// backslashes of a flag, so the literal rule does not apply to a flag
+// here. The word view applies it.
 func checkParserView(line int, text string) error {
-	cmd, flags, args := splitParserLine(text)
-	var allFlags []string
-	allFlags = append(allFlags, flags...)
+	cmd, rest := splitParserKeyword(text)
 	if cmd == "onbuild" {
-		cmd, flags, args = splitParserLine(args)
-		allFlags = append(allFlags, flags...)
+		// ONBUILD has flags of its own before the instruction.
+		args, _ := extractParserFlags(rest)
+		cmd, rest = splitParserKeyword(args)
 	}
-	for _, f := range allFlags {
+	if cmd != "from" && !imageInstructions[cmd] {
+		return nil
+	}
+	args, flags := extractParserFlags(rest)
+	args = strings.TrimSpace(args)
+	for _, f := range flags {
 		if hasNonASCII(f) {
 			return refuseNonASCIIFlag(line, f)
 		}
@@ -272,9 +306,10 @@ func checkParserView(line int, text string) error {
 		}
 	}
 	if cmd == "from" {
-		for i, w := range parserWhitespace.Split(args, -1) {
-			if w == "" {
-				continue
+		words := parserWhitespace.Split(args, maxFromWords+1)
+		for i, w := range words {
+			if i == maxFromWords || w == "" {
+				break
 			}
 			if err := checkReference(line, w, i == 0); err != nil {
 				return err
@@ -284,16 +319,16 @@ func checkParserView(line int, text string) error {
 	return nil
 }
 
-// splitParserLine splits one line as splitCommand of the Dockerfile parser
-// does: the keyword (lower case), the flags, and the rest.
-func splitParserLine(text string) (string, []string, string) {
+// splitParserKeyword splits one line as splitCommand of the Dockerfile
+// parser does: the keyword (lower case) and the rest, which holds the
+// flags and the arguments.
+func splitParserKeyword(text string) (string, string) {
 	parts := parserWhitespace.Split(strings.TrimSpace(text), 2)
 	cmd := strings.ToLower(parts[0])
 	if len(parts) < 2 {
-		return cmd, nil, ""
+		return cmd, ""
 	}
-	args, flags := extractParserFlags(parts[1])
-	return cmd, flags, strings.TrimSpace(args)
+	return cmd, parts[1]
 }
 
 // extractParserFlags is a copy of extractBuilderFlags of the Dockerfile
@@ -308,7 +343,12 @@ func extractParserFlags(line string) (string, []string) {
 	)
 	var words []string
 	phase := inSpaces
-	word := ""
+	var word strings.Builder
+	takeWord := func() string {
+		w := word.String()
+		word.Reset()
+		return w
+	}
 	quote := '\000'
 	blankOK := false
 	var ch rune
@@ -329,21 +369,21 @@ func extractParserFlags(line string) (string, []string) {
 			phase = inWord
 		}
 		if (phase == inWord || phase == inQuote) && pos == len(line) {
-			if word != "--" && (blankOK || len(word) > 0) {
-				words = append(words, word)
+			if w := takeWord(); w != "--" && (blankOK || len(w) > 0) {
+				words = append(words, w)
 			}
 			break
 		}
 		if phase == inWord {
 			if unicode.IsSpace(ch) {
 				phase = inSpaces
-				if word == "--" {
+				w := takeWord()
+				if w == "--" {
 					return line[pos:], words
 				}
-				if blankOK || len(word) > 0 {
-					words = append(words, word)
+				if blankOK || len(w) > 0 {
+					words = append(words, w)
 				}
-				word = ""
 				blankOK = false
 				continue
 			}
@@ -360,7 +400,7 @@ func extractParserFlags(line string) (string, []string) {
 				pos++
 				ch = rune(line[pos])
 			}
-			word += string(ch)
+			word.WriteRune(ch)
 			continue
 		}
 		if phase == inQuote {
@@ -376,7 +416,7 @@ func extractParserFlags(line string) (string, []string) {
 				pos++
 				ch = rune(line[pos])
 			}
-			word += string(ch)
+			word.WriteRune(ch)
 		}
 	}
 	return "", words
@@ -440,15 +480,21 @@ func asciiLower(s string) string {
 	return string(b)
 }
 
-// rawWords splits text at whitespace outside quotes, with no expansion.
-// A backslash keeps the next character in the word.
-func rawWords(text string) []string {
-	var words []string
+// wordScanner splits text at whitespace runes outside quotes, with no
+// expansion. A backslash keeps the next character in the word. It returns
+// one word at a time, so a caller can stop early.
+type wordScanner struct {
+	text string
+	pos  int
+}
+
+func (s *wordScanner) next() (string, bool) {
 	var cur strings.Builder
 	inWord := false
 	var quote rune
 	escaped := false
-	for _, r := range text {
+	for s.pos < len(s.text) {
+		r, size := utf8.DecodeRuneInString(s.text[s.pos:])
 		switch {
 		case escaped:
 			cur.WriteRune(r)
@@ -468,17 +514,13 @@ func rawWords(text string) []string {
 			inWord = true
 		case unicode.IsSpace(r):
 			if inWord {
-				words = append(words, cur.String())
-				cur.Reset()
-				inWord = false
+				return cur.String(), true
 			}
 		default:
 			cur.WriteRune(r)
 			inWord = true
 		}
+		s.pos += size
 	}
-	if inWord {
-		words = append(words, cur.String())
-	}
-	return words
+	return cur.String(), inWord
 }

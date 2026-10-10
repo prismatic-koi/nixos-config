@@ -140,6 +140,10 @@ func TestBuild_PhysicalLineChecked(t *testing.T) {
 		"no-break space before escape":    {"\u00a0# escape=`\nFROM alpine\n", 1, "escape directive"},
 		"ideographic space before escape": {"\u3000# escape=`\nFROM alpine\n", 1, "escape directive"},
 		"SQL text in a RUN continuation":  {"FROM postgres:16\nRUN psql -c \"SELECT * \\\nFROM users\"\n", 3, "restructure the text"},
+		"heredoc terminator, split FROM":  {arg + heredoc + "FR\\\nOM $X\n", 6, "is not literal"},
+		"heredoc terminator, split flag":  {arg + heredoc + "COPY \\\n--fr\\\nom=$X / /\n", 6, "is not literal"},
+		"heredoc terminator, split value": {arg + heredoc + "COPY --from=tar\\\nball:/x / /\n", 6, `the "tarball" transport`},
+		"continuation over 200 lines":     {"FROM alpine\nRUN true" + strings.Repeat(" \\\n  && true", 200) + "\n", 2, "more than 200 lines"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -174,6 +178,8 @@ func TestBuild_LiteralReferencesPass(t *testing.T) {
 		"shell flags on joined": "FROM alpine\nRUN kubectl create secret generic s \\\n  --from-literal=k=$V \\\n  && rsync -a \\\n  --exclude-from=$LIST /a /b\n",
 		"comment with a slash":  "# a comment \\\nFROM alpine\n",
 		"split literal FROM":    "FROM \\\n  --platform=$BUILDPLATFORM \\\n  golang:1.23 \\\n  AS build\nRUN true\n",
+		"shell flags in a RUN":  "FROM alpine\nRUN cmd \\\n  -- arg \\\n  --some_flag=1 \\\n  --from-file=$X \\\n  --mount=$M\n",
+		"continuation of 199":   "FROM alpine\nRUN true" + strings.Repeat(" \\\n  && true", 198) + "\n",
 		"heredoc Python import": "FROM python:3.12\nRUN <<EOF python3\nfrom typing import List, Dict\nfrom foo import *\nEOF\n",
 		"heredoc SQL":           "FROM postgres:16\nCOPY <<EOF /init.sql\nSELECT name\nFROM users WHERE id = 1;\nEOF\n",
 		"non-ASCII in RUN":      "FROM alpine\nRUN echo caf\u00e9 \u0160\n",
