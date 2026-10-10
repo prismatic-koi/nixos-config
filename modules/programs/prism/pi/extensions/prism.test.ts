@@ -4078,7 +4078,7 @@ describe("#2646: git-push reminder fires at most once per session", () => {
       const server = net.createServer((conn) => {
         makeSidecarResponder1554(conn)
         conn.on("data", (chunk) => {
-          if (chunk.toString().includes('"type":"hello"')) handshakeSeen()
+          if (chunk.toString().includes('"type":"session_status"')) handshakeSeen()
         })
       })
 
@@ -4092,12 +4092,9 @@ describe("#2646: git-push reminder fires at most once per session", () => {
 
       server.listen(sockPath, () => {
         void trigger("session_start", {}, {}).then(() => {
-          // Wait for the server to have observed the client's `hello` frame
-          // (hello_ack is written synchronously in response), then give the
-          // client a short grace period to process it and set
-          // handshakeComplete=true. This avoids flakiness from a fixed
-          // timeout racing the handshake under full-suite CPU contention.
-          void handshakeSeenPromise.then(() => new Promise((r) => setTimeout(r, 50))).then(() => {
+          // The extension sends session_status right after it sets
+          // handshakeComplete=true, so that frame is the readiness signal.
+          void handshakeSeenPromise.then(() => {
             void (async () => {
               try {
                 // First push, then the turn_start that delivers the reminder.
@@ -6117,6 +6114,26 @@ describe("#1761: TOOL_HEARTBEAT_INTERVAL_MS — env override", () => {
 //   - `parentMessageId` is present and non-empty on tool_result,
 //   - both values equal the `message.id` from the preceding message_start.
 
+// Polls `lines` (JSONL frames the responder received) until `count` frames of
+// `type` have arrived. Rejects with a message that names the missing type.
+async function waitForFrames(
+  lines: string[],
+  type: string,
+  count = 1,
+  deadlineMs = 5000,
+): Promise<void> {
+  const countOf = () => lines.filter((l) => l.includes(`"type":"${type}"`)).length
+  const end = Date.now() + deadlineMs
+  while (countOf() < count) {
+    if (Date.now() > end) {
+      throw new Error(
+        `timeout: expected ${count} "${type}" frame(s), got ${countOf()}; received: ${JSON.stringify(lines)}`,
+      )
+    }
+    await new Promise((r) => setTimeout(r, 5))
+  }
+}
+
 describe("#1787: tool_call/tool_result emit parentMessageId from message_start", () => {
   it("stamps the assistant message id onto tool_call and tool_result frames", () => {
     return new Promise<void>((resolve, reject) => {
@@ -6166,8 +6183,9 @@ describe("#1787: tool_call/tool_result emit parentMessageId from message_start",
 
       server.listen(sockPath, () => {
         void trigger("session_start", {}, {}).then(async () => {
-          // Wait a tick for the handshake to round-trip.
-          await new Promise((r) => setTimeout(r, 50))
+          // The extension sends session_status right after it processes
+          // hello_ack, so that frame means the handshake is complete.
+          await waitForFrames(receivedLines, "session_status")
 
           // Drive the lifecycle: assistant message_start (provides the
           // parent message id) → tool_execution_start → tool_execution_end.
@@ -6188,8 +6206,8 @@ describe("#1787: tool_call/tool_result emit parentMessageId from message_start",
             result: { content: "hi\n" },
           })
 
-          // Wait for the frames to flush across the socket.
-          await new Promise((r) => setTimeout(r, 50))
+          await waitForFrames(receivedLines, "tool_call")
+          await waitForFrames(receivedLines, "tool_result")
 
           try {
             const frames = receivedLines.map((l) => {
@@ -6247,7 +6265,7 @@ describe("#1787: tool_call/tool_result emit parentMessageId from message_start",
         reject(new Error(
           `timeout: never saw both tool_call and tool_result frames; received: ${JSON.stringify(receivedLines)}`,
         ))
-      }, 1000).unref()
+      }, 10000).unref()
     })
   })
 
@@ -6295,7 +6313,7 @@ describe("#1787: tool_call/tool_result emit parentMessageId from message_start",
 
       server.listen(sockPath, () => {
         void trigger("session_start", {}, {}).then(async () => {
-          await new Promise((r) => setTimeout(r, 50))
+          await waitForFrames(receivedLines, "session_status")
 
           // Deliberately skip message_start — simulates an extension that
           // restarted mid-turn or a tool call fired before any assistant
@@ -6308,7 +6326,7 @@ describe("#1787: tool_call/tool_result emit parentMessageId from message_start",
             args: { command: "true" },
           })
 
-          await new Promise((r) => setTimeout(r, 50))
+          await waitForFrames(receivedLines, "tool_call")
 
           try {
             const frames = receivedLines
@@ -6337,7 +6355,7 @@ describe("#1787: tool_call/tool_result emit parentMessageId from message_start",
         cleanup()
         server.close()
         reject(new Error("timeout"))
-      }, 1000).unref()
+      }, 10000).unref()
     })
   })
 })
@@ -6743,10 +6761,8 @@ function setupReviewGuardHarness(): Promise<{
     server.listen(sockPath, () => {
       // Fire session_start to dial the socket and complete the handshake.
       void trigger("session_start", {}, {}).then(async () => {
-        // Wait for the handshake to round-trip and post-handshake frames
-        // (including the sidecar's reviewing_state{in_flight:false}) to
-        // arrive at the server's read side.
-        await new Promise((r) => setTimeout(r, 50))
+        // session_status is the first frame after the handshake completes.
+        await waitForFrames(receivedLines, "session_status")
         resolve({
           trigger,
           pushInbound: (frame) => {
