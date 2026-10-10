@@ -990,6 +990,7 @@ func resolveLayoutIsolationMode(opts SpawnOpts) string {
 // in practice.
 func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 	return Opts{
+		ProfileName:         opts.ProfileName,
 		Prompt:              opts.Prompt,
 		PromptFilePath:      promptFilePath,
 		Agent:               opts.AgentRole,

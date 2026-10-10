@@ -49,6 +49,9 @@ func openDB() (*db.DB, error) {
 
 // Opts carries optional parameters for session creation.
 type Opts struct {
+	// ProfileName is the resolved profile for this session. Host mode reads
+	// the model, thinking level, and provider from its slot for Agent.
+	ProfileName string
 	// Prompt is passed to the agent as the last positional argument at startup.
 	//
 	// In host mode, when PromptFilePath is also set, BuildAgentCmd
@@ -423,6 +426,37 @@ func BuildAgentCmd(opts Opts) (string, error) {
 	})
 }
 
+// hostProfileSlot returns the profile slot for this session's role. Bwrap and
+// sandbox-exec read the slot in `prism agent-run`; host mode has no agent-run
+// process, so the command builder reads it here. The profile name comes from
+// opts.ProfileName, then the spawn_inputs row, then the active profile. Any
+// failure returns an empty slot, and pi then uses its own default.
+func hostProfileSlot(opts Opts) config.RoleSlot {
+	if opts.Agent == "" {
+		return config.RoleSlot{}
+	}
+	pf, err := config.LoadProfiles()
+	if err != nil {
+		return config.RoleSlot{}
+	}
+	name := opts.ProfileName
+	if name == "" && opts.DB != nil {
+		// Not profile.SpawnTimeForSession: internal/profile's tests import
+		// this package through sidecartest, so importing it here is a cycle.
+		if sess, err := opts.DB.MostRecentSessionForName(opts.SessionName); err == nil && sess != nil {
+			if si, err := opts.DB.SpawnInputsByInstanceID(sess.InstanceID); err == nil && si != nil && si.ProfileName != nil {
+				name = *si.ProfileName
+			}
+		}
+	}
+	name, _, err = config.ResolveActiveProfile(pf, name)
+	if err != nil || name == "" {
+		return config.RoleSlot{}
+	}
+	slot, _ := config.SlotForRole(pf, name, opts.Agent)
+	return slot
+}
+
 // harnessBinary returns the binary name to invoke for the given harness.
 // For "pi" (or empty) the binary is pi.
 func harnessBinary(harnessName string) string {
@@ -503,26 +537,22 @@ func buildDirectAgentCmd(opts Opts) string {
 	// positional message bytes. Empty values omit the flag and the profile
 	// slot's model/variant is used unchanged.
 	if container.IsPIHarness(opts.HarnessName) {
-		// --provider first, mirroring container.PIInvocation's flag order so
-		// the host-mode and sandboxed argvs read the same way.
-		if opts.Provider != "" {
-			cmd += " --provider " + shellQuote(opts.Provider)
-		}
-		// Model axis, highest rung first: the per-role
-		// `--model-override` entry for this session's role beats the
-		// session-wide `--model`, which beats the profile slot (resolved by
-		// pi itself in host mode). Host mode emits ONE `--model` flag, so the
-		// precedence is applied here rather than by PIInvocation, which is
-		// the equivalent single argv-rendering point for the sandboxed modes.
-		model := opts.Model
-		if roleModel := roleModelOverride(opts); roleModel != "" {
-			model = roleModel
-		}
-		if model != "" {
-			cmd += " --model " + shellQuote(model)
-		}
-		if opts.Variant != "" {
-			cmd += " --thinking " + shellQuote(opts.Variant)
+		// The same function renders the flags for bwrap and sandbox-exec
+		// (container.PIInvocation), so the argvs cannot drift. The profile
+		// slot supplies provider, model, and thinking when no override is set.
+		slot := hostProfileSlot(opts)
+		axes := container.ResolvePIModelAxes(slot, container.PIOverrides{
+			Provider:   opts.Provider,
+			Model:      opts.Model,
+			AgentModel: roleModelOverride(opts),
+			Variant:    opts.Variant,
+		})
+		for i, a := range container.PIModelFlags(axes.Provider, "", axes.Model, axes.Thinking) {
+			if i%2 == 0 {
+				cmd += " " + a
+			} else {
+				cmd += " " + shellQuote(a)
+			}
 		}
 	}
 	// Append --session <id> for host-mode pi-resume.

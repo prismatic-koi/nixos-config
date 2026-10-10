@@ -883,25 +883,16 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	// command). When non-empty they replace the slot's value here, before
 	// PIInvocation reads PIModel / PIThinking. Empty override fields fall
 	// through to the slot value unchanged.
-	ctrCfg.PIProvider = slot.Provider
-	ctrCfg.PIModel = slot.Model
-	ctrCfg.PIThinking = slot.Thinking
-	if overrides.Model != "" {
-		ctrCfg.PIModel = overrides.Model
-	}
-	if overrides.Variant != "" {
-		ctrCfg.PIThinking = overrides.Variant
-	}
-	// The routing-provider override. An empty value falls through to
-	// slot.Provider unchanged, so no blank `--provider ""` can ever reach
-	// pi's argv — PIInvocation omits the flag for an empty PIProvider.
-	if overrides.Provider != "" {
-		ctrCfg.PIProvider = overrides.Provider
-	}
-	// The per-role `--model-override` entry travels on its own field so
-	// PIInvocation can rank it above PIModel when it renders pi's --model
-	// argument. An empty value leaves AgentModel empty and PIModel (slot, or
-	// agent-run's own --model) decides the model unchanged.
+	axes := container.ResolvePIModelAxes(slot, container.PIOverrides{
+		Provider: overrides.Provider,
+		Model:    overrides.Model,
+		Variant:  overrides.Variant,
+	})
+	ctrCfg.PIProvider = axes.Provider
+	ctrCfg.PIModel = axes.Model
+	ctrCfg.PIThinking = axes.Thinking
+	// The per-role `--model-override` entry travels on its own field;
+	// PIModelFlags ranks it above PIModel when it renders --model.
 	ctrCfg.AgentModel = overrides.AgentModel
 
 	// Resolve the pi binary path. This must be the absolute store
