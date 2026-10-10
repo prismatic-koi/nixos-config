@@ -345,6 +345,16 @@ jobs:
         # nix go must be provisioned here too.
         run: |
           set -o pipefail
+          # The tests (and production) assume a NixOS-style /bin/sh: a
+          # symlink into /nix/store, so a sandbox that binds only /nix and
+          # /bin can run it. Ubuntu's /bin/sh is dash, which needs /lib and
+          # fails inside that sandbox. Point it at a nix bash.
+          nix_bash="$(nix build --no-link --print-out-paths nixpkgs#bash)"
+          sudo ln -sf "$nix_bash/bin/bash" /usr/bin/sh
+          # CGO_ENABLED=0 makes the test binaries static. The sidecar and
+          # integration tests exec their own test binary inside bwrap, and a
+          # dynamic binary needs the host /lib64 loader, which is not bound.
+          export CGO_ENABLED=0
           nix shell --print-build-logs nixpkgs#coreutils nixpkgs#util-linux nixpkgs#go \
             --command go test -v ./internal/container/ ./internal/integration/ ./internal/sidecar/ -run '^(TestBwrapBaseline_|TestBwrapUsageStateDir_|TestBwrapGoCacheDirs_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)' 2>&1 | tee /tmp/go-test-bwrap-live.log
       - name: Guard against SKIP-as-PASS and a zero-test run
