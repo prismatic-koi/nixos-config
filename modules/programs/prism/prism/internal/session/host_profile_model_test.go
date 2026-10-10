@@ -68,3 +68,17 @@ func TestHostAndPIInvocationShareModelFlags(t *testing.T) {
 		t.Errorf("host %q lacks bwrap flags %q", got, want)
 	}
 }
+
+// The agent-only layout (review fan-out) forwards ProfileName, so a host-mode
+// reviewer runs on the spawn's profile slot.
+func TestAgentOnlyLayout_HostModeProfileSlot(t *testing.T) {
+	writeHostProfiles(t)
+	o := buildOptsForAgentOnlyLayout(SpawnOpts{AgentRole: "worker", HarnessName: "pi", ProfileName: "light"}, 0, "host")
+	if o.ProfileName != "light" {
+		t.Fatalf("ProfileName not forwarded: %q", o.ProfileName)
+	}
+	cmd := buildDirectAgentCmd(o)
+	if !strings.Contains(cmd, "--model 'anthropic/claude-sonnet-5-5'") {
+		t.Errorf("agent-only host cmd lacks profile model: %q", cmd)
+	}
+}
