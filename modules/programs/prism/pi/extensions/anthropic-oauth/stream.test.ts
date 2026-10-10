@@ -1074,3 +1074,25 @@ describe("convertPiMessagesToAnthropic \u2014 thinking-block re-injection (#2049
     assert.equal(blocks[0].signature, "sig-1", "signature is NOT sanitized")
   })
 })
+
+const tuStart = (name: string) =>
+  `event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"${name}","input":{}}}\n\n`
+const tuDelta = (j: string) =>
+  `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: j } })}\n\n`
+const tuStop = `event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n`
+
+describe("parseSSEStream — broken tool_use blocks (#3103)", () => {
+  it("input that is not valid JSON fails the turn and names the tool", async () => {
+    const { failure } = await failedMessage([
+      START, tuStart("bash"), tuDelta('{"cmd": "ls'), tuStop,
+      messageDelta("tool_use"), MESSAGE_STOP,
+    ])
+    assert.match(failure.message, /tool "bash".*not valid JSON: /)
+  })
+  it("a stream that ends inside a tool_use block fails the turn", async () => {
+    const { failure } = await failedMessage([
+      START, tuStart("bash"), tuDelta('{"cmd":'), messageDelta("tool_use"), MESSAGE_STOP,
+    ])
+    assert.match(failure.message, /inside a tool_use block for tool "bash"/)
+  })
+})
