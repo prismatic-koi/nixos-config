@@ -56,15 +56,17 @@ nix build --impure --no-link \
 
 The `go-tests` job catches race conditions and integration-test failures that the nix sandbox masks. The `nix-build-prism-checked` job catches the homeless-shelter failure class.
 
-## Live bwrap tests run only from a host shell
+## Live bwrap tests: the `go-tests-bwrap-live` job
 
-The live bwrap tests start a real `bwrap`. Examples are `TestBwrapBaseline_*`, `TestBwrapUsageStateDir_*`, `TestBwrapGoCacheDirs_*`, `TestBwrapAgentRlimitNofile`, `TestRunStartupStdio_*`, and `TestStdio_*`. Three environments skip them:
+The live bwrap tests start a real `bwrap`. Examples are `TestBwrapBaseline_*`, `TestBwrapUsageStateDir_*`, `TestBwrapGoCacheDirs_*`, `TestBwrapAgentRlimitNofile`, `TestRunStartupStdio_*`, and `TestStdio_*`.
+
+The `go-tests-bwrap-live` job in `pr-gate.yml` is the automatic run of these tests (#3076). It sets `kernel.apparmor_restrict_unprivileged_userns=0`, installs bubblewrap and Nix, and fails if a selected test reports SKIP or if zero selected tests run. It is part of the `pr-gate` fan-in. The helpers no longer skip on `GITHUB_ACTIONS`: a live bwrap probe decides the skip. Three environments still skip them:
 
 - A prism bwrap worker. The worker sandbox runs with `--disable-userns` (#3065), so a nested bwrap cannot start.
-- The `go-tests` CI job. The helpers skip when `GITHUB_ACTIONS=true` (#1510).
+- The `go-tests` CI job. The runner keeps the apparmor restriction, so the live probe skips.
 - The `nix-build-prism-checked` CI job. bwrap is not on `PATH` in the nix build sandbox.
 
-A SKIP in these tests is not a PASS. If a change touches `internal/container/bwrap.go` or a live bwrap test, run the tests with `-v` from a host shell outside every sandbox. If you cannot, ask the user to run them. Record the result in the PR body. #3076 tracks a CI job that runs these tests.
+A SKIP in these tests is not a PASS. In a worker, read the `go-tests-bwrap-live` result on the PR. For a local run, use `-v` from a host shell outside every sandbox. Record the result in the PR body. Add a new live bwrap test name to the `-run` selector of the job.
 
 ## Test-suite isolation (issue #1608)
 

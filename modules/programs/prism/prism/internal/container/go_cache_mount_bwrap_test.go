@@ -110,6 +110,8 @@ func runInBwrapWithPath(t *testing.T, bwrapBin, hostHome string, pathDirs []stri
 		"--ro-bind", "/bin", "/bin",
 		"--proc", "/proc",
 		"--dev", "/dev",
+		// go build creates its work dir under /tmp; a bare sandbox has none.
+		"--tmpfs", "/tmp",
 		"--unshare-pid",
 		"--die-with-parent",
 		"--setenv", "PATH", strings.Join(pathDirs, ":"),

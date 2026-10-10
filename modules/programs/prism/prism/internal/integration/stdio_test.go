@@ -35,22 +35,26 @@ import (
 // Two skip paths:
 //
 //   - PATH lookup fails: bwrap is not installed.
-//   - GitHub Actions ubuntu-latest runner: bwrap is in PATH (we apt-install
-//     it in the workflow) but unprivileged user-namespace uid-map setup is
-//     blocked by the runner's apparmor profile, so any actual bwrap exec
-//     fails with "setting up uid map: Permission denied".
+//   - A live probe fails: bwrap is in PATH but cannot set up a user
+//     namespace (the go-tests runner's apparmor profile, a prism worker
+//     sandbox).
 //
 // The skip messages are loud and name the exact reason, so reviewers see it
 // in test output rather than a vague "skipping" string.
 func requireBwrap(t *testing.T) string {
 	t.Helper()
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Skipf("skipping on GitHub Actions ubuntu-latest: %s — see #1510",
-			"unprivileged userns uid-map setup is disallowed (kernel.apparmor_restrict_unprivileged_userns=1)")
-	}
 	bin, err := exec.LookPath("bwrap")
 	if err != nil {
 		t.Skip("bwrap not found in PATH — skipping bwrap stdio integration test")
+	}
+	// A live probe decides the skip, not the CI environment. On a runner
+	// with kernel.apparmor_restrict_unprivileged_userns=1 the uid-map
+	// setup fails and the probe skips; the bwrap CI job lifts that
+	// restriction so the probe passes there (#3076).
+	probe := exec.Command(bin, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+		"--unshare-pid", "/bin/sh", "-c", "true")
+	if out, err := probe.CombinedOutput(); err != nil {
+		t.Skipf("bwrap is on PATH but cannot run here: %v — %s", err, out)
 	}
 	return bin
 }
