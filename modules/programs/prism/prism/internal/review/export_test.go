@@ -356,3 +356,8 @@ func SetFallbackSpawnerForTest(opts *MonitorOpts, fn func(d *db.DB, c FallbackSp
 func BuildFallbackPlanForTest(pf *config.ProfilesFile, profileName string, modelsByRole map[string]string, agents []Agent, prompts []string) []AgentFallbackPlan {
 	return buildFallbackPlan(pf, profileName, modelsByRole, agents, prompts)
 }
+
+// FallbackProfilesForTest exposes fallbackProfiles.
+func FallbackProfilesForTest(pf *config.ProfilesFile) *config.ProfilesFile {
+	return fallbackProfiles(pf)
+}

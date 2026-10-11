@@ -66,15 +66,16 @@ func waitForReviewTerminal(prNumber, groupID string, jsonMode bool, timeout time
 	}
 	defer probe.Close()
 
+	var refusalSince time.Time
 	pollErr := pollWait(context.Background(), timeout,
 		1*time.Second, 10*time.Second,
 		func() (bool, error) {
-			done, _, _, gErr := probe.GroupPoll(groupID)
+			done, members, results, gErr := probe.GroupPoll(groupID)
 			if gErr != nil {
 				proglog.Debugf("[prism review --wait] probe error: %v (will retry)\n", gErr)
 				return false, nil
 			}
-			return done, nil
+			return reviewWaitDone(done, members, results, &refusalSince, time.Now()), nil
 		})
 
 	switch exitCodeOf(pollErr) {
@@ -94,6 +95,27 @@ func waitForReviewTerminal(prNumber, groupID string, jsonMode bool, timeout time
 		return fmt.Errorf("prism review --wait: final group poll: %w", gErr)
 	}
 	return emitReviewWaitTerminalAgg(prNumber, groupID, allMembers, members, jsonMode)
+}
+
+// reviewWaitFallbackSettle is how long --wait keeps polling a complete group
+// whose last session of some agent ended with a refusal. The monitor starts
+// the fallback session within one poll interval (5 s) plus the spawn time;
+// the fallback session then makes the group incomplete again (issue #3112).
+var reviewWaitFallbackSettle = 30 * time.Second
+
+// reviewWaitDone returns whether --wait can report the group. A complete
+// group with a refusal that can still start a fallback is not done until
+// reviewWaitFallbackSettle has passed since --wait first saw that state.
+// *refusalSince holds that time, and is reset when the state ends.
+func reviewWaitDone(done bool, members []db.Status, results map[string]db.GroupMemberResult, refusalSince *time.Time, now time.Time) bool {
+	if !done || !review.RefusalAwaitingFallback(members, results) {
+		*refusalSince = time.Time{}
+		return done
+	}
+	if refusalSince.IsZero() {
+		*refusalSince = now
+	}
+	return now.Sub(*refusalSince) >= reviewWaitFallbackSettle
 }
 
 // emitReviewWaitTerminal is kept for tests that pre-date the probe

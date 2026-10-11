@@ -305,3 +305,22 @@ func EffectiveRoundSessions(names []string) []string {
 	}
 	return out
 }
+
+// RefusalAwaitingFallback reports whether the last session of some agent in
+// the group ended with a refusal run_error. The monitor can still start a
+// fallback for that agent, so a group that is complete now can become
+// incomplete again. members are the group's agent_status rows, and results
+// the db.GroupResults map.
+func RefusalAwaitingFallback(members []db.Status, results map[string]db.GroupMemberResult) bool {
+	names := make([]string, 0, len(members))
+	for _, m := range members {
+		names = append(names, m.SessionName)
+	}
+	for _, sess := range EffectiveRoundSessions(names) {
+		mr, ok := results[sess]
+		if ok && mr.State == "error" && mr.RunError != "" && IsRefusalStopReason(mr.RunErrorRawStopReason) {
+			return true
+		}
+	}
+	return false
+}

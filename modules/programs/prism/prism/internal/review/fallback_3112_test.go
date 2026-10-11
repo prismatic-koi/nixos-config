@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -310,5 +312,30 @@ func TestEffectiveRoundSessions_CollapsesFallbackChain(t *testing.T) {
 	want := []string{"p~review-1-review-security-fallback-2", "p~review-1-review-goal"}
 	if got := review.EffectiveRoundSessions(in); !reflect.DeepEqual(got, want) {
 		t.Errorf("EffectiveRoundSessions = %v, want %v", got, want)
+	}
+}
+
+// TestFallbackProfiles_LoadsWhenNil covers host mode: cmd/review.go does not
+// load profiles.json for it, so the fallback plan loads the file itself.
+func TestFallbackProfiles_LoadsWhenNil(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	if err := os.MkdirAll(filepath.Join(cfg, "prism"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"profiles":{"max":{"review-security":{"model":"` + fbFirst + `","fallbacks":["` + fbModelOne + `"]}}}}`
+	if err := os.WriteFile(filepath.Join(cfg, "prism", "profiles.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pf := review.FallbackProfilesForTest(nil)
+	plan := review.BuildFallbackPlanForTest(pf, "max", nil, []review.Agent{{Name: "review-security"}}, []string{"p"})
+	if !reflect.DeepEqual(plan[0].Fallbacks, []string{fbModelOne}) || plan[0].Model != fbFirst {
+		t.Errorf("plan = %+v, want the slot model and fallbacks from profiles.json", plan[0])
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if got := review.FallbackProfilesForTest(nil); got != nil {
+		t.Errorf("missing profiles.json: got %+v, want nil", got)
 	}
 }

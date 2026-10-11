@@ -569,7 +569,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			ProfileName:        activeProfile,
 			InvokerSession:     opts.ParentSession,
 			ModelsByRole:       opts.ModelsByRole,
-			Agents:             buildFallbackPlan(opts.ProfilesFile, activeProfile, opts.ModelsByRole, expectedAgents, prompts),
+			Agents:             buildFallbackPlan(fallbackProfiles(opts.ProfilesFile), activeProfile, opts.ModelsByRole, expectedAgents, prompts),
 		},
 	}
 	if startErr := StartMonitorProcess(monitorOpts, prismBinary); startErr != nil {
@@ -709,4 +709,20 @@ func asyncHarnessName(opts Opts) string {
 		return opts.Harness
 	}
 	return "pi"
+}
+
+// fallbackProfiles returns pf, or loads profiles.json when pf is nil. The
+// caller does not load profiles.json for host mode, but a host-mode session
+// still runs on its profile slot (hostProfileSlot), so its fallbacks apply
+// too. A load error gives a nil file, and the round then has no fallbacks.
+func fallbackProfiles(pf *config.ProfilesFile) *config.ProfilesFile {
+	if pf != nil {
+		return pf
+	}
+	loaded, err := config.LoadProfiles()
+	if err != nil {
+		proglog.Warnf("[prism review] warning: profiles.json not loaded, review fallbacks disabled: %v\n", err)
+		return nil
+	}
+	return loaded
 }
