@@ -48,29 +48,25 @@ func prismContainerStatePaths(t *testing.T, instanceID string) []string {
 }
 
 // TestGenerateProfile_PrismContainerState_OutsideWriteGrantedSubpaths: no
-// write-granting clause of the sandbox-exec profile covers the tree, for a
-// session with or without --containers.
+// write-granting clause of the sandbox-exec profile covers the tree.
 func TestGenerateProfile_PrismContainerState_OutsideWriteGrantedSubpaths(t *testing.T) {
-	for _, containers := range []bool{false, true} {
-		m := newAuditLocationTestManager(t)
-		m.cfg.ContainersEnabled = containers
-		profile := generateProfile(m)
-		granted := writeGrantedSBPLPaths(t, profile)
-		if len(granted) == 0 {
-			t.Fatalf("parsed no write-granted paths out of the profile:\n%s", profile)
-		}
-		paths := prismContainerStatePaths(t, m.cfg.InstanceID)
-		for _, target := range paths {
-			for _, rule := range granted {
-				if rule.covers(target) {
-					t.Errorf("containers=%v: %s is inside write-granted (%s %q)\nclause:\n%s",
-						containers, target, rule.form, rule.path, rule.clause)
-				}
+	m := newAuditLocationTestManager(t)
+	profile := generateProfile(m)
+	granted := writeGrantedSBPLPaths(t, profile)
+	if len(granted) == 0 {
+		t.Fatalf("parsed no write-granted paths out of the profile:\n%s", profile)
+	}
+	paths := prismContainerStatePaths(t, m.cfg.InstanceID)
+	for _, target := range paths {
+		for _, rule := range granted {
+			if rule.covers(target) {
+				t.Errorf("%s is inside write-granted (%s %q)\nclause:\n%s",
+					target, rule.form, rule.path, rule.clause)
 			}
 		}
-		if strings.Contains(profile, paths[0]) {
-			t.Errorf("containers=%v: profile names the prism-container state dir %s", containers, paths[0])
-		}
+	}
+	if strings.Contains(profile, paths[0]) {
+		t.Errorf("profile names the prism-container state dir %s", paths[0])
 	}
 }
 

@@ -40,8 +40,8 @@ package cmd
 // replaced — so the guard errs toward leaving a resource in place. See
 // `legacySiblingPrefixes`.
 //
-// Images the session pulled are NOT swept. See docs/podman-proxy.md
-// section 8.3 for the two conditions that work needs first.
+// Images the session pulled are NOT swept. A pulled image can be shared
+// with another session, and no label records which session pulled it.
 //
 // The container sweep complements the per-mode container teardown that
 // `removeContainerIfExists` already performs: that path removes the
@@ -388,10 +388,8 @@ func newResourceOwner(sessionName string, instanceIDs, legacySiblings []string) 
 // A long-lived session name that is closed and opened again often, and
 // reaches hard cleanup rarely, is the reachable case. Do NOT close this
 // by falling back to the name when a token is unknown — that is the
-// collision issue #2951 closed. Issue #2972 carries the follow-up: a
-// diagnostic warning for the silent skip, and the prune-versus-ownership
-// retention question underneath it. docs/podman-proxy.md §8.3 records the
-// residual.
+// collision issue #2951 closed. collectSweepable logs a warning for the
+// skip when the name matches the session that cleanup removes.
 //
 // A failed `sessions` read degrades to the current incarnation plus the
 // legacy rule, with a warning. That leaks an older incarnation's volumes

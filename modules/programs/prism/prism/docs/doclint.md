@@ -17,15 +17,14 @@
     identifiers would strip the section's point.
   - `CgroupBudget` is referenced as the annotation example in the
     "Annotation — opting out of a specific finding" section; it is a
-    hypothetical field in the podman-proxy field-admission walkthrough.
+    hypothetical field in a field-admission walkthrough.
   - `refs/stash`, `AllPackages.nix`, `allPackages.nix` are the same
     counter-example set carried over from the AGENTS.md doclint-ignore
     block, mentioned here as canonical worked examples of when to reach
     for the annotation.
   - `AGENTS.md` is a cross-boundary reference to the repo-root file. In
     a full checkout the basename resolves; in the nix sandbox where
-    only the prism subtree is copied in, it does not exist. Same
-    situation as the equivalent annotation in podman-proxy.md.
+    only the prism subtree is copied in, it does not exist.
 -->
 
 This document specifies the doc-lint that verifies backticked identifier-shaped
@@ -41,7 +40,7 @@ pr-gate enforcement (both the `go-tests` CI job and the homeless-shelter
 
 Backticked identifiers in markdown drift from the source they reference as
 the code evolves — functions get renamed, fields get added/removed, files
-get split. PR #2333 (the podman-proxy train's closer) went through three
+get split. PR #2333 went through three
 review cycles of `review-code` and `review-context` catching stale
 identifiers by hand. Examples: `bind_source_outside_allowlist:<path>`
 where the source emits `host_bind:<path>`, `mountTypeAllowlist` where the
@@ -73,13 +72,13 @@ For each markdown file in scope (see [Scope](#scope) below), the lint:
 
 | Class | Example | Resolution rule |
 |---|---|---|
-| `file_path` | `` `internal/podmanproxy/policy.go` `` | `os.Stat` against `<prismRoot>/<path>` and `<repoRoot>/<path>`. |
-| `file_with_member` | `` `policy.go::checkHostConfig` `` | The file must exist (bare basename resolves against the walked file index. A full relative path resolves via `os.Stat`), and the member must appear as an identifier in some indexed source file. |
-| `bare_filename` | `` `proxy_test.go` `` | The basename must exist somewhere under the walked source tree. |
-| `dotted` | `` `Config.MaxMemoryBytes` `` or `` `agent_status.instance_id` `` | Every segment must appear as an identifier in some indexed source file. SQL `table.column` references resolve because CREATE TABLE / SELECT strings contain the column and table names as word tokens. |
-| `go_ident` | `` `checkHostConfig`, `NewIsolated` `` | Must appear as an identifier in some indexed source file. Requires mixed case (both upper- and lower-case letters) — pure lowercase words are treated as English prose and skipped. |
+| `file_path` | `` `internal/doclint/scan.go` `` | `os.Stat` against `<prismRoot>/<path>` and `<repoRoot>/<path>`. |
+| `file_with_member` | `` `scan.go::scanDoc` `` | The file must exist (bare basename resolves against the walked file index. A full relative path resolves via `os.Stat`), and the member must appear as an identifier in some indexed source file. |
+| `bare_filename` | `` `scan_test.go` `` | The basename must exist somewhere under the walked source tree. |
+| `dotted` | `` `Config.SessionName` `` or `` `agent_status.instance_id` `` | Every segment must appear as an identifier in some indexed source file. SQL `table.column` references resolve because CREATE TABLE / SELECT strings contain the column and table names as word tokens. |
+| `go_ident` | `` `scanDoc`, `NewIsolated` `` | Must appear as an identifier in some indexed source file. Requires mixed case (both upper- and lower-case letters) — pure lowercase words are treated as English prose and skipped. |
 | `snake_case` | `` `agent_max_open_files_soft` `` | Must appear as an identifier in some indexed source file. |
-| `env_var` | `` `CONTAINER_HOST` `` | Must appear as an identifier in some indexed source file. All-caps with underscores and length ≥ 3. |
+| `env_var` | `` `PRISM_HOST_API` `` | Must appear as an identifier in some indexed source file. All-caps with underscores and length ≥ 3. |
 | `colon_token` | `` `host_bind:<path>`, `cap_add:SYS_ADMIN` `` | The prefix (before `:`) must appear as an identifier OR as a substring of some Go string literal. When the suffix is not a placeholder or plain value, it is recursively resolved against the same rule set. |
 
 The rules are deliberately conservative. When a token is ambiguous — for
@@ -107,7 +106,7 @@ The source index that resolution runs against covers:
 
 Some backticked identifiers are intentionally unresolvable. Examples
 include a hypothetical field used in a walkthrough (`CgroupBudget` in
-the podman proxy field-admission walkthrough), a name that describes an
+a field-admission walkthrough), a name that describes an
 external system (git internals like `refs/stash`), and a deliberate
 counter-example (`AllPackages.nix` used in the file-naming rule).
 
@@ -309,7 +308,6 @@ The STE checks run only against these files, matched by basename under
 `docs/diagnoses/` do NOT participate):
 
 - `docs/doclint.md`
-- `docs/podman-proxy.md`
 - `docs/sandbox-exec-testing.md`
 - `docs/stdout-capture-testing.md`
 - `docs/pi-rpc-interface.md` (added in Phase 1 of issue #2497, alongside
@@ -352,122 +350,6 @@ The per-token `<!-- doclint-ignore: <token1>, <token2> -->` directive
 suppresses matching STE findings the same way it suppresses identifier
 findings. The offending text is looked up in the union of all
 doclint-ignore lists in the file, and a match skips the finding.
-
-## Enumeration rules — the podman-proxy channel set (issue #2974)
-
-A third rule family runs beside the identifier scan and the STE checks.
-It holds every prose enumeration of the podman-proxy channel set to the
-Go declaration the policy code reads.
-
-### Why this family exists
-
-A container-create body reaches a named volume through several
-channels, and `internal/podmanproxy/policy.go` polices each one. Prose
-across the repo enumerates the same set. It also enumerates which of
-the checks are gated on `Config.VolumeNamePrefix`. Nothing linked the
-prose to the code before this family, so both enumerations drifted.
-
-PR #2961 added a channel and left stale prose behind it. Review round 3
-found one stale site. The author then swept for that class by hand, and
-round 4 found another site. A careful human sweep missed one, which is
-the signal that the check must be mechanical.
-
-### The declaration is the source of truth
-
-Two declarations in `internal/podmanproxy/policy.go` carry the sets:
-
-- `namePolicyChannels` — one row per name-policy channel. Each row
-  names the config field, the policy function, the audit reason, and
-  whether an absent name gets an injected one.
-- `createVolumeChecks` — one row per check the named-volume policy
-  applies, and which side of the prefix gate the check sits on.
-
-The policy functions take their audit reasons from those rows.
-`volumeNamePrefixFor` is the only reader of `Config.VolumeNamePrefix`
-in the package, so a change of gate passes through the declaration.
-
-### The five rules
-
-| Rule tag | Detects |
-|---|---|
-| `podman-channel-decl` | A row with an empty field. A `checkFunc` that `policy.go` does not declare. A row that no function reads, or that the wrong function reads. A `prefix_mismatch` audit reason that no row declares. A `create_volumes` audit reason that no check claims. A direct read of `Config.VolumeNamePrefix` outside `volumeNamePrefixFor`. |
-| `podman-channel-table` | The canonical table in `docs/podman-proxy.md` and the declaration disagree. A declared channel with no row, a row with no declared channel, or a wrong "Absent name" cell. |
-| `podman-gate-section` | The canonical gated section above `checkCreateVolumeNames` names a check on the wrong side of the gate, or the section anchor is gone. |
-| `podman-channel-count` | A prose count phrase states a number that the declaration contradicts. |
-| `podman-phrase-catalogue` | The count-phrase catalogue below and the pattern set disagree. A recognised phrase the catalogue omits, or an entry no pattern recognises. |
-
-### The canonical prose sites
-
-The channel table sits between two markers in `docs/podman-proxy.md`:
-
-```markdown
-<!-- doclint-enumeration: name-policy-channels -->
-| Channel | Config field | Policy function | Deny reason | Absent name |
-...
-<!-- doclint-enumeration-end -->
-```
-
-The row match is line-oriented, not cell-oriented. A row matches a
-channel when the line carries the config field, the policy function,
-and the deny reasons of that channel. Column order, column width, and
-the prose of the Channel column are all free to change.
-
-The gated enumeration is the section headed `# What is gated on the
-prefix, and what is not` in the doc comment above
-`checkCreateVolumeNames`. The rule splits that section at the sentence
-that carries `NOT gated`, then requires each declared check to appear
-on its own side by `proseName`.
-
-### Count phrases
-
-These phrases carry a number that the declaration also states. `N`
-stands for a count word (`one` to `twelve`) or a decimal number. Every
-phrase runs against every prose site in Scope below, the last two
-included: §8.3 of `docs/podman-proxy.md` restates the gating outside the
-canonical section.
-
-<!-- doclint-enumeration: count-phrases -->
-
-```text
-N named-volume channels             -> named-volume channels
-N container-create channels         -> named-volume channels
-N create-body channels              -> named-volume channels
-N name-policy channels              -> every declared channel
-N mount-channel reasons             -> distinct named-volume deny reasons
-VolumeNamePrefix covers N surfaces  -> channels the volume prefix covers
-N checks of the N are gated         -> gated checks, and every check
-The other N are NOT gated           -> un-gated checks
-```
-
-<!-- doclint-enumeration-end -->
-
-The `podman-phrase-catalogue` rule holds this catalogue to
-`podmanCountPatterns` and `podmanGateCountPatterns`, in both directions.
-The list above is therefore the pattern set, not a copy of it. A capture
-that is not a number is not a count phrase, and produces no finding.
-
-A prose site that wants this enforcement writes one of these phrases.
-Any other phrasing is unenforced prose.
-
-### A deliberate subset is not a finding
-
-The patterns name the whole set. A doc comment that describes only the
-channels one function handles — "Two channels, two consequences" above
-`checkMountedVolumeNames` — matches no pattern, so it produces no
-finding. This is the same precision rule the rest of the lint follows.
-
-### Scope
-
-The count patterns run against the prism docs and the comments of every
-file in `internal/podmanproxy/`, test files included. They also run
-against the markdown under modules/programs/prism/agents/ and
-modules/programs/prism/skills/, when the repo root is available. The
-declaration rules read `internal/podmanproxy/policy.go` alone.
-
-The whole family is silent when `docs/podman-proxy.md` is absent, which
-is the shape of the synthetic scan roots in this package's tests. When
-that doc IS present, an absent or unparseable `policy.go` is itself a
-finding.
 
 ## Failure output
 
@@ -531,5 +413,5 @@ conservative — err on the side of skipping ambiguous tokens.
 
 - [`internal/doclint/`](../internal/doclint/) — the lint implementation.
 - Issue #2334 — codifies this lint. This doc is its operational spec.
-- PR #2333 — the podman-proxy Step 8 closer whose three review cycles
+- PR #2333 — the PR whose three review cycles
   of stale-identifier findings motivated the lint.

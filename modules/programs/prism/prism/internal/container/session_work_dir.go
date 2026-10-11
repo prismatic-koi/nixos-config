@@ -134,36 +134,6 @@ func SessionWorkDirAllowedSignersPath(sessionDir string) string {
 	return filepath.Join(sessionDir, "allowed_signers")
 }
 
-// SessionWorkDirContainerScratchPath returns the per-session container-scratch
-// directory inside the given session work dir.
-//
-//	<sessionDir>/container-scratch
-//
-// This is the only sandbox path a worker may bind-mount RW into a podman
-// container alongside the worktree and bare repo (the proxy's host-side
-// path allowlist is the security-side enforcement — see
-// internal/sidecar/podman_proxy.go::allowedPodmanBindSources).
-//
-// Sandbox shape:
-//   - bwrap binds the path Dst==Src into the sandbox so
-//     a worker can `podman run -v <sessionDir>/container-scratch:/x ...`
-//     without granting the wider worktree to the spawned container.
-//   - sandbox-exec rides on the section-6
-//     (subpath <sessionDir>) RW grant in the SBPL profile — no new SBPL
-//     clause is needed for the scratch dir itself.
-//
-// The directory is created by the per-isolator Prepare hook when
-// containers_enabled=1 (bwrapIsolator.Prepare / sandboxExecIsolator.Prepare
-// in lifecycle_dispatch.go), so the `podman run -v
-// <sessionDir>/container-scratch:/x ...` mount has its source on disk
-// before the proxy validates the create request.
-//
-// Lifecycle: removed automatically by RemoveSessionWorkDir on session end,
-// alongside the rest of the session work dir.
-func SessionWorkDirContainerScratchPath(sessionDir string) string {
-	return filepath.Join(sessionDir, "container-scratch")
-}
-
 // SessionWorkDirKubeCacheDirPath returns the kubectl cache directory inside
 // the given session work dir:
 //

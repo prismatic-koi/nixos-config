@@ -17,7 +17,6 @@ package cmd
 //	--provider <name>            routing provider override (overrides the profile slot's provider; pi harness only)
 //	--model-override role=model  per-role model override (repeatable); overrides --model for that role
 //	--isolation <mode>           isolation mode: bwrap, sandbox-exec, or host (default: from config.json)
-//	--containers                 enable the per-session filtering podman API socket proxy (default: off)
 //	--harness <name>             agent harness to use (default: "pi")
 
 import (
@@ -25,7 +24,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -55,8 +53,8 @@ import (
 // runSpawn and POSTs them to /spawn, then prints the returned session name.
 //
 // The "repo" field is forwarded only when the user explicitly set --repo
-// (cmd.Flags().Changed("repo")), mirroring the isolationChanged /
-// containersChanged pattern below. When unset, the field is omitted entirely
+// (cmd.Flags().Changed("repo")), mirroring the isolationChanged
+// pattern below. When unset, the field is omitted entirely
 // and the sidecar derives the repo from its own session name, so a client
 // running inside a container where PRISM_BARE_ROOT is a mount-path name
 // (e.g. "/prism-git") does not need to supply the correct repo name. When
@@ -85,16 +83,11 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	harnessFlag, _ := cmd.Flags().GetString("harness")
 	ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
-	containersFlag, _ := cmd.Flags().GetBool("containers")
 	modelOverrideFlag, _ := cmd.Flags().GetStringArray("model-override")
 	reuseFlag, _ := cmd.Flags().GetBool("reuse")
 
 	repoChanged := cmd.Flags().Changed("repo")
 	isolationChanged := cmd.Flags().Changed("isolation")
-	// Only forward "containers" when explicitly set so an unset child does
-	// not accidentally inherit a parent's enabled state. Mirrors
-	// isolationChanged — see body["isolation"] below for the same pattern.
-	containersChanged := cmd.Flags().Changed("containers")
 
 	// Validate --isolation client-side so unknown values fail fast with the
 	// same error message as the direct path. The platform guards in
@@ -220,9 +213,6 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		if isolationChanged {
 			body["isolation"] = isolationFlag
 		}
-		if containersChanged {
-			body["containers"] = containersFlag
-		}
 		// Only forward "repo" when explicitly set. See the doc comment above
 		// proxySpawn for why an unresolvable forwarded value must error rather
 		// than fall back to the sidecar's own repo.
@@ -318,12 +308,6 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	if isolationChanged {
 		body["isolation"] = isolationFlag
 	}
-	// Only forward "containers" when explicitly set. Mirroring the
-	// isolationChanged pattern above: an unset child does not inherit a
-	// parent's enabled state by accident.
-	if containersChanged {
-		body["containers"] = containersFlag
-	}
 	// Only forward "repo" when explicitly set. See the doc comment above
 	// proxySpawn for why an unresolvable forwarded value must error rather
 	// than fall back to the sidecar's own repo.
@@ -405,7 +389,6 @@ func init() {
 	spawnCmd.Flags().String("provider", "", "Routing provider override for all agents (e.g. anthropic, openrouter); overrides the profile slot's provider. Pi harness only; mutually exclusive with --abtest. When --model also carries a provider prefix, make the two agree — pi only strips a matching prefix.")
 	spawnCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
-	spawnCmd.Flags().Bool("containers", false, "Enable the per-session filtering podman API socket proxy. Default: off. Combine with bwrap or sandbox-exec isolation; host mode bypasses the proxy.")
 	spawnCmd.Flags().String("harness", "pi", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, config.IgnoreConcurrencyCapHelp)
 	spawnCmd.Flags().Bool("wait", false, "Block until the spawned agent finishes its initial prompt. Without --wait, returns immediately.")
@@ -418,31 +401,6 @@ func init() {
 	spawnCmd.Flags().String("prompt-source", "", "")
 	_ = spawnCmd.Flags().MarkHidden("prompt-source")
 	rootCmd.AddCommand(spawnCmd)
-}
-
-// warnContainersWithHostMode emits an informational warning to w when the
-// caller passed --containers AND the resolved isolation mode is "host".
-//
-// The combo is intentionally not an error: users may legitimately combine the
-// two to audit what containers a host-mode agent spawned via the
-// spawn_inputs.containers_flag audit trail. Host-mode agents already have
-// direct podman access via the host's CONTAINER_HOST / DOCKER_HOST, so the
-// filtering socket proxy adds no value at runtime — the warning makes that
-// trade-off explicit.
-//
-// The check fires on the *resolved* isolation mode rather than just
-// `--isolation host`, so the message is consistent whether the user named
-// host explicitly or arrived at it via the config.json default.
-//
-// Extracted to a helper so the warning text is testable without going
-// through the full runSpawn / runAbtestSpawn path. Returns true when the
-// warning was emitted, for tests that want to assert presence directly.
-func warnContainersWithHostMode(w io.Writer, containers bool, isolation string) bool {
-	if !containers || isolation != "host" {
-		return false
-	}
-	fmt.Fprintln(w, "prism spawn: --containers with --isolation host: host mode bypasses the proxy (host-mode agents already have direct podman access); --containers is recorded in spawn_inputs.containers_flag for audit, but agent_status.containers_enabled is still set")
-	return true
 }
 
 // resolveIsolationMode returns the effective isolation mode for a spawn
@@ -599,11 +557,6 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	if err != nil {
 		return err
 	}
-
-	// --containers + host isolation: informational warning.
-	// See warnContainersWithHostMode for the rationale.
-	containersFlag, _ := cmd.Flags().GetBool("containers")
-	warnContainersWithHostMode(os.Stderr, containersFlag, string(isolationMode))
 
 	// Look up the isolation capabilities for this mode. All per-mode branching
 	// below reads from isoCaps rather than comparing against raw mode constants.
@@ -967,7 +920,6 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		IgnoreConcurrencyCap: ignoreConcurrencyCapFlagFromCmd(cmd),
 		SkillsManifestHash:   skillsManifestHash,
 		AgentPromptHash:      agentPromptHash,
-		ContainersFlag:       containersFlag,
 		// ────────────────────────────────────────────────────────
 		// PIExtensionDir is the host-side prism PI extension directory
 		// (populated by Nix into config.json). Forwarded so that host-mode
@@ -1307,7 +1259,6 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
-	containersFlag, _ := cmd.Flags().GetBool("containers")
 	modelOverrideRaw, _ := cmd.Flags().GetStringArray("model-override")
 	modelsByRole, err := parseModelOverrides(modelOverrideRaw)
 	if err != nil {
@@ -1337,12 +1288,6 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 	if err != nil {
 		return err
 	}
-
-	// --containers + host isolation: informational warning, mirroring runSpawn.
-	// Both legs of an abtest pair share the same resolved isolation mode, so a
-	// single warning covers both. The flag is recorded in each leg's
-	// spawn_inputs.containers_flag for audit symmetry.
-	warnContainersWithHostMode(os.Stderr, containersFlag, string(isolationMode))
 
 	isoCaps := container.CapabilitiesFor(isolationMode)
 
@@ -1474,7 +1419,6 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 				agentPromptHash:    agentPromptHash,
 				branchFlag:         branchFlag,
 				prFlag:             prFlag,
-				containersFlag:     containersFlag,
 				d:                  d,
 			})
 			mu.Lock()
@@ -1538,11 +1482,7 @@ type spawnOneAbtestArgs struct {
 	agentPromptHash    string
 	branchFlag         string
 	prFlag             string
-	// containersFlag mirrors `prism spawn --containers` and is threaded to
-	// each abtest leg so both sibling sessions opt into the proxy
-	// symmetrically.
-	containersFlag bool
-	d              *db.DB
+	d                  *db.DB
 }
 
 // spawnOneAbtest spawns a single leg of an --abtest pair. Returns the session
@@ -1612,7 +1552,6 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		SkillsManifestHash:   a.skillsManifestHash,
 		AgentPromptHash:      a.agentPromptHash,
 		AbtestPairID:         a.pairID,
-		ContainersFlag:       a.containersFlag,
 		// ────────────────────────────────────────────────────────
 	}
 	// Role-filtered before the SpawnOpts are constructed.

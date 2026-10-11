@@ -63,7 +63,7 @@ var indexableExtensions = map[string]bool{
 // The dual-context split lives here: in the nix sandbox where only the
 // prism subtree is present, repoRoot is "" and only the Go source is
 // indexed — that is enough for the docs shipped inside the subtree
-// (podman-proxy.md, sandbox-exec-testing.md, stdout-capture-testing.md).
+// (sandbox-exec-testing.md, stdout-capture-testing.md).
 // In a full checkout the Nix and pi-TS source under
 // modules/programs/prism/ is also indexed, so the repo-root AGENTS.md's
 // references to identifiers like `agentMaxOpenFilesSoft` (in prism-tui.nix)
@@ -213,8 +213,8 @@ func (idx *sourceIndex) hasIdent(name string) bool {
 
 // hasBasename reports whether any indexed file's basename equals name.
 // Used by the file-with-member resolver so that a bare `policy.go`
-// reference (no directory) resolves against the well-known
-// internal/podmanproxy/policy.go.
+// reference (no directory) resolves against the indexed file of that
+// basename.
 func (idx *sourceIndex) hasBasename(name string) bool {
 	return len(idx.basenames[name]) > 0
 }

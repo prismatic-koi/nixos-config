@@ -59,7 +59,6 @@ func buildSpawnCmdForMainReuseTest(t *testing.T) *cobra.Command {
 	cmd.Flags().Bool("attach", false, "")
 	cmd.Flags().String("harness", "pi", "")
 	cmd.Flags().String("isolation", "", "")
-	cmd.Flags().Bool("containers", false, "")
 	cmd.Flags().Bool("ignore-concurrency-cap", false, "")
 	cmd.Flags().Bool("reuse", false, "")
 	cmd.Flags().Bool("wait", false, "")

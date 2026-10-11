@@ -1414,12 +1414,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Reuse                 bool     `json:"reuse"`
 			ModelVariantOverrides string   `json:"model_variant_overrides"` // JSON-encoded map[string]string
 			Abtest                []string `json:"abtest"`                  // two-element array of profile names
-			// Containers mirrors the --containers CLI flag. Forwarded as
-			// --containers to the host-side prism spawn when true. A proxy
-			// client that omits the field (older client, non-prism HTTP
-			// caller) gets the default false — the host-side spawn then writes
-			// containers_flag=0 and leaves containers_enabled=0.
-			Containers bool `json:"containers"`
 			// FromKeybind discriminates a tmux Prefix+a (keybind) spawn from
 			// an arbitrary HTTP caller. When true, an empty prompt is
 			// permitted — the operator types the initial prompt to the live
@@ -1612,9 +1606,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Isolation != "" {
 			args = append(args, "--isolation", req.Isolation)
-		}
-		if req.Containers {
-			args = append(args, "--containers")
 		}
 		if req.IgnoreConcurrencyCap {
 			args = append(args, "--ignore-concurrency-cap")

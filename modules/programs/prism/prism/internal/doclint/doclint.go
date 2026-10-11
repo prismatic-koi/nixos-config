@@ -34,17 +34,16 @@ import (
 	"strings"
 )
 
-// Finding records a single doclint failure. Three categories share this
-// shape: identifier-resolution findings (Category="" or "unresolved"),
-// ASD-STE100 prose findings (Category="ste"), and podman-proxy
-// enumeration findings (Category="enumeration").
+// Finding records a single doclint failure. Two categories share this
+// shape: identifier-resolution findings (Category="" or "unresolved") and
+// ASD-STE100 prose findings (Category="ste").
 type Finding struct {
 	File     string // absolute path
 	Line     int    // 1-based
 	Token    string // the offending text (backticked token or matched prose)
 	Rule     string // resolution rule or STE rule tag (e.g. ste-3.2-modal)
 	Note     string // human-readable diagnostic
-	Category string // "" / "unresolved" for identifier findings, "ste" for prose, "enumeration" for a declaration/prose disagreement
+	Category string // "" / "unresolved" for identifier findings, "ste" for prose
 }
 
 // String formats a Finding for test output. Preserves the shape used by
@@ -57,11 +56,8 @@ func (f Finding) String() string {
 		rel = abs
 	}
 	verb := "unresolved"
-	switch f.Category {
-	case "ste":
+	if f.Category == "ste" {
 		verb = "ste"
-	case categoryEnumeration:
-		verb = "enumeration"
 	}
 	return fmt.Sprintf("%s:%d: %s `%s` (rule=%s): %s", rel, f.Line, verb, f.Token, f.Rule, f.Note)
 }
@@ -94,10 +90,6 @@ func Scan(prismSourceRoot, repoRoot string) ([]Finding, error) {
 		}
 		findings = append(findings, fs...)
 	}
-
-	// The podman-proxy enumeration rules read the Go declarations rather
-	// than a doc, so they run once per scan instead of once per doc.
-	findings = append(findings, scanPodmanEnumerations(prismSourceRoot, repoRoot)...)
 
 	// Deterministic ordering by file, line, token.
 	sort.Slice(findings, func(i, j int) bool {

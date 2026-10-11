@@ -358,24 +358,6 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		ctrCfg.RuntimeEnv = h.RuntimeEnv()
 	}
 
-	// Resolve the per-session podman proxy listener path.
-	// The path is set unconditionally so the sidecar wiring sees it; the
-	// gate on actually starting the proxy is the agent_status.containers_enabled
-	// column, read inside runPodmanProxyIfEnabled. Resolution failure is
-	// non-fatal — the sidecar still starts, just without the proxy surface.
-	podmanProxyListenerPath, podmanProxyErr := prismSession.SidecarPodmanProxyPath(sessionName)
-	if podmanProxyErr != nil {
-		proglog.Warnf("[prism sidecar] resolve podman proxy socket path: %v (containers_enabled sessions will have no proxy)\n", podmanProxyErr)
-		podmanProxyListenerPath = ""
-	}
-
-	// bareRoot is the worktree's bare repo root, used by the podman proxy's
-	// allowed bind sources so the agent can mount the bare repo into a
-	// container alongside the worktree. git.BareRoot returns "" when the
-	// path is not inside a bare+worktree layout; that is fine — the
-	// allowlist just gains one fewer entry in that case.
-	bareRoot := git.BareRoot(worktree)
-
 	// Tier-3 /checkin troubleshooting privilege. The list is read
 	// host-side, once, at sidecar start: the rendered file lives under
 	// ~/.config/prism/ and is deliberately not bound into any sandbox, so no
@@ -393,32 +375,30 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := sidecar.Config{
-		SessionName:             sessionName,
-		Repo:                    repo,
-		Worktree:                worktree,
-		BareRoot:                bareRoot,
-		HarnessURL:              harnessURL,
-		DB:                      d,
-		Clock:                   sidecar.RealClock(),
-		AgentRole:               agentRole,
-		AgentModel:              agentModel,
-		ModelsByRole:            modelsByRole,
-		HarnessName:             harnessName,
-		HarnessBinaryPath:       harnessBinaryPath,
-		BwrapPath:               bwrapPath,
-		InstanceID:              instanceID,
-		IsolationMode:           isolationMode,
-		Container:               ctrCfg,
-		HostAPISockPath:         hostAPISockPath,
-		HarnessPipeSockPath:     harnessPipeSockPath,
-		HarnessPipeTCPPort:      harnessPipeTCPPort,
-		PodmanProxyListenerPath: podmanProxyListenerPath,
-		CheckinPrivilegedRepos:  checkinPrivilegedRepos,
-		PIExtensionDir:          prismCfg.PIExtensionDir,
-		OnReady:                 onReady,
-		InitialPrompt:           initialPrompt,
-		TitleGenerator:          newTitleGenerator(),
-		Harness:                 h,
+		SessionName:            sessionName,
+		Repo:                   repo,
+		Worktree:               worktree,
+		HarnessURL:             harnessURL,
+		DB:                     d,
+		Clock:                  sidecar.RealClock(),
+		AgentRole:              agentRole,
+		AgentModel:             agentModel,
+		ModelsByRole:           modelsByRole,
+		HarnessName:            harnessName,
+		HarnessBinaryPath:      harnessBinaryPath,
+		BwrapPath:              bwrapPath,
+		InstanceID:             instanceID,
+		IsolationMode:          isolationMode,
+		Container:              ctrCfg,
+		HostAPISockPath:        hostAPISockPath,
+		HarnessPipeSockPath:    harnessPipeSockPath,
+		HarnessPipeTCPPort:     harnessPipeTCPPort,
+		CheckinPrivilegedRepos: checkinPrivilegedRepos,
+		PIExtensionDir:         prismCfg.PIExtensionDir,
+		OnReady:                onReady,
+		InitialPrompt:          initialPrompt,
+		TitleGenerator:         newTitleGenerator(),
+		Harness:                h,
 	}
 	sc := sidecar.New(cfg)
 

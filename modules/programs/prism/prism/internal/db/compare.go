@@ -68,11 +68,8 @@ type CompareInputs struct {
 	AgentFlag     *string `json:"agent_flag"`
 	BranchFlag    *string `json:"branch_flag"`
 	AbtestPairID  *string `json:"abtest_pair_id"`
-	// ContainersFlag mirrors spawn_inputs.containers_flag — the raw
-	// --containers CLI flag captured at spawn time. false when the flag was
-	// omitted (default), true when the user passed --containers. Audit-only:
-	// the live runtime gate is agent_status.containers_enabled
-	// (Status.ContainersEnabled).
+	// ContainersFlag mirrors spawn_inputs.containers_flag: the spawn flag of
+	// the removed podman API proxy. Only rows of old sessions hold true.
 	ContainersFlag bool `json:"containers_flag"`
 }
 

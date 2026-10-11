@@ -13,7 +13,7 @@
   - The two paths above resolve against the same repo but only in a
     full checkout — same class of cross-boundary reference as the
     `AGENTS.md` and `modules/programs/prism/pi/extensions/prism.ts`
-    annotations in podman-proxy.md and doclint.md.
+    annotations in doclint.md.
 -->
 
 ## Symptom

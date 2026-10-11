@@ -208,9 +208,9 @@ jobs:
           go-version-file: modules/programs/prism/prism/go.mod
           cache-dependency-path: modules/programs/prism/prism/go.sum
       # The sandbox-exec test suite hard-requires its test binaries (bash,
-      # git, aws, kubectl, socat) to resolve to a /nix/store/... path — see
-      # requireNixBash / requireNixGit / requireNixAws / requireNixKubectl /
-      # requireNixSocat in internal/integration/sandbox_exec_*_darwin_test.go,
+      # git, aws, kubectl) to resolve to a /nix/store/... path — see
+      # requireNixBash / requireNixGit / requireNixAws / requireNixKubectl
+      # in internal/integration/sandbox_exec_*_darwin_test.go,
       # which skip when the resolved binary is not under /nix/store (Apple-
       # signed and Homebrew binaries SIGABRT under the deny-default sandbox,
       # see #1190). A bare macos-15 runner has no Nix installed, so without

@@ -21,10 +21,7 @@ package cmd
 // Each positive test is paired with a revert-and-watch-fail guard: with the
 // package-level severGateForceAlwaysSever knob flipped, sever runs anyway and
 // the assertions in (a) or (b) flip — proving the copied-gate is load-
-// bearing, not a no-op. The pattern mirrors the podman-proxy field-admission
-// discipline (see modules/programs/prism/prism/docs/podman-proxy.md,
-// "Field-admission process" and
-// internal/podmanproxy/proxy_name_prefix_test.go::…_RevertGuard).
+// bearing, not a no-op.
 //
 // Skip path numbering:
 //
