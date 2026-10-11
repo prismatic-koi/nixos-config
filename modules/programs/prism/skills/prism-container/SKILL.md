@@ -567,7 +567,9 @@ start no container, so no limit refuses them.
 
 - **Per session.** One session runs at most one container or build at a
   time. Prism refuses a second request from the same session at once. The
-  error names the per-session limit. Wait until the first one stops.
+  error names the per-session limit. Wait until a `run` or a `build`
+  stops. A service container does not stop by itself: find its handle
+  with `prism container list`, then run `prism container stop HANDLE`.
 - **Host-wide.** At most N prism containers and builds run at the same
   time across all sessions. The Nix option
   `nx.programs.prism.containerHostLimit` sets N. The default is 4. Prism
@@ -665,7 +667,7 @@ markers. Like the audit directory, no sandbox can write them.
 
 | Error text | What to do |
 |---|---|
-| `refused: this session already has a running container or build` | Wait until your other container or build stops, then try again. |
+| `refused: this session already has a running container or build` | If it is a `run` or a `build`, wait until it stops, then try again. If it is a service container, it runs until you stop it: find its handle with `prism container list`, then run `prism container stop HANDLE`. |
 | `refused: N prism containers and builds are running on this host` | Try again later. If the limit is too low, tell the user about `nx.programs.prism.containerHostLimit`. |
 | `podman is not reachable` | Tell the user. On macOS, the user runs `podman machine start`. On Linux, the user runs `systemctl --user status podman.socket`. You cannot correct this from the sandbox. |
 | `the --timeout of ... expired` | Increase `--timeout` (maximum `60m`), or make the command faster. |

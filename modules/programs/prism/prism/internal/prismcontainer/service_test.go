@@ -185,8 +185,9 @@ func TestStart_RefusedWhileSessionContainerRuns(t *testing.T) {
 	}
 	// A run container counts too: the service holds the one place.
 	run := prismcontainer.Run(context.Background(), deps(f), c, prismcontainer.RunRequest{Image: "alpine"})
-	if run.ExitCode != prismcontainer.ExitRefused || !strings.Contains(run.Message, "per-session limit") {
-		t.Errorf("run while a service runs = %+v", run)
+	if run.ExitCode != prismcontainer.ExitRefused || !strings.Contains(run.Message, "per-session limit") ||
+		!strings.Contains(run.Message, "prism container list") || !strings.Contains(run.Message, "prism container stop HANDLE") {
+		t.Errorf("run while a service runs = %+v, want the per-session refusal with the stop step", run)
 	}
 }
 
