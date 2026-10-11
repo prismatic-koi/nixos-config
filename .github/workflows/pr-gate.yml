@@ -445,7 +445,7 @@ jobs:
           nix_bash="$(nix build --no-link --print-out-paths 'nixpkgs#bash^out')"
           sudo ln -sf "$nix_bash/bin/bash" /usr/bin/sh
           export CGO_ENABLED=0
-          PRISM_CONTAINER_INTEGRATION=1 nix shell --print-build-logs nixpkgs#coreutils nixpkgs#util-linux \
+          PRISM_CONTAINER_INTEGRATION=1 nix shell --print-build-logs nixpkgs#bash nixpkgs#coreutils nixpkgs#util-linux \
             --command go test -v -count=1 -timeout 20m ./internal/prismcontainer ./internal/container -run 'Integration|ServicePort' 2>&1 | tee /tmp/go-test-container-live.log
       - name: Guard against SKIP-as-PASS and a zero-test run
         if: always() && steps.changes.outputs.container == 'true'
