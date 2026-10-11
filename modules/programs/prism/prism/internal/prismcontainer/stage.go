@@ -22,8 +22,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/container"
 )
@@ -54,8 +56,22 @@ type stagedBuild struct {
 
 func (s *stagedBuild) remove() {
 	if s != nil && s.dir != "" {
-		_ = os.RemoveAll(s.dir)
+		removeBuildCopy(s.dir)
 	}
+}
+
+// removeBuildCopy removes the copy dir of one build. A Linux build can
+// leave files of a sub-UID of the host user in its per-build /var/tmp, for
+// example a RUN --mount=type=cache dir with uid=. The host user cannot
+// remove those, so the removal then runs rm in the user namespace of
+// podman, where the host user is root. rm does not follow a symlink.
+func removeBuildCopy(dir string) {
+	if os.RemoveAll(dir) == nil || runtime.GOOS != "linux" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	_, _ = ExecRunner{}.Run(ctx, io.Discard, io.Discard, "unshare", "rm", "-rf", "--", dir)
 }
 
 // resolveInWorktree resolves rel against the worktree with every symlink

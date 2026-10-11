@@ -174,7 +174,7 @@ func removeStaleBuildCopies() {
 	}
 	for _, e := range entries {
 		if !markerHeld(filepath.Join(lockDir, e.Name()+buildMarkerSuffix)) {
-			_ = os.RemoveAll(filepath.Join(stageDir, e.Name()))
+			removeBuildCopy(filepath.Join(stageDir, e.Name()))
 		}
 	}
 }

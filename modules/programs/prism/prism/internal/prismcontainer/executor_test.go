@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -426,6 +427,11 @@ func TestBwrapArgs_Allowlist(t *testing.T) {
 			t.Errorf("bwrap options hold %s: %q", f, args)
 		}
 	}
+	// The /tmp of the namespace is a tmpfs in RAM. Pulled blobs, layer
+	// blobs, and cache mounts must go to the per-build dir on disk.
+	if !containsSeq(args, []string{"--bind", v.VarTmp, "/var/tmp"}) || !containsSeq(args, []string{"--setenv", "TMPDIR", "/var/tmp"}) {
+		t.Errorf("bwrap options do not set TMPDIR to the per-build /var/tmp: %q", args)
+	}
 	allowed := map[string]bool{
 		v.Graphroot: true, v.Runroot: true, v.ConfigDir: true, v.StageDir: true, v.VarTmp: true, v.Policy: true,
 		"/sys": true, "/sys/fs/cgroup": true, "/dev/net/tun": true, "/dev/fuse": true,
@@ -451,6 +457,55 @@ func TestBwrapArgs_Allowlist(t *testing.T) {
 			}
 		}
 		i += 2
+	}
+}
+
+// TestRemoveBuildCopy_SubUIDFiles: a build copy that the host user cannot
+// remove (a dir with no write permission stands in for a dir of a sub-UID)
+// is removed with rm in the user namespace of podman. A copy that the host
+// user can remove causes no podman call.
+func TestRemoveBuildCopy_SubUIDFiles(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Geteuid() == 0 {
+		t.Skip("needs Linux and a user that file permissions apply to")
+	}
+	bin := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "podman.args")
+	writeScript(t, bin, "podman", `printf '%s\n' "$@" > "$FAKE_PODMAN_ARGS"
+chmod -R u+w "$5" && rm -rf "$5"
+`)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	t.Setenv("FAKE_PODMAN_ARGS", argsFile)
+
+	plain := filepath.Join(t.TempDir(), "plain")
+	if err := os.MkdirAll(filepath.Join(plain, "vartmp", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	removeBuildCopy(plain)
+	if _, err := os.Stat(plain); !os.IsNotExist(err) {
+		t.Errorf("the copy remains: %v", err)
+	}
+	if _, err := os.Stat(argsFile); !os.IsNotExist(err) {
+		t.Errorf("podman ran for a copy that the host user can remove: %v", err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "copy")
+	cache := filepath.Join(dir, "vartmp", "buildah-cache-0", "c")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "f"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(cache, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cache, 0o755) })
+	removeBuildCopy(dir)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("the copy remains: %v", err)
+	}
+	if got, want := readLines(t, argsFile), []string{"unshare", "rm", "-rf", "--", dir}; !slices.Equal(got, want) {
+		t.Errorf("podman args = %q, want %q", got, want)
 	}
 }
 

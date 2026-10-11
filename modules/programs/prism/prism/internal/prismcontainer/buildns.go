@@ -70,8 +70,11 @@ type buildView struct {
 	ConfigDir string
 	// StageDir is the build copy, read-only.
 	StageDir string
-	// VarTmp is a per-build dir, mounted read-write at /var/tmp. buildah
-	// writes temporary layers and RUN --mount=type=cache dirs there.
+	// VarTmp is a per-build dir on disk, mounted read-write at /var/tmp.
+	// TMPDIR names it, so podman and buildah put pulled image blobs,
+	// commit layer blobs, and RUN --mount=type=cache dirs there. The
+	// /tmp of the namespace is a tmpfs in RAM with no size limit and no
+	// memory limit, so TMPDIR must not name /tmp.
 	VarTmp string
 	// Policy is the signature policy file, read-only.
 	Policy string
@@ -113,7 +116,7 @@ func bwrapArgs(v buildView) []string {
 		"--ro-bind", v.StageDir, v.StageDir,
 		"--bind", v.VarTmp, "/var/tmp",
 		"--ro-bind", v.Policy, v.Policy,
-		"--setenv", "TMPDIR", "/tmp",
+		"--setenv", "TMPDIR", "/var/tmp",
 	)
 	return args
 }
