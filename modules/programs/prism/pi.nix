@@ -512,6 +512,8 @@
           tsx # for testing pi extensions
           # mitmproxy # for testing; disabled due to upstream msgpack<=1.1.2 skew (issue #2442)
           playwright-cli
+          nodejs_24 # need npx on path
+          poppler-utils # pdf text extraction for agent use
         ];
 
         programs.zsh.shellAliases = {
