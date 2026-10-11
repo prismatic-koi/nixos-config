@@ -897,3 +897,60 @@ func podmanQuiet(t *testing.T, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// serviceVolumes returns the names of the volumes of the service container
+// with handle.
+func serviceVolumes(t *testing.T, handle string) []string {
+	t.Helper()
+	id := podmanQuiet(t, "ps", "--quiet", "--filter", "label="+prismcontainer.LabelService+"="+handle)
+	out, err := exec.Command("podman", "inspect", id).Output()
+	if err != nil {
+		t.Fatalf("podman inspect %s: %v", id, err)
+	}
+	var inspect []struct {
+		Mounts []struct{ Type, Name string }
+	}
+	if err := json.Unmarshal(out, &inspect); err != nil || len(inspect) != 1 {
+		t.Fatalf("parse inspect: %v", err)
+	}
+	var names []string
+	for _, m := range inspect[0].Mounts {
+		if m.Type == "volume" && m.Name != "" {
+			names = append(names, m.Name)
+		}
+	}
+	return names
+}
+
+// TestIntegration_ServiceVolumesRemoved checks that stop and the cleanup
+// sweep remove the anonymous volume that the VOLUME of postgres:16 gives a
+// service container.
+func TestIntegration_ServiceVolumesRemoved(t *testing.T) {
+	c := integrationCaller(t)
+	for _, path := range []string{"stop", "sweep"} {
+		res := startReal(t, c, prismcontainer.StartRequest{Image: "postgres:16", Mount: prismcontainer.MountNone, Command: []string{"sleep", "600"}})
+		if res.ExitCode != 0 {
+			t.Fatalf("%s: start = %+v (stderr %s)", path, res, res.Stderr)
+		}
+		volumes := serviceVolumes(t, res.Handle)
+		if len(volumes) == 0 {
+			t.Fatalf("%s: the service container has no anonymous volume, so the test proves nothing", path)
+		}
+		switch path {
+		case "stop":
+			if r := prismcontainer.Stop(context.Background(), prismcontainer.Deps{}, c, prismcontainer.HandleRequest{Handle: res.Handle}); r.ExitCode != 0 {
+				t.Fatalf("stop = %+v", r)
+			}
+		case "sweep":
+			if err := prismcontainer.SweepSession(context.Background(), prismcontainer.ExecRunner{}, prismcontainer.DefaultBuildExecutor(runtime.GOOS, nil, nil), []string{c.InstanceID}); err != nil {
+				t.Fatalf("SweepSession: %v", err)
+			}
+		}
+		for _, v := range volumes {
+			if err := exec.Command("podman", "volume", "exists", v).Run(); err == nil {
+				t.Errorf("%s: volume %s of the service container stays on the host", path, v)
+				_ = exec.Command("podman", "volume", "rm", "--force", v).Run()
+			}
+		}
+	}
+}

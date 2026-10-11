@@ -410,7 +410,8 @@ service container until the container stops.
 - `logs` prints the logs of the service container. The container stdout
   goes to stdout, and the container stderr goes to stderr. Prism keeps the
   last 1 MiB of each stream.
-- `stop` stops and removes the service container. Podman gives the
+- `stop` stops and removes the service container, with its anonymous
+  volumes (for example the `VOLUME` of `postgres:16`). Podman gives the
   service 10 seconds to stop, then kills it. After `stop`, the handle does
   not name a container.
 
@@ -593,7 +594,8 @@ start no container, so no limit refuses them.
   database holds.
   1. It stops every running build. On macOS it cannot stop a build step
      in the VM (see "Platform note").
-  2. It removes every container that carries the label.
+  2. It removes every container that carries the label, with its
+     anonymous volumes.
   3. It force-removes every image, intermediate images included, that
      carries the label. This also removes a container of any session that
      uses the image. Do not run an image that another session built.

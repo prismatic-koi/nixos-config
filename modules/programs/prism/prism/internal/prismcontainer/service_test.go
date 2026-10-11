@@ -434,3 +434,34 @@ func TestSweepSession_RemovesServiceContainer(t *testing.T) {
 		t.Errorf("containers left = %+v", left)
 	}
 }
+
+// TestPodmanRm_AlwaysRemovesVolumes checks every podman rm of prism: stop,
+// the remove after a failed start, the remove after a run, and the cleanup
+// sweep. Without --volumes, the anonymous volume of an image VOLUME stays
+// on the host with no prism label.
+func TestPodmanRm_AlwaysRemovesVolumes(t *testing.T) {
+	c := newCaller(t)
+	f := &prismcontainertest.Fake{ImagePresent: true}
+	h := startService(t, f, c).Handle
+	prismcontainer.Stop(context.Background(), deps(f), c, prismcontainer.HandleRequest{Handle: h})
+
+	failing := &prismcontainertest.Fake{ImagePresent: true}
+	failing.OnRun = func(context.Context, io.Writer, io.Writer, []string) (int, error) { return 126, nil }
+	prismcontainer.Start(context.Background(), deps(failing), c, prismcontainer.StartRequest{Image: "alpine"})
+
+	prismcontainer.Run(context.Background(), deps(f), c, prismcontainer.RunRequest{Image: "alpine"})
+	startService(t, f, c)
+	if err := prismcontainer.SweepSession(context.Background(), f, f, []string{testInstanceID}); err != nil {
+		t.Fatalf("SweepSession: %v", err)
+	}
+
+	rms := append(callsOf(f, "rm"), callsOf(failing, "rm")...)
+	if len(rms) < 4 {
+		t.Fatalf("podman rm calls = %q, want stop, start failure, run, and sweep", rms)
+	}
+	for _, rm := range rms {
+		if !slices.Contains(rm, "--volumes") {
+			t.Errorf("podman rm without --volumes: %q", rm)
+		}
+	}
+}

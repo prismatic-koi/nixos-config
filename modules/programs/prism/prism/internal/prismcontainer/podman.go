@@ -104,13 +104,17 @@ func unreachableMessage(goos, detail string) string {
 	return fmt.Sprintf("podman is not reachable (%s). To fix this, %s, then try again", detail, hint)
 }
 
-// removeContainer force-removes a container by name. A missing container
-// is not an error.
+// removeContainer force-removes a container by name, with its anonymous
+// volumes. A missing container is not an error.
+//
+// Every podman rm of prism gives --volumes. A service container has no
+// --rm, and an image VOLUME gives it an anonymous volume. That volume has
+// no prism label, so no sweep finds it after its container is gone.
 func removeContainer(r Runner, name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var stderr bytes.Buffer
-	code, err := r.Run(ctx, io.Discard, &stderr, "rm", "--force", "--ignore", "--time", "0", name)
+	code, err := r.Run(ctx, io.Discard, &stderr, "rm", "--force", "--ignore", "--volumes", "--time", "0", name)
 	if err != nil {
 		return err
 	}
@@ -226,7 +230,8 @@ func SweepImages(ctx context.Context, r Runner, instanceIDs []string) (int, erro
 }
 
 // SweepInstances force-removes every container whose instance label names
-// one of instanceIDs. It returns the number of containers removed.
+// one of instanceIDs, with its anonymous volumes. It returns the number of
+// containers removed.
 func SweepInstances(ctx context.Context, r Runner, instanceIDs []string) (int, error) {
 	if len(instanceIDs) == 0 {
 		return 0, nil
@@ -245,7 +250,7 @@ func SweepInstances(ctx context.Context, r Runner, instanceIDs []string) (int, e
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	args := append([]string{"rm", "--force", "--ignore", "--time", "0"}, ids...)
+	args := append([]string{"rm", "--force", "--ignore", "--volumes", "--time", "0"}, ids...)
 	var stderr bytes.Buffer
 	code, err := r.Run(ctx, io.Discard, &stderr, args...)
 	if err != nil {

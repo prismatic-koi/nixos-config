@@ -546,7 +546,7 @@ func Stop(ctx context.Context, d Deps, c Caller, req HandleRequest) RunResult {
 		return *early
 	}
 	var podmanErr bytes.Buffer
-	code, err := d.Runner.Run(stopCtx, io.Discard, &podmanErr, "rm", "--force", "--ignore", "--time", stopGrace, e.ID)
+	code, err := d.Runner.Run(stopCtx, io.Discard, &podmanErr, "rm", "--force", "--ignore", "--volumes", "--time", stopGrace, e.ID)
 	if err != nil {
 		return o.finish(DecisionError, ExitRefused, false, unreachableMessage(d.GOOS, err.Error()))
 	}
