@@ -38,6 +38,25 @@ const MaxContextBytes int64 = 4 << 30
 // maxSmallFileBytes limits the Containerfile and the ignore files.
 const maxSmallFileBytes int64 = 1 << 20
 
+// hostError marks a failure of the host while prism stages a build, such as
+// a full disk. The caller reports it as an error, not as a refusal of the
+// request.
+type hostError struct{ err error }
+
+func (e *hostError) Error() string { return e.err.Error() }
+func (e *hostError) Unwrap() error { return e.err }
+
+// isHostFault reports whether err comes from the host, not from a change
+// of the worktree.
+func isHostFault(err error) bool {
+	for _, errno := range []syscall.Errno{syscall.ENOSPC, syscall.EDQUOT, syscall.EROFS, syscall.EMFILE, syscall.ENFILE, syscall.ENOMEM, syscall.EIO} {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
+}
+
 // errContextChanged reports that the worktree changed while prism copied it.
 var errContextChanged = errors.New("the build context changed while prism copied it: try again")
 
@@ -146,14 +165,14 @@ func resolveBuildPaths(worktree string, v validBuild) (buildPaths, error) {
 func stageBuild(ctx context.Context, worktree string, p buildPaths, name string) (*stagedBuild, error) {
 	parent, err := container.PrismContainerBuildStageDirPath()
 	if err != nil {
-		return nil, err
+		return nil, &hostError{err}
 	}
 	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return nil, fmt.Errorf("create the build copy dir: %w", err)
+		return nil, &hostError{fmt.Errorf("create the build copy dir: %w", err)}
 	}
 	dir := filepath.Join(parent, name)
 	if err := os.Mkdir(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create the build copy dir: %w", err)
+		return nil, &hostError{fmt.Errorf("create the build copy dir: %w", err)}
 	}
 	s := &stagedBuild{
 		dir:     dir,
@@ -169,14 +188,17 @@ func stageBuild(ctx context.Context, worktree string, p buildPaths, name string)
 
 	root, err := os.OpenRoot(worktree)
 	if err != nil {
-		return nil, fmt.Errorf("open the worktree: %w", err)
+		return nil, &hostError{fmt.Errorf("open the worktree: %w", err)}
 	}
 	defer root.Close()
 
 	if err := os.Mkdir(filepath.Dir(s.file), 0o700); err != nil {
-		return nil, err
+		return nil, &hostError{err}
 	}
 	if err := copySmallFile(root, p.file, s.file); err != nil {
+		if isHostFault(err) {
+			return nil, &hostError{fmt.Errorf("copy the Containerfile %q: %w", p.file, err)}
+		}
 		return nil, fmt.Errorf("copy the Containerfile %q: %w", p.file, err)
 	}
 	// Podman reads <Containerfile>.containerignore or .dockerignore before
@@ -439,6 +461,9 @@ func (c *contextCopier) copy() error {
 		}
 		if errors.Is(err, fs.ErrPermission) {
 			return fmt.Errorf("prism cannot read a file of the build context: %v. Make the file readable, or exclude it in .containerignore", err)
+		}
+		if isHostFault(err) {
+			return &hostError{fmt.Errorf("copy the build context: %w", err)}
 		}
 		return fmt.Errorf("%w (%v)", errContextChanged, err)
 	}

@@ -190,10 +190,16 @@ func execArgs(id string, command []string) []string {
 
 // The CPU limit of a build step. podman build has no --cpus, so the limit
 // is a CFS quota of CPULimit periods per period.
-const (
-	buildCPUPeriod = "100000"
-	buildCPUQuota  = "200000"
-)
+const buildCPUPeriod = "100000"
+
+var buildCPUQuota = func() string {
+	cpus, err := strconv.Atoi(CPULimit)
+	if err != nil {
+		panic("CPULimit is not an integer: " + CPULimit)
+	}
+	period, _ := strconv.Atoi(buildCPUPeriod)
+	return strconv.Itoa(cpus * period)
+}()
 
 // maxImageSessionFold limits the session name part of a built image name.
 // The part is decoration, like the session name in a container name.
