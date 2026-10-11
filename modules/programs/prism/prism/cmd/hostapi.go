@@ -776,6 +776,7 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, 
 	var (
 		sentinelSeen bool
 		passed       bool
+		cause        string
 		outputBuf    strings.Builder
 	)
 	for scanner.Scan() {
@@ -788,6 +789,10 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, 
 			sentinelSeen = true
 			passed = false
 		default:
+			if strings.HasPrefix(line, sidecar.ReviewCauseMarker) {
+				cause = strings.TrimPrefix(line, sidecar.ReviewCauseMarker)
+				continue
+			}
 			// Regular output line — buffer for the caller's return value, and
 			// (unless quietStdout is set) stream to stdout immediately so the
 			// worker sees progress as it arrives.
@@ -814,7 +819,10 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, 
 	}
 
 	if !passed {
-		return outputBuf.String(), fmt.Errorf("host-API /review: review process failed — check host logs for details")
+		if cause == "" {
+			cause = "the host review process failed and gave no cause"
+		}
+		return outputBuf.String(), fmt.Errorf("host-API /review: review process failed: %s", cause)
 	}
 
 	return outputBuf.String(), nil

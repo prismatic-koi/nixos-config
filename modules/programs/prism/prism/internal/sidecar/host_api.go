@@ -2088,9 +2088,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// runs and write the sentinel after cmd.Wait(). The 30 s exec deadline
 		// is the binding constraint — the client-side context (60 s) is set
 		// wider to include connection overhead on top of this.
-		const execTimeout = 30 * time.Second
-
-		ctx, cancel := context.WithTimeout(r.Context(), execTimeout)
+		ctx, cancel := context.WithTimeout(r.Context(), reviewExecTimeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, prismBinary(), args...)
 
@@ -2178,8 +2176,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		scanner := bufio.NewScanner(stdoutPipe)
 		// Allow lines up to 1 MiB to handle very long output without truncation.
 		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		ackSeen := false
 		for scanner.Scan() {
 			line := scanner.Text()
+			if strings.HasPrefix(line, reviewAckPrefix) {
+				ackSeen = true
+			}
 			_, _ = fmt.Fprintln(w, line)
 			if canFlush {
 				flusher.Flush()
@@ -2206,8 +2208,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		// Write pass/fail sentinel. The client (proxyReviewAsync) consumes
 		// this line and does not print it to its own stdout.
-		if waitErr != nil {
+		// The child prints the acknowledgement only after RunAsync registered
+		// the round. A non-zero wait after that point (for example the
+		// exec deadline killing a slow child) does not undo the round, so it
+		// counts as started: no failure, no rollback.
+		roundStarted := waitErr == nil || ackSeen
+		if waitErr != nil && ackSeen {
+			s.logger().Printf("sidecar: host-API /review: child ended with %v after the round started; treating the round as started", waitErr)
+		}
+		if !roundStarted {
 			s.logger().Printf("sidecar: host-API /review: review process failed: %v", waitErr)
+			_, _ = fmt.Fprintln(w, ReviewCauseMarker+describeReviewWaitErr(ctx, waitErr, stderrBuf.Len() > 0))
 			_, _ = fmt.Fprintln(w, ReviewSentinelFailed)
 		} else {
 			_, _ = fmt.Fprintln(w, ReviewSentinelPassed)
@@ -2228,7 +2239,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// is now responsible for delivering the review-complete prompt,
 		// which clears reviewingInFlight via the normal /prompt path.
 		// No rollback in that case.
-		if waitErr != nil {
+		if !roundStarted {
 			rollbackPreemptiveWrite()
 		}
 	})
@@ -4033,6 +4044,10 @@ func (s *Sidecar) worktreePathForSession(sessionName string) (string, error) {
 const (
 	ReviewSentinelPassed = "__PRISM_REVIEW_PASSED__"
 	ReviewSentinelFailed = "__PRISM_REVIEW_FAILED__"
+
+	// ReviewCauseMarker prefixes the line, written before ReviewSentinelFailed,
+	// that names why the host child did not start a round.
+	ReviewCauseMarker = "__PRISM_REVIEW_CAUSE__ "
 )
 
 // reviewAgentAllowlist is the set of valid review agent names accepted by the
@@ -4270,3 +4285,28 @@ func defaultHostAPISocketPath(sessionName string) (string, error) {
 // hostAPILoadProfiles loads the profiles file for the /apply-profile endpoint.
 // Package-level variable so tests can inject a fake.
 var hostAPILoadProfiles = config.LoadProfiles
+
+// reviewExecTimeout bounds the host `prism review` child. It is a variable so
+// a test can shorten it.
+var reviewExecTimeout = 30 * time.Second
+
+// reviewAckPrefix starts the first line `prism review` prints after RunAsync
+// registered the round.
+const reviewAckPrefix = "Review in progress"
+
+// describeReviewWaitErr names why the host review child ended without a round.
+func describeReviewWaitErr(ctx context.Context, waitErr error, hasStderr bool) string {
+	var cause string
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		cause = fmt.Sprintf("the host review process hit the %s deadline before it started a round", reviewExecTimeout)
+	case errors.Is(ctx.Err(), context.Canceled):
+		cause = "the host-API request was cancelled before the host review process started a round"
+	default:
+		cause = fmt.Sprintf("the host review process exited before it started a round (%v)", waitErr)
+	}
+	if hasStderr {
+		cause += "; its error output is above"
+	}
+	return cause
+}
