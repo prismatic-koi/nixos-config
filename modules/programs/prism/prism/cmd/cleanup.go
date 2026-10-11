@@ -1795,7 +1795,9 @@ var severGateForceAlwaysSever bool
 //     internal/container/podman_proxy_audit.go) and therefore needs its
 //     own removal here, and
 //   - the per-session `prism container` audit dir, for the same reason
-//     (see internal/container/prism_container_state.go).
+//     (see internal/container/prism_container_state.go). It is removed
+//     only after a sweep of the incarnation succeeds
+//     (removePrismContainerAuditDir).
 //
 // All removals are non-fatal and idempotent. A directory that does not
 // exist is silently skipped: a bwrap or host session has no work dir, and
@@ -1806,7 +1808,7 @@ var severGateForceAlwaysSever bool
 func removeSessionInstanceDirs(instanceID string) {
 	container.RemoveSessionWorkDir(instanceID)
 	container.RemovePodmanProxyAuditDir(instanceID)
-	container.RemovePrismContainerAuditDir(instanceID)
+	removePrismContainerAuditDir(instanceID)
 }
 
 // instanceIDFromStatus returns the instance_id from the agent_status row for

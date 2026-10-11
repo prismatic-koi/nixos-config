@@ -75,6 +75,10 @@ type Fake struct {
 	OnPull func()
 	// PsErr makes `podman ps` fail as an unreachable podman does.
 	PsErr error
+	// RmCode and RmiCode, when not zero, make `podman rm` and `podman rmi`
+	// exit with that code and remove nothing.
+	RmCode  int
+	RmiCode int
 	// OnRun is the container command. Nil exits 0 with no output.
 	OnRun RunFunc
 	// OnBuild is the build. Nil exits 0 with no output. A build that
@@ -238,6 +242,9 @@ func (f *Fake) Run(ctx context.Context, stdout, stderr io.Writer, args ...string
 	case "images":
 		return f.listImages(stdout)
 	case "rmi":
+		if code := f.code(&f.RmiCode); code != 0 {
+			return code, nil
+		}
 		f.removeImages(args[1:])
 		return 0, nil
 	case "machine":
@@ -268,6 +275,9 @@ func (f *Fake) Run(ctx context.Context, stdout, stderr io.Writer, args ...string
 	case "run":
 		return f.run(ctx, stdout, stderr, args)
 	case "rm":
+		if code := f.code(&f.RmCode); code != 0 {
+			return code, nil
+		}
 		f.remove(args[1:])
 		return 0, nil
 	case "container":
@@ -277,6 +287,20 @@ func (f *Fake) Run(ctx context.Context, stdout, stderr io.Writer, args ...string
 		return 1, nil
 	}
 	return 125, fmt.Errorf("fake podman: unexpected call %v", args)
+}
+
+// SetRmCodes sets RmCode and RmiCode while other goroutines can use the
+// fake.
+func (f *Fake) SetRmCodes(rm, rmi int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.RmCode, f.RmiCode = rm, rmi
+}
+
+func (f *Fake) code(p *int) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return *p
 }
 
 func (f *Fake) ps(stdout io.Writer) (int, error) {

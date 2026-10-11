@@ -447,6 +447,11 @@ session cannot run at the same time.
      uses the image. Do not run an image that another session built.
 - Cleanup issues podman commands only when one of these incarnations has
   an audit directory.
+- Cleanup removes the audit directory of an incarnation only after the
+  sweep of that incarnation succeeds. If the sweep fails, the directory
+  stays, and cleanup writes a warning. A later `prism cleanup` of the
+  session then sweeps the incarnation again. `prism reset` applies the
+  same rule.
 - Cleanup of a parent session does the same three steps for each of its
   review agents: it stops their builds, and it removes their containers
   and their images.
@@ -489,8 +494,10 @@ sandbox-exec profile grants no write access in it.
 3. Cleanup copies the log into the session archive as
    `prism-container-audit.log`, then removes the audit directories.
 
-If an append fails, cleanup keeps the source directory on disk and writes
-a warning that names it.
+An append moves the lines: cleanup removes the source log after the
+append, so a later cleanup does not copy the lines again. If an append
+fails, cleanup keeps the source directory on disk and writes a warning
+that names it.
 
 The prism-container state tree also holds the host-wide lock file, the
 per-run cidfile directories, the per-build context copies, and the build

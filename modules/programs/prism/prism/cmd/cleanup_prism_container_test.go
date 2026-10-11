@@ -182,3 +182,109 @@ func TestHeadlessCleanup_PrismContainer_StopsRunningBuild(t *testing.T) {
 		t.Fatal("the build still runs after cleanup")
 	}
 }
+
+// TestHeadlessCleanup_PrismContainer_FailedSweepKeepsAuditDirs checks the
+// gate at every removal site of a cleanup: the final incarnation
+// (removeSessionInstanceDirs), an earlier one
+// (gatherPrismContainerAuditLogs), and a review child (cleanupAgentSession).
+// After a failed sweep each dir stays. A later cleanup of the same session
+// then removes the service container or the built image, and the dirs.
+func TestHeadlessCleanup_PrismContainer_FailedSweepKeepsAuditDirs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rm, rmi int
+	}{
+		{"service container", 125, 0},
+		{"built image", 0, 125},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const earlierIID = "22222222-3333-4444-8555-666666666666"
+			const childIID = "33333333-3333-4444-8555-666666666666"
+			f := setupArchiveOrderFixture(t, "prism-container-gate", "")
+			child := f.session + "~review-1-review-qa"
+			d, err := db.Open(f.dbFile)
+			if err != nil {
+				t.Fatalf("open db: %v", err)
+			}
+			if err := d.InsertSession(db.Session{
+				InstanceID: earlierIID, SessionName: f.session, Repo: archiveOrderRepo,
+				Worktree: f.worktree, Harness: "pi", StartedAt: time.Now().Add(-time.Hour),
+			}); err != nil {
+				t.Fatalf("InsertSession earlier: %v", err)
+			}
+			if err := d.UpsertStatus(child, archiveOrderRepo, f.worktree, "idle", nil, nil); err != nil {
+				t.Fatalf("UpsertStatus child: %v", err)
+			}
+			if err := d.SetInstanceID(child, childIID); err != nil {
+				t.Fatalf("SetInstanceID child: %v", err)
+			}
+			d.Close()
+			ids := []string{archiveOrderIID, earlierIID, childIID}
+			earlierLine := writeFakePrismContainerAuditLog(t, earlierIID, "earlier")
+			writeFakePrismContainerAuditLog(t, archiveOrderIID, "current")
+			writeFakePrismContainerAuditLog(t, childIID, "child")
+
+			fake := &prismcontainertest.Fake{}
+			for _, iid := range ids {
+				fake.Add(labelled("svc-"+iid, iid, "running"))
+				fake.AddImage(prismcontainertest.Image{ID: "img-" + iid, Labels: map[string]string{prismcontainer.LabelInstanceID: iid}})
+			}
+			fake.SetRmCodes(tc.rm, tc.rmi)
+			installPrismContainerFake(t, fake)
+			t.Cleanup(review.SetChildPrismContainerRunnerForTest(fake, fake))
+
+			if err := headlessCleanup(f.session, "prism-container-gate", "", ""); err != nil {
+				t.Fatalf("headlessCleanup: %v", err)
+			}
+			for _, id := range ids {
+				if !container.PrismContainerAuditDirExists(id) {
+					t.Errorf("the audit dir of %s was removed although its sweep failed", id)
+				}
+			}
+			if len(fake.Containers())+len(fake.Images()) == 0 {
+				t.Fatalf("the failing sweep removed everything: the fake did not fail")
+			}
+
+			fake.SetRmCodes(0, 0)
+			if err := headlessCleanup(f.session, "prism-container-gate", "", ""); err != nil {
+				t.Fatalf("second headlessCleanup: %v", err)
+			}
+			if c, i := fake.Containers(), fake.Images(); len(c) != 0 || len(i) != 0 {
+				t.Errorf("after the later cleanup: containers %+v, images %+v remain", c, i)
+			}
+			for _, id := range ids {
+				if container.PrismContainerAuditDirExists(id) {
+					t.Errorf("the audit dir of %s stays after a successful sweep", id)
+				}
+			}
+			archived, err := os.ReadFile(filepath.Join(assertTranscriptArchived(t, f), "prism-container-audit.log"))
+			if err != nil {
+				t.Fatalf("read the archived audit log: %v", err)
+			}
+			if n := strings.Count(string(archived), earlierLine); n != 1 {
+				t.Errorf("the archive holds the earlier line %d times, want 1:\n%s", n, archived)
+			}
+		})
+	}
+}
+
+// TestRemoveSessionInstanceDirs_FailedSweepKeepsAuditDir covers the
+// removal of `prism reset`, which calls removeSessionInstanceDirs for
+// every session and runs no other sweep.
+func TestRemoveSessionInstanceDirs_FailedSweepKeepsAuditDir(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	writeFakePrismContainerAuditLog(t, archiveOrderIID, "reset")
+	fake := &prismcontainertest.Fake{RmCode: 125}
+	fake.Add(labelled("svc", archiveOrderIID, "running"))
+	installPrismContainerFake(t, fake)
+
+	removeSessionInstanceDirs(archiveOrderIID)
+	if !container.PrismContainerAuditDirExists(archiveOrderIID) {
+		t.Fatalf("the audit dir was removed although the sweep failed")
+	}
+	fake.SetRmCodes(0, 0)
+	removeSessionInstanceDirs(archiveOrderIID)
+	if container.PrismContainerAuditDirExists(archiveOrderIID) || len(fake.Containers()) != 0 {
+		t.Errorf("dir exists %v, containers %+v after a successful sweep", container.PrismContainerAuditDirExists(archiveOrderIID), fake.Containers())
+	}
+}

@@ -191,3 +191,52 @@ func writeChildAuditLog(t *testing.T, instanceID string) string {
 	}
 	return line
 }
+
+// TestCleanupAgentSession_FailedSweepKeepsChildAuditDir verifies the gate
+// for a review child: after a failed sweep the child audit dir stays, and a
+// later cleanup removes the container and the dir. The parent log gets the
+// child line once.
+func TestCleanupAgentSession_FailedSweepKeepsChildAuditDir(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	d := openTestDB(t)
+	const parent = "prism-test@3063-child"
+	const parentID = "30630000-0000-4000-8000-0000000000aa"
+	const session = parent + "~review-1-review-qa"
+	const instanceID = "30630000-0000-4000-8000-000000000001"
+	if err := d.UpsertStatus(parent, "prism-test", "/code/prism-test/x", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus parent: %v", err)
+	}
+	if err := d.SetInstanceID(parent, parentID); err != nil {
+		t.Fatalf("SetInstanceID parent: %v", err)
+	}
+	if err := d.UpsertStatus(session, "prism-test", "/code/prism-test/x", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetInstanceID(session, instanceID); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	childLine := writeChildAuditLog(t, instanceID)
+
+	fake := &prismcontainertest.Fake{RmCode: 125}
+	fake.Add(prismcontainertest.Container{ID: "svc", State: "running", Labels: map[string]string{prismcontainer.LabelInstanceID: instanceID}})
+	t.Cleanup(review.SetChildPrismContainerRunnerForTest(fake, fake))
+
+	review.CleanupAgentSessionForTest(d, session, db.ReapCauseParentCleanup)
+	if !container.PrismContainerAuditDirExists(instanceID) {
+		t.Fatalf("the child audit dir was removed although its sweep failed")
+	}
+
+	fake.SetRmCodes(0, 0)
+	review.CleanupAgentSessionForTest(d, session, db.ReapCauseParentCleanup)
+	if left := fake.Containers(); len(left) != 0 {
+		t.Errorf("containers left = %+v after the later cleanup", left)
+	}
+	if container.PrismContainerAuditDirExists(instanceID) {
+		t.Errorf("the child audit dir stays after a successful sweep")
+	}
+	parentLog, _ := container.PrismContainerAuditLogPath(parentID)
+	if got, err := os.ReadFile(parentLog); err != nil || string(got) != childLine {
+		t.Errorf("parent audit log = %q (%v), want the child line once", got, err)
+	}
+}
