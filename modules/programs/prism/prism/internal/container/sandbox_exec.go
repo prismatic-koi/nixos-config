@@ -1199,6 +1199,19 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("\n")
 	sb.WriteString(containerCLIExecDeny)
 
+	// ── 21d. FINAL DENY — a read-only worktree ─
+	// Section 6 grants read-write on the worktree and on BareRoot, its
+	// parent. For a review agent or an investigator, this deny takes the
+	// write back. The deny must follow every allow, because SBPL resolves a
+	// conflict in favour of the later rule.
+	// TestGenerateProfile_WorktreeReadOnlyDenyFollowsEveryAllow pins the
+	// order. The worktree git dir is in BareRoot, not in the worktree, so
+	// git can still write the index.
+	if m.cfg.WorktreeReadOnly && m.cfg.Worktree != "" {
+		sb.WriteString("\n")
+		sb.WriteString(worktreeReadOnlyDeny(m.cfg.Worktree))
+	}
+
 	// ── 22. FINAL DENIES — Go module cache is not executable ─
 	// The module cache holds downloaded dependency SOURCE. Section 5k grants
 	// it read-write because the toolchain must populate it. Without this deny,
@@ -1260,6 +1273,17 @@ func generateProfile(m *Manager) string {
 	}
 
 	return sb.String()
+}
+
+// worktreeReadOnlyDeny is the section-21d clause of generateProfile. SBPL
+// matches the path after it resolves symlinks, so the clause also lists the
+// resolved path when it is different.
+func worktreeReadOnlyDeny(worktree string) string {
+	clause := "(deny file-write*\n  (subpath " + quoteSBPL(worktree) + ")"
+	if real, err := filepath.EvalSymlinks(worktree); err == nil && real != filepath.Clean(worktree) {
+		clause += "\n  (subpath " + quoteSBPL(real) + ")"
+	}
+	return clause + ")\n"
 }
 
 // containerCLIExecDeny is the section-21c clause of generateProfile.

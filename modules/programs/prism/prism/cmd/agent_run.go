@@ -164,12 +164,20 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("agent-run: open database: %w", err)
 	}
 	status, err := d.CurrentStatus(sessionName)
-	d.Close()
 	if err != nil {
+		d.Close()
 		return fmt.Errorf("agent-run: query session %q: %w", sessionName, err)
 	}
 	if status == nil {
+		d.Close()
 		return fmt.Errorf("agent-run: session %q not found in DB", sessionName)
+	}
+	// A failed read stops the launch: the sandbox must not start with a
+	// writable worktree for a session that the spawner made read-only.
+	worktreeReadOnly, err := d.WorktreeReadOnly(sessionName)
+	d.Close()
+	if err != nil {
+		return fmt.Errorf("agent-run: session %q: %w", sessionName, err)
 	}
 
 	// Dispatch based on the session's isolation mode.
@@ -219,9 +227,10 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	})
 
 	return iso.AgentRun(cmd.Context(), container.AgentRunOpts{
-		SessionName: sessionName,
-		StartTime:   agentRunStart,
-		LogFile:     logFile,
+		SessionName:      sessionName,
+		StartTime:        agentRunStart,
+		LogFile:          logFile,
+		WorktreeReadOnly: worktreeReadOnly,
 	})
 }
 
@@ -367,6 +376,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		AgentEnvVars:        agentEnvVars,
 		Harness:             harnessName,
 		HarnessSessionID:    harnessSessionID,
+		WorktreeReadOnly:    opts.WorktreeReadOnly,
 	}
 
 	// PI-harness: populate PI-specific config fields from the active profile slot.

@@ -29,6 +29,6 @@ import (
 // runAgentRunSandboxExec is a non-Darwin stub that always returns an error.
 // The dispatch in runAgentRun already rejects sandbox-exec on non-Darwin via
 // a runtime.GOOS check, so this is unreachable in practice.
-func runAgentRunSandboxExec(_ string, _ *db.Status, _ time.Time, _ *os.File) error {
+func runAgentRunSandboxExec(_ string, _ *db.Status, _ time.Time, _ *os.File, _ bool) error {
 	return fmt.Errorf("agent-run: sandbox-exec isolation requires macOS (Darwin); this stub is unreachable")
 }

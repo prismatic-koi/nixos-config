@@ -575,10 +575,6 @@ type StartSidecarOpts struct {
 	// without needing to read it back from the DB (which would race with the
 	// tmux-session-start event that writes instance_id to agent_status).
 	InstanceID string
-	// WorktreeReadOnly, when true, mounts the worktree read-only inside the
-	// container. Set for review agent containers so they cannot modify the
-	// branch under review. Passed via --worktree-readonly to the sidecar.
-	WorktreeReadOnly bool
 	// HarnessName is the registered harness name (e.g. "pi"). When
 	// non-empty it is forwarded to the sidecar via --harness so the sidecar
 	// can call harness.ShapeOf to determine its own transport shape. When
@@ -668,9 +664,6 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 	}
 	if opts.InstanceID != "" {
 		cmdArgs = append(cmdArgs, "--instance-id", opts.InstanceID)
-	}
-	if opts.WorktreeReadOnly {
-		cmdArgs = append(cmdArgs, "--worktree-readonly")
 	}
 	if opts.HarnessName != "" {
 		cmdArgs = append(cmdArgs, "--harness", opts.HarnessName)

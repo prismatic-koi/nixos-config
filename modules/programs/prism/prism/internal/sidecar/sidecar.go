@@ -219,6 +219,9 @@ type Config struct {
 	// to_instance_id on bus messages addressed to the coordinator, so that the
 	// coordinator only receives messages intended for its current instance.
 	InstanceID string
+	// WorktreeReadOnly is agent_status.worktree_readonly. When true, the
+	// prism container routes refuse --mount rw.
+	WorktreeReadOnly bool
 	// Logger, when non-nil, is the logger used for all sidecar log output.
 	// When nil, New() defaults it to log.Default() so existing production log
 	// output is unchanged. A test must supply a per-test logger backed by a

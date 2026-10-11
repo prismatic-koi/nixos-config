@@ -1060,6 +1060,47 @@ func (d *DB) SetContainersEnabled(sessionName string, enabled bool) error {
 	return nil
 }
 
+// SetWorktreeReadOnly writes agent_status.worktree_readonly for sessionName.
+// It returns an error when sessionName has no agent_status row, because a
+// spawn that cannot record the flag must not start the session with a
+// writable worktree.
+func (d *DB) SetWorktreeReadOnly(sessionName string, readOnly bool) error {
+	var v int
+	if readOnly {
+		v = 1
+	}
+	res, err := d.conn.Exec(
+		"UPDATE agent_status SET worktree_readonly = ? WHERE session_name = ?",
+		v, sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: set worktree_readonly: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("db: set worktree_readonly: %w", err)
+	} else if n == 0 {
+		return fmt.Errorf("db: set worktree_readonly: session %q has no agent_status row", sessionName)
+	}
+	return nil
+}
+
+// WorktreeReadOnly reports agent_status.worktree_readonly for sessionName.
+// It returns false with no error when sessionName has no agent_status row.
+func (d *DB) WorktreeReadOnly(sessionName string) (bool, error) {
+	var v int
+	err := d.conn.QueryRow(
+		"SELECT worktree_readonly FROM agent_status WHERE session_name = ?",
+		sessionName,
+	).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("db: read worktree_readonly: %w", err)
+	}
+	return v != 0, nil
+}
+
 // portAvailable checks whether a TCP port is available on localhost by
 // attempting a brief listen. Returns true if the port is free.
 func portAvailable(port int) bool {

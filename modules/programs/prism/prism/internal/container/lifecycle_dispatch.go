@@ -52,6 +52,10 @@ type AgentRunOpts struct {
 	// append mode by the cmd dispatcher). May be nil when the log file
 	// cannot be opened — handlers tolerate nil.
 	LogFile *os.File
+
+	// WorktreeReadOnly is agent_status.worktree_readonly. Handlers copy it
+	// to Config.WorktreeReadOnly.
+	WorktreeReadOnly bool
 }
 
 // AgentRunHandler is the function signature that cmd/agent_run.go registers
