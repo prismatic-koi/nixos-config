@@ -60,7 +60,9 @@ func checkLimits(entries []psEntry, instanceID string, hostLimit int) string {
 		}
 	}
 	if session >= PerSessionLimit {
-		return fmt.Sprintf("this session already has a running container or build, and the per-session limit is %d at a time. Wait until it stops, then try again",
+		return fmt.Sprintf("this session already has a running container or build, and the per-session limit is %d at a time. "+
+			"A run or a build stops by itself: wait until it stops, then try again. "+
+			"A service container of prism container start runs until you stop it: run prism container list to find its handle, then prism container stop HANDLE",
 			PerSessionLimit)
 	}
 	if host >= hostLimit {

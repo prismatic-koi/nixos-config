@@ -92,27 +92,32 @@ func (c Caller) validateWorktree() error {
 	return nil
 }
 
+// LabelService marks a service container of `prism container start`. Its
+// value is the handle that start prints. exec and logs act only on a
+// container that carries it.
+const LabelService = "prism.service"
+
 // containerName returns a new container name with the session prefix.
 func containerName(c Caller) (string, error) {
-	var b [4]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("container name: %w", err)
-	}
-	return container.ResourceNamePrefixForOwner(c.InstanceID, c.SessionName) + hex.EncodeToString(b[:]), nil
+	name, _, err := serviceName(c)
+	return name, err
 }
 
-// runArgs builds the podman argument vector of `prism container run`. It is
-// the only builder: the host-API route and the host-mode route both reach
-// it through Run.
-//
-// The agent controls only v. The fixed options come first and v cannot
-// remove them. v cannot add an option either: the image is validated and
-// cannot start with "-", podman stops option parsing at the image, and every
-// value that follows a flag is one argument.
-func runArgs(c Caller, v validRun, name, cidFile string) []string {
-	args := []string{
-		"run",
-		"--rm",
+// serviceName returns a new container name with the session prefix, and
+// its random suffix, which is the handle of a service container.
+func serviceName(c Caller) (name, handle string, err error) {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", "", fmt.Errorf("container name: %w", err)
+	}
+	handle = hex.EncodeToString(b[:])
+	return container.ResourceNamePrefixForOwner(c.InstanceID, c.SessionName) + handle, handle, nil
+}
+
+// fixedOptions returns the options that run and start share. No agent
+// input reaches them.
+func fixedOptions(c Caller, name string) []string {
+	return []string{
 		"--name", name,
 		"--label", LabelInstanceID + "=" + c.InstanceID,
 		"--memory", MemoryLimit,
@@ -121,9 +126,13 @@ func runArgs(c Caller, v validRun, name, cidFile string) []string {
 		"--pids-limit", PidsLimit,
 		"--security-opt", "no-new-privileges",
 		"--pull", "never",
-		"--timeout", strconv.FormatInt(int64((v.timeout+conmonTimeoutGrace)/time.Second), 10),
-		"--cidfile", cidFile,
 	}
+}
+
+// appendWorkload appends the worktree mount, the environment, the image,
+// and the command. The image is validated and cannot start with "-", and
+// podman stops option parsing at the image.
+func appendWorkload(args []string, c Caller, v validRun) []string {
 	switch v.mount {
 	case MountRO:
 		args = append(args, "--volume", c.Worktree+":"+WorkspaceDir+":ro", "--workdir", WorkspaceDir)
@@ -135,6 +144,48 @@ func runArgs(c Caller, v validRun, name, cidFile string) []string {
 	}
 	args = append(args, v.image)
 	return append(args, v.command...)
+}
+
+// runArgs builds the podman argument vector of `prism container run`. It is
+// the only builder: the host-API route and the host-mode route both reach
+// it through Run.
+//
+// The agent controls only v. The fixed options come first and v cannot
+// remove them. v cannot add an option either: the image is validated and
+// cannot start with "-", podman stops option parsing at the image, and every
+// value that follows a flag is one argument.
+func runArgs(c Caller, v validRun, name, cidFile string) []string {
+	args := append([]string{"run", "--rm"}, fixedOptions(c, name)...)
+	args = append(args,
+		"--timeout", strconv.FormatInt(int64((v.timeout+conmonTimeoutGrace)/time.Second), 10),
+		"--cidfile", cidFile,
+	)
+	return appendWorkload(args, c, v)
+}
+
+// startArgs builds the podman argument vector of `prism container start`.
+// It is the only builder: the host-API route and the host-mode route both
+// reach it through Start. It has the fixed options of run, with these
+// differences: --detach in place of --rm, and no --timeout, because a
+// service container runs until stop or cleanup.
+//
+// Each port is published on 127.0.0.1 only, with a random host port. The
+// agent gives the container port only, as one validated integer.
+func startArgs(c Caller, v validStart, name, handle, cidFile string) []string {
+	args := append([]string{"run", "--detach"}, fixedOptions(c, name)...)
+	args = append(args, "--label", LabelService+"="+handle, "--cidfile", cidFile)
+	for _, p := range v.ports {
+		args = append(args, "--publish", PublishHost+"::"+strconv.Itoa(p)+"/tcp")
+	}
+	return appendWorkload(args, c, v.validRun)
+}
+
+// execArgs builds the podman argument vector of `prism container exec`.
+// id is a container ID that prism resolved, never agent text. podman exec
+// stops option parsing at the container, so the command cannot add an
+// option.
+func execArgs(id string, command []string) []string {
+	return append([]string{"exec", id}, command...)
 }
 
 // The CPU limit of a build step. podman build has no --cpus, so the limit

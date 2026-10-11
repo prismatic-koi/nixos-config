@@ -141,6 +141,9 @@ func runReset(cmd *cobra.Command, _ []string) error {
 	// snapshotted above (regardless of pi resume linkage) gets both trees
 	// removed here, closing the gap where `prism reset` left them behind for
 	// every session (issue #2960). Both removals are non-fatal and idempotent.
+	// The prism-container audit dir goes only after a sweep of the
+	// incarnation succeeds, because no later cleanup finds its service
+	// containers and images without the dir.
 	fmt.Println("Removing per-session instance directories...")
 	for _, instanceID := range instanceIDs {
 		removeSessionInstanceDirs(instanceID)

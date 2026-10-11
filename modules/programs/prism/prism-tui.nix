@@ -209,7 +209,8 @@ in
       description = ''
         Maximum number of `prism container` containers and image builds that
         run at the same time on this host, across all sessions. When the
-        limit is reached, prism refuses a new container or build at once.
+        limit is reached, prism refuses a new container or build at once. A
+        service container of `prism container start` counts while it runs.
         Written to config.json as container_host_limit. Each session can run
         one container or build at a time, independent of this option.
       '';

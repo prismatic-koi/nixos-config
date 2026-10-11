@@ -1,6 +1,7 @@
 package prismcontainer
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,10 +36,14 @@ type AuditEntry struct {
 	File           string   `json:"file,omitempty"`
 	BuildArgKeys   []string `json:"build_arg_keys,omitempty"`
 	Mount          string   `json:"mount,omitempty"`
+	Ports          []string `json:"ports,omitempty"`
 	TimeoutSeconds int64    `json:"timeout_seconds,omitempty"`
 	Container      string   `json:"container,omitempty"`
-	Decision       string   `json:"decision"`
-	Reason         string   `json:"reason,omitempty"`
+	// Handle is the handle that start printed, or the handle that the
+	// agent gave to exec, logs, or stop.
+	Handle   string `json:"handle,omitempty"`
+	Decision string `json:"decision"`
+	Reason   string `json:"reason,omitempty"`
 	// ExitCode is null when no container command ran to completion.
 	ExitCode *int `json:"exit_code"`
 }
@@ -78,12 +83,16 @@ func (a *auditLog) write(e AuditEntry, now time.Time) error {
 
 func (a *auditLog) close() { _ = a.f.Close() }
 
-// AppendAuditLog appends the audit log of incarnation from to the audit log
-// of incarnation to. Cleanup uses it to keep the record of an incarnation
-// or a review agent that has no archive of its own: the lines go into a log
-// that cleanup archives. Each line names its own session and instance ID.
-// A missing source log is not an error. After a nil return the caller can
-// remove the source directory.
+// AppendAuditLog moves the lines of the audit log of incarnation from to
+// the end of the audit log of incarnation to. Cleanup uses it to keep the
+// record of an incarnation or a review agent that has no archive of its
+// own: the lines go into a log that cleanup archives. Each line names its
+// own session and instance ID. A missing source log is not an error.
+//
+// After a nil return the source log is gone, but its dir stays. The dir is
+// the proof that cleanup must sweep the incarnation, and only RemoveAuditDir
+// removes it. A later cleanup that finds the dir again does not copy the
+// lines a second time.
 func AppendAuditLog(from, to string) error {
 	src, err := container.PrismContainerAuditLogPath(from)
 	if err != nil {
@@ -101,6 +110,32 @@ func AppendAuditLog(from, to string) error {
 		return err
 	}
 	defer dst.close()
-	_, err = dst.f.Write(data)
-	return err
+	if _, err := dst.f.Write(data); err != nil {
+		return err
+	}
+	if err := os.Remove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove the copied log: %w", err)
+	}
+	return nil
+}
+
+// RemoveAuditDir sweeps incarnation instanceID (SweepSession), then removes
+// its audit dir. It is the only removal of an audit dir.
+//
+// Cleanup sweeps an incarnation only while its audit dir exists. A service
+// container and a built image have no podman --timeout, so after a failed
+// sweep only a later cleanup removes them. Thus the dir stays when the sweep
+// fails, and the error says so. A missing dir causes no podman command.
+func RemoveAuditDir(ctx context.Context, r Runner, e BuildExecutor, instanceID string) error {
+	if !container.PrismContainerAuditDirExists(instanceID) {
+		return nil
+	}
+	if err := SweepSession(ctx, r, e, []string{instanceID}); err != nil {
+		return fmt.Errorf("keep the prism-container audit dir of incarnation %s, because its sweep failed: %w", instanceID, err)
+	}
+	dir, err := container.PrismContainerAuditDirPath(instanceID)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
 }

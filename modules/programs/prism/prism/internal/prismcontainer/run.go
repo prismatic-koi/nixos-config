@@ -1,12 +1,13 @@
-// Package prismcontainer runs containers and image builds for prism
-// sessions.
+// Package prismcontainer runs containers, image builds, and service
+// containers for prism sessions.
 //
 // The agent never talks to podman. It gives prism a small set of inputs
-// (RunRequest, BuildRequest), and prism builds the podman argument vector
-// on the host with a fixed set of options (runArgs, buildArgs). A sandboxed
-// session reaches this package through its sidecar (POST /container/run,
-// POST /container/build). A host-mode session calls it directly. Both
-// routes call Run or Build, so they cannot differ.
+// (RunRequest, BuildRequest, StartRequest, ExecRequest, HandleRequest), and
+// prism builds the podman argument vector on the host with a fixed set of
+// options (runArgs, buildArgs, startArgs, execArgs). A sandboxed session
+// reaches this package through its sidecar (POST /container/<command>). A
+// host-mode session calls it directly. Both routes call the same function
+// (Run, Build, Start, Exec, Logs, Stop, List), so they cannot differ.
 package prismcontainer
 
 import (

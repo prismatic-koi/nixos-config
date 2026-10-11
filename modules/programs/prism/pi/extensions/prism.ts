@@ -978,7 +978,8 @@ export function segmentRunsContainerCLI(segment: string): boolean {
  */
 const CONTAINER_CLI_REASON =
   "blocked by prism extension: podman and docker do not work in a prism " +
-  "sandbox. To run a container or build an image, use `prism container`: " +
+  "sandbox. To run a container, build an image, or start a service " +
+  "container, use `prism container`: " +
   "prism runs podman on the host with fixed options. Load the " +
   "`prism-container` skill before you use it. See issue #3065."
 

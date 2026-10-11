@@ -142,13 +142,3 @@ func PrismContainerAuditDirExists(instanceID string) bool {
 	_, statErr := os.Stat(dir)
 	return statErr == nil
 }
-
-// RemovePrismContainerAuditDir removes the audit directory of one session
-// incarnation. A missing directory is a no-op.
-func RemovePrismContainerAuditDir(instanceID string) {
-	dir, err := PrismContainerAuditDirPath(instanceID)
-	if err != nil {
-		return
-	}
-	_ = os.RemoveAll(dir)
-}

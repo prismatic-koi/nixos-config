@@ -18,11 +18,9 @@ import (
 // It issues podman commands only when one of those incarnations has a
 // prism-container audit dir. Every request creates that dir before podman
 // runs, so a session that never used `prism container` causes no podman
-// command and no warning. A failure is a warning, never a cleanup error. A
-// container that a failed sweep leaves behind still stops and removes
-// itself: podman's own --timeout and --rm are in its argument vector. An
-// image that a failed sweep leaves behind stays: cleanup removes the audit
-// dir whatever the sweep result, so no later cleanup finds the image.
+// command and no warning. A failure is a warning, never a cleanup error.
+// After a failed sweep the audit dir stays (removePrismContainerAuditDir),
+// so a later cleanup sweeps the incarnation again.
 func sweepPrismContainersForSession(session string) {
 	d, err := openDB()
 	if err != nil {
@@ -50,9 +48,9 @@ func sweepPrismContainersForSession(session string) {
 	}
 }
 
-// gatherPrismContainerAuditLogs appends the prism-container audit log of
+// gatherPrismContainerAuditLogs moves the prism-container audit log of
 // every earlier incarnation of session to the log of the final incarnation,
-// then removes the earlier audit dir.
+// then removes the earlier audit dir after a sweep of that incarnation.
 //
 // The archive copies the log of the final incarnation only. An earlier
 // incarnation can end with no cleanup of its own (the `prism restore`
@@ -68,7 +66,18 @@ func gatherPrismContainerAuditLogs(d *db.DB, session, finalID string) {
 			proglog.Warnf("[prism] warning: archive: keep the prism-container audit log of incarnation %s of %q: append failed (%v)\n", id, session, err)
 			continue
 		}
-		container.RemovePrismContainerAuditDir(id)
+		removePrismContainerAuditDir(id)
+	}
+}
+
+// removePrismContainerAuditDir removes the prism-container audit dir of
+// incarnation id after a sweep of that incarnation succeeds. After a failed
+// sweep the dir stays, and a warning says so.
+func removePrismContainerAuditDir(id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), podmanSweepBudget)
+	defer cancel()
+	if err := prismcontainer.RemoveAuditDir(ctx, currentPrismContainerRunner(), currentPrismContainerBuildExecutor(), id); err != nil {
+		proglog.Warnf("[prism] warning: cleanup: %v. A later prism cleanup of the session sweeps it again\n", err)
 	}
 }
 

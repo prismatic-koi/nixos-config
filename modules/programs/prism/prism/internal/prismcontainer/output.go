@@ -46,18 +46,23 @@ func (t *tailBuffer) snapshot() ([]byte, int64) {
 
 // WriteResult writes a RunResult to the streams of the `prism container run`
 // process. Both routes use it, so the output does not depend on the route.
-// The truncation notes go to stderr first, so that stdout holds container
-// output only.
 func WriteResult(stdout, stderr io.Writer, r RunResult) {
+	WriteCommandResult("run", stdout, stderr, r)
+}
+
+// WriteCommandResult writes a RunResult to the streams of the `prism
+// container <command>` process: run, exec, logs, or stop. The truncation
+// notes go to stderr first, so that stdout holds container output only.
+func WriteCommandResult(command string, stdout, stderr io.Writer, r RunResult) {
 	if r.StdoutDropped > 0 {
-		fmt.Fprintf(stderr, "prism container run: stdout was truncated: it was longer than 1 MiB, so prism kept the last 1 MiB and dropped the first %d bytes\n", r.StdoutDropped)
+		fmt.Fprintf(stderr, "prism container %s: stdout was truncated: it was longer than 1 MiB, so prism kept the last 1 MiB and dropped the first %d bytes\n", command, r.StdoutDropped)
 	}
 	if r.StderrDropped > 0 {
-		fmt.Fprintf(stderr, "prism container run: stderr was truncated: it was longer than 1 MiB, so prism kept the last 1 MiB and dropped the first %d bytes\n", r.StderrDropped)
+		fmt.Fprintf(stderr, "prism container %s: stderr was truncated: it was longer than 1 MiB, so prism kept the last 1 MiB and dropped the first %d bytes\n", command, r.StderrDropped)
 	}
 	_, _ = stdout.Write(r.Stdout)
 	_, _ = stderr.Write(r.Stderr)
 	if r.Message != "" {
-		fmt.Fprintf(stderr, "prism container run: %s\n", r.Message)
+		fmt.Fprintf(stderr, "prism container %s: %s\n", command, r.Message)
 	}
 }

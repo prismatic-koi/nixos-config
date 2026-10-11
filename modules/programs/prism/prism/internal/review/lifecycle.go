@@ -213,17 +213,14 @@ func cleanupAgentSession(d *db.DB, agentSession string, cause db.SessionReapCaus
 	// child has no work dir, and a child that never used containers has no
 	// audit dir.
 	//
-	// A child that used `prism container` first gets its builds, containers,
-	// and images swept, while its audit dir still proves that it used them. Its audit log then
-	// goes to the parent, because a review agent has no archive of its own.
+	// The audit log of a child that used `prism container` goes to the
+	// parent, because a review agent has no archive of its own. Its builds,
+	// containers, and images are then swept.
 	if lookupErr == nil && st != nil && st.InstanceID != nil && *st.InstanceID != "" {
 		childID := *st.InstanceID
-		sweepChildPrismContainers(agentSession, childID)
+		sweepChildPrismContainers(agentSession, childID, handOverChildPrismContainerAudit(d, agentSession, childID))
 		container.RemoveSessionWorkDir(childID)
 		container.RemovePodmanProxyAuditDir(childID)
-		if handOverChildPrismContainerAudit(d, agentSession, childID) {
-			container.RemovePrismContainerAuditDir(childID)
-		}
 	}
 }
 
@@ -271,9 +268,11 @@ func SetChildPrismContainerRunnerForTest(r prismcontainer.Runner, e prismcontain
 }
 
 // sweepChildPrismContainers stops the `prism container` builds and removes
-// the containers and images of one review-agent child. It issues no podman
-// command when the child has no prism-container audit dir.
-func sweepChildPrismContainers(agentSession, instanceID string) {
+// the containers and images of one review-agent child. With removeDir, it
+// then removes the audit dir of the child, but only after a successful
+// sweep. It issues no podman command when the child has no prism-container
+// audit dir.
+func sweepChildPrismContainers(agentSession, instanceID string, removeDir bool) {
 	if !container.PrismContainerAuditDirExists(instanceID) {
 		return
 	}
@@ -283,7 +282,13 @@ func sweepChildPrismContainers(agentSession, instanceID string) {
 	if executor == nil {
 		executor = prismcontainer.DefaultBuildExecutor(runtime.GOOS, childPrismContainerRunner, nil)
 	}
-	if err := prismcontainer.SweepSession(ctx, childPrismContainerRunner, executor, []string{instanceID}); err != nil {
+	var err error
+	if removeDir {
+		err = prismcontainer.RemoveAuditDir(ctx, childPrismContainerRunner, executor, instanceID)
+	} else {
+		err = prismcontainer.SweepSession(ctx, childPrismContainerRunner, executor, []string{instanceID})
+	}
+	if err != nil {
 		proglog.Warnf("[prism] warning: cleanup: prism-container sweep for %q failed (%v) — continuing cleanup\n", agentSession, err)
 	}
 }
