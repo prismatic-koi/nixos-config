@@ -96,13 +96,12 @@ type Config struct {
 	SessionName string
 
 	// Worktree is the absolute path to the git worktree on the host.
-	// Mounted at /workspace inside the container. When WorktreeReadOnly is
-	// true, the mount is read-only; otherwise it is read-write.
 	Worktree string
 
-	// WorktreeReadOnly, when true, mounts the worktree read-only inside
-	// the container. Used by review agent containers so agents cannot
-	// modify the branch under review.
+	// WorktreeReadOnly, when true, makes the worktree read-only in the
+	// sandbox: bwrap binds it with --ro-bind, and the sandbox-exec profile
+	// denies file-write* on it. Set for review agents and investigators, so
+	// that they cannot change the branch that they review or research.
 	WorktreeReadOnly bool
 
 	// AllocatedPort is the host port to bind to ContainerPort inside the container.

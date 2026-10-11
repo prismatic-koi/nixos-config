@@ -80,7 +80,6 @@ func init() {
 	sidecarCmd.Flags().String("plugin-path", "", "Host path to prism-hooks.ts plugin (unused; retained for back-compat)")
 	sidecarCmd.Flags().String("initial-prompt", "", "Initial prompt to deliver to the agent after readiness")
 	sidecarCmd.Flags().String("instance-id", "", "UUID instance identifier for this session incarnation (for bus message scoping)")
-	sidecarCmd.Flags().Bool("worktree-readonly", false, "Mount the worktree read-only inside the container (used for review agents)")
 	sidecarCmd.Flags().String("harness", "pi", "Agent harness to use")
 	sidecarCmd.Flags().String("harness-binary", "", "Path to the harness binary (required for stdio-pipe harnesses; ignored for http-port harnesses)")
 	sidecarCmd.Flags().String("bwrap-path", "", "Override path to the bwrap binary used to sandbox stdio-pipe harnesses (default: resolved via PATH)")
@@ -100,8 +99,6 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	_ = pluginPath // retained for back-compat; no longer consumed
 	initialPrompt, _ := cmd.Flags().GetString("initial-prompt")
 	instanceID, _ := cmd.Flags().GetString("instance-id")
-	worktreeReadOnly, _ := cmd.Flags().GetBool("worktree-readonly")
-	_ = worktreeReadOnly
 	harnessName, _ := cmd.Flags().GetString("harness")
 	harnessBinaryPath, _ := cmd.Flags().GetString("harness-binary")
 	bwrapPath, _ := cmd.Flags().GetString("bwrap-path")
@@ -193,6 +190,14 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// repo/worktree — mirroring what tmux-session-start does.
 	if err := d.UpsertStatus(sessionName, repo, worktree, "idle", nil, nil); err != nil {
 		proglog.Errorf("[prism sidecar] initial upsert: %v\n", err)
+	}
+
+	// Fail closed: if the read fails, `prism container` refuses --mount rw
+	// for this session.
+	worktreeReadOnly, roErr := d.WorktreeReadOnly(sessionName)
+	if roErr != nil {
+		proglog.Errorf("[prism sidecar] %v: the session is treated as read-only\n", roErr)
+		worktreeReadOnly = true
 	}
 
 	// Load prism runtime config.
@@ -378,6 +383,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		SessionName:            sessionName,
 		Repo:                   repo,
 		Worktree:               worktree,
+		WorktreeReadOnly:       worktreeReadOnly,
 		HarnessURL:             harnessURL,
 		DB:                     d,
 		Clock:                  sidecar.RealClock(),

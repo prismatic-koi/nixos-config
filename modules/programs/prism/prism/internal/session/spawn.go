@@ -143,9 +143,11 @@ type SpawnOpts struct {
 	// hook will generate one downstream if it remains empty.
 	InstanceID string
 
-	// WorktreeReadOnly, when true, mounts the worktree read-only inside the
-	// container. Set for review agents so they cannot modify the branch
-	// under review.
+	// WorktreeReadOnly, when true, makes the worktree read-only inside the
+	// bwrap and sandbox-exec sandboxes, and makes `prism container run` and
+	// `start` refuse `--mount rw`. SpawnSession records it in
+	// agent_status.worktree_readonly, so a restore keeps it. Host mode has no
+	// sandbox, so there the worktree stays writable.
 	WorktreeReadOnly bool
 
 	// GroupID, when non-empty, associates this session with a SessionGroup
@@ -695,6 +697,15 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	}
 	startup.log("spawn-session: agent_status seeded (state=idle, isolation_mode=%q, title=%v)", mode, seedTitle != nil)
 
+	// Write the flag on every spawn, false included: a re-spawn of a session
+	// name must not keep the flag of the row's previous life. prism agent-run
+	// reads it to build the sandbox, so it must be written before the agent
+	// window exists.
+	if err := d.SetWorktreeReadOnly(opts.SessionName, opts.WorktreeReadOnly); err != nil {
+		startup.log("spawn-session: set worktree_readonly FAILED: %v", err)
+		return fmt.Errorf("spawn session: %w", err)
+	}
+
 	// Step 2: Write group_id when set. Single-session spawns leave GroupID
 	// empty and this is a no-op.
 	if opts.GroupID != "" {
@@ -1187,16 +1198,15 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	// state, and host-API, and starting it up-front keeps the ordering
 	// consistent across modes.
 	sidecarOpts := StartSidecarOpts{
-		Port:             port,
-		IsolationMode:    mode,
-		AgentRole:        opts.AgentRole,
-		Worktree:         opts.Worktree,
-		PluginHostPath:   opts.PluginHostPath,
-		InitialPrompt:    opts.Prompt,
-		InstanceID:       opts.InstanceID,
-		WorktreeReadOnly: opts.WorktreeReadOnly,
-		HarnessName:      opts.HarnessName,
-		ModelsByRole:     opts.ModelsByRole,
+		Port:           port,
+		IsolationMode:  mode,
+		AgentRole:      opts.AgentRole,
+		Worktree:       opts.Worktree,
+		PluginHostPath: opts.PluginHostPath,
+		InitialPrompt:  opts.Prompt,
+		InstanceID:     opts.InstanceID,
+		HarnessName:    opts.HarnessName,
+		ModelsByRole:   opts.ModelsByRole,
 	}
 	if err := StartSidecarWithOpts(opts.SessionName, sidecarOpts); err != nil {
 		// Non-fatal: log and continue, matching the LayoutFull behaviour

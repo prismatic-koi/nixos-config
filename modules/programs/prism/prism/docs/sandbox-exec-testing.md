@@ -236,6 +236,15 @@ integration test coverage exists for:
   and a copy under another name runs. The paired negative strips the deny
   and runs the copy named `podman`. See
   `sandbox_exec_container_cli_darwin_test.go`.
+- **The read-only worktree deny** — the final deny (section 21d) on
+  `file-write*` in the worktree, for a session with
+  `Config.WorktreeReadOnly` set (a review agent or an investigator). Under
+  the production profile of such a session, a read of a worktree file
+  works, and a change, a create, and a remove each fail with
+  "Operation not permitted". Under the profile of a worker, the same
+  writes work. The paired negative strips the deny from the read-only
+  profile and the writes work. See
+  `sandbox_exec_worktree_readonly_darwin_test.go`.
 - **Network egress** — `(allow network*)` permits outbound TCP.
 
 Each positive case has a paired negative case that mutates the profile to
@@ -285,7 +294,7 @@ workflow already uses that same action. The job then runs the tests inside
 
 ```
 nix shell nixpkgs#bash nixpkgs#coreutils \
-  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|ContainerCLI)' -race
+  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|WorktreeReadOnly|ContainerCLI)' -race
 ```
 
 The tests in `sandbox_exec_gitlab_token_darwin_test.go` and
@@ -295,7 +304,7 @@ The production secrets.d deny regexes key off that path. A bare `macos-15`
 runner starts with `TMPDIR` under `/private/tmp`, so the job exports
 `TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"` before it runs `go test`.
 
-**Selector scope: four named families, not the whole `TestSandboxExec*`
+**Selector scope: five named families, not the whole `TestSandboxExec*`
 family.** Issue #2749's problem statement names exactly two affected files:
 `sandbox_exec_gitlab_token_darwin_test.go` and
 `sandbox_exec_grafana_config_darwin_test.go`. Issue #3061 adds a third file,
@@ -304,9 +313,14 @@ path deny. Its only extra need on a bare `macos-15` runner is Nix coreutils.
 Issue #3065 adds a fourth file,
 `sandbox_exec_container_cli_darwin_test.go`, for the section-21c podman and
 docker exec deny. It needs only Nix bash.
+Issue #3079 adds a fifth file,
+`sandbox_exec_worktree_readonly_darwin_test.go`, for the section-21d
+read-only worktree deny. Like the worktree path deny, it needs only Nix
+bash and Nix coreutils.
 The `-run` selector matches only the `TestSandboxExecGitLabToken_*`,
-`TestSandboxExecGrafanaConfig_*`, `TestSandboxExecWorktreeEntry_*`, and
-`TestSandboxExecContainerCLI_*` functions. A wider `^TestSandboxExec`
+`TestSandboxExecGrafanaConfig_*`, `TestSandboxExecWorktreeEntry_*`,
+`TestSandboxExecWorktreeReadOnly_*`, and `TestSandboxExecContainerCLI_*`
+functions. A wider `^TestSandboxExec`
 selector was tried first. PR #2785 (round-2 review) found that this
 selector skips several other sandbox-exec suites on a bare `macos-15`
 runner. For example, the playwright suite

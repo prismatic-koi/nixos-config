@@ -174,8 +174,8 @@ func dbSessionsForMode(dbPath string, mode config.IsolationMode) (count int, ses
 // Mirrors the fields read by the argv builder in
 // internal/session/sidecar.go.
 //
-// Mode-independent flags (e.g. --instance-id, --worktree-readonly,
-// --harness) live outside SidecarFlags — they are appended unconditionally
+// Mode-independent flags (e.g. --instance-id, --harness) live outside
+// SidecarFlags — they are appended unconditionally
 // by the caller after the per-mode dispatch.
 type SidecarFlagOpts struct {
 	Port           int

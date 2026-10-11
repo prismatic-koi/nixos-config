@@ -41,6 +41,8 @@ type Caller struct {
 	SessionName string
 	InstanceID  string
 	Worktree    string
+	// WorktreeReadOnly is agent_status.worktree_readonly of the session.
+	WorktreeReadOnly bool
 }
 
 func (c Caller) validate(mount Mount) error {
@@ -49,6 +51,9 @@ func (c Caller) validate(mount Mount) error {
 	}
 	if mount == MountNone {
 		return nil
+	}
+	if mount == MountRW && c.WorktreeReadOnly {
+		return fmt.Errorf("the worktree %q of session %q is read-only, so --mount rw is not permitted: use --mount ro or --mount none", c.Worktree, c.SessionName)
 	}
 	if c.Worktree == "" {
 		return fmt.Errorf("session %q has no worktree to mount: use --mount none", c.SessionName)
