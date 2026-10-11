@@ -95,6 +95,7 @@ let
     agent_max_open_files_soft = config.nx.programs.prism.agentMaxOpenFilesSoft;
     agent_max_open_files_hard = config.nx.programs.prism.agentMaxOpenFilesHard;
     container_host_limit = config.nx.programs.prism.containerHostLimit;
+    container_machine_mount_allowlist = config.nx.programs.prism.containerMachineMountAllowlist;
     pi_extension_dir = config.nx.programs.prism.piExtensionDir;
     # github_token_path: absolute path to the sops-decrypted GitHub token file.
     # Last-resort fallback read by credentialEnvVars when the inherited
@@ -206,11 +207,27 @@ in
       type = lib.types.ints.positive;
       default = 4;
       description = ''
-        Maximum number of `prism container` containers that run at the same
-        time on this host, across all sessions. When the limit is reached,
-        prism refuses a new container at once. Written to config.json as
-        container_host_limit. Each session can run one container at a time,
-        independent of this option.
+        Maximum number of `prism container` containers and image builds that
+        run at the same time on this host, across all sessions. When the
+        limit is reached, prism refuses a new container or build at once.
+        Written to config.json as container_host_limit. Each session can run
+        one container or build at a time, independent of this option.
+      '';
+    };
+
+    nx.programs.prism.containerMachineMountAllowlist = lib.mkOption {
+      type = lib.types.nullOr (lib.types.listOf lib.types.str);
+      default = null;
+      example = [ "~/code" ];
+      description = ''
+        macOS only. The Mac paths that the podman machine can mount when an
+        agent runs `prism container build`. Before each build, prism reads
+        the mounts of the default podman machine and refuses the build when
+        a mount source is not one of these paths or inside one. A build in
+        the machine can read every mounted path. A leading "~/" is expanded.
+        null selects the prism project locations
+        (nx.programs.prism.projects.locations). Written to config.json as
+        container_machine_mount_allowlist.
       '';
     };
 

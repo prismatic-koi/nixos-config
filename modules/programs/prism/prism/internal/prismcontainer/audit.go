@@ -20,15 +20,20 @@ const (
 )
 
 // AuditEntry is one line of the audit log. The log never holds an --env
-// value, because a value can be a secret. It holds the key only.
+// or --build-arg value, because a value can be a secret. It holds the key
+// only.
 type AuditEntry struct {
-	Time           string   `json:"time"`
-	Session        string   `json:"session"`
-	InstanceID     string   `json:"instance_id"`
-	Command        string   `json:"command"`
+	Time       string `json:"time"`
+	Session    string `json:"session"`
+	InstanceID string `json:"instance_id"`
+	Command    string `json:"command"`
+	// Image is the image of a run, or the name a build gives its image.
 	Image          string   `json:"image"`
 	Args           []string `json:"args,omitempty"`
 	EnvKeys        []string `json:"env_keys,omitempty"`
+	Context        string   `json:"context,omitempty"`
+	File           string   `json:"file,omitempty"`
+	BuildArgKeys   []string `json:"build_arg_keys,omitempty"`
 	Mount          string   `json:"mount,omitempty"`
 	TimeoutSeconds int64    `json:"timeout_seconds,omitempty"`
 	Container      string   `json:"container,omitempty"`

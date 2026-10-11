@@ -1,20 +1,37 @@
 package container
 
 // Host-side state of `prism container`: the host-wide limit lock, the
-// per-incarnation audit log, and the podman cidfiles.
+// per-incarnation audit log, the podman cidfiles, the build context
+// copies, and the markers of running builds.
 //
 //	<XDG_STATE_HOME>/prism/prism-container/host-limit.lock
 //	<XDG_STATE_HOME>/prism/prism-container/audit/<instanceID>/audit.log
 //	<XDG_STATE_HOME>/prism/prism-container/cid/<per-run dir>/cid
+//	<XDG_STATE_HOME>/prism/prism-container/build-stage/<per-build dir>/
+//	<XDG_STATE_HOME>/prism/prism-container/build-lock/<instanceID>.<suffix>.lock
+//	<XDG_STATE_HOME>/prism/prism-container/build-policy.json
 //
-// No sandbox may write this tree. The agent is the subject of the audit
-// log. Podman writes the cidfile on the host and follows a symlink at its
-// path, so a sandbox that can write the cid dir can make podman overwrite
-// any file of the host user. It sits outside the session work dir and the per-session run dir,
+// No agent sandbox may write this tree. The agent is the subject of the
+// audit log. Podman writes the cidfile on the host and follows a symlink at
+// its path, so a sandbox that can write the cid dir can make podman
+// overwrite any file of the host user. Podman build reads the context copy
+// while the build runs, so a sandbox that can write the copy can put a
+// symlink to a host path in it. A sandbox that can remove a build marker
+// can hide a running build from the limits. The build signature policy
+// refuses image sources, so a sandbox that can write it can turn that
+// refusal off. The tree sits outside the session work dir and the per-session run dir,
 // which are the only state paths the sandbox-exec profile grants for write.
-// bwrap binds nothing under it. Do not add a grant or a bind that reaches it.
+// The bwrap of the agent sandbox binds nothing under it. Do not add a grant
+// or a bind of the agent sandbox that reaches it.
 // TestGenerateProfile_PrismContainerState_OutsideWriteGrantedSubpaths and
 // TestBwrapBuildArgs_PrismContainerStateNotBound fail if one does.
+//
+// The Linux build namespace (prismcontainer/buildns.go) is a different
+// sandbox. It binds the copy of its own build and the build signature
+// policy read-only. It binds one dir read-write: build-stage/<per-build
+// dir>/vartmp, at /var/tmp, for the temporary files of podman and buildah.
+// A build step can write there through a cache mount. No prism code reads
+// that dir, and prism removes it with the build copy.
 
 import (
 	"fmt"
@@ -28,6 +45,9 @@ const (
 	prismContainerAuditDirName  = "audit"
 	prismContainerAuditFileName = "audit.log"
 	prismContainerCIDDirName    = "cid"
+	prismContainerStageDirName  = "build-stage"
+	prismContainerBuildLockDir  = "build-lock"
+	prismContainerBuildPolicy   = "build-policy.json"
 )
 
 // PrismContainerStateDir returns <XDG_STATE_HOME>/prism/prism-container.
@@ -56,6 +76,36 @@ func PrismContainerCIDDirPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, prismContainerCIDDirName), nil
+}
+
+// PrismContainerBuildStageDirPath returns the directory that holds the
+// per-build copies of the build context.
+func PrismContainerBuildStageDirPath() (string, error) {
+	dir, err := PrismContainerStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, prismContainerStageDirName), nil
+}
+
+// PrismContainerBuildLockDirPath returns the directory that holds one
+// marker file for each running build.
+func PrismContainerBuildLockDirPath() (string, error) {
+	dir, err := PrismContainerStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, prismContainerBuildLockDir), nil
+}
+
+// PrismContainerBuildPolicyPath returns the path of the signature policy
+// that a Linux build uses.
+func PrismContainerBuildPolicyPath() (string, error) {
+	dir, err := PrismContainerStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, prismContainerBuildPolicy), nil
 }
 
 // PrismContainerAuditDirPath returns the audit directory of one session

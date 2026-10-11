@@ -621,11 +621,13 @@ type cleanupResult struct {
 	HarnessSessionIDCleared any     `json:"harness_session_id_cleared"`
 	// ContainersSwept reports the number of orphan containers
 	// (matching prism-<session>-<8 hex> on the host) removed by the
-	// containers_enabled=1 sweep. nil omits the field entirely from
-	// the JSON envelope: when containers_enabled=0,
-	// the cleanup path issues NO podman commands AND emits no
-	// containers_swept key. *int (not int + omitempty) is used so a
-	// run that produces zero matches still emits "containers_swept": 0.
+	// containers_enabled=1 proxy sweep. nil omits the field entirely
+	// from the JSON envelope: when containers_enabled=0, the proxy
+	// sweep issues no podman command and the envelope has no
+	// containers_swept key. The `prism container` sweep
+	// (sweepPrismContainersForSession) has its own gate and no count
+	// here. *int (not int + omitempty) is used so a run that produces
+	// zero matches still emits "containers_swept": 0.
 	ContainersSwept *int `json:"containers_swept,omitempty"`
 	// VolumesSwept reports the number of volumes (matching the
 	// prism-<session>- name prefix) removed by the sweep. It follows

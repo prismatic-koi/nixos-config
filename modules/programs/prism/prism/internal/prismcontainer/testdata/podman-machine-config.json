@@ -1,0 +1,71 @@
+{
+  "ConfigPath": {
+    "Path": "/Users/u/.config/containers/podman/machine/applehv/podman-machine-default.json"
+  },
+  "Created": "2026-10-01T09:00:00.000000+13:00",
+  "GvProxy": {
+    "GvProxy": "/opt/podman/bin/gvproxy",
+    "HostSocks": null,
+    "RemoteSocket": {
+      "Path": "/var/folders/xx/T/podman/podman-machine-default-api.sock"
+    }
+  },
+  "HostUser": {
+    "Modified": false,
+    "Rootful": false,
+    "UID": 501
+  },
+  "LastUp": "2026-10-10T08:00:00.000000+13:00",
+  "Mounts": [
+    {
+      "ReadOnly": false,
+      "Source": "/Users",
+      "Tag": "a2a0ee2c717462feb1de2f5afd59de5f",
+      "Target": "/Users",
+      "Type": "virtiofs",
+      "VSockNumber": null,
+      "OriginalInput": "/Users:/Users"
+    },
+    {
+      "ReadOnly": false,
+      "Source": "/private",
+      "Tag": "71708eb255bc230cd7c91dd26f7667a7",
+      "Target": "/private",
+      "Type": "virtiofs",
+      "VSockNumber": null,
+      "OriginalInput": "/private:/private"
+    },
+    {
+      "ReadOnly": false,
+      "Source": "/var/folders",
+      "Tag": "a0bb3a2c8b0b02ba5958b0576f0d6530",
+      "Target": "/var/folders",
+      "Type": "virtiofs",
+      "VSockNumber": null,
+      "OriginalInput": "/var/folders:/var/folders"
+    }
+  ],
+  "Name": "podman-machine-default",
+  "Resources": {
+    "CPUs": 4,
+    "DiskSize": 100,
+    "Memory": 8192,
+    "USBs": []
+  },
+  "SSH": {
+    "IdentityPath": "/Users/u/.local/share/containers/podman/machine/machine",
+    "Port": 53321,
+    "RemoteUsername": "core"
+  },
+  "Starting": false,
+  "Version": 1,
+  "AppleHypervisor": {
+    "Vfkit": {
+      "Endpoint": "http://localhost:51234",
+      "BinaryPath": {
+        "Path": "/opt/podman/bin/vfkit"
+      },
+      "Rosetta": true
+    }
+  }
+}

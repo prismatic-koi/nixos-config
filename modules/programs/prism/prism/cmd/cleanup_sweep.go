@@ -8,8 +8,9 @@ package cmd
 //  2. Volumes the session owns.
 //
 // Both are gated on the SAME agent_status.containers_enabled read, so a
-// session that never enabled containers issues no podman command at
-// all.
+// session that never enabled containers issues no podman command in this
+// sweep. The `prism container` sweep (cleanup_prism_container.go) has its
+// own gate and runs whatever containers_enabled holds.
 //
 // # Ownership is identity, not a shared prefix
 //
@@ -182,8 +183,8 @@ func (s sweepScope) sweepsVolumes() bool { return s == sweepContainersAndVolumes
 //
 // When ran is false the JSON envelope MUST omit the containers_swept
 // and volumes_swept fields entirely — this is the spec, and it is what
-// makes "a session that never enabled containers issues no podman
-// command" observable from the outside.
+// makes "a session that never enabled containers issues no proxy-sweep
+// podman command" observable from the outside.
 //
 // scope decides whether the volume sweep runs at all. Under
 // sweepContainersOnly no volume podman command is issued and

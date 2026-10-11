@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -122,7 +123,11 @@ func seedContainerRunSession(t *testing.T, session, worktree string) {
 func installPrismContainerFake(t *testing.T, f *prismcontainertest.Fake) {
 	t.Helper()
 	prismContainerRunnerForTest = f
-	t.Cleanup(func() { prismContainerRunnerForTest = nil })
+	prismContainerBuildExecutorForTest = f
+	t.Cleanup(func() {
+		prismContainerRunnerForTest = nil
+		prismContainerBuildExecutorForTest = nil
+	})
 }
 
 // TestContainerRunHostMode_SameArgvAsDirectRun pins the parity of the two
@@ -190,5 +195,91 @@ func TestTimeoutSeconds(t *testing.T) {
 		if got := timeoutSeconds(d); got != want {
 			t.Errorf("timeoutSeconds(%s) = %d, want %d", d, got, want)
 		}
+	}
+}
+
+func TestAgentContext_ListsContainerBuild(t *testing.T) {
+	doc := buildAgentContextDocument(false)
+	build, ok := doc.Commands["container"].Subcommands["build"]
+	if !ok {
+		t.Fatalf("agent-context has no container build: %+v", doc.Commands["container"])
+	}
+	for _, flag := range []string{"--file", "--build-arg", "--tag", "--timeout"} {
+		if _, ok := build.Flags[flag]; !ok {
+			t.Errorf("container build flag %s missing from agent-context", flag)
+		}
+	}
+	if build.Flags["--timeout"].Default != "30m0s" {
+		t.Errorf("--timeout default = %q, want 30m0s", build.Flags["--timeout"].Default)
+	}
+}
+
+func TestFinishContainerBuild(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := finishContainerBuild(&stdout, &stderr, prismcontainer.BuildResult{Image: "localhost/prism-x-y-z", Output: []byte("STEP 1/1\n")})
+	if err != nil || stdout.String() != "localhost/prism-x-y-z\n" || stderr.String() != "STEP 1/1\n" {
+		t.Errorf("success: err %v, stdout %q, stderr %q", err, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	err = finishContainerBuild(&stdout, &stderr, prismcontainer.BuildResult{ExitCode: 2, Output: []byte("Error: x\n"), Message: "the build failed: podman build exited 2"})
+	var ec *exitCodeError
+	if !errors.As(err, &ec) || ec.ExitCode() != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "Error: x") {
+		t.Errorf("failure: err %v, stdout %q, stderr %q", err, stdout.String(), stderr.String())
+	}
+}
+
+// TestContainerBuildHostMode_SameArgvAsDirectBuild pins the parity of the
+// two routes for a build. The sidecar route has the matching test in
+// internal/sidecar.
+func TestContainerBuildHostMode_SameArgvAsDirectBuild(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_CONFIG_FILE", filepath.Join(t.TempDir(), "absent.json"))
+	session := "prism-test@container-host"
+	worktree := prismcontainertest.RealTempDir(t)
+	if err := os.WriteFile(filepath.Join(worktree, "Containerfile"), []byte("FROM alpine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_SESSION_NAME", session)
+	seedContainerRunSession(t, session, worktree)
+
+	viaHost := &prismcontainertest.Fake{}
+	installPrismContainerFake(t, viaHost)
+	req := prismcontainer.BuildRequest{BuildArgs: []string{"A=1"}, Tag: "app"}
+	hostRes := buildContainerHostMode(context.Background(), req)
+	if hostRes.ExitCode != 0 {
+		t.Fatalf("host-mode build: %+v", hostRes)
+	}
+
+	direct := &prismcontainertest.Fake{}
+	directRes := prismcontainer.Build(context.Background(), prismcontainer.Deps{Runner: direct, BuildExecutor: direct, HostLimit: 4}, prismcontainer.Caller{
+		SessionName: session, InstanceID: containerCmdTestInstanceID, Worktree: worktree,
+	}, req)
+
+	if hostRes.Image != directRes.Image {
+		t.Errorf("host-mode image %q differs from direct %q", hostRes.Image, directRes.Image)
+	}
+	got, want := viaHost.BuildCalls(), direct.BuildCalls()
+	if len(got) != 1 || len(want) != 1 {
+		t.Fatalf("build calls: host %d, direct %d; want 1 each", len(got), len(want))
+	}
+	if g, w := prismcontainertest.MaskBuildArgs(got[0]), prismcontainertest.MaskBuildArgs(want[0]); !slices.Equal(g, w) {
+		t.Errorf("host-mode argv differs from direct Build argv:\n got %q\nwant %q", g, w)
+	}
+}
+
+func TestContainerBuildHostMode_UnknownSessionRefused(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_SESSION_NAME", "prism-test@not-seeded")
+	seedContainerRunSession(t, "prism-test@other", t.TempDir())
+	f := &prismcontainertest.Fake{}
+	installPrismContainerFake(t, f)
+
+	res := buildContainerHostMode(context.Background(), prismcontainer.BuildRequest{})
+	if res.ExitCode == 0 || !strings.Contains(res.Message, "not in the prism database") {
+		t.Errorf("result = %+v, want refusal", res)
+	}
+	if len(f.Calls()) != 0 {
+		t.Errorf("podman called: %q", f.Calls())
 	}
 }

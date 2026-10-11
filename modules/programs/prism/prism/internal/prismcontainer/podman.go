@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/container"
 )
 
 // Runner runs the podman CLI. Production uses ExecRunner. Tests inject a
@@ -116,18 +118,103 @@ func removeContainer(r Runner, name string) error {
 	return nil
 }
 
-// SweepInstances force-removes every container whose instance label names
-// one of instanceIDs. It returns the number of containers removed.
-func SweepInstances(ctx context.Context, r Runner, instanceIDs []string) (int, error) {
-	if len(instanceIDs) == 0 {
-		return 0, nil
-	}
+func ownedSet(instanceIDs []string) map[string]bool {
 	owned := make(map[string]bool, len(instanceIDs))
 	for _, id := range instanceIDs {
 		if id != "" {
 			owned[id] = true
 		}
 	}
+	return owned
+}
+
+// SweepSession stops every running build, then removes every container,
+// then removes every built image, of the session incarnations instanceIDs.
+// The builds stop first, so that no build adds an image after the image
+// sweep. Each step runs even when an earlier one fails. It also removes
+// the context copies of dead builds of any session.
+func SweepSession(ctx context.Context, r Runner, e BuildExecutor, instanceIDs []string) error {
+	_, buildErr := StopBuilds(ctx, e, instanceIDs)
+	removeStaleBuildCopies()
+	_, ctrErr := SweepInstances(ctx, r, instanceIDs)
+	_, imgErr := SweepImages(ctx, r, instanceIDs)
+	return errors.Join(buildErr, ctrErr, imgErr)
+}
+
+// StopBuilds stops every running build of the session incarnations
+// instanceIDs. It returns the number of builds stopped.
+func StopBuilds(ctx context.Context, e BuildExecutor, instanceIDs []string) (int, error) {
+	var stopped int
+	var errs []error
+	for id := range ownedSet(instanceIDs) {
+		if container.InstanceTokenForID(id) == "" {
+			continue
+		}
+		n, err := e.StopBuilds(ctx, buildUnitPrefix(id))
+		stopped += n
+		if err != nil {
+			errs = append(errs, fmt.Errorf("stop builds: %w", err))
+		}
+	}
+	return stopped, errors.Join(errs...)
+}
+
+// imageEntry is the part of `podman images --format json` that prism reads.
+type imageEntry struct {
+	ID     string            `json:"Id"`
+	Labels map[string]string `json:"Labels"`
+}
+
+// SweepImages force-removes every image, intermediate images included,
+// whose instance label names one of instanceIDs. --force also removes a
+// container that uses the image. It returns the number of images removed.
+func SweepImages(ctx context.Context, r Runner, instanceIDs []string) (int, error) {
+	owned := ownedSet(instanceIDs)
+	if len(owned) == 0 {
+		return 0, nil
+	}
+	var stdout, stderr bytes.Buffer
+	code, err := r.Run(ctx, &stdout, &stderr, "images", "--all",
+		"--filter", "label="+LabelInstanceID, "--format", "json")
+	if err != nil {
+		return 0, err
+	}
+	if code != 0 {
+		return 0, fmt.Errorf("podman images exited %d: %s", code, strings.TrimSpace(stderr.String()))
+	}
+	var images []imageEntry
+	if out := bytes.TrimSpace(stdout.Bytes()); len(out) > 0 {
+		if err := json.Unmarshal(out, &images); err != nil {
+			return 0, fmt.Errorf("parse podman images output: %v", err)
+		}
+	}
+	var ids []string
+	for _, img := range images {
+		if owned[img.Labels[LabelInstanceID]] && img.ID != "" {
+			ids = append(ids, img.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	stderr.Reset()
+	code, err = r.Run(ctx, io.Discard, &stderr, append([]string{"rmi", "--force", "--ignore"}, ids...)...)
+	if err != nil {
+		return 0, err
+	}
+	if code != 0 {
+		return 0, fmt.Errorf("podman rmi exited %d: %s", code, strings.TrimSpace(stderr.String()))
+	}
+	return len(ids), nil
+}
+
+// SweepInstances force-removes every container whose instance label names
+// one of instanceIDs. It returns the number of containers removed.
+func SweepInstances(ctx context.Context, r Runner, instanceIDs []string) (int, error) {
+	if len(instanceIDs) == 0 {
+		return 0, nil
+	}
+	owned := ownedSet(instanceIDs)
 	entries, err := listLabelled(ctx, r)
 	if err != nil {
 		return 0, err

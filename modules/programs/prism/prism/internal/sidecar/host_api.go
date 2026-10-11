@@ -232,6 +232,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	POST /set-active-tools — set the active tool list on one session (role-scoped)
 //	POST /abort         — abort the current turn on one session (role-scoped)
 //	POST /container/run — run one command in a new container for this session (all roles)
+//	POST /container/build — build an image from the worktree of this session (all roles)
 //
 // The permission label on each line above is the contract, not a comment:
 // "coordinator only" means the handler calls requireCoordinator, "role-scoped"
@@ -2823,6 +2824,26 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, s.runContainer(r.Context(), req))
+	})
+
+	// POST /container/build
+	// Request:  prismcontainer.BuildRequest
+	// Response: prismcontainer.BuildResult, HTTP 200 for every decision,
+	//           refusals included.
+	//
+	// The same rule as /container/run applies: the caller identity, the
+	// label, the image name prefix, and the worktree that the paths are
+	// relative to come from this sidecar's own config.
+	mux.HandleFunc("/container/build", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		var req prismcontainer.BuildRequest
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, s.buildContainer(r.Context(), req))
 	})
 
 	// POST /usage/snapshot

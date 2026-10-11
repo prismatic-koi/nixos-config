@@ -391,9 +391,14 @@ type Config struct {
 	// runPodmanProxyIfEnabled.
 	BareRoot string
 
-	// ContainerRunner runs podman for POST /container/run. Nil selects
-	// prismcontainer.ExecRunner. Tests inject a fake.
+	// ContainerRunner runs podman for POST /container/run and POST
+	// /container/build. Nil selects prismcontainer.ExecRunner. Tests inject
+	// a fake.
 	ContainerRunner prismcontainer.Runner
+
+	// ContainerBuildExecutor runs podman build for POST /container/build.
+	// Nil selects the executor of the host platform. Tests inject a fake.
+	ContainerBuildExecutor prismcontainer.BuildExecutor
 
 	// ContainerHostLimit overrides the host-wide container limit. Zero makes
 	// each request read the limit from config.json, so a changed Nix option

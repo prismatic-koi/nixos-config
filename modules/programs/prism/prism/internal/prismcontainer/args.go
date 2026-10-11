@@ -44,11 +44,8 @@ type Caller struct {
 }
 
 func (c Caller) validate(mount Mount) error {
-	if c.SessionName == "" {
-		return fmt.Errorf("prism cannot determine the calling session")
-	}
-	if container.InstanceTokenForID(c.InstanceID) == "" {
-		return fmt.Errorf("session %q has no valid instance ID, so prism cannot label its container", c.SessionName)
+	if err := c.validateIdentity(); err != nil {
+		return err
 	}
 	if mount == MountNone {
 		return nil
@@ -61,17 +58,36 @@ func (c Caller) validate(mount Mount) error {
 		strings.IndexFunc(c.Worktree, unicode.IsControl) >= 0 {
 		return fmt.Errorf("worktree path %q cannot be given to podman as a mount source: use --mount none", c.Worktree)
 	}
-	// Podman follows a symlink in any component of the mount source, so a
-	// path that holds a symlink must not pass. The sandbox-exec profile
-	// stops an agent from putting one there (section 21b). This check
-	// refuses one that is there already. Run checks again under the host
-	// lock, just before podman starts.
+	// Podman follows a symlink in any component of the mount source. Run
+	// checks again under the host lock, just before podman starts.
+	if err := c.validateWorktree(); err != nil {
+		return fmt.Errorf("%w: use --mount none", err)
+	}
+	return nil
+}
+
+func (c Caller) validateIdentity() error {
+	if c.SessionName == "" {
+		return fmt.Errorf("prism cannot determine the calling session")
+	}
+	if container.InstanceTokenForID(c.InstanceID) == "" {
+		return fmt.Errorf("session %q has no valid instance ID, so prism cannot label its container", c.SessionName)
+	}
+	return nil
+}
+
+// validateWorktree refuses a worktree path that is not a directory or that
+// goes through a symlink. A symlink there can redirect the mount source of
+// a run and the paths of a build. The sandbox-exec profile stops an agent
+// from putting one there (section 21b). This check refuses one that is
+// there already.
+func (c Caller) validateWorktree() error {
 	info, err := os.Lstat(c.Worktree)
 	if err != nil || !info.IsDir() {
-		return fmt.Errorf("worktree %q is not a directory (a symlink is refused): use --mount none", c.Worktree)
+		return fmt.Errorf("worktree %q is not a directory (a symlink is refused)", c.Worktree)
 	}
 	if real, err := filepath.EvalSymlinks(c.Worktree); err != nil || real != filepath.Clean(c.Worktree) {
-		return fmt.Errorf("worktree path %q goes through a symlink (a symlink is refused): use --mount none", c.Worktree)
+		return fmt.Errorf("worktree path %q goes through a symlink (a symlink is refused)", c.Worktree)
 	}
 	return nil
 }
@@ -119,4 +135,72 @@ func runArgs(c Caller, v validRun, name, cidFile string) []string {
 	}
 	args = append(args, v.image)
 	return append(args, v.command...)
+}
+
+// The CPU limit of a build step. podman build has no --cpus, so the limit
+// is a CFS quota of CPULimit periods per period.
+const (
+	buildCPUPeriod = "100000"
+	buildCPUQuota  = "200000"
+)
+
+// maxImageSessionFold limits the session name part of a built image name.
+// The part is decoration, like the session name in a container name.
+const maxImageSessionFold = 40
+
+// imageNamePrefix returns the name prefix of the images that the session
+// builds: localhost/prism-<instance token>-<folded session name>-. An
+// image name must be lower case and must not hold "@", "/", "~", or "_-",
+// so the session name is folded more than in a container name.
+//
+// The localhost/ domain is mandatory. Without it, `prism container run`
+// reads the name as a Docker Hub name, and its --pull never then fails.
+func imageNamePrefix(c Caller) string {
+	fold := []byte(strings.ToLower(c.SessionName))
+	for i, ch := range fold {
+		if (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') {
+			fold[i] = '-'
+		}
+	}
+	if len(fold) > maxImageSessionFold {
+		fold = fold[:maxImageSessionFold]
+	}
+	return "localhost/" + container.ResourceNamePrefixRoot + container.InstanceTokenForID(c.InstanceID) + "-" + string(fold) + "-"
+}
+
+// buildArgs builds the podman argument vector of `prism container build`.
+// It is the only builder: the host-API route and the host-mode route both
+// reach it through Build. The build executor adds options and changes
+// nothing else. ScopeExecutor (Linux) adds --signature-policy after
+// "build", and runs the vector as `podman unshare bwrap ... -- podman
+// --cgroup-manager=cgroupfs build --cgroup-parent <scope>/build ...`
+// (buildns.go). PlainExecutor (macOS) adds --ulimit nproc after "build".
+//
+// The agent controls only v. Every path is a prism-owned copy, never an
+// agent path. A --build-arg value is one argument after its flag, so it
+// cannot add an option. No input reaches --volume, --secret, --network,
+// --device, or --cap-add.
+//
+// --label marks the final image and --layer-label marks each intermediate
+// image, so that cleanup finds both by the label. podman build adds the
+// --label value as the last instruction, so a LABEL in the Containerfile
+// cannot change it.
+func buildArgs(c Caller, v validBuild, image, contextDir, file string) []string {
+	label := LabelInstanceID + "=" + c.InstanceID
+	args := []string{
+		"build",
+		"--file", file,
+		"--tag", image,
+		"--label", label,
+		"--layer-label", label,
+		"--memory", MemoryLimit,
+		"--memory-swap", MemoryLimit,
+		"--cpu-period", buildCPUPeriod,
+		"--cpu-quota", buildCPUQuota,
+		"--security-opt", "no-new-privileges",
+	}
+	for _, a := range v.buildArgs {
+		args = append(args, "--build-arg", a)
+	}
+	return append(args, contextDir)
 }

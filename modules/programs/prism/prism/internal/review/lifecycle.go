@@ -9,6 +9,7 @@ package review
 
 import (
 	"context"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -212,8 +213,8 @@ func cleanupAgentSession(d *db.DB, agentSession string, cause db.SessionReapCaus
 	// child has no work dir, and a child that never used containers has no
 	// audit dir.
 	//
-	// A child that used `prism container` first gets its containers swept,
-	// while its audit dir still proves that it used them. Its audit log then
+	// A child that used `prism container` first gets its builds, containers,
+	// and images swept, while its audit dir still proves that it used them. Its audit log then
 	// goes to the parent, because a review agent has no archive of its own.
 	if lookupErr == nil && st != nil && st.InstanceID != nil && *st.InstanceID != "" {
 		childID := *st.InstanceID
@@ -251,29 +252,38 @@ func handOverChildPrismContainerAudit(d *db.DB, agentSession, childID string) bo
 	return true
 }
 
-// childPrismContainerRunner runs podman for sweepChildPrismContainers.
-var childPrismContainerRunner prismcontainer.Runner = prismcontainer.ExecRunner{}
+// childPrismContainerRunner and childPrismContainerBuildExecutor run podman
+// for sweepChildPrismContainers. A nil executor selects the executor of
+// the host platform.
+var (
+	childPrismContainerRunner        prismcontainer.Runner = prismcontainer.ExecRunner{}
+	childPrismContainerBuildExecutor prismcontainer.BuildExecutor
+)
 
-// SetChildPrismContainerRunnerForTest replaces the podman runner of the
-// review-child container sweep until the returned restore runs. Tests in
-// other packages use it, so that a cleanup test never runs the real
-// podman. Production code must not call it.
-func SetChildPrismContainerRunnerForTest(r prismcontainer.Runner) (restore func()) {
-	prev := childPrismContainerRunner
-	childPrismContainerRunner = r
-	return func() { childPrismContainerRunner = prev }
+// SetChildPrismContainerRunnerForTest replaces the podman runner and the
+// build executor of the review-child sweep until the returned restore
+// runs. Tests in other packages use it, so that a cleanup test never runs
+// the real podman or systemctl. Production code must not call it.
+func SetChildPrismContainerRunnerForTest(r prismcontainer.Runner, e prismcontainer.BuildExecutor) (restore func()) {
+	prevR, prevE := childPrismContainerRunner, childPrismContainerBuildExecutor
+	childPrismContainerRunner, childPrismContainerBuildExecutor = r, e
+	return func() { childPrismContainerRunner, childPrismContainerBuildExecutor = prevR, prevE }
 }
 
-// sweepChildPrismContainers removes the `prism container` containers of one
-// review-agent child. It issues no podman command when the child has no
-// prism-container audit dir.
+// sweepChildPrismContainers stops the `prism container` builds and removes
+// the containers and images of one review-agent child. It issues no podman
+// command when the child has no prism-container audit dir.
 func sweepChildPrismContainers(agentSession, instanceID string) {
 	if !container.PrismContainerAuditDirExists(instanceID) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := prismcontainer.SweepInstances(ctx, childPrismContainerRunner, []string{instanceID}); err != nil {
+	executor := childPrismContainerBuildExecutor
+	if executor == nil {
+		executor = prismcontainer.DefaultBuildExecutor(runtime.GOOS, childPrismContainerRunner, nil)
+	}
+	if err := prismcontainer.SweepSession(ctx, childPrismContainerRunner, executor, []string{instanceID}); err != nil {
 		proglog.Warnf("[prism] warning: cleanup: prism-container sweep for %q failed (%v) — continuing cleanup\n", agentSession, err)
 	}
 }

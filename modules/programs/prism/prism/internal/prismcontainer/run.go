@@ -1,15 +1,18 @@
-// Package prismcontainer runs containers for prism sessions.
+// Package prismcontainer runs containers and image builds for prism
+// sessions.
 //
 // The agent never talks to podman. It gives prism a small set of inputs
-// (RunRequest), and prism builds the podman argument vector on the host
-// with a fixed set of options (runArgs). A sandboxed session reaches this
-// package through its sidecar (POST /container/run). A host-mode session
-// calls it directly. Both routes call Run, so they cannot differ.
+// (RunRequest, BuildRequest), and prism builds the podman argument vector
+// on the host with a fixed set of options (runArgs, buildArgs). A sandboxed
+// session reaches this package through its sidecar (POST /container/run,
+// POST /container/build). A host-mode session calls it directly. Both
+// routes call Run or Build, so they cannot differ.
 package prismcontainer
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -42,12 +45,18 @@ type RunResult struct {
 // Deps holds the host-side dependencies of Run. Zero values select the
 // production defaults.
 type Deps struct {
-	Runner     Runner
-	HostLimit  int
-	GOOS       string
-	Now        func() time.Time
-	LockWait   time.Duration
-	CreateWait time.Duration
+	Runner Runner
+	// BuildExecutor runs podman build. Nil selects DefaultBuildExecutor
+	// for GOOS.
+	BuildExecutor BuildExecutor
+	// MachineMountAllowlist holds the Mac paths that the podman machine
+	// can mount, for the default macOS build executor.
+	MachineMountAllowlist []string
+	HostLimit             int
+	GOOS                  string
+	Now                   func() time.Time
+	LockWait              time.Duration
+	CreateWait            time.Duration
 }
 
 func (d Deps) withDefaults() Deps {
@@ -68,6 +77,9 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.CreateWait <= 0 {
 		d.CreateWait = 30 * time.Second
+	}
+	if d.BuildExecutor == nil {
+		d.BuildExecutor = DefaultBuildExecutor(d.GOOS, d.Runner, d.MachineMountAllowlist)
 	}
 	return d
 }
@@ -153,13 +165,18 @@ func Run(ctx context.Context, d Deps, c Caller, req RunRequest) RunResult {
 		}
 		return finish(DecisionError, ExitRefused, false, unreachableMessage(d.GOOS, err.Error()))
 	}
+	limitCheckFailed := func(err error) RunResult {
+		var pe *podmanError
+		if errors.As(err, &pe) {
+			return podmanFailed(err)
+		}
+		return finish(DecisionError, ExitRefused, false, err.Error())
+	}
 
 	// Check the limits before the pull, so that a refusal comes at once.
-	entries, err := listLabelled(runCtx, d.Runner)
-	if err != nil {
-		return podmanFailed(err)
-	}
-	if msg := checkLimits(entries, c.InstanceID, d.HostLimit); msg != "" {
+	if msg, err := limitRefusal(runCtx, d.Runner, c.InstanceID, d.HostLimit); err != nil {
+		return limitCheckFailed(err)
+	} else if msg != "" {
 		return refuse(msg)
 	}
 
@@ -184,11 +201,9 @@ func Run(ctx context.Context, d Deps, c Caller, req RunRequest) RunResult {
 		return finish(DecisionError, ExitRefused, false, err.Error())
 	}
 	defer lock.release()
-	entries, err = listLabelled(runCtx, d.Runner)
-	if err != nil {
-		return podmanFailed(err)
-	}
-	if msg := checkLimits(entries, c.InstanceID, d.HostLimit); msg != "" {
+	if msg, err := limitRefusal(runCtx, d.Runner, c.InstanceID, d.HostLimit); err != nil {
+		return limitCheckFailed(err)
+	} else if msg != "" {
 		return refuse(msg)
 	}
 	// The pull and the lock wait can take minutes. Check the worktree path
