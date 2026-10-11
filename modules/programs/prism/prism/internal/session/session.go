@@ -457,6 +457,25 @@ func hostProfileSlot(opts Opts) config.RoleSlot {
 	return slot
 }
 
+// logHostNoModelWarning appends a warning to the agent-run log when a
+// host-mode pi launch resolves no model. Best-effort: a log failure never
+// blocks the launch.
+func logHostNoModelWarning(opts Opts) {
+	if opts.SessionName == "" {
+		return
+	}
+	logPath, err := AgentRunLogPath(opts.SessionName)
+	if err != nil || os.MkdirAll(filepath.Dir(logPath), 0o700) != nil {
+		return
+	}
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "[prism] warning: no profile model resolved for role %q in host mode; pi uses its default model\n", opts.Agent)
+}
+
 // harnessBinary returns the binary name to invoke for the given harness.
 // For "pi" (or empty) the binary is pi.
 func harnessBinary(harnessName string) string {
@@ -547,6 +566,9 @@ func buildDirectAgentCmd(opts Opts) string {
 			AgentModel: roleModelOverride(opts),
 			Variant:    opts.Variant,
 		})
+		if axes.Model == "" && effectiveIsolationMode(opts) == "host" {
+			logHostNoModelWarning(opts)
+		}
 		for i, a := range container.PIModelFlags(axes.Provider, "", axes.Model, axes.Thinking) {
 			if i%2 == 0 {
 				cmd += " " + a

@@ -68,6 +68,12 @@ The `go-tests-bwrap-live` job in `pr-gate.yml` is the automatic run of these tes
 
 A SKIP in these tests is not a PASS. In a worker, read the `go-tests-bwrap-live` result on the PR. For a local run, use `-v` from a host shell outside every sandbox. Record the result in the PR body. Add a new live bwrap test name to the `-run` selector of the job.
 
+## Container integration tests: the `go-tests-container-live` job
+
+The `prism container` integration tests need a real rootless podman: `TestIntegration_*` in `internal/prismcontainer` and `TestServicePortBwrap_*` in `internal/container`. They skip unless `PRISM_CONTAINER_INTEGRATION=1`.
+
+The `go-tests-container-live` job in `pr-gate.yml` is the automatic run of these tests (#3115). It installs podman and `uidmap`, sets subuid/subgid ranges, starts a user systemd instance, and fails if a selected test reports SKIP or if zero tests run. It is part of the `pr-gate` fan-in. A prism worker cannot run podman, so read the job result on the PR and record it in the PR body. Add a new test name to the `-run` selector of the job.
+
 ## Test-suite isolation (issue #1608)
 
 The test suite under `modules/programs/prism/prism/internal/sidecar/` is fully isolated from host bus / DB / tmux state:
