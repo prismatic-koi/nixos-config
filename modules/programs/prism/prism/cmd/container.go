@@ -89,8 +89,8 @@ exit code of the container command.
 
 The session worktree is mounted at /workspace (read-only by default), and
 /workspace is the working directory. Prism refuses --mount rw for a session
-with a read-only worktree (a review agent or an investigator). A short image name such as "alpine"
-means docker.io/library/alpine.
+with a read-only worktree (a review agent or an investigator). A short image
+name such as "alpine" means docker.io/library/alpine.
 
 Limits: one running container per session, and a host-wide limit (default
 4, set by the Nix option ` + prismcontainer.HostLimitNixOption + `). A request

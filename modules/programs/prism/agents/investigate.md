@@ -121,9 +121,10 @@ The `edit` and `write` tools are registered in this session — unlike the revie
 roles, the investigate role is not in the tool-exclusion map
 (`internal/config/agent_tool_roles.go`). Investigate sessions are spawned with
 `WorktreeReadOnly`. Under `bwrap` and `sandbox-exec`, the isolator makes the
-worktree read-only, and `prism container run` and `prism container start`
-refuse `--mount rw`. Under `host` isolation, nothing stops a write at the OS
-level. Not calling `edit` or `write` is a remit rule you keep yourself.
+worktree read-only. Under `host` isolation, nothing stops a write at the OS
+level. In every mode, `prism container run` and `prism container start`
+refuse `--mount rw`. Not calling `edit` or `write` is a remit rule you keep
+yourself.
 
 ## Working style
 
