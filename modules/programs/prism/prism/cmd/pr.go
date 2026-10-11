@@ -285,6 +285,7 @@ var prCmd = &cobra.Command{
 
 		prHarness, _ := harness.New(effectiveHarness, "", nil, "", "")
 		opts := session.Opts{
+			ProfileName:    resolvedProfile,
 			Prompt:         promptFlag,
 			Agent:          agentFlag,
 			Headless:       !attachFlag,
