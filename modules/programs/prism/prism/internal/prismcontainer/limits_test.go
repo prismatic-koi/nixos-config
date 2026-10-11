@@ -41,3 +41,9 @@ func TestTailBuffer(t *testing.T) {
 		t.Errorf("after a large write: %q, %d; want 8 z and 22", got, dropped)
 	}
 }
+
+func TestBuildCPUQuotaDerivedFromCPULimit(t *testing.T) {
+	if buildCPUQuota != "200000" {
+		t.Fatalf("buildCPUQuota = %q for CPULimit %q", buildCPUQuota, CPULimit)
+	}
+}
