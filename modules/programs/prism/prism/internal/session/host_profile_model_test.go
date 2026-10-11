@@ -82,3 +82,23 @@ func TestAgentOnlyLayout_HostModeProfileSlot(t *testing.T) {
 		t.Errorf("agent-only host cmd lacks profile model: %q", cmd)
 	}
 }
+
+// A host-mode launch with no resolvable model writes a warning that names the
+// role to the agent-run log.
+func TestBuildDirectAgentCmd_HostModeNoModelWarns(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("XDG_STATE_HOME", dir)
+	buildDirectAgentCmd(Opts{Agent: "worker", HarnessName: "pi", SessionName: "prism-test@warn", IsolationMode: "host"})
+	p, err := AgentRunLogPath("prism-test@warn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `role "worker"`) || !strings.Contains(string(b), "default model") {
+		t.Errorf("warning missing: %q", b)
+	}
+}

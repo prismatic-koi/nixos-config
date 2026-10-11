@@ -290,6 +290,13 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 		// PIExtensionDir for host-mode pi launches.
 		PIExtensionDir: cfg.PIExtensionDir,
 	}
+	// Host mode has no agent-run process to re-read the profile, so carry the
+	// spawn-time profile into the launch command.
+	if s.InstanceID == nil {
+		// No instance row: fall through to the active profile.
+	} else if si, siErr := d.SpawnInputsByInstanceID(*s.InstanceID); siErr == nil && si != nil && si.ProfileName != nil {
+		opts.ProfileName = *si.ProfileName
+	}
 	// Propagate the persisted harness session ID so the sandbox launcher can
 	// ask pi to resume the prior conversation. Empty pointer
 	// or empty string both mean "start fresh" — PIInvocation treats an empty
