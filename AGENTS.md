@@ -153,9 +153,9 @@ Why: The prose tells agents what they can do. Stale prose — especially false s
 
 Workers missed `prism/docs/invariants/` entries in PR #2596 and again in PR #2605, costing a review cycle each time. The scope must cover the whole prism tree, not an enumerated subset, and must name `prism/docs/invariants/` explicitly because that directory holds agent-facing invariants that do not live elsewhere.
 
-### Podman support for workers
+### Containers for workers
 
-A worker spawned with `prism spawn --containers` gets a filtered podman API socket inside its sandbox. The operational guide and security spec live in the `podman-proxy` skill and `modules/programs/prism/prism/docs/podman-proxy.md`.
+A prism session runs a container with `prism container` (`run`, `build`, and the service-container commands `start`, `exec`, `logs`, `stop`, `list`). Prism builds the `podman` command on the host from a small fixed set of inputs. The session gets no container API socket, and `podman` and `docker` do not run inside the `bwrap` and `sandbox-exec` sandboxes. The command needs no spawn flag. Load the `prism-container` skill before you run a container.
 
 ### File naming and organisation
 

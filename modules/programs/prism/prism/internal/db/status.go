@@ -1038,10 +1038,8 @@ func (d *DB) SetIsolationMode(sessionName, mode string) error {
 }
 
 // SetContainersEnabled writes agent_status.containers_enabled for sessionName.
-// enabled=true is the runtime gate the sidecar reads to decide whether to
-// start the per-session filtering podman API socket proxy; the spawn-time CLI
-// flag --containers flips this on. enabled=false leaves the row at the default
-// (proxy not started).
+// No spawn path calls it. Tests call it to build a session row of the removed
+// podman API proxy, which the legacy cleanup sweep acts on.
 //
 // No-op when sessionName has no agent_status row (the UPDATE affects zero rows
 // and returns nil). Mirrors SetIsolationMode / SetGroupID — write the boolean

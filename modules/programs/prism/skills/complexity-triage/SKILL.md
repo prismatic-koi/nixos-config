@@ -118,15 +118,16 @@ not revert this example's tier back to `light` on the reasoning that the
 signals "obviously" describe an easy task — that reasoning is the failure
 mode the new signal exists to catch.
 
-### Example 4 — podman-proxy field admission (score: +4, tier: `max`)
+### Example 4 — sandbox-exec profile grant (score: +2, tier: `max`)
 
-Task: audit and admit a new `HostConfig.Foo` field to the podman-proxy policy.
+Task: add a read-only grant for one more host path to the sandbox-exec profile (`generateProfile` in `internal/container/sandbox_exec.go`).
 
-- Touches ≤ 2 files → **-1**
-- Novel design decision required (must classify field against threat model) → **+2**
-- Security-sensitive surface → **+2**
+- A working reference / analogue file exists in-tree (the other read-only grants in the same function, and their paired Darwin integration tests) → **-1**
+- Additive (one more grant) → **-1**
+- Novel design decision required (must decide if the path can expose a secret or let the agent reach a host service) → **+2**
+- Security-sensitive surface (sandbox policy) → **+2**
 
-Total: **+3** numerically → `heavy`. But the `security-sensitive` override clamps to `max`. The whole point of the six-layer default-deny model is that quiet field admissions ship CRITICALs.
+Total: **+2** numerically → `heavy`. But the `security-sensitive` override clamps to `max`. A grant looks like one harmless line, but it can open a path out of the sandbox, and a passing test does not show the mistake.
 
 ---
 

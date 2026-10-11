@@ -38,7 +38,6 @@ import (
 // deliberate scope decision. See docs/doclint.md.
 var steInScopeBasenames = map[string]bool{
 	"doclint.md":                true,
-	"podman-proxy.md":           true,
 	"sandbox-exec-testing.md":   true,
 	"stdout-capture-testing.md": true,
 	// pi-rpc-interface.md and pi-wire-protocol.md carry a

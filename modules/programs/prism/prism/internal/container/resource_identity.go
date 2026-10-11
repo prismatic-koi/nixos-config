@@ -1,7 +1,7 @@
 package container
 
-// Resource identity for the containers and volumes an agent creates
-// through the podman proxy.
+// Resource identity for the containers that `prism container` creates, and
+// for the containers and volumes that the removed podman API proxy created.
 //
 // # Why a name prefix is not an identity
 //
@@ -130,11 +130,11 @@ func InstanceTokenForID(instanceID string) string {
 	return strings.ToLower(strings.ReplaceAll(instanceID, "-", ""))
 }
 
-// ResourceNamePrefixForOwner returns the per-session name prefix the
-// podman proxy injects into the resources an agent creates through it —
-// containers (Config.ContainerNamePrefix) and volumes
-// (Config.VolumeNamePrefix) — for the session incarnation identified by
-// instanceID.
+// ResourceNamePrefixForOwner returns the per-session name prefix of the
+// resources that prism creates for the session incarnation identified by
+// instanceID. The legacy cleanup sweep parses the same prefix out of the
+// names of the containers and volumes that the removed podman API proxy
+// created.
 //
 // The shape is `prism-<instance token>-<sanitised session name>-`.
 //

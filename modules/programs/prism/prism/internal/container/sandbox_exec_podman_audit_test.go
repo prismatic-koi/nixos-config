@@ -1,7 +1,7 @@
 package container
 
-// sandbox_exec_podman_audit_test.go — the podman-proxy audit log must sit
-// outside every write-granted path of the generated SBPL profile.
+// sandbox_exec_podman_audit_test.go — the legacy podman-proxy audit log
+// must sit outside every write-granted path of the generated SBPL profile.
 //
 // The audit log is the record used to reconstruct what a session asked the
 // container runtime to do. The agent is the subject of that record, so the
@@ -104,9 +104,9 @@ func writeGrantedSBPLPaths(t *testing.T, profile string) []sbplPathRule {
 // file reads or writes the tree, so the path does not have to exist.
 const auditLocationTestHome = "/Users/prism-audit-location-test"
 
-// newAuditLocationTestManager builds a containers-enabled sandbox-exec
-// Manager whose every session-derived path resolves under the synthetic
-// HOME, so the rendered profile matches the production shape.
+// newAuditLocationTestManager builds a sandbox-exec Manager whose every
+// session-derived path resolves under the synthetic HOME, so the rendered
+// profile matches the production shape.
 func newAuditLocationTestManager(t *testing.T) *Manager {
 	t.Helper()
 	home := auditLocationTestHome
@@ -115,17 +115,15 @@ func newAuditLocationTestManager(t *testing.T) *Manager {
 
 	runDir := filepath.Join(home, ".local", "state", "prism", "run", "repo-main")
 	return newSandboxExecManagerWithInstance(Config{
-		SessionName:         "repo@main",
-		Worktree:            filepath.Join(home, "code", "repo", "main"),
-		BareRoot:            filepath.Join(home, "code", "repo"),
-		HostAPISockPath:     filepath.Join(runDir, "hostapi.sock"),
-		ContainersEnabled:   true,
-		PodmanProxySockPath: filepath.Join(runDir, "podman.sock"),
+		SessionName:     "repo@main",
+		Worktree:        filepath.Join(home, "code", "repo", "main"),
+		BareRoot:        filepath.Join(home, "code", "repo"),
+		HostAPISockPath: filepath.Join(runDir, "hostapi.sock"),
 	})
 }
 
 // TestGenerateProfile_PodmanProxyAuditLog_OutsideWriteGrantedSubpaths is the
-// security assertion: for a --containers session, no write-granting allow
+// security assertion: no write-granting allow
 // clause of the profile covers the audit-log path or its directory.
 //
 // Move the audit log back under <sessionDir> and this test fails, because

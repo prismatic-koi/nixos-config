@@ -717,9 +717,3 @@ markers. Like the audit directory, no sandbox can write them.
   - macOS: the machine mount check before the build, and
     `--ulimit nproc=1024:1024` after `build`.
 - The source is in `modules/programs/prism/prism/internal/prismcontainer/`.
-
-## The podman proxy
-
-`prism spawn --containers` and the `podman-proxy` skill describe an older
-mechanism: a filtered podman API socket. Do not spawn new sessions with
-`--containers`. Use `prism container`.

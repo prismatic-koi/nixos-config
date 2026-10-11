@@ -186,6 +186,18 @@ func TestHostModeFlagDoesNotExist(t *testing.T) {
 	}
 }
 
+// TestContainersFlagDoesNotExist: `prism spawn --containers` fails with an
+// unknown-flag error.
+func TestContainersFlagDoesNotExist(t *testing.T) {
+	if spawnCmd.Flags().Lookup("containers") != nil {
+		t.Fatal("--containers flag found on spawnCmd")
+	}
+	err := spawnCmd.ParseFlags([]string{"--containers"})
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --containers") {
+		t.Fatalf("ParseFlags(--containers) error = %v, want unknown flag", err)
+	}
+}
+
 // TestSidecarCmd_IsolationModeFlag verifies that the --isolation-mode flag
 // is registered on sidecarCmd.
 func TestSidecarCmd_IsolationModeFlag(t *testing.T) {

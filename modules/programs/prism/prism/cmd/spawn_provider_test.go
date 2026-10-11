@@ -199,7 +199,6 @@ func buildProviderProxyCmd(t *testing.T) *cobra.Command {
 	cmd.Flags().String("harness", "pi", "")
 	cmd.Flags().Bool("ignore-concurrency-cap", false, "")
 	cmd.Flags().String("isolation", "", "")
-	cmd.Flags().Bool("containers", false, "")
 	cmd.Flags().StringArray("model-override", nil, "")
 	cmd.Flags().Bool("reuse", false, "")
 	cmd.Flags().Bool("wait", false, "")

@@ -59,8 +59,9 @@ let
   #   * These are single-user personal machines, so the exposure is to
   #     other processes of the same user, not to another person.
   #     Named residual risk: that set includes sandboxed prism agents,
-  #     which get unrestricted loopback by design (see
-  #     ../../programs/prism/prism/docs/podman-proxy.md). For that
+  #     which get unrestricted loopback by design (the bwrap sandbox
+  #     shares the host network namespace; see
+  #     ../../programs/prism/prism/internal/container/bwrap.go). For that
   #     principal the REST API is a genuine widening — its sandbox
   #     restricts the filesystem it can read, and `POST /rest/config`
   #     does not. We accept it knowingly: the agent sandbox is a guard

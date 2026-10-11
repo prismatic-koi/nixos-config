@@ -383,14 +383,6 @@ type Config struct {
 	// the nix sandbox). See dashboard.go for the footgun analysis.
 	DashboardSink DashboardSink
 
-	// BareRoot is the bare repository root for sessions in the bare+worktree
-	// layout. When non-empty it is added to the podman proxy's allowed bind
-	// sources so the agent can mount the bare repo into a container alongside
-	// the worktree. Empty for sessions that are not in a bare+worktree layout.
-	// Wired by cmd/sidecar.go from git.BareRoot(worktree). Read by
-	// runPodmanProxyIfEnabled.
-	BareRoot string
-
 	// ContainerRunner runs podman for POST /container/run and POST
 	// /container/build. Nil selects prismcontainer.ExecRunner. Tests inject
 	// a fake.
@@ -404,27 +396,6 @@ type Config struct {
 	// each request read the limit from config.json, so a changed Nix option
 	// takes effect without a sidecar restart.
 	ContainerHostLimit int
-
-	// PodmanProxyListenerPath is the Unix socket path the per-session
-	// filtering podman API socket proxy listens on when containers are
-	// enabled for the session. When empty the proxy is
-	// never started, regardless of the agent_status.containers_enabled
-	// gate. Typically set to session.SidecarPodmanProxyPath(sessionName).
-	PodmanProxyListenerPath string
-
-	// PodmanUpstreamPath, when non-empty, overrides the platform-specific
-	// upstream socket discovery in runPodmanProxyIfEnabled. The primary
-	// purpose is test isolation: a sidecar test can point the proxy at a
-	// stub upstream (or at a non-existent path to exercise the 503
-	// envelope) without depending on a real podman socket on the host
-	// (AGENTS.md "Test-suite isolation").
-	PodmanUpstreamPath string
-
-	// PodmanMachineName is the Darwin podman-machine name probed by the
-	// upstream discovery shellout when PodmanUpstreamPath is empty. When
-	// empty, defaultPodmanMachineName ("podman-machine-default") is used.
-	// No-op on non-Darwin platforms.
-	PodmanMachineName string
 }
 
 // seenUnknownCap is the maximum number of unique unknown event types tracked
@@ -778,19 +749,6 @@ type Sidecar struct {
 	// the coordinator notify path — do not extend this to other
 	// notify* methods without a separate justification.
 	notifyCoordinatorDeliverFn func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error
-
-	// podmanProxyAuditFile is the open audit-log file handle held by the
-	// per-session podman proxy. Set by
-	// runPodmanProxyIfEnabled when the proxy is started; closed by Shutdown
-	// after the proxy goroutine has exited so the last audit line is
-	// flushed. nil when the proxy is not started (containers_enabled=0) or
-	// when audit-file open failed at startup. Protected by s.mu.
-	podmanProxyAuditFile *os.File
-
-	// podmanProxyAuditPath is the absolute path of the audit log opened by
-	// runPodmanProxyIfEnabled. Held only for log/diagnostic surfaces.
-	// Protected by s.mu.
-	podmanProxyAuditPath string
 }
 
 // defaultReviewRecoveryInterval is how often the worker-sidecar recovery
@@ -1029,14 +987,6 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			s.logger().Printf("sidecar: warning: InsertSession for instance %s failed (FK-guard): %v", s.cfg.InstanceID, err)
 		}
 	}
-
-	// Start the per-session filtering podman API socket proxy when the
-	// agent_status.containers_enabled gate is set.
-	// Placed after the FK guard so the audit log path's instance_id-derived
-	// directory is safe to create. The call is a no-op when the gate is off,
-	// when PodmanProxyListenerPath is empty, or when DB is nil — see
-	// runPodmanProxyIfEnabled for the gate logic.
-	s.runPodmanProxyIfEnabled(ctx)
 
 	// Stage 2: Start the merge-queue watcher for coordinator sessions.
 	// This is transport-agnostic and must run for ALL transport shapes so that
@@ -1470,16 +1420,6 @@ func (s *Sidecar) Shutdown() {
 			_ = os.Remove(s.cfg.HarnessPipeSockPath)
 		}
 	}
-
-	// Defensive close of the podman-proxy audit log. In the happy path the
-	// goNotify wrapper around proxy.Serve already closed it after Serve
-	// returned on ctx cancellation; this call is a no-op then (the handle
-	// is nilled under s.mu so a double close cannot occur). The defensive
-	// path covers Shutdown invocations that race with Run failure-modes
-	// where the goroutine was never spawned (for example, NewProxy returned an
-	// error after the file was opened) — closePodmanProxyAuditFile reads
-	// the handle under s.mu so the second writer is safe.
-	s.closePodmanProxyAuditFile()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

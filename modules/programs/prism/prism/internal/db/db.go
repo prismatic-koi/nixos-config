@@ -3162,10 +3162,8 @@ type SpawnInputs struct {
 
 	IgnoreConcurrencyCap bool
 
-	// ContainersFlag mirrors --containers. Audit-only
-	// symmetry with HostModeFlag / IsolationFlag; the live runtime gate is
-	// agent_status.containers_enabled (Status.ContainersEnabled). Defaults
-	// to false when the caller does not set it.
+	// ContainersFlag mirrors spawn_inputs.containers_flag: the spawn flag of
+	// the removed podman API proxy. Only rows of old sessions hold true.
 	ContainersFlag bool
 
 	// C.2 hook: per-role model-variant overrides (JSON).

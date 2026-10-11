@@ -186,48 +186,6 @@ type Config struct {
 	// mount or allow rule is needed.
 	AgentRunLogPath string
 
-	// ContainersEnabled is the per-session runtime gate for the filtering
-	// podman API socket proxy. When true, the
-	// per-isolator BuildArgs / SBPL generator emits:
-	//
-	// bwrap:
-	//   --setenv CONTAINER_HOST unix://<PodmanProxySockPath>
-	//   --setenv DOCKER_HOST    unix://<PodmanProxySockPath>
-	//   --bind   <sessionDir>/container-scratch <sessionDir>/container-scratch
-	//
-	// sandbox-exec:
-	//   (allow file-read* file-write* (literal "<PodmanProxySockPath>"))
-	//   CONTAINER_HOST=unix://<PodmanProxySockPath>   (env injection)
-	//   DOCKER_HOST=unix://<PodmanProxySockPath>      (env injection)
-	//   <sessionDir>/container-scratch rides on the existing
-	//   (subpath <sessionDir>) RW grant in the SBPL profile.
-	//
-	// Both isolators' Prepare hook (lifecycle_dispatch.go) call
-	// PrepareSessionWorkDir + mkdirs the container-scratch subdirectory so
-	// the source path exists on disk before the sandbox is execed. Defaults
-	// to false; sourced from agent_status.containers_enabled (the live DB
-	// gate read by cmd/agent_run.go on the bwrap path and
-	// cmd/agent_run_sandbox_exec_darwin.go on the sandbox-exec path).
-	//
-	// Critically, the upstream podman socket path is NEVER passed into the
-	// sandbox — only the filtered PodmanProxySockPath the sidecar's proxy
-	// goroutine listens on. The proxy is the agent's only container API
-	// surface. See the podman-proxy security spec for the threat model.
-	ContainersEnabled bool
-
-	// PodmanProxySockPath is the absolute host path of the per-session
-	// filtering podman API socket created by the sidecar's podman-proxy
-	// goroutine. The socket sits in the same per-session
-	// run directory as HostAPISockPath, so on bwrap the directory bind that
-	// already exposes the host-API socket also exposes this socket — no
-	// additional bind-mount is required. On sandbox-exec the SBPL
-	// generator emits a literal RW allow on this exact path; the (literal
-	// …), not (subpath …), keeps any future content of the run dir isolated
-	// from the sandboxed process. Typically populated via
-	// session.SidecarPodmanProxyPath. Consumed only when ContainersEnabled
-	// is true; ignored otherwise.
-	PodmanProxySockPath string
-
 	// InstanceID is the UUID instance identifier for the prism session that owns
 	// this container. When non-empty it is written as a
 	// "prism.instance-id=<uuid>" label on the container so that EnsureRemoved
@@ -452,10 +410,12 @@ func containerName(sessionName string) string {
 }
 
 // ResourceNamePrefixForSession returns the LEGACY per-session name
-// prefix for podman-proxy resources: `prism-<sanitised session>-`.
+// prefix for resources of the removed podman API proxy:
+// `prism-<sanitised session>-`.
 //
-// It is no longer what the proxy injects. `ResourceNamePrefixForOwner`
-// is (see resource_identity.go), because this prefix cannot express
+// Prism does not give new resources this prefix.
+// `ResourceNamePrefixForOwner` is the current prefix (see
+// resource_identity.go), because this prefix cannot express
 // identity — two distinct live sessions collide under it by folding and
 // by nesting (issue #2951).
 //

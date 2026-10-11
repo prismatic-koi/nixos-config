@@ -416,8 +416,8 @@ var restoreSidecarStopTimeout = killSidecarTimeout
 // recreates must run with. It returns "" when it cannot record one.
 //
 // A restore continues the incarnation that agent_status names. The instance
-// ID keys the spawn_inputs profile pin, spawn_outcome, the container-scratch
-// directory, and the podman resource names, so all of them must survive a
+// ID keys the spawn_inputs profile pin, spawn_outcome, and the podman
+// resource names, so all of them must survive a
 // restart. The old sidecar stamps ended_at on its instance when it stops, so
 // restore clears ended_at and end_state again. Otherwise the restored sidecar
 // writes every event with the instance ID of an ended session (#3027).

@@ -337,22 +337,12 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	}
 
 	// Resolve InstanceID from DB status. Required so the per-session work dir
-	// is namespaced by the same instance_id that prism cleanup uses: bwrap
-	// with containers_enabled needs the work dir for the container-scratch
-	// bind mount. Sandbox-exec populates this on the same path
+	// is namespaced by the same instance_id that prism cleanup uses.
+	// Sandbox-exec populates this on the same path
 	// (cmd/agent_run_sandbox_exec_darwin.go).
 	instanceID := ""
 	if status.InstanceID != nil {
 		instanceID = *status.InstanceID
-	}
-
-	// Resolve the filtered podman API socket path so bwrap can emit
-	// CONTAINER_HOST / DOCKER_HOST when containers_enabled is set. Resolution
-	// failure is non-fatal at this layer — PrepareBwrap re-validates the
-	// containers_enabled invariants and produces the surfaced error.
-	podmanProxySockPath := ""
-	if p, podmanErr := session.SidecarPodmanProxyPath(sessionName); podmanErr == nil {
-		podmanProxySockPath = p
 	}
 
 	ctrCfg := container.Config{
@@ -373,8 +363,6 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		HarnessPipeSockPath: harnessPipeSockPath,
 		AgentRunLogPath:     agentRunLogPath,
 		InstanceID:          instanceID,
-		ContainersEnabled:   status.ContainersEnabled,
-		PodmanProxySockPath: podmanProxySockPath,
 		RuntimeEnv:          runtimeEnv,
 		AgentEnvVars:        agentEnvVars,
 		Harness:             harnessName,

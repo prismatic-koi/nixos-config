@@ -8,8 +8,7 @@
   has no fallback to resolve against. The reference is correct in the
   repository and resolves in the go-tests job, which has a full checkout. It
   is unresolvable only inside the sandbox. This is the same cross-boundary
-  reason as the AGENTS.md annotations in docs/doclint.md and
-  docs/podman-proxy.md.
+  reason as the AGENTS.md annotation in docs/doclint.md.
 -->
 
 This document states the convention for opening a SQLite database in a test.

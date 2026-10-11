@@ -1,10 +1,11 @@
 package container
 
-// podman_proxy_audit.go — location and lifecycle of the per-session
-// podman-proxy audit log.
+// podman_proxy_audit.go — location and lifecycle of the per-session audit
+// log of the removed podman API proxy. Prism no longer writes this log.
+// Cleanup still archives and removes the log of a session that was spawned
+// with the proxy.
 //
-// The proxy writes one JSON line per request it sees (docs/podman-proxy.md
-// §7). That log is the record used to reconstruct what a session asked the
+// That log is the record used to reconstruct what a session asked the
 // container runtime to do, so the subject of the record — the agent — must
 // have no write path to it. A record its own subject can edit is not
 // evidence.
@@ -32,8 +33,7 @@ package container
 // Cleanup is not free at this location. RemoveSessionWorkDir removes the
 // work dir only, so the audit directory needs its own removal at session
 // teardown: RemovePodmanProxyAuditDir, called from cmd/cleanup.go beside
-// RemoveSessionWorkDir. Without that call, one audit log per
-// containers-enabled session accumulates on the host forever.
+// RemoveSessionWorkDir.
 
 import (
 	"fmt"
@@ -59,10 +59,6 @@ const podmanProxyAuditLogFileName = "podman-proxy.log"
 // uses. A test that needs a writable audit dir sets XDG_STATE_HOME to a
 // t.TempDir(), which is also what keeps the path writable in the
 // homeless-shelter nix sandbox.
-//
-// The sidecar creates the directory when it opens the log
-// (internal/sidecar/podman_proxy.go::openPodmanProxyAuditFile). Nothing
-// else prepares it.
 func PodmanProxyAuditDirPath(instanceID string) (string, error) {
 	if instanceID == "" {
 		return "", fmt.Errorf("container: podman-proxy audit dir: instanceID is empty")

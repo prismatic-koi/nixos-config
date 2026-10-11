@@ -376,7 +376,7 @@ actually run in that case. The job installs Nix and runs the tests
 through `nix shell` for this reason. It does not rely on
 whatever `bash` the bare runner image happens to ship. A future selector
 widening that pulls in a suite calling `requireNixGit`, `requireNixAws`,
-`requireNixKubectl`, or `requireNixSocat` must add the corresponding
+or `requireNixKubectl` must add the corresponding
 `nixpkgs#` package to this `nix shell` invocation. The job adds
 `nixpkgs#coreutils` for `requireNixCoreutilsDir` in the same way.
 
