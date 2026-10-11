@@ -170,6 +170,9 @@ func Build(ctx context.Context, d Deps, c Caller, req BuildRequest) BuildResult 
 		if runCtx.Err() != nil {
 			return stopped("")
 		}
+		if he := (*hostError)(nil); errors.As(err, &he) {
+			return finish(DecisionError, ExitRefused, false, "", err.Error())
+		}
 		return refuse(err.Error())
 	}
 	defer stage.remove()
