@@ -50,8 +50,10 @@ func (ExecRunner) Run(ctx context.Context, stdout, stderr io.Writer, args ...str
 type psEntry struct {
 	ID     string            `json:"Id"`
 	Names  []string          `json:"Names"`
+	Image  string            `json:"Image"`
 	State  string            `json:"State"`
 	Labels map[string]string `json:"Labels"`
+	Ports  []psPort          `json:"Ports"`
 }
 
 // active reports whether the container counts against a limit. A container
@@ -162,7 +164,33 @@ func StopBuilds(ctx context.Context, e BuildExecutor, instanceIDs []string) (int
 // imageEntry is the part of `podman images --format json` that prism reads.
 type imageEntry struct {
 	ID     string            `json:"Id"`
+	Names  []string          `json:"Names"`
 	Labels map[string]string `json:"Labels"`
+}
+
+// listImages returns every image on the host that carries the prism
+// instance label, with any value. With all, the list includes the
+// intermediate images of a build.
+func listImages(ctx context.Context, r Runner, all bool) ([]imageEntry, error) {
+	args := []string{"images", "--filter", "label=" + LabelInstanceID, "--format", "json"}
+	if all {
+		args = append([]string{"images", "--all"}, args[1:]...)
+	}
+	var stdout, stderr bytes.Buffer
+	code, err := r.Run(ctx, &stdout, &stderr, args...)
+	if err != nil {
+		return nil, &podmanError{detail: err.Error()}
+	}
+	if code != 0 {
+		return nil, &podmanError{detail: fmt.Sprintf("podman images exited %d: %s", code, strings.TrimSpace(stderr.String()))}
+	}
+	var images []imageEntry
+	if out := bytes.TrimSpace(stdout.Bytes()); len(out) > 0 {
+		if err := json.Unmarshal(out, &images); err != nil {
+			return nil, &podmanError{detail: fmt.Sprintf("parse podman images output: %v", err)}
+		}
+	}
+	return images, nil
 }
 
 // SweepImages force-removes every image, intermediate images included,
@@ -173,20 +201,9 @@ func SweepImages(ctx context.Context, r Runner, instanceIDs []string) (int, erro
 	if len(owned) == 0 {
 		return 0, nil
 	}
-	var stdout, stderr bytes.Buffer
-	code, err := r.Run(ctx, &stdout, &stderr, "images", "--all",
-		"--filter", "label="+LabelInstanceID, "--format", "json")
+	images, err := listImages(ctx, r, true)
 	if err != nil {
 		return 0, err
-	}
-	if code != 0 {
-		return 0, fmt.Errorf("podman images exited %d: %s", code, strings.TrimSpace(stderr.String()))
-	}
-	var images []imageEntry
-	if out := bytes.TrimSpace(stdout.Bytes()); len(out) > 0 {
-		if err := json.Unmarshal(out, &images); err != nil {
-			return 0, fmt.Errorf("parse podman images output: %v", err)
-		}
 	}
 	var ids []string
 	for _, img := range images {
@@ -197,8 +214,8 @@ func SweepImages(ctx context.Context, r Runner, instanceIDs []string) (int, erro
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	stderr.Reset()
-	code, err = r.Run(ctx, io.Discard, &stderr, append([]string{"rmi", "--force", "--ignore"}, ids...)...)
+	var stderr bytes.Buffer
+	code, err := r.Run(ctx, io.Discard, &stderr, append([]string{"rmi", "--force", "--ignore"}, ids...)...)
 	if err != nil {
 		return 0, err
 	}

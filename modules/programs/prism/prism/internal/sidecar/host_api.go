@@ -233,6 +233,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	POST /abort         — abort the current turn on one session (role-scoped)
 //	POST /container/run — run one command in a new container for this session (all roles)
 //	POST /container/build — build an image from the worktree of this session (all roles)
+//	POST /container/start, /container/exec, /container/logs, /container/stop, /container/list — service containers of this session (all roles)
 //
 // The permission label on each line above is the contract, not a comment:
 // "coordinator only" means the handler calls requireCoordinator, "role-scoped"
@@ -2845,6 +2846,37 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, s.buildContainer(r.Context(), req))
 	})
+
+	// POST /container/start  Request: prismcontainer.StartRequest
+	//                        Response: prismcontainer.StartResult
+	// POST /container/exec   Request: prismcontainer.ExecRequest
+	//                        Response: prismcontainer.RunResult
+	// POST /container/logs   Request: prismcontainer.HandleRequest
+	//                        Response: prismcontainer.RunResult
+	// POST /container/stop   Request: prismcontainer.HandleRequest
+	//                        Response: prismcontainer.RunResult
+	// POST /container/list   Request: {}
+	//                        Response: prismcontainer.ListResult
+	// HTTP 200 for every decision, refusals included.
+	//
+	// The same rule as /container/run applies: the caller identity comes
+	// from this sidecar's own config. exec, logs, and stop act only on a
+	// service container that carries the instance label of this sidecar.
+	mux.HandleFunc("/container/start", containerRoute(writeJSON, func(ctx context.Context, req prismcontainer.StartRequest) any {
+		return s.containerService("start", prismcontainer.Start(ctx, s.containerDeps(), s.containerCaller(), req))
+	}))
+	mux.HandleFunc("/container/exec", containerRoute(writeJSON, func(ctx context.Context, req prismcontainer.ExecRequest) any {
+		return s.containerService("exec", prismcontainer.Exec(ctx, s.containerDeps(), s.containerCaller(), req))
+	}))
+	mux.HandleFunc("/container/logs", containerRoute(writeJSON, func(ctx context.Context, req prismcontainer.HandleRequest) any {
+		return s.containerService("logs", prismcontainer.Logs(ctx, s.containerDeps(), s.containerCaller(), req))
+	}))
+	mux.HandleFunc("/container/stop", containerRoute(writeJSON, func(ctx context.Context, req prismcontainer.HandleRequest) any {
+		return s.containerService("stop", prismcontainer.Stop(ctx, s.containerDeps(), s.containerCaller(), req))
+	}))
+	mux.HandleFunc("/container/list", containerRoute(writeJSON, func(ctx context.Context, _ struct{}) any {
+		return s.containerService("list", prismcontainer.List(ctx, s.containerDeps(), s.containerCaller()))
+	}))
 
 	// POST /usage/snapshot
 	// Request:  usageSnapshotRequest JSON — the parsed

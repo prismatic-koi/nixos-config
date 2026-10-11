@@ -283,3 +283,90 @@ func TestContainerBuildHostMode_UnknownSessionRefused(t *testing.T) {
 		t.Errorf("podman called: %q", f.Calls())
 	}
 }
+
+func TestAgentContext_ListsContainerServiceCommands(t *testing.T) {
+	doc := buildAgentContextDocument(false)
+	subs := doc.Commands["container"].Subcommands
+	for name, flags := range map[string][]string{
+		"start": {"--mount", "--env", "--port"},
+		"exec":  {"--timeout"},
+		"logs":  nil,
+		"stop":  nil,
+		"list":  nil,
+	} {
+		sub, ok := subs[name]
+		if !ok {
+			t.Errorf("agent-context has no container %s", name)
+			continue
+		}
+		for _, flag := range flags {
+			if _, ok := sub.Flags[flag]; !ok {
+				t.Errorf("container %s flag %s missing from agent-context", name, flag)
+			}
+		}
+	}
+	if mount := subs["start"].Flags["--mount"]; mount.Type != "enum" || !slices.Equal(mount.Values, prismcontainer.MountModes) {
+		t.Errorf("start --mount meta = %+v", mount)
+	}
+}
+
+func TestParseContainerArgs_ExecNeedsDashDash(t *testing.T) {
+	if _, _, err := parseContainerArgs("exec", "handle", []string{"1234abcd", "echo", "hi"}); err == nil ||
+		!strings.Contains(err.Error(), "put -- between the handle and the command: prism container exec 1234abcd -- echo") {
+		t.Errorf("err = %v", err)
+	}
+	h, cmd, err := parseContainerArgs("exec", "handle", []string{"1234abcd", "--", "--user", "root"})
+	if err != nil || h != "1234abcd" || !slices.Equal(cmd, []string{"--user", "root"}) {
+		t.Errorf("got %q %q %v", h, cmd, err)
+	}
+}
+
+// TestContainerStartHostMode_SameArgvAsDirectStart pins the parity of the
+// host-mode route of start with a direct prismcontainer.Start call. The
+// sidecar route has the matching test in internal/sidecar.
+func TestContainerStartHostMode_SameArgvAsDirectStart(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_CONFIG_FILE", filepath.Join(t.TempDir(), "absent.json"))
+	t.Setenv("PRISM_HOST_API", "")
+	session := "prism-test@container-host"
+	worktree := prismcontainertest.RealTempDir(t)
+	t.Setenv("PRISM_SESSION_NAME", session)
+	seedContainerRunSession(t, session, worktree)
+
+	viaHost := &prismcontainertest.Fake{ImagePresent: true}
+	installPrismContainerFake(t, viaHost)
+	req := prismcontainer.StartRequest{Image: "postgres:16", Env: []string{"POSTGRES_PASSWORD=x"}, Ports: []string{"5432"}}
+	res := containerRequest("/container/start", req, time.Minute, prismcontainer.Start,
+		func(msg string) prismcontainer.StartResult {
+			return prismcontainer.StartResult{ExitCode: 125, Message: msg}
+		})
+	if res.ExitCode != 0 || res.Handle == "" {
+		t.Fatalf("host-mode start: %+v", res)
+	}
+
+	direct := &prismcontainertest.Fake{ImagePresent: true}
+	prismcontainer.Start(context.Background(), prismcontainer.Deps{Runner: direct, HostLimit: 4}, prismcontainer.Caller{
+		SessionName: session, InstanceID: containerCmdTestInstanceID, Worktree: worktree,
+	}, req)
+	got, want := viaHost.RunCalls(), direct.RunCalls()
+	if len(got) != 1 || len(want) != 1 {
+		t.Fatalf("run calls: host %d, direct %d; want 1 each", len(got), len(want))
+	}
+	if g, w := prismcontainertest.MaskRunArgs(got[0]), prismcontainertest.MaskRunArgs(want[0]); !slices.Equal(g, w) {
+		t.Errorf("host-mode argv differs from direct Start argv:\n got %q\nwant %q", g, w)
+	}
+
+	// The handle works through the host-mode routes of exec, logs, stop,
+	// and list.
+	exec := containerRequest("/container/exec", prismcontainer.ExecRequest{Handle: res.Handle, Command: []string{"id"}}, time.Minute, prismcontainer.Exec, refusedRun)
+	logs := containerRequest("/container/logs", prismcontainer.HandleRequest{Handle: res.Handle}, time.Minute, prismcontainer.Logs, refusedRun)
+	if exec.ExitCode != 0 || logs.ExitCode != 0 {
+		t.Errorf("exec = %+v, logs = %+v", exec, logs)
+	}
+	if stop := containerRequest("/container/stop", prismcontainer.HandleRequest{Handle: res.Handle}, time.Minute, prismcontainer.Stop, refusedRun); stop.ExitCode != 0 {
+		t.Errorf("stop = %+v", stop)
+	}
+	if left := viaHost.Containers(); len(left) != 0 {
+		t.Errorf("containers left after stop = %+v", left)
+	}
+}

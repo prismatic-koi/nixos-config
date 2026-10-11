@@ -36,10 +36,14 @@ type AuditEntry struct {
 	File           string   `json:"file,omitempty"`
 	BuildArgKeys   []string `json:"build_arg_keys,omitempty"`
 	Mount          string   `json:"mount,omitempty"`
+	Ports          []string `json:"ports,omitempty"`
 	TimeoutSeconds int64    `json:"timeout_seconds,omitempty"`
 	Container      string   `json:"container,omitempty"`
-	Decision       string   `json:"decision"`
-	Reason         string   `json:"reason,omitempty"`
+	// Handle is the handle that start printed, or the handle that the
+	// agent gave to exec, logs, or stop.
+	Handle   string `json:"handle,omitempty"`
+	Decision string `json:"decision"`
+	Reason   string `json:"reason,omitempty"`
 	// ExitCode is null when no container command ran to completion.
 	ExitCode *int `json:"exit_code"`
 }

@@ -12,12 +12,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -26,6 +28,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
 	"github.com/prismatic-koi/prism/internal/prismcontainer/prismcontainertest"
 )
@@ -592,4 +595,305 @@ func TestIntegration_BuildRunStepNetwork(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Errorf("build = %+v (output %s), want a RUN step with network to work", res, res.Output)
 	}
+}
+
+// secondCaller returns another session incarnation in the same prism
+// state dir as c.
+func secondCaller(t *testing.T, c prismcontainer.Caller) prismcontainer.Caller {
+	t.Helper()
+	o := prismcontainer.Caller{
+		SessionName: c.SessionName + "-other",
+		InstanceID:  uuid.New().String(),
+		Worktree:    prismcontainertest.RealTempDir(t),
+	}
+	t.Cleanup(func() { assertNoLabelledContainer(t, o.InstanceID) })
+	return o
+}
+
+// startReal starts a service container and removes every container of the
+// caller when the test ends, before the check that none remains.
+func startReal(t *testing.T, c prismcontainer.Caller, req prismcontainer.StartRequest) prismcontainer.StartResult {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if _, err := prismcontainer.SweepInstances(ctx, prismcontainer.ExecRunner{}, []string{c.InstanceID}); err != nil {
+			t.Errorf("SweepInstances: %v", err)
+		}
+	})
+	return prismcontainer.Start(context.Background(), prismcontainer.Deps{}, c, req)
+}
+
+func execReal(c prismcontainer.Caller, handle string, command ...string) prismcontainer.RunResult {
+	return prismcontainer.Exec(context.Background(), prismcontainer.Deps{}, c, prismcontainer.ExecRequest{Handle: handle, Command: command})
+}
+
+// waitReady runs pg_isready in the service container until it exits 0.
+func waitReady(t *testing.T, c prismcontainer.Caller, handle string) {
+	t.Helper()
+	var last prismcontainer.RunResult
+	for deadline := time.Now().Add(2 * time.Minute); time.Now().Before(deadline); time.Sleep(time.Second) {
+		if last = execReal(c, handle, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"); last.ExitCode == 0 {
+			return
+		}
+	}
+	t.Fatalf("postgres did not accept connections: %+v (stdout %q, stderr %q)", last, last.Stdout, last.Stderr)
+}
+
+// TestIntegration_ServicePostgres is the database flow of the
+// prism-container skill: start postgres:16 with a published port, wait
+// until it accepts connections, connect from the host to 127.0.0.1, read
+// the logs, check the fixed options, then stop it.
+func TestIntegration_ServicePostgres(t *testing.T) {
+	c := integrationCaller(t)
+	// A real worktree is readable by every user. The postgres user of the
+	// image then can enter /workspace, its working directory.
+	if err := os.Chmod(c.Worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := startReal(t, c, prismcontainer.StartRequest{Image: "postgres:16", Env: []string{"POSTGRES_PASSWORD=x"}, Ports: []string{"5432"}})
+	if res.ExitCode != 0 || res.Handle == "" || len(res.Ports) != 1 || res.Ports[0].ContainerPort != 5432 || res.Ports[0].HostIP != "127.0.0.1" {
+		t.Fatalf("start = %+v (stderr %s)", res, res.Stderr)
+	}
+	waitReady(t, c, res.Handle)
+
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(res.Ports[0].HostPort))
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial the published port %s: %v", addr, err)
+	}
+	_ = conn.Close()
+
+	if r := execReal(c, res.Handle, "sh", "-c", "echo out; echo err >&2; exit 7"); r.ExitCode != 7 || string(r.Stdout) != "out\n" || string(r.Stderr) != "err\n" {
+		t.Errorf("exec = %+v, stdout %q, stderr %q", r, r.Stdout, r.Stderr)
+	}
+	logs := prismcontainer.Logs(context.Background(), prismcontainer.Deps{}, c, prismcontainer.HandleRequest{Handle: res.Handle})
+	if logs.ExitCode != 0 || !strings.Contains(string(logs.Stdout)+string(logs.Stderr), "database system is ready to accept connections") {
+		t.Errorf("logs = %+v, stdout %q, stderr %q", logs, logs.Stdout, logs.Stderr)
+	}
+
+	inspectService(t, c, res.Handle)
+
+	list := prismcontainer.List(context.Background(), prismcontainer.Deps{}, c)
+	if list.ExitCode != 0 || len(list.Containers) != 1 || list.Containers[0].Handle != res.Handle || list.Containers[0].Kind != "service" {
+		t.Errorf("list = %+v", list)
+	}
+
+	if r := prismcontainer.Stop(context.Background(), prismcontainer.Deps{}, c, prismcontainer.HandleRequest{Handle: res.Handle}); r.ExitCode != 0 {
+		t.Fatalf("stop = %+v", r)
+	}
+	if r := execReal(c, res.Handle, "true"); r.ExitCode != prismcontainer.ExitRefused || !strings.Contains(r.Message, "does not exist") {
+		t.Errorf("exec after stop = %+v, want the does-not-exist refusal", r)
+	}
+	assertNoLabelledContainer(t, c.InstanceID)
+}
+
+// inspectService checks the options that podman applied to the service
+// container, and that every port binding is on 127.0.0.1.
+func inspectService(t *testing.T, c prismcontainer.Caller, handle string) {
+	t.Helper()
+	out, err := exec.Command("podman", "ps", "--filter", "label="+prismcontainer.LabelService+"="+handle, "--format", "{{.ID}}").Output()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		t.Fatalf("podman ps for handle %s: %v %q", handle, err, out)
+	}
+	out, err = exec.Command("podman", "inspect", strings.TrimSpace(string(out))).Output()
+	if err != nil {
+		t.Fatalf("podman inspect: %v", err)
+	}
+	var inspect []struct {
+		Name       string
+		Config     struct{ Labels map[string]string }
+		HostConfig struct {
+			Memory       int64
+			MemorySwap   int64
+			NanoCpus     int64
+			PidsLimit    int64
+			Privileged   bool
+			CapAdd       []string
+			SecurityOpt  []string
+			AutoRemove   bool
+			PortBindings map[string][]struct{ HostIp, HostPort string }
+		}
+	}
+	if err := json.Unmarshal(out, &inspect); err != nil || len(inspect) != 1 {
+		t.Fatalf("parse inspect: %v", err)
+	}
+	h := inspect[0].HostConfig
+	if h.Memory != 4<<30 || h.MemorySwap != 4<<30 || h.NanoCpus != 2_000_000_000 || h.PidsLimit != 1024 || h.Privileged || len(h.CapAdd) != 0 || h.AutoRemove {
+		t.Errorf("HostConfig = %+v", h)
+	}
+	if !strings.Contains(strings.Join(h.SecurityOpt, ","), "no-new-privileges") {
+		t.Errorf("SecurityOpt = %v", h.SecurityOpt)
+	}
+	if len(h.PortBindings) == 0 {
+		t.Errorf("no port bindings")
+	}
+	for port, binds := range h.PortBindings {
+		for _, b := range binds {
+			if b.HostIp != "127.0.0.1" {
+				t.Errorf("port %s binds to %q, want 127.0.0.1", port, b.HostIp)
+			}
+		}
+	}
+	if l := inspect[0].Config.Labels; l[prismcontainer.LabelInstanceID] != c.InstanceID || l[prismcontainer.LabelService] != handle {
+		t.Errorf("labels = %v", l)
+	}
+	if !strings.HasPrefix(inspect[0].Name, "prism-") || !strings.HasSuffix(inspect[0].Name, "-"+handle) {
+		t.Errorf("name = %q, want the session prefix and the handle", inspect[0].Name)
+	}
+}
+
+// TestIntegration_ServiceLimitsAndExec checks that a running service
+// container holds the per-session place, and that exec is not refused.
+func TestIntegration_ServiceLimitsAndExec(t *testing.T) {
+	c := integrationCaller(t)
+	res := startReal(t, c, prismcontainer.StartRequest{Image: "alpine", Mount: prismcontainer.MountNone, Command: []string{"sleep", "600"}})
+	if res.ExitCode != 0 {
+		t.Fatalf("start = %+v (stderr %s)", res, res.Stderr)
+	}
+	second := startReal(t, c, prismcontainer.StartRequest{Image: "alpine", Command: []string{"sleep", "600"}})
+	if second.ExitCode != prismcontainer.ExitRefused || !strings.Contains(second.Message, "per-session limit") {
+		t.Errorf("second start = %+v, want the per-session refusal", second)
+	}
+	if r := execReal(c, res.Handle, "echo", "hello"); r.ExitCode != 0 || string(r.Stdout) != "hello\n" {
+		t.Errorf("exec = %+v (stdout %q)", r, r.Stdout)
+	}
+	// podman exec stops option parsing at the container, so a command
+	// that looks like an option is the command.
+	if r := execReal(c, res.Handle, "--user", "root", "id"); r.ExitCode == 0 || !strings.Contains(string(r.Stderr), "--user") {
+		t.Errorf("exec of --user = %+v (stderr %q), want podman to run --user as the command and fail", r, r.Stderr)
+	}
+}
+
+// TestIntegration_ServiceRefusesOtherContainers checks that another
+// session, and a run container of the same session, cannot be the target
+// of exec, logs, or stop, and that the target is not changed.
+func TestIntegration_ServiceRefusesOtherContainers(t *testing.T) {
+	owner := integrationCaller(t)
+	res := startReal(t, owner, prismcontainer.StartRequest{Image: "alpine", Mount: prismcontainer.MountNone, Command: []string{"sleep", "600"}})
+	if res.ExitCode != 0 {
+		t.Fatalf("start = %+v (stderr %s)", res, res.Stderr)
+	}
+	out, err := exec.Command("podman", "ps", "--filter", "label="+prismcontainer.LabelService+"="+res.Handle, "--format", "{{.ID}} {{.Names}}").Output()
+	fields := strings.Fields(string(out))
+	if err != nil || len(fields) != 2 {
+		t.Fatalf("podman ps: %v %q", err, out)
+	}
+	id, name := fields[0], fields[1]
+
+	other := secondCaller(t, owner)
+	for _, handle := range []string{res.Handle, id, name} {
+		for op, r := range map[string]prismcontainer.RunResult{
+			"exec": execReal(other, handle, "touch", "/changed"),
+			"logs": prismcontainer.Logs(context.Background(), prismcontainer.Deps{}, other, prismcontainer.HandleRequest{Handle: handle}),
+			"stop": prismcontainer.Stop(context.Background(), prismcontainer.Deps{}, other, prismcontainer.HandleRequest{Handle: handle}),
+		} {
+			if r.ExitCode != prismcontainer.ExitRefused || !strings.Contains(r.Message, "does not carry the label of this session") {
+				t.Errorf("%s %s from another session = %+v", op, handle, r)
+			}
+		}
+	}
+	if r := execReal(owner, res.Handle, "test", "!", "-e", "/changed"); r.ExitCode != 0 {
+		t.Errorf("the other session changed the container: %+v", r)
+	}
+
+	runner := secondCaller(t, owner)
+	done := make(chan prismcontainer.RunResult, 1)
+	go func() {
+		done <- runReal(t, runner, prismcontainer.RunRequest{Mount: prismcontainer.MountNone, Command: []string{"sleep", "20"}})
+	}()
+	var runName string
+	for deadline := time.Now().Add(time.Minute); runName == "" && time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		out, _ := exec.Command("podman", "ps", "--filter", "label="+prismcontainer.LabelInstanceID+"="+runner.InstanceID, "--format", "{{.Names}}").Output()
+		runName = strings.TrimSpace(string(out))
+	}
+	if runName == "" {
+		t.Fatalf("no running container of the run")
+	}
+	if r := execReal(runner, runName, "true"); r.ExitCode != prismcontainer.ExitRefused || !strings.Contains(r.Message, "was not created by prism container start") {
+		t.Errorf("exec into a run container = %+v", r)
+	}
+	if r := <-done; r.ExitCode != 0 {
+		t.Errorf("run = %+v", r)
+	}
+}
+
+// failingRunner makes one podman subcommand exit 125, as a podman that
+// fails during the sweep does.
+type failingRunner struct {
+	prismcontainer.Runner
+	sub string
+}
+
+func (f failingRunner) Run(ctx context.Context, stdout, stderr io.Writer, args ...string) (int, error) {
+	if len(args) > 0 && args[0] == f.sub {
+		return 125, nil
+	}
+	return f.Runner.Run(ctx, stdout, stderr, args...)
+}
+
+// TestIntegration_FailedSweepKeepsAuditDir checks the cleanup gate against
+// the real podman, for a service container and for a built image: after a
+// failed sweep the audit dir and the resource stay, and a later sweep
+// removes both.
+func TestIntegration_FailedSweepKeepsAuditDir(t *testing.T) {
+	c := integrationCaller(t)
+	if res := startReal(t, c, prismcontainer.StartRequest{Image: "alpine", Mount: prismcontainer.MountNone, Command: []string{"sleep", "600"}}); res.ExitCode != 0 {
+		t.Fatalf("start = %+v", res)
+	}
+	ex := prismcontainer.DefaultBuildExecutor(runtime.GOOS, nil, config.LoadFresh().MachineMountAllowlist())
+	// The service holds the per-session place, so the image belongs to a
+	// second incarnation.
+	imgCaller := secondCaller(t, c)
+	if err := os.WriteFile(filepath.Join(imgCaller.Worktree, "Containerfile"), []byte("FROM alpine\nRUN echo layer > /l\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if b := prismcontainer.Build(context.Background(), prismcontainer.Deps{MachineMountAllowlist: config.LoadFresh().MachineMountAllowlist()}, imgCaller, prismcontainer.BuildRequest{}); b.ExitCode != 0 {
+		t.Fatalf("build = %+v", b)
+	}
+	t.Cleanup(func() {
+		_, _ = prismcontainer.SweepImages(context.Background(), prismcontainer.ExecRunner{}, []string{imgCaller.InstanceID})
+	})
+
+	for _, tc := range []struct {
+		caller prismcontainer.Caller
+		sub    string
+		left   func() string
+	}{
+		{c, "rm", func() string {
+			return podmanQuiet(t, "ps", "-a", "--quiet", "--filter", "label="+prismcontainer.LabelInstanceID+"="+c.InstanceID)
+		}},
+		{imgCaller, "rmi", func() string {
+			return podmanQuiet(t, "images", "--all", "--quiet", "--filter", "label="+prismcontainer.LabelInstanceID+"="+imgCaller.InstanceID)
+		}},
+	} {
+		err := prismcontainer.RemoveAuditDir(context.Background(), failingRunner{prismcontainer.ExecRunner{}, tc.sub}, ex, tc.caller.InstanceID)
+		if err == nil || !strings.Contains(err.Error(), "keep the prism-container audit dir") {
+			t.Errorf("%s: RemoveAuditDir with a failing podman %s = %v", tc.sub, tc.sub, err)
+		}
+		if tc.left() == "" {
+			t.Fatalf("%s: the resource is gone although podman %s failed", tc.sub, tc.sub)
+		}
+		if !container.PrismContainerAuditDirExists(tc.caller.InstanceID) {
+			t.Errorf("%s: the audit dir was removed after a failed sweep", tc.sub)
+		}
+		if err := prismcontainer.RemoveAuditDir(context.Background(), prismcontainer.ExecRunner{}, ex, tc.caller.InstanceID); err != nil {
+			t.Errorf("%s: RemoveAuditDir = %v", tc.sub, err)
+		}
+		if left := tc.left(); left != "" {
+			t.Errorf("%s: resources remain after the later sweep: %s", tc.sub, left)
+		}
+		if container.PrismContainerAuditDirExists(tc.caller.InstanceID) {
+			t.Errorf("%s: the audit dir stays after a successful sweep", tc.sub)
+		}
+	}
+}
+
+func podmanQuiet(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("podman", args...).Output()
+	if err != nil {
+		t.Fatalf("podman %q: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
 }

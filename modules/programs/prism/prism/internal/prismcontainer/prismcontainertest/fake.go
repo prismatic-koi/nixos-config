@@ -1,7 +1,7 @@
 // Package prismcontainertest holds a fake podman for tests of
 // `prism container`. It models the podman CLI calls that prismcontainer
-// makes: ps, image exists, pull, run, rm, container exists, build, images,
-// rmi, machine list, machine inspect, info, and unshare. It is also a prismcontainer.BuildExecutor that runs a build
+// makes: ps, image exists, pull, run, exec, logs, rm, container exists,
+// build, images, rmi, machine list, machine inspect, info, and unshare. It is also a prismcontainer.BuildExecutor that runs a build
 // through the same fake podman.
 package prismcontainertest
 
@@ -36,8 +36,19 @@ func RealTempDir(t testing.TB) string {
 type Container struct {
 	ID     string
 	Name   string
+	Image  string
 	State  string
 	Labels map[string]string
+	Ports  []Port
+	// Logs is the output of `podman logs`.
+	Logs string
+}
+
+// Port is one published port of a container.
+type Port struct {
+	HostIP        string
+	ContainerPort int
+	HostPort      int
 }
 
 // Image is one image the fake holds.
@@ -79,8 +90,16 @@ type Fake struct {
 	// exit with that code and remove nothing.
 	RmCode  int
 	RmiCode int
-	// OnRun is the container command. Nil exits 0 with no output.
+	// OnRun is the container command. Nil exits 0 with no output. For
+	// `podman run --detach` it is the result of the start: the container
+	// stays.
 	OnRun RunFunc
+	// OnExec is the result of `podman exec`. Nil exits 0 with no output
+	// for a container that exists, and 125 for one that does not.
+	OnExec RunFunc
+	// PublishIP, when set, replaces the host address that ps reports for
+	// a published port.
+	PublishIP string
 	// OnBuild is the build. Nil exits 0 with no output. A build that
 	// exits 0 adds an image with the --tag name and the --label labels,
 	// and an intermediate image with the --layer-label labels.
@@ -274,6 +293,27 @@ func (f *Fake) Run(ctx context.Context, stdout, stderr io.Writer, args ...string
 		return f.PullCode, nil
 	case "run":
 		return f.run(ctx, stdout, stderr, args)
+	case "exec":
+		if len(args) < 2 || !f.has(args[1]) {
+			_, _ = io.WriteString(stderr, "Error: no such container\n")
+			return 125, nil
+		}
+		if f.OnExec != nil {
+			return f.OnExec(ctx, stdout, stderr, args)
+		}
+		return 0, nil
+	case "logs":
+		if len(args) != 2 {
+			return 125, nil
+		}
+		for _, c := range f.Containers() {
+			if c.ID == args[1] {
+				_, _ = io.WriteString(stdout, c.Logs)
+				return 0, nil
+			}
+		}
+		_, _ = io.WriteString(stderr, "Error: no such container\n")
+		return 125, nil
 	case "rm":
 		if code := f.code(&f.RmCode); code != 0 {
 			return code, nil
@@ -308,16 +348,33 @@ func (f *Fake) ps(stdout io.Writer) (int, error) {
 		return -1, f.PsErr
 	}
 	f.mu.Lock()
+	type port struct {
+		HostIP        string `json:"host_ip"`
+		ContainerPort int    `json:"container_port"`
+		HostPort      int    `json:"host_port"`
+		Range         int    `json:"range"`
+		Protocol      string `json:"protocol"`
+	}
 	type entry struct {
 		ID     string            `json:"Id"`
 		Names  []string          `json:"Names"`
+		Image  string            `json:"Image"`
 		State  string            `json:"State"`
 		Labels map[string]string `json:"Labels"`
+		Ports  []port            `json:"Ports"`
 	}
 	entries := []entry{}
 	for _, c := range f.containers {
 		if _, ok := c.Labels[prismcontainer.LabelInstanceID]; ok {
-			entries = append(entries, entry{ID: c.ID, Names: []string{c.Name}, State: c.State, Labels: c.Labels})
+			e := entry{ID: c.ID, Names: []string{c.Name}, Image: c.Image, State: c.State, Labels: c.Labels}
+			for _, p := range c.Ports {
+				ip := p.HostIP
+				if f.PublishIP != "" {
+					ip = f.PublishIP
+				}
+				e.Ports = append(e.Ports, port{HostIP: ip, ContainerPort: p.ContainerPort, HostPort: p.HostPort, Range: 1, Protocol: "tcp"})
+			}
+			entries = append(entries, e)
 		}
 	}
 	f.mu.Unlock()
@@ -332,18 +389,41 @@ func (f *Fake) ps(stdout io.Writer) (int, error) {
 func (f *Fake) run(ctx context.Context, stdout, stderr io.Writer, args []string) (int, error) {
 	c := Container{State: "running", Labels: map[string]string{}}
 	var cidFile string
-	for i := 1; i < len(args)-1; i++ {
-		switch args[i] {
+	detach := false
+	f.mu.Lock()
+	// Every option that prism gives takes a value, except --rm and
+	// --detach. The first argument that is not an option is the image.
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			c.Image = a
+			break
+		}
+		if a == "--rm" || a == "--detach" {
+			detach = detach || a == "--detach"
+			continue
+		}
+		if i+1 >= len(args) {
+			break
+		}
+		i++
+		switch val := args[i]; a {
 		case "--name":
-			c.Name = args[i+1]
+			c.Name = val
 		case "--label":
-			k, v, _ := strings.Cut(args[i+1], "=")
+			k, v, _ := strings.Cut(val, "=")
 			c.Labels[k] = v
 		case "--cidfile":
-			cidFile = args[i+1]
+			cidFile = val
+		case "--publish":
+			// HOST_IP::CONTAINER_PORT/tcp
+			parts := strings.Split(strings.TrimSuffix(val, "/tcp"), ":")
+			var cport int
+			_, _ = fmt.Sscan(parts[len(parts)-1], &cport)
+			f.nextID++
+			c.Ports = append(c.Ports, Port{HostIP: parts[0], ContainerPort: cport, HostPort: 40000 + f.nextID})
 		}
 	}
-	f.mu.Lock()
 	f.nextID++
 	c.ID = fmt.Sprintf("fake%04d", f.nextID)
 	f.containers = append(f.containers, c)
@@ -355,6 +435,12 @@ func (f *Fake) run(ctx context.Context, stdout, stderr io.Writer, args []string)
 	code, err := 0, error(nil)
 	if f.OnRun != nil {
 		code, err = f.OnRun(ctx, stdout, stderr, args)
+	}
+	if detach {
+		if err == nil && code == 0 {
+			_, _ = io.WriteString(stdout, c.ID+"\n")
+		}
+		return code, err
 	}
 	if err == nil {
 		// --rm: the container goes away when it exits on its own.
@@ -490,17 +576,19 @@ func MaskBuildArgs(args []string) []string {
 }
 
 // MaskRunArgs returns a copy of a `podman run` argument vector with the
-// values that change on every call, the container name and the cidfile
-// path, replaced by fixed text. Two routes that build the same vector give
-// equal masked copies.
+// values that change on every call, the container name, the cidfile path,
+// and the service handle, replaced by fixed text. Two routes that build
+// the same vector give equal masked copies.
 func MaskRunArgs(args []string) []string {
 	out := append([]string(nil), args...)
 	for i := 0; i < len(out)-1; i++ {
-		switch out[i] {
-		case "--name":
+		switch {
+		case out[i] == "--name":
 			out[i+1] = "<name>"
-		case "--cidfile":
+		case out[i] == "--cidfile":
 			out[i+1] = "<cidfile>"
+		case out[i] == "--label" && strings.HasPrefix(out[i+1], prismcontainer.LabelService+"="):
+			out[i+1] = prismcontainer.LabelService + "=<handle>"
 		}
 	}
 	return out

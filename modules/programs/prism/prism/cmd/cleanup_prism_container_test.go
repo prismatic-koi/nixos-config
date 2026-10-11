@@ -288,3 +288,28 @@ func TestRemoveSessionInstanceDirs_FailedSweepKeepsAuditDir(t *testing.T) {
 		t.Errorf("dir exists %v, containers %+v after a successful sweep", container.PrismContainerAuditDirExists(archiveOrderIID), fake.Containers())
 	}
 }
+
+// TestHeadlessCleanup_PrismContainer_RemovesServiceContainer checks that
+// cleanup stops and removes a running service container of the session.
+func TestHeadlessCleanup_PrismContainer_RemovesServiceContainer(t *testing.T) {
+	f := setupArchiveOrderFixture(t, "prism-container-service", "")
+	fake := &prismcontainertest.Fake{ImagePresent: true}
+	installPrismContainerFake(t, fake)
+	res := prismcontainer.Start(context.Background(), prismcontainer.Deps{Runner: fake, HostLimit: 4},
+		prismcontainer.Caller{SessionName: f.session, InstanceID: archiveOrderIID}, prismcontainer.StartRequest{
+			Image: "postgres:16", Mount: prismcontainer.MountNone, Ports: []string{"5432"},
+		})
+	if res.ExitCode != 0 || len(fake.Containers()) != 1 {
+		t.Fatalf("start = %+v, containers %+v", res, fake.Containers())
+	}
+
+	if err := headlessCleanup(f.session, "prism-container-service", "", ""); err != nil {
+		t.Fatalf("headlessCleanup: %v", err)
+	}
+	if left := fake.Containers(); len(left) != 0 {
+		t.Errorf("containers left after cleanup = %+v", left)
+	}
+	if container.PrismContainerAuditDirExists(archiveOrderIID) {
+		t.Errorf("the audit dir stays after a successful sweep")
+	}
+}

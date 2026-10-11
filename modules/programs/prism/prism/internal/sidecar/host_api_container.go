@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
@@ -35,6 +36,39 @@ func (s *Sidecar) containerCaller() prismcontainer.Caller {
 func (s *Sidecar) runContainer(ctx context.Context, req prismcontainer.RunRequest) prismcontainer.RunResult {
 	res := prismcontainer.Run(ctx, s.containerDeps(), s.containerCaller(), req)
 	s.logger().Printf("sidecar: host-API /container/run: image=%q exit=%d", req.Image, res.ExitCode)
+	return res
+}
+
+// containerRoute returns the handler of a service-container endpoint: POST
+// only, a strict JSON body of type Req, and HTTP 200 with the result for
+// every decision. writeJSON is the response writer of hostAPIHandler.
+func containerRoute[Req any](writeJSON func(http.ResponseWriter, int, any), serve func(context.Context, Req) any) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var req Req
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeJSON(w, status, map[string]string{"error": "invalid JSON: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, serve(r.Context(), req))
+	}
+}
+
+// containerService logs the result of a service-container request.
+func (s *Sidecar) containerService(command string, res any) any {
+	code := -1
+	switch r := res.(type) {
+	case prismcontainer.StartResult:
+		code = r.ExitCode
+	case prismcontainer.RunResult:
+		code = r.ExitCode
+	case prismcontainer.ListResult:
+		code = r.ExitCode
+	}
+	s.logger().Printf("sidecar: host-API /container/%s: exit=%d", command, code)
 	return res
 }
 

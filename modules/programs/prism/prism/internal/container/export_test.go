@@ -40,3 +40,7 @@ const GitBareRootTimeoutForTest = gitBareRootTimeout
 func RedactedArgsForTest(args []string) []string {
 	return redactedArgs(args)
 }
+
+// BwrapBaselineArgsForTest returns the namespace flags of the session
+// sandbox, for a live test in another package directory test file.
+func BwrapBaselineArgsForTest() []string { return bwrapBaselineArgs() }

@@ -130,6 +130,9 @@ var enumFlagRegistry = map[enumFlagKey]flagEnumMeta{
 	{commandUse: containerRunUse, flagName: "mount"}: {
 		values: prismcontainer.MountModes,
 	},
+	{commandUse: containerStartUse, flagName: "mount"}: {
+		values: prismcontainer.MountModes,
+	},
 	{commandUse: "sidecar", flagName: "isolation-mode"}: {
 		values: func() []string {
 			s := make([]string, len(config.ValidIsolationModes))

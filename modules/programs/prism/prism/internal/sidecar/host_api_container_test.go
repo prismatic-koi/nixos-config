@@ -231,3 +231,95 @@ func TestHostAPI_ContainerBuild_TransportRefused(t *testing.T) {
 		t.Errorf("podman build ran: %q", calls)
 	}
 }
+
+// TestHostAPI_ContainerService_Flow drives start, exec, logs, list, and
+// stop through the sidecar routes for every role.
+func TestHostAPI_ContainerService_Flow(t *testing.T) {
+	for _, role := range []string{"worker", "coordinator", "review-code"} {
+		t.Run(role, func(t *testing.T) {
+			fake := &prismcontainertest.Fake{ImagePresent: true}
+			fake.OnExec = func(_ context.Context, stdout, _ io.Writer, _ []string) (int, error) {
+				_, _ = io.WriteString(stdout, "ready\n")
+				return 0, nil
+			}
+			sc := newContainerTestSidecar(t, role, fake)
+
+			var start prismcontainer.StartResult
+			decodeJSONBody(t, doHostAPI(t, sc, http.MethodPost, "/container/start", `{"image":"postgres:16","env":["POSTGRES_PASSWORD=x"],"ports":["5432"]}`), &start)
+			if start.ExitCode != 0 || start.Handle == "" || len(start.Ports) != 1 || start.Ports[0].HostIP != "127.0.0.1" {
+				t.Fatalf("start = %+v", start)
+			}
+			h := `{"handle":"` + start.Handle + `"}`
+
+			var exec prismcontainer.RunResult
+			decodeJSONBody(t, doHostAPI(t, sc, http.MethodPost, "/container/exec", `{"handle":"`+start.Handle+`","command":["pg_isready"]}`), &exec)
+			if exec.ExitCode != 0 || string(exec.Stdout) != "ready\n" {
+				t.Errorf("exec = %+v", exec)
+			}
+			var logs prismcontainer.RunResult
+			decodeJSONBody(t, doHostAPI(t, sc, http.MethodPost, "/container/logs", h), &logs)
+			if logs.ExitCode != 0 {
+				t.Errorf("logs = %+v", logs)
+			}
+			var list prismcontainer.ListResult
+			decodeJSONBody(t, doHostAPI(t, sc, http.MethodPost, "/container/list", `{}`), &list)
+			if list.ExitCode != 0 || len(list.Containers) != 1 || list.Containers[0].Handle != start.Handle {
+				t.Errorf("list = %+v", list)
+			}
+			var stop prismcontainer.RunResult
+			decodeJSONBody(t, doHostAPI(t, sc, http.MethodPost, "/container/stop", h), &stop)
+			if stop.ExitCode != 0 || len(fake.Containers()) != 0 {
+				t.Errorf("stop = %+v, containers left %+v", stop, fake.Containers())
+			}
+		})
+	}
+}
+
+// TestHostAPI_ContainerStart_SameArgvAsDirectStart pins the parity of the
+// sidecar route of start with a direct prismcontainer.Start call.
+func TestHostAPI_ContainerStart_SameArgvAsDirectStart(t *testing.T) {
+	viaSidecar := &prismcontainertest.Fake{ImagePresent: true}
+	sc := newContainerTestSidecar(t, "worker", viaSidecar)
+	req := prismcontainer.StartRequest{Image: "postgres:16", Env: []string{"A=1"}, Ports: []string{"5432", "80"}, Mount: prismcontainer.MountNone}
+	body, _ := json.Marshal(req)
+	if rr := doHostAPI(t, sc, http.MethodPost, "/container/start", string(body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	direct := &prismcontainertest.Fake{ImagePresent: true}
+	prismcontainer.Start(context.Background(), prismcontainer.Deps{Runner: direct, HostLimit: 4}, sc.containerCaller(), req)
+
+	got, want := viaSidecar.RunCalls(), direct.RunCalls()
+	if len(got) != 1 || len(want) != 1 {
+		t.Fatalf("run calls: sidecar %d, direct %d; want 1 each", len(got), len(want))
+	}
+	if g, w := prismcontainertest.MaskRunArgs(got[0]), prismcontainertest.MaskRunArgs(want[0]); !slices.Equal(g, w) {
+		t.Errorf("sidecar argv differs from direct Start argv:\n got %q\nwant %q", g, w)
+	}
+}
+
+// TestHostAPI_ContainerService_IdentityNotFromRequest checks that no
+// service request can name a session, an instance, a host address, or a
+// podman option.
+func TestHostAPI_ContainerService_IdentityNotFromRequest(t *testing.T) {
+	for _, endpoint := range []string{"/container/start", "/container/exec", "/container/logs", "/container/stop", "/container/list"} {
+		for _, field := range []string{"session", "instance_id", "worktree", "label", "host_ip", "publish", "user", "privileged"} {
+			t.Run(endpoint+"/"+field, func(t *testing.T) {
+				fake := &prismcontainertest.Fake{ImagePresent: true}
+				sc := newContainerTestSidecar(t, "worker", fake)
+				rr := doHostAPI(t, sc, http.MethodPost, endpoint, `{"`+field+`":"x"}`)
+				if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "unknown field") {
+					t.Errorf("status = %d, body = %s; want 400 unknown field", rr.Code, rr.Body.String())
+				}
+				if len(fake.Calls()) != 0 {
+					t.Errorf("podman called: %q", fake.Calls())
+				}
+			})
+		}
+		t.Run(endpoint+"/GET", func(t *testing.T) {
+			sc := newContainerTestSidecar(t, "worker", &prismcontainertest.Fake{})
+			if rr := doHostAPI(t, sc, http.MethodGet, endpoint, ""); rr.Code != http.StatusMethodNotAllowed {
+				t.Errorf("GET status = %d, want 405", rr.Code)
+			}
+		})
+	}
+}

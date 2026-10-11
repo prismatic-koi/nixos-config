@@ -1,20 +1,21 @@
 ---
 name: prism-container
 description: |
-  How to run a container or build an image from a prism session with
-  `prism container`. Load this skill before you run a container or build an
-  image, and when a `prism container` command is refused, times out, or
-  gives output that you do not expect. `prism container` is the way to run
-  a container or build an image from a prism sandbox, in place of `podman`
-  and `docker`. The skill covers the command surface, the fixed options,
-  the limits, ownership, cleanup, and the audit log.
+  How to run a container, build an image, or start a service container
+  (for example a database) from a prism session with `prism container`.
+  Load this skill before you run, build, or start a container, and when a
+  `prism container` command is refused, times out, or gives output that
+  you do not expect. `prism container` is the way to run containers from a
+  prism sandbox, in place of `podman` and `docker`. The skill covers the
+  command surface, the fixed options, the limits, ownership, cleanup, and
+  the audit log.
 ---
 
-# Run containers and build images with `prism container`
+# Run containers, build images, and start services with `prism container`
 
-`prism container` is the way to run a container or build an image from a
-prism sandbox. Use it in place of `podman` and `docker`. In a host shell
-outside prism, use podman, not docker.
+`prism container` is the way to run a container, build an image, or start
+a service container from a prism sandbox. Use it in place of `podman` and
+`docker`. In a host shell outside prism, use podman, not docker.
 
 The agent does not get a container API socket. The agent gives prism a
 small set of inputs. Prism builds the `podman` command on the host and sets
@@ -30,6 +31,11 @@ The command works for every session role and in every isolation mode:
 |---|---|
 | `run` | Run one command in a new container, return the output and the exit code, and remove the container. |
 | `build` | Build an image from a Containerfile in the worktree, and print the image name. See "Build an image". |
+| `start` | Start a service container that runs until you stop it, and print its handle and its published ports. See "Service containers". |
+| `exec` | Run one command in a service container. |
+| `logs` | Print the logs of a service container. |
+| `stop` | Stop and remove a service container. |
+| `list` | List the containers and the built images of this session. |
 
 ### `prism container run`
 
@@ -350,6 +356,128 @@ On macOS:
 
 Issue #3070 tracks the macOS step that continues after a timeout.
 
+## Service containers
+
+A service container runs in the background, for example a database for
+your tests. It has no timeout. It runs until `prism container stop` or
+`prism cleanup` removes it.
+
+```bash
+prism container start [flags] IMAGE [-- COMMAND [ARG...]]
+prism container exec [--timeout DURATION] HANDLE -- COMMAND [ARG...]
+prism container logs HANDLE
+prism container stop HANDLE
+prism container list
+```
+
+### `prism container start`
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--port N` | none | Publishes container port `N` (TCP) on `127.0.0.1` with a random host port. `N` must be an integer from 1 to 65535. Repeat the flag for more ports, up to 16. |
+| `--mount none\|ro\|rw` | `ro` | The same as for `run`. See "The worktree mount". |
+| `--env KEY=VALUE` | none | The same as for `run`. |
+
+The image, the `--` rule, and the command are the same as for `run`.
+`start` has no `--timeout`. Prism stops the image pull and the container
+create after 10 minutes.
+
+On success, `start` exits 0 while the container keeps running. stdout
+holds one `handle` line, then one `port` line for each `--port`:
+
+```text
+handle 3f9a1c2e
+port 5432 127.0.0.1:41873
+```
+
+The handle names the service container for `exec`, `logs`, and `stop`.
+Connect to the host address of the `port` line from the sandbox. The host
+port is different for each start, so always read it from the output.
+
+### `prism container exec`
+
+`exec` runs one command in a running service container, and gives its
+stdout, its stderr, and its exit code, as `run` does. Put `--` between the
+handle and the command. No shell parses the command. `exec` starts no
+container, so no limit refuses it.
+
+`--timeout` has the default `10m` and the maximum `60m`. At the timeout,
+prism stops `podman exec` and exits 124. The command can continue in the
+service container until the container stops.
+
+### `prism container logs` and `prism container stop`
+
+- `logs` prints the logs of the service container. The container stdout
+  goes to stdout, and the container stderr goes to stderr. Prism keeps the
+  last 1 MiB of each stream.
+- `stop` stops and removes the service container. Podman gives the
+  service 10 seconds to stop, then kills it. After `stop`, the handle does
+  not name a container.
+
+### `prism container list`
+
+`list` shows the containers of this session, also a container that has
+exited, and the images that this session built:
+
+```text
+HANDLE    KIND     STATE    IMAGE                          PORTS
+3f9a1c2e  service  running  docker.io/library/postgres:16  5432->127.0.0.1:41873
+
+BUILT IMAGE
+localhost/prism-1a2b3c4d-nixos-config-my-branch-app:latest
+```
+
+For a service container, HANDLE is its handle. For a container of `run`,
+HANDLE is the container name, and KIND is `run`.
+
+### Which containers `exec`, `logs`, and `stop` accept
+
+You can give the handle, the container name, the container ID, or an ID
+prefix of 12 or more characters. Prism refuses each of these:
+
+- A container that does not carry the label of this session.
+- A container that has no prism label.
+- A container of this session that `start` did not make, for example a
+  container of `run`.
+
+Prism does not change the container that it refuses.
+
+### Example: tests against a database
+
+```bash
+out=$(prism container start --mount none --env POSTGRES_PASSWORD=test --port 5432 postgres:16)
+handle=$(echo "$out" | awk '$1 == "handle" {print $2}')
+addr=$(echo "$out" | awk '$1 == "port" && $2 == 5432 {print $3}')
+
+# Wait up to 60 seconds until postgres accepts connections on its TCP port.
+for i in $(seq 60); do
+  prism container exec "$handle" -- pg_isready -h 127.0.0.1 -U postgres && break
+  sleep 1
+done
+
+DATABASE_URL="postgres://postgres:test@$addr/postgres" go test ./...
+
+prism container stop "$handle"
+```
+
+The tests run in the sandbox. They connect to `127.0.0.1` and the host
+port. Stop the container when the tests are done: while it runs, it holds
+the one container place of the session, so a `run` or a `build` of the
+session is refused.
+
+On macOS, the podman machine forwards the host port to the VM. The
+address is also `127.0.0.1`.
+
+### Output and exit codes of the service commands
+
+| Command | Exit code |
+|---|---|
+| `start` | `0` when the container started. `125` when prism refuses the request, the pull fails, or podman fails. |
+| `exec` | The exit code of the command. `124` when `--timeout` expires. `125` when prism refuses the request or podman fails. |
+| `logs`, `stop`, `list` | `0`, or `125` when prism refuses the request or podman fails. |
+
+The last line on stderr gives the reason for a `125`.
+
 ## Options that prism always sets
 
 ### For `run`
@@ -375,6 +503,26 @@ input can add one.
 
 The container uses the default rootless network of podman. It can open
 outbound connections. It cannot publish a port.
+
+### For `start`
+
+`start` sets the options of `run`, with these differences:
+
+| Option | Value | Reason |
+|---|---|---|
+| `--detach` | | In place of `--rm`. `stop` or `prism cleanup` removes the container. |
+| `--timeout` | none | A service container runs until it is stopped. |
+| `--label` | `prism.service=<handle>` | In addition to `prism.instance-id`. It marks a service container, and holds its handle. |
+| `--publish` | `127.0.0.1::<port>/tcp` | One for each `--port`. The host address is always `127.0.0.1`. Podman picks the host port. |
+
+After the start, prism reads the published ports from podman. If podman
+reports a port on an address other than `127.0.0.1`, prism removes the
+container and refuses the request.
+
+The argument vector of `exec` is `podman exec <container ID> COMMAND...`.
+Prism resolves the container ID. Podman reads every argument after the
+container ID as the command, so the command cannot add an option such as
+`--privileged`, `--user`, or `--cap-add`.
 
 ### For `build`
 
@@ -411,8 +559,10 @@ the machine VM is a second limit on memory and CPU.
 
 ## Limits
 
-A build counts as one container. Thus a `run` and a `build` of one
-session cannot run at the same time.
+A build counts as one container, and a running service container counts
+as one container. Thus a `run`, a `build`, and a service container of one
+session cannot run at the same time. `exec`, `logs`, `stop`, and `list`
+start no container, so no limit refuses them.
 
 - **Per session.** One session runs at most one container or build at a
   time. Prism refuses a second request from the same session at once. The
@@ -436,6 +586,8 @@ session cannot run at the same time.
   `prism.instance-id` label. Prism never decides ownership by the name.
 - `prism container run` removes its container before it returns. This also
   applies after a timeout and after a cancelled request.
+- A service container stays until `prism container stop` or
+  `prism cleanup` removes it. It has no podman `--timeout`.
 - `prism cleanup` does three steps for each incarnation of the session.
   That is the current incarnation and each earlier incarnation that the
   database holds.
@@ -455,8 +607,8 @@ session cannot run at the same time.
 - Cleanup of a parent session does the same three steps for each of its
   review agents: it stops their builds, and it removes their containers
   and their images.
-- If prism stops before it removes a container, the podman `--timeout`
-  stops the container and `--rm` removes it.
+- If prism stops before it removes a `run` container, the podman
+  `--timeout` stops the container and `--rm` removes it.
 - Images that prism pulls stay in the shared image store of the host. Prism
   does not remove them. The base images that a build pulls stay too.
 
@@ -470,7 +622,8 @@ $XDG_STATE_HOME/prism/prism-container/audit/<instance ID>/audit.log
 
 The line holds these fields:
 
-- `time`, `session`, `instance_id`, and `command` (`run` or `build`).
+- `time`, `session`, `instance_id`, and `command` (`run`, `build`,
+  `start`, `exec`, `logs`, `stop`, or `list`).
 - `image`: for `run`, the image with the Docker Hub prefix added to a
   short name. For `build`, the name of the image that the build makes.
 - For `run`: `args` (the container command), `env_keys`, `mount`, and
@@ -478,6 +631,9 @@ The line holds these fields:
   because a value can be a secret.
 - For `build`: `context`, `file`, and `build_arg_keys`. The log never holds
   a `--build-arg` value.
+- For `start`: the fields of `run`, and `ports` and `handle`.
+- For `exec`, `logs`, and `stop`: `handle` (the value that you gave),
+  `container`, and `image`. For `exec`, also `args`.
 - `timeout_seconds`.
 - `decision`: `allowed`, `refused`, or `error`. `reason` gives the cause.
 - `exit_code`: the exit code, or `null` when no command ran to completion.
@@ -514,6 +670,12 @@ markers. Like the audit directory, no sandbox can write them.
 | `the podman pull of image ... failed` | Read the podman error above this line. The image name or the tag is wrong, or the registry is not reachable. |
 | `put -- between the image and the command` | Add `--` after the image. |
 | `refused: --env ...` | Use `KEY=VALUE` with a valid key. |
+| `refused: --port "..." is not valid` | Give a container port, an integer from 1 to 65535. |
+| `refused: service container "..." does not exist in this session` | The container was stopped or removed, or the handle is wrong. Run `prism container list`. |
+| `refused: container "..." does not carry the label of this session` | The container belongs to another session. Use a handle that your `start` printed. |
+| `refused: container "..." was not created by prism container start` | `exec`, `logs`, and `stop` act only on a service container. |
+| `podman run exited N, so the service container did not start` | Read the podman error above this line. |
+| `can only create exec sessions on running containers` | The service container stopped. Read `prism container logs HANDLE`, then `stop` it and start it again. |
 | `the --timeout of ... expired, so prism stopped the build` | Increase `--timeout` (maximum `60m`), or make the build faster. |
 | `the build failed: podman build exited N` | Read the build output above this line. |
 | `refused: CONTEXT ...` or `refused: --file ...` | Give a path in the worktree that exists. A symlink must resolve inside the worktree. |
@@ -528,8 +690,9 @@ markers. Like the audit directory, no sandbox can write them.
 ## How it works
 
 - In a `bwrap` or `sandbox-exec` session, the `prism` CLI sends the request
-  to `POST /container/run` or `POST /container/build` on the sidecar of the
-  session. The sidecar runs on the host. It takes the session name, the
+  to the sidecar of the session: `POST /container/run`, `/container/build`,
+  `/container/start`, `/container/exec`, `/container/logs`,
+  `/container/stop`, or `/container/list`. The sidecar runs on the host. It takes the session name, the
   instance ID, and the worktree from its own configuration, never from the
   request.
 - In a `host` session, the CLI runs the same code in its own process. It
