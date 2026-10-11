@@ -300,6 +300,7 @@ func formatResults(results []AgentResult, prNumber string, round int, sizeBudget
 
 		// ── Structured per-agent findings ────────────────────────────────
 		findings.WriteString(fmt.Sprintf("\n### %s\n\n", r.Agent.Name))
+		writeModelLines(&findings, r)
 
 		// Verdict line.
 		if r.Passed {
@@ -371,4 +372,28 @@ func formatResults(results []AgentResult, prNumber string, round int, sizeBudget
 	result.WriteString("\n## Per-agent findings\n")
 	result.WriteString(findings.String())
 	return result.String(), allPassed
+}
+
+// writeModelLines writes the model of the result and each fallback the
+// monitor started for the agent, with the stop reason that started it (issue
+// #3112). It writes nothing when the result carries no model.
+func writeModelLines(sb *strings.Builder, r AgentResult) {
+	if r.Model == "" && len(r.Fallbacks) == 0 {
+		return
+	}
+	if r.Model != "" {
+		sb.WriteString(fmt.Sprintf("**Model:** %s\n\n", r.Model))
+	}
+	if len(r.Fallbacks) == 0 {
+		return
+	}
+	sb.WriteString("**Fallbacks:**\n")
+	for _, f := range r.Fallbacks {
+		line := fmt.Sprintf("- %s stopped with provider stop reason %q. Fallback: %s (%s).", f.FromModel, f.RawStopReason, f.Model, f.Session)
+		if f.SpawnError != "" {
+			line += fmt.Sprintf(" The fallback session did not spawn: %s", f.SpawnError)
+		}
+		sb.WriteString(line + "\n")
+	}
+	sb.WriteString("\n")
 }

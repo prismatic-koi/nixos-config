@@ -349,6 +349,12 @@ type AgentResult struct {
 	// emitting an unlabelled verdict.
 	SessionName string
 	InstanceID  string
+	// Model is the model of the session that produced this result, and
+	// Fallbacks the fallback sessions the monitor started for this agent, in
+	// order (issue #3112). The monitor sets both. Other producers leave them
+	// empty, and the report then omits the lines.
+	Model     string
+	Fallbacks []FallbackAttempt
 }
 
 // AsyncResult is returned immediately by RunAsync. It contains the group_id

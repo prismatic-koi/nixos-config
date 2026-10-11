@@ -793,6 +793,9 @@ in `agent_events`, then moves the session to `StateError`. The
 inactivity watchdog then finds the session terminal and does nothing.
 The review report reads the `reason` of the latest `run_error` row. It
 shows the agent in the "ended in error state" class, with this reason.
+The profile slot of the agent can name fallback models. When
+`raw_stop_reason` is `refusal` or `sensitive`, the review monitor then
+runs the agent again on the next fallback model (issue #3112).
 
 ## 6. Frame catalogue — sidecar → extension
 

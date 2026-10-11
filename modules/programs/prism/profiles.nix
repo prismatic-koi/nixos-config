@@ -38,6 +38,10 @@
           #   - provider:         the routing provider
           #   - model:            the model identifier
           #   - thinking:         the reasoning level (rendered as pi "variant")
+          #   - fallbacks:        an ordered list of models. `prism review` runs a
+          #                       review agent again on the next model in the list
+          #                       when the provider refuses the request (#3112).
+          #                       Only review roles read it.
           #
           # The role system-prompt is no longer carried in the slot: it is
           # injected at runtime by the prism PI extension (before_agent_start)
@@ -68,9 +72,15 @@
               provider ? "",
               model,
               thinking ? "off",
+              fallbacks ? [ ],
             }:
             {
-              inherit provider model thinking;
+              inherit
+                provider
+                model
+                thinking
+                fallbacks
+                ;
             };
 
           # Build a profile entry by calling `fn role` for every pi role.
@@ -124,6 +134,13 @@
             lib.genAttrs analyticalRoles (
               role: slot role (removeAttrs s [ "thinking" ] // { thinking = s.thinking or "off"; })
             );
+
+          # review-security discusses bypasses and exploit test cases, and the
+          # provider can refuse that request on Opus 5.5 (#3112).
+          securityFallbacks = [
+            "anthropic/claude-opus-4-8"
+            "anthropic/claude-sonnet-5-5"
+          ];
 
           profiles = {
             light = profileFromSlots (
@@ -179,6 +196,14 @@
                 model = "anthropic/claude-opus-5-5";
                 thinking = "medium";
               }
+              // {
+                review-security = slot "review-security" {
+                  provider = "anthropic";
+                  model = "anthropic/claude-opus-5-5";
+                  thinking = "medium";
+                  fallbacks = securityFallbacks;
+                };
+              }
               // analyticalSlots {
                 provider = "anthropic";
                 model = "anthropic/claude-opus-5-5";
@@ -196,6 +221,12 @@
                 provider = "anthropic";
                 model = "anthropic/claude-opus-5-5";
                 thinking = "xhigh";
+              };
+              review-security = slot "review-security" {
+                provider = "anthropic";
+                model = "anthropic/claude-opus-5-5";
+                thinking = "xhigh";
+                fallbacks = securityFallbacks;
               };
             };
 
@@ -259,16 +290,22 @@
               }
               // {
                 # Profiles are role-keyed. Each slot is emitted with its full
-                # record (provider, model, thinking). The role system-prompt is
+                # record (provider, model, thinking, and fallbacks when set). The role system-prompt is
                 # injected at runtime by the prism PI extension, not carried in
                 # the slot (design #2031).
                 profiles = lib.mapAttrs (
                   _name: profileEntry:
-                  lib.mapAttrs (_role: roleSlot: {
-                    provider = roleSlot.provider or "";
-                    model = roleSlot.model;
-                    thinking = roleSlot.thinking or "off";
-                  }) profileEntry
+                  lib.mapAttrs (
+                    _role: roleSlot:
+                    {
+                      provider = roleSlot.provider or "";
+                      model = roleSlot.model;
+                      thinking = roleSlot.thinking or "off";
+                    }
+                    // lib.optionalAttrs ((roleSlot.fallbacks or [ ]) != [ ]) {
+                      inherit (roleSlot) fallbacks;
+                    }
+                  ) profileEntry
                 ) config.nx.programs.prism.profiles.data.profiles;
                 # Agent environment variables to inject into host-mode agent processes.
                 agent_env_vars = lib.mapAttrs (

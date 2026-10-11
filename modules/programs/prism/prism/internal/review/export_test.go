@@ -14,6 +14,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/session"
@@ -324,4 +325,39 @@ func VerdictEventIDForTest(groupID string) string {
 // one row under INSERT OR IGNORE.
 func AgentVerdictEventIDForTest(groupID, agentRole string) string {
 	return agentVerdictEventID(groupID, agentRole)
+}
+
+// FallbackSpawnCall is the part of a fallback spawn that tests assert on.
+type FallbackSpawnCall struct {
+	AgentName    string
+	Session      string
+	Prompt       string
+	GroupID      string
+	ModelsByRole map[string]string
+	ProfileName  string
+}
+
+// SetFallbackSpawnerForTest replaces the fallback spawner on opts, so a
+// MonitorFunc test starts no tmux session or sidecar.
+func SetFallbackSpawnerForTest(opts *MonitorOpts, fn func(d *db.DB, c FallbackSpawnCall) error) {
+	opts.spawnFallback = func(d *db.DB, in reviewerSpawnInput) error {
+		return fn(d, FallbackSpawnCall{
+			AgentName:    in.AgentName,
+			Session:      in.AgentSession,
+			Prompt:       in.Prompt,
+			GroupID:      in.GroupID,
+			ModelsByRole: in.ModelsByRole,
+			ProfileName:  in.ProfileName,
+		})
+	}
+}
+
+// BuildFallbackPlanForTest exposes buildFallbackPlan.
+func BuildFallbackPlanForTest(pf *config.ProfilesFile, profileName string, modelsByRole map[string]string, agents []Agent, prompts []string) []AgentFallbackPlan {
+	return buildFallbackPlan(pf, profileName, modelsByRole, agents, prompts)
+}
+
+// FallbackProfilesForTest exposes fallbackProfiles.
+func FallbackProfilesForTest(pf *config.ProfilesFile) *config.ProfilesFile {
+	return fallbackProfiles(pf)
 }

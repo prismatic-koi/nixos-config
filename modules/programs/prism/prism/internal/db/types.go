@@ -177,6 +177,11 @@ type GroupMemberResult struct {
 	StartupError string // reason from startup_error event; empty when not a no-start failure
 	StallError   string // reason from stall_error event (inactivity watchdog fired after inbound frames were seen). Empty when the agent did not stall mid-run
 	RunError     string // reason from run_error event (pi ended its run after a failed turn: no text and no tool call, or text with stop reason error or length; names the stop reason). Empty when no failed turn ended the run
+	// RunErrorRawStopReason is the provider stop reason (raw_stop_reason) on
+	// the same run_error event, for example "refusal". Empty when the event
+	// carries none. The review monitor reads it to decide whether to re-run
+	// the agent on a fallback model (issue #3112).
+	RunErrorRawStopReason string
 }
 
 // TokenTurn holds per-turn token and cost data for a single msg_assistant event.

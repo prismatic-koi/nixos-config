@@ -629,6 +629,7 @@ ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 			}
 		case "run_error":
 			r.RunError = reasonFromPayload(payload)
+			r.RunErrorRawStopReason = rawStopReasonFromPayload(payload)
 		}
 		results[sessName] = r
 	}

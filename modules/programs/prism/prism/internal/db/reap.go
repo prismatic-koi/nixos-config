@@ -325,3 +325,15 @@ func reasonFromPayload(payload string) string {
 	}
 	return payload
 }
+
+// rawStopReasonFromPayload returns the raw_stop_reason field of a run_error
+// payload, or "" when the payload is not JSON or carries no such field.
+func rawStopReasonFromPayload(payload string) string {
+	var p struct {
+		RawStopReason string `json:"raw_stop_reason"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return ""
+	}
+	return p.RawStopReason
+}
