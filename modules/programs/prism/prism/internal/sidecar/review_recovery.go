@@ -234,6 +234,11 @@ func (s *Sidecar) dispatchReviewRecovery(groupID string) {
 		s.dropReviewRecoveryFirstSeen(groupID)
 		return
 	}
+	if res != nil && res.FallbackStarted > 0 {
+		s.logger().Printf("sidecar: review-recovery: started %d fallback session(s) for group %s; delivery waits for them", res.FallbackStarted, groupID)
+		s.dropReviewRecoveryFirstSeen(groupID)
+		return
+	}
 	// No error and not delivered (unusual — DeliverGroupResults only returns
 	// this when the parent session has ended) — log and clear bookkeeping.
 	s.logger().Printf("sidecar: review-recovery: DeliverGroupResults returned no-error/no-delivery for group %s", groupID)

@@ -137,7 +137,7 @@ func ExpectedRoundSetForTest(agents []Agent, agentSessions []string, spawnErr []
 func AgentsFromSessionsForTest(agentSessions []string) []Agent {
 	agents := make([]Agent, 0, len(agentSessions))
 	for _, sess := range agentSessions {
-		agents = append(agents, Agent{Name: agentNameFromSession(sess)})
+		agents = append(agents, Agent{Name: AgentNameFromSession(sess)})
 	}
 	return agents
 }
@@ -360,4 +360,14 @@ func BuildFallbackPlanForTest(pf *config.ProfilesFile, profileName string, model
 // FallbackProfilesForTest exposes fallbackProfiles.
 func FallbackProfilesForTest(pf *config.ProfilesFile) *config.ProfilesFile {
 	return fallbackProfiles(pf)
+}
+
+// StartRecoveryFallbacksForTest runs the recovery fallback path with a fake spawner.
+func StartRecoveryFallbacksForTest(d *db.DB, groupID string, fn func(d *db.DB, c FallbackSpawnCall) error) int {
+	return startRecoveryFallbacks(d, groupID, func(d *db.DB, in reviewerSpawnInput) error {
+		return fn(d, FallbackSpawnCall{
+			Session: in.AgentSession,
+			GroupID: in.GroupID,
+		})
+	})
 }

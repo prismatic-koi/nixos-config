@@ -1348,6 +1348,22 @@ func buildPromptBodyForMonitor(text string, status *db.Status) map[string]any {
 	return body
 }
 
+// MonitorOptsPath returns the path of the opts file of a group's monitor.
+func MonitorOptsPath(groupID string) string {
+	return filepath.Join(os.TempDir(), "prism-monitor-opts-"+sanitisePRNumber(groupID)+".json")
+}
+
+func writeMonitorOpts(path string, opts MonitorOpts) error {
+	optsJSON, err := json.Marshal(opts)
+	if err != nil {
+		return fmt.Errorf("monitor: marshal opts: %w", err)
+	}
+	if err := os.WriteFile(path, optsJSON, 0o600); err != nil {
+		return fmt.Errorf("monitor: write opts file: %w", err)
+	}
+	return nil
+}
+
 // StartMonitorProcess launches the group-completion monitor as a detached
 // subprocess. The monitor runs `prism monitor-review` with the provided opts
 // encoded as JSON via a temp file. The subprocess is detached (Setsid) so it
@@ -1364,22 +1380,14 @@ func StartMonitorProcess(opts MonitorOpts, prismBinary string) error {
 		}
 	}
 
-	// Serialise MonitorOpts to a temp file so we can pass it via flag.
-	optsJSON, err := json.Marshal(opts)
-	if err != nil {
-		return fmt.Errorf("monitor: marshal opts: %w", err)
+	// The opts file stays on disk at a path derived from the group, so the
+	// recovery watcher can read the fallback plan if this process dies.
+	optsPath := MonitorOptsPath(opts.GroupID)
+	if err := writeMonitorOpts(optsPath, opts); err != nil {
+		return err
 	}
 
-	tmpFile, err := os.CreateTemp("", "prism-monitor-opts-*.json")
-	if err != nil {
-		return fmt.Errorf("monitor: create temp opts file: %w", err)
-	}
-	defer tmpFile.Close()
-	if _, err := tmpFile.Write(optsJSON); err != nil {
-		return fmt.Errorf("monitor: write opts file: %w", err)
-	}
-
-	cmd := exec.Command(prismBinary, "monitor-review", "--opts-file", tmpFile.Name())
+	cmd := exec.Command(prismBinary, "monitor-review", "--opts-file", optsPath)
 	// Detach the process: use setsid so it survives the parent process exiting.
 	detachProcess(cmd)
 	// Redirect stdout/stderr to log file for diagnostics.
@@ -1523,7 +1531,7 @@ func isTerminalForGuard(m db.Status) bool {
 func cycleProducedVerdicts(expectedSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status) bool {
 	agents := make([]Agent, 0, len(expectedSessions))
 	for _, sess := range expectedSessions {
-		agents = append(agents, Agent{Name: agentNameFromSession(sess)})
+		agents = append(agents, Agent{Name: AgentNameFromSession(sess)})
 	}
 	return ClassifyRound(agents, expectedSessions, groupData, endedRows).CountsAsCycle()
 }
