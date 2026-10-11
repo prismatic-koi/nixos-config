@@ -558,6 +558,10 @@ add one.
 On macOS, the host `podman` CLI talks to the podman machine. The size of
 the machine VM is a second limit on memory and CPU.
 
+## Automatic test run: the `go-tests-container-live` job
+
+The `go-tests-container-live` job in `.github/workflows/pr-gate.yml` is the automatic run of the `prism container` integration tests (#3115): `TestIntegration_*` in `internal/prismcontainer` and `TestServicePortBwrap_*` in `internal/container`. It uses rootless podman on an ubuntu runner and runs on PRs that touch `internal/prismcontainer/`, `internal/container/`, or `cmd/container*.go`. It fails on a SKIP and on zero tests run, and it is part of the `pr-gate` fan-in. A worker cannot run these tests, so read the job result on the PR.
+
 ## Limits
 
 A build counts as one container, and a running service container counts

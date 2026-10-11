@@ -482,11 +482,19 @@ func leakFile(source string) string {
 // than the namespace, and the negative test measures nothing.
 func plainBuild(t *testing.T, containerfile, want string) {
 	t.Helper()
-	dir := t.TempDir()
+	// podman limits the runroot path to 50 characters, and t.TempDir
+	// embeds the test name, so use a short directory under /tmp.
+	dir, err := os.MkdirTemp("/tmp", "pc-")
+	if err != nil {
+		t.Fatal(err)
+	}
 	store := filepath.Join(dir, "store")
 	// The store holds files of sub-uids, so remove it in the user
-	// namespace of podman, before the cleanup of t.TempDir runs.
-	t.Cleanup(func() { _ = exec.Command("podman", "unshare", "rm", "-rf", store).Run() })
+	// namespace of podman first.
+	t.Cleanup(func() {
+		_ = exec.Command("podman", "unshare", "rm", "-rf", store).Run()
+		_ = os.RemoveAll(dir)
+	})
 	policy := filepath.Join(dir, "policy.json")
 	if err := os.WriteFile(policy, []byte(`{"default":[{"type":"insecureAcceptAnything"}]}`), 0o600); err != nil {
 		t.Fatal(err)
