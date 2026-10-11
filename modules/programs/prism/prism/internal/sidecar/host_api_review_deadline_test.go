@@ -57,3 +57,40 @@ func TestHostAPI_Review_DeadlineBeforeAckNamesCause(t *testing.T) {
 		t.Errorf("want cause line naming the deadline; body = %q", body)
 	}
 }
+
+// The response must end at the acknowledgement while the child still runs,
+// and must not wait for the exec deadline.
+func TestHostAPI_Review_ResponseEndsAtAckWhileChildRuns(t *testing.T) {
+	old := reviewExecTimeout
+	reviewExecTimeout = 20 * time.Second
+	t.Cleanup(func() { reviewExecTimeout = old })
+	oldGrace := reviewAckDrainGrace
+	reviewAckDrainGrace = 100 * time.Millisecond
+	t.Cleanup(func() { reviewAckDrainGrace = oldGrace })
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	script := "#!/bin/sh\necho 'Review in progress — PR #1, round 1 (group: g)'\necho 'Spawned: 5, Failed: 0'\nexec sleep 30\n"
+	if err := os.WriteFile(stubPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	sc := New(Config{
+		SessionName:     "test-repo@feature",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@feature",
+		HarnessURL:      "http://localhost:14000",
+		DB:              openTestDB(t),
+		Clock:           newTestClock(),
+		AgentRole:       "worker",
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	})
+	start := time.Now()
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"1"}`)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("response took %v; it must end at the ack, not at the deadline", elapsed)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "Spawned: 5") || !strings.HasSuffix(strings.TrimSpace(body), ReviewSentinelPassed) {
+		t.Errorf("want full ack then passed sentinel; body = %q", body)
+	}
+}

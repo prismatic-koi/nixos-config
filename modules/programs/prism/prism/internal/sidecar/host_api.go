@@ -2083,13 +2083,22 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		s.logger().Printf("sidecar: host-API /review: prism %s", strings.Join(args, " "))
 
+		handedOff := false
+
 		// Async review: `prism review` spawns agents and a monitor, then exits
 		// quickly (well under 30 s in practice). We stream its stdout as it
 		// runs and write the sentinel after cmd.Wait(). The 30 s exec deadline
 		// is the binding constraint — the client-side context (60 s) is set
 		// wider to include connection overhead on top of this.
-		ctx, cancel := context.WithTimeout(r.Context(), reviewExecTimeout)
-		defer cancel()
+		// The child's context must outlive this request: after the
+		// acknowledgement the handler returns while the child is still being
+		// reaped in the background.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), reviewExecTimeout)
+		defer func() {
+			if !handedOff {
+				cancel()
+			}
+		}()
 		cmd := exec.CommandContext(ctx, prismBinary(), args...)
 
 		// Anchor the subprocess CWD to the calling session's worktree so that
@@ -2173,22 +2182,69 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		flusher, canFlush := w.(http.Flusher)
 
-		scanner := bufio.NewScanner(stdoutPipe)
-		// Allow lines up to 1 MiB to handle very long output without truncation.
-		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-		ackSeen := false
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.HasPrefix(line, reviewAckPrefix) {
-				ackSeen = true
+		// A reader goroutine feeds lines to the loop below. The loop ends the
+		// response shortly after the acknowledgement header, without waiting
+		// for the child to exit: a grandchild that holds the stdout pipe
+		// open must not keep the response open until the exec deadline.
+		lines := make(chan string, 64)
+		go func() {
+			defer close(lines)
+			scanner := bufio.NewScanner(stdoutPipe)
+			// Allow lines up to 1 MiB to handle very long output without truncation.
+			scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+			for scanner.Scan() {
+				lines <- scanner.Text()
 			}
-			_, _ = fmt.Fprintln(w, line)
+		}()
+
+		ackSeen := false
+		outputClosed := false
+		var ackGrace <-chan time.Time
+	stream:
+		for {
+			select {
+			case line, ok := <-lines:
+				if !ok {
+					outputClosed = true
+					break stream
+				}
+				if strings.HasPrefix(line, reviewAckPrefix) {
+					ackSeen = true
+					t := time.NewTimer(reviewAckDrainGrace)
+					defer t.Stop()
+					ackGrace = t.C
+				}
+				_, _ = fmt.Fprintln(w, line)
+				if canFlush {
+					flusher.Flush()
+				}
+			case <-ackGrace:
+				break stream
+			}
+		}
+
+		if ackSeen && !outputClosed {
+			// The child is still running: end the response at the ack and
+			// reap the child in the background.
+			handedOff = true
+			_, _ = fmt.Fprintln(w, ReviewSentinelPassed)
 			if canFlush {
 				flusher.Flush()
 			}
+			go func() {
+				defer cancel()
+				for range lines {
+				}
+				werr := cmd.Wait()
+				if stderrBuf.Len() > 0 {
+					s.logger().Printf("sidecar: host-API /review: stderr: %s", strings.TrimSpace(stderrBuf.String()))
+				}
+				if werr != nil {
+					s.logger().Printf("sidecar: host-API /review: child ended with %v after the round started", werr)
+				}
+			}()
+			return
 		}
-		// scanner.Err() is checked implicitly — if the pipe closed cleanly it
-		// returns nil; errors are logged below after cmd.Wait().
 
 		waitErr := cmd.Wait()
 		if stderrBuf.Len() > 0 {
@@ -4294,14 +4350,17 @@ var reviewExecTimeout = 30 * time.Second
 // registered the round.
 const reviewAckPrefix = "Review in progress"
 
+// reviewAckDrainGrace is how long the handler keeps streaming after the
+// acknowledgement header, so the rest of the acknowledgement reaches the
+// client. The child prints the whole acknowledgement in one write.
+var reviewAckDrainGrace = 500 * time.Millisecond
+
 // describeReviewWaitErr names why the host review child ended without a round.
 func describeReviewWaitErr(ctx context.Context, waitErr error, hasStderr bool) string {
 	var cause string
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		cause = fmt.Sprintf("the host review process hit the %s deadline before it started a round", reviewExecTimeout)
-	case errors.Is(ctx.Err(), context.Canceled):
-		cause = "the host-API request was cancelled before the host review process started a round"
 	default:
 		cause = fmt.Sprintf("the host review process exited before it started a round (%v)", waitErr)
 	}
