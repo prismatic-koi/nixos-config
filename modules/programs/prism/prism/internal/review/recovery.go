@@ -28,7 +28,6 @@ package review
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
@@ -44,6 +43,10 @@ type RecoveryDeliveryResult struct {
 	Replayed    bool
 	FallbackTo  string // non-empty when delivery failed and a fallback file was written
 	MessageText string // the prompt body that was (or would have been) delivered
+	// FallbackStarted is the number of fallback sessions the recovery path
+	// started. When it is above zero nothing was delivered: the round is
+	// running again.
+	FallbackStarted int
 }
 
 // DeliverGroupResults aggregates the group's results, formats the
@@ -91,10 +94,13 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 		return nil, fmt.Errorf("review recovery: GroupMembersForGroup(%s): %w", groupID, err)
 	}
 
+	if n := StartRecoveryFallbacks(d, groupID); n > 0 {
+		proglog.Infof("[prism review recovery] group %s: started %d fallback session(s); delivery deferred\n", groupID, n)
+		return &RecoveryDeliveryResult{FallbackStarted: n}, nil
+	}
+
 	// Reconstruct the (Agents, AgentSessions) pair from the member rows.
-	// The agent name is the suffix after the last "-" in the session name
-	// (member sessions are <parent>~review-<N>-<agent>); fall back to the
-	// session name itself when the suffix cannot be parsed.
+	// Member sessions are <parent>~review-<N>-<agent>.
 	//
 	// A fallback chain (issue #3112) collapses to its last session, so the
 	// agent has one result, as on the monitor path.
@@ -105,7 +111,7 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 	agentSessions := EffectiveRoundSessions(names)
 	agents := make([]Agent, 0, len(agentSessions))
 	for _, sess := range agentSessions {
-		agents = append(agents, Agent{Name: agentNameFromSession(sess)})
+		agents = append(agents, Agent{Name: AgentNameFromSession(sess)})
 	}
 
 	groupData, err := d.GroupResults(groupID)
@@ -232,27 +238,57 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 	return res, nil
 }
 
-// agentNameFromSession extracts the agent name suffix from a review-agent
-// session name of the form "<parent>~review-<N>-<agent>". Returns the full
-// session name unchanged when the pattern is not present (degraded mode for
-// unexpected name shapes). A "-fallback-<k>" suffix is dropped, so a fallback
-// session reports the agent it re-runs.
-func agentNameFromSession(sessionName string) string {
-	tilde := strings.Index(sessionName, "~review-")
-	if tilde < 0 {
-		return sessionName
-	}
-	suffix := sessionName[tilde+len("~review-"):]
-	dash := strings.Index(suffix, "-")
-	if dash < 0 || dash == len(suffix)-1 {
-		return sessionName
-	}
-	return baseReviewSession(suffix[dash+1:])
-}
-
 // RecoveryDeliveryID returns the deterministic delivery_id used for the
 // recovery-path /prompt request for groupID. Exported so the watcher and
 // integration tests use the same value.
 func RecoveryDeliveryID(groupID string) string {
 	return "review-recovery:" + groupID
+}
+
+// StartRecoveryFallbacks starts the fallback session of each agent in the
+// group whose last session ended with a refusal and that has a fallback model
+// left. It reads the plan from the monitor's opts file, and it returns 0 when
+// that file is missing or has no plan. It returns the number of sessions
+// that spawned.
+func StartRecoveryFallbacks(d *db.DB, groupID string) int {
+	return startRecoveryFallbacks(d, groupID, nil)
+}
+
+func startRecoveryFallbacks(d *db.DB, groupID string, spawn fallbackSpawnFunc) int {
+	opts, err := LoadMonitorOptsFromFile(MonitorOptsPath(groupID))
+	if err != nil || opts.Fallback == nil {
+		return 0
+	}
+	members, err := d.GroupMembersForGroup(groupID)
+	if err != nil {
+		proglog.Warnf("[prism review recovery] warning: GroupMembersForGroup(%s): %v\n", groupID, err)
+		return 0
+	}
+	names := make([]string, 0, len(members))
+	for _, m := range members {
+		names = append(names, m.SessionName)
+	}
+	effective := EffectiveRoundSessions(names)
+	current := make([]string, len(opts.AgentSessions))
+	for i, base := range opts.AgentSessions {
+		current[i] = base
+		for _, e := range effective {
+			if baseReviewSession(e) == base {
+				current[i] = e
+			}
+		}
+	}
+	fr := newFallbackRunner(opts.Fallback, current, spawn)
+	// The runner counts attempts to pick the next fallback model. The
+	// fallback index of the current session is the number of attempts so far.
+	for i, cur := range current {
+		if i >= len(opts.Fallback.Agents) {
+			break
+		}
+		fbs := opts.Fallback.Agents[i].Fallbacks
+		for k := 0; k < fallbackIndex(cur) && k < len(fbs); k++ {
+			fr.attempts[i] = append(fr.attempts[i], FallbackAttempt{Model: fbs[k]})
+		}
+	}
+	return fr.step(d, groupID, opts.Agents)
 }
