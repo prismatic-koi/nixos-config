@@ -92,5 +92,5 @@ func runAgentRunSandboxExecHandler(ctx context.Context, opts container.AgentRunO
 	if status == nil {
 		return errAgentRunNoStatus(sessionName)
 	}
-	return runAgentRunSandboxExec(sessionName, status, opts.StartTime, opts.LogFile)
+	return runAgentRunSandboxExec(sessionName, status, opts.StartTime, opts.LogFile, opts.WorktreeReadOnly)
 }

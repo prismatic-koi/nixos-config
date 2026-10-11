@@ -194,7 +194,7 @@ func assembleOneReviewCycle(d *db.DB, g db.GroupInfo) (ReviewCycle, error) {
 	for _, sn := range sessionNames {
 		a := ReviewCycleAgent{
 			Session: sn,
-			Agent:   agentNameFromSession(sn),
+			Agent:   AgentNameFromSession(sn),
 		}
 		if av, ok := agg[sn]; ok {
 			a.DataRecorded = true

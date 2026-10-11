@@ -88,8 +88,9 @@ stderr go to the stdout and stderr of this command, and the exit code is the
 exit code of the container command.
 
 The session worktree is mounted at /workspace (read-only by default), and
-/workspace is the working directory. A short image name such as "alpine"
-means docker.io/library/alpine.
+/workspace is the working directory. Prism refuses --mount rw for a session
+with a read-only worktree (a review agent or an investigator). A short image
+name such as "alpine" means docker.io/library/alpine.
 
 Limits: one running container per session, and a host-wide limit (default
 4, set by the Nix option ` + prismcontainer.HostLimitNixOption + `). A request
@@ -347,11 +348,16 @@ func hostModeContainerCaller() (prismcontainer.Caller, string) {
 		return prismcontainer.Caller{}, "open db: " + err.Error()
 	}
 	status, err := d.CurrentStatus(session)
-	d.Close()
 	if err != nil || status == nil {
+		d.Close()
 		return prismcontainer.Caller{}, fmt.Sprintf("session %q is not in the prism database", session)
 	}
-	caller := prismcontainer.Caller{SessionName: session, Worktree: status.Worktree}
+	readOnly, err := d.WorktreeReadOnly(session)
+	d.Close()
+	if err != nil {
+		return prismcontainer.Caller{}, err.Error()
+	}
+	caller := prismcontainer.Caller{SessionName: session, Worktree: status.Worktree, WorktreeReadOnly: readOnly}
 	if status.InstanceID != nil {
 		caller.InstanceID = *status.InstanceID
 	}

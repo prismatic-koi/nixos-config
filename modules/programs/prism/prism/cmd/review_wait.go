@@ -38,11 +38,14 @@ type reviewWaitJSON struct {
 }
 
 type reviewWaitAgentJSON struct {
-	Agent   string `json:"agent"`
-	Session string `json:"session"`
-	State   string `json:"state"`   // finished / error / interrupted / deleted / unknown
-	Verdict string `json:"verdict"` // PASS / FAIL / NONE
-	Error   string `json:"error,omitempty"`
+	Agent string `json:"agent"`
+	// Fallback is the fallback index of the session: 0 for the first
+	// session of an agent, k for its k-th fallback.
+	Fallback int    `json:"fallback,omitempty"`
+	Session  string `json:"session"`
+	State    string `json:"state"`   // finished / error / interrupted / deleted / unknown
+	Verdict  string `json:"verdict"` // PASS / FAIL / NONE
+	Error    string `json:"error,omitempty"`
 }
 
 // waitForReviewTerminal polls the review group until db.GroupCompleted
@@ -160,9 +163,10 @@ func emitReviewWaitTerminalAgg(prNumber, groupID string, allMembers []db.Status,
 			continue
 		}
 		row := reviewWaitAgentJSON{
-			Agent:   agentNameFromSession(m.SessionName),
-			Session: m.SessionName,
-			State:   m.State,
+			Agent:    review.AgentNameFromSession(m.SessionName),
+			Fallback: review.FallbackIndexFromSession(m.SessionName),
+			Session:  m.SessionName,
+			State:    m.State,
 		}
 		if mr, ok := members[m.SessionName]; ok {
 			switch mr.State {
@@ -274,10 +278,11 @@ func emitReviewWaitTimeout(prNumber, groupID string, probe waitProbe, jsonMode b
 	rows := make([]reviewWaitAgentJSON, 0, len(allMembers))
 	for _, m := range allMembers {
 		rows = append(rows, reviewWaitAgentJSON{
-			Agent:   agentNameFromSession(m.SessionName),
-			Session: m.SessionName,
-			State:   m.State,
-			Verdict: "PENDING",
+			Agent:    review.AgentNameFromSession(m.SessionName),
+			Fallback: review.FallbackIndexFromSession(m.SessionName),
+			Session:  m.SessionName,
+			State:    m.State,
+			Verdict:  "PENDING",
 		})
 	}
 	if jsonMode {
@@ -297,15 +302,4 @@ func emitReviewWaitTimeout(prNumber, groupID string, probe waitProbe, jsonMode b
 	fmt.Fprintf(os.Stderr, "prism review --wait: timed out after %s; review continues running.\n", formatDurationShort(timeout))
 	fmt.Fprintf(os.Stderr, "  Track progress with: prism reviews list\n")
 	return nil
-}
-
-// agentNameFromSession recovers the per-agent role from a review session name
-// of the form "<parent>~review-<N>-<agent>". Falls back to the full session
-// name when no match is found.
-func agentNameFromSession(sessionName string) string {
-	m := reviewSessionPattern.FindStringSubmatch(sessionName)
-	if len(m) == 4 {
-		return m[3]
-	}
-	return sessionName
 }

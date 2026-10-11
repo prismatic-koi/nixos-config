@@ -58,7 +58,8 @@ var investigateCmd = &cobra.Command{
 	Short: "Spawn a read-only investigate-agent session and return immediately",
 	Long: `Spawn a new investigate-agent session named <invoker>~investigate-<slug>
 and return the session name immediately. The agent runs against the invoker's
-worktree in read-only mode.
+worktree. Under bwrap and sandbox-exec isolation, the worktree is read-only
+for the agent.
 
 Per-turn notifications are delivered back to the invoker session automatically
 via the sidecar. No --wait flag is provided — this command is always async.

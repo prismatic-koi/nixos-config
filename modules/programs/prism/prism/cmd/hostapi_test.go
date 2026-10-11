@@ -1364,7 +1364,7 @@ func TestProxyReviewAsync_HTTP500BeforeStreamReturnsError(t *testing.T) {
 	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":"review process failed — check host logs for details"}`))
+		_, _ = w.Write([]byte(`{"error":"review process failed: cause"}`))
 	})
 
 	var callErr error
@@ -1641,5 +1641,15 @@ func TestProxySpawn_EmptyPromptStdin_Rejected(t *testing.T) {
 	case <-called:
 		t.Fatal("host-API /spawn was called despite empty-stdin rejection")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestProxyReviewAsync_FailureSurfacesCause(t *testing.T) {
+	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(sidecar.ReviewCauseMarker + "the host review process hit the 30s deadline\n" + sidecar.ReviewSentinelFailed + "\n"))
+	})
+	_, err := proxyReviewAsync(srv.apiURL(), "1", nil, "", false, true, reviewProxyExtras{})
+	if err == nil || !strings.Contains(err.Error(), "30s deadline") || strings.Contains(err.Error(), "check host logs") {
+		t.Fatalf("error %v should name the cause", err)
 	}
 }

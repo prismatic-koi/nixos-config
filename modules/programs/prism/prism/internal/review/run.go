@@ -164,8 +164,9 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// allocation, tmux session creation, and sidecar startup — keeping
 		// review.go free of direct db/tmux/sidecar machinery.
 		//
-		// WorktreeReadOnly=true ensures review containers cannot modify the
-		// branch under review.
+		// WorktreeReadOnly=true (set in newReviewerSpawnOpts) makes the
+		// worktree read-only under bwrap and sandbox-exec, so a review agent
+		// cannot change the branch under review.
 		//
 		// Pi is the sole harness. Use it directly unless --harness was
 		// explicitly passed (opts.HarnessExplicit).

@@ -31,7 +31,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 45
+	currentSchemaVersion = 46
 )
 
 // DB wraps a SQLite connection.
@@ -202,7 +202,12 @@ CREATE TABLE IF NOT EXISTS agent_status (
   -- terminated on the PASS_WITH_DISAGREEMENT marker (#2977). NULL means no
   -- disagreement is pending -- either the round carried none, or it was
   -- already consumed by a finish notification or cleared by prism escalate.
-  pending_disagreement TEXT
+  pending_disagreement TEXT,
+  -- worktree_readonly is 1 for a session whose worktree the isolator must
+  -- mount read-only (a review agent or an investigator). SpawnSession
+  -- writes it. prism agent-run, the sidecar, and the prism container
+  -- routes read it.
+  worktree_readonly INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS bus_messages (
@@ -1054,6 +1059,9 @@ func runMigrations(conn sqlExecutor) error {
 	if err := migrateV44ToV45(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV45ToV46(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -1742,6 +1750,34 @@ func migrateV44ToV45(conn sqlExecutor, version *int) error {
 		return fmt.Errorf("db: migration v44\u2192v45: %w", err)
 	}
 	*version = 45
+	return nil
+}
+
+// migrateV45ToV46 adds the `worktree_readonly` column to agent_status.
+// Existing rows take the default 0. The ALTER TABLE is guarded by a
+// pragma_table_info check so the migration is idempotent on fresh databases
+// where the declarative schema block above already includes the column.
+func migrateV45ToV46(conn sqlExecutor, version *int) error {
+	if *version >= 46 {
+		return nil
+	}
+	var exists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_status') WHERE name = 'worktree_readonly'`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("db: migration v45\u2192v46: check worktree_readonly column: %w", err)
+	}
+	if exists == 0 {
+		if _, err := conn.Exec(
+			`ALTER TABLE agent_status ADD COLUMN worktree_readonly INTEGER NOT NULL DEFAULT 0`,
+		); err != nil {
+			return fmt.Errorf("db: migration v45\u2192v46: add worktree_readonly: %w", err)
+		}
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 46`); err != nil {
+		return fmt.Errorf("db: migration v45\u2192v46: %w", err)
+	}
+	*version = 46
 	return nil
 }
 

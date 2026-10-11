@@ -30,9 +30,9 @@ in
       background_0 = bg0;
       background_1 = "#343f44";
       background_2 = "#475258";
-      background_3 = "#7a8478";
-      background_4 = lighten "#7a8478" 3; # derived — no further raised surface upstream
-      background_5 = lighten "#7a8478" 6; # derived — no further raised surface upstream
+      background_3 = "#56635f";
+      background_4 = lighten "#56635f" 3; # derived — no further raised surface upstream
+      background_5 = lighten "#56635f" 6; # derived — no further raised surface upstream
       foreground_dim = "#859289";
       foreground = "#d3c6aa";
     };

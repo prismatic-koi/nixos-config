@@ -220,7 +220,6 @@ func bwrapBaselineArgs() []string {
 //
 // # Mounts not included
 //
-//   - WorktreeReadOnly handling for review agents under bwrap.
 //   - Darwin Keychain credentials (darwin-only, not applicable on Linux).
 func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	cfg := m.cfg
@@ -334,12 +333,10 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		}
 	}
 
-	// ── Worktree (read-write) ───────────────────────────────────────────────
+	// ── Worktree (read-only when cfg.WorktreeReadOnly) ──────────────────────
 	// Dst == Src: the worktree mounts at its host path inside the sandbox.
 	// No /workspace remap — this is the key bwrap design difference.
-	if cfg.Worktree != "" {
-		args = append(args, "--bind", cfg.Worktree, cfg.Worktree)
-	}
+	args = append(args, bwrapWorktreeBind(cfg)...)
 
 	// ── Bare repo and worktree private git state (read-write) ──────────────
 	// Dst == Src: both directories mount at their host paths inside the
@@ -722,6 +719,23 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	args = append(args, PIInvocation(cfg)...)
 
 	return args
+}
+
+// bwrapWorktreeBind returns the bind triple of the worktree: --ro-bind when
+// cfg.WorktreeReadOnly is set, else --bind. It returns nil when cfg has no
+// worktree.
+//
+// The worktree git dir and the bare repo are not below the worktree, and
+// their binds stay read-write, so git can still update the index and fetch.
+func bwrapWorktreeBind(cfg Config) []string {
+	if cfg.Worktree == "" {
+		return nil
+	}
+	flag := "--bind"
+	if cfg.WorktreeReadOnly {
+		flag = "--ro-bind"
+	}
+	return []string{flag, cfg.Worktree, cfg.Worktree}
 }
 
 // Run launches "bwrap <args...>" and waits for it to complete. Stdout and

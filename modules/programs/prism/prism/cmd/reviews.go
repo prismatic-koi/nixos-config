@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
 )
 
@@ -70,13 +71,6 @@ func init() {
 	reviewsCmd.AddCommand(reviewsListCmd)
 	rootCmd.AddCommand(reviewsCmd)
 }
-
-// reviewSessionPattern matches per-agent review session names of the form
-// "<parent>~review-<N>-<agent>". We use it to recover the PR number's parent
-// branch from any one member; the actual PR number is not encoded in the
-// session name (the round number N is) so PR is left unknown unless we can
-// derive it from the parent's branch suffix.
-var reviewSessionPattern = regexp.MustCompile(`^(.+)~review-(\d+)-(.+)$`)
 
 // reviewParentBranchPattern extracts the branch component from a parent
 // session name "<repo>@<branch>". Used as a heuristic for surfacing the PR
@@ -194,11 +188,8 @@ func inferPRFromGroup(g db.ReviewGroupSummary) int {
 // group share the same round, so we can return the first one we parse.
 func inferRoundFromGroup(g db.ReviewGroupSummary) int {
 	for _, name := range g.Members {
-		m := reviewSessionPattern.FindStringSubmatch(name)
-		if len(m) == 4 {
-			if n, err := strconv.Atoi(m[2]); err == nil {
-				return n
-			}
+		if ps, ok := review.ParseReviewSession(name); ok {
+			return ps.Round
 		}
 	}
 	return 0

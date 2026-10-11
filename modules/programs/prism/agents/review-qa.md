@@ -79,7 +79,7 @@ Run validation in priority order. Stop and report if a P0 scenario fails — do 
 
 | Project type | Validation approach |
 |---|---|
-| NixOS/nix config | `nix build <target>`, `nixfmt .`, `nix flake check` |
+| NixOS/nix config | `nix build --no-link <target>`, `nixfmt --check .`, `nix flake check` |
 | Go source | `go build ./...`, `go test ./...`, `go vet ./...` |
 | TypeScript/JavaScript | `npm test`, `npx tsc --noEmit`, linter checks |
 | Pi extension tests (`modules/programs/prism/pi/extensions/`) | `tsx --test` from that directory. `node`, `npm`, and `npx` are on `PATH` (`nodejs_24` in `pi.nix`); use `tsx --test` to run these tests |
@@ -91,6 +91,8 @@ Run validation in priority order. Stop and report if a P0 scenario fails — do 
 | Generic | Read test files, run any test runner mentioned in AGENTS.md |
 
 Always read `AGENTS.md` before running validation — it contains project-specific commands and can contradict these defaults.
+
+Under `bwrap` and `sandbox-exec`, your worktree is read-only. A command that writes into the worktree fails with a permission error, and that failure is not a defect of the change. Use a form that does not write into the worktree: `nix build --no-link`, and `nixfmt --check` in place of `nixfmt`. `go build ./...`, `go vet ./...`, and `go test ./...` write only to the Go caches and to temporary directories, so they work.
 
 ### Step 5: Compile results
 

@@ -94,7 +94,7 @@ prism container run --mount none alpine -- sh -c 'apk add --no-cache curl && cur
 | `--mount` | Result |
 |---|---|
 | `ro` | The worktree is read-only at `/workspace`. The working directory is `/workspace`. A write under `/workspace` fails. |
-| `rw` | The worktree is read-write at `/workspace`. The working directory is `/workspace`. A file that the container writes appears in the worktree. |
+| `rw` | The worktree is read-write at `/workspace`. The working directory is `/workspace`. A file that the container writes appears in the worktree. Prism refuses `rw` for a session with a read-only worktree (a review agent or an investigator). |
 | `none` | The container has no `/workspace`. The working directory is the default of the image. |
 
 The mount source is always the worktree of the calling session. Prism

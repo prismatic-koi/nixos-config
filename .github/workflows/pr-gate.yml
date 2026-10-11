@@ -27,6 +27,7 @@ jobs:
       - go-tests-macos-sandbox-exec
       - go-tests-bwrap-live
       - go-tests-container-live
+      - go-fuzz-containerfile
     if: always()
     steps:
       - name: Check upstream job results
@@ -39,6 +40,7 @@ jobs:
           GO_TESTS_MACOS_SANDBOX_EXEC_RESULT: ${{ needs.go-tests-macos-sandbox-exec.result }}
           GO_TESTS_BWRAP_LIVE_RESULT: ${{ needs.go-tests-bwrap-live.result }}
           GO_TESTS_CONTAINER_LIVE_RESULT: ${{ needs.go-tests-container-live.result }}
+          GO_FUZZ_CONTAINERFILE_RESULT: ${{ needs.go-fuzz-containerfile.result }}
         run: |
           echo "go-tests: $GO_TESTS_RESULT"
           echo "nix-build-prism-checked: $NIX_BUILD_PRISM_CHECKED_RESULT"
@@ -48,6 +50,7 @@ jobs:
           echo "go-tests-macos-sandbox-exec: $GO_TESTS_MACOS_SANDBOX_EXEC_RESULT"
           echo "go-tests-bwrap-live: $GO_TESTS_BWRAP_LIVE_RESULT"
           echo "go-tests-container-live: $GO_TESTS_CONTAINER_LIVE_RESULT"
+          echo "go-fuzz-containerfile: $GO_FUZZ_CONTAINERFILE_RESULT"
           if [ "$GO_TESTS_RESULT" != "success" ] \
              || [ "$NIX_BUILD_PRISM_CHECKED_RESULT" != "success" ] \
              || [ "$GO_TESTS_BM_RESULT" != "success" ] \
@@ -55,7 +58,8 @@ jobs:
              || [ "$PI_EXTENSION_TESTS_RESULT" != "success" ] \
              || [ "$GO_TESTS_MACOS_SANDBOX_EXEC_RESULT" != "success" ] \
              || [ "$GO_TESTS_BWRAP_LIVE_RESULT" != "success" ] \
-             || [ "$GO_TESTS_CONTAINER_LIVE_RESULT" != "success" ]; then
+             || [ "$GO_TESTS_CONTAINER_LIVE_RESULT" != "success" ] \
+             || [ "$GO_FUZZ_CONTAINERFILE_RESULT" != "success" ]; then
             echo "pr-gate: one or more required jobs did not succeed" >&2
             exit 1
           fi
@@ -234,7 +238,7 @@ jobs:
           authToken: ${{ secrets.CACHIX_TOKEN }}
           extraPullNames: nix-community
           name: lucidph3nx-nixos-config
-      - name: go test ./internal/integration -run '^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|ContainerCLI)' -race
+      - name: go test ./internal/integration -run '^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|WorktreeReadOnly|ContainerCLI)' -race
         if: steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism
         # Run inside `nix shell` so bash and coreutils resolve to
@@ -254,7 +258,7 @@ jobs:
         run: |
           set -o pipefail
           nix shell --print-build-logs nixpkgs#bash nixpkgs#coreutils \
-            --command bash -c 'TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"; export TMPDIR; go test -v ./internal/integration/ -run "^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|ContainerCLI)" -race' 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
+            --command bash -c 'TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"; export TMPDIR; go test -v ./internal/integration/ -run "^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|WorktreeReadOnly|ContainerCLI)" -race' 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
       # A SKIP must never read as a PASS (this was a review blocker on the
       # parent issue). go test exits 0 even when every selected test
       # skips (e.g. the /var/folders TMPDIR guard tripping on a runner
@@ -274,10 +278,10 @@ jobs:
             exit 1
           fi
 
-          run_count=$(grep -cE '^=== RUN   TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|ContainerCLI)' /tmp/go-test-macos-sandbox-exec.log || true)
-          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|ContainerCLI)|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
+          run_count=$(grep -cE '^=== RUN   TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|WorktreeReadOnly|ContainerCLI)' /tmp/go-test-macos-sandbox-exec.log || true)
+          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|WorktreeReadOnly|ContainerCLI)|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
 
-          echo "TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|ContainerCLI)* tests run: ${run_count:-0}"
+          echo "TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|WorktreeReadOnly|ContainerCLI)* tests run: ${run_count:-0}"
           if [ -n "$skip_lines" ]; then
             echo "::error::one or more selected tests reported SKIP - a skip must not read as a pass:"
             echo "$skip_lines"
@@ -360,7 +364,7 @@ jobs:
           # dynamic binary needs the host /lib64 loader, which is not bound.
           export CGO_ENABLED=0
           nix shell --print-build-logs nixpkgs#coreutils nixpkgs#util-linux nixpkgs#go \
-            --command go test -v ./internal/container/ ./internal/integration/ ./internal/sidecar/ -run '^(TestBwrapBaseline_|TestBwrapUsageStateDir_|TestBwrapGoCacheDirs_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)' 2>&1 | tee /tmp/go-test-bwrap-live.log
+            --command go test -v ./internal/container/ ./internal/integration/ ./internal/sidecar/ -run '^(TestBwrapBaseline_|TestBwrapUsageStateDir_|TestBwrapGoCacheDirs_|TestBwrapWorktreeReadOnly_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)' 2>&1 | tee /tmp/go-test-bwrap-live.log
       - name: Guard against SKIP-as-PASS and a zero-test run
         if: always() && steps.changes.outputs.go == 'true'
         run: |
@@ -368,7 +372,7 @@ jobs:
             echo "::error::go test log not found - likely the test step did not run" >&2
             exit 1
           fi
-          sel='^(TestBwrapBaseline_|TestBwrapUsageStateDir_|TestBwrapGoCacheDirs_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)'
+          sel='^(TestBwrapBaseline_|TestBwrapUsageStateDir_|TestBwrapGoCacheDirs_|TestBwrapWorktreeReadOnly_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)'
           run_count=$(grep -E '^=== RUN   Test' /tmp/go-test-bwrap-live.log | awk '{print $3}' | grep -cE "$sel" || true)
           skip_lines=$(grep -E '^\s*--- SKIP:|^=== SKIP|    [^ ].*_test\.go:[0-9]+: skipping' /tmp/go-test-bwrap-live.log || true)
           echo "live bwrap tests run: ${run_count:-0}"
@@ -472,6 +476,42 @@ jobs:
       - name: No container-relevant changes
         if: steps.changes.outputs.container != 'true'
         run: echo "no container paths touched; skipping go-tests-container-live"
+
+  # Differential fuzz test of the Containerfile check of prism container
+  # build against the Dockerfile parser of imagebuilder (#3110). It lives in
+  # a nested Go module, so "go test ./..." of the prism module does not run
+  # it. The seed corpus holds the bypass inputs of the review rounds of
+  # PR #3075. The fuzz run lasts 90 seconds.
+  go-fuzz-containerfile:
+    name: go-fuzz-containerfile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Detect relevant changes
+        id: changes
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            fuzz:
+              - 'modules/programs/prism/prism/internal/prismcontainer/**'
+              - '.github/workflows/pr-gate.yml'
+      - name: Set up Go
+        if: steps.changes.outputs.fuzz == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: modules/programs/prism/prism/go.mod
+          cache-dependency-path: modules/programs/prism/prism/internal/prismcontainer/parserdiff/go.sum
+      - name: go test (seed corpus)
+        if: steps.changes.outputs.fuzz == 'true'
+        working-directory: modules/programs/prism/prism/internal/prismcontainer/parserdiff
+        run: go test -count=1 ./...
+      - name: go test -fuzz (90 seconds)
+        if: steps.changes.outputs.fuzz == 'true'
+        working-directory: modules/programs/prism/prism/internal/prismcontainer/parserdiff
+        run: go test -run '^$' -fuzz '^FuzzCheckAgainstImagebuilder$' -fuzztime 90s .
+      - name: No relevant changes
+        if: steps.changes.outputs.fuzz != 'true'
+        run: echo "no prismcontainer paths touched; skipping go-fuzz-containerfile"
 
   # Builds prism with doCheck=true so the homeless-shelter sandbox
   # signal ($HOME=/homeless-shelter) is preserved in the PR pipeline.
