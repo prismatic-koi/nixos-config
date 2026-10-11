@@ -236,6 +236,15 @@ integration test coverage exists for:
   and a copy under another name runs. The paired negative strips the deny
   and runs the copy named `podman`. See
   `sandbox_exec_container_cli_darwin_test.go`.
+- **The read-only worktree deny** — the final deny (section 21d) on
+  `file-write*` in the worktree, for a session with
+  `Config.WorktreeReadOnly` set (a review agent or an investigator). Under
+  the production profile of such a session, a read of a worktree file
+  works, and a change, a create, and a remove each fail with
+  "Operation not permitted". Under the profile of a worker, the same
+  writes work. The paired negative strips the deny from the read-only
+  profile and the writes work. See
+  `sandbox_exec_worktree_readonly_darwin_test.go`.
 - **Network egress** — `(allow network*)` permits outbound TCP.
 
 Each positive case has a paired negative case that mutates the profile to
