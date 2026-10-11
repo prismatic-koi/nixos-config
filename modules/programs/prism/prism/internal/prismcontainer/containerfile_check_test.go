@@ -226,6 +226,27 @@ func TestBuild_TransportRefusedOnAnyLine(t *testing.T) {
 	}
 }
 
+// TestBuild_ChainedOnbuildRefused: a chained ONBUILD is refused, in any
+// case and with any whitespace, so the inner instruction is not read.
+func TestBuild_ChainedOnbuildRefused(t *testing.T) {
+	cases := map[string]string{
+		"plain":          "FROM alpine\nONBUILD ONBUILD COPY --from=tarball:/x /a /b\n",
+		"no newline":     "ONBUILD ONBUILD COPY --from=atomic:",
+		"mixed case":     "FROM alpine\nonBuild OnBuild COPY --from=tarball:/x /a /b\n",
+		"tabs and VT":    "FROM alpine\nONBUILD\t\vONBUILD\fCOPY --from=tarball:/x /a /b\n",
+		"literal source": "FROM alpine\nONBUILD ONBUILD COPY --from=build /a /b\n",
+		"three deep":     "FROM alpine\nONBUILD ONBUILD ONBUILD RUN true\n",
+		"joined lines":   "FROM alpine\nONBUILD \\\n ONBUILD COPY --from=tarball:/x /a /b\n",
+		"flags between":  "FROM alpine\nONBUILD --x ONBUILD COPY --from=tarball:/x /a /b\n",
+	}
+	for name, file := range cases {
+		t.Run(name, func(t *testing.T) {
+			res, f := buildFile(t, file)
+			wantRefused(t, res, f, "ONBUILD ONBUILD")
+		})
+	}
+}
+
 // TestBuild_PolicyRefusalNamed: when the signature policy of a Linux
 // build refuses a source that the check cannot see (an ONBUILD
 // instruction of a base image), the result names the cause.

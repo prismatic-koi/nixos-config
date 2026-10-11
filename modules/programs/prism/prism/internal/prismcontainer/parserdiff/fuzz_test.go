@@ -72,6 +72,12 @@ func bypassSeeds() []string {
 		"FROM alpine\nCOPY --FROM=tarball:/x /a /b\n",
 		"FROM \\\n# a comment\n  tarball:/x\n",
 		"FROM alpine\nRUN true" + strings.Repeat(" \\\n  && true", 200) + "\nFROM tarball:/x\n",
+		// Chained ONBUILD: the parser of imagebuilder reads the inner
+		// instruction (found by the fuzzer in CI).
+		"ONBUILD ONBUILD COPY --from=atomic:",
+		"FROM alpine\nONBUILD ONBUILD COPY --from=tarball:/x /a /b\n",
+		"FROM alpine\nONBUILD ONBUILD ONBUILD COPY --from=tarball:/x /a /b\n",
+		"FROM alpine\nONBUILD ONBUILD FROM tarball:/x\n",
 		// Inputs that must pass the oracle without a transport.
 		"FROM docker://alpine\n",
 		"FROM docker:24-dind\n",
