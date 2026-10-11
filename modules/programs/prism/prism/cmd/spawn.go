@@ -930,9 +930,9 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		// be killed.
 		ForceFresh: true,
 		Headless:   headless,
-		// WorktreeReadOnly: mount the worktree read-only for investigate sessions
-		// (defence in depth — denylist prevents writes at the bash level;
-		// read-only mount ensures even a denylist gap cannot modify the repo).
+		// An investigator gets a read-only worktree under bwrap and
+		// sandbox-exec. Under host, nothing enforces it. The git dir and the
+		// bare repo stay writable. See SpawnOpts.WorktreeReadOnly.
 		WorktreeReadOnly: agentRole == "investigate",
 		// ReadinessTimeout=DefaultReadinessTimeout (30s) gates SpawnSession's
 		// return on the agent actually binding its port.
@@ -1534,7 +1534,7 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		Variant:    a.variantFlag,
 		ForceFresh: true,
 		Headless:   true,
-		// WorktreeReadOnly: mount the worktree read-only for investigate sessions.
+		// An investigator gets a read-only worktree; see the main spawn path.
 		WorktreeReadOnly: agentRole == "investigate",
 		// PIExtensionDir for host-mode pi launches.
 		PIExtensionDir:   a.cfg.PIExtensionDir,
