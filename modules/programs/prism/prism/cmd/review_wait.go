@@ -123,7 +123,20 @@ func emitReviewWaitTerminalAgg(prNumber, groupID string, allMembers []db.Status,
 
 	allPass := true
 	rows := make([]reviewWaitAgentJSON, 0, len(allMembers))
+	// A session that a fallback session replaced (issue #3112) has no
+	// verdict by design. Only the last session of each chain counts.
+	names := make([]string, 0, len(allMembers))
 	for _, m := range allMembers {
+		names = append(names, m.SessionName)
+	}
+	effective := make(map[string]bool, len(names))
+	for _, n := range review.EffectiveRoundSessions(names) {
+		effective[n] = true
+	}
+	for _, m := range allMembers {
+		if !effective[m.SessionName] {
+			continue
+		}
 		row := reviewWaitAgentJSON{
 			Agent:   agentNameFromSession(m.SessionName),
 			Session: m.SessionName,

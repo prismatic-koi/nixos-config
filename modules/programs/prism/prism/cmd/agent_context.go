@@ -19,6 +19,8 @@ package cmd
 //	prism_version      — git SHA of the binary (empty in dev builds)
 //	commands           — map of command name → CommandMeta
 //	available_profiles — list of profile names from profiles.json ([] if missing)
+//	profile_fallbacks  — profile → role → ordered review fallback models
+//	                     ({} if missing; only slots that set fallbacks)
 //	precedence         — map of cross-cutting precedence rules
 
 import (
@@ -90,7 +92,11 @@ type AgentContextDocument struct {
 	PrismVersion      string                 `json:"prism_version"`
 	Commands          map[string]CommandMeta `json:"commands"`
 	AvailableProfiles []string               `json:"available_profiles"`
-	Precedence        map[string][]string    `json:"precedence"`
+	// ProfileFallbacks maps profile name → role → the ordered fallback
+	// models of that slot (issue #3112). Only slots that set fallbacks
+	// appear.
+	ProfileFallbacks map[string]map[string][]string `json:"profile_fallbacks"`
+	Precedence       map[string][]string            `json:"precedence"`
 }
 
 // flagEnumMeta carries custom metadata for flags that have enum constraints.
@@ -200,6 +206,10 @@ var precedenceRules = map[string][]string{
 		"--provider flag on prism spawn (pi harness only)",
 		"profile slot provider field in ~/.config/prism/profiles.json (lowest)",
 	},
+	"review_fallback": {
+		"--model-override role=model flag on prism review (disables the fallbacks for that role)",
+		"profile slot fallbacks field in ~/.config/prism/profiles.json (lowest)",
+	},
 }
 
 var agentContextCmd = &cobra.Command{
@@ -243,6 +253,7 @@ func runAgentContext(cmd *cobra.Command, args []string) error {
 func buildAgentContextDocument(includeHidden bool) AgentContextDocument {
 	// Load available profiles — missing file is not an error.
 	profiles := loadAvailableProfiles()
+	fallbacks := loadProfileFallbacks()
 
 	// Walk the command tree.
 	commands := make(map[string]CommandMeta)
@@ -259,6 +270,7 @@ func buildAgentContextDocument(includeHidden bool) AgentContextDocument {
 		PrismVersion:      archive.PrismGitSHA(),
 		Commands:          commands,
 		AvailableProfiles: profiles,
+		ProfileFallbacks:  fallbacks,
 		Precedence:        precedenceRules,
 	}
 }
@@ -419,4 +431,27 @@ func loadAvailableProfiles() []string {
 		return []string{}
 	}
 	return names
+}
+
+// loadProfileFallbacks reads profiles.json and returns the fallback models of
+// every slot that sets them. Returns an empty (non-nil) map if the file is
+// missing or unreadable.
+func loadProfileFallbacks() map[string]map[string][]string {
+	out := map[string]map[string][]string{}
+	pf, err := config.LoadProfiles()
+	if err != nil {
+		return out
+	}
+	for name, entry := range pf.Profiles {
+		for role, slot := range entry {
+			if len(slot.Fallbacks) == 0 {
+				continue
+			}
+			if out[name] == nil {
+				out[name] = map[string][]string{}
+			}
+			out[name][role] = slot.Fallbacks
+		}
+	}
+	return out
 }

@@ -156,6 +156,12 @@ type MonitorOpts struct {
 	// ReapGrace overrides ReapGracePeriod for this round. Zero uses the
 	// default. Read only when ReapAfterDelivery is true.
 	ReapGrace time.Duration
+	// Fallback, when set, makes the monitor re-run an agent on a fallback
+	// model after a provider refusal (issue #3112). Nil disables fallbacks.
+	Fallback *FallbackPlan `json:",omitempty"`
+
+	// spawnFallback replaces spawnFallbackSession in tests.
+	spawnFallback fallbackSpawnFunc
 }
 
 // defaultPollInterval is how often the monitor polls GroupCompleted.
@@ -240,12 +246,24 @@ func MonitorFunc(opts MonitorOpts) error {
 	// Second, SetGroupDeliveredAt below records the group's end-of-life once
 	// results are delivered, and that — not member state — is what releases
 	// the in-progress guard (ActiveReviewGroupForParent).
+	//
+	// Each pass also starts the fallback session of any agent that the
+	// provider refused. A fallback session joins the group as a non-terminal
+	// member, so GroupCompleted stays false until it ends. The check runs
+	// again after GroupCompleted is true, because an agent can end with a
+	// refusal between the first check and GroupCompleted.
+	fallbacks := newFallbackRunner(opts.Fallback, opts.AgentSessions, opts.spawnFallback)
 	deadlineLogged := false
 	for {
+		fallbacks.step(d, opts.GroupID, opts.Agents)
 		done, groupErr := d.GroupCompleted(opts.GroupID)
 		if groupErr != nil {
 			proglog.Warnf("[prism monitor-review] warning: GroupCompleted(%s): %v — retrying\n", opts.GroupID, groupErr)
 		} else if done {
+			if fallbacks.step(d, opts.GroupID, opts.Agents) > 0 {
+				time.Sleep(pollInterval)
+				continue
+			}
 			proglog.Infof("[prism monitor-review] group %s complete — aggregating results\n", opts.GroupID)
 			break
 		}
@@ -255,7 +273,7 @@ func MonitorFunc(opts MonitorOpts) error {
 				proglog.Infof("[prism monitor-review] group-wide safety deadline reached for group %s — reaping dead-watchdog members, sparing any still-live agent\n", opts.GroupID)
 				deadlineLogged = true
 			}
-			spared := forceTerminateStuckMembers(d, opts.AgentSessions, opts.Timeout)
+			spared := forceTerminateStuckMembers(d, fallbacks.current, opts.Timeout)
 			if spared == 0 {
 				// No live members remain: every member is now terminal (reaped
 				// or finished). Deliver the partial results.
@@ -289,11 +307,14 @@ func MonitorFunc(opts MonitorOpts) error {
 
 	// Build AgentResult slice, handling "missing" sessions (row reaped or
 	// deleted mid-review).
-	results := buildMonitorResults(opts.Agents, opts.AgentSessions, groupData, endedRows, endedCauses)
+	// fallbacks.current is opts.AgentSessions with each refused session
+	// replaced by the last session of its fallback chain.
+	results := buildMonitorResults(opts.Agents, fallbacks.current, groupData, endedRows, endedCauses)
+	fallbacks.annotate(results)
 
 	// Classify the round once. RoundStatus is the single source of truth for
 	// both the report wording and the cycle-counter gate below.
-	status := ClassifyRoundWithCauses(opts.Agents, opts.AgentSessions, groupData, endedRows, endedCauses)
+	status := ClassifyRoundWithCauses(opts.Agents, fallbacks.current, groupData, endedRows, endedCauses)
 
 	// Format the delivery message. FormatResultsForRound keeps the summary
 	// footer's retry hint consistent with the re-run advice below.
@@ -1664,10 +1685,14 @@ func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID stri
 		if len(groupData) == 0 {
 			continue
 		}
+		// A fallback chain (issue #3112) collapses to its last session: the
+		// refused sessions before it produced no verdict by design, and the
+		// round is still one cycle.
 		expected := make([]string, 0, len(gMembers))
 		for _, m := range gMembers {
 			expected = append(expected, m.SessionName)
 		}
+		expected = EffectiveRoundSessions(expected)
 		if cycleProducedVerdicts(expected, groupData, endedRowsFrom(gMembers)) {
 			count++
 		}

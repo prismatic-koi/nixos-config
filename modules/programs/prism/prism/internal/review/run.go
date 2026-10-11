@@ -414,6 +414,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	// Spawn each agent.
 	agentSessions := make([]string, len(agents))
 	spawnErr := make([]error, len(agents))
+	prompts := make([]string, len(agents))
 
 	for i, ag := range agents {
 		agentSession := roundPrefix + ag.Name
@@ -426,6 +427,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			prCtxWithWorktree = &ctxCopy
 		}
 		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree, ag.Name)
+		prompts[i] = prompt
 
 		if roleDefinitionMissing(ag.Name) && opts.OnProgress != nil {
 			opts.OnProgress(fmt.Sprintf("%s: role definition missing or empty at %s — starting with a degraded system prompt", FormatAgentDisplayName(ag.Name), roleDefinitionPath(ag.Name)))
@@ -556,6 +558,19 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		// sessions hold a concurrency slot and a harness port until a human
 		// notices.
 		ReapAfterDelivery: true,
+		Fallback: &FallbackPlan{
+			Repo:               repo,
+			Worktree:           worktree,
+			PromptTemplateHash: ReviewPromptTemplateHash(),
+			IsolationMode:      opts.IsolationMode,
+			PluginHostPath:     opts.PluginHostPath,
+			HarnessName:        asyncHarnessName(opts),
+			PIExtensionDir:     opts.PIExtensionDir,
+			ProfileName:        activeProfile,
+			InvokerSession:     opts.ParentSession,
+			ModelsByRole:       opts.ModelsByRole,
+			Agents:             buildFallbackPlan(opts.ProfilesFile, activeProfile, opts.ModelsByRole, expectedAgents, prompts),
+		},
 	}
 	if startErr := StartMonitorProcess(monitorOpts, prismBinary); startErr != nil {
 		// Monitor failed to start — not fatal for spawning, but warn loudly.
@@ -685,4 +700,13 @@ func LookupParentSession() string {
 func expectedRoundSet(agents []Agent, agentSessions []string, spawnErr []error) ([]Agent, []string) {
 	_ = spawnErr // see the doc comment: the expected set is never filtered.
 	return agents, agentSessions
+}
+
+// asyncHarnessName returns the harness RunAsync spawns each agent on: "pi",
+// unless --harness was passed.
+func asyncHarnessName(opts Opts) string {
+	if opts.HarnessExplicit {
+		return opts.Harness
+	}
+	return "pi"
 }

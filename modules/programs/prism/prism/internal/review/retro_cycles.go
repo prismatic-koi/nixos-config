@@ -175,9 +175,12 @@ func assembleOneReviewCycle(d *db.DB, g db.GroupInfo) (ReviewCycle, error) {
 	// The expected agent list for ClassifyRound is exactly the members the
 	// group registered — every review agent gets an agent_status row at
 	// spawn time, so there is no historical case where a member is expected
-	// but was never registered at all.
-	agents := make([]Agent, len(sessionNames))
-	rs := ClassifyRound(agents, sessionNames, groupData, nil)
+	// but was never registered at all. A fallback chain (issue #3112)
+	// collapses to its last session, as in CompletedReviewCyclesForParent;
+	// every session still appears in the per-agent list below.
+	effective := EffectiveRoundSessions(sessionNames)
+	agents := make([]Agent, len(effective))
+	rs := ClassifyRound(agents, effective, groupData, nil)
 	cyc.CountsAsCycle = rs.CountsAsCycle()
 	if !cyc.CountsAsCycle {
 		cyc.NonCountingLabel = rs.NonCountingLabel()

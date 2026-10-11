@@ -42,14 +42,18 @@ import (
 //   - Model: model identifier for this role's session.
 //   - Thinking: reasoning level. Passed to pi verbatim on argv as
 //     `--thinking <value>` (see container.PIInvocation).
+//   - Fallbacks: ordered models that `prism review` re-runs a review agent
+//     on when the provider refuses the request (issue #3112). Other roles
+//     ignore it.
 //
 // The role system-prompt is not carried in the slot: it is injected at
 // runtime by the prism PI extension (before_agent_start) from
 // ~/.config/prism/agents/<role>.md.
 type RoleSlot struct {
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model"`
-	Thinking string `json:"thinking,omitempty"`
+	Provider  string   `json:"provider,omitempty"`
+	Model     string   `json:"model"`
+	Thinking  string   `json:"thinking,omitempty"`
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // ProfileEntry maps session role names ("coordinator", "worker", "review-goal",

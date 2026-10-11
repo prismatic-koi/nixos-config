@@ -356,6 +356,16 @@ round does not count. A worker that hits the gate three times in a row
 and then runs three real reviews still has all three real cycles
 available before the LOOP-LIMIT footer fires.
 
+**Provider-refusal fallback (#3112).** When a review agent ends with
+`run_error` and the provider stop reason is `refusal` or `sensitive`, the
+monitor runs the agent again on the next model in the `fallbacks` list of its
+profile slot. The fallback runs in the same round, with the same prompt, as
+the session `<parent>~review-<N>-<agent>-fallback-<k>`. The report gives the
+model of each verdict and lists each fallback with its stop reason. The round
+counts as one cycle. Do not re-run a refused agent by hand while fallbacks
+remain. `--model-override <role>=<model>` disables the fallbacks for that
+role. `prism agent-context` shows the fallbacks under `profile_fallbacks`.
+
 Rounds that **do not count** toward the 3-cycle limit:
 
 - **Pre-flight gate refusals** — behind-base, fetch failure, missing

@@ -95,11 +95,17 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 	// The agent name is the suffix after the last "-" in the session name
 	// (member sessions are <parent>~review-<N>-<agent>); fall back to the
 	// session name itself when the suffix cannot be parsed.
-	agents := make([]Agent, 0, len(members))
-	agentSessions := make([]string, 0, len(members))
+	//
+	// A fallback chain (issue #3112) collapses to its last session, so the
+	// agent has one result, as on the monitor path.
+	names := make([]string, 0, len(members))
 	for _, m := range members {
-		agentSessions = append(agentSessions, m.SessionName)
-		agents = append(agents, Agent{Name: agentNameFromSession(m.SessionName)})
+		names = append(names, m.SessionName)
+	}
+	agentSessions := EffectiveRoundSessions(names)
+	agents := make([]Agent, 0, len(agentSessions))
+	for _, sess := range agentSessions {
+		agents = append(agents, Agent{Name: agentNameFromSession(sess)})
 	}
 
 	groupData, err := d.GroupResults(groupID)
@@ -229,7 +235,8 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 // agentNameFromSession extracts the agent name suffix from a review-agent
 // session name of the form "<parent>~review-<N>-<agent>". Returns the full
 // session name unchanged when the pattern is not present (degraded mode for
-// unexpected name shapes).
+// unexpected name shapes). A "-fallback-<k>" suffix is dropped, so a fallback
+// session reports the agent it re-runs.
 func agentNameFromSession(sessionName string) string {
 	tilde := strings.Index(sessionName, "~review-")
 	if tilde < 0 {
@@ -240,7 +247,7 @@ func agentNameFromSession(sessionName string) string {
 	if dash < 0 || dash == len(suffix)-1 {
 		return sessionName
 	}
-	return suffix[dash+1:]
+	return baseReviewSession(suffix[dash+1:])
 }
 
 // RecoveryDeliveryID returns the deterministic delivery_id used for the
