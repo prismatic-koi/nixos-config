@@ -48,8 +48,12 @@ type MachineMount struct {
 }
 
 // machineConfig is the part of the machine config file that prism reads.
+// Mounts stays raw, so that a file with no Mounts key is a refusal and not
+// a machine with no mounts. A file of a layout that prism does not know
+// then refuses the build and does not expose Mac files. Podman writes null
+// for a machine with no mounts.
 type machineConfig struct {
-	Mounts []MachineMount `json:"Mounts"`
+	Mounts json.RawMessage `json:"Mounts"`
 }
 
 // checkMachineMounts refuses a build when the default podman machine
@@ -70,11 +74,24 @@ func checkMachineMounts(ctx context.Context, r Runner, readFile func(string) ([]
 		return fmt.Errorf("prism cannot read the mounts of podman machine %q from %s (%v), so it cannot make sure that the build cannot read Mac files", name, path, err)
 	}
 	var cfg machineConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	var mounts []MachineMount
+	err = json.Unmarshal(data, &cfg)
+	if err == nil && len(cfg.Mounts) == 0 {
+		err = fmt.Errorf("no Mounts field")
+	}
+	if err == nil {
+		err = json.Unmarshal(cfg.Mounts, &mounts)
+	}
+	if err != nil {
 		return fmt.Errorf("prism cannot parse the mounts of podman machine %q in %s (%v), so it cannot make sure that the build cannot read Mac files", name, path, err)
 	}
+	for i, m := range mounts {
+		if m.Source == "" {
+			return fmt.Errorf("prism cannot parse the mounts of podman machine %q in %s (mount %d has no Source), so it cannot make sure that the build cannot read Mac files", name, path, i)
+		}
+	}
 	var bad []MachineMount
-	for _, m := range cfg.Mounts {
+	for _, m := range mounts {
 		if !insideAllowlist(m.Source, allowlist) {
 			bad = append(bad, m)
 		}

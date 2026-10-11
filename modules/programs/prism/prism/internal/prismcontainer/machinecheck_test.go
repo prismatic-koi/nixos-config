@@ -96,7 +96,8 @@ func TestMachineCheck_Allowlist(t *testing.T) {
 		ok        bool
 	}{
 		{"no mounts, empty allowlist", `{"Mounts":[]}`, nil, true},
-		{"no Mounts field", `{"Name":"x"}`, nil, true},
+		{"no mounts as null", `{"Mounts":null}`, nil, true},
+		{"no Mounts field", `{"Name":"x"}`, nil, false},
 		{"root itself", `{"Mounts":[{"Source":"/Users/u/code","Target":"/Users/u/code"}]}`, []string{"/Users/u/code"}, true},
 		{"inside a root", `{"Mounts":[{"Source":"/Users/u/code/proj/","Target":"/w"}]}`, []string{"/Users/u/code"}, true},
 		{"second root", `{"Mounts":[{"Source":"/Users/u/work","Target":"/w"}]}`, []string{"/Users/u/code", "/Users/u/work"}, true},
@@ -139,6 +140,10 @@ func TestMachineCheck_FailsClosed(t *testing.T) {
 		"config missing":   {machineStub{list: stubList, inspect: stubInspect}, func(string) ([]byte, error) { return nil, os.ErrNotExist }, "cannot read the mounts"},
 		"config not JSON":  {machineStub{list: stubList, inspect: stubInspect}, mountsReader("{"), "cannot parse the mounts"},
 		"mounts not array": {machineStub{list: stubList, inspect: stubInspect}, mountsReader(`{"Mounts":"x"}`), "cannot parse the mounts"},
+		"no Mounts key":    {machineStub{list: stubList, inspect: stubInspect}, mountsReader(`{"Name":"podman-machine-default"}`), "no Mounts field"},
+		"other key name":   {machineStub{list: stubList, inspect: stubInspect}, mountsReader(`{"Volumes":[{"Source":"/Users","Target":"/Users"}]}`), "no Mounts field"},
+		"empty Source":     {machineStub{list: stubList, inspect: stubInspect}, mountsReader(`{"Mounts":[{"Source":"/Users/u/code"},{"Src":"/Users","Target":"/Users"}]}`), "mount 1 has no Source"},
+		"null mount":       {machineStub{list: stubList, inspect: stubInspect}, mountsReader(`{"Mounts":[null]}`), "mount 0 has no Source"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -158,5 +163,12 @@ func TestPlainExecutor_Preflight(t *testing.T) {
 	e.ReadFile = mountsReader(`{"Mounts":[{"Source":"/Users/u/code","Target":"/Users/u/code"}]}`)
 	if err := e.Preflight(context.Background()); err != nil {
 		t.Errorf("Preflight with allowed mounts = %v, want nil", err)
+	}
+	// Podman writes null for a machine with no mounts.
+	for _, cfg := range []string{`{"Mounts":null}`, `{"Mounts":[]}`} {
+		e.ReadFile = mountsReader(cfg)
+		if err := e.Preflight(context.Background()); err != nil {
+			t.Errorf("Preflight with %s = %v, want nil", cfg, err)
+		}
 	}
 }

@@ -339,6 +339,84 @@ func TestIntegration_BuildTimeoutStopsStep(t *testing.T) {
 	}
 }
 
+// TestIntegration_BuildMultiStage: COPY --from with a stage name and with a
+// stage index works in the build namespace.
+func TestIntegration_BuildMultiStage(t *testing.T) {
+	c := integrationCaller(t)
+	res := buildReal(t, c, "FROM alpine AS builder\nRUN echo stage-output > /built\nFROM alpine\nCOPY --from=builder /built /from-name\nCOPY --from=0 /built /from-index\n",
+		prismcontainer.BuildRequest{Tag: "multistage"})
+	if res.ExitCode != 0 {
+		t.Fatalf("build = %+v (output %s)", res, res.Output)
+	}
+	run := runReal(t, c, prismcontainer.RunRequest{Image: res.Image, Mount: prismcontainer.MountNone, Command: []string{"cat", "/from-name", "/from-index"}})
+	if run.ExitCode != 0 || string(run.Stdout) != "stage-output\nstage-output\n" {
+		t.Errorf("run of the multi-stage image = %+v", run)
+	}
+}
+
+// TestIntegration_SweepStopsRunningBuild: the cleanup sweep of a session
+// stops its running build, and no process of the build step stays. The
+// check reads the host process list, so it runs on Linux only.
+func TestIntegration_SweepStopsRunningBuild(t *testing.T) {
+	c := integrationCaller(t)
+	if runtime.GOOS != "linux" {
+		t.Skip("the build step runs in the podman machine VM")
+	}
+	const marker = "617.413"
+	if err := os.WriteFile(filepath.Join(c.Worktree, "Containerfile"), []byte("FROM alpine\nRUN sleep "+marker+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ex := prismcontainer.DefaultBuildExecutor(runtime.GOOS, nil, nil)
+	done := make(chan prismcontainer.BuildResult, 1)
+	go func() {
+		done <- prismcontainer.Build(context.Background(), prismcontainer.Deps{}, c, prismcontainer.BuildRequest{TimeoutSeconds: 600})
+	}()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_ = prismcontainer.SweepSession(ctx, prismcontainer.ExecRunner{}, ex, []string{c.InstanceID})
+	})
+	stepProcs := func() []string {
+		var found []string
+		procs, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+		for _, p := range procs {
+			if data, err := os.ReadFile(p); err == nil && bytes.Contains(data, []byte(marker)) {
+				found = append(found, p)
+			}
+		}
+		return found
+	}
+	deadline := time.Now().Add(3 * time.Minute)
+	for len(stepProcs()) == 0 {
+		select {
+		case res := <-done:
+			t.Fatalf("the build ended before its RUN step ran: %+v (output %s)", res, res.Output)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the RUN step did not start within 3 minutes")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := prismcontainer.SweepSession(ctx, prismcontainer.ExecRunner{}, ex, []string{c.InstanceID}); err != nil {
+		t.Errorf("SweepSession: %v", err)
+	}
+	select {
+	case res := <-done:
+		if res.ExitCode == 0 || res.Image != "" {
+			t.Errorf("build = %+v (output %s), want a build that the sweep stopped", res, res.Output)
+		}
+	case <-time.After(time.Minute):
+		t.Fatal("the build did not end within a minute after the sweep")
+	}
+	time.Sleep(2 * time.Second)
+	if found := stepProcs(); len(found) != 0 {
+		t.Errorf("processes of the build step still run after the sweep: %q", found)
+	}
+}
+
 func TestIntegration_BuildImagesRemovedBySweep(t *testing.T) {
 	c := integrationCaller(t)
 	if err := os.WriteFile(filepath.Join(c.Worktree, "Containerfile"), []byte("FROM alpine\nRUN echo layer > /l\nRUN echo second > /s\n"), 0o644); err != nil {
