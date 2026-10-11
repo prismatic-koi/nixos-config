@@ -281,6 +281,52 @@ func fallbackIndex(name string) int {
 	return k
 }
 
+// ReviewSessionName is a review session name split into its parts.
+type ReviewSessionName struct {
+	Parent string
+	Round  int
+	// Agent is the base role, for example "review-security". A fallback
+	// suffix is not part of it.
+	Agent string
+	// Fallback is 0 for the first session of an agent, k for its k-th fallback.
+	Fallback int
+}
+
+var reviewSessionPattern = regexp.MustCompile(`^(.+)~review-(\d+)-(.+)$`)
+
+// ParseReviewSession splits "<parent>~review-<N>-<agent>[-fallback-<k>]".
+// It is the one parser of review session names.
+func ParseReviewSession(name string) (ReviewSessionName, bool) {
+	m := reviewSessionPattern.FindStringSubmatch(name)
+	if m == nil {
+		return ReviewSessionName{}, false
+	}
+	round, err := strconv.Atoi(m[2])
+	if err != nil {
+		return ReviewSessionName{}, false
+	}
+	return ReviewSessionName{
+		Parent:   m[1],
+		Round:    round,
+		Agent:    baseReviewSession(m[3]),
+		Fallback: fallbackIndex(m[3]),
+	}, true
+}
+
+// AgentNameFromSession returns the base role of a review session. It returns
+// the session name unchanged when the name is not a review session name.
+func AgentNameFromSession(sessionName string) string {
+	if ps, ok := ParseReviewSession(sessionName); ok {
+		return ps.Agent
+	}
+	return sessionName
+}
+
+// FallbackIndexFromSession returns the fallback index of a review session.
+func FallbackIndexFromSession(sessionName string) int {
+	return fallbackIndex(sessionName)
+}
+
 // EffectiveRoundSessions collapses each fallback chain in names to its last
 // session, and keeps the order of first appearance. A round that ran
 // fallbacks then has one result per agent, the same as a round that did not.

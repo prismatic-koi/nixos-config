@@ -10,6 +10,7 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"github.com/prismatic-koi/prism/internal/review"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -211,12 +212,13 @@ func TestAgentNameFromSession(t *testing.T) {
 	}{
 		{"repo@pr-1500~review-1-review-goal", "review-goal"},
 		{"repo@pr-1500~review-3-review-security", "review-security"},
+		{"repo@pr-1500~review-1-review-security-fallback-2", "review-security"},
 		{"repo@main", "repo@main"},
 		{"weird-name", "weird-name"},
 	}
 	for _, tc := range cases {
-		if got := agentNameFromSession(tc.in); got != tc.want {
-			t.Errorf("agentNameFromSession(%q): got %q, want %q", tc.in, got, tc.want)
+		if got := review.AgentNameFromSession(tc.in); got != tc.want {
+			t.Errorf("AgentNameFromSession(%q): got %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

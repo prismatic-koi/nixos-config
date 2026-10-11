@@ -367,7 +367,7 @@ func ClassifyRoundWithCauses(
 		}
 		name := ag.Name
 		if name == "" {
-			name = agentNameFromSession(session)
+			name = AgentNameFromSession(session)
 		}
 
 		mr, present := groupData[session]
