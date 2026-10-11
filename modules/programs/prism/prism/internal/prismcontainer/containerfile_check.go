@@ -231,6 +231,9 @@ func checkWordView(line int, text string) error {
 		if !ok {
 			return nil
 		}
+		if strings.ToLower(keyword) == "onbuild" {
+			return refuseChainedOnbuild(line)
+		}
 	}
 	keyword = strings.ToLower(keyword)
 	if keyword == "from" {
@@ -295,6 +298,9 @@ func checkParserView(line int, text string) error {
 		// ONBUILD has flags of its own before the instruction.
 		args, _ := extractParserFlags(rest)
 		cmd, rest = splitParserKeyword(args)
+		if cmd == "onbuild" {
+			return refuseChainedOnbuild(line)
+		}
 	}
 	if cmd != "from" && !imageInstructions[cmd] {
 		return nil
@@ -435,6 +441,14 @@ func extractParserFlags(line string) (string, []string) {
 		}
 	}
 	return "", words
+}
+
+// refuseChainedOnbuild refuses "ONBUILD ONBUILD ...". Docker and buildah
+// reject a chained ONBUILD at build time, but the Dockerfile parser of
+// imagebuilder still reads the inner instruction. One level of ONBUILD is
+// all that the checks above unwrap, so a chain is refused as a whole.
+func refuseChainedOnbuild(line int) error {
+	return refuseFile(line, "ONBUILD ONBUILD is not allowed: buildah rejects a chained ONBUILD. Write one ONBUILD before the instruction")
 }
 
 func hasNonASCII(s string) bool {
