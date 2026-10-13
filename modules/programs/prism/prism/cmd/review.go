@@ -451,17 +451,14 @@ func runReview(cmd *cobra.Command, args []string) error {
 		ModelsByRole:    modelsByRole,
 	}
 
-	// Load profiles for any sandboxed mode (bwrap or sandbox-exec) so the
-	// round can resolve the active profile and validate each reviewer's slot.
-	// Surface a missing profiles.json as an explicit error rather than silently
-	// spawning agents with the wrong model.
-	if isoCaps.RequiresProfilesFile {
-		pf, pfErr := config.LoadProfiles()
-		if pfErr != nil {
-			return fmt.Errorf("prism review: %s mode requires profiles.json but it could not be loaded: %w\nhint: ensure the system has been rebuilt with the prism NixOS module enabled", isoMode, pfErr)
-		}
-		opts.ProfilesFile = pf
+	// Load profiles in every isolation mode so the round can resolve the
+	// active profile and validate each reviewer's slot. A missing file is an
+	// error only in modes that require it; host mode proceeds without it.
+	pf, pfErr := loadReviewProfiles(isoMode, isoCaps.RequiresProfilesFile, config.LoadProfiles)
+	if pfErr != nil {
+		return pfErr
 	}
+	opts.ProfilesFile = pf
 
 	// RunAsync spawns the agents, registers the group, starts the monitor, and
 	// returns immediately. No blocking poll — the monitor process handles that.
@@ -660,4 +657,18 @@ func containsString(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// loadReviewProfiles loads profiles.json for a review round in any isolation
+// mode. When the load fails and the mode requires the file, it returns an
+// error. Otherwise it returns a nil file and no error.
+func loadReviewProfiles(mode config.IsolationMode, required bool, load func() (*config.ProfilesFile, error)) (*config.ProfilesFile, error) {
+	pf, err := load()
+	if err != nil {
+		if required {
+			return nil, fmt.Errorf("prism review: %s mode requires profiles.json but it could not be loaded: %w\nhint: ensure the system has been rebuilt with the prism NixOS module enabled", mode, err)
+		}
+		return nil, nil
+	}
+	return pf, nil
 }
