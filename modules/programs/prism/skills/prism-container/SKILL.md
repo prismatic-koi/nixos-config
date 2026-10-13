@@ -335,11 +335,13 @@ On macOS:
   prism project locations (for example `~/code`), unless the Nix option
   `nx.programs.prism.containerMachineMountAllowlist` sets it. Prism also
   refuses the build when it cannot read the mounts.
+- This repository generates the `volumes` setting from the allowlist on
+  Darwin. It writes `~/.config/containers/containers.conf`, and each
+  entry maps a path to the same path in the machine.
 - By default, a podman machine mounts `/Users`, `/private`, and
   `/var/folders`, so prism refuses every build until the user recreates
   the machine. Tell the user. The refusal names each mount that is not
-  allowed, and gives the steps: set `volumes` in the `[machine]` section
-  of `~/.config/containers/containers.conf`, then
+  allowed. After a rebuild writes `volumes`, the steps are:
   `podman machine stop`, `podman machine rm`, `podman machine init`, and
   `podman machine start`. `podman machine rm` deletes the images and
   containers in the machine.
