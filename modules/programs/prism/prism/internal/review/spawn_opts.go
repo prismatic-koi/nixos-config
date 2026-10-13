@@ -111,8 +111,9 @@ func newReviewerSpawnOpts(in reviewerSpawnInput) session.SpawnOpts {
 		InvokerSession: in.InvokerSession,
 	}
 	// For socket-pipe harnesses (e.g. "pi") in host isolation mode,
-	// pre-compute the Unix socket path so agentPaneEnvVars can inject
-	// PRISM_HARNESS_PIPE into the tmux pane (session/session.go:778-786).
+	// pre-compute the Unix socket path so hostHarnessEnvVars can inject
+	// PRISM_HARNESS_PIPE into the tmux pane (session.hostHarnessEnvVars, called
+	// from spawnAgentOnlyLayout via agentOnlyPaneEnvVars).
 	// Without this gate the PI extension early-returns as a no-op,
 	// `--agent` is never registered as a CLI flag, and pi rejects
 	// `--agent review-<role> --prompt "..."` with `Unknown options`,

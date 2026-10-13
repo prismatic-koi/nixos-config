@@ -875,6 +875,23 @@ func Create(name, directory string, opts Opts) error {
 	return nil
 }
 
+// hostHarnessEnvVars returns the host-mode harness env vars for an agent
+// pane: PRISM_HARNESS_PIPE and PRISM_AGENT_RUN_LOG. LayoutFull
+// (agentPaneEnvVars) and LayoutAgentOnly (spawnAgentOnlyLayout) both call it.
+// Returns nil when sockPath is empty.
+func hostHarnessEnvVars(sockPath, sessionName string) map[string]string {
+	if sockPath == "" {
+		return nil
+	}
+	envs := map[string]string{"PRISM_HARNESS_PIPE": "unix://" + sockPath}
+	// The per-session run dir is the durable home for the PI extension's
+	// first-connect give-up line; on resolve failure it logs to the pane only.
+	if logPath, err := AgentRunLogPath(sessionName); err == nil {
+		envs["PRISM_AGENT_RUN_LOG"] = logPath
+	}
+	return envs
+}
+
 // agentPaneEnvVars builds the env-var map for the agent tmux pane.
 //
 // When opts.PromptFilePath is non-empty, PRISM_INITIAL_PROMPT_FILE carries
@@ -902,21 +919,7 @@ func agentPaneEnvVars(opts Opts) map[string]string {
 		// we must inject PRISM_HARNESS_PIPE so the PI extension can find the
 		// sidecar Unix socket. bwrap and sandbox-exec set this via their own
 		// paths; only inject here for host mode.
-		if opts.HarnessPipeSockPath != "" {
-			envs := map[string]string{
-				"PRISM_HARNESS_PIPE": "unix://" + opts.HarnessPipeSockPath,
-			}
-			// Durable give-up diagnostics: host mode has no
-			// agent-run process, but the per-session run dir (which also
-			// holds the pipe socket above) is the durable home for the PI
-			// extension's first-connect give-up line. Best-effort — on
-			// resolve failure the extension falls back to pane-only logging.
-			if logPath, err := AgentRunLogPath(opts.SessionName); err == nil {
-				envs["PRISM_AGENT_RUN_LOG"] = logPath
-			}
-			return envs
-		}
-		return nil
+		return hostHarnessEnvVars(opts.HarnessPipeSockPath, opts.SessionName)
 	}
 	if opts.Prompt == "" {
 		return nil
