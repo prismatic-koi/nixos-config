@@ -8,6 +8,8 @@ package db
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -77,12 +79,17 @@ func seedRawDBWithVersion(t *testing.T, dbPath string, version int) {
 // containing both the on-disk version and the binary's max when the DB's
 // schema_version exceeds currentSchemaVersion.
 func TestOpen_SchemaVersionTooNew(t *testing.T) {
+	stubInstalledPrismProbe(t, prismBinaries{}, false)
 	dbPath := filepath.Join(t.TempDir(), "too-new.db")
 	seedRawDBWithVersion(t, dbPath, 999)
 
 	_, err := Open(dbPath)
 	if err == nil {
 		t.Fatal("Open: expected error for schema_version=999, got nil")
+	}
+	var tooNew *SchemaTooNewError
+	if !errors.As(err, &tooNew) {
+		t.Fatalf("Open error is %T, want *SchemaTooNewError: %v", err, err)
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "999") {
@@ -91,11 +98,9 @@ func TestOpen_SchemaVersionTooNew(t *testing.T) {
 	if !strings.Contains(msg, "newer than this prism binary") {
 		t.Errorf("error message must say 'newer than this prism binary': got %q", msg)
 	}
-	// The message should also name the binary's max so the user knows what
-	// version they need to upgrade to or roll back from.
-	want := "upgrade prism, or restore"
-	if !strings.Contains(msg, want) {
-		t.Errorf("error message must contain %q: got %q", want, msg)
+	wantMax := fmt.Sprintf("(max %d)", currentSchemaVersion)
+	if !strings.Contains(msg, wantMax) {
+		t.Errorf("error message must contain %q: got %q", wantMax, msg)
 	}
 }
 
