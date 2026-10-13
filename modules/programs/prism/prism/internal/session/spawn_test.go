@@ -1225,3 +1225,38 @@ func TestSpawnSession_WritesSpawnInputs_AbtestPairIDShared(t *testing.T) {
 		}
 	}
 }
+
+// TestSpawnSession_AgentOnly_Host_PassesHarnessPipe pins #3144: a host-mode
+// LayoutAgentOnly pane gets PRISM_HARNESS_PIPE; a sandboxed one does not.
+func TestSpawnSession_AgentOnly_Host_PassesHarnessPipe(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want bool
+	}{{"host", true}, {"sandbox-exec", false}} {
+		t.Run(tc.mode, func(t *testing.T) {
+			d, _ := openSpawnTestDB(t)
+			argsFile := spyTmuxBin(t)
+			t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+			err := SpawnSession(d, SpawnOpts{
+				SessionName:         "myrepo@branch~review-1-review-goal",
+				Repo:                "myrepo",
+				Worktree:            "/worktrees/myrepo-branch",
+				AgentRole:           "review-goal",
+				Prompt:              "p",
+				Layout:              LayoutAgentOnly,
+				IsolationMode:       tc.mode,
+				PIExtensionDir:      testPIExtensionDir,
+				HarnessPipeSockPath: "/run/abc/pipe.sock",
+			})
+			if err != nil {
+				t.Fatalf("SpawnSession: %v", err)
+			}
+			got := containsSeq(readSpyArgs(argsFile), []string{"-e", "PRISM_HARNESS_PIPE=unix:///run/abc/pipe.sock"})
+			if got != tc.want {
+				t.Errorf("PRISM_HARNESS_PIPE in tmux args = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
