@@ -24,6 +24,49 @@ import (
 	"time"
 )
 
+// isolateTmuxTmpdir points $TMUX_TMPDIR at a fresh short-path scratch
+// directory and clears $TMUX, and returns a function that restores the
+// previous environment. The tmux-harness integration tests start real tmux
+// servers with `-L <name>`. Without this redirect the socket lands in
+// /private/tmp/tmux-<uid>/, which the sandbox-exec profile protects: section
+// 3d denies file-write* there and section 17c denies the connect (issue
+// #3066). The scratch path /tmp/ptm-<rand>/tmux-<uid>/ matches neither regex,
+// because both anchor on tmux-<n> directly under /tmp or /private/tmp. So the
+// tmux tests behave the same inside and outside the sandbox, and the suite
+// does not touch the real user's tmux directory. /tmp is used first, not
+// os.MkdirTemp(""), because a /var/folders path overflows the Darwin
+// sun_path limit once tmux appends tmux-<uid>/<name>. Mirrors
+// cmd/tmux_isolation_test.go and internal/tmux/testmain_test.go.
+func isolateTmuxTmpdir() func() {
+	origTmux, hadTmux := os.LookupEnv("TMUX")
+	origTmpdir, hadTmpdir := os.LookupEnv("TMUX_TMPDIR")
+
+	isoDir, err := os.MkdirTemp("/tmp", "ptm-")
+	if err != nil {
+		isoDir, err = os.MkdirTemp("", "ptm-")
+	}
+	if err != nil {
+		isoDir = "/nonexistent/prism-integration-test"
+	}
+
+	os.Setenv("TMUX", "")
+	os.Setenv("TMUX_TMPDIR", isoDir)
+
+	return func() {
+		if hadTmux {
+			os.Setenv("TMUX", origTmux)
+		} else {
+			os.Unsetenv("TMUX")
+		}
+		if hadTmpdir {
+			os.Setenv("TMUX_TMPDIR", origTmpdir)
+		} else {
+			os.Unsetenv("TMUX_TMPDIR")
+		}
+		os.RemoveAll(isoDir)
+	}
+}
+
 func TestMain(m *testing.M) {
 	switch os.Getenv("PRISM_FAKE_STDIO_HARNESS") {
 	case "normal":
@@ -61,8 +104,14 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 
-	// Default: run the test suite.
-	os.Exit(m.Run())
+	// Default: run the test suite, under the suite-wide tmux isolation. The
+	// early-exit modes above are the binary acting as a harness or sidecar
+	// child; they never start a tmux server, so the redirect applies only
+	// here, around m.Run().
+	restore := isolateTmuxTmpdir()
+	code := m.Run()
+	restore()
+	os.Exit(code)
 }
 
 // runFakeHarnessNormal writes 3 valid JSONL event frames to stdout and exits.
