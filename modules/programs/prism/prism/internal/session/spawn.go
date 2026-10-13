@@ -188,7 +188,7 @@ type SpawnOpts struct {
 
 	// HarnessPipeSockPath is the Unix socket path for the PI harness pipe
 	// (TransportSocketPipe). When non-empty and isolation mode is "host",
-	// agentPaneEnvVars injects PRISM_HARNESS_PIPE=unix://<path> into the
+	// hostHarnessEnvVars injects PRISM_HARNESS_PIPE=unix://<path> into the
 	// agent tmux pane. Pre-computed by the caller (cmd/spawn.go) from
 	// SidecarHarnessPipePath so that the spawner and sidecar agree on the
 	// path deterministically without a round-trip through the sidecar process.
@@ -526,10 +526,12 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		// managed 3-window layout. The env-var map carries
 		// PRISM_INITIAL_PROMPT_FILE; measure the full contribution so any exotic
 		// prompt or large session name is caught here.
-		previewEnvs := spawnAgentPaneEnvVars(SpawnOpts{
-			Prompt:         opts.Prompt,
-			PromptFilePath: promptFilePath,
-		})
+		previewEnvs := agentOnlyPaneEnvVars(SpawnOpts{
+			Prompt:              opts.Prompt,
+			PromptFilePath:      promptFilePath,
+			SessionName:         opts.SessionName,
+			HarnessPipeSockPath: opts.HarnessPipeSockPath,
+		}, mode)
 		size := 0
 		for k, v := range previewEnvs {
 			size += len(k) + len(v) + 4
@@ -1116,6 +1118,26 @@ func spawnAgentPaneEnvVars(opts SpawnOpts) map[string]string {
 	}
 }
 
+// agentOnlyPaneEnvVars is spawnAgentPaneEnvVars plus, in host mode, the
+// harness env vars from hostHarnessEnvVars (the same ones LayoutFull sets).
+func agentOnlyPaneEnvVars(opts SpawnOpts, mode string) map[string]string {
+	envs := spawnAgentPaneEnvVars(opts)
+	if mode != "host" {
+		return envs
+	}
+	host := hostHarnessEnvVars(opts.HarnessPipeSockPath, opts.SessionName)
+	if host == nil {
+		return envs
+	}
+	if envs == nil {
+		envs = map[string]string{}
+	}
+	for k, v := range host {
+		envs[k] = v
+	}
+	return envs
+}
+
 // agentOnlyAgentEnvVars resolves the profile-level AgentEnvVars map for the
 // agent-only layout, filtered for opts.AgentRole.
 //
@@ -1253,7 +1275,7 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	if err := tmux.NewSessionDetached(opts.SessionName, opts.Worktree); err != nil {
 		return fmt.Errorf("spawn session: new tmux session %q: %w", opts.SessionName, err)
 	}
-	if err := tmux.NewWindow(opts.SessionName, 1, "agent", opts.Worktree, agentCmd, spawnAgentPaneEnvVars(opts)); err != nil {
+	if err := tmux.NewWindow(opts.SessionName, 1, "agent", opts.Worktree, agentCmd, agentOnlyPaneEnvVars(opts, mode)); err != nil {
 		return fmt.Errorf("spawn session: new agent window for %q: %w", opts.SessionName, err)
 	}
 	_ = tmux.SelectWindow(opts.SessionName, 1)
