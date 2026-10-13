@@ -100,9 +100,9 @@ func TestSidecarAlive_Tombstone(t *testing.T) {
 	}
 }
 
-// TestSidecarAlive_PipeSocketFallback verifies that a host-mode session whose
-// only socket is pipe.sock (no hostapi.sock — host isolation has no host-API
-// socket) is still recognised as alive via the pipe socket.
+// TestSidecarAlive_PipeSocketFallback verifies that a session whose only live
+// socket is pipe.sock (no hostapi.sock listener) is still recognised as alive
+// via the pipe socket.
 func TestSidecarAlive_PipeSocketFallback(t *testing.T) {
 	const sessionName = "prism-test@alive-pipe"
 	_ = setupAliveTestEnv(t, sessionName)

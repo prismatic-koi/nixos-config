@@ -4,7 +4,7 @@ package cmd
 //
 // The host-API /investigate endpoint is gated, which covers every sandboxed
 // caller (bwrap, sandbox-exec) because those sessions always carry
-// PRISM_HOST_API. A session in `host` isolation mode has no host-API socket,
+// PRISM_HOST_API. A session in `host` isolation mode has no PRISM_HOST_API,
 // so runInvestigate skips proxyInvestigate and reaches
 // spawnInvestigateSessionWithDB directly. These tests pin the guard on that
 // path: refusal for a non-coordinator invoker, admission for a coordinator

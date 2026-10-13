@@ -316,7 +316,7 @@ func finishContainerRun(stdout, stderr io.Writer, res prismcontainer.RunResult) 
 }
 
 // runContainerHostMode runs the request in this process, for a host-mode
-// session that has no sidecar socket. Prism resolves the caller from the
+// session that has no PRISM_HOST_API. Prism resolves the caller from the
 // session name and the database, the same facts the sidecar route reads
 // from its own config.
 func runContainerHostMode(ctx context.Context, req prismcontainer.RunRequest) prismcontainer.RunResult {

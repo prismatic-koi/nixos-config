@@ -5,8 +5,8 @@ package cmd
 //
 // The host API gates both verbs — `/merges` and `/merges/cancel` each call
 // requireCoordinator — which covers every sandboxed caller, because a bwrap or
-// sandbox-exec session always carries the host-API socket. A session in `host`
-// isolation mode has no socket, so runMergesList / runMergesCancel skip the
+// sandbox-exec session always carries PRISM_HOST_API. A session in `host`
+// isolation mode has no PRISM_HOST_API, so runMergesList / runMergesCancel skip the
 // proxy branch and reach the direct DB path. Without a role check there, a
 // host-mode worker reaches d.CancelMerge.
 //
@@ -42,7 +42,7 @@ const (
 
 // seedMergesGuardSession inserts an agent_status row for the given session with
 // an explicit root_agent_name, an instance_id, and isolation mode `host` — the
-// mode that reaches the direct CLI path because it carries no host-API socket.
+// mode that reaches the direct CLI path because it carries no PRISM_HOST_API.
 func seedMergesGuardSession(t *testing.T, sessionName, rootAgent, instanceID string) {
 	t.Helper()
 	d, err := openDB()
@@ -100,7 +100,7 @@ func assertMergeStatus(t *testing.T, pr int, want string) {
 
 // TestRunMergesCancel_HostModeWorker_Refused is the headline security
 // assertion: a worker in host isolation mode — the exact session shape that
-// carries no host-API socket and therefore never meets the host-API gate —
+// carries no PRISM_HOST_API and therefore never meets the host-API gate —
 // is refused on the direct path.
 //
 // The queued row is deliberately owned by the WORKER's own instance_id, not

@@ -467,8 +467,9 @@ func unlinkSidecarSockets(sessionName string) {
 const sidecarAliveDialTimeout = 250 * time.Millisecond
 
 // SidecarAlive reports whether a live sidecar process is currently accepting
-// connections on one of sessionName's Unix sockets (hostapi.sock for
-// sandboxed sessions, pipe.sock for host-mode socket-pipe sessions).
+// connections on one of sessionName's Unix sockets. The sidecar binds
+// hostapi.sock in every isolation mode, and pipe.sock for a socket-pipe
+// harness that does not use TCP. A live listener on either socket is enough.
 //
 // This is the authoritative liveness signal for sessions whose agent_status
 // row has gone quiet: paused-by-design states (escalated awaiting coordinator
