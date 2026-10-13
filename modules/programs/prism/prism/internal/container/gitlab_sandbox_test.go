@@ -333,10 +333,7 @@ func TestGenerateProfile_SecretsDAllowlistIgnoresNonSopsGitLabPath(t *testing.T)
 	})
 	profile := generateProfile(m)
 
-	// Regex require-nots only: the section-17b Unix-socket allowlist (#3066)
-	// emits (literal …)/(subpath …) require-nots that are not secrets.d
-	// exceptions.
-	if got := strings.Count(profile, "(require-not (regex "); got != 0 {
+	if got := secretsDExceptionCount(t, profile); got != 0 {
 		t.Errorf("expected zero require-not exceptions for a non-sops GitLab path, got %d; full profile:\n%s", got, profile)
 	}
 }

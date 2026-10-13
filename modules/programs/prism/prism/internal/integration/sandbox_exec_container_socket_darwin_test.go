@@ -3,30 +3,22 @@
 package integration_test
 
 // sandbox_exec_container_socket_darwin_test.go — the Unix-socket connect
-// allowlist of the sandbox-exec profile (sections 17b and 17c of
-// generateProfile, issue #3066).
-//
-// Section 17's (allow network*) admits a connect(2) to any Unix domain
-// socket, so a sandboxed agent could reach the podman machine API socket
-// under $TMPDIR/podman/ and drive the podman machine with no filter. It
-// could also reach the tmux control socket, the user ssh-agent, and the
-// AeroSpace window-manager socket under /private/tmp — each a host escape.
+// policy of the sandbox-exec profile (sections 17b and 17c of
+// generateProfile, #3066).
 //
 // Section 17b denies `network-outbound` for every Unix-socket path except an
-// allowlist (the host-API socket dir, mDNSResponder, syslog, the nix daemon
-// socket, and the scratch trees /tmp, /private/tmp, the session work dir, the
-// worktree, and the bare repo). The leading (subpath "/") scopes the rule to
-// path-bearing connects, so TCP is untouched. Section 17c then re-denies the
-// three host-escape sockets that live inside the broad /private/tmp
-// allowance.
+// allowlist. Its leading (subpath "/") scopes the deny to path-bearing
+// connects, so TCP stays open. The podman machine socket is under $TMPDIR,
+// outside the allowlist. Section 17c re-denies the host-escape sockets inside
+// the /private/tmp allowance: tmux, the user ssh-agent, AeroSpace, and the
+// .NET diagnostic IPC socket.
 //
-// These tests invoke /usr/bin/sandbox-exec against the production profile and
-// a Unix-socket connect probe, with paired negatives that mutate the profile
-// to prove each rule is load-bearing. See docs/sandbox-exec-testing.md.
+// Each positive test runs a connect probe under the production profile. Each
+// paired negative mutates the profile and shows that the rule under test is
+// what decides the result. See docs/sandbox-exec-testing.md.
 //
-// The probe is a tiny Go program built with CGO disabled, so the macos-15 CI
-// job needs no C compiler. It exits 0 when the connect succeeds and non-zero
-// when the sandbox denies it.
+// The probe is a small Go program built with CGO disabled, so the macos-15 CI
+// job needs no C compiler. It exits 0 when the connect succeeds.
 
 import (
 	"net"
@@ -34,54 +26,66 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// uxConnectProbeSrc is the source of the Unix-socket connect probe. It dials
-// os.Args[1] and exits 0 on success, 1 on failure.
-const uxConnectProbeSrc = `package main
+// connectProbeSrc is the source of the connect probe. os.Args[1] is a Unix
+// socket path, or "tcp:<host:port>" for a TCP connect.
+const connectProbeSrc = `package main
 
 import (
 	"net"
 	"os"
+	"strings"
 	"time"
 )
 
 func main() {
-	c, err := net.DialTimeout("unix", os.Args[1], 3*time.Second)
+	network, addr := "unix", os.Args[1]
+	if strings.HasPrefix(addr, "tcp:") {
+		network, addr = "tcp", strings.TrimPrefix(addr, "tcp:")
+	}
+	c, err := net.DialTimeout(network, addr, 3*time.Second)
 	if err != nil {
 		os.Stderr.WriteString(err.Error() + "\n")
 		os.Exit(1)
 	}
 	_ = c.Close()
-	os.Stdout.WriteString("UNIX-CONNECTED\n")
+	os.Stdout.WriteString("CONNECTED\n")
 }
 `
 
-// buildUnixConnectProbe compiles the probe into a t.TempDir() and returns its
-// path. The build is CGO-disabled so it needs no C compiler on the bare
-// macos-15 runner. The temp dir lives under os.TempDir() ($TMPDIR), which the
-// profile's section 3b grants exec, so sandbox-exec can run the probe.
-func buildUnixConnectProbe(t *testing.T) string {
+// connectedMarker is what the probe prints when its connect succeeds.
+const connectedMarker = "CONNECTED"
+
+// sectionNetworkScope is the opening of the section-17b deny. It is unique in
+// the profile: the secrets.d require-all (section 3c) opens with
+// (require-any), and the only other (subpath "/") is in a plain allow.
+const sectionNetworkScope = "(require-all\n    (subpath \"/\")\n"
+
+// buildConnectProbe compiles the probe into a t.TempDir(). That dir is under
+// os.TempDir(), which section 3b of the profile grants, so sandbox-exec can
+// run the probe.
+func buildConnectProbe(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	src := filepath.Join(dir, "uxprobe.go")
-	if err := os.WriteFile(src, []byte(uxConnectProbeSrc), 0o600); err != nil {
+	src := filepath.Join(dir, "probe.go")
+	if err := os.WriteFile(src, []byte(connectProbeSrc), 0o600); err != nil {
 		t.Fatalf("write probe source: %v", err)
 	}
-	bin := filepath.Join(dir, "uxprobe")
+	bin := filepath.Join(dir, "probe")
 	cmd := exec.Command("go", "build", "-o", bin, src)
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("cannot build the unix-connect probe (go unavailable?): %v\n%s", err, out)
+		t.Skipf("cannot build the connect probe (go unavailable?): %v\n%s", err, out)
 	}
 	return bin
 }
 
-// startUnixListener binds a stream Unix socket at path, drains and closes
-// incoming connections, and registers cleanup. The test process runs OUTSIDE
-// the sandbox, so it can bind anywhere it can write.
+// startUnixListener binds a stream Unix socket at path and closes each
+// connection it accepts. The test process runs outside the sandbox.
 func startUnixListener(t *testing.T, path string) {
 	t.Helper()
 	_ = os.Remove(path)
@@ -90,178 +94,204 @@ func startUnixListener(t *testing.T, path string) {
 		t.Fatalf("listen unix %s: %v", path, err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			c, acceptErr := ln.Accept()
-			if acceptErr != nil {
-				return
-			}
-			_ = c.Close()
-		}
-	}()
+	go acceptAndClose(ln)
 }
 
-// runProbe runs the probe under the given profile against sockPath and
-// returns its combined output and error. A nil error means the connect
-// succeeded.
-func runProbe(t *testing.T, profilePath, probe, sockPath string) (string, error) {
+// startTCPListener binds 127.0.0.1:0 and returns the probe address
+// "tcp:127.0.0.1:<port>".
+func startTCPListener(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command(sandboxExecPath, "-f", profilePath, probe, sockPath)
-	out, err := cmd.CombinedOutput()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go acceptAndClose(ln)
+	return "tcp:127.0.0.1:" + strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+}
+
+func acceptAndClose(ln net.Listener) {
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_ = c.Close()
+	}
+}
+
+// runProbe runs the probe under the profile against target. A nil error
+// means the connect succeeded.
+func runProbe(t *testing.T, profilePath, probe, target string) (string, error) {
+	t.Helper()
+	out, err := exec.Command(sandboxExecPath, "-f", profilePath, probe, target).CombinedOutput()
 	return string(out), err
 }
 
-// deniedPodmanSocketPath creates a listener under os.TempDir()/podman-ish/,
-// which mirrors the real podman machine socket location ($TMPDIR/podman/) and
-// is NOT in the section-17b allowlist. Returns the socket path.
-func deniedPodmanSocketPath(t *testing.T) string {
+// socketInNewDir creates a temp dir under parent with the name prefix
+// pattern, binds a listener at <dir>/a.sock, and returns the socket path.
+func socketInNewDir(t *testing.T, parent, pattern string) string {
 	t.Helper()
-	dir, err := os.MkdirTemp(os.TempDir(), "p3066pod")
+	dir, err := os.MkdirTemp(parent, pattern)
 	if err != nil {
-		t.Fatalf("mkdir podman-ish dir: %v", err)
+		t.Fatalf("mkdir %s/%s*: %v", parent, pattern, err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "api.sock")
+	sock := filepath.Join(dir, "a.sock")
 	startUnixListener(t, sock)
 	return sock
 }
 
-// TestSandboxExecContainerSocket_DeniedUnderProductionProfile is the positive
-// test. Under the production profile, a connect to a Unix socket in the
-// podman machine location ($TMPDIR, not allowlisted) fails, while a connect to
-// a socket under the allowlisted /private/tmp scratch tree succeeds.
+// podmanLocationSocket returns a socket under os.TempDir(), the location of
+// the real podman machine socket ($TMPDIR/podman/). The CI job sets TMPDIR to
+// the /var/folders user temp dir, which is outside the section-17b allowlist.
+func podmanLocationSocket(t *testing.T) string {
+	return socketInNewDir(t, os.TempDir(), "p3066pod")
+}
+
+func expectDenied(t *testing.T, profilePath, probe, target, why string) {
+	t.Helper()
+	if out, err := runProbe(t, profilePath, probe, target); err == nil {
+		t.Errorf("connect to %s succeeded: %s.\nOutput: %s\nProfile: %s", target, why, out, profilePath)
+	}
+}
+
+func expectConnected(t *testing.T, profilePath, probe, target, why string) {
+	t.Helper()
+	if out, err := runProbe(t, profilePath, probe, target); err != nil || !strings.Contains(out, connectedMarker) {
+		t.Errorf("connect to %s failed: %s.\nExit: %v\nOutput: %s\nProfile: %s", target, why, err, out, profilePath)
+	}
+}
+
+// TestSandboxExecContainerSocket_DeniedUnderProductionProfile: under the
+// production profile, a connect to the podman machine location fails. A
+// connect to a socket under the allowlisted /private/tmp and a loopback TCP
+// connect both succeed.
 func TestSandboxExecContainerSocket_DeniedUnderProductionProfile(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
-	probe := buildUnixConnectProbe(t)
+	probe := buildConnectProbe(t)
 
-	podmanSock := deniedPodmanSocketPath(t)
-
-	allowedDir, err := os.MkdirTemp("/private/tmp", "prism-3066-allowed")
-	if err != nil {
-		t.Fatalf("mkdir allowed dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(allowedDir) })
-	allowedSock := filepath.Join(allowedDir, "a.sock")
-	startUnixListener(t, allowedSock)
+	podmanSock := podmanLocationSocket(t)
+	allowedSock := socketInNewDir(t, "/private/tmp", "prism-3066-allowed")
+	tcpAddr := startTCPListener(t)
 
 	m := newProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
 	profilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	// The podman-location socket must be denied by section 17b.
-	if out, runErr := runProbe(t, profilePath, probe, podmanSock); runErr == nil {
-		t.Errorf("connect to podman-location socket %s succeeded under the production profile — section 17b did not deny it.\nOutput: %s\nProfile: %s",
-			podmanSock, out, profilePath)
-	}
-
-	// The /private/tmp scratch socket must be allowed (the go-test quality
-	// gate binds its sockets there in-sandbox).
-	if out, runErr := runProbe(t, profilePath, probe, allowedSock); runErr != nil || !strings.Contains(out, "UNIX-CONNECTED") {
-		t.Errorf("connect to allowed /private/tmp socket %s failed under the production profile — section 17b is too strict.\nExit: %v\nOutput: %s\nProfile: %s",
-			allowedSock, runErr, out, profilePath)
-	}
+	expectDenied(t, profilePath, probe, podmanSock,
+		"section 17b did not deny the podman machine location")
+	expectConnected(t, profilePath, probe, allowedSock,
+		"section 17b denies the /private/tmp scratch tree, where go test binds its sockets")
+	expectConnected(t, profilePath, probe, tcpAddr,
+		"section 17b denies TCP; its (subpath \"/\") scope must match Unix-socket connects only")
 }
 
 // TestSandboxExecContainerSocket_PodmanConnectsWithoutAllowlistDeny is the
-// paired negative for section 17b. It neutralises the rule's (subpath "/")
-// scope term so the require-all never matches, then asserts the podman-
-// location connect succeeds — proving the section-17b deny is what blocks it.
+// paired negative for the podman case. It points the section-17b scope at a
+// path that does not exist, so the deny never matches, and the podman
+// location connect succeeds.
 func TestSandboxExecContainerSocket_PodmanConnectsWithoutAllowlistDeny(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
-	probe := buildUnixConnectProbe(t)
+	probe := buildConnectProbe(t)
 
-	podmanSock := deniedPodmanSocketPath(t)
+	podmanSock := podmanLocationSocket(t)
 
 	m := newProfileManager(t)
-	// The sequence below is unique to the section-17b deny: the secrets.d
-	// require-all (section 3c) is followed by (require-any), and the only
-	// other (subpath "/") lives in a plain allow, not a require-all.
-	const scope = "(require-all\n    (subpath \"/\")\n"
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
-		return strings.Replace(p, scope, "(require-all\n    (subpath \"/prism-3066-nonexistent\")\n", 1)
+		return strings.Replace(p, sectionNetworkScope, "(require-all\n    (subpath \"/prism-3066-nonexistent\")\n", 1)
 	})
 
-	if out, runErr := runProbe(t, mutatedPath, probe, podmanSock); runErr != nil || !strings.Contains(out, "UNIX-CONNECTED") {
-		t.Errorf("connect to %s still failed with the section-17b scope neutralised, so the positive test proves nothing.\nExit: %v\nOutput: %s\nProfile: %s",
-			podmanSock, runErr, out, mutatedPath)
-	}
+	expectConnected(t, mutatedPath, probe, podmanSock,
+		"the connect still fails with the section-17b scope neutralised, so the positive test proves nothing")
 }
 
-// TestSandboxExecContainerSocket_EscapeDeniedUnderProductionProfile is the
-// positive test for section 17c. A socket under a tmux-shaped directory in
-// /private/tmp is denied, even though section 17b allows /private/tmp,
-// because section 17c re-denies it.
+// TestSandboxExecContainerSocket_TCPDeniedWithoutScope is the paired negative
+// for the TCP case. It removes the (subpath "/") scope from section 17b, and
+// the loopback TCP connect then fails. The scope is what keeps TCP open.
+func TestSandboxExecContainerSocket_TCPDeniedWithoutScope(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	probe := buildConnectProbe(t)
+
+	tcpAddr := startTCPListener(t)
+
+	m := newProfileManager(t)
+	mutatedPath := withMutatedProfile(t, m, func(p string) string {
+		return strings.Replace(p, sectionNetworkScope, "(require-all\n", 1)
+	})
+
+	expectDenied(t, mutatedPath, probe, tcpAddr,
+		"TCP still connects without the (subpath \"/\") scope, so the TCP check in the positive test proves nothing")
+}
+
+// TestSandboxExecContainerSocket_EscapeDeniedUnderProductionProfile: under the
+// production profile, a socket under a tmux-shaped dir and a socket under a
+// .NET-diagnostic-shaped name in /private/tmp are denied. Section 17b allows
+// /private/tmp, so section 17c is what denies them.
 func TestSandboxExecContainerSocket_EscapeDeniedUnderProductionProfile(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
-	probe := buildUnixConnectProbe(t)
+	probe := buildConnectProbe(t)
 
-	// A high, fixed uid-shaped number that no real tmux server uses, so the
-	// dir cannot collide with the running user's tmux socket dir.
-	tmuxDir := "/private/tmp/tmux-2147483646"
-	if err := os.MkdirAll(tmuxDir, 0o700); err != nil {
-		t.Fatalf("mkdir tmux-shaped dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(tmuxDir) })
-	escapeSock := filepath.Join(tmuxDir, "probe.sock")
-	startUnixListener(t, escapeSock)
+	// os.MkdirTemp appends digits, so the dir names match the 17c regexes
+	// and do not collide with a real tmux dir or a concurrent test run.
+	tmuxSock := socketInNewDir(t, "/private/tmp", "tmux-")
+	dotnetSock := socketInNewDir(t, "/private/tmp", "dotnet-diagnostic-")
 
 	m := newProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
 	profilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	if out, runErr := runProbe(t, profilePath, probe, escapeSock); runErr == nil {
-		t.Errorf("connect to tmux-shaped socket %s succeeded under the production profile — section 17c did not re-deny it inside the /private/tmp allowance.\nOutput: %s\nProfile: %s",
-			escapeSock, out, profilePath)
-	}
+	expectDenied(t, profilePath, probe, tmuxSock,
+		"section 17c did not re-deny the tmux-shaped socket")
+	expectDenied(t, profilePath, probe, dotnetSock,
+		"section 17c did not re-deny the .NET-diagnostic-shaped socket")
 }
 
 // TestSandboxExecContainerSocket_EscapeConnectsWithoutReDeny is the paired
-// negative for section 17c. With the re-deny removed, the tmux-shaped socket
-// connects (section 17b allows /private/tmp) — proving section 17c is what
-// blocks the escape.
+// negative for section 17c. With the re-deny removed, both sockets connect.
 func TestSandboxExecContainerSocket_EscapeConnectsWithoutReDeny(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
-	probe := buildUnixConnectProbe(t)
+	probe := buildConnectProbe(t)
 
-	tmuxDir := "/private/tmp/tmux-2147483646"
-	if err := os.MkdirAll(tmuxDir, 0o700); err != nil {
-		t.Fatalf("mkdir tmux-shaped dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(tmuxDir) })
-	escapeSock := filepath.Join(tmuxDir, "probe.sock")
-	startUnixListener(t, escapeSock)
+	tmuxSock := socketInNewDir(t, "/private/tmp", "tmux-")
+	dotnetSock := socketInNewDir(t, "/private/tmp", "dotnet-diagnostic-")
 
 	m := newProfileManager(t)
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
 		return strings.Replace(p, escapeReDenyBlock, "", 1)
 	})
 
-	if out, runErr := runProbe(t, mutatedPath, probe, escapeSock); runErr != nil || !strings.Contains(out, "UNIX-CONNECTED") {
-		t.Errorf("connect to %s still failed with the section-17c re-deny removed, so the positive test proves nothing.\nExit: %v\nOutput: %s\nProfile: %s",
-			escapeSock, runErr, out, mutatedPath)
+	for _, sock := range []string{tmuxSock, dotnetSock} {
+		expectConnected(t, mutatedPath, probe, sock,
+			"the connect still fails with section 17c removed, so the positive test proves nothing")
 	}
 }
 
-// escapeReDenyBlock is the exact section-17c clause of generateProfile,
-// duplicated here (the generator's containerRuntimeSocketEscapeReDeny constant
-// is unexported). withMutatedProfile fails loudly if this text is not present
-// verbatim, so a drift from the generator cannot pass silently.
+// escapeReDenyBlock is the section-17c clause of generateProfile
+// (hostEscapeSocketReDeny, unexported). withMutatedProfile fails when the
+// text is not in the profile, so a copy that drifts from the generator
+// fails the negative test.
 const escapeReDenyBlock = "(deny network-outbound\n" +
 	"  (regex #\"^/private/tmp/tmux-[0-9]+/\")\n" +
 	"  (regex #\"^/tmp/tmux-[0-9]+/\")\n" +
 	"  (regex #\"^/private/tmp/com\\.apple\\.launchd\\.\")\n" +
 	"  (regex #\"^/tmp/com\\.apple\\.launchd\\.\")\n" +
 	"  (regex #\"^/private/tmp/bobko\\.aerospace-\")\n" +
-	"  (regex #\"^/tmp/bobko\\.aerospace-\"))\n"
+	"  (regex #\"^/tmp/bobko\\.aerospace-\")\n" +
+	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +
+	"  (regex #\"^/tmp/dotnet-diagnostic-\"))\n"

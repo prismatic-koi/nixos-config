@@ -215,7 +215,9 @@ func ensureGoCacheDirs() {
 //     the work dir (subpath <sessionDir>) is the ONLY per-session writable
 //     grant
 //   - Process and IPC primitives required by dyld, AMFI, and the agent
-//   - (allow network*)
+//   - (allow network*), narrowed by a deny of every Unix-socket connect
+//     except an allowlist (section 17b), plus a re-deny of the host-escape
+//     sockets inside the /private/tmp allowance (section 17c)
 //
 // New top-level allow/deny clauses require an explanatory comment in the
 // generator.
@@ -1119,46 +1121,37 @@ func generateProfile(m *Manager) string {
 
 	// ── 17b. Unix-socket connect allowlist ─────────────────────────────────
 	// On macOS, a connect(2) to a Unix domain socket is a `network-outbound`
-	// operation that carries the socket's filesystem PATH. A path filter on
-	// `network-outbound` therefore matches it. Section 17's unfiltered
-	// (allow network*) admits every such connect, so a sandboxed agent could
-	// reach the podman machine API socket under $TMPDIR/podman/ and drive the
-	// podman machine with no filter (issue #3066). The same unfiltered allow
-	// also reaches the tmux control socket (which runs host commands), the
-	// user ssh-agent (which signs as the user), and the AeroSpace window
-	// manager socket (whose exec-and-forget bindings run host commands) — each
-	// a full host escape, confirmed by connect probes on m4mac.
+	// operation that carries the socket path. Section 17's unfiltered allow
+	// admits every such connect. Without this section, a sandboxed agent
+	// reaches the podman machine API socket under $TMPDIR/podman/ and drives
+	// the podman machine with no filter (#3066).
 	//
-	// The macOS MECHANISM that blocks the connection: a `(subpath "/")` filter
-	// on `network-outbound` matches every path-bearing (Unix-domain) connect
-	// and NOTHING else — a TCP or UDP connect carries an IP endpoint, not a
-	// path, so the filter never matches it. A deny built on `(subpath "/")`
-	// therefore blocks Unix-socket connects while leaving TCP (HTTPS, the
-	// 127.0.0.1 harness pipe, `prism container start --port`) untouched.
+	// The macOS mechanism that blocks the connection: a `(subpath "/")` filter
+	// on `network-outbound` matches every path-bearing (Unix-domain) connect.
+	// A TCP or UDP connect carries an IP endpoint and no path, so the filter
+	// never matches it. A deny built on `(subpath "/")` thus blocks
+	// Unix-socket connects and leaves TCP (HTTPS, the 127.0.0.1 harness pipe,
+	// `prism container start --port`) and DNS open.
 	//
-	// Shape — an ALLOWLIST, the preferred shape of #3066:
-	//   Deny `network-outbound` for every Unix-socket path EXCEPT an allowed
-	//   set, expressed as a require-all of `(subpath "/")` plus one require-not
-	//   per allowed path. A path in the allowed set does not match the deny and
-	//   falls through to section 17's allow.
-	//
-	// The allowed set is the sockets a session legitimately connects to:
-	//   - the per-session host-API socket dir (hostapi.sock) — prism prompt,
+	// The deny is an allowlist: a require-all of `(subpath "/")` plus one
+	// require-not per allowed path. An allowed path does not match the deny,
+	// so section 17's allow admits it. The allowed set:
+	//   - the per-session host-API socket dir (hostapi.sock): prism prompt,
 	//     prism escalate, prism review;
-	//   - mDNSResponder — DNS name resolution;
-	//   - syslog — libsystem logging;
-	//   - the nix daemon socket — `nix build .#prism` (the pre-PR check);
-	//   - /tmp and /private/tmp, plus the session work dir, the worktree, and
-	//     the bare repo — the scratch trees where `go test ./...` (the repo
-	//     quality gate, run in-sandbox on Darwin per section 5k) binds and
-	//     dials its own Unix sockets. A minimal allowlist that omitted these
-	//     broke ~60 socket tests in internal/sidecar, internal/session, and
-	//     cmd. The podman machine socket lives under $TMPDIR (/var/folders),
-	//     which is NOT in this set, so it stays denied.
+	//   - mDNSResponder: DNS name resolution;
+	//   - syslog: libsystem logging;
+	//   - the nix daemon socket: `nix build`;
+	//   - /tmp, /private/tmp, the session work dir, the worktree, and the bare
+	//     repo: the scratch trees where `go test ./...` binds and dials its own
+	//     Unix sockets. Section 5k makes that quality gate runnable in-sandbox.
+	//     The in-sandbox TMPDIR is unset, so the test sockets land in /tmp.
+	//     Remove these entries and about 60 socket tests in internal/sidecar,
+	//     internal/session, and cmd fail.
 	//
-	// Section 17c then re-denies the three host-escape sockets that live
-	// inside the broad /private/tmp allowance.
-	sb.WriteString(networkUnixSocketDeny(m, home, sessionDir, sessionDirErr))
+	// $TMPDIR (/var/folders) is not in the set, so the podman machine socket
+	// stays denied. Section 17c re-denies the host-escape sockets that live
+	// inside the /private/tmp allowance.
+	sb.WriteString(networkUnixSocketDeny(m, sessionDir, sessionDirErr))
 
 	// ── 18. Socket options ────────────────────────────────────────────────
 	// CRITICAL: (allow network*) in v3 does NOT cover setsockopt/getsockopt.
@@ -1236,9 +1229,9 @@ func generateProfile(m *Manager) string {
 	// the deny lists that name too.
 	//
 	// The rule matches file names. A copy of the binary under another name
-	// still runs. The podman machine socket also stays reachable. #3066
-	// tracks that socket. The deny must follow the section-9 allow, because
-	// SBPL resolves a conflict in favour of the later rule.
+	// still runs, but section 17b denies its connect to the podman machine
+	// socket. The deny must follow the section-9 allow, because SBPL resolves
+	// a conflict in favour of the later rule.
 	// TestGenerateProfile_ContainerCLIExecDenyFollowsProcessExecAllow pins
 	// the order.
 	sb.WriteString("\n")
@@ -1338,49 +1331,51 @@ const containerCLIExecDeny = "(deny process-exec*\n" +
 	"  (regex #\"/\\.podman-wrapped$\")\n" +
 	"  (regex #\"/\\.docker-wrapped$\"))\n"
 
-// containerRuntimeSocketEscapeReDeny is the section-17c clause of
-// generateProfile. It re-denies `network-outbound` to the three host-escape
-// Unix sockets that live inside the broad /private/tmp allowance of section
-// 17b. SBPL resolves a conflict in favour of the later rule, so this clause
-// must follow the section-17b allowlist deny (which lets /private/tmp
-// through) — TestGenerateProfile_NetworkUnixSocketEscapeReDenyFollowsAllowlist
-// pins the order.
+// hostEscapeSocketReDeny is the section-17c clause of generateProfile. It
+// re-denies `network-outbound` to the host-escape Unix sockets that live
+// inside the /private/tmp allowance of section 17b. The clause must follow
+// section 17's (allow network*), because SBPL resolves a conflict in favour
+// of the later rule.
+// TestGenerateProfile_NetworkUnixSocketDenyFollowsNetworkAllow and
+// TestGenerateProfile_NetworkUnixSocketEscapeReDenyFollowsAllowlist pin the
+// order.
 //
-// Each socket is a full host escape, confirmed by connect probes on m4mac:
+// Each socket lets a client act on the host outside the sandbox:
 //   - the tmux control socket (/private/tmp/tmux-<uid>/<name>) runs any
-//     command on the host via `tmux new-session`/`send-keys`;
+//     command through `tmux new-session` or `send-keys`;
 //   - the user ssh-agent (SSH_AUTH_SOCK, /private/tmp/com.apple.launchd.*/)
 //     signs with the user's keys;
 //   - the AeroSpace window-manager socket
-//     (/private/tmp/bobko.aerospace-<user>.sock) runs host commands through
-//     its config exec-and-forget bindings, reached with
-//     `aerospace trigger-binding`.
+//     (/private/tmp/bobko.aerospace-<user>.sock) runs the exec-and-forget
+//     commands of its config bindings through `aerospace trigger-binding`;
+//   - a .NET diagnostic IPC socket (/private/tmp/dotnet-diagnostic-*) takes
+//     an AttachProfiler command, which loads a native library from a path
+//     that the client gives into the target process.
 //
 // Both the /tmp and the /private/tmp forms are listed. The kernel resolves a
-// connect path through the /tmp → /private/tmp symlink before it matches, so
-// the /private/tmp form is the one that normally fires; the /tmp form is
-// defence in depth against a future path that reaches the socket unresolved.
-const containerRuntimeSocketEscapeReDeny = "(deny network-outbound\n" +
+// connect path through the /tmp symlink before it matches, so the
+// /private/tmp form is the one that normally matches. The /tmp form guards a
+// path that reaches the socket unresolved.
+const hostEscapeSocketReDeny = "(deny network-outbound\n" +
 	"  (regex #\"^/private/tmp/tmux-[0-9]+/\")\n" +
 	"  (regex #\"^/tmp/tmux-[0-9]+/\")\n" +
 	"  (regex #\"^/private/tmp/com\\.apple\\.launchd\\.\")\n" +
 	"  (regex #\"^/tmp/com\\.apple\\.launchd\\.\")\n" +
 	"  (regex #\"^/private/tmp/bobko\\.aerospace-\")\n" +
-	"  (regex #\"^/tmp/bobko\\.aerospace-\"))\n"
+	"  (regex #\"^/tmp/bobko\\.aerospace-\")\n" +
+	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +
+	"  (regex #\"^/tmp/dotnet-diagnostic-\"))\n"
 
 // networkUnixSocketDeny returns the section-17b allowlist deny and the
-// section-17c escape re-deny (see the godoc on
-// containerRuntimeSocketEscapeReDeny). It is the one source of truth for the
-// Unix-socket connect policy; the integration test and the content tests
-// assert on what it emits.
+// section-17c re-deny (hostEscapeSocketReDeny). It is the single source of
+// the Unix-socket connect policy.
 //
 // The allowlist deny is `(deny network-outbound (require-all (subpath "/")
-// (require-not <allowed>) ...))`. The leading `(subpath "/")` is what scopes
-// the rule to Unix-domain connects only: a TCP or UDP connect carries no
-// path, so `(subpath "/")` never matches it and the deny leaves it to
-// section 17's allow. Each allowed path is a require-not, so an allowed
-// socket does not match the deny and also falls through to the allow.
-func networkUnixSocketDeny(m *Manager, home, sessionDir string, sessionDirErr error) string {
+// (require-not <allowed>) ...))`. The leading `(subpath "/")` scopes the
+// rule to Unix-domain connects: a TCP or UDP connect carries no path, so
+// `(subpath "/")` never matches it. Remove that term and the rule denies
+// every outbound connection, HTTPS included.
+func networkUnixSocketDeny(m *Manager, sessionDir string, sessionDirErr error) string {
 	var allowed []string
 	// Per-session host-API socket dir — hostapi.sock is the one Unix socket a
 	// session connects to for prism prompt/escalate/review. Grant the dir, not
@@ -1424,7 +1419,7 @@ func networkUnixSocketDeny(m *Manager, home, sessionDir string, sessionDirErr er
 	}
 	sb.WriteString("))\n")
 	sb.WriteString("\n")
-	sb.WriteString(containerRuntimeSocketEscapeReDeny)
+	sb.WriteString(hostEscapeSocketReDeny)
 	sb.WriteString("\n")
 	return sb.String()
 }

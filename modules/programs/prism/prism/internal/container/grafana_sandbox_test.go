@@ -78,10 +78,8 @@ func TestGenerateProfile_SecretsDAllowlistAdmitsGrafanaConfig(t *testing.T) {
 		t.Errorf("profile bakes the concrete secrets.d counter into a regex; full profile:\n%s", profile)
 	}
 	// Exactly two exceptions: the ssh access key and grafana. The grafana
-	// carve-out adds ONE name and no more (inventory rule). Regex require-nots
-	// only: the section-17b Unix-socket allowlist (#3066) emits
-	// (literal …)/(subpath …) require-nots that are not secrets.d exceptions.
-	if got := strings.Count(profile, "(require-not (regex "); got != 2 {
+	// carve-out adds ONE name and no more (inventory rule).
+	if got := secretsDExceptionCount(t, profile); got != 2 {
 		t.Errorf("expected exactly 2 require-not exceptions (ssh access key + grafana), got %d; full profile:\n%s",
 			got, profile)
 	}
@@ -138,9 +136,7 @@ func TestGenerateProfile_SecretsDAllowlistIgnoresNonSopsGrafanaPath(t *testing.T
 	})
 	profile := generateProfile(m)
 
-	// Regex require-nots only — see the note in
-	// TestGenerateProfile_SecretsDAllowlistAdmitsGrafanaConfig.
-	if got := strings.Count(profile, "(require-not (regex "); got != 0 {
+	if got := secretsDExceptionCount(t, profile); got != 0 {
 		t.Errorf("expected zero require-not exceptions for a non-sops grafana path, got %d; full profile:\n%s", got, profile)
 	}
 }

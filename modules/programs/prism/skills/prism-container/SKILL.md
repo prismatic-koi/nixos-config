@@ -31,8 +31,8 @@ test suite. The podman machine API socket sits under the per-user `$TMPDIR`,
 which is not on the allowlist, so a connect to it fails with a sandbox
 denial (`EPERM`). A TCP connect carries an IP endpoint, not a path, so this
 deny leaves normal network use untouched. The same deny stops the tmux
-control socket, the user ssh-agent, and the AeroSpace window-manager socket,
-which are each a host escape. On Linux, the bwrap sandbox binds no container
+control socket, the user ssh-agent, the AeroSpace window-manager socket,
+and the .NET diagnostic IPC socket, which are each a host escape. On Linux, the bwrap sandbox binds no container
 socket, so the same connection is absent. Use `prism container` for every
 container action in place of a direct socket.
 

@@ -248,15 +248,16 @@ integration test coverage exists for:
 - **Network egress** — `(allow network*)` permits outbound TCP.
 - **The Unix-socket connect allowlist** — the section-17b deny on
   `network-outbound` for every Unix-socket path except an allowlist, and the
-  section-17c re-deny of the three host-escape sockets inside the broad
-  `/private/tmp` allowance (tmux, the user ssh-agent, AeroSpace). Under the
-  production profile, a connect to a socket in the podman machine location
-  (`$TMPDIR`, not allowlisted) fails, a connect to a socket under the
-  allowlisted `/private/tmp` succeeds, and a connect to a tmux-shaped socket
-  under `/private/tmp` fails. The paired negatives neutralise the section-17b
-  scope term and strip the section-17c re-deny, and the connects then succeed.
-  The connect probe is a CGO-disabled Go binary the test builds itself, so no
-  extra Nix tool is needed. See
+  section-17c re-deny of the host-escape sockets inside the `/private/tmp`
+  allowance (tmux, the user ssh-agent, AeroSpace, and the .NET diagnostic IPC
+  socket). Under the production profile, a connect to a socket in the podman
+  machine location (`$TMPDIR`) fails. A connect to a socket under
+  `/private/tmp` and a loopback TCP connect both succeed. A connect to a
+  tmux-shaped socket and to a .NET-diagnostic-shaped socket under
+  `/private/tmp` fails. The paired negatives neutralise the section-17b scope
+  term, remove that term, and strip the section-17c re-deny. Each negative
+  then gives the opposite result. The connect probe is a CGO-disabled Go
+  binary that the test builds, so no extra Nix tool is necessary. See
   `sandbox_exec_container_socket_darwin_test.go` (issue #3066).
 
 Each positive case has a paired negative case that mutates the profile to
@@ -331,11 +332,11 @@ read-only worktree deny. Like the worktree path deny, it needs only Nix
 bash and Nix coreutils.
 Issue #3066 adds a sixth file,
 `sandbox_exec_container_socket_darwin_test.go`, for the section-17b/17c
-Unix-socket connect allowlist. It needs no Nix tool: the test builds its own
-CGO-disabled connect probe with the Go toolchain the job already sets up, and
-binds its listeners from the test process. It relies on the same
-`TMPDIR`-under-`/var/folders` export as the gitlab/grafana tests, so its
-"podman-location" socket (under `os.TempDir()`) lands outside the allowlist.
+Unix-socket connect allowlist. It needs no Nix tool. The test builds its own
+CGO-disabled connect probe with the Go toolchain that the job sets up. The
+test process binds the listeners. The test relies on the same
+`TMPDIR`-under-`/var/folders` export as the gitlab/grafana tests. Thus its
+"podman-location" socket (under `os.TempDir()`) is outside the allowlist.
 The `-run` selector matches only the `TestSandboxExecGitLabToken_*`,
 `TestSandboxExecGrafanaConfig_*`, `TestSandboxExecWorktreeEntry_*`,
 `TestSandboxExecWorktreeReadOnly_*`, `TestSandboxExecContainerCLI_*`, and

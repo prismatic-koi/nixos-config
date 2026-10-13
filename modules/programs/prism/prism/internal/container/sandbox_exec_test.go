@@ -317,13 +317,7 @@ func TestGenerateProfile_NetworkAllow(t *testing.T) {
 }
 
 // TestGenerateProfile_NetworkUnixSocketAllowlist asserts the section-17b
-// allowlist deny for Unix-socket connects (issue #3066). It is the positive
-// content replacement for the deleted profile-text-absence assertion
-// TestGenerateProfile_PodmanProxy_UpstreamPathNeverAppears (that test, removed
-// with the podman proxy in #3116, only proved an explicit allow was ABSENT —
-// which the unfiltered (allow network*) made meaningless). This test asserts
-// the rule that is PRESENT instead: a deny of every Unix-socket connect except
-// an allowlist.
+// deny of every Unix-socket connect except an allowlist (#3066).
 func TestGenerateProfile_NetworkUnixSocketAllowlist(t *testing.T) {
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName:     "repo@main",
@@ -336,8 +330,8 @@ func TestGenerateProfile_NetworkUnixSocketAllowlist(t *testing.T) {
 	clause := extractClause(t, profile, "(deny network-outbound\n  (require-all")
 
 	// The leading (subpath "/") scopes the rule to path-bearing (Unix-domain)
-	// connects, leaving TCP/UDP untouched. Without it the rule would deny
-	// every outbound connection, including HTTPS.
+	// connects. Without it the rule denies every outbound connection, HTTPS
+	// and loopback TCP included.
 	if !strings.Contains(clause, "(require-all\n    (subpath \"/\")") {
 		t.Errorf("section-17b deny is not scoped by a leading (subpath \"/\") inside require-all; clause:\n%s", clause)
 	}
@@ -362,10 +356,12 @@ func TestGenerateProfile_NetworkUnixSocketAllowlist(t *testing.T) {
 		}
 	}
 
-	// The per-session work dir is allowed (its exact path is instance-derived,
-	// so match the prefix).
-	if !strings.Contains(clause, `(require-not (subpath "`) || !strings.Contains(clause, "/prism/sessions/") {
-		t.Errorf("section-17b deny missing the per-session work dir require-not; clause:\n%s", clause)
+	sessionDir, err := m.sessionWorkDirPath()
+	if err != nil {
+		t.Fatalf("sessionWorkDirPath: %v", err)
+	}
+	if want := "(require-not (subpath " + quoteSBPL(sessionDir) + "))"; !strings.Contains(clause, want) {
+		t.Errorf("section-17b deny missing the per-session work dir %s; clause:\n%s", want, clause)
 	}
 
 	// The podman machine socket lives under $TMPDIR (/var/folders on a real
@@ -397,22 +393,20 @@ func TestGenerateProfile_NetworkUnixSocketDenyFollowsNetworkAllow(t *testing.T) 
 }
 
 // TestGenerateProfile_NetworkUnixSocketEscapeReDeny asserts the section-17c
-// re-deny that claws back the three host-escape sockets living inside the
-// broad /private/tmp allowance: the tmux control socket, the user ssh-agent
-// (SSH_AUTH_SOCK under com.apple.launchd.*), and the AeroSpace window-manager
-// socket. Each was confirmed reachable from a sandbox-exec session before the
-// fix (connect probes on m4mac, #3066).
+// re-deny of the host-escape sockets inside the /private/tmp allowance: tmux,
+// the user ssh-agent, AeroSpace, and the .NET diagnostic IPC socket.
 func TestGenerateProfile_NetworkUnixSocketEscapeReDeny(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
 
-	if !strings.Contains(profile, containerRuntimeSocketEscapeReDeny) {
-		t.Errorf("profile missing the section-17c escape re-deny:\n%s\nprofile:\n%s", containerRuntimeSocketEscapeReDeny, profile)
+	if !strings.Contains(profile, hostEscapeSocketReDeny) {
+		t.Errorf("profile missing the section-17c escape re-deny:\n%s\nprofile:\n%s", hostEscapeSocketReDeny, profile)
 	}
 	for _, want := range []string{
 		`(regex #"^/private/tmp/tmux-[0-9]+/")`,
 		`(regex #"^/private/tmp/com\.apple\.launchd\.")`,
 		`(regex #"^/private/tmp/bobko\.aerospace-")`,
+		`(regex #"^/private/tmp/dotnet-diagnostic-")`,
 	} {
 		if !strings.Contains(profile, want) {
 			t.Errorf("section-17c re-deny missing %s; profile:\n%s", want, profile)
@@ -420,18 +414,16 @@ func TestGenerateProfile_NetworkUnixSocketEscapeReDeny(t *testing.T) {
 	}
 }
 
-// TestGenerateProfile_NetworkUnixSocketEscapeReDenyFollowsAllowlist pins the
-// order of section 17c after section 17b. Section 17b allows /private/tmp via
-// a require-not; section 17c re-denies the three escape sockets inside it. A
-// deny is a deny regardless of order, but keeping 17c after 17b matches the
-// documented layering and guards against a future refactor that turns 17b
-// into an allow.
+// TestGenerateProfile_NetworkUnixSocketEscapeReDenyFollowsAllowlist pins
+// section 17c after section 17b. With the 17b order test, it keeps the 17c
+// deny after section 17's (allow network*), which the later-rule-wins
+// resolution of SBPL requires.
 func TestGenerateProfile_NetworkUnixSocketEscapeReDenyFollowsAllowlist(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
 
 	allowlistIdx := strings.Index(profile, "(deny network-outbound\n  (require-all")
-	reDenyIdx := strings.Index(profile, containerRuntimeSocketEscapeReDeny)
+	reDenyIdx := strings.Index(profile, hostEscapeSocketReDeny)
 	if allowlistIdx < 0 || reDenyIdx < 0 {
 		t.Fatalf("profile missing section 17b or 17c:\nallowlistIdx=%d reDenyIdx=%d\n%s", allowlistIdx, reDenyIdx, profile)
 	}
@@ -1794,6 +1786,15 @@ const secretsDDenyReadHeader = "(deny file-read*\n" +
 	"      (regex #\"^/var/folders/.*/secrets\\.d/\")\n" +
 	"      (regex #\"^/private/var/folders/.*/secrets\\.d/\"))\n"
 
+// secretsDExceptionCount returns the number of require-not exceptions in the
+// secrets.d read-deny clause. It counts inside that clause only, so the
+// require-not terms of the section-17b Unix-socket allowlist do not change
+// the count.
+func secretsDExceptionCount(t *testing.T, profile string) int {
+	t.Helper()
+	return strings.Count(extractClause(t, profile, secretsDDenyReadHeader), "(require-not ")
+}
+
 // secretsDDenyWriteRule is the verbatim secrets.d write-deny rule.
 const secretsDDenyWriteRule = "(deny file-write*\n" +
 	"  (regex #\"^/var/folders/.*/secrets\\.d/\")\n" +
@@ -1896,11 +1897,8 @@ func TestGenerateProfile_SecretsDAllowlistDerivedFromStableSources(t *testing.T)
 	}
 
 	// Exactly the six inventoried exceptions — nothing else. A higher count
-	// would mean a wildcard or an un-inventoried name slipped in. The count is
-	// scoped to regex require-nots: the section-17b Unix-socket allowlist
-	// (#3066) also emits require-not terms, but as (literal …) / (subpath …),
-	// never (regex …), so the secrets.d exceptions are the only regex ones.
-	if got := strings.Count(profile, "(require-not (regex "); got != len(expected) {
+	// would mean a wildcard or an un-inventoried name slipped in.
+	if got := secretsDExceptionCount(t, profile); got != len(expected) {
 		t.Errorf("expected exactly %d require-not exceptions, got %d; full profile:\n%s",
 			len(expected), got, profile)
 	}
@@ -1923,11 +1921,7 @@ func TestGenerateProfile_SecretsDAllowlistEmptyWithoutSopsChains(t *testing.T) {
 	if !strings.Contains(profile, secretsDDenyWriteRule) || !strings.Contains(profile, secretsDDenyReadHeader) {
 		t.Fatalf("secrets.d deny rules must be emitted even with no allowlist sources; full profile:\n%s", profile)
 	}
-	// Scoped to regex require-nots — see the note in
-	// TestGenerateProfile_SecretsDAllowlistDerivedFromStableSources: the
-	// section-17b Unix-socket allowlist emits (literal …)/(subpath …)
-	// require-nots that are not secrets.d exceptions.
-	if got := strings.Count(profile, "(require-not (regex "); got != 0 {
+	if got := secretsDExceptionCount(t, profile); got != 0 {
 		t.Errorf("expected zero require-not exceptions on a non-sops host, got %d; full profile:\n%s", got, profile)
 	}
 }
