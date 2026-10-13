@@ -920,7 +920,6 @@ func agentPaneEnvVars(opts Opts) map[string]string {
 		// sidecar Unix socket. bwrap and sandbox-exec set this via their own
 		// paths; only inject here for host mode.
 		return hostHarnessEnvVars(opts.HarnessPipeSockPath, opts.SessionName)
-		return nil
 	}
 	if opts.Prompt == "" {
 		return nil
