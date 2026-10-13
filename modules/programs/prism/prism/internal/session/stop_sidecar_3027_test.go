@@ -107,39 +107,36 @@ func TestStopSidecar_OtherProcessNotSignalled(t *testing.T) {
 	}
 }
 
-// withFakeProcCmdline points procRoot at a fake tree where pid has the given
-// /proc/<pid>/cmdline content.
-func withFakeProcCmdline(t *testing.T, pid int, cmdline string) {
+// withFakePIDArgv makes pidArgv return argv and err for pid. Other PIDs keep
+// the real reader.
+func withFakePIDArgv(t *testing.T, pid int, argv []string, err error) {
 	t.Helper()
-	root := t.TempDir()
-	dir := filepath.Join(root, strconv.Itoa(pid))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir fake proc: %v", err)
+	prev := pidArgv
+	pidArgv = func(p int) ([]string, error) {
+		if p == pid {
+			return argv, err
+		}
+		return prev(p)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "cmdline"), []byte(cmdline), 0o644); err != nil {
-		t.Fatalf("write fake cmdline: %v", err)
-	}
-	prev := procRoot
-	procRoot = root
-	t.Cleanup(func() { procRoot = prev })
+	t.Cleanup(func() { pidArgv = prev })
 }
 
 func TestSidecarPIDOwner(t *testing.T) {
 	const name = "prism-test@owner"
 	cases := []struct {
-		desc    string
-		cmdline string
-		want    pidOwner
+		desc string
+		argv []string
+		want pidOwner
 	}{
-		{"sidecar of the session", "/bin/prism\x00sidecar\x00--session\x00" + name + "\x00", pidOwnerSidecar},
-		{"sidecar of another session", "/bin/prism\x00sidecar\x00--session\x00other@x\x00", pidOwnerOther},
-		{"another program", "/usr/bin/sleep\x0030\x00", pidOwnerOther},
-		{"empty command line (kernel thread)", "", pidOwnerOther},
+		{"sidecar of the session", []string{"/bin/prism", "sidecar", "--session", name}, pidOwnerSidecar},
+		{"sidecar of another session", []string{"/bin/prism", "sidecar", "--session", "other@x"}, pidOwnerOther},
+		{"another program", []string{"/usr/bin/sleep", "30"}, pidOwnerOther},
+		{"empty command line (kernel thread)", []string{""}, pidOwnerOther},
 	}
 	for i, c := range cases {
 		t.Run(c.desc, func(t *testing.T) {
 			pid := 4_000_000 + i
-			withFakeProcCmdline(t, pid, c.cmdline)
+			withFakePIDArgv(t, pid, c.argv, nil)
 			if got := sidecarPIDOwner(pid, name); got != c.want {
 				t.Errorf("sidecarPIDOwner = %v, want %v", got, c.want)
 			}
@@ -155,7 +152,7 @@ func TestStopSidecar_EmptyCmdlineIsNotASidecar(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	const name = "prism-test@stop-kthread"
 	pid, _ := startSidecarStub(t, name, []string{"not-a-sidecar"}, "PRISM_TEST_STUB_LONG=1")
-	withFakeProcCmdline(t, pid, "")
+	withFakePIDArgv(t, pid, []string{""}, nil)
 
 	const timeout = 2 * time.Second
 	start := time.Now()

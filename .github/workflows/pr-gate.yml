@@ -292,6 +292,37 @@ jobs:
             exit 1
           fi
           echo "go-tests-macos-sandbox-exec: ${run_count} test(s) ran, none skipped"
+      # The sidecar owner check reads the command line of a PID with a
+      # different mechanism on Darwin (kern.procargs2) than on Linux
+      # (/proc). The go-tests job runs on Linux only, so these tests run
+      # here too (#3136). The selector excludes TestKillSidecarAndWait*,
+      # which skip on Darwin.
+      - name: go test ./internal/session -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2)' -race
+        if: always() && steps.changes.outputs.go == 'true'
+        working-directory: modules/programs/prism/prism
+        run: |
+          set -o pipefail
+          go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2)' -race -count=1 2>&1 | tee /tmp/go-test-macos-sidecar-owner.log
+      - name: Guard against SKIP-as-PASS and a zero-test run (sidecar owner check)
+        if: always() && steps.changes.outputs.go == 'true'
+        run: |
+          if [ ! -f /tmp/go-test-macos-sidecar-owner.log ]; then
+            echo "::error::go test log not found - likely the test step did not run" >&2
+            exit 1
+          fi
+          stop_count=$(grep -cE '^=== RUN   TestStopSidecar' /tmp/go-test-macos-sidecar-owner.log || true)
+          skip_lines=$(grep -E '^[[:space:]]*--- SKIP: ' /tmp/go-test-macos-sidecar-owner.log || true)
+          echo "TestStopSidecar* tests run: ${stop_count:-0}"
+          if [ -n "$skip_lines" ]; then
+            echo "::error::one or more selected tests reported SKIP - a skip must not read as a pass:"
+            echo "$skip_lines"
+            exit 1
+          fi
+          if [ -z "$stop_count" ] || [ "$stop_count" -eq 0 ]; then
+            echo "::error::0 TestStopSidecar tests ran - the -run selector matched nothing, check for naming drift" >&2
+            exit 1
+          fi
+          echo "sidecar owner check: ${stop_count} TestStopSidecar test(s) ran, none skipped"
       - name: No Go-relevant changes
         if: steps.changes.outputs.go != 'true'
         run: echo "no Go-relevant paths touched; skipping go-tests-macos-sandbox-exec"
