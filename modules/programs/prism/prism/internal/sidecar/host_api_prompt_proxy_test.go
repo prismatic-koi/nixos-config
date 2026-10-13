@@ -194,6 +194,72 @@ func TestHostAPI_Prompt_CrossSession_UnparseableStdoutFallsBack(t *testing.T) {
 	}
 }
 
+// TestHostAPI_Prompt_CrossSession_FailureCarriesChildStderr: when the
+// `prism prompt` child exits non-zero, the error in the response carries the
+// stderr of the child. The caller of /prompt sees only that error string, so
+// without the stderr it sees only "exit status 1" (issue #3135).
+func TestHostAPI_Prompt_CrossSession_FailureCarriesChildStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stubs are POSIX-only")
+	}
+	const childErr = "host-API socket not found at /run/prism/abc/hostapi.sock (session may have ended): stat /run/prism/abc/hostapi.sock: no such file or directory"
+	stub := filepath.Join(t.TempDir(), "prism-stub-socket-missing")
+	script := "#!/bin/sh\n" +
+		"echo " + shellSingleQuote(childErr) + " >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	bus := sidecartest.NewIsolated(t, "")
+	sc := newCrossSessionSidecar(t, "prism-test@coord-child-stderr",
+		"target-repo", "coordinator", stub, bus.DB)
+	seedTargetSession(t, bus.DB, "target-repo@worker", "target-repo")
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/prompt", `{"session":"target-repo@worker","prompt":"hello"}`)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rr.Code, rr.Body.String())
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("parse response body: %v (body=%s)", err, rr.Body.String())
+	}
+	want := "prompt delivery failed: exit status 1: " + childErr
+	if parsed["error"] != want {
+		t.Errorf("error = %q, want %q", parsed["error"], want)
+	}
+}
+
+// TestHostAPI_Prompt_CrossSession_FailureWithEmptyStderr: a child that exits
+// non-zero with no stderr gives the exit status alone, with no trailing
+// separator.
+func TestHostAPI_Prompt_CrossSession_FailureWithEmptyStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stubs are POSIX-only")
+	}
+	stub := filepath.Join(t.TempDir(), "prism-stub-silent-fail")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	bus := sidecartest.NewIsolated(t, "")
+	sc := newCrossSessionSidecar(t, "prism-test@coord-silent-fail",
+		"target-repo", "coordinator", stub, bus.DB)
+	seedTargetSession(t, bus.DB, "target-repo@worker", "target-repo")
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/prompt", `{"session":"target-repo@worker","prompt":"hello"}`)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rr.Code, rr.Body.String())
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("parse response body: %v (body=%s)", err, rr.Body.String())
+	}
+	if want := "prompt delivery failed: exit status 1"; parsed["error"] != want {
+		t.Errorf("error = %q, want %q", parsed["error"], want)
+	}
+}
+
 // newCrossSessionSidecar constructs a coordinator sidecar with a stubbed
 // prism binary, wired for cross-session /prompt tests. The session name
 // uses the prism-test@ prefix for isolation.

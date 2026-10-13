@@ -982,6 +982,28 @@ func TestProxyPrompt_Returns403AsError(t *testing.T) {
 	}
 }
 
+// TestProxyPromptWithOutcome_SurfacesChildStderr: when the sidecar /prompt
+// handler reports a failed delivery child, the sandboxed caller sees the
+// cause that the handler copies from the stderr of the child, not only the
+// exit status (issue #3135).
+func TestProxyPromptWithOutcome_SurfacesChildStderr(t *testing.T) {
+	const handlerErr = "prompt delivery failed: exit status 1: host-API socket not found at /run/prism/abc/hostapi.sock (session may have ended): stat /run/prism/abc/hostapi.sock: no such file or directory"
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		b, _ := json.Marshal(map[string]string{"error": handlerErr})
+		_, _ = w.Write(b)
+	})
+
+	err := proxyPromptWithOutcome(srv.apiURL(), "otherrepo@feature", "hello", "steer", false)
+	if err == nil {
+		t.Fatal("expected non-nil error for 500 response")
+	}
+	if want := "host-API /prompt: " + handlerErr; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
 // TestProxyPrompt_DeliverAsModes verifies that proxyPrompt forwards the
 // deliverAs argument as the "deliver_as" JSON field for all accepted modes.
 // This is the container-mode (PRISM_HOST_API set) path — the CLI validates

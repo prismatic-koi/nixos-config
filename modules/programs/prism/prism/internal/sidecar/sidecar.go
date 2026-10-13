@@ -246,9 +246,10 @@ type Config struct {
 	// current code — no isolation mode owns a container lifecycle.
 	Container *container.Config
 	// HostAPISockPath, when non-empty, is the path at which the sidecar starts a
-	// Unix socket HTTP server exposing host-side tmux operations to agents running
-	// inside the sandbox (container or bwrap). The listener is started regardless of
-	// whether Container is set — bwrap sessions (where Container is nil) also need it.
+	// Unix socket HTTP server. The server exposes host-side operations to an agent
+	// inside a sandbox, and receives /prompt deliveries for this session in every
+	// isolation mode. The listener is started regardless of whether Container is
+	// set.
 	HostAPISockPath string
 	// HostAPITCPPort is the OS-allocated TCP port used on Darwin for the host-API
 	// listener. It is set by Run() after binding the listener and recorded here for
@@ -875,9 +876,10 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	}
 
 	// Start the host-API Unix socket server.
-	// This runs for ALL harness types — any session with HostAPISockPath set
-	// needs the Unix socket so the sandboxed agent can proxy prism CLI calls
-	// back to the host.
+	// This runs for ALL harness types and ALL isolation modes — any session
+	// with HostAPISockPath set needs the Unix socket. A sandboxed agent
+	// proxies prism CLI calls back to the host through it, and `prism prompt`
+	// delivers to a pi session through it in every mode, host included.
 	//
 	// This block MUST run before the transport-shape switch so that pi
 	// (socket-pipe) and stdio-pipe sessions get the listener before

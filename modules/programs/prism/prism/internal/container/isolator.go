@@ -45,9 +45,14 @@ type Capabilities struct {
 	//        cmd/switch.go:61, :310, :354, :385.
 	RequiresProfilesFile bool
 
-	// NeedsHostAPISocket means the sidecar binds the host-API Unix socket for
-	// this mode. True for bwrap and sandbox-exec; false for host.
-	// Cites: internal/sidecar/sidecar.go:512-547; cmd/sidecar.go:233-249.
+	// NeedsHostAPISocket means the agent runs in a sandbox and reaches the
+	// host only through the host-API Unix socket. The sidecar of such a mode
+	// requires --port and builds the container harness. True for bwrap and
+	// sandbox-exec; false for host.
+	//
+	// This flag does not gate the listener. The sidecar binds the socket in
+	// every mode, host included, because prompt delivery to a pi session
+	// dials it (cmd/sidecar.go resolveHostAPISockPath).
 	NeedsHostAPISocket bool
 
 	// UsesContainerHarness means the harness adapter is constructed in

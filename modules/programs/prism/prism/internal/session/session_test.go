@@ -729,6 +729,29 @@ func TestAgentPaneEnvVars_HostMode_Skipped(t *testing.T) {
 	}
 }
 
+// TestAgentPaneEnvVars_HostMode_NoHostAPIURL: a host-mode agent pane gets no
+// PRISM_HOST_API, although its sidecar binds hostapi.sock (issue #3135). The
+// prism CLI treats PRISM_HOST_API as the sandbox sentinel
+// (sandboxenv.IsInsideSandbox) and proxies every verb through the socket
+// when it is set. A host-mode session runs on the host, so its CLI keeps the
+// direct route.
+func TestAgentPaneEnvVars_HostMode_NoHostAPIURL(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	opts := Opts{
+		SessionName:         "prism-test@3135-host-env",
+		Prompt:              "hello",
+		IsolationMode:       "host",
+		HarnessPipeSockPath: "/var/state/prism/run/abc/pipe.sock",
+	}
+	got := agentPaneEnvVars(opts)
+	if _, present := got["PRISM_HOST_API"]; present {
+		t.Errorf("agentPaneEnvVars(host): PRISM_HOST_API is set (%q); a host-mode pane must not get it", got["PRISM_HOST_API"])
+	}
+	if got["PRISM_HARNESS_PIPE"] == "" {
+		t.Errorf("agentPaneEnvVars(host): PRISM_HARNESS_PIPE is empty; got %v", got)
+	}
+}
+
 // TestAgentPaneEnvVars_PromptFile_PreferredOverInline verifies the file-path
 // preference: when both opts.Prompt and opts.PromptFilePath are set in bwrap
 // or sandbox-exec mode, agentPaneEnvVars emits PRISM_INITIAL_PROMPT_FILE

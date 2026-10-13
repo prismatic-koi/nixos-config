@@ -313,8 +313,8 @@ func runMergesCancel(cmd *cobra.Command, args []string) error {
 // The host API gates both verbs: `/merges` and `/merges/cancel` each call
 // requireCoordinator (internal/sidecar/host_api.go), so a sandboxed caller
 // (bwrap, sandbox-exec) is refused with HTTP 403 — every sandboxed session
-// carries the host-API socket, so every call from one routes through that
-// gate. A session in `host` isolation mode has no socket, so
+// carries PRISM_HOST_API, so every call from one routes through that
+// gate. A session in `host` isolation mode has no PRISM_HOST_API, so
 // sandboxenv.HostAPISocket() is empty, the proxy branch is skipped, and the
 // call reaches the direct DB path. Without a check there, any host-mode
 // worker, review agent, or investigator reaches d.CancelMerge with no role
