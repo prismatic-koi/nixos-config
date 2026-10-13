@@ -40,10 +40,32 @@ func limitRefusal(ctx context.Context, r Runner, instanceID string, hostLimit in
 	if err != nil {
 		return "", fmt.Errorf("read the build markers: %w", err)
 	}
-	for _, id := range builds {
-		entries = append(entries, psEntry{State: "running", Labels: map[string]string{LabelInstanceID: id}})
+	held := make(map[string]bool, len(builds))
+	for _, b := range builds {
+		held[b.name()] = true
+		entries = append(entries, psEntry{State: "running", Labels: map[string]string{LabelInstanceID: b.instanceID}})
 	}
-	return checkLimits(entries, instanceID, hostLimit), nil
+	// The anchor container of a macOS build and its marker are one build.
+	// The anchor counts only when no prism process holds the marker: then
+	// a build step can still run in the VM until the anchor stops.
+	counted := entries[:0]
+	for _, e := range entries {
+		if name := anchorBuildName(e); name == "" || !held[name] {
+			counted = append(counted, e)
+		}
+	}
+	return checkLimits(counted, instanceID, hostLimit), nil
+}
+
+// anchorBuildName returns the build name (buildName) of an anchor
+// container, or "" when e is not an anchor.
+func anchorBuildName(e psEntry) string {
+	id := e.Labels[LabelInstanceID]
+	suffix, ok := strings.CutPrefix(e.Labels[LabelBuild], buildUnitPrefix(id))
+	if !ok || suffix == "" || container.InstanceTokenForID(id) == "" {
+		return ""
+	}
+	return buildName(id, suffix)
 }
 
 // checkLimits returns a refusal message when a new container or build goes
@@ -98,6 +120,20 @@ func newBuildSuffix() (string, error) {
 // build, with no file suffix.
 func buildName(instanceID, suffix string) string {
 	return instanceID + "." + suffix
+}
+
+// buildRef names one build that holds its marker.
+type buildRef struct{ instanceID, suffix string }
+
+func (b buildRef) name() string { return buildName(b.instanceID, b.suffix) }
+
+// buildMarkerPath returns the path of the marker of the build name.
+func buildMarkerPath(name string) (string, error) {
+	dir, err := container.PrismContainerBuildLockDirPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, name+buildMarkerSuffix), nil
 }
 
 // createBuildMarker creates and locks the marker of one build. The caller
@@ -181,10 +217,9 @@ func removeStaleBuildCopies() {
 	}
 }
 
-// runningBuilds returns the instance ID of each build that runs now, one
-// entry for each build. It removes the markers and the context copies of
-// builds whose prism process has ended.
-func runningBuilds() ([]string, error) {
+// runningBuilds returns each build that runs now. It removes the markers
+// and the context copies of builds whose prism process has ended.
+func runningBuilds() ([]buildRef, error) {
 	removeStaleBuildCopies()
 	dir, err := container.PrismContainerBuildLockDirPath()
 	if err != nil {
@@ -197,21 +232,21 @@ func runningBuilds() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
+	var builds []buildRef
 	for _, e := range entries {
 		name := e.Name()
 		if strings.HasPrefix(name, ".") || !strings.HasSuffix(name, buildMarkerSuffix) {
 			continue
 		}
-		id, _, _ := strings.Cut(name, ".")
+		id, suffix, _ := strings.Cut(strings.TrimSuffix(name, buildMarkerSuffix), ".")
 		path := filepath.Join(dir, name)
 		if markerHeld(path) {
-			ids = append(ids, id)
+			builds = append(builds, buildRef{instanceID: id, suffix: suffix})
 		} else {
 			_ = os.Remove(path)
 		}
 	}
-	return ids, nil
+	return builds, nil
 }
 
 // hostLock serialises the limit check and the container create across all

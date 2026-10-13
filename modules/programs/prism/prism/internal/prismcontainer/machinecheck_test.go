@@ -155,8 +155,8 @@ func TestMachineCheck_FailsClosed(t *testing.T) {
 	}
 }
 
-func TestPlainExecutor_Preflight(t *testing.T) {
-	e := PlainExecutor{Runner: machineStub{list: stubList, inspect: stubInspect}, ReadFile: fixtureReader(t), MountAllowlist: []string{"/Users/u/code"}}
+func TestAnchorExecutor_Preflight(t *testing.T) {
+	e := AnchorExecutor{Runner: machineStub{list: stubList, inspect: stubInspect}, ReadFile: fixtureReader(t), MountAllowlist: []string{"/Users/u/code"}}
 	if err := e.Preflight(context.Background()); err == nil || !strings.Contains(err.Error(), "/private") {
 		t.Errorf("Preflight = %v, want a refusal that names /private", err)
 	}

@@ -63,8 +63,8 @@ func notStarted(format string, args ...any) error {
 }
 
 // DefaultBuildExecutor returns the executor for goos: ScopeExecutor on
-// Linux, PlainExecutor on every other platform. machineAllowlist is the
-// list of Mac paths that the podman machine can mount (PlainExecutor).
+// Linux, AnchorExecutor on every other platform. machineAllowlist is the
+// list of Mac paths that the podman machine can mount (AnchorExecutor).
 func DefaultBuildExecutor(goos string, r Runner, machineAllowlist []string) BuildExecutor {
 	if r == nil {
 		r = ExecRunner{}
@@ -72,7 +72,7 @@ func DefaultBuildExecutor(goos string, r Runner, machineAllowlist []string) Buil
 	if goos == "linux" {
 		return ScopeExecutor{Runner: r}
 	}
-	return PlainExecutor{Runner: r, MountAllowlist: machineAllowlist}
+	return AnchorExecutor{Runner: r, MountAllowlist: machineAllowlist}
 }
 
 // buildUnitPrefix returns the unit name prefix of every build of one
@@ -88,32 +88,6 @@ func insertAfterBuild(args []string, opts ...string) []string {
 	out = append(out, opts...)
 	return append(out, args[1:]...)
 }
-
-// PlainExecutor runs podman build directly. It is the macOS executor: the
-// build runs in the podman machine VM, and the host has no handle on the
-// processes of a build step. Preflight refuses a build when the machine
-// mounts a Mac path outside MountAllowlist (machinecheck.go).
-//
-// A build step that runs when ctx ends can continue in the VM until it
-// exits. Its memory and CPU limits still apply, and the VM size bounds it.
-// StopBuilds cannot reach it, so it reports zero builds.
-type PlainExecutor struct {
-	Runner Runner
-	// MountAllowlist holds the absolute Mac paths that the machine can
-	// mount: a mount source must be one of them or inside one.
-	MountAllowlist []string
-	// ReadFile reads the machine config file. Nil selects os.ReadFile.
-	ReadFile func(string) ([]byte, error)
-}
-
-// Build adds --ulimit nproc as the process limit: podman build has no
-// --pids-limit. RLIMIT_NPROC counts the processes of one user in the
-// rootless user namespace, so other containers of that user count too.
-func (e PlainExecutor) Build(ctx context.Context, _ string, out io.Writer, args []string) (int, error) {
-	return e.runner().Run(ctx, out, out, insertAfterBuild(args, "--ulimit", "nproc="+PidsLimit+":"+PidsLimit)...)
-}
-
-func (PlainExecutor) StopBuilds(context.Context, string) (int, error) { return 0, nil }
 
 // scopeScript runs as the command of the systemd scope. Its first argument
 // is the started file. It moves itself into a leaf cgroup of the scope,
@@ -388,7 +362,7 @@ func (e ScopeExecutor) Build(ctx context.Context, unit string, out io.Writer, ar
 		// A build step can outlive podman. Kill the scope after every
 		// build, so that nothing of the build keeps running.
 		stopErr := e.stopUnit(unit)
-		code, err := scopeExitCode(err)
+		code, err := buildExitCode(err)
 		if _, statErr := os.Stat(started); statErr != nil {
 			tail, _ := setupOut.snapshot()
 			err = notStarted("the build scope did not start podman build (systemd-run exit %d, %v): %s", code, err, strings.TrimSpace(string(tail)))
@@ -414,9 +388,10 @@ func (e ScopeExecutor) Build(ctx context.Context, unit string, out io.Writer, ar
 	}
 }
 
-// scopeExitCode converts the result of systemd-run. A podman that a signal
+// buildExitCode converts the result of the process that runs podman build:
+// systemd-run (Linux) or the client guard (macOS). A podman that a signal
 // killed did not run to completion, so that is an error, not an exit code.
-func scopeExitCode(err error) (int, error) {
+func buildExitCode(err error) (int, error) {
 	if err == nil {
 		return 0, nil
 	}
