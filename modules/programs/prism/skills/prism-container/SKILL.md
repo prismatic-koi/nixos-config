@@ -22,6 +22,20 @@ small set of inputs. Prism builds the `podman` command on the host and sets
 every other option itself. The agent cannot add an option, remove an
 option, or change an option.
 
+The sandbox also blocks a direct connection to the container runtime. On
+macOS, a connect to a Unix domain socket is a `network-outbound` operation
+that carries the socket path. The sandbox-exec profile denies
+`network-outbound` to every Unix socket except an allowlist: the host-API
+socket, DNS, the system log, the nix daemon, and the scratch trees for the
+test suite. The podman machine API socket sits under the per-user `$TMPDIR`,
+which is not on the allowlist, so a connect to it fails with a sandbox
+denial (`EPERM`). A TCP connect carries an IP endpoint, not a path, so this
+deny leaves normal network use untouched. The same deny stops the tmux
+control socket, the user ssh-agent, and the AeroSpace window-manager socket,
+which are each a host escape. On Linux, the bwrap sandbox binds no container
+socket, so the same connection is absent. Use `prism container` for every
+container action in place of a direct socket.
+
 The command works for every session role and in every isolation mode:
 `bwrap`, `sandbox-exec`, and `host`. It needs no spawn flag.
 

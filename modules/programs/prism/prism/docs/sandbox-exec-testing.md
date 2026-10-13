@@ -246,6 +246,18 @@ integration test coverage exists for:
   profile and the writes work. See
   `sandbox_exec_worktree_readonly_darwin_test.go`.
 - **Network egress** — `(allow network*)` permits outbound TCP.
+- **The Unix-socket connect allowlist** — the section-17b deny on
+  `network-outbound` for every Unix-socket path except an allowlist, and the
+  section-17c re-deny of the three host-escape sockets inside the broad
+  `/private/tmp` allowance (tmux, the user ssh-agent, AeroSpace). Under the
+  production profile, a connect to a socket in the podman machine location
+  (`$TMPDIR`, not allowlisted) fails, a connect to a socket under the
+  allowlisted `/private/tmp` succeeds, and a connect to a tmux-shaped socket
+  under `/private/tmp` fails. The paired negatives neutralise the section-17b
+  scope term and strip the section-17c re-deny, and the connects then succeed.
+  The connect probe is a CGO-disabled Go binary the test builds itself, so no
+  extra Nix tool is needed. See
+  `sandbox_exec_container_socket_darwin_test.go` (issue #3066).
 
 Each positive case has a paired negative case that mutates the profile to
 remove the specific rule under test and asserts the operation fails.
@@ -294,7 +306,7 @@ workflow already uses that same action. The job then runs the tests inside
 
 ```
 nix shell nixpkgs#bash nixpkgs#coreutils \
-  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|WorktreeReadOnly|ContainerCLI)' -race
+  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket)' -race
 ```
 
 The tests in `sandbox_exec_gitlab_token_darwin_test.go` and
@@ -304,7 +316,7 @@ The production secrets.d deny regexes key off that path. A bare `macos-15`
 runner starts with `TMPDIR` under `/private/tmp`, so the job exports
 `TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"` before it runs `go test`.
 
-**Selector scope: five named families, not the whole `TestSandboxExec*`
+**Selector scope: six named families, not the whole `TestSandboxExec*`
 family.** Issue #2749's problem statement names exactly two affected files:
 `sandbox_exec_gitlab_token_darwin_test.go` and
 `sandbox_exec_grafana_config_darwin_test.go`. Issue #3061 adds a third file,
@@ -317,10 +329,17 @@ Issue #3079 adds a fifth file,
 `sandbox_exec_worktree_readonly_darwin_test.go`, for the section-21d
 read-only worktree deny. Like the worktree path deny, it needs only Nix
 bash and Nix coreutils.
+Issue #3066 adds a sixth file,
+`sandbox_exec_container_socket_darwin_test.go`, for the section-17b/17c
+Unix-socket connect allowlist. It needs no Nix tool: the test builds its own
+CGO-disabled connect probe with the Go toolchain the job already sets up, and
+binds its listeners from the test process. It relies on the same
+`TMPDIR`-under-`/var/folders` export as the gitlab/grafana tests, so its
+"podman-location" socket (under `os.TempDir()`) lands outside the allowlist.
 The `-run` selector matches only the `TestSandboxExecGitLabToken_*`,
 `TestSandboxExecGrafanaConfig_*`, `TestSandboxExecWorktreeEntry_*`,
-`TestSandboxExecWorktreeReadOnly_*`, and `TestSandboxExecContainerCLI_*`
-functions. A wider `^TestSandboxExec`
+`TestSandboxExecWorktreeReadOnly_*`, `TestSandboxExecContainerCLI_*`, and
+`TestSandboxExecContainerSocket_*` functions. A wider `^TestSandboxExec`
 selector was tried first. PR #2785 (round-2 review) found that this
 selector skips several other sandbox-exec suites on a bare `macos-15`
 runner. For example, the playwright suite
