@@ -615,6 +615,10 @@ func Open(path string) (*DB, error) {
 
 	conn, err = openAndConfigure(conn)
 	if err != nil {
+		var tooNew *SchemaTooNewError
+		if errors.As(err, &tooNew) {
+			tooNew.diagnose(probeInstalledPrism())
+		}
 		return nil, err
 	}
 
@@ -927,6 +931,9 @@ func runMigrations(conn sqlExecutor) error {
 	if err := conn.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		return fmt.Errorf("db: read schema_version: %w", err)
 	}
+	if version < currentSchemaVersion {
+		cautionLiveSessions(conn, version)
+	}
 	if err := migrateV1toV2(conn, &version); err != nil {
 		return err
 	}
@@ -1063,11 +1070,7 @@ func runMigrations(conn sqlExecutor) error {
 		return err
 	}
 	if version > currentSchemaVersion {
-		return fmt.Errorf(
-			"db schema version %d is newer than this prism binary (max %d); "+
-				"please upgrade prism, or restore the matching DB from before the downgrade",
-			version, currentSchemaVersion,
-		)
+		return &SchemaTooNewError{DBVersion: version, BinaryMax: currentSchemaVersion}
 	}
 	return nil
 }
