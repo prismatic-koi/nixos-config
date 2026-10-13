@@ -17,7 +17,7 @@ import (
 // The agent must see the same `prism container build` on Linux and on
 // macOS. The tests below run one request through both executors, the
 // Linux ScopeExecutor (with a fake systemd-run and systemctl) and the macOS
-// PlainExecutor (with the fake podman), and compare what the agent sees.
+// AnchorExecutor (with the fake podman), and compare what the agent sees.
 
 // scopeFake is a fake systemd-run that acts as podman build after the
 // scope starts, and a fake systemctl that logs its calls.
@@ -126,27 +126,27 @@ func TestBuildExecutors_SameRequestSameResult(t *testing.T) {
 				_, _ = io.WriteString(out, output)
 				return tc.code, nil
 			}
-			plain := prismcontainer.Build(context.Background(), buildDeps(f), c, req)
+			anchor := prismcontainer.Build(context.Background(), buildDeps(f), c, req)
 
 			sf := newScopeFake(t, output, string(rune('0'+tc.code)), false)
 			d := deps(&prismcontainertest.Fake{})
 			d.BuildExecutor = sf.exe
 			scope := prismcontainer.Build(context.Background(), d, c, req)
 
-			if plain.ExitCode != tc.code || string(plain.Output) != output {
-				t.Fatalf("plain result = %+v, want exit %d and the output", plain, tc.code)
+			if anchor.ExitCode != tc.code || string(anchor.Output) != output {
+				t.Fatalf("anchor result = %+v, want exit %d and the output", anchor, tc.code)
 			}
-			if scope.ExitCode != plain.ExitCode || scope.Image != plain.Image ||
-				string(scope.Output) != string(plain.Output) || scope.Message != plain.Message {
-				t.Errorf("results differ:\nscope %+v\nplain %+v", scope, plain)
+			if scope.ExitCode != anchor.ExitCode || scope.Image != anchor.Image ||
+				string(scope.Output) != string(anchor.Output) || scope.Message != anchor.Message {
+				t.Errorf("results differ:\nscope  %+v\nanchor %+v", scope, anchor)
 			}
 
-			// Each executor adds only its own options: the process limit, and on
-			// Linux the signature policy.
-			plainArgs := prismcontainertest.MaskBuildArgs(withoutOption(f.BuildCalls()[0], "--ulimit"))
+			// Each executor adds only its own options: on macOS the cgroup of
+			// the anchor, and on Linux the signature policy.
+			anchorArgs := prismcontainertest.MaskBuildArgs(withoutOption(f.BuildCalls()[0], "--cgroup-parent"))
 			scopeArgs := prismcontainertest.MaskBuildArgs(withoutOption(sf.podmanArgs(t), "--signature-policy"))
-			if !slices.Equal(plainArgs, scopeArgs) {
-				t.Errorf("podman argv differs:\nscope %q\nplain %q", scopeArgs, plainArgs)
+			if !slices.Equal(anchorArgs, scopeArgs) {
+				t.Errorf("podman argv differs:\nscope  %q\nanchor %q", scopeArgs, anchorArgs)
 			}
 		})
 	}
@@ -163,18 +163,18 @@ func TestBuildExecutors_SameTimeoutResult(t *testing.T) {
 		<-ctx.Done()
 		return -1, ctx.Err()
 	}
-	plain := prismcontainer.Build(context.Background(), buildDeps(f), c, req)
+	anchor := prismcontainer.Build(context.Background(), buildDeps(f), c, req)
 
 	sf := newScopeFake(t, "STEP 2/2: RUN sleep infinity\n", "0", true)
 	d := deps(&prismcontainertest.Fake{})
 	d.BuildExecutor = sf.exe
 	scope := prismcontainer.Build(context.Background(), d, c, req)
 
-	if plain.ExitCode != prismcontainer.ExitTimeout || plain.Message != "the --timeout of 1s expired, so prism stopped the build" {
-		t.Fatalf("plain result = %+v, want the timeout result", plain)
+	if anchor.ExitCode != prismcontainer.ExitTimeout || anchor.Message != "the --timeout of 1s expired, so prism stopped the build" {
+		t.Fatalf("anchor result = %+v, want the timeout result", anchor)
 	}
-	if scope.ExitCode != plain.ExitCode || scope.Message != plain.Message || string(scope.Output) != string(plain.Output) || scope.Image != "" {
-		t.Errorf("timeout results differ:\nscope %+v\nplain %+v", scope, plain)
+	if scope.ExitCode != anchor.ExitCode || scope.Message != anchor.Message || string(scope.Output) != string(anchor.Output) || scope.Image != "" {
+		t.Errorf("timeout results differ:\nscope  %+v\nanchor %+v", scope, anchor)
 	}
 	unit := "prism-build-" + container.InstanceTokenForID(testInstanceID) + "-"
 	if log := sf.systemctlLog(t); !strings.Contains(log, "--user kill --signal=SIGKILL "+unit) {
@@ -188,18 +188,23 @@ func TestBuildExecutors_SameRefusal(t *testing.T) {
 	req := prismcontainer.BuildRequest{}
 
 	f := &prismcontainertest.Fake{}
-	plain := prismcontainer.Build(context.Background(), buildDeps(f), c, req)
+	anchor := prismcontainer.Build(context.Background(), buildDeps(f), c, req)
 
 	sf := newScopeFake(t, "", "0", false)
 	d := deps(&prismcontainertest.Fake{})
 	d.BuildExecutor = sf.exe
 	scope := prismcontainer.Build(context.Background(), d, c, req)
 
-	if plain.ExitCode != prismcontainer.ExitRefused || !strings.Contains(plain.Message, `the "tarball" transport`) {
-		t.Fatalf("plain result = %+v, want the transport refusal", plain)
+	if anchor.ExitCode != prismcontainer.ExitRefused || !strings.Contains(anchor.Message, `the "tarball" transport`) {
+		t.Fatalf("anchor result = %+v, want the transport refusal", anchor)
 	}
-	if scope.ExitCode != plain.ExitCode || scope.Message != plain.Message {
-		t.Errorf("refusals differ:\nscope %+v\nplain %+v", scope, plain)
+	if scope.ExitCode != anchor.ExitCode || scope.Message != anchor.Message {
+		t.Errorf("refusals differ:\nscope  %+v\nanchor %+v", scope, anchor)
+	}
+	for _, call := range f.Calls() {
+		if call[0] == "build" || call[0] == "run" {
+			t.Errorf("the anchor executor ran podman %s after the refusal: %q", call[0], call)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(sf.dir, "podman.args")); !os.IsNotExist(err) {
 		t.Errorf("the scope executor ran podman: %v", err)

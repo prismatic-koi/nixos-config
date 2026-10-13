@@ -568,10 +568,12 @@ type ListedContainer struct {
 	Ports  []PortMapping `json:"ports,omitempty"`
 }
 
-// Container kinds in a ListResult.
+// Container kinds in a ListResult. A build is the anchor container of a
+// macOS build.
 const (
 	KindService = "service"
 	KindRun     = "run"
+	KindBuild   = "build"
 )
 
 // ListResult is the outcome of one `prism container list` request. It is
@@ -611,6 +613,9 @@ func List(ctx context.Context, d Deps, c Caller) ListResult {
 		lc := ListedContainer{Handle: e.Labels[LabelService], Kind: KindService, State: e.State, Image: e.Image}
 		if lc.Handle == "" {
 			lc.Handle, lc.Kind = e.name(), KindRun
+			if anchorBuildName(e) != "" {
+				lc.Kind = KindBuild
+			}
 		}
 		for _, p := range e.Ports {
 			lc.Ports = append(lc.Ports, PortMapping{ContainerPort: p.ContainerPort, HostIP: p.HostIP, HostPort: p.HostPort})

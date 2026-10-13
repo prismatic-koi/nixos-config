@@ -359,18 +359,34 @@ On macOS:
   `podman machine stop`, `podman machine rm`, `podman machine init`, and
   `podman machine start`. `podman machine rm` deletes the images and
   containers in the machine.
-- A build can still read the files in the allowlisted paths, for example
+- Each build runs under an anchor container. Before `podman build`
+  starts, prism starts a container of the pinned image
+  `registry.k8s.io/pause` with the fixed limits and the label of the
+  session. Prism gives `podman build` the option `--cgroup-parent` in the
+  systemd scope of the anchor, so every build step runs in that scope.
+- At a timeout, prism stops the `podman build` client first, so that the
+  VM starts no further build step. Then prism removes the anchor. systemd
+  stops the scope and kills every process of the build in the VM. No
+  build step continues after a timeout.
+- `prism cleanup` pauses the anchor. The prism process of the build then
+  stops its client and removes the anchor. If that process does not
+  remove the anchor in 15 seconds, cleanup removes it.
+- If prism stops during a build, a guard stops the `podman build` client
+  too. The anchor has a podman `--timeout` of the build timeout plus 60
+  seconds. When it expires, the scope stops, and no process of the build
+  continues. Until then, the anchor counts toward the per-session limit
+  and the host-wide limit.
+- Prism pulls the anchor image at the first build. It stays in the image
+  store of the machine.
+- The build has no signature policy, because the macOS podman client does
+  not send `--signature-policy`. The Containerfile check refuses a
+  transport source in your Containerfile. An `ONBUILD` instruction of a
+  base image is not in your Containerfile, and prism cannot read it
+  before the build, because `podman image inspect` does not show it.
+  Such an instruction can name a transport source. A transport source
+  can read an image archive, an image layout, or a tar archive
+  (`tarball:`) in the VM or in an allowlisted Mac path, for example
   another repository in `~/code`.
-- If a build step runs when the timeout expires, the step can continue
-  inside the VM until it ends. Its memory and CPU limits still apply, and
-  the VM size is the upper limit. `podman machine stop` removes it.
-  `prism cleanup` cannot stop it. If prism stops during a build, the build
-  continues in the VM and no longer counts toward a limit.
-- The build has no signature policy. An `ONBUILD` instruction of a base
-  image can name a transport source. It can read only the VM files and
-  the allowlisted Mac paths.
-
-Issue #3070 tracks the macOS step that continues after a timeout.
 
 ## Service containers
 
@@ -445,7 +461,9 @@ localhost/prism-1a2b3c4d-nixos-config-my-branch-app:latest
 ```
 
 For a service container, HANDLE is its handle. For a container of `run`,
-HANDLE is the container name, and KIND is `run`.
+HANDLE is the container name, and KIND is `run`. For the anchor container
+of a macOS build (see "Platform note"), HANDLE is the container name, and
+KIND is `build`.
 
 ### Which containers `exec`, `logs`, and `stop` accept
 
@@ -553,6 +571,7 @@ container ID as the command, so the command cannot add an option such as
 | `--layer-label` | `prism.instance-id=<instance ID>` | The owner of each intermediate image. |
 | `--tag` | `localhost/prism-...-<NAME>` | See "The image name". |
 | `--file`, `CONTEXT` | The copy on the host | See "The context copy". |
+| `--cgroup-parent` | `<scope>/build` | Every build step runs in a systemd scope that prism stops. On Linux, the scope of the build. On macOS, the scope of the anchor container. See "Platform note". |
 | `--signature-policy` | A prism policy file on the host | Linux only. Refuses every image source other than a registry and the local store. See "The image sources of a build". |
 | `podman unshare`, `bwrap` | The allowlist of host paths | Linux only. The mount namespace of the build. See "What a build can read". |
 
@@ -562,10 +581,18 @@ The process limit depends on the platform, because `podman build` has no
 - On Linux, the systemd scope of the build has `TasksMax=1024`. This is a
   limit of 1024 tasks for the whole build. Prism also gives podman
   `--cgroup-parent` in the scope, so that every build step is in the scope.
-- On macOS, prism gives `--ulimit nproc=1024:1024`. This limit counts every
-  process of one user in the rootless user namespace of the VM. Thus the
-  processes of other prism containers, also of other sessions, count too.
-  A build can make a fork fail in another container.
+- On macOS, the anchor container has `--pids-limit 1024`. This is a limit
+  of 1024 processes for the scope of the anchor: the pause process of the
+  anchor and every build step. Processes of other containers do not count,
+  so a build cannot make a fork fail in another container.
+
+On macOS, the anchor container has the memory, swap, CPU, and process
+limits of `run`, and `--security-opt no-new-privileges`, `--cap-drop all`,
+`--read-only`, and `--network none`. It has the labels
+`prism.instance-id=<instance ID>` and `prism.build=<build name>`, and a
+podman `--timeout` of the build timeout plus 60 seconds.
+`--stop-signal KILL` makes the stop of the scope kill each build step at
+once.
 
 The argument vector never holds `--volume`, `--secret`, `--ssh`,
 `--network`, `--device`, `--cap-add`, or `--build-context`. No input can
@@ -602,6 +629,9 @@ start no container, so no limit refuses them.
 - Podman does not list a build container, so prism counts builds with a
   marker file. A build holds a lock on its marker while it runs. The
   marker of a build whose prism process stopped does not count.
+- On macOS, the anchor container of a build counts only when no prism
+  process holds the marker of the build. Thus a build counts once, and a
+  build whose prism process stopped counts until its anchor stops.
 
 ## Ownership and cleanup
 
@@ -614,8 +644,8 @@ start no container, so no limit refuses them.
 - `prism cleanup` does three steps for each incarnation of the session.
   That is the current incarnation and each earlier incarnation that the
   database holds.
-  1. It stops every running build. On macOS it cannot stop a build step
-     in the VM (see "Platform note").
+  1. It stops every running build, build steps included (see "Platform
+     note").
   2. It removes every container that carries the label, with its
      anonymous volumes.
   3. It force-removes every image, intermediate images included, that
@@ -734,6 +764,11 @@ markers. Like the audit directory, no sandbox can write them.
     `TasksMax`, `Delegate`, and `RuntimeMaxSec`. Before the scope starts,
     prism runs `podman unshare true`, so that the pause process of podman
     is not in the scope.
-  - macOS: the machine mount check before the build, and
-    `--ulimit nproc=1024:1024` after `build`.
+  - macOS: the machine mount check before the build. Prism starts the
+    anchor container, then runs `podman build --cgroup-parent <anchor
+    scope>/build ...`. A shell guard runs the `podman build` client and
+    kills it when the prism process stops. Prism stops the client before
+    it removes the anchor, because the VM starts no build step after the
+    client stops, and a build step that starts after the scope is gone
+    runs outside every scope.
 - The source is in `modules/programs/prism/prism/internal/prismcontainer/`.

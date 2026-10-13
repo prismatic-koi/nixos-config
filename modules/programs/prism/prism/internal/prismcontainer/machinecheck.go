@@ -196,7 +196,7 @@ func machineMountRefusal(name string, bad []MachineMount, allowlist []string) er
 const MachineAllowlistNixOption = "nx.programs.prism.containerMachineMountAllowlist"
 
 // Preflight checks the mounts of the podman machine before a build.
-func (e PlainExecutor) Preflight(ctx context.Context) error {
+func (e AnchorExecutor) Preflight(ctx context.Context) error {
 	readFile := e.ReadFile
 	if readFile == nil {
 		readFile = os.ReadFile
@@ -204,7 +204,7 @@ func (e PlainExecutor) Preflight(ctx context.Context) error {
 	return checkMachineMounts(ctx, e.runner(), readFile, e.MountAllowlist)
 }
 
-func (e PlainExecutor) runner() Runner {
+func (e AnchorExecutor) runner() Runner {
 	if e.Runner == nil {
 		return ExecRunner{}
 	}

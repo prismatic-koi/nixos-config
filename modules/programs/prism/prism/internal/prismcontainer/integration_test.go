@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -315,9 +316,36 @@ func TestIntegration_BuildSymlinkNotInImage(t *testing.T) {
 	}
 }
 
+// buildStepProcs returns the processes whose command line holds marker.
+// On Linux it reads the host process list. On macOS a build step runs in
+// the podman machine VM, so it reads the process list of the VM.
+func buildStepProcs(t *testing.T, marker string) []string {
+	t.Helper()
+	var found []string
+	if runtime.GOOS == "linux" {
+		procs, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+		for _, p := range procs {
+			if data, err := os.ReadFile(p); err == nil && bytes.Contains(data, []byte(marker)) {
+				found = append(found, fmt.Sprintf("%s %q", p, data))
+			}
+		}
+		return found
+	}
+	out, err := exec.Command("podman", "machine", "ssh", "ps", "-eo", "pid=,args=").Output()
+	if err != nil {
+		t.Fatalf("read the process list of the podman machine: %v", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, marker) {
+			found = append(found, strings.TrimSpace(line))
+		}
+	}
+	return found
+}
+
 // TestIntegration_BuildTimeoutStopsStep: after the timeout, no process of
-// the build step runs on the host. The check reads the host process list,
-// so it runs on Linux only. On macOS the step runs in the VM.
+// the build step runs: on the Linux host, or in the podman machine VM on
+// macOS.
 func TestIntegration_BuildTimeoutStopsStep(t *testing.T) {
 	c := integrationCaller(t)
 	const marker = "613.317"
@@ -330,15 +358,9 @@ func TestIntegration_BuildTimeoutStopsStep(t *testing.T) {
 	if !bytes.Contains(res.Output, []byte("RUN sleep "+marker)) {
 		t.Fatalf("output %s, want the RUN step to have started before the timeout", res.Output)
 	}
-	if runtime.GOOS != "linux" {
-		t.Skip("the build step runs in the podman machine VM")
-	}
 	time.Sleep(2 * time.Second)
-	procs, _ := filepath.Glob("/proc/[0-9]*/cmdline")
-	for _, p := range procs {
-		if data, err := os.ReadFile(p); err == nil && bytes.Contains(data, []byte(marker)) {
-			t.Errorf("a process of the build step still runs: %s %q", p, data)
-		}
+	if found := buildStepProcs(t, marker); len(found) != 0 {
+		t.Errorf("processes of the build step still run after the timeout: %q", found)
 	}
 }
 
@@ -358,13 +380,10 @@ func TestIntegration_BuildMultiStage(t *testing.T) {
 }
 
 // TestIntegration_SweepStopsRunningBuild: the cleanup sweep of a session
-// stops its running build, and no process of the build step stays. The
-// check reads the host process list, so it runs on Linux only.
+// stops its running build, and no process of the build step stays: on the
+// Linux host, or in the podman machine VM on macOS.
 func TestIntegration_SweepStopsRunningBuild(t *testing.T) {
 	c := integrationCaller(t)
-	if runtime.GOOS != "linux" {
-		t.Skip("the build step runs in the podman machine VM")
-	}
 	const marker = "617.413"
 	if err := os.WriteFile(filepath.Join(c.Worktree, "Containerfile"), []byte("FROM alpine\nRUN sleep "+marker+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -372,23 +391,14 @@ func TestIntegration_SweepStopsRunningBuild(t *testing.T) {
 	ex := prismcontainer.DefaultBuildExecutor(runtime.GOOS, nil, nil)
 	done := make(chan prismcontainer.BuildResult, 1)
 	go func() {
-		done <- prismcontainer.Build(context.Background(), prismcontainer.Deps{}, c, prismcontainer.BuildRequest{TimeoutSeconds: 600})
+		done <- prismcontainer.Build(context.Background(), prismcontainer.Deps{MachineMountAllowlist: config.LoadFresh().MachineMountAllowlist()}, c, prismcontainer.BuildRequest{TimeoutSeconds: 600})
 	}()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		_ = prismcontainer.SweepSession(ctx, prismcontainer.ExecRunner{}, ex, []string{c.InstanceID})
 	})
-	stepProcs := func() []string {
-		var found []string
-		procs, _ := filepath.Glob("/proc/[0-9]*/cmdline")
-		for _, p := range procs {
-			if data, err := os.ReadFile(p); err == nil && bytes.Contains(data, []byte(marker)) {
-				found = append(found, p)
-			}
-		}
-		return found
-	}
+	stepProcs := func() []string { return buildStepProcs(t, marker) }
 	deadline := time.Now().Add(3 * time.Minute)
 	for len(stepProcs()) == 0 {
 		select {

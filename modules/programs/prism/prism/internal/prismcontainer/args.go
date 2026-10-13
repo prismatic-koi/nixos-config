@@ -102,6 +102,46 @@ func (c Caller) validateWorktree() error {
 // container that carries it.
 const LabelService = "prism.service"
 
+// LabelBuild marks the anchor container of a macOS build (anchor.go). Its
+// value is the unit name of the build.
+const LabelBuild = "prism.build"
+
+// AnchorImage is the image of the anchor container. Its one process waits
+// until a signal stops it. The digest pins the image.
+const AnchorImage = "registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a"
+
+// anchorRunArgs builds the podman argument vector that starts the anchor
+// container of one build. It has the fixed limits of a run, so the systemd
+// scope of the anchor applies them to every build step in it. No agent
+// input reaches it. The anchor has no network, no capability, and a
+// read-only root, because it runs only the pause process.
+//
+// podman sets KillSignal and TimeoutStopUSec of the scope from
+// --stop-signal and --stop-timeout. With SIGKILL, the stop of the scope
+// kills each build step at once. A RUN step that is PID 1 of its namespace
+// ignores the default SIGTERM, and the stop then waits 10 seconds.
+func anchorRunArgs(instanceID, unit string, timeout time.Duration) []string {
+	return []string{
+		"run", "--detach", "--rm",
+		"--name", unit,
+		"--label", LabelInstanceID + "=" + instanceID,
+		"--label", LabelBuild + "=" + unit,
+		"--memory", MemoryLimit,
+		"--memory-swap", MemoryLimit,
+		"--cpus", CPULimit,
+		"--pids-limit", PidsLimit,
+		"--security-opt", "no-new-privileges",
+		"--cap-drop", "all",
+		"--read-only",
+		"--network", "none",
+		"--stop-signal", "KILL",
+		"--stop-timeout", "1",
+		"--pull", "never",
+		"--timeout", strconv.FormatInt(int64((timeout+time.Second-1)/time.Second), 10),
+		AnchorImage,
+	}
+}
+
 // containerName returns a new container name with the session prefix.
 func containerName(c Caller) (string, error) {
 	name, _, err := serviceName(c)
@@ -236,7 +276,8 @@ func imageNamePrefix(c Caller) string {
 // nothing else. ScopeExecutor (Linux) adds --signature-policy after
 // "build", and runs the vector as `podman unshare bwrap ... -- podman
 // --cgroup-manager=cgroupfs build --cgroup-parent <scope>/build ...`
-// (buildns.go). PlainExecutor (macOS) adds --ulimit nproc after "build".
+// (buildns.go). AnchorExecutor (macOS) adds --cgroup-parent <anchor
+// cgroup>/build after "build" (anchor.go).
 //
 // The agent controls only v. Every path is a prism-owned copy, never an
 // agent path. A --build-arg value is one argument after its flag, so it

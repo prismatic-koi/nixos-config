@@ -74,6 +74,8 @@ The `prism container` integration tests need a real rootless podman: `TestIntegr
 
 The `go-tests-container-live` job in `pr-gate.yml` is the automatic run of these tests (#3115). It installs podman and `uidmap`, sets subuid/subgid ranges, starts a user systemd instance, and fails if a selected test reports SKIP or if zero tests run. It is part of the `pr-gate` fan-in. A prism worker cannot run podman, so read the job result on the PR and record it in the PR body. Add a new test name to the `-run` selector of the job.
 
+The macOS build executor (the anchor container) has live tests of its own: `TestMachineAnchor_*` in `internal/prismcontainer/machine_anchor_live_test.go`, with the `darwin` build tag. They need a running podman machine and `PRISM_CONTAINER_INTEGRATION=1`, and no CI job runs them. Run them from a host shell on a Mac, and record the result in the PR body. Do not give a test that skips on Linux a name that matches `Integration|ServicePort`: the CI job runs on Linux and fails on the SKIP.
+
 ## Test-suite isolation (issue #1608)
 
 The test suite under `modules/programs/prism/prism/internal/sidecar/` is fully isolated from host bus / DB / tmux state:
