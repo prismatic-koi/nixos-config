@@ -407,6 +407,9 @@ func TestGenerateProfile_NetworkUnixSocketEscapeReDeny(t *testing.T) {
 		`(regex #"^/private/tmp/com\.apple\.launchd\.")`,
 		`(regex #"^/private/tmp/bobko\.aerospace-")`,
 		`(regex #"^/private/tmp/dotnet-diagnostic-")`,
+		// #3147 item 2: the podman machine socket in the TMPDIR-unset location.
+		`(regex #"^/private/tmp/podman/")`,
+		`(regex #"^/tmp/podman/")`,
 	} {
 		if !strings.Contains(profile, want) {
 			t.Errorf("section-17c re-deny missing %s; profile:\n%s", want, profile)
@@ -450,6 +453,12 @@ func TestGenerateProfile_HostSocketWriteDeny(t *testing.T) {
 	for _, want := range []string{
 		`(regex #"^/var/folders/.*/podman(/|$)")`,
 		`(regex #"^/private/var/folders/.*/podman(/|$)")`,
+		// #3147 item 2: the podman machine dir in the TMPDIR-unset location.
+		`(regex #"^/private/tmp/podman(/|$)")`,
+		`(regex #"^/tmp/podman(/|$)")`,
+		// #3147 item 1: the nvim RPC directory and socket under $TMPDIR.
+		`(regex #"^/var/folders/.*/nvim\.[^/]+(/|$)")`,
+		`(regex #"^/private/var/folders/.*/nvim\.[^/]+(/|$)")`,
 		`(regex #"^/private/tmp/tmux-[0-9]+(/|$)")`,
 		`(regex #"^/private/tmp/com\.apple\.launchd\.[^/]+(/|$)")`,
 		`(regex #"^/private/tmp/bobko\.aerospace-")`,

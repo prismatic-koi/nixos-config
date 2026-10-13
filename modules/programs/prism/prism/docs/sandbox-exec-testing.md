@@ -249,8 +249,9 @@ integration test coverage exists for:
 - **The Unix-socket connect allowlist** — the section-17b deny on
   `network-outbound` for every Unix-socket path except an allowlist, the
   section-17c re-deny of the host-escape sockets inside the `/private/tmp`
-  allowance (tmux, the user ssh-agent, AeroSpace, and the .NET diagnostic IPC
-  socket), and the section-3d `file-write*` deny that stops a rename from
+  allowance (tmux, the user ssh-agent, AeroSpace, the .NET diagnostic IPC
+  socket, and the podman machine socket in the TMPDIR-unset `/private/tmp`
+  location), and the section-3d `file-write*` deny that stops a rename from
   moving a protected socket to an allowed path. Under the production profile,
   a connect to a socket in the podman machine location (`$TMPDIR`) fails. A
   connect to a socket under `/private/tmp` and a loopback TCP connect both
@@ -263,6 +264,26 @@ integration test coverage exists for:
   Go binary that the test builds, so no extra Nix tool is necessary. It also
   does the rename in-process (`os.Rename`), so the move test needs no shell.
   See `sandbox_exec_container_socket_darwin_test.go` (issue #3066).
+
+  #3147 adds two more host-escape locations to the same test file, in the
+  same shape:
+  - **The nvim RPC socket** (section 3d). nvim starts an RPC server at
+    `$TMPDIR/nvim.<user>/<rand>/nvim.<pid>.0`, and a client on it runs
+    `:!<cmd>` on the host. Section 17b denies the direct connect (`$TMPDIR`
+    is under `/var/folders`, outside the allowlist). The section-3d
+    `nvim\.[^/]+(/|$)` pair stops the agent from moving the socket file, or
+    the `nvim.<user>` directory, into `/private/tmp`. The test uses a plain
+    listener under an `nvim.<user>`-shaped directory, because the deny is
+    path-based and the macos-15 job (which fails on any SKIP) has no nvim.
+    The paired negative strips only the two nvim lines, so the directory
+    move then succeeds.
+  - **The podman machine socket in `/private/tmp`** (sections 17c and 3d).
+    When podman runs with `TMPDIR` unset, its machine runtime dir is
+    `/private/tmp/podman` (or `/tmp/podman`), inside the section-17b
+    allowance. Section 17c re-denies the connect. Section 3d denies the move
+    of the `podman` directory. The connect test binds a socket at
+    `/private/tmp/podman/<pid>-api.sock`. The paired negative drops the two
+    podman lines of section 17c, and the connect then succeeds.
 
 Each positive case has a paired negative case that mutates the profile to
 remove the specific rule under test and asserts the operation fails.

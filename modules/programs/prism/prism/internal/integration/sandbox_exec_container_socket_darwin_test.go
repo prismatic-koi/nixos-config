@@ -388,6 +388,161 @@ func TestSandboxExecContainerSocket_RenameBypassWorksWithoutWriteDeny(t *testing
 	}
 }
 
+// nvimShapedSocket creates <$TMPDIR>/<rand>/nvim.<user>/<rand2>/nvim.<pid>.0
+// with a live listener and returns the socket path and the nvim.<user>
+// directory. The paths match the section-3d regex
+// `^/var/folders/.*/nvim\.[^/]+(/|$)`, and the socket is under $TMPDIR,
+// outside the section-17b allowlist, so a direct connect is denied by 17b -
+// the same location class as the real host nvim RPC socket. The nvim.<user>
+// component sits under a MkdirTemp parent, so the test never touches the real
+// host nvim directory at <$TMPDIR>/nvim.<user>. A plain listener stands in for
+// nvim: the deny is path-based, so it decides the result without a live nvim,
+// and the macos-15 CI job (which fails on any SKIP) has no nvim to depend on.
+func nvimShapedSocket(t *testing.T) (sock, nvimDir string) {
+	t.Helper()
+	// Short names keep <$TMPDIR>/<base>/nvim.u/r/nvim.1.0 under the Darwin
+	// sun_path limit (~104 bytes), the same reason fakeTmpdirLayout uses a
+	// short prefix.
+	base, err := os.MkdirTemp(os.TempDir(), "p3147n")
+	if err != nil {
+		t.Fatalf("mkdir temp base: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	nvimDir = filepath.Join(base, "nvim.u")
+	inner := filepath.Join(nvimDir, "r")
+	if err := os.MkdirAll(inner, 0o700); err != nil {
+		t.Fatalf("mkdir nvim dir: %v", err)
+	}
+	sock = filepath.Join(inner, "nvim.1.0")
+	startUnixListener(t, sock)
+	return sock, nvimDir
+}
+
+// TestSandboxExecContainerSocket_NvimDeniedUnderProductionProfile is #3147
+// item 1. Under the production profile, a direct connect to an nvim RPC
+// socket under $TMPDIR is denied (section 17b), and a sandboxed process
+// cannot move the socket file or its nvim.<user> directory into /private/tmp
+// (section 3d) to reach it at an allowed path.
+func TestSandboxExecContainerSocket_NvimDeniedUnderProductionProfile(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	probe := buildConnectProbe(t)
+
+	sock, nvimDir := nvimShapedSocket(t)
+
+	m := newProfileManager(t)
+	prepared, _ := preparePositiveProfile(t, m)
+	profilePath := writeAugmentedPositiveProfile(t, prepared)
+
+	// A direct connect at the socket's own path under $TMPDIR is denied by 17b.
+	expectDenied(t, profilePath, probe, sock,
+		"section 17b did not deny a direct connect to the nvim RPC socket under $TMPDIR")
+
+	// Move the socket FILE out of its nvim dir into /private/tmp.
+	movedFile := "/private/tmp/prism-3147-nvim-mv-file.sock"
+	t.Cleanup(func() { _ = os.Remove(movedFile) })
+	if out, runErr := runProbe(t, profilePath, probe, "--move", sock, movedFile, movedFile); runErr == nil || strings.Contains(out, connectedMarker) {
+		t.Errorf("moved the nvim socket file and connected - section 3d did not deny the file rename.\nOutput: %s\nProfile: %s", out, profilePath)
+	}
+	// Move the nvim.<user> DIRECTORY (with the socket inside) into /private/tmp.
+	movedDir := "/private/tmp/prism-3147-nvim-mv-dir"
+	t.Cleanup(func() { _ = os.RemoveAll(movedDir) })
+	if out, runErr := runProbe(t, profilePath, probe, "--move", nvimDir, movedDir, filepath.Join(movedDir, "r", "nvim.1.0")); runErr == nil || strings.Contains(out, connectedMarker) {
+		t.Errorf("moved the nvim.<user> directory and connected - section 3d did not deny the directory rename.\nOutput: %s\nProfile: %s", out, profilePath)
+	}
+}
+
+// TestSandboxExecContainerSocket_NvimRenameWorksWithoutWriteDeny is the
+// paired negative for the #3147 nvim lines of section 3d. With those two
+// lines stripped, the nvim.<user> directory move succeeds and the connect to
+// the moved socket succeeds - the exact bypass the lines close. Only the
+// nvim lines are stripped, so the test isolates them from the rest of 3d.
+func TestSandboxExecContainerSocket_NvimRenameWorksWithoutWriteDeny(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	probe := buildConnectProbe(t)
+
+	_, nvimDir := nvimShapedSocket(t)
+	moved := "/private/tmp/prism-3147-nvim-neg"
+	t.Cleanup(func() { _ = os.RemoveAll(moved) })
+
+	m := newProfileManager(t)
+	mutatedPath := withMutatedProfile(t, m, func(p string) string {
+		return strings.Replace(p, nvimWriteDenyLines, "", 1)
+	})
+
+	connectPath := filepath.Join(moved, "r", "nvim.1.0")
+	if out, runErr := runProbe(t, mutatedPath, probe, "--move", nvimDir, moved, connectPath); runErr != nil || !strings.Contains(out, connectedMarker) {
+		t.Errorf("the nvim directory move+connect still failed with the section-3d nvim lines removed, so the positive test proves nothing.\nExit: %v\nOutput: %s\nProfile: %s", runErr, out, mutatedPath)
+	}
+}
+
+// podmanTmpSocket creates /private/tmp/podman/<unique>-api.sock with a live
+// listener and returns the socket path. This models the podman machine API
+// socket location when podman runs with TMPDIR unset (#3147 item 2). The
+// socket name is unique, and the directory is removed only when this helper
+// created it, so the helper never clobbers a real podman runtime dir.
+func podmanTmpSocket(t *testing.T) string {
+	t.Helper()
+	dir := "/private/tmp/podman"
+	if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		t.Cleanup(func() { _ = os.Remove(dir) })
+	}
+	sock := filepath.Join(dir, "prism-3147-"+strconv.Itoa(os.Getpid())+"-api.sock")
+	startUnixListener(t, sock)
+	t.Cleanup(func() { _ = os.Remove(sock) })
+	return sock
+}
+
+// TestSandboxExecContainerSocket_PodmanTmpDeniedUnderProductionProfile is
+// #3147 item 2. Under the production profile, a connect to the podman machine
+// API socket in /private/tmp/podman (the TMPDIR-unset location) fails.
+// Section 17b allows /private/tmp, so section 17c is what denies it.
+func TestSandboxExecContainerSocket_PodmanTmpDeniedUnderProductionProfile(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	probe := buildConnectProbe(t)
+
+	podmanSock := podmanTmpSocket(t)
+
+	m := newProfileManager(t)
+	prepared, _ := preparePositiveProfile(t, m)
+	profilePath := writeAugmentedPositiveProfile(t, prepared)
+
+	expectDenied(t, profilePath, probe, podmanSock,
+		"section 17c did not re-deny the podman machine socket in /private/tmp/podman")
+}
+
+// TestSandboxExecContainerSocket_PodmanTmpConnectsWithoutReDeny is the paired
+// negative for the #3147 podman lines of section 17c. With those two lines
+// dropped, the connect to the /private/tmp/podman socket succeeds.
+func TestSandboxExecContainerSocket_PodmanTmpConnectsWithoutReDeny(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	probe := buildConnectProbe(t)
+
+	podmanSock := podmanTmpSocket(t)
+
+	m := newProfileManager(t)
+	mutatedPath := withMutatedProfile(t, m, func(p string) string {
+		return strings.Replace(p, podmanReDenyTail, podmanReDenyTailStripped, 1)
+	})
+
+	expectConnected(t, mutatedPath, probe, podmanSock,
+		"the connect still failed with the section-17c podman lines removed, so the positive test proves nothing")
+}
+
 // escapeReDenyBlock is the section-17c clause of generateProfile
 // (hostEscapeSocketReDeny, unexported). withMutatedProfile fails when the
 // text is not in the profile, so a copy that drifts from the generator
@@ -400,7 +555,18 @@ const escapeReDenyBlock = "(deny network-outbound\n" +
 	"  (regex #\"^/private/tmp/bobko\\.aerospace-\")\n" +
 	"  (regex #\"^/tmp/bobko\\.aerospace-\")\n" +
 	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +
-	"  (regex #\"^/tmp/dotnet-diagnostic-\"))\n"
+	"  (regex #\"^/tmp/dotnet-diagnostic-\")\n" +
+	"  (regex #\"^/private/tmp/podman/\")\n" +
+	"  (regex #\"^/tmp/podman/\"))\n"
+
+// podmanReDenyTail and podmanReDenyTailStripped bracket the #3147 podman
+// lines of section 17c. The negative test replaces the first with the second
+// to drop only the two podman connect denies (and re-close the clause), so
+// the connect to a socket under /private/tmp/podman then succeeds.
+const podmanReDenyTail = "  (regex #\"^/tmp/dotnet-diagnostic-\")\n" +
+	"  (regex #\"^/private/tmp/podman/\")\n" +
+	"  (regex #\"^/tmp/podman/\"))\n"
+const podmanReDenyTailStripped = "  (regex #\"^/tmp/dotnet-diagnostic-\"))\n"
 
 // hostSocketWriteDenyBlock is the section-3d clause of generateProfile
 // (hostSocketWriteDeny, unexported). Kept in sync by the same
@@ -408,6 +574,10 @@ const escapeReDenyBlock = "(deny network-outbound\n" +
 const hostSocketWriteDenyBlock = "(deny file-write*\n" +
 	"  (regex #\"^/var/folders/.*/podman(/|$)\")\n" +
 	"  (regex #\"^/private/var/folders/.*/podman(/|$)\")\n" +
+	"  (regex #\"^/private/tmp/podman(/|$)\")\n" +
+	"  (regex #\"^/tmp/podman(/|$)\")\n" +
+	"  (regex #\"^/var/folders/.*/nvim\\.[^/]+(/|$)\")\n" +
+	"  (regex #\"^/private/var/folders/.*/nvim\\.[^/]+(/|$)\")\n" +
 	"  (regex #\"^/private/tmp/tmux-[0-9]+(/|$)\")\n" +
 	"  (regex #\"^/tmp/tmux-[0-9]+(/|$)\")\n" +
 	"  (regex #\"^/private/tmp/com\\.apple\\.launchd\\.[^/]+(/|$)\")\n" +
@@ -416,6 +586,12 @@ const hostSocketWriteDenyBlock = "(deny file-write*\n" +
 	"  (regex #\"^/tmp/bobko\\.aerospace-\")\n" +
 	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +
 	"  (regex #\"^/tmp/dotnet-diagnostic-\"))\n"
+
+// nvimWriteDenyLines are the two #3147 nvim lines of section 3d. The negative
+// test strips them so the move of the nvim.<user> directory into /private/tmp
+// then succeeds.
+const nvimWriteDenyLines = "  (regex #\"^/var/folders/.*/nvim\\.[^/]+(/|$)\")\n" +
+	"  (regex #\"^/private/var/folders/.*/nvim\\.[^/]+(/|$)\")\n"
 
 // fakeTmpdirLayout builds base/{T, wt} under the real $TMPDIR, with a podman
 // socket under T, points $TMPDIR at base/T, and returns a Manager whose
