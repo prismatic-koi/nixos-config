@@ -368,6 +368,27 @@ The job is gated on the same Go-relevant path filter as the ubuntu
 `go-tests` job. Its result feeds the `pr-gate` fan-in check, like every
 other required job.
 
+**Sidecar owner-check tests (`internal/session`).** The job also runs the
+sidecar owner-check tests of issue #3136. On Darwin, `StopSidecar` and
+`KillSidecar` read the command line of a PID with the `kern.procargs2`
+sysctl, not from `/proc`. The ubuntu `go-tests` job cannot run that code.
+This step runs directly on the runner, with no `nix shell` and no
+`sandbox-exec` profile:
+
+```
+go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2)' -race -count=1
+```
+
+The selector has `TestKillSidecar_*` with the underscore, so it does not
+match the `TestKillSidecarAndWait*` tests. Those tests skip on Darwin, and
+a SKIP fails the guard. The step has its own guard step. The guard fails
+the job on any SKIP, or if no `TestStopSidecar*` test runs. These tests need
+no nested sandbox, so they also run inside a prism worker on Darwin. Only
+that run covers the sandbox condition of #3136: the worker sandbox denies
+the exec of `/bin/ps`, and the runner does not. If you add a
+session test for a Darwin code path of the owner check, add its name to the
+`-run` selector.
+
 This job is CI-only test execution. It does not change worker isolation.
 It does not touch `config.ValidIsolationModes`, and no worker spawn
 default moves to `host` mode.
