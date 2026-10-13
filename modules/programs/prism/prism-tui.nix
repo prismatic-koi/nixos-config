@@ -57,6 +57,15 @@ let
       ) gitCfg.includes;
     in
     if emails != [ ] then builtins.head emails else "";
+  homeDir = config.home-manager.users.${username}.home.homeDirectory;
+  # The one resolution of the mount allowlist: the override, else the project
+  # locations. A leading "~/" becomes the absolute home path.
+  machineMountAllowlist =
+    let
+      override = config.nx.programs.prism.containerMachineMountAllowlist;
+      paths = if override != null then override else config.nx.programs.prism.projects.locations;
+    in
+    map (p: if lib.hasPrefix "~/" p then "${homeDir}/${lib.removePrefix "~/" p}" else p) paths;
   isolationDefault = config.nx.programs.prism.agent.isolation.default;
   prismConfig = {
     color_primary = roles.primary;
@@ -257,6 +266,14 @@ in
       ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.bubblewrap ];
 
       xdg.configFile."prism/config.json".text = builtins.toJSON prismConfig;
+
+      # Darwin only: narrow the podman machine mounts to the prism allowlist.
+      # home-manager services.podman is Linux only, so write the file directly.
+      xdg.configFile."containers/containers.conf" = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
+        source = (pkgs.formats.toml { }).generate "containers.conf" {
+          machine.volumes = map (p: "${p}:${p}") machineMountAllowlist;
+        };
+      };
 
       # Go module cache — persist across the boot wipe (issue #2731).
       #
