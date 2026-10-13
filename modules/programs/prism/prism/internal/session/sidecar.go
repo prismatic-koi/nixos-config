@@ -175,10 +175,12 @@ func AgentRunLogPath(sessionName string) (string, error) {
 //
 // This function is safe to call from test teardown: if StartSidecar was never
 // reached (e.g. the test failed before the session was created) the missing PID
-// file is treated as a no-op.  If the process has already exited (ESRCH), the
+// file is treated as a no-op.  If the process has already exited, the
 // stale PID file is removed without attempting the kill.  If the PID has been
-// recycled to an unrelated process (/proc/<pid>/cmdline does not contain
-// "prism"), the kill is skipped and the file is removed.
+// recycled to an unrelated process (its command line does not carry the
+// sidecar markers), the kill is skipped and the file is removed.  If the
+// command line of a live PID cannot be read, the kill is skipped, a warning
+// names the PID, and the file is removed.
 func KillSidecar(sessionName string) {
 	pidPath, err := SidecarPIDPath(sessionName)
 	if err != nil {
@@ -201,12 +203,9 @@ func KillSidecar(sessionName string) {
 	}
 
 	// Guard against same-user PID recycling: verify the PID belongs to a
-	// prism sidecar process by checking /proc/<pid>/cmdline before sending
-	// SIGTERM. This is Linux-specific (codebase targets NixOS), so if the
-	// file is unreadable (e.g. the process is already gone) we fall through
-	// and let the subsequent Kill handle ESRCH gracefully.
-	//
-	// The check matches the invariant argv shape of a prism-spawned sidecar:
+	// prism sidecar process by checking its command line before sending
+	// SIGTERM. The check matches the invariant argv shape of a prism-spawned
+	// sidecar:
 	//
 	//   <binary> sidecar --session <name> ...
 	//
@@ -215,14 +214,21 @@ func KillSidecar(sessionName string) {
 	// is spawned by re-invoking the test binary (e.g. "cmd.test sidecar …"),
 	// whose cmdline does not contain "prism" at all, so KillSidecar would skip
 	// the kill and sidecars would leak after every test run.
-	if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
-		cmdlineStr := string(cmdline)
-		if !strings.Contains(cmdlineStr, "sidecar") || !strings.Contains(cmdlineStr, "--session") {
-			// PID has been recycled to an unrelated process — do not kill it.
-			fmt.Fprintf(os.Stderr, "warning: sidecar pid %d does not appear to be a prism sidecar process — skipping kill\n", pid)
-			_ = os.Remove(pidPath)
-			return
-		}
+	owner := classifySidecarPID(pid, sessionName, func(argv []string) bool {
+		cmdline := strings.Join(argv, "\x00")
+		return strings.Contains(cmdline, "sidecar") && strings.Contains(cmdline, "--session")
+	})
+	switch owner {
+	case pidOwnerOther:
+		// PID has been recycled to an unrelated process — do not kill it.
+		fmt.Fprintf(os.Stderr, "warning: sidecar pid %d does not appear to be a prism sidecar process — skipping kill\n", pid)
+		_ = os.Remove(pidPath)
+		return
+	case pidOwnerGone, pidOwnerUnknown:
+		// Fail closed: do not signal a PID that prism cannot prove is a
+		// sidecar.
+		_ = os.Remove(pidPath)
+		return
 	}
 
 	// Send SIGTERM; ignore ESRCH (no such process — already gone).
@@ -354,16 +360,25 @@ func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 // end again, and the sidecar must not write an event after its row ended.
 // SIGKILL goes only to a PID that StopSidecar confirms as this session's
 // sidecar.
+//
+// If StopSidecar cannot read the command line of a live PID, it sends no
+// signal and writes a warning that names the PID. If this user owns that
+// PID, StopSidecar returns false: that PID can still be the sidecar.
 func StopSidecar(sessionName string, timeout time.Duration) bool {
 	pid := readSidecarPID(sessionName)
+	owner := pidOwnerGone
+	if pid > 0 && sidecarProcessExists(pid) {
+		owner = sidecarPIDOwner(pid, sessionName)
+	}
 	// EPERM means another user owns pid. The sidecar runs as this user, so a
 	// stale PID file names that process.
-	if pid <= 0 || !sidecarProcessExists(pid) || sidecarPIDOwner(pid, sessionName) == pidOwnerOther ||
-		syscall.Kill(pid, 0) == syscall.EPERM {
-		if pidPath, err := SidecarPIDPath(sessionName); err == nil {
-			_ = os.Remove(pidPath)
-		}
+	if owner == pidOwnerGone || owner == pidOwnerOther || syscall.Kill(pid, 0) == syscall.EPERM {
+		removeSidecarPIDFile(sessionName)
 		return true
+	}
+	if owner == pidOwnerUnknown {
+		removeSidecarPIDFile(sessionName)
+		return false
 	}
 	if err := KillSidecarAndWait(sessionName, timeout); err == nil {
 		return true
@@ -401,46 +416,66 @@ func readSidecarPID(sessionName string) int {
 	return pid
 }
 
+func removeSidecarPIDFile(sessionName string) {
+	if pidPath, err := SidecarPIDPath(sessionName); err == nil {
+		_ = os.Remove(pidPath)
+	}
+}
+
 type pidOwner int
 
 const (
+	// pidOwnerUnknown: the process runs, but prism cannot read its command
+	// line. Send it no signal.
 	pidOwnerUnknown pidOwner = iota
 	pidOwnerSidecar
 	pidOwnerOther
+	// pidOwnerGone: the process no longer runs, or is a zombie.
+	pidOwnerGone
 )
 
-// procRoot is the procfs mount that sidecarPIDOwner reads. Tests point it at
-// a fake tree.
-var procRoot = "/proc"
+// pidArgv returns the argument vector of a process. Tests replace it.
+var pidArgv = readPIDArgv
+
+// classifySidecarPID reads the command line of pid and reports
+// pidOwnerSidecar when isSidecar accepts it. Fail closed: if the command
+// line cannot be read and pid still runs, it writes a warning that names
+// pid and returns pidOwnerUnknown. Do not signal pid in that case.
+func classifySidecarPID(pid int, sessionName string, isSidecar func(argv []string) bool) pidOwner {
+	argv, err := pidArgv(pid)
+	if err == nil {
+		if isSidecar(argv) {
+			return pidOwnerSidecar
+		}
+		return pidOwnerOther
+	}
+	if !sidecarProcessExists(pid) {
+		return pidOwnerGone
+	}
+	fmt.Fprintf(os.Stderr, "warning: sidecar pid %d (session %q): cannot read its command line (%v), so prism cannot prove that it is a prism sidecar; sending no signal\n", pid, sessionName, err)
+	return pidOwnerUnknown
+}
 
 // sidecarPIDOwner reports whether pid runs `<binary> sidecar --session
-// <sessionName>`. It reads <procRoot>/<pid>/cmdline, and falls back to ps(1)
-// where /proc is absent (Darwin). It returns pidOwnerUnknown only when it
-// cannot read the command line of pid at all.
+// <sessionName>`.
 //
 // A command line that is readable but empty is pidOwnerOther. A kernel
 // thread has an empty command line, and after a reboot the PID in a stale
 // PID file can belong to one. That is not a sidecar, so restore must not
 // wait for it to stop.
 func sidecarPIDOwner(pid int, sessionName string) pidOwner {
-	var argv []string
-	if data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "cmdline")); err == nil {
-		argv = strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
-	} else if out, err := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output(); err == nil {
-		argv = strings.Fields(string(out))
-	} else {
-		return pidOwnerUnknown
-	}
-	hasSidecar := false
-	for i, a := range argv {
-		if a == "sidecar" {
-			hasSidecar = true
+	return classifySidecarPID(pid, sessionName, func(argv []string) bool {
+		hasSidecar := false
+		for i, a := range argv {
+			if a == "sidecar" {
+				hasSidecar = true
+			}
+			if hasSidecar && a == "--session" && i+1 < len(argv) && argv[i+1] == sessionName {
+				return true
+			}
 		}
-		if hasSidecar && a == "--session" && i+1 < len(argv) && argv[i+1] == sessionName {
-			return pidOwnerSidecar
-		}
-	}
-	return pidOwnerOther
+		return false
+	})
 }
 
 // unlinkSidecarSockets removes the host-API and harness pipe socket files for
@@ -526,10 +561,10 @@ func waitForSocketGone(sockPath string, deadline time.Time) {
 // On other platforms (e.g. Darwin), it falls back to kill(pid, 0): signal 0
 // is never delivered but the kernel validates that the PID exists and is
 // owned by the same user — ESRCH means the process is gone, nil means it
-// is still running. kill(pid, 0) cannot distinguish zombies from live
-// processes, but on Darwin sidecars run with Setsid so they are adopted
-// by init (PID 1) after prism releases them — init reaps them promptly
-// after SIGTERM, so the zombie window is negligible.
+// is still running. kill(pid, 0) succeeds for a zombie, so pidIsZombie
+// then reads the process state (kern.proc.pid on Darwin). The command line
+// of a zombie cannot be read, so without this check a sidecar that exited
+// and waits for its parent reads as a live PID of unknown owner.
 func sidecarProcessExists(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -545,7 +580,10 @@ func sidecarProcessExists(pid int) bool {
 	}
 	// Non-Linux (or /proc unavailable): use kill(pid, 0).
 	// ESRCH → process is gone; any other result (nil, EPERM) → still running.
-	return syscall.Kill(pid, 0) != syscall.ESRCH
+	if syscall.Kill(pid, 0) == syscall.ESRCH {
+		return false
+	}
+	return !pidIsZombie(pid)
 }
 
 // StartSidecarOpts holds optional parameters for launching a sidecar process.
