@@ -250,9 +250,9 @@ integration test coverage exists for:
   `network-outbound` for every Unix-socket path except an allowlist, the
   section-17c re-deny of the host-escape sockets inside the `/private/tmp`
   allowance (tmux, the user ssh-agent, AeroSpace, the .NET diagnostic IPC
-  socket, and the podman machine socket in the TMPDIR-unset `/private/tmp`
-  location), and the section-3d `file-write*` deny that stops a rename from
-  moving a protected socket to an allowed path. Under the production profile,
+  socket, and the podman machine socket and nvim RPC socket in the
+  TMPDIR-unset `/private/tmp` location), and the section-3d `file-write*`
+  deny that stops a rename from moving a protected socket to an allowed path. Under the production profile,
   a connect to a socket in the podman machine location (`$TMPDIR`) fails. A
   connect to a socket under `/private/tmp` and a loopback TCP connect both
   succeed. A connect to a tmux-shaped socket and to a .NET-diagnostic-shaped

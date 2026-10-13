@@ -219,10 +219,11 @@ func ensureGoCacheDirs() {
 //     except an allowlist (section 17b), plus a re-deny of the host-escape
 //     sockets inside the /private/tmp allowance (section 17c) — tmux, the
 //     user ssh-agent, AeroSpace, a .NET diagnostic socket, and the podman
-//     machine socket in the TMPDIR-unset /private/tmp location
+//     and nvim sockets in the TMPDIR-unset /private/tmp location
 //   - A file-write* deny on the protected sockets and their directories
-//     (section 3d) — including the nvim RPC directory under $TMPDIR — so a
-//     rename cannot move a socket to a path the connect deny does not match
+//     (section 3d) — including the nvim RPC directory under $TMPDIR and under
+//     /private/tmp, and the podman dir under /private/tmp — so a rename
+//     cannot move a socket to a path the connect deny does not match
 //
 // New top-level allow/deny clauses require an explanatory comment in the
 // generator.
@@ -496,9 +497,10 @@ func generateProfile(m *Manager) string {
 	// covers are:
 	//   - /private/tmp and /tmp — section 3 grants (subpath ...) over the
 	//     node, and they are the parents of the tmux, ssh-agent, AeroSpace,
-	//     and .NET sockets;
+	//     and .NET sockets, and (with TMPDIR unset) of the podman and
+	//     nvim.<user> directories;
 	//   - the $TMPDIR node — section 3b grants (subpath os.TempDir()) over the
-	//     node, and it is the parent of the podman directory.
+	//     node, and it is the parent of the podman and nvim.<user> directories.
 	// Their own parents (/private, /, and the /var/folders hash directory)
 	// carry only the section-2 read grant, so the chain stops there.
 	//
@@ -1540,11 +1542,13 @@ func hostSocketAncestorWriteDeny() string {
 		}
 	}
 	// Section 3 grants (subpath ...) over these nodes. They are the parents
-	// of the tmux, ssh-agent, AeroSpace, and .NET sockets.
+	// of the tmux, ssh-agent, AeroSpace, and .NET sockets, and (with TMPDIR
+	// unset) of the podman and nvim.<user> directories.
 	add("/private/tmp")
 	add("/tmp")
 	// Section 3b grants (subpath os.TempDir()) over the $TMPDIR node, the
-	// parent of the podman directory. Deny both symlink forms.
+	// parent of the podman and nvim.<user> directories. Deny both symlink
+	// forms.
 	if tmpDir := filepath.Clean(os.TempDir()); tmpDir != "" && tmpDir != "." && tmpDir != "/" {
 		add(tmpDir)
 		if strings.HasPrefix(tmpDir, "/private/var/") {
