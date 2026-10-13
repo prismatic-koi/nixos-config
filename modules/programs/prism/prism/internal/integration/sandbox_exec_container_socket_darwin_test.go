@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/prismatic-koi/prism/internal/container"
 )
 
 // connectProbeSrc is the source of the connect probe.
@@ -414,3 +416,122 @@ const hostSocketWriteDenyBlock = "(deny file-write*\n" +
 	"  (regex #\"^/tmp/bobko\\.aerospace-\")\n" +
 	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +
 	"  (regex #\"^/tmp/dotnet-diagnostic-\"))\n"
+
+// fakeTmpdirLayout builds base/{T, wt} under the real $TMPDIR, with a podman
+// socket under T, points $TMPDIR at base/T, and returns a Manager whose
+// worktree is base/wt — OUTSIDE base/T. The generated profile then grants
+// section 3b over base/T (so the node is writable), denies section 3e on the
+// base/T node, and — because the worktree is base/wt, not under base/T —
+// section 21b lists base/wt and its ancestors but NOT base/T. So section 3e
+// is the only rule that protects the base/T node, which is the production
+// situation (a worktree under ~/code, a $TMPDIR under /var/folders). This
+// never touches the real $TMPDIR. Returns the manager and the base/T path.
+func fakeTmpdirLayout(t *testing.T) (*container.Manager, string) {
+	t.Helper()
+	// A short prefix under the real $TMPDIR, NOT t.TempDir(): the long test
+	// name would push the socket path past the Darwin sun_path limit (~104
+	// bytes). The base stays under /var/folders so the fake $TMPDIR node is
+	// connect-denied (section 17b allowlists /tmp and /private/tmp, not
+	// /var/folders), which models the real $TMPDIR.
+	base, err := os.MkdirTemp(os.TempDir(), "r")
+	if err != nil {
+		t.Fatalf("mkdir short base under $TMPDIR: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	fakeTmp := filepath.Join(base, "T")
+	if err := os.MkdirAll(filepath.Join(fakeTmp, "podman"), 0o700); err != nil {
+		t.Fatalf("mkdir fake $TMPDIR podman dir: %v", err)
+	}
+	wt := filepath.Join(base, "wt")
+	if err := os.MkdirAll(wt, 0o700); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	startUnixListener(t, filepath.Join(fakeTmp, "podman", "api.sock"))
+
+	// os.TempDir() reads $TMPDIR, so the generator treats base/T as $TMPDIR.
+	t.Setenv("TMPDIR", fakeTmp)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(base, "state"))
+
+	m := container.New(container.Config{
+		SessionName:  "integ-sandbox-exec-ancestor-test",
+		InstanceID:   "integ-sbx-ancestor-" + strings.ReplaceAll(t.Name(), "/", "-"),
+		Worktree:     wt,
+		BareRoot:     base,
+		GitUserName:  "test-user",
+		GitUserEmail: "test@example.com",
+	})
+	return m, fakeTmp
+}
+
+// TestSandboxExecContainerSocket_TmpdirNodeRenameDenied is the round-7
+// regression test. Under the production profile, the agent cannot rename the
+// $TMPDIR node to a connect-allowed path. The worktree is outside $TMPDIR, so
+// section 21b does not list the $TMPDIR node by chance — section 3e is the
+// only rule that denies the rename.
+func TestSandboxExecContainerSocket_TmpdirNodeRenameDenied(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	probe := buildConnectProbe(t)
+
+	m, fakeTmp := fakeTmpdirLayout(t)
+	prepared, _ := preparePositiveProfile(t, m)
+	profilePath := writeAugmentedPositiveProfile(t, prepared)
+
+	// A direct connect to the socket under the $TMPDIR node is denied by 17b.
+	expectDenied(t, profilePath, probe, filepath.Join(fakeTmp, "podman", "api.sock"),
+		"section 17b did not deny a connect to a socket under the $TMPDIR node")
+
+	// Renaming the $TMPDIR node into /private/tmp must fail (section 3e).
+	moved := "/private/tmp/prism-3066-tmpdir-moved"
+	t.Cleanup(func() { _ = os.RemoveAll(moved) })
+	connectPath := filepath.Join(moved, "podman", "api.sock")
+	if out, runErr := runProbe(t, profilePath, probe, "--move", fakeTmp, moved, connectPath); runErr == nil || strings.Contains(out, connectedMarker) {
+		t.Errorf("renamed the $TMPDIR node and connected — section 3e did not deny the ancestor rename.\nOutput: %s\nProfile: %s", out, profilePath)
+	}
+}
+
+// TestSandboxExecContainerSocket_TmpdirNodeRenameWorksWithoutDeny is the
+// paired negative. With the section-3e clause stripped, the $TMPDIR-node
+// rename succeeds and the connect to the moved socket succeeds — the exact
+// round-7 bypass that section 3e closes.
+func TestSandboxExecContainerSocket_TmpdirNodeRenameWorksWithoutDeny(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	probe := buildConnectProbe(t)
+
+	m, fakeTmp := fakeTmpdirLayout(t)
+	moved := "/private/tmp/prism-3066-tmpdir-moved-neg"
+	t.Cleanup(func() { _ = os.RemoveAll(moved) })
+
+	// Strip the section-3e clause only. It is the first
+	// (deny file-write-unlink file-write-create ...) in the profile, opening
+	// with the /private/tmp literal; section 21b's later clause opens with
+	// the worktree literal instead.
+	mutatedPath := withMutatedProfile(t, m, stripSection3e)
+
+	connectPath := filepath.Join(moved, "podman", "api.sock")
+	if out, runErr := runProbe(t, mutatedPath, probe, "--move", fakeTmp, moved, connectPath); runErr != nil || !strings.Contains(out, connectedMarker) {
+		t.Errorf("the $TMPDIR-node rename+connect still failed with section 3e removed, so the positive test proves nothing.\nExit: %v\nOutput: %s\nProfile: %s", runErr, out, mutatedPath)
+	}
+}
+
+// stripSection3e removes the section-3e clause from a profile. That clause is
+// the first (deny file-write-unlink file-write-create ...) and opens with the
+// /private/tmp literal. Section 21b's clause of the same verb opens with the
+// worktree literal, so the marker is unambiguous.
+func stripSection3e(p string) string {
+	const marker = "(deny file-write-unlink file-write-create\n  (literal \"/private/tmp\")"
+	start := strings.Index(p, marker)
+	if start < 0 {
+		return p // no change — withMutatedProfile fails loudly on a no-op
+	}
+	end := strings.Index(p[start:], "))\n")
+	if end < 0 {
+		return p
+	}
+	return p[:start] + p[start+end+len("))\n"):]
+}

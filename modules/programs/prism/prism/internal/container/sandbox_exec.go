@@ -461,11 +461,45 @@ func generateProfile(m *Manager) string {
 	// random names under /tmp that match none of these regexes, so the broad
 	// section-3/3b write grants still cover them.
 	//
-	// $TMPDIR itself cannot be renamed: its parent (/var/folders/<a>/<b>) has
-	// only the section-2 read grant, not write, so the unlink of the $TMPDIR
-	// node is denied already. TestSandboxExecContainerSocket_* cover the file
-	// and directory rename with paired negatives.
+	// This clause stops a rename of the socket or of its own directory.
+	// Section 3e stops a rename of a writable ANCESTOR directory ($TMPDIR,
+	// /private/tmp, /tmp), which is the sibling bypass.
+	// TestSandboxExecContainerSocket_* cover the file and directory rename
+	// with paired negatives.
 	sb.WriteString(hostSocketWriteDeny)
+	sb.WriteString("\n")
+
+	// ── 3e. Writable-ancestor rename deny ─────────────────────────────────
+	// Section 3d stops the agent from moving a protected socket or its own
+	// directory. A path-based deny also fails one level up: the agent can
+	// rename ANY ancestor directory it can write, because the socket then
+	// appears at a new path that sections 17b and 17c do not match. Round 5
+	// was the socket and its directory; round 7 was the $TMPDIR node, an
+	// ancestor of the podman directory.
+	//
+	// A directory node is renamable when a subpath write grant covers the
+	// node itself, because macOS checks file-write-unlink against the node,
+	// not its parent. The ancestors of a protected socket that such a grant
+	// covers are:
+	//   - /private/tmp and /tmp — section 3 grants (subpath ...) over the
+	//     node, and they are the parents of the tmux, ssh-agent, AeroSpace,
+	//     and .NET sockets;
+	//   - the $TMPDIR node — section 3b grants (subpath os.TempDir()) over the
+	//     node, and it is the parent of the podman directory.
+	// Their own parents (/private, /, and the /var/folders hash directory)
+	// carry only the section-2 read grant, so the chain stops there.
+	//
+	// This clause denies file-write-unlink and file-write-create on each such
+	// node as a LITERAL. A literal matches the node only, never its contents,
+	// so go test and bun keep their writes inside /tmp, /private/tmp, and
+	// $TMPDIR. The clause must follow sections 3 and 3b, whose node-covering
+	// subpath grants it overrides. $TMPDIR is derived from
+	// filepath.Clean(os.TempDir()) the same way section 3b derives its grant,
+	// in both the /var and /private/var forms.
+	// TestGenerateProfile_WritableAncestorRenameDeny and
+	// TestGenerateProfile_WritableAncestorRenameDenyFollowsTmpWriteAllows pin
+	// the content and the order.
+	sb.WriteString(hostSocketAncestorWriteDeny())
 	sb.WriteString("\n")
 
 	// ── 4. Sensitive /etc subtree denies ──────────────────────────────────
@@ -1430,6 +1464,52 @@ const hostSocketWriteDeny = "(deny file-write*\n" +
 	"  (regex #\"^/tmp/bobko\\.aerospace-\")\n" +
 	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +
 	"  (regex #\"^/tmp/dotnet-diagnostic-\"))\n"
+
+// hostSocketAncestorWriteDeny is the section-3e clause of generateProfile. It
+// denies file-write-unlink and file-write-create on each ancestor directory
+// of a protected socket that a subpath write grant covers at the node, so the
+// agent cannot rename that ancestor into a connect-allowed path. See the
+// section-3e comment for the full reasoning.
+//
+// The nodes are literals, so the deny matches each directory node only and
+// never its contents: writes inside /tmp, /private/tmp, and $TMPDIR still
+// work. $TMPDIR is derived from filepath.Clean(os.TempDir()) and emitted in
+// both the /var and /private/var forms, the same derivation as section 3b.
+func hostSocketAncestorWriteDeny() string {
+	var nodes []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			nodes = append(nodes, p)
+		}
+	}
+	// Section 3 grants (subpath ...) over these nodes. They are the parents
+	// of the tmux, ssh-agent, AeroSpace, and .NET sockets.
+	add("/private/tmp")
+	add("/tmp")
+	// Section 3b grants (subpath os.TempDir()) over the $TMPDIR node, the
+	// parent of the podman directory. Deny both symlink forms.
+	if tmpDir := filepath.Clean(os.TempDir()); tmpDir != "" && tmpDir != "." && tmpDir != "/" {
+		add(tmpDir)
+		if strings.HasPrefix(tmpDir, "/private/var/") {
+			add(strings.TrimPrefix(tmpDir, "/private"))
+		} else if strings.HasPrefix(tmpDir, "/var/") {
+			add("/private" + tmpDir)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("(deny file-write-unlink file-write-create\n")
+	for i, n := range nodes {
+		sb.WriteString("  (literal " + quoteSBPL(n) + ")")
+		if i == len(nodes)-1 {
+			sb.WriteString(")")
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
 
 // networkUnixSocketDeny returns the section-17b allowlist deny and the
 // section-17c re-deny (hostEscapeSocketReDeny). It is the single source of

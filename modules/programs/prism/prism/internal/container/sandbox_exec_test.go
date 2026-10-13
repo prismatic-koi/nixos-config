@@ -483,6 +483,56 @@ func TestGenerateProfile_HostSocketWriteDenyFollowsTmpWriteAllows(t *testing.T) 
 	}
 }
 
+// TestGenerateProfile_WritableAncestorRenameDeny asserts the section-3e deny
+// that stops a rename of a writable ancestor directory of a protected socket
+// (issue #3066, round-7 finding). A path-based connect or write deny is
+// bypassed if the agent renames an ancestor the profile lets it write, so the
+// socket appears at a new path. The ancestors a subpath write grant covers at
+// the node are /private/tmp and /tmp (section 3) and the $TMPDIR node (section
+// 3b). Each is denied as a LITERAL, so writes inside the directory still work.
+func TestGenerateProfile_WritableAncestorRenameDeny(t *testing.T) {
+	// Pin $TMPDIR so the derived literals are predictable.
+	t.Setenv("TMPDIR", "/var/folders/zz/abcdef/T")
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	clause := extractClause(t, profile, "(deny file-write-unlink file-write-create\n  (literal \"/private/tmp\")")
+	for _, want := range []string{
+		`(literal "/private/tmp")`,
+		`(literal "/tmp")`,
+		`(literal "/var/folders/zz/abcdef/T")`,
+		`(literal "/private/var/folders/zz/abcdef/T")`,
+	} {
+		if !strings.Contains(clause, want) {
+			t.Errorf("section-3e deny missing ancestor %s; clause:\n%s", want, clause)
+		}
+	}
+
+	// The nodes are literals, never subpaths: a subpath here would deny every
+	// write inside /tmp, /private/tmp, and $TMPDIR, which breaks go test.
+	if strings.Contains(clause, "(subpath ") {
+		t.Errorf("section-3e uses a subpath; it must use literals so writes inside the dirs still work; clause:\n%s", clause)
+	}
+}
+
+// TestGenerateProfile_WritableAncestorRenameDenyFollowsTmpWriteAllows pins the
+// order: the section-3e deny MUST come after section 3 (the /tmp +
+// /private/tmp write allow) and section 3b (the $TMPDIR write allow), whose
+// node-covering subpath grants it overrides.
+func TestGenerateProfile_WritableAncestorRenameDenyFollowsTmpWriteAllows(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	tmpAllowIdx := strings.Index(profile, "(allow file-read* file-write* file-test-existence file-map-executable\n  (subpath \"/private/tmp\")")
+	ancestorDenyIdx := strings.Index(profile, "(deny file-write-unlink file-write-create\n  (literal \"/private/tmp\")")
+	if tmpAllowIdx < 0 || ancestorDenyIdx < 0 {
+		t.Fatalf("profile missing the /tmp write allow or the section-3e ancestor deny:\ntmpAllowIdx=%d ancestorDenyIdx=%d\n%s", tmpAllowIdx, ancestorDenyIdx, profile)
+	}
+	if ancestorDenyIdx < tmpAllowIdx {
+		t.Errorf("section-3e ancestor deny (idx %d) precedes the /tmp write allow (idx %d); SBPL would outrank the deny", ancestorDenyIdx, tmpAllowIdx)
+	}
+}
+
 func TestGenerateProfile_V3CryptexAndTmpRules(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
