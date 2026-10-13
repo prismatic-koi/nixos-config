@@ -89,7 +89,8 @@ session — and your role is `investigate`:
   session, and an investigator spawns none, so every target returns 403. Ask
   the coordinator for the conversation history you need.
 
-(In an unsandboxed `host`-mode session there is no socket to route through.
+(In an unsandboxed `host`-mode session there is no `PRISM_HOST_API`, so the
+CLI does not route through the host API.
 `prism merge`, `prism merges list`, `prism merges cancel`, and
 `prism investigate` are refused there too. Each carries a second, CLI-side
 coordinator guard, in `cmd/merge.go`, `cmd/merges.go` (issue #2608), and

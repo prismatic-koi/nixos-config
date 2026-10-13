@@ -141,7 +141,10 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 
 	// needsHostAPI is true for any mode where the agent runs in a sandbox
 	// without direct access to host tmux — bwrap and sandbox-exec
-	// (NeedsHostAPISocket) both require the host-API Unix socket.
+	// (NeedsHostAPISocket). The agent in such a sandbox reaches the host only
+	// through the host-API socket. The sidecar binds that socket in every
+	// mode (resolveHostAPISockPath), so this flag gates only the
+	// sandbox-specific steps.
 	needsHostAPI := isoCaps.NeedsHostAPISocket || isoCaps.IsContainer
 
 	// useContainerHarness is true for modes where the agent is pre-created with
@@ -237,27 +240,16 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// container-specific code paths.
 	var ctrCfg *container.Config
 
-	// Build the host-API socket path for bwrap and sandbox-exec modes.
-	// The agent runs in a sandbox without direct access to host tmux in both
-	// cases, so the host-API Unix socket is required for proxying prism
-	// CLI calls.
-	var hostAPISockPath string
-	if needsHostAPI {
-		if port == 0 && isoCaps.NeedsHostAPISocket {
-			return fmt.Errorf("sidecar: --port is required in bwrap/sandbox-exec mode")
-		}
-		sockPath, err := prismSession.SidecarHostAPIPath(sessionName)
-		if err != nil {
-			return fmt.Errorf("sidecar: resolve host-API socket path: %w", err)
-		}
-		hostAPISockPath = sockPath
-		// Wire the socket path into the container config so the container
-		// gets the socket mounted and PRISM_HOST_API injected.
-		// In bwrap and sandbox-exec modes ctrCfg is nil — the sandbox args
-		// are built by the isolator at prism agent-run time, not here.
-		if ctrCfg != nil {
-			ctrCfg.HostAPISockPath = sockPath
-		}
+	hostAPISockPath, err := resolveHostAPISockPath(sessionName, isoCaps, port)
+	if err != nil {
+		return err
+	}
+	// Wire the socket path into the container config so the container
+	// gets the socket mounted and PRISM_HOST_API injected.
+	// In bwrap and sandbox-exec modes ctrCfg is nil — the sandbox args
+	// are built by the isolator at prism agent-run time, not here.
+	if needsHostAPI && ctrCfg != nil {
+		ctrCfg.HostAPISockPath = hostAPISockPath
 	}
 
 	// Build the harness pipe socket path for socket-pipe harnesses.
@@ -512,6 +504,24 @@ func runSignalHandler(sigCh <-chan os.Signal, shutdownFn func(), cancelFn func()
 		shutdownFn()
 		cancelFn()
 	}()
+}
+
+// resolveHostAPISockPath returns the path at which the sidecar binds its
+// host-API socket. The sidecar binds the socket in every isolation mode,
+// host included. `prism prompt` to a pi session, and every prism
+// notification to it, deliver through the host-API socket of the target. A
+// session with no socket cannot receive a prompt (issue #3135).
+//
+// A sandboxed mode (NeedsHostAPISocket) also requires a non-zero port.
+func resolveHostAPISockPath(sessionName string, isoCaps container.Capabilities, port int) (string, error) {
+	if port == 0 && isoCaps.NeedsHostAPISocket {
+		return "", fmt.Errorf("sidecar: --port is required in bwrap/sandbox-exec mode")
+	}
+	sockPath, err := prismSession.SidecarHostAPIPath(sessionName)
+	if err != nil {
+		return "", fmt.Errorf("sidecar: resolve host-API socket path: %w", err)
+	}
+	return sockPath, nil
 }
 
 // selectHarnessPipeTransport decides whether a named harness needs a harness

@@ -1323,7 +1323,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				return
 			}
 			s.logger().Printf("sidecar: host-API /prompt: %v: stdout=%s stderr=%s", err, childStdout.String(), childStderr.String())
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("prompt delivery failed: %v", err))
+			// The caller sees only this error string. The child writes the
+			// cause to stderr, so the string must carry it.
+			msg := fmt.Sprintf("prompt delivery failed: %v", err)
+			if stderrText := strings.TrimSpace(childStderr.String()); stderrText != "" {
+				msg += ": " + stderrText
+			}
+			writeError(w, http.StatusInternalServerError, msg)
 			return
 		}
 

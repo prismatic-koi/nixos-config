@@ -3,7 +3,7 @@ package cmd
 // checkin_permission_test.go — direct-route permission gate on `prism checkin`.
 //
 // The DIRECT CLI route of `prism checkin`, which a `host`-mode session takes
-// because it has no host-API socket. This route enforces the same three tiers
+// because it has no PRISM_HOST_API. This route enforces the same three tiers
 // as the host-API route: a role check, a repo scope, and a tier-3 audit event.
 //
 // These tests pin the direct route against the same tier table the host-API

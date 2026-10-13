@@ -37,8 +37,8 @@
 
           The tiers apply on both routes of the verb (issue #2619). A
           sandboxed session meets them on the host-API route; a host-mode
-          session has no socket and meets the same predicate on the direct
-          CLI route. A privileged read writes an audit event either way.
+          session has no PRISM_HOST_API and meets the same predicate on the
+          direct CLI route. A privileged read writes an audit event either way.
 
           An empty list grants the privilege to nobody, which is the behaviour
           prism had before the option existed.

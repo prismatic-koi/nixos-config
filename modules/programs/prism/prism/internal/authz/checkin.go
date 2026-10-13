@@ -4,7 +4,8 @@
 // A prism verb reaches the DB by one of two routes. A sandboxed session
 // (`bwrap`, `sandbox-exec`) has PRISM_HOST_API set and proxies to the host
 // sidecar, where the host-API handler applies the rule. A `host`-mode session
-// has no socket, so the CLI opens prism.db itself and the handler never runs.
+// has no PRISM_HOST_API, so the CLI opens prism.db itself and the handler
+// never runs.
 // A predicate that lives inside the handler therefore gates one route only.
 //
 // This package is the shared home for such a predicate: `cmd/` and

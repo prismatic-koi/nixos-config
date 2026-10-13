@@ -4,7 +4,7 @@ package cmd
 //
 // The host API gates the proxy route — GET /audit calls requireCoordinator —
 // which covers every sandboxed caller. A session in `host` isolation mode has
-// no socket, so fetchAuditEvents skips the proxy branch and reaches
+// no PRISM_HOST_API, so fetchAuditEvents skips the proxy branch and reaches
 // fetchAuditEventsLocal. Without a role check on that path, a host-mode
 // worker reads every session's audit rows.
 //
@@ -38,7 +38,7 @@ const (
 // seedAuditGuardSession inserts an agent_status row for the given session
 // against d, with an explicit root_agent_name, an instance_id, and isolation
 // mode `host` — the mode that reaches the direct CLI path because it carries
-// no host-API socket.
+// no PRISM_HOST_API.
 func seedAuditGuardSession(t *testing.T, d *db.DB, sessionName, rootAgent, instanceID string) {
 	t.Helper()
 	if err := d.UpsertStatusSeedRootAgentName(

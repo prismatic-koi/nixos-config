@@ -150,8 +150,9 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 // requireCoordinator, so a sandboxed caller (bwrap, sandbox-exec) is refused
 // with HTTP 403 — every sandboxed session carries PRISM_HOST_API, so every
 // call from one routes through that endpoint. A session in `host` isolation
-// mode has no host-API socket, so PRISM_HOST_API is unset, runInvestigate
-// skips proxyInvestigate, and the call reaches this code path instead. With
+// mode has no PRISM_HOST_API, although its sidecar binds a host-API socket.
+// So runInvestigate skips proxyInvestigate, and the call reaches this code
+// path instead. With
 // no check here, any host-mode worker, review agent, or investigator can
 // spawn an investigator. This function closes that path, and mirrors the
 // `// Guard: coordinator-only` branch in cmd/merge.go — the same
