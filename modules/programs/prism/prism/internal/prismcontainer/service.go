@@ -613,7 +613,7 @@ func List(ctx context.Context, d Deps, c Caller) ListResult {
 		lc := ListedContainer{Handle: e.Labels[LabelService], Kind: KindService, State: e.State, Image: e.Image}
 		if lc.Handle == "" {
 			lc.Handle, lc.Kind = e.name(), KindRun
-			if e.Labels[LabelBuild] != "" {
+			if anchorBuildName(e) != "" {
 				lc.Kind = KindBuild
 			}
 		}

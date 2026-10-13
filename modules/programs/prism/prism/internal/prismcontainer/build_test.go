@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1069,8 +1070,10 @@ func TestAnchorExecutor_StopBuildsDeadBuild(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	f := &prismcontainertest.Fake{}
 	unit := orphanAnchor(f)
-	f.Add(prismcontainertest.Container{Name: "other-session-anchor", State: "running",
-		Labels: map[string]string{prismcontainer.LabelInstanceID: "11111111-2222-4333-8444-555555555555", prismcontainer.LabelBuild: "prism-build-ffffffff-00000001"}})
+	const otherID = "11111111-2222-4333-8444-555555555555"
+	otherUnit := "prism-build-" + container.InstanceTokenForID(otherID) + "-00000001"
+	f.Add(prismcontainertest.Container{Name: otherUnit, State: "running",
+		Labels: map[string]string{prismcontainer.LabelInstanceID: otherID, prismcontainer.LabelBuild: otherUnit}})
 	start := time.Now()
 	n, err := anchorExecutor(f).StopBuilds(context.Background(), "prism-build-"+container.InstanceTokenForID(testInstanceID)+"-")
 	if n != 1 || err != nil {
@@ -1079,7 +1082,7 @@ func TestAnchorExecutor_StopBuildsDeadBuild(t *testing.T) {
 	if took := time.Since(start); took > 5*time.Second {
 		t.Errorf("StopBuilds took %s for a build with no prism process", took)
 	}
-	if left := anchors(f); len(left) != 1 || left[0].Name != "other-session-anchor" {
+	if left := anchors(f); len(left) != 1 || left[0].Name != otherUnit {
 		t.Errorf("anchors left = %+v, want only the anchor of the other session", left)
 	}
 	var order []string
@@ -1091,6 +1094,96 @@ func TestAnchorExecutor_StopBuildsDeadBuild(t *testing.T) {
 	if !slices.Equal(order, []string{"pause", "rm"}) {
 		t.Errorf("podman calls = %q, want pause, then rm of %s", f.Calls(), unit)
 	}
+}
+
+// forgedAnchorLabel returns a prism.build label that an agent can put on
+// an image with LABEL. Its suffix goes out of the build lock dir to the
+// path dir/p.
+func forgedAnchorLabel(dir string) string {
+	return "prism-build-" + container.InstanceTokenForID(testInstanceID) + "-x/" + strings.Repeat("../", 40) + strings.TrimPrefix(dir, "/") + "/p"
+}
+
+// TestAnchorExecutor_StopBuildsIgnoresForgedLabel: a service container
+// whose image has a prism.build label is not an anchor. StopBuilds does
+// not pause it, does not remove it, and does not open the path in its
+// label. The agent can put a FIFO there, and an open of the FIFO waits for
+// a writer.
+func TestAnchorExecutor_StopBuildsIgnoresForgedLabel(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := prismcontainertest.RealTempDir(t)
+	fifo := filepath.Join(dir, "p"+".lock")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			_ = w.Close()
+		}
+	})
+	f := &prismcontainertest.Fake{}
+	forged := "prism-" + container.InstanceTokenForID(testInstanceID) + "-prism-test-01020304"
+	f.Add(prismcontainertest.Container{Name: forged, State: "running", Labels: map[string]string{
+		prismcontainer.LabelInstanceID: testInstanceID, prismcontainer.LabelService: "01020304", prismcontainer.LabelBuild: forgedAnchorLabel(dir)}})
+
+	done := make(chan error, 1)
+	go func() {
+		n, err := anchorExecutor(f).StopBuilds(context.Background(), "prism-build-"+container.InstanceTokenForID(testInstanceID)+"-")
+		if err == nil && n != 0 {
+			err = fmt.Errorf("StopBuilds stopped %d builds, want 0", n)
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopBuilds did not return: it opened the FIFO that the forged label names")
+	}
+	if cs := f.Containers(); len(cs) != 1 || cs[0].State != "running" {
+		t.Errorf("containers = %+v, want the service container, still running", cs)
+	}
+	for _, call := range f.Calls() {
+		if call[0] == "pause" || call[0] == "rm" {
+			t.Errorf("StopBuilds ran podman %q on a container that is not an anchor", call)
+		}
+	}
+}
+
+// TestBuild_ForgedAnchorLabelCounts: a service container with the
+// prism.build label of a running build still counts toward the limits. A
+// forged label cannot merge it into the count of the build.
+func TestBuild_ForgedAnchorLabelCounts(t *testing.T) {
+	c := newCaller(t)
+	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\n")
+	f := &prismcontainertest.Fake{ImagePresent: true}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	f.OnBuild = func(context.Context, io.Writer, []string) (int, error) {
+		close(started)
+		<-release
+		return 0, nil
+	}
+	done := make(chan prismcontainer.BuildResult, 1)
+	go func() {
+		done <- prismcontainer.Build(context.Background(), buildDeps(f), c, prismcontainer.BuildRequest{})
+	}()
+	<-started
+	live := anchors(f)
+	if len(live) != 1 {
+		t.Fatalf("anchors during the build = %+v, want one", live)
+	}
+	f.Add(prismcontainertest.Container{Name: "prism-" + container.InstanceTokenForID(testInstanceID) + "-prism-test-01020304", State: "running",
+		Labels: map[string]string{prismcontainer.LabelInstanceID: testInstanceID, prismcontainer.LabelService: "01020304",
+			prismcontainer.LabelBuild: live[0].Labels[prismcontainer.LabelBuild]}})
+	d := deps(f)
+	d.HostLimit = 2
+	if res := prismcontainer.Run(context.Background(), d, secondSession(c), prismcontainer.RunRequest{Image: "alpine"}); res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, "host-wide limit is 2") {
+		t.Errorf("run of another session with a build and a service container at host limit 2 = %+v, want the host-wide refusal", res)
+	}
+	close(release)
+	<-done
 }
 
 // blockingClient is a build client that ignores its context until release

@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -57,12 +59,23 @@ func limitRefusal(ctx context.Context, r Runner, instanceID string, hostLimit in
 	return checkLimits(counted, instanceID, hostLimit), nil
 }
 
+// buildSuffixPattern matches a suffix that newBuildSuffix makes.
+var buildSuffixPattern = regexp.MustCompile(`^[0-9a-f]{8}$`)
+
 // anchorBuildName returns the build name (buildName) of an anchor
 // container, or "" when e is not an anchor.
+//
+// The agent controls the labels of an image (LABEL), and podman copies
+// them to each container of the image. Thus the prism.build label alone
+// does not make an anchor. Prism sets the name of every container, and it
+// gives an anchor its unit name, so the name must equal the label. The
+// suffix must have the form of newBuildSuffix, because the build name
+// becomes the path of a build marker.
 func anchorBuildName(e psEntry) string {
+	unit := e.Labels[LabelBuild]
 	id := e.Labels[LabelInstanceID]
-	suffix, ok := strings.CutPrefix(e.Labels[LabelBuild], buildUnitPrefix(id))
-	if !ok || suffix == "" || container.InstanceTokenForID(id) == "" {
+	suffix, ok := strings.CutPrefix(unit, buildUnitPrefix(id))
+	if !ok || !buildSuffixPattern.MatchString(suffix) || container.InstanceTokenForID(id) == "" || !slices.Contains(e.Names, unit) {
 		return ""
 	}
 	return buildName(id, suffix)
@@ -184,11 +197,17 @@ func (m *buildMarker) release() {
 // marker is not held. Any lock error other than success counts as held,
 // so that an error cannot open a place over the limit.
 func markerHeld(path string) bool {
-	f, err := os.Open(path)
+	// O_NONBLOCK: an open of a FIFO does not wait for a writer. A file that
+	// is not a regular file is not a marker that prism made, so it counts
+	// as held.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return !errors.Is(err, fs.ErrNotExist)
 	}
 	defer f.Close()
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return true
+	}
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB) != nil
 }
 

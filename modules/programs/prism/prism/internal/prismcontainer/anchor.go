@@ -315,7 +315,7 @@ func (e AnchorExecutor) StopBuilds(ctx context.Context, prefix string) (int, err
 	}
 	var anchors []psEntry
 	for _, en := range entries {
-		if unit := en.Labels[LabelBuild]; unit != "" && strings.HasPrefix(unit, prefix) && en.ID != "" {
+		if anchorBuildName(en) != "" && strings.HasPrefix(en.Labels[LabelBuild], prefix) && en.ID != "" {
 			anchors = append(anchors, en)
 		}
 	}
