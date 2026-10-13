@@ -434,6 +434,55 @@ func TestGenerateProfile_NetworkUnixSocketEscapeReDenyFollowsAllowlist(t *testin
 
 // TestGenerateProfile_V3CryptexAndTmpRules verifies the v3-specific additions
 // required for the dyld shared cache and transient files. See F.1 §2.
+// TestGenerateProfile_HostSocketWriteDeny asserts the section-3d file-write*
+// deny that stops a rename from moving a protected socket to a path the
+// connect deny (sections 17b/17c) does not match. Each entry matches the
+// directory node and its contents, so a rename of the directory is denied as
+// well as a rename of the socket inside it (issue #3066).
+func TestGenerateProfile_HostSocketWriteDeny(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	if !strings.Contains(profile, hostSocketWriteDeny) {
+		t.Errorf("profile missing the section-3d host-socket write deny:\n%s\nprofile:\n%s", hostSocketWriteDeny, profile)
+	}
+	clause := extractClause(t, profile, "(deny file-write*\n  (regex #\"^/var/folders/.*/podman")
+	for _, want := range []string{
+		`(regex #"^/var/folders/.*/podman(/|$)")`,
+		`(regex #"^/private/var/folders/.*/podman(/|$)")`,
+		`(regex #"^/private/tmp/tmux-[0-9]+(/|$)")`,
+		`(regex #"^/private/tmp/com\.apple\.launchd\.[^/]+(/|$)")`,
+		`(regex #"^/private/tmp/bobko\.aerospace-")`,
+		`(regex #"^/private/tmp/dotnet-diagnostic-")`,
+	} {
+		if !strings.Contains(clause, want) {
+			t.Errorf("section-3d write deny missing %s; clause:\n%s", want, clause)
+		}
+	}
+}
+
+// TestGenerateProfile_HostSocketWriteDenyFollowsTmpWriteAllows pins the
+// ordering: the section-3d write deny MUST come after section 3 (file-write*
+// on /tmp and /private/tmp) and section 3b (file-write* on $TMPDIR). SBPL
+// resolves a conflict in favour of the later rule, so a deny placed before
+// those allows would be outranked and a protected socket could be moved
+// again.
+func TestGenerateProfile_HostSocketWriteDenyFollowsTmpWriteAllows(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	// Section 3 is the /tmp + /private/tmp read-write allow. Section 3b is the
+	// $TMPDIR read-write allow. Both precede the section-3d write deny.
+	tmpAllowIdx := strings.Index(profile, "(allow file-read* file-write* file-test-existence file-map-executable\n  (subpath \"/private/tmp\")")
+	writeDenyIdx := strings.Index(profile, hostSocketWriteDeny)
+	if tmpAllowIdx < 0 || writeDenyIdx < 0 {
+		t.Fatalf("profile missing the /tmp write allow or the section-3d write deny:\ntmpAllowIdx=%d writeDenyIdx=%d\n%s", tmpAllowIdx, writeDenyIdx, profile)
+	}
+	if writeDenyIdx < tmpAllowIdx {
+		t.Errorf("section-3d write deny (idx %d) precedes the /tmp write allow (idx %d); SBPL would outrank the deny", writeDenyIdx, tmpAllowIdx)
+	}
+}
+
 func TestGenerateProfile_V3CryptexAndTmpRules(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)

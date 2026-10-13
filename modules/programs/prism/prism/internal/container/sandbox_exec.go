@@ -218,6 +218,9 @@ func ensureGoCacheDirs() {
 //   - (allow network*), narrowed by a deny of every Unix-socket connect
 //     except an allowlist (section 17b), plus a re-deny of the host-escape
 //     sockets inside the /private/tmp allowance (section 17c)
+//   - A file-write* deny on the protected sockets and their directories
+//     (section 3d), so a rename cannot move a socket to a path the connect
+//     deny does not match
 //
 // New top-level allow/deny clauses require an explanatory comment in the
 // generator.
@@ -429,6 +432,40 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("    (require-not (regex #\"/secrets\\.d/[0-9]+/" + regexQuotePath(name) + "$\"))\n")
 	}
 	sb.WriteString("))\n")
+	sb.WriteString("\n")
+
+	// ── 3d. Host-socket write deny — a protected socket cannot be moved ────
+	// Sections 17b and 17c deny a `network-outbound` connect by the socket
+	// PATH. Section 3 grants file-write* on /tmp and /private/tmp, and section
+	// 3b grants it on $TMPDIR. So without this deny, a sandboxed agent renames
+	// a protected socket, or the directory that holds it, into /private/tmp
+	// under a name the connect deny does not match, and then connects. The
+	// move keeps the socket inode and its listener, so the connect reaches the
+	// real service. Confirmed on m4mac: a direct connect is EPERM, and a
+	// connect after `mv <socket> /private/tmp/x` is CONNECTED.
+	//
+	// This deny removes that move. It denies file-write* on each protected
+	// socket and on the directory that holds it, so the agent can neither
+	// unlink the socket out of its directory nor rename the directory. It is
+	// the same pattern as the section-3c secrets.d write deny, which pairs a
+	// write deny with the read deny so the agent cannot move a secret either.
+	//
+	// Each regex matches the directory node and its contents with `(/|$)`, so
+	// a rename of the directory itself is denied as well as a rename of the
+	// socket inside it. Both the /var and /private/var forms, and both the
+	// /tmp and /private/tmp forms, are listed (same dual-form reason as 3b).
+	//
+	// The agent has no reason to write any of these paths: they belong to the
+	// podman machine, to another process's tmux server, to the user ssh-agent,
+	// to AeroSpace, or to a .NET process. The go-test scratch sockets have
+	// random names under /tmp that match none of these regexes, so the broad
+	// section-3/3b write grants still cover them.
+	//
+	// $TMPDIR itself cannot be renamed: its parent (/var/folders/<a>/<b>) has
+	// only the section-2 read grant, not write, so the unlink of the $TMPDIR
+	// node is denied already. TestSandboxExecContainerSocket_* cover the file
+	// and directory rename with paired negatives.
+	sb.WriteString(hostSocketWriteDeny)
 	sb.WriteString("\n")
 
 	// ── 4. Sensitive /etc subtree denies ──────────────────────────────────
@@ -1361,6 +1398,34 @@ const hostEscapeSocketReDeny = "(deny network-outbound\n" +
 	"  (regex #\"^/tmp/tmux-[0-9]+/\")\n" +
 	"  (regex #\"^/private/tmp/com\\.apple\\.launchd\\.\")\n" +
 	"  (regex #\"^/tmp/com\\.apple\\.launchd\\.\")\n" +
+	"  (regex #\"^/private/tmp/bobko\\.aerospace-\")\n" +
+	"  (regex #\"^/tmp/bobko\\.aerospace-\")\n" +
+	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +
+	"  (regex #\"^/tmp/dotnet-diagnostic-\"))\n"
+
+// hostSocketWriteDeny is the section-3d clause of generateProfile. It denies
+// file-write* on each socket that sections 17b and 17c protect by path, and
+// on the directory that holds it, so a sandboxed agent cannot move the socket
+// to a path the connect deny does not match. Without it, the path-based
+// connect deny is bypassed by a rename (see the section-3d comment).
+//
+// The clause must follow sections 3 and 3b, whose broad file-write* grants on
+// /tmp, /private/tmp, and $TMPDIR it overrides. SBPL resolves a conflict in
+// favour of the later rule, and no later rule grants write on these paths.
+// TestGenerateProfile_HostSocketWriteDenyFollowsTmpWriteAllows pins the order.
+//
+// The podman regex matches any `podman` directory under /var/folders, so it
+// does not depend on os.TempDir() reading back the current $TMPDIR (same
+// reason the section-3c regexes are TMPDIR-independent). The /private/tmp
+// entries mirror the section-17c families, with `(/|$)` in place of the
+// trailing `/` so the directory node is matched as well as its contents.
+const hostSocketWriteDeny = "(deny file-write*\n" +
+	"  (regex #\"^/var/folders/.*/podman(/|$)\")\n" +
+	"  (regex #\"^/private/var/folders/.*/podman(/|$)\")\n" +
+	"  (regex #\"^/private/tmp/tmux-[0-9]+(/|$)\")\n" +
+	"  (regex #\"^/tmp/tmux-[0-9]+(/|$)\")\n" +
+	"  (regex #\"^/private/tmp/com\\.apple\\.launchd\\.[^/]+(/|$)\")\n" +
+	"  (regex #\"^/tmp/com\\.apple\\.launchd\\.[^/]+(/|$)\")\n" +
 	"  (regex #\"^/private/tmp/bobko\\.aerospace-\")\n" +
 	"  (regex #\"^/tmp/bobko\\.aerospace-\")\n" +
 	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +

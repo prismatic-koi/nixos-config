@@ -247,18 +247,22 @@ integration test coverage exists for:
   `sandbox_exec_worktree_readonly_darwin_test.go`.
 - **Network egress** — `(allow network*)` permits outbound TCP.
 - **The Unix-socket connect allowlist** — the section-17b deny on
-  `network-outbound` for every Unix-socket path except an allowlist, and the
+  `network-outbound` for every Unix-socket path except an allowlist, the
   section-17c re-deny of the host-escape sockets inside the `/private/tmp`
   allowance (tmux, the user ssh-agent, AeroSpace, and the .NET diagnostic IPC
-  socket). Under the production profile, a connect to a socket in the podman
-  machine location (`$TMPDIR`) fails. A connect to a socket under
-  `/private/tmp` and a loopback TCP connect both succeed. A connect to a
-  tmux-shaped socket and to a .NET-diagnostic-shaped socket under
-  `/private/tmp` fails. The paired negatives neutralise the section-17b scope
-  term, remove that term, and strip the section-17c re-deny. Each negative
-  then gives the opposite result. The connect probe is a CGO-disabled Go
-  binary that the test builds, so no extra Nix tool is necessary. See
-  `sandbox_exec_container_socket_darwin_test.go` (issue #3066).
+  socket), and the section-3d `file-write*` deny that stops a rename from
+  moving a protected socket to an allowed path. Under the production profile,
+  a connect to a socket in the podman machine location (`$TMPDIR`) fails. A
+  connect to a socket under `/private/tmp` and a loopback TCP connect both
+  succeed. A connect to a tmux-shaped socket and to a .NET-diagnostic-shaped
+  socket under `/private/tmp` fails. A move of the podman socket file, and of
+  the podman directory, into `/private/tmp` fails, so no connect follows. The
+  paired negatives neutralise the section-17b scope term, remove that term,
+  strip the section-17c re-deny, and strip the section-3d write deny. Each
+  negative then gives the opposite result. The connect probe is a CGO-disabled
+  Go binary that the test builds, so no extra Nix tool is necessary. It also
+  does the rename in-process (`os.Rename`), so the move test needs no shell.
+  See `sandbox_exec_container_socket_darwin_test.go` (issue #3066).
 
 Each positive case has a paired negative case that mutates the profile to
 remove the specific rule under test and asserts the operation fails.
