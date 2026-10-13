@@ -91,8 +91,12 @@ func runWorktreeScript(t *testing.T, profilePath, worktree, script string) ([]by
 	return cmd.CombinedOutput()
 }
 
-// worktreeDenyClause matches the section-21b deny with all its literals.
-var worktreeDenyClause = regexp.MustCompile(`(?s)\(deny file-write-unlink file-write-create\n.*?\)\)\n`)
+// worktreeDenyClause matches the section-21b deny with all its literals. It
+// anchors on the trailing (literal "/")) that closes the ancestor walk at
+// the filesystem root, so it never matches the section-3e ancestor deny,
+// which opens with the same verb but ends at a /private/tmp or $TMPDIR
+// literal, not at the root.
+var worktreeDenyClause = regexp.MustCompile(`(?s)\(deny file-write-unlink file-write-create\n(?:  \(literal "[^"]*"\)\n)*  \(literal "/"\)\)\n`)
 
 func withoutWorktreeDeny(p string) string { return worktreeDenyClause.ReplaceAllString(p, "") }
 

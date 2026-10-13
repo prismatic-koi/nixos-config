@@ -79,7 +79,7 @@ func TestGenerateProfile_SecretsDAllowlistAdmitsGrafanaConfig(t *testing.T) {
 	}
 	// Exactly two exceptions: the ssh access key and grafana. The grafana
 	// carve-out adds ONE name and no more (inventory rule).
-	if got := strings.Count(profile, "(require-not "); got != 2 {
+	if got := secretsDExceptionCount(t, profile); got != 2 {
 		t.Errorf("expected exactly 2 require-not exceptions (ssh access key + grafana), got %d; full profile:\n%s",
 			got, profile)
 	}
@@ -136,7 +136,7 @@ func TestGenerateProfile_SecretsDAllowlistIgnoresNonSopsGrafanaPath(t *testing.T
 	})
 	profile := generateProfile(m)
 
-	if got := strings.Count(profile, "(require-not "); got != 0 {
+	if got := secretsDExceptionCount(t, profile); got != 0 {
 		t.Errorf("expected zero require-not exceptions for a non-sops grafana path, got %d; full profile:\n%s", got, profile)
 	}
 }

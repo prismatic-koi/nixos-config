@@ -333,7 +333,7 @@ func TestGenerateProfile_SecretsDAllowlistIgnoresNonSopsGitLabPath(t *testing.T)
 	})
 	profile := generateProfile(m)
 
-	if got := strings.Count(profile, "(require-not "); got != 0 {
+	if got := secretsDExceptionCount(t, profile); got != 0 {
 		t.Errorf("expected zero require-not exceptions for a non-sops GitLab path, got %d; full profile:\n%s", got, profile)
 	}
 }

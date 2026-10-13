@@ -316,8 +316,223 @@ func TestGenerateProfile_NetworkAllow(t *testing.T) {
 	}
 }
 
+// TestGenerateProfile_NetworkUnixSocketAllowlist asserts the section-17b
+// deny of every Unix-socket connect except an allowlist (#3066).
+func TestGenerateProfile_NetworkUnixSocketAllowlist(t *testing.T) {
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName:     "repo@main",
+		Worktree:        "/Users/u/code/repo/main",
+		BareRoot:        "/Users/u/code/repo",
+		HostAPISockPath: "/Users/u/.local/state/prism/run/abc123/hostapi.sock",
+	})
+	profile := generateProfile(m)
+
+	clause := extractClause(t, profile, "(deny network-outbound\n  (require-all")
+
+	// The leading (subpath "/") scopes the rule to path-bearing (Unix-domain)
+	// connects. Without it the rule denies every outbound connection, HTTPS
+	// and loopback TCP included.
+	if !strings.Contains(clause, "(require-all\n    (subpath \"/\")") {
+		t.Errorf("section-17b deny is not scoped by a leading (subpath \"/\") inside require-all; clause:\n%s", clause)
+	}
+
+	// Every allowed socket is a require-not. A session legitimately connects
+	// to each of these.
+	wantAllowed := []string{
+		`(require-not (subpath "/Users/u/.local/state/prism/run/abc123"))`,
+		`(require-not (literal "/private/var/run/mDNSResponder"))`,
+		`(require-not (literal "/var/run/mDNSResponder"))`,
+		`(require-not (literal "/private/var/run/syslog"))`,
+		`(require-not (literal "/var/run/syslog"))`,
+		`(require-not (literal "/nix/var/nix/daemon-socket/socket"))`,
+		`(require-not (subpath "/private/tmp"))`,
+		`(require-not (subpath "/tmp"))`,
+		`(require-not (subpath "/Users/u/code/repo/main"))`,
+		`(require-not (subpath "/Users/u/code/repo"))`,
+	}
+	for _, want := range wantAllowed {
+		if !strings.Contains(clause, want) {
+			t.Errorf("section-17b deny missing allowed socket %s; clause:\n%s", want, clause)
+		}
+	}
+
+	sessionDir, err := m.sessionWorkDirPath()
+	if err != nil {
+		t.Fatalf("sessionWorkDirPath: %v", err)
+	}
+	if want := "(require-not (subpath " + quoteSBPL(sessionDir) + "))"; !strings.Contains(clause, want) {
+		t.Errorf("section-17b deny missing the per-session work dir %s; clause:\n%s", want, clause)
+	}
+
+	// The podman machine socket lives under $TMPDIR (/var/folders on a real
+	// host), which is NOT in the allowlist, so no require-not names it. A
+	// require-not that reached /var/folders would re-open the #3066 hole.
+	if strings.Contains(clause, "/var/folders") {
+		t.Errorf("section-17b deny names /var/folders, which would re-open the podman machine socket (#3066); clause:\n%s", clause)
+	}
+}
+
+// TestGenerateProfile_NetworkUnixSocketDenyFollowsNetworkAllow pins the
+// ordering: the section-17b Unix-socket deny MUST come after section 17's
+// (allow network*). SBPL resolves a conflict in favour of the later rule, so
+// a deny placed before the allow would be silently outranked and every
+// Unix-socket connect would be admitted again — with this and the content
+// test still green, because the deny text would be present, just outranked.
+func TestGenerateProfile_NetworkUnixSocketDenyFollowsNetworkAllow(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	allowIdx := strings.Index(profile, "(allow network*)")
+	denyIdx := strings.Index(profile, "(deny network-outbound\n  (require-all")
+	if allowIdx < 0 || denyIdx < 0 {
+		t.Fatalf("profile missing the network allow or the section-17b deny:\nallowIdx=%d denyIdx=%d\n%s", allowIdx, denyIdx, profile)
+	}
+	if denyIdx < allowIdx {
+		t.Errorf("section-17b Unix-socket deny (idx %d) precedes (allow network*) (idx %d); SBPL would outrank the deny", denyIdx, allowIdx)
+	}
+}
+
+// TestGenerateProfile_NetworkUnixSocketEscapeReDeny asserts the section-17c
+// re-deny of the host-escape sockets inside the /private/tmp allowance: tmux,
+// the user ssh-agent, AeroSpace, and the .NET diagnostic IPC socket.
+func TestGenerateProfile_NetworkUnixSocketEscapeReDeny(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	if !strings.Contains(profile, hostEscapeSocketReDeny) {
+		t.Errorf("profile missing the section-17c escape re-deny:\n%s\nprofile:\n%s", hostEscapeSocketReDeny, profile)
+	}
+	for _, want := range []string{
+		`(regex #"^/private/tmp/tmux-[0-9]+/")`,
+		`(regex #"^/private/tmp/com\.apple\.launchd\.")`,
+		`(regex #"^/private/tmp/bobko\.aerospace-")`,
+		`(regex #"^/private/tmp/dotnet-diagnostic-")`,
+	} {
+		if !strings.Contains(profile, want) {
+			t.Errorf("section-17c re-deny missing %s; profile:\n%s", want, profile)
+		}
+	}
+}
+
+// TestGenerateProfile_NetworkUnixSocketEscapeReDenyFollowsAllowlist pins
+// section 17c after section 17b. With the 17b order test, it keeps the 17c
+// deny after section 17's (allow network*), which the later-rule-wins
+// resolution of SBPL requires.
+func TestGenerateProfile_NetworkUnixSocketEscapeReDenyFollowsAllowlist(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	allowlistIdx := strings.Index(profile, "(deny network-outbound\n  (require-all")
+	reDenyIdx := strings.Index(profile, hostEscapeSocketReDeny)
+	if allowlistIdx < 0 || reDenyIdx < 0 {
+		t.Fatalf("profile missing section 17b or 17c:\nallowlistIdx=%d reDenyIdx=%d\n%s", allowlistIdx, reDenyIdx, profile)
+	}
+	if reDenyIdx < allowlistIdx {
+		t.Errorf("section-17c re-deny (idx %d) precedes section-17b allowlist (idx %d)", reDenyIdx, allowlistIdx)
+	}
+}
+
 // TestGenerateProfile_V3CryptexAndTmpRules verifies the v3-specific additions
 // required for the dyld shared cache and transient files. See F.1 §2.
+// TestGenerateProfile_HostSocketWriteDeny asserts the section-3d file-write*
+// deny that stops a rename from moving a protected socket to a path the
+// connect deny (sections 17b/17c) does not match. Each entry matches the
+// directory node and its contents, so a rename of the directory is denied as
+// well as a rename of the socket inside it (issue #3066).
+func TestGenerateProfile_HostSocketWriteDeny(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	if !strings.Contains(profile, hostSocketWriteDeny) {
+		t.Errorf("profile missing the section-3d host-socket write deny:\n%s\nprofile:\n%s", hostSocketWriteDeny, profile)
+	}
+	clause := extractClause(t, profile, "(deny file-write*\n  (regex #\"^/var/folders/.*/podman")
+	for _, want := range []string{
+		`(regex #"^/var/folders/.*/podman(/|$)")`,
+		`(regex #"^/private/var/folders/.*/podman(/|$)")`,
+		`(regex #"^/private/tmp/tmux-[0-9]+(/|$)")`,
+		`(regex #"^/private/tmp/com\.apple\.launchd\.[^/]+(/|$)")`,
+		`(regex #"^/private/tmp/bobko\.aerospace-")`,
+		`(regex #"^/private/tmp/dotnet-diagnostic-")`,
+	} {
+		if !strings.Contains(clause, want) {
+			t.Errorf("section-3d write deny missing %s; clause:\n%s", want, clause)
+		}
+	}
+}
+
+// TestGenerateProfile_HostSocketWriteDenyFollowsTmpWriteAllows pins the
+// ordering: the section-3d write deny MUST come after section 3 (file-write*
+// on /tmp and /private/tmp) and section 3b (file-write* on $TMPDIR). SBPL
+// resolves a conflict in favour of the later rule, so a deny placed before
+// those allows would be outranked and a protected socket could be moved
+// again.
+func TestGenerateProfile_HostSocketWriteDenyFollowsTmpWriteAllows(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	// Section 3 is the /tmp + /private/tmp read-write allow. Section 3b is the
+	// $TMPDIR read-write allow. Both precede the section-3d write deny.
+	tmpAllowIdx := strings.Index(profile, "(allow file-read* file-write* file-test-existence file-map-executable\n  (subpath \"/private/tmp\")")
+	writeDenyIdx := strings.Index(profile, hostSocketWriteDeny)
+	if tmpAllowIdx < 0 || writeDenyIdx < 0 {
+		t.Fatalf("profile missing the /tmp write allow or the section-3d write deny:\ntmpAllowIdx=%d writeDenyIdx=%d\n%s", tmpAllowIdx, writeDenyIdx, profile)
+	}
+	if writeDenyIdx < tmpAllowIdx {
+		t.Errorf("section-3d write deny (idx %d) precedes the /tmp write allow (idx %d); SBPL would outrank the deny", writeDenyIdx, tmpAllowIdx)
+	}
+}
+
+// TestGenerateProfile_WritableAncestorRenameDeny asserts the section-3e deny
+// that stops a rename of a writable ancestor directory of a protected socket
+// (issue #3066, round-7 finding). A path-based connect or write deny is
+// bypassed if the agent renames an ancestor the profile lets it write, so the
+// socket appears at a new path. The ancestors a subpath write grant covers at
+// the node are /private/tmp and /tmp (section 3) and the $TMPDIR node (section
+// 3b). Each is denied as a LITERAL, so writes inside the directory still work.
+func TestGenerateProfile_WritableAncestorRenameDeny(t *testing.T) {
+	// Pin $TMPDIR so the derived literals are predictable.
+	t.Setenv("TMPDIR", "/var/folders/zz/abcdef/T")
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	clause := extractClause(t, profile, "(deny file-write-unlink file-write-create\n  (literal \"/private/tmp\")")
+	for _, want := range []string{
+		`(literal "/private/tmp")`,
+		`(literal "/tmp")`,
+		`(literal "/var/folders/zz/abcdef/T")`,
+		`(literal "/private/var/folders/zz/abcdef/T")`,
+	} {
+		if !strings.Contains(clause, want) {
+			t.Errorf("section-3e deny missing ancestor %s; clause:\n%s", want, clause)
+		}
+	}
+
+	// The nodes are literals, never subpaths: a subpath here would deny every
+	// write inside /tmp, /private/tmp, and $TMPDIR, which breaks go test.
+	if strings.Contains(clause, "(subpath ") {
+		t.Errorf("section-3e uses a subpath; it must use literals so writes inside the dirs still work; clause:\n%s", clause)
+	}
+}
+
+// TestGenerateProfile_WritableAncestorRenameDenyFollowsTmpWriteAllows pins the
+// order: the section-3e deny MUST come after section 3 (the /tmp +
+// /private/tmp write allow) and section 3b (the $TMPDIR write allow), whose
+// node-covering subpath grants it overrides.
+func TestGenerateProfile_WritableAncestorRenameDenyFollowsTmpWriteAllows(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	tmpAllowIdx := strings.Index(profile, "(allow file-read* file-write* file-test-existence file-map-executable\n  (subpath \"/private/tmp\")")
+	ancestorDenyIdx := strings.Index(profile, "(deny file-write-unlink file-write-create\n  (literal \"/private/tmp\")")
+	if tmpAllowIdx < 0 || ancestorDenyIdx < 0 {
+		t.Fatalf("profile missing the /tmp write allow or the section-3e ancestor deny:\ntmpAllowIdx=%d ancestorDenyIdx=%d\n%s", tmpAllowIdx, ancestorDenyIdx, profile)
+	}
+	if ancestorDenyIdx < tmpAllowIdx {
+		t.Errorf("section-3e ancestor deny (idx %d) precedes the /tmp write allow (idx %d); SBPL would outrank the deny", ancestorDenyIdx, tmpAllowIdx)
+	}
+}
+
 func TestGenerateProfile_V3CryptexAndTmpRules(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
@@ -1537,6 +1752,41 @@ func TestMinimalIsolatedExecEnv_AllowsExpectedKeys(t *testing.T) {
 	}
 }
 
+// TestSandboxExecEnv_NoContainerHostOrDockerHost asserts that a sandbox-exec
+// session env holds no CONTAINER_HOST and no DOCKER_HOST, mirroring the bwrap
+// assertion in TestBwrapBuildArgs_NoContainerAPISurface. Agents reach podman
+// only through `prism container`, which runs on the host; a session that
+// carried CONTAINER_HOST or DOCKER_HOST would point a client straight at the
+// podman machine socket, the surface #3066 closes.
+//
+// Unlike bwrap, sandbox-exec does not rebuild the interior env with
+// --setenv: the sandbox shares the harness process env, filtered by
+// MinimalIsolatedExecEnv, plus the profile AgentEnvVars/RuntimeEnv from
+// AppendSandboxEnvVarsKV. The load-bearing defence is MinimalIsolatedExecEnv:
+// CONTAINER_HOST and DOCKER_HOST are not on its allow-list, so a value set in
+// the host shell cannot pass through to the sandbox. This test seeds both
+// into the host env and asserts they do not survive the assembly through a
+// production-shaped config (AgentEnvVars/RuntimeEnv, which prism never
+// populates with these names).
+func TestSandboxExecEnv_NoContainerHostOrDockerHost(t *testing.T) {
+	t.Setenv("CONTAINER_HOST", "unix:///var/folders/xx/T/podman/podman-machine-default-api.sock")
+	t.Setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+
+	env := MinimalIsolatedExecEnv(os.Environ())
+	env = AppendSandboxEnvVarsKV(env, Config{
+		SessionName:  "repo@main",
+		AgentEnvVars: map[string]string{"KUBECONFIG": "/x/kube"},
+		RuntimeEnv:   map[string]string{"PI_SOME_VAR": "ok"},
+	})
+
+	for _, kv := range env {
+		k := strings.SplitN(kv, "=", 2)[0]
+		if k == "CONTAINER_HOST" || k == "DOCKER_HOST" {
+			t.Errorf("forbidden container-API var %q present in sandbox-exec env: %q", k, kv)
+		}
+	}
+}
+
 // ── SandboxExecShellEnv ──────────────────────────────────────────────────────
 
 // TestSandboxExecShellEnv_PinsShellToBinSh asserts the SHELL=/bin/sh pin,
@@ -1634,6 +1884,15 @@ const secretsDDenyReadHeader = "(deny file-read*\n" +
 	"    (require-any\n" +
 	"      (regex #\"^/var/folders/.*/secrets\\.d/\")\n" +
 	"      (regex #\"^/private/var/folders/.*/secrets\\.d/\"))\n"
+
+// secretsDExceptionCount returns the number of require-not exceptions in the
+// secrets.d read-deny clause. It counts inside that clause only, so the
+// require-not terms of the section-17b Unix-socket allowlist do not change
+// the count.
+func secretsDExceptionCount(t *testing.T, profile string) int {
+	t.Helper()
+	return strings.Count(extractClause(t, profile, secretsDDenyReadHeader), "(require-not ")
+}
 
 // secretsDDenyWriteRule is the verbatim secrets.d write-deny rule.
 const secretsDDenyWriteRule = "(deny file-write*\n" +
@@ -1738,7 +1997,7 @@ func TestGenerateProfile_SecretsDAllowlistDerivedFromStableSources(t *testing.T)
 
 	// Exactly the six inventoried exceptions — nothing else. A higher count
 	// would mean a wildcard or an un-inventoried name slipped in.
-	if got := strings.Count(profile, "(require-not "); got != len(expected) {
+	if got := secretsDExceptionCount(t, profile); got != len(expected) {
 		t.Errorf("expected exactly %d require-not exceptions, got %d; full profile:\n%s",
 			len(expected), got, profile)
 	}
@@ -1761,7 +2020,7 @@ func TestGenerateProfile_SecretsDAllowlistEmptyWithoutSopsChains(t *testing.T) {
 	if !strings.Contains(profile, secretsDDenyWriteRule) || !strings.Contains(profile, secretsDDenyReadHeader) {
 		t.Fatalf("secrets.d deny rules must be emitted even with no allowlist sources; full profile:\n%s", profile)
 	}
-	if got := strings.Count(profile, "(require-not "); got != 0 {
+	if got := secretsDExceptionCount(t, profile); got != 0 {
 		t.Errorf("expected zero require-not exceptions on a non-sops host, got %d; full profile:\n%s", got, profile)
 	}
 }
