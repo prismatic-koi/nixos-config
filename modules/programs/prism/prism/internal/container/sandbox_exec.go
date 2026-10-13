@@ -459,9 +459,20 @@ func generateProfile(m *Manager) string {
 	//
 	// The agent has no reason to write any of these paths: they belong to the
 	// podman machine, to another process's tmux server, to the user ssh-agent,
-	// to AeroSpace, or to a .NET process. The go-test scratch sockets have
-	// random names under /tmp that match none of these regexes, so the broad
-	// section-3/3b write grants still cover them.
+	// to AeroSpace, to a .NET process, or to the user's nvim. The go-test
+	// scratch sockets have random names under /tmp that match none of these
+	// regexes, so the broad section-3/3b write grants still cover them.
+	//
+	// The nvim entries and the /private/tmp + /tmp podman entries join the
+	// list for #3147. nvim is a host escape: a client runs `:!<cmd>` on the
+	// host. nvim resolves its temp dir in the order $TMPDIR, /tmp, so its
+	// socket is under /var/folders with TMPDIR set, or under /tmp (that is,
+	// /private/tmp) with TMPDIR unset. This deny stops the move of the
+	// nvim.<user> directory, or the socket, out of either location. The podman
+	// /private/tmp + /tmp entries cover the TMPDIR-unset podman machine dir.
+	// Both TMPDIR-unset cases are paired with a section-17c re-deny of the
+	// connect, because /private/tmp and /tmp are inside the section-17b
+	// allowance.
 	//
 	// This clause stops a rename of the socket or of its own directory.
 	// Section 3e stops a rename of a writable ANCESTOR directory ($TMPDIR,
@@ -1430,7 +1441,14 @@ const containerCLIExecDeny = "(deny process-exec*\n" +
 //     (for example a launchd job). The $TMPDIR form is under /var/folders,
 //     outside the section-17b allowlist, so it is denied already; the
 //     /private/tmp form is inside the allowance and needs this re-deny
-//     (#3147 item 2).
+//     (#3147 item 2);
+//   - the nvim RPC socket in the TMPDIR-unset location
+//     (/private/tmp/nvim.<user>/<rand>/nvim.<pid>.0). nvim resolves its temp
+//     dir in the order $TMPDIR, /tmp, so with TMPDIR unset the socket lands
+//     in /tmp, inside the section-17b allowance. A client on it runs
+//     `:!<cmd>` on the host (#3147 item 1). The TMPDIR-set form, under
+//     /var/folders, is denied by section 17b already; this re-deny covers
+//     the TMPDIR-unset form, the same shape as the podman item above.
 //
 // Both the /tmp and the /private/tmp forms are listed. The kernel resolves a
 // connect path through the /tmp symlink before it matches, so the
@@ -1446,7 +1464,9 @@ const hostEscapeSocketReDeny = "(deny network-outbound\n" +
 	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +
 	"  (regex #\"^/tmp/dotnet-diagnostic-\")\n" +
 	"  (regex #\"^/private/tmp/podman/\")\n" +
-	"  (regex #\"^/tmp/podman/\"))\n"
+	"  (regex #\"^/tmp/podman/\")\n" +
+	"  (regex #\"^/private/tmp/nvim\\.[^/]+/\")\n" +
+	"  (regex #\"^/tmp/nvim\\.[^/]+/\"))\n"
 
 // hostSocketWriteDeny is the section-3d clause of generateProfile. It denies
 // file-write* on each socket that sections 17b and 17c protect by path, and
@@ -1469,12 +1489,17 @@ const hostEscapeSocketReDeny = "(deny network-outbound\n" +
 //   - the nvim RPC socket. nvim starts an RPC server at
 //     $TMPDIR/nvim.<user>/<rand>/nvim.<pid>.0, and a client on it runs
 //     `:!<cmd>` on the host — the same escape class as the tmux socket.
-//     Section 17b denies the direct connect ($TMPDIR is under /var/folders,
-//     outside the allowlist), but without this deny the agent moves the
-//     socket file, or the nvim.<user> directory, into /private/tmp and
-//     connects to it there. The `nvim\.[^/]+(/|$)` pair matches the
+//     nvim resolves its temp dir in the order $TMPDIR, /tmp, so the socket
+//     is under /var/folders with TMPDIR set, or under /tmp (that is,
+//     /private/tmp) with TMPDIR unset. All three forms are denied, so a
+//     rename cannot move the nvim.<user> directory or the socket to a
+//     connect-allowed path. The `nvim\.[^/]+(/|$)` pair matches the
 //     nvim.<user> directory node, the socket file nvim.<pid>.0, and every
-//     path under nvim.<user>/, in both the /var and /private/var forms.
+//     path under nvim.<user>/. (Side effect: an nvim started inside the
+//     sandbox, where TMPDIR is unset, cannot create its server dir under
+//     /tmp; it falls back to the next writable temp dir and still starts.
+//     Agents do not start nvim in normal use — GIT_EDITOR is `true`, see
+//     modules/programs/prism/default.nix.)
 //   - the podman machine dir in /private/tmp and /tmp, for the TMPDIR-unset
 //     case (section 17c re-denies the connect; this denies the move).
 const hostSocketWriteDeny = "(deny file-write*\n" +
@@ -1484,6 +1509,8 @@ const hostSocketWriteDeny = "(deny file-write*\n" +
 	"  (regex #\"^/tmp/podman(/|$)\")\n" +
 	"  (regex #\"^/var/folders/.*/nvim\\.[^/]+(/|$)\")\n" +
 	"  (regex #\"^/private/var/folders/.*/nvim\\.[^/]+(/|$)\")\n" +
+	"  (regex #\"^/private/tmp/nvim\\.[^/]+(/|$)\")\n" +
+	"  (regex #\"^/tmp/nvim\\.[^/]+(/|$)\")\n" +
 	"  (regex #\"^/private/tmp/tmux-[0-9]+(/|$)\")\n" +
 	"  (regex #\"^/tmp/tmux-[0-9]+(/|$)\")\n" +
 	"  (regex #\"^/private/tmp/com\\.apple\\.launchd\\.[^/]+(/|$)\")\n" +
