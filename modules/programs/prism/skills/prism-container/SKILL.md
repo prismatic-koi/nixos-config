@@ -28,11 +28,12 @@ that carries the socket path. The sandbox-exec profile denies
 `network-outbound` to every Unix socket except an allowlist: the host-API
 socket, DNS, the system log, the nix daemon, and the scratch trees for the
 test suite. The podman machine API socket sits under the per-user `$TMPDIR`,
-which is not on the allowlist, so a connect to it fails with a sandbox
-denial (`EPERM`). A TCP connect carries an IP endpoint, not a path, so this
-deny leaves normal network use untouched. The same deny stops the tmux
-control socket, the user ssh-agent, the AeroSpace window-manager socket,
-and the .NET diagnostic IPC socket, which are each a host escape. On Linux, the bwrap sandbox binds no container
+or under `/private/tmp/podman` when `TMPDIR` is unset. A connect to it fails
+with a sandbox denial (`EPERM`) in either location. A TCP connect carries an
+IP endpoint, not a path, so this deny leaves normal network use untouched.
+The same deny stops the tmux control socket, the user ssh-agent, the
+AeroSpace window-manager socket, the .NET diagnostic IPC socket, and the
+nvim RPC socket, which are each a host escape. On Linux, the bwrap sandbox binds no container
 socket, so the same connection is absent. Use `prism container` for every
 container action in place of a direct socket.
 
