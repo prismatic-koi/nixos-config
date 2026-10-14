@@ -275,6 +275,14 @@ func (w *Watcher) tick(ctx context.Context) {
 		return
 	}
 
+	// Terminal: the PR conflicts with its base (issue #3131). Nothing
+	// resolves this without a worker rebase, so end the row and notify once.
+	// Mergeable UNKNOWN (GitHub still computing) is not a conflict.
+	if prInfo.MergeStateStatus == "DIRTY" || prInfo.Mergeable == "CONFLICTING" {
+		w.notifyConflicting(ctx, head)
+		return
+	}
+
 	// Branch-protection gate (core rule): NEVER auto-merge on a repo
 	// without branch protection. A 404 on the protection endpoint is a
 	// description of state, not a licence.
@@ -343,9 +351,9 @@ func (w *Watcher) tick(ctx context.Context) {
 		}
 		log.Printf("[mergequeue] PR #%d BLOCKED but no required check has conclusively failed — staying watching silently", head.PR)
 
-	case "DIRTY", "UNKNOWN", "HAS_HOOKS", "DRAFT":
+	case "UNKNOWN", "HAS_HOOKS", "DRAFT":
 		// None of these are coordinator-actionable terminal events
-		// mid-poll. DIRTY may resolve when the worker rebases; UNKNOWN is a
+		// mid-poll. DIRTY is handled earlier as a terminal conflict; UNKNOWN is a
 		// transient GitHub side effect; DRAFT and HAS_HOOKS are the
 		// worker's responsibility, not prism's. Keep polling silently — the
 		// initial-invocation message told the coordinator what to expect.
@@ -367,6 +375,18 @@ func (w *Watcher) notifyClosedNotMerged(ctx context.Context, head *db.PendingMer
 		log.Printf("[mergequeue] TerminateMerge(closed) PR #%d: %v", head.PR, err)
 	}
 	text := fmt.Sprintf("PR #%d closed without merge. Please clean up the branch and worktree.", head.PR)
+	log.Printf("[mergequeue] %s", text)
+	w.notify(ctx, head.SessionName, head.InstanceID, text)
+}
+
+// notifyConflicting ends the head row (status='failed') and notifies the
+// coordinator once. The terminal row is no longer the head, so the next
+// poll moves on to the next PR and the notification is not repeated.
+func (w *Watcher) notifyConflicting(ctx context.Context, head *db.PendingMerge) {
+	if err := w.db.TerminateMerge(head.PR, head.Repo, "failed", "merge conflict"); err != nil {
+		log.Printf("[mergequeue] TerminateMerge(conflict) PR #%d: %v", head.PR, err)
+	}
+	text := fmt.Sprintf("PR #%d has conflicts. Worker needs to rebase.", head.PR)
 	log.Printf("[mergequeue] %s", text)
 	w.notify(ctx, head.SessionName, head.InstanceID, text)
 }
@@ -830,7 +850,7 @@ func buildNotifyBody(text string, status *db.Status) map[string]any {
 //
 // `mergedBy` lets the external-merge notification name the human (or bot) who
 // clicked Squash-and-merge before the watcher's mutation.
-const prInfoJSONFields = "state,mergedAt,mergedBy,mergeStateStatus,statusCheckRollup,reviewDecision"
+const prInfoJSONFields = "state,mergedAt,mergedBy,mergeStateStatus,mergeable,statusCheckRollup,reviewDecision"
 
 // userRef is the shape `gh pr view --json mergedBy` returns: an object with a
 // `login` field. Null in JSON unmarshals to a nil *userRef.
@@ -847,6 +867,7 @@ type prInfo struct {
 	// the external-merge notification path.
 	MergedBy          *userRef     `json:"mergedBy"`
 	MergeStateStatus  string       `json:"mergeStateStatus"`
+	Mergeable         string       `json:"mergeable"`
 	StatusCheckRollup []checkEntry `json:"statusCheckRollup"`
 	// ReviewDecision is the PR's review decision from GitHub: "REVIEW_REQUIRED",
 	// "APPROVED", "CHANGES_REQUESTED", or "" (empty when no review policy exists).

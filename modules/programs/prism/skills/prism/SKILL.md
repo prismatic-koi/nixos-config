@@ -740,6 +740,7 @@ One CI outcome is terminal (issue #2525). When `mergeStateStatus` is `BLOCKED`, 
 | Out-of-band merge (merger unknown) | `PR #N merged out-of-band. Please clean up the branch and worktree.` |
 | PR closed without merging (mid-poll) | `PR #N closed without merge. Please clean up the branch and worktree.` |
 | BLOCKED, required check concluded in failure | `PR #N CI failed: <check names>. Worker needs to fix and push. No merge will happen until then.` |
+| PR became DIRTY or CONFLICTING while queued (mid-poll) | `PR #N has conflicts. Worker needs to rebase.` |
 | Genuine `gh pr merge` failure (rare fallback) | `PR #N merge failed: <error>` |
 | Coordinator session ended while watching | Row transitions to `abandoned` — surfaces via `prism merges list --abandoned` only; no live notification. |
 
@@ -757,6 +758,7 @@ When a merge-queue notification arrives, treat it as high-priority (same as a wo
 | `PR #N merged out-of-band. ...` | `git pull` in @main, then `prism cleanup --yes --session <worker-session>`. Prism did NOT perform the merge, but the branch/worktree are still yours to clean up. |
 | `PR #N closed without merge. ...` | `prism cleanup --yes --session <worker-session>`. Usually nothing else — the PR was closed deliberately. Investigate if unexpected. |
 | `PR #N CI failed: <check names>. ...` | Do NOT clean up — the branch is still needed. `prism prompt <worker-session>` with the failed check names so the worker fixes and pushes. Re-run `prism merge <pr>` after the fix lands; the row is terminal, so it does not resume on its own. |
+| `PR #N has conflicts. Worker needs to rebase.` (mid-poll) | Do NOT clean up. `prism prompt <worker-session>` to rebase and push, then `prism merge <pr>` again; the row is terminal and the queue has moved on. |
 | `PR #N merge failed: <error>` | Read the error, decide whether to retry (`prism merge <pr>`) or escalate to the user. |
 | `abandoned` (via `--abandoned` listing) | A new coordinator decides whether to re-enqueue with `prism merge <pr>`. |
 

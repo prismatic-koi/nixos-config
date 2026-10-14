@@ -332,7 +332,7 @@ Once the sense-check passes, enqueue the PR in the merge queue and continue with
 2. Read the initial-state message and follow its guidance:
    - **`PR #N already merged. Please clean up the branch and worktree.`** — `git pull` in @main, then `prism cleanup --yes --session <worker-session>`. No poller runs.
    - **`PR #N closed without merge. No action required from you; a human closed this. Please clean up the branch and worktree.`** — `prism cleanup --yes --session <worker-session>`. No poller runs.
-   - **`PR #N has conflicts. Worker needs to rebase.`** — `prism prompt <worker-session>` to rebase and push, then `prism merge <number>` again.
+   - **`PR #N has conflicts. Worker needs to rebase.`** — `prism prompt <worker-session>` to rebase and push, then `prism merge <number>` again. This also arrives mid-poll when a queued PR becomes conflicting (issue #3131); the row is terminal and the queue moves on.
    - **`PR #N ready. Merging now.`** / **`... waiting on N check(s) ...`** / **`... requires human approval ...`** / **`... has no branch protection configured ...`** — the watcher is now polling; continue with other work. Do NOT request reviewers, do NOT add approvers, do NOT try to be helpful — the initial message says "just wait" and it means it.
    - **`PR #N's branch is behind <base> (mergeStateStatus=BEHIND). ... do not run \`gh pr update-branch\` yourself ...`** — the watcher already syncs the branch itself, just-in-time, when the PR reaches the head of the queue (issue #2654). Do NOT run `gh pr update-branch` against this PR; continue with other work.
 3. When the poll-time notification arrives via the bus, action it as a high-priority todo:
