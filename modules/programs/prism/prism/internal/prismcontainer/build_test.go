@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -23,10 +24,36 @@ import (
 // noMachineMounts is a podman machine config file with no mounts.
 func noMachineMounts(string) ([]byte, error) { return []byte(`{"Mounts":[]}`), nil }
 
+// buildDeps returns the deps of a macOS build: the anchor executor, with
+// the fake for the anchor and for the build client. The anchor image is in
+// the fake, so the build pulls nothing.
 func buildDeps(f *prismcontainertest.Fake) prismcontainer.Deps {
 	d := deps(f)
-	d.BuildExecutor = prismcontainer.PlainExecutor{Runner: f, ReadFile: noMachineMounts}
+	d.BuildExecutor = anchorExecutor(f)
 	return d
+}
+
+func anchorExecutor(f *prismcontainertest.Fake) prismcontainer.AnchorExecutor {
+	f.AddImage(prismcontainertest.Image{Names: []string{prismcontainer.AnchorImage}})
+	return prismcontainer.AnchorExecutor{Runner: f, Client: f, ReadFile: noMachineMounts}
+}
+
+// isAnchorRun reports whether a podman argument vector starts an anchor.
+func isAnchorRun(args []string) bool {
+	return len(args) > 0 && args[0] == "run" && slices.ContainsFunc(optionValue(args, "--label"), func(l string) bool {
+		return strings.HasPrefix(l, prismcontainer.LabelBuild+"=")
+	})
+}
+
+// anchors returns the anchor containers that the fake holds.
+func anchors(f *prismcontainertest.Fake) []prismcontainertest.Container {
+	var out []prismcontainertest.Container
+	for _, c := range f.Containers() {
+		if c.Labels[prismcontainer.LabelBuild] != "" {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func writeFile(t *testing.T, dir, rel, content string) {
@@ -154,7 +181,12 @@ func TestBuild_ImageWorksWithRun(t *testing.T) {
 			t.Errorf("run pulled the built image: %q", call)
 		}
 	}
-	runs := f.RunCalls()
+	var runs [][]string
+	for _, r := range f.RunCalls() {
+		if !isAnchorRun(r) {
+			runs = append(runs, r)
+		}
+	}
 	if len(runs) != 1 || !slices.Contains(runs[0], built.Image) {
 		t.Errorf("run argv %q does not name the built image %s", runs, built.Image)
 	}
@@ -248,8 +280,10 @@ func TestBuild_FailurePrintsOutput(t *testing.T) {
 	if !strings.Contains(stderr.String(), "exit status 1") || !strings.Contains(stderr.String(), "the build failed") {
 		t.Errorf("stderr = %q, want the build output and the failure", stderr.String())
 	}
-	if imgs := f.Images(); len(imgs) != 0 {
-		t.Errorf("a failed build left images: %v", imgs)
+	for _, img := range f.Images() {
+		if img.Labels[prismcontainer.LabelInstanceID] != "" {
+			t.Errorf("a failed build left an image: %v", img)
+		}
 	}
 }
 
@@ -386,7 +420,7 @@ func TestBuild_ContextSwappedToSymlinkDuringCopy(t *testing.T) {
 	}}
 	d := buildDeps(f)
 	d.Runner = swapper
-	d.BuildExecutor = prismcontainer.PlainExecutor{Runner: swapper, ReadFile: noMachineMounts}
+	d.BuildExecutor = prismcontainer.AnchorExecutor{Runner: swapper, Client: swapper, ReadFile: noMachineMounts}
 
 	res := prismcontainer.Build(context.Background(), d, c, prismcontainer.BuildRequest{Context: "app", File: "Containerfile"})
 	if !swapped {
@@ -503,7 +537,15 @@ func TestBuild_ArgvFixedOptions(t *testing.T) {
 				"--security-opt": "no-new-privileges",
 				"--label":        prismcontainer.LabelInstanceID + "=" + testInstanceID,
 				"--layer-label":  prismcontainer.LabelInstanceID + "=" + testInstanceID,
-				"--ulimit":       "nproc=1024:1024",
+			}
+			// The process limit is the pids limit of the anchor scope, which
+			// counts this build only. RLIMIT_NPROC counts every process of
+			// the user in the VM, so a build must not set it.
+			if got := optionValue(args, "--ulimit"); len(got) != 0 {
+				t.Errorf("--ulimit = %q, want none", got)
+			}
+			if got := optionValue(args, "--cgroup-parent"); len(got) != 1 || !strings.HasSuffix(got[0], ".scope/build") {
+				t.Errorf("--cgroup-parent = %q, want one path in the anchor scope", got)
 			}
 			for flag, val := range want {
 				if got := optionValue(args, flag); !slices.Equal(got, []string{val}) {
@@ -842,8 +884,9 @@ func TestBuild_MachineMountsRefused(t *testing.T) {
 	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\n")
 	f := &prismcontainertest.Fake{}
 	d := deps(f)
-	d.BuildExecutor = prismcontainer.PlainExecutor{
+	d.BuildExecutor = prismcontainer.AnchorExecutor{
 		Runner:         f,
+		Client:         f,
 		MountAllowlist: []string{"/Users/u/code"},
 		ReadFile: func(string) ([]byte, error) {
 			return []byte(`{"Mounts":[{"Source":"/Users","Target":"/Users"},{"Source":"/Users/u/code","Target":"/Users/u/code"}]}`), nil
@@ -877,5 +920,434 @@ func TestBuild_PreflightRefusal(t *testing.T) {
 	}
 	if len(f.BuildCalls()) != 0 {
 		t.Errorf("podman build ran")
+	}
+}
+
+// TestBuild_AnchorLifecycle: a macOS build starts a labelled anchor, puts
+// the build steps in the scope of the anchor, and removes the anchor after
+// the build.
+func TestBuild_AnchorLifecycle(t *testing.T) {
+	c := newCaller(t)
+	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\n")
+	f := &prismcontainertest.Fake{}
+	var during []prismcontainertest.Container
+	f.OnBuild = func(context.Context, io.Writer, []string) (int, error) {
+		during = anchors(f)
+		return 0, nil
+	}
+	res := prismcontainer.Build(context.Background(), buildDeps(f), c, prismcontainer.BuildRequest{TimeoutSeconds: 600})
+	if res.ExitCode != 0 || res.Message != "" || res.Image == "" {
+		t.Fatalf("result = %+v, want a build that succeeds", res)
+	}
+	if len(during) != 1 {
+		t.Fatalf("anchors during the build = %+v, want one", during)
+	}
+	a := during[0]
+	unit := a.Labels[prismcontainer.LabelBuild]
+	if !strings.HasPrefix(unit, "prism-build-"+container.InstanceTokenForID(testInstanceID)+"-") || a.Name != unit ||
+		a.Labels[prismcontainer.LabelInstanceID] != testInstanceID || a.Image != prismcontainer.AnchorImage {
+		t.Errorf("anchor = %+v, want the unit name, the instance label, and the anchor image", a)
+	}
+	if got := optionValue(f.BuildCalls()[0], "--cgroup-parent"); !slices.Equal(got, []string{prismcontainertest.FakeCgroup(a.ID) + "/build"}) {
+		t.Errorf("--cgroup-parent = %q, want the scope of the anchor plus /build", got)
+	}
+	var order []string
+	for _, call := range f.Calls() {
+		switch {
+		case isAnchorRun(call):
+			order = append(order, "anchor")
+			if got := optionValue(call, "--timeout"); !slices.Equal(got, []string{"660"}) && !slices.Equal(got, []string{"659"}) {
+				t.Errorf("anchor --timeout = %q, want the request timeout plus 60 seconds", got)
+			}
+		case call[0] == "inspect" || call[0] == "build":
+			order = append(order, call[0])
+		case call[0] == "rm" && slices.Contains(call, unit):
+			order = append(order, "rm")
+		}
+	}
+	if want := []string{"anchor", "inspect", "build", "rm"}; !slices.Equal(order, want) {
+		t.Errorf("podman calls = %q, want %q", order, want)
+	}
+	if left := anchors(f); len(left) != 0 {
+		t.Errorf("anchor left after the build: %+v", left)
+	}
+}
+
+// TestBuild_AnchorTimeoutStopsClientFirst: at the timeout, prism stops the
+// build client while the anchor still holds its scope, and then removes
+// the anchor. If the anchor goes first, the VM can start the next RUN step
+// outside every scope.
+func TestBuild_AnchorTimeoutStopsClientFirst(t *testing.T) {
+	c := newCaller(t)
+	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\nRUN sleep infinity\n")
+	f := &prismcontainertest.Fake{}
+	anchorsAtStop := -1
+	f.OnBuild = func(ctx context.Context, _ io.Writer, _ []string) (int, error) {
+		<-ctx.Done()
+		// The client takes time to stop. The anchor must stay until then.
+		time.Sleep(200 * time.Millisecond)
+		anchorsAtStop = len(anchors(f))
+		return -1, ctx.Err()
+	}
+	res := prismcontainer.Build(context.Background(), buildDeps(f), c, prismcontainer.BuildRequest{TimeoutSeconds: 1})
+	if res.ExitCode != prismcontainer.ExitTimeout || res.Message != "the --timeout of 1s expired, so prism stopped the build" {
+		t.Errorf("result = %+v, want the timeout result", res)
+	}
+	if anchorsAtStop != 1 {
+		t.Errorf("anchors when the client stopped = %d, want 1", anchorsAtStop)
+	}
+	if left := anchors(f); len(left) != 0 {
+		t.Errorf("anchor left after the timeout: %+v", left)
+	}
+}
+
+// TestBuild_AnchorStoppedByCleanup: the cleanup sweep pauses the anchor.
+// The build process sees the pause, stops its client while the anchor
+// still holds its scope, and removes the anchor.
+func TestBuild_AnchorStoppedByCleanup(t *testing.T) {
+	c := newCaller(t)
+	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\nRUN sleep infinity\n")
+	f := &prismcontainertest.Fake{}
+	exe := anchorExecutor(f)
+	d := deps(f)
+	d.BuildExecutor = exe
+	started := make(chan struct{})
+	var atStop []prismcontainertest.Container
+	f.OnBuild = func(ctx context.Context, _ io.Writer, _ []string) (int, error) {
+		close(started)
+		<-ctx.Done()
+		// The client takes time to stop. The anchor must stay until then.
+		time.Sleep(200 * time.Millisecond)
+		atStop = anchors(f)
+		return -1, ctx.Err()
+	}
+	done := make(chan prismcontainer.BuildResult, 1)
+	go func() {
+		done <- prismcontainer.Build(context.Background(), d, c, prismcontainer.BuildRequest{TimeoutSeconds: 600})
+	}()
+	<-started
+
+	start := time.Now()
+	if err := prismcontainer.SweepSession(context.Background(), f, exe, []string{testInstanceID}); err != nil {
+		t.Fatalf("SweepSession: %v", err)
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Errorf("the sweep took %s; it must not wait for the grace time while the build process removes its anchor", took)
+	}
+	var res prismcontainer.BuildResult
+	select {
+	case res = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the build did not end after the sweep")
+	}
+	if res.ExitCode != prismcontainer.ExitRefused || !strings.HasPrefix(res.Message, "podman build did not complete: the anchor container of the build stopped running") {
+		t.Errorf("result = %+v, want a build that the paused anchor stopped", res)
+	}
+	if len(atStop) != 1 || atStop[0].State != "paused" {
+		t.Errorf("anchors when the client stopped = %+v, want the paused anchor", atStop)
+	}
+	if left := anchors(f); len(left) != 0 {
+		t.Errorf("anchor left after the sweep: %+v", left)
+	}
+	lockDir, _ := container.PrismContainerBuildLockDirPath()
+	if left, _ := os.ReadDir(lockDir); len(left) != 0 {
+		t.Errorf("build marker left: %v", left)
+	}
+}
+
+// orphanAnchor puts an anchor of the session into f with no build marker,
+// as the anchor of a build whose prism process died.
+func orphanAnchor(f *prismcontainertest.Fake) string {
+	unit := "prism-build-" + container.InstanceTokenForID(testInstanceID) + "-0000beef"
+	f.Add(prismcontainertest.Container{Name: unit, State: "running", Image: prismcontainer.AnchorImage,
+		Labels: map[string]string{prismcontainer.LabelInstanceID: testInstanceID, prismcontainer.LabelBuild: unit}})
+	return unit
+}
+
+// TestAnchorExecutor_StopBuildsDeadBuild: an anchor whose build has no
+// prism process is removed at once. Its client died with that process.
+func TestAnchorExecutor_StopBuildsDeadBuild(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	f := &prismcontainertest.Fake{}
+	unit := orphanAnchor(f)
+	const otherID = "11111111-2222-4333-8444-555555555555"
+	otherUnit := "prism-build-" + container.InstanceTokenForID(otherID) + "-00000001"
+	f.Add(prismcontainertest.Container{Name: otherUnit, State: "running",
+		Labels: map[string]string{prismcontainer.LabelInstanceID: otherID, prismcontainer.LabelBuild: otherUnit}})
+	start := time.Now()
+	n, err := anchorExecutor(f).StopBuilds(context.Background(), "prism-build-"+container.InstanceTokenForID(testInstanceID)+"-")
+	if n != 1 || err != nil {
+		t.Fatalf("StopBuilds = %d, %v; want 1, nil", n, err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("StopBuilds took %s for a build with no prism process", took)
+	}
+	if left := anchors(f); len(left) != 1 || left[0].Name != otherUnit {
+		t.Errorf("anchors left = %+v, want only the anchor of the other session", left)
+	}
+	var order []string
+	for _, call := range f.Calls() {
+		if (call[0] == "pause" || call[0] == "rm") && len(order) < 2 {
+			order = append(order, call[0])
+		}
+	}
+	if !slices.Equal(order, []string{"pause", "rm"}) {
+		t.Errorf("podman calls = %q, want pause, then rm of %s", f.Calls(), unit)
+	}
+}
+
+// forgedAnchorLabel returns a prism.build label that an agent can put on
+// an image with LABEL. Its suffix goes out of the build lock dir to the
+// path dir/p.
+func forgedAnchorLabel(dir string) string {
+	return "prism-build-" + container.InstanceTokenForID(testInstanceID) + "-x/" + strings.Repeat("../", 40) + strings.TrimPrefix(dir, "/") + "/p"
+}
+
+// TestAnchorExecutor_StopBuildsIgnoresForgedLabel: a service container
+// whose image has a prism.build label is not an anchor. StopBuilds does
+// not pause it, does not remove it, and does not open the path in its
+// label. The agent can put a FIFO there, and an open of the FIFO waits for
+// a writer.
+func TestAnchorExecutor_StopBuildsIgnoresForgedLabel(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := prismcontainertest.RealTempDir(t)
+	fifo := filepath.Join(dir, "p"+".lock")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			_ = w.Close()
+		}
+	})
+	f := &prismcontainertest.Fake{}
+	forged := "prism-" + container.InstanceTokenForID(testInstanceID) + "-prism-test-01020304"
+	f.Add(prismcontainertest.Container{Name: forged, State: "running", Labels: map[string]string{
+		prismcontainer.LabelInstanceID: testInstanceID, prismcontainer.LabelService: "01020304", prismcontainer.LabelBuild: forgedAnchorLabel(dir)}})
+
+	done := make(chan error, 1)
+	go func() {
+		n, err := anchorExecutor(f).StopBuilds(context.Background(), "prism-build-"+container.InstanceTokenForID(testInstanceID)+"-")
+		if err == nil && n != 0 {
+			err = fmt.Errorf("StopBuilds stopped %d builds, want 0", n)
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopBuilds did not return: it opened the FIFO that the forged label names")
+	}
+	if cs := f.Containers(); len(cs) != 1 || cs[0].State != "running" {
+		t.Errorf("containers = %+v, want the service container, still running", cs)
+	}
+	for _, call := range f.Calls() {
+		if call[0] == "pause" || call[0] == "rm" {
+			t.Errorf("StopBuilds ran podman %q on a container that is not an anchor", call)
+		}
+	}
+}
+
+// TestBuild_ForgedAnchorLabelCounts: a service container with the
+// prism.build label of a running build still counts toward the limits. A
+// forged label cannot merge it into the count of the build.
+func TestBuild_ForgedAnchorLabelCounts(t *testing.T) {
+	c := newCaller(t)
+	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\n")
+	f := &prismcontainertest.Fake{ImagePresent: true}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	f.OnBuild = func(context.Context, io.Writer, []string) (int, error) {
+		close(started)
+		<-release
+		return 0, nil
+	}
+	done := make(chan prismcontainer.BuildResult, 1)
+	go func() {
+		done <- prismcontainer.Build(context.Background(), buildDeps(f), c, prismcontainer.BuildRequest{})
+	}()
+	<-started
+	live := anchors(f)
+	if len(live) != 1 {
+		t.Fatalf("anchors during the build = %+v, want one", live)
+	}
+	f.Add(prismcontainertest.Container{Name: "prism-" + container.InstanceTokenForID(testInstanceID) + "-prism-test-01020304", State: "running",
+		Labels: map[string]string{prismcontainer.LabelInstanceID: testInstanceID, prismcontainer.LabelService: "01020304",
+			prismcontainer.LabelBuild: live[0].Labels[prismcontainer.LabelBuild]}})
+	d := deps(f)
+	d.HostLimit = 2
+	if res := prismcontainer.Run(context.Background(), d, secondSession(c), prismcontainer.RunRequest{Image: "alpine"}); res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, "host-wide limit is 2") {
+		t.Errorf("run of another session with a build and a service container at host limit 2 = %+v, want the host-wide refusal", res)
+	}
+	close(release)
+	<-done
+}
+
+// blockingClient is a build client that ignores its context until release
+// closes, as a build process that does not react to the pause.
+type blockingClient struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b blockingClient) Run(context.Context, io.Writer, io.Writer, ...string) (int, error) {
+	close(b.started)
+	<-b.release
+	return 1, nil
+}
+
+// TestAnchorExecutor_StopBuildsGraceTime: when a live build process does
+// not remove its paused anchor, StopBuilds removes it after the grace time.
+func TestAnchorExecutor_StopBuildsGraceTime(t *testing.T) {
+	c := newCaller(t)
+	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\n")
+	f := &prismcontainertest.Fake{}
+	exe := anchorExecutor(f)
+	client := blockingClient{started: make(chan struct{}), release: make(chan struct{})}
+	exe.Client = client
+	d := deps(f)
+	d.BuildExecutor = exe
+	done := make(chan prismcontainer.BuildResult, 1)
+	go func() {
+		done <- prismcontainer.Build(context.Background(), d, c, prismcontainer.BuildRequest{TimeoutSeconds: 600})
+	}()
+	<-client.started
+
+	exe.StopGrace = 300 * time.Millisecond
+	n, err := exe.StopBuilds(context.Background(), "prism-build-"+container.InstanceTokenForID(testInstanceID)+"-")
+	if n != 1 || err != nil {
+		t.Errorf("StopBuilds = %d, %v; want 1, nil", n, err)
+	}
+	if left := anchors(f); len(left) != 0 {
+		t.Errorf("anchor left after the grace time: %+v", left)
+	}
+	close(client.release)
+	<-done
+}
+
+// TestBuild_AnchorStartFailures: when prism cannot start a usable anchor,
+// podman build does not run, and no anchor stays.
+func TestBuild_AnchorStartFailures(t *testing.T) {
+	hexID := strings.Repeat("a", 64)
+	cases := map[string]struct {
+		setup func(f *prismcontainertest.Fake)
+		want  string
+	}{
+		"pull fails": {
+			func(f *prismcontainertest.Fake) { f.PullCode, f.PullStderr = 125, "denied" },
+			"podman build did not start: the pull of the anchor image " + prismcontainer.AnchorImage + " failed (exit 125): denied",
+		},
+		"shared cgroup": {
+			func(f *prismcontainertest.Fake) {
+				f.AddImage(prismcontainertest.Image{Names: []string{prismcontainer.AnchorImage}})
+				f.Inspect = hexID + " running /user.slice/user-501.slice/user@501.service/user.slice"
+			},
+			"podman build did not start: the anchor container has no cgroup of its own",
+		},
+		"dot dot in the cgroup": {
+			func(f *prismcontainertest.Fake) {
+				f.AddImage(prismcontainertest.Image{Names: []string{prismcontainer.AnchorImage}})
+				f.Inspect = hexID + " running /user.slice/libpod-" + hexID + ".scope/../x"
+			},
+			"podman build did not start: the anchor container has no cgroup of its own",
+		},
+		"anchor not running": {
+			func(f *prismcontainertest.Fake) {
+				f.AddImage(prismcontainertest.Image{Names: []string{prismcontainer.AnchorImage}})
+				f.Inspect = hexID + " exited /user.slice/libpod-" + hexID + ".scope"
+			},
+			"podman build did not start: the anchor container has no cgroup of its own",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := newCaller(t)
+			writeFile(t, c.Worktree, "Containerfile", "FROM alpine\n")
+			f := &prismcontainertest.Fake{}
+			tc.setup(f)
+			d := deps(f)
+			d.BuildExecutor = prismcontainer.AnchorExecutor{Runner: f, Client: f, ReadFile: noMachineMounts}
+			res := prismcontainer.Build(context.Background(), d, c, prismcontainer.BuildRequest{})
+			if res.ExitCode != prismcontainer.ExitRefused || !strings.HasPrefix(res.Message, tc.want) {
+				t.Errorf("result = %+v, want a message that starts with %q", res, tc.want)
+			}
+			if len(f.BuildCalls()) != 0 {
+				t.Errorf("podman build ran")
+			}
+			if left := anchors(f); len(left) != 0 {
+				t.Errorf("anchor left: %+v", left)
+			}
+		})
+	}
+}
+
+// TestBuild_AnchorCountsOnce: the build marker and the anchor of a running
+// build count as one build toward the host-wide limit.
+func TestBuild_AnchorCountsOnce(t *testing.T) {
+	c := newCaller(t)
+	writeFile(t, c.Worktree, "Containerfile", "FROM alpine\n")
+	f := &prismcontainertest.Fake{ImagePresent: true}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	f.OnBuild = func(context.Context, io.Writer, []string) (int, error) {
+		close(started)
+		<-release
+		return 0, nil
+	}
+	done := make(chan prismcontainer.BuildResult, 1)
+	go func() {
+		done <- prismcontainer.Build(context.Background(), buildDeps(f), c, prismcontainer.BuildRequest{})
+	}()
+	<-started
+	if len(anchors(f)) != 1 {
+		t.Fatalf("anchors during the build = %+v, want one", anchors(f))
+	}
+	other := secondSession(c)
+	d := deps(f)
+	d.HostLimit = 2
+	if res := prismcontainer.Run(context.Background(), d, other, prismcontainer.RunRequest{Image: "alpine"}); res.ExitCode != 0 {
+		t.Errorf("run of another session at host limit 2 during one build = %+v, want it to pass", res)
+	}
+	close(release)
+	if res := <-done; res.ExitCode != 0 {
+		t.Fatalf("build: %+v", res)
+	}
+}
+
+func secondSession(c prismcontainer.Caller) prismcontainer.Caller {
+	other := c
+	other.SessionName = "prism-test@other"
+	other.InstanceID = "22222222-3333-4444-8555-666666666666"
+	return other
+}
+
+// TestBuild_OrphanAnchorCounts: the anchor of a build whose prism process
+// died still counts toward both limits, because a build step can run in
+// its scope until the anchor stops.
+func TestBuild_OrphanAnchorCounts(t *testing.T) {
+	c := newCaller(t)
+	f := &prismcontainertest.Fake{ImagePresent: true}
+	orphanAnchor(f)
+	if res := prismcontainer.Run(context.Background(), deps(f), c, prismcontainer.RunRequest{Image: "alpine"}); res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, "per-session limit is 1") {
+		t.Errorf("run of the session = %+v, want the per-session refusal", res)
+	}
+	d := deps(f)
+	d.HostLimit = 1
+	if res := prismcontainer.Run(context.Background(), d, secondSession(c), prismcontainer.RunRequest{Image: "alpine"}); res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, "host-wide limit is 1") {
+		t.Errorf("run of another session at host limit 1 = %+v, want the host-wide refusal", res)
+	}
+}
+
+// TestList_AnchorKind: prism container list shows an anchor as a build.
+func TestList_AnchorKind(t *testing.T) {
+	c := newCaller(t)
+	f := &prismcontainertest.Fake{}
+	unit := orphanAnchor(f)
+	res := prismcontainer.List(context.Background(), deps(f), c)
+	if res.ExitCode != 0 || len(res.Containers) != 1 || res.Containers[0].Kind != prismcontainer.KindBuild || res.Containers[0].Handle != unit {
+		t.Errorf("list = %+v, want the anchor as kind build", res)
 	}
 }

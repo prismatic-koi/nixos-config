@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -264,8 +266,12 @@ func TestScopeExecutor_StopBuilds(t *testing.T) {
 // TestScopeScript runs the scope script with the cgroup paths moved into a
 // temp dir and a fake command. The script moves itself into a leaf cgroup,
 // puts the cgroup path of the build in place of cgroupToken, and runs its
-// arguments unchanged otherwise.
+// arguments unchanged otherwise. The script reads /proc/self/stat, and
+// only a Linux build runs it.
 func TestScopeScript(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the scope script reads /proc, and only a Linux build runs it")
+	}
 	dir := t.TempDir()
 	cgRoot := filepath.Join(dir, "cgroup")
 	scope := "/user.slice/user-1000.slice/user@1000.service/app.slice/prism-build-x.scope"
@@ -519,33 +525,172 @@ func containsSeq(s, seq []string) bool {
 	return false
 }
 
-func TestPlainExecutor_AddsNprocLimit(t *testing.T) {
-	r := &recordRunner{}
-	if _, err := (PlainExecutor{Runner: r}).Build(context.Background(), "u", &bytes.Buffer{}, []string{"build", "--file", "/f", "/ctx"}); err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"build", "--ulimit", "nproc=1024:1024", "--file", "/f", "/ctx"}; !slices.Equal(r.args, want) {
-		t.Errorf("podman args = %q, want %q", r.args, want)
-	}
-	if n, err := (PlainExecutor{Runner: r}).StopBuilds(context.Background(), "x"); n != 0 || err != nil {
-		t.Errorf("StopBuilds = %d, %v", n, err)
-	}
-}
-
-type recordRunner struct{ args []string }
-
-func (r *recordRunner) Run(_ context.Context, _, _ io.Writer, args ...string) (int, error) {
-	r.args = args
-	return 0, nil
-}
-
 func TestDefaultBuildExecutor(t *testing.T) {
 	if _, ok := DefaultBuildExecutor("linux", nil, nil).(ScopeExecutor); !ok {
 		t.Errorf("linux executor is not ScopeExecutor")
 	}
-	if _, ok := DefaultBuildExecutor("darwin", nil, nil).(PlainExecutor); !ok {
-		t.Errorf("darwin executor is not PlainExecutor")
+	if _, ok := DefaultBuildExecutor("darwin", nil, nil).(AnchorExecutor); !ok {
+		t.Errorf("darwin executor is not AnchorExecutor")
 	}
+}
+
+// TestAnchorRunArgs: the anchor has the fixed limits of a run, the labels
+// that the limits and the sweep read, and a podman timeout. Its options
+// take no agent input.
+func TestAnchorRunArgs(t *testing.T) {
+	const id = "0f0e0d0c-0b0a-4908-8706-050403020100"
+	unit := buildUnitPrefix(id) + "00000001"
+	got := anchorRunArgs(id, unit, 90*time.Second+time.Millisecond)
+	want := []string{
+		"run", "--detach", "--rm",
+		"--name", unit,
+		"--label", "prism.instance-id=" + id,
+		"--label", "prism.build=" + unit,
+		"--memory", "4g", "--memory-swap", "4g", "--cpus", "2", "--pids-limit", "1024",
+		"--security-opt", "no-new-privileges", "--cap-drop", "all", "--read-only",
+		"--network", "none", "--stop-signal", "KILL", "--stop-timeout", "1", "--pull", "never",
+		"--timeout", "91",
+		AnchorImage,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("anchor args = %q, want %q", got, want)
+	}
+	if !strings.Contains(AnchorImage, "@sha256:") {
+		t.Errorf("AnchorImage %q is not pinned by digest", AnchorImage)
+	}
+}
+
+// TestAnchorTimeout: the anchor stops at the request deadline plus the
+// grace time. It is never 0, which podman reads as no timeout.
+func TestAnchorTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	if got := anchorTimeout(ctx); got < 30*time.Minute+59*time.Second || got > 31*time.Minute {
+		t.Errorf("anchorTimeout = %s, want 31m", got)
+	}
+	if got := anchorTimeout(context.Background()); got != MaxTimeout+conmonTimeoutGrace {
+		t.Errorf("anchorTimeout with no deadline = %s, want %s", got, MaxTimeout+conmonTimeoutGrace)
+	}
+	past, cancelPast := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancelPast()
+	if got := anchorTimeout(past); got != time.Second {
+		t.Errorf("anchorTimeout after the deadline = %s, want 1s", got)
+	}
+}
+
+func TestGuardedClient_ExitCodeAndOutput(t *testing.T) {
+	var out bytes.Buffer
+	code, err := GuardedClient{Podman: "/bin/sh"}.Run(context.Background(), &out, &out, "-c", `printf '%s|' "$@"; exit 3`, "sh", "a b", "$(id)")
+	if code != 3 || err != nil || out.String() != "a b|$(id)|" {
+		t.Errorf("Run = %d, %v, output %q; want 3, nil, and the arguments unchanged", code, err, out.String())
+	}
+}
+
+// pidAlive reports whether pid runs. A zombie counts as gone: the guard
+// reaps its client, so a zombie client is a dead one. When the state
+// cannot be read, the process counts as alive, so that the test fails and
+// does not pass with no check.
+func pidAlive(pid int) bool {
+	if syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	if data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat"); err == nil {
+		// The state is the first field after the command name in ().
+		if i := bytes.LastIndexByte(data, ')'); i >= 0 && i+2 < len(data) {
+			return data[i+2] != 'Z'
+		}
+	}
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	return err != nil || !strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
+}
+
+// waitPIDFile returns the PID that a client script writes to path.
+func waitPIDFile(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil && strings.HasSuffix(string(data), "\n") {
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err == nil {
+				return pid
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("the client did not write its PID to %s", path)
+	return 0
+}
+
+func waitGone(t *testing.T, pid int, what string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for pidAlive(pid) {
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("%s: the client (pid %d) still runs", what, pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// sleepingClient writes a client script that writes its PID to pidFile and
+// then sleeps as the same process.
+func sleepingClient(t *testing.T, pidFile string) string {
+	t.Helper()
+	return writeScript(t, t.TempDir(), "podman", `echo $$ > "`+pidFile+`"`+"\nexec sleep 300\n")
+}
+
+// TestGuardedClient_CancelKillsClient: when ctx ends, the guard kills the
+// client and returns the context error.
+func TestGuardedClient_CancelKillsClient(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := GuardedClient{Podman: sleepingClient(t, pidFile)}.Run(ctx, io.Discard, io.Discard, "build")
+		done <- err
+	}()
+	pid := waitPIDFile(t, pidFile)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Run = %v, want the context error", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after the cancel")
+	}
+	waitGone(t, pid, "after the cancel")
+}
+
+// TestGuardedClient_PrismDeathKillsClient: when the process that runs the
+// guard dies by SIGKILL, the guard kills the client. A helper process runs
+// the guard, and the test kills the helper.
+func TestGuardedClient_PrismDeathKillsClient(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	helper := exec.Command(os.Args[0], "-test.run=^TestGuardedClientHelperProcess$")
+	helper.Env = append(os.Environ(), "PRISM_GUARD_HELPER_CLIENT="+sleepingClient(t, pidFile))
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := waitPIDFile(t, pidFile)
+	if err := helper.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = helper.Wait()
+	waitGone(t, pid, "after a SIGKILL of the process that runs the guard")
+}
+
+// TestGuardedClientHelperProcess is the helper process of
+// TestGuardedClient_PrismDeathKillsClient. It does nothing in a normal
+// test run.
+func TestGuardedClientHelperProcess(t *testing.T) {
+	client := os.Getenv("PRISM_GUARD_HELPER_CLIENT")
+	if client == "" {
+		return
+	}
+	_, _ = GuardedClient{Podman: client}.Run(context.Background(), io.Discard, io.Discard, "build")
+	os.Exit(0)
 }
 
 func TestParseIgnoreSubset(t *testing.T) {
@@ -586,16 +731,16 @@ func TestRunningBuilds_StaleMarkerRemoved(t *testing.T) {
 	if err := os.WriteFile(stale, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ids, err := runningBuilds()
-	if err != nil || !slices.Equal(ids, []string{"0f0e0d0c-0b0a-4908-8706-050403020100"}) {
-		t.Errorf("runningBuilds = %v, %v; want the live build only", ids, err)
+	builds, err := runningBuilds()
+	if err != nil || !slices.Equal(builds, []buildRef{{instanceID: "0f0e0d0c-0b0a-4908-8706-050403020100", suffix: "00000001"}}) {
+		t.Errorf("runningBuilds = %v, %v; want the live build only", builds, err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Errorf("stale marker not removed: %v", err)
 	}
 	live.release()
-	if ids, _ := runningBuilds(); len(ids) != 0 {
-		t.Errorf("runningBuilds after release = %v, want none", ids)
+	if builds, _ := runningBuilds(); len(builds) != 0 {
+		t.Errorf("runningBuilds after release = %v, want none", builds)
 	}
 }
 

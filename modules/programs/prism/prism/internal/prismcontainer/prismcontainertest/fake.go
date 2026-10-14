@@ -1,12 +1,15 @@
 // Package prismcontainertest holds a fake podman for tests of
 // `prism container`. It models the podman CLI calls that prismcontainer
 // makes: ps, image exists, pull, run, exec, logs, rm, container exists,
-// build, images, rmi, machine list, machine inspect, info, and unshare. It is also a prismcontainer.BuildExecutor that runs a build
-// through the same fake podman.
+// inspect, wait, pause, build, images, rmi, machine list, machine inspect,
+// info, and unshare. It is also a prismcontainer.BuildExecutor that runs a
+// build through the same fake podman.
 package prismcontainertest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
 )
@@ -113,6 +117,23 @@ type Fake struct {
 	MachineList    string
 	MachineInspect string
 	Info           string
+	// Inspect, when set, is the output of `podman inspect`. Empty selects
+	// "<ID> <state> <cgroup>", where ID is a hex ID of the container and
+	// cgroup is a systemd scope that holds that ID (FakeCgroup).
+	Inspect string
+}
+
+// FakeHexID returns the hex container ID that `podman inspect` of the fake
+// reports for the container id.
+func FakeHexID(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:])
+}
+
+// FakeCgroup returns the cgroup path that `podman inspect` of the fake
+// reports for the container id.
+func FakeCgroup(id string) string {
+	return "/user.slice/user-501.slice/user@501.service/user.slice/libpod-" + FakeHexID(id) + ".scope"
 }
 
 func orDefault(s, def string) string {
@@ -325,8 +346,69 @@ func (f *Fake) Run(ctx context.Context, stdout, stderr io.Writer, args ...string
 			return 0, nil
 		}
 		return 1, nil
+	case "inspect":
+		c, ok := f.find(args[len(args)-1])
+		if !ok {
+			_, _ = io.WriteString(stderr, "Error: no such container\n")
+			return 125, nil
+		}
+		out := f.Inspect
+		if out == "" {
+			out = FakeHexID(c.ID) + " " + c.State + " " + FakeCgroup(c.ID)
+		}
+		_, _ = io.WriteString(stdout, out+"\n")
+		return 0, nil
+	case "wait":
+		// The fake returns when the container does not run: it is paused,
+		// it exited, or it is gone.
+		for {
+			c, ok := f.find(args[len(args)-1])
+			if !ok {
+				_, _ = io.WriteString(stderr, "Error: no such container\n")
+				return 125, nil
+			}
+			if c.State != "running" {
+				return 0, nil
+			}
+			select {
+			case <-ctx.Done():
+				return -1, ctx.Err()
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	case "pause":
+		if len(args) != 2 || !f.setState(args[1], "paused") {
+			_, _ = io.WriteString(stderr, "Error: no such container\n")
+			return 125, nil
+		}
+		return 0, nil
 	}
 	return 125, fmt.Errorf("fake podman: unexpected call %v", args)
+}
+
+// find returns the container with the ID or the name name.
+func (f *Fake) find(name string) (Container, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.containers {
+		if c.ID == name || c.Name == name {
+			return c, true
+		}
+	}
+	return Container{}, false
+}
+
+// setState sets the state of the container with the ID or the name name.
+func (f *Fake) setState(name, state string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.containers {
+		if f.containers[i].ID == name || f.containers[i].Name == name {
+			f.containers[i].State = state
+			return true
+		}
+	}
+	return false
 }
 
 // SetRmCodes sets RmCode and RmiCode while other goroutines can use the
@@ -391,15 +473,16 @@ func (f *Fake) run(ctx context.Context, stdout, stderr io.Writer, args []string)
 	var cidFile string
 	detach := false
 	f.mu.Lock()
-	// Every option that prism gives takes a value, except --rm and
-	// --detach. The first argument that is not an option is the image.
+	// Every option that prism gives takes a value, except --rm, --detach,
+	// and --read-only. The first argument that is not an option is the
+	// image.
 	for i := 1; i < len(args); i++ {
 		a := args[i]
 		if !strings.HasPrefix(a, "-") {
 			c.Image = a
 			break
 		}
-		if a == "--rm" || a == "--detach" {
+		if a == "--rm" || a == "--detach" || a == "--read-only" {
 			detach = detach || a == "--detach"
 			continue
 		}
