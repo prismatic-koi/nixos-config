@@ -105,6 +105,19 @@ func writeAugmentedPositiveProfileWithLaunchDir(t *testing.T, p preparedProfile,
 	return testProfilePath
 }
 
+// writeProbePositiveProfileWithLaunchDir is writeProbePositiveProfile plus
+// the getcwd ancestor extras for launchDir. It adds no /tmp grant.
+func writeProbePositiveProfileWithLaunchDir(t *testing.T, p preparedProfile, launchDir string) string {
+	t.Helper()
+	augmented := augmentProfileForProbe(p.content) + getcwdAncestorExtras(launchDir)
+	testProfilePath := p.path + ".integ-probe-launch"
+	if err := os.WriteFile(testProfilePath, []byte(augmented), 0o600); err != nil {
+		t.Fatalf("write probe profile: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(testProfilePath) })
+	return testProfilePath
+}
+
 // withMutatedProfileAndLaunchDir is withMutatedProfile plus the getcwd
 // ancestor extras for launchDir. Use it for negative tests whose in-sandbox
 // binary hard-fails on an unresolvable CWD (node, git) AND whose mutation
