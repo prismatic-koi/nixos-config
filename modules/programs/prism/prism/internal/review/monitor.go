@@ -416,7 +416,7 @@ func MonitorFunc(opts MonitorOpts) error {
 	deliverErr := deliverWithRetry(opts.WorkerSession, deliveryText, maxRetries, retryBackoff, dbPath, monitorDeliveryID)
 	if deliverErr != nil {
 		// Delivery failed after all retries — write fallback file.
-		fallbackPath := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", sanitisePRNumber(opts.PRNumber), opts.Round)
+		fallbackPath := fallbackFilePath(opts.PRNumber, opts.Round)
 		proglog.Errorf("[prism monitor-review] delivery failed after %d retries — writing fallback to %s\n", maxRetries, fallbackPath)
 		writeErr := os.WriteFile(fallbackPath, []byte(deliveryText), 0o644)
 		if writeErr != nil {
@@ -1744,7 +1744,7 @@ func ReviewRoundForGroup(members []db.Status) int {
 // when delivery fails. prNumber is sanitised to prevent path traversal.
 // Exported for testing.
 func WriteFallbackResult(prNumber string, round int, content string) (string, error) {
-	path := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", sanitisePRNumber(prNumber), round)
+	path := fallbackFilePath(prNumber, round)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return "", fmt.Errorf("write fallback result: %w", err)
 	}
@@ -1768,8 +1768,13 @@ func LoadMonitorOptsFromFile(path string) (MonitorOpts, error) {
 
 // fallbackFilePath returns the standard fallback result file path.
 // prNumber is sanitised to prevent path traversal.
+//
+// The writers (the monitor and the sidecar recovery) run on the host, so
+// os.TempDir() is the user $TMPDIR under /var/folders. A sandbox-exec
+// session can read that dir (section 2 of its profile) but not /tmp, so a
+// sandboxed coordinator or worker can still read a fallback verdict.
 func fallbackFilePath(prNumber string, round int) string {
-	return filepath.Join("/tmp", fmt.Sprintf("prism-review-%s-round-%d-result.md", sanitisePRNumber(prNumber), round))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("prism-review-%s-round-%d-result.md", sanitisePRNumber(prNumber), round))
 }
 
 // BuildMonitorResultsForTest is an exported wrapper around buildMonitorResults

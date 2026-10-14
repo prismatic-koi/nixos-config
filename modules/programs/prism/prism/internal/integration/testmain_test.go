@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
@@ -30,14 +31,13 @@ import (
 // directory and clears $TMUX, and returns a function that restores the
 // previous environment. The tmux-harness integration tests start real tmux
 // servers with `-L <name>`. Without this redirect the socket lands in
-// /private/tmp/tmux-<uid>/, which the sandbox-exec profile protects: section
-// 3d denies file-write* there and section 17c denies the connect (issue
-// #3066). The scratch path /tmp/ptm-<rand>/tmux-<uid>/ matches neither regex,
-// because both anchor on tmux-<n> directly under /tmp or /private/tmp. So the
-// tmux tests behave the same inside and outside the sandbox, and the suite
-// does not touch the real user's tmux directory. /tmp is used first, not
-// os.MkdirTemp(""), because a /var/folders path overflows the Darwin
-// sun_path limit once tmux appends tmux-<uid>/<name>. Mirrors
+// /private/tmp/tmux-<uid>/, where a sandbox-exec session can neither write
+// nor connect (#3066, #3150). The scratch path is /tmp/ptm-<rand> in a host
+// shell, or <TMPDIR>/ptm-<rand> in a sandbox-exec session (the per-session
+// TMPDIR). So the tmux tests behave the same inside and outside the sandbox,
+// and the suite does not touch the real user's tmux directory. /tmp is used
+// first, not os.MkdirTemp(""), because a /var/folders path overflows the
+// Darwin sun_path limit once tmux appends tmux-<uid>/<name>. Mirrors
 // cmd/tmux_isolation_test.go and internal/tmux/testmain_test.go.
 func isolateTmuxTmpdir() func() {
 	origTmux, hadTmux := os.LookupEnv("TMUX")
@@ -111,12 +111,37 @@ func TestMain(m *testing.M) {
 	// child; they never start a tmux server, so the redirect applies only
 	// here, around m.Run().
 	restore := isolateTmuxTmpdir()
+	restoreTmpRoot := sessionTmpRootForSuite()
 	var restoreState func()
 	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
 	code := m.Run()
 	restoreState()
+	restoreTmpRoot()
 	restore()
 	os.Exit(code)
+}
+
+// sessionTmpRootForSuite keeps the production root (/var/tmp) of the
+// per-session TMPDIR when the test process can write /var/tmp. A test
+// process in a sandbox-exec session cannot, so Manager.PrepareSandboxExec
+// fails there.
+// In that case the root moves to a new dir under os.TempDir(), the
+// per-session TMPDIR of the session. The sandbox-exec tests skip in such a
+// session, and the profile-content tests still run.
+func sessionTmpRootForSuite() (restore func()) {
+	if probe, err := os.MkdirTemp("/var/tmp", "pst-"); err == nil {
+		_ = os.Remove(probe)
+		return func() {}
+	}
+	dir, err := os.MkdirTemp("", "pst-")
+	if err != nil {
+		return func() {}
+	}
+	restoreRoot := container.SetSessionTmpRootForTest(dir)
+	return func() {
+		restoreRoot()
+		_ = os.RemoveAll(dir)
+	}
 }
 
 // suiteStateRoot is the directory that TestMain gives to IsolateSuite.

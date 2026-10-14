@@ -131,8 +131,8 @@ the source of truth when AGENTS.md is silent or stale.
 When you write a new test for a fix, briefly verify the test actually catches
 the bug it's meant to catch. The minimal discipline:
 
-1. Revert your fix locally (e.g. `git diff > /tmp/fix.patch && git restore .`,
-   restoring afterwards with `git apply /tmp/fix.patch`, or comment out the
+1. Revert your fix locally (e.g. `git diff > "${TMPDIR:-/tmp}/fix.patch" && git restore .`,
+   restoring afterwards with `git apply "${TMPDIR:-/tmp}/fix.patch"`, or comment out the
    change). Never use `git stash` — see "Setting WIP aside" in the repo's
    AGENTS.md for the sanctioned patterns.
 2. Re-run only the new test. Confirm it **FAILS**.

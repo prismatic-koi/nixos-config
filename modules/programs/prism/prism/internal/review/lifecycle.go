@@ -205,7 +205,7 @@ func cleanupAgentSession(d *db.DB, agentSession string, cause db.SessionReapCaus
 	_ = d.SetEnded(agentSession)
 	_ = d.PurgeBusMessages(agentSession)
 	// Remove the child's own instance-ID-keyed directory trees (work dir,
-	// podman-proxy audit dir, and prism-container audit dir). Every
+	// TMPDIR, podman-proxy audit dir, and prism-container audit dir). Every
 	// parent-cleanup path routes through this function for each review-agent
 	// child, so this is the single place that closes the gap where a child
 	// session's directories otherwise outlive its parent's cleanup (issue
@@ -220,6 +220,7 @@ func cleanupAgentSession(d *db.DB, agentSession string, cause db.SessionReapCaus
 		childID := *st.InstanceID
 		sweepChildPrismContainers(agentSession, childID, handOverChildPrismContainerAudit(d, agentSession, childID))
 		container.RemoveSessionWorkDir(childID)
+		container.RemoveSessionTmpDir(childID)
 		container.RemovePodmanProxyAuditDir(childID)
 	}
 }

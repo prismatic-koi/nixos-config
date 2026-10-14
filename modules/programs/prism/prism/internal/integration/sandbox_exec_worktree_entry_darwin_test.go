@@ -77,25 +77,36 @@ func requireNixCoreutilsDir(t *testing.T) string {
 }
 
 // runWorktreeScript runs script under the profile with WT set to the
-// worktree, BARE to its parent (BareRoot), and DEST to a directory that the
-// profile grants for write (under TMPDIR, section 3b).
-func runWorktreeScript(t *testing.T, profilePath, worktree, script string) ([]byte, error) {
+// worktree, BARE to its parent (BareRoot), and DEST to dest. A test that
+// moves BareRoot passes a dest that the profile grants for write outside
+// BareRoot: the per-session TMPDIR (section 3).
+func runWorktreeScript(t *testing.T, profilePath, worktree, dest, script string) ([]byte, error) {
 	t.Helper()
 	nixBash := requireNixBash(t)
 	cmd := exec.Command(sandboxExecPath, "-f", profilePath, nixBash, "-c", script)
 	cmd.Env = append(os.Environ(),
 		"WT="+worktree,
 		"BARE="+filepath.Dir(worktree),
-		"DEST="+t.TempDir(),
+		"DEST="+dest,
 		"PATH="+requireNixCoreutilsDir(t))
 	return cmd.CombinedOutput()
 }
 
+// sessionTmpDirOf returns the per-session TMPDIR of m. Prepare creates it.
+func sessionTmpDirOf(t *testing.T, m *container.Manager) string {
+	t.Helper()
+	dir, err := m.SessionTmpDir()
+	if err != nil {
+		t.Fatalf("SessionTmpDir: %v", err)
+	}
+	return dir
+}
+
 // worktreeDenyClause matches the section-21b deny with all its literals. It
 // anchors on the trailing (literal "/")) that closes the ancestor walk at
-// the filesystem root, so it never matches the section-3e ancestor deny,
-// which opens with the same verb but ends at a /private/tmp or $TMPDIR
-// literal, not at the root.
+// the filesystem root, so it never matches the section-21e TMPDIR node
+// deny, which opens with the same verb but ends at a TMPDIR literal, not at
+// the root.
 var worktreeDenyClause = regexp.MustCompile(`(?s)\(deny file-write-unlink file-write-create\n(?:  \(literal "[^"]*"\)\n)*  \(literal "/"\)\)\n`)
 
 func withoutWorktreeDeny(p string) string { return worktreeDenyClause.ReplaceAllString(p, "") }
@@ -118,7 +129,7 @@ mv "$BARE" "$DEST/saved" && exit 14
 rm -f "$WT/probe" || exit 13
 rmdir "$WT" && exit 12
 exit 0`
-	out, err := runWorktreeScript(t, profilePath, worktree, script)
+	out, err := runWorktreeScript(t, profilePath, worktree, sessionTmpDirOf(t, m), script)
 	if err != nil {
 		t.Fatalf("a worktree or BareRoot swap was not blocked (exit 11/12/14), or a write inside the worktree failed (exit 10/13).\nExit: %v\nOutput: %s\nProfile: %s",
 			err, out, profilePath)
@@ -140,7 +151,7 @@ func TestSandboxExecWorktreeEntry_ReplaceableWithoutDeny(t *testing.T) {
 	m, worktree := newWorktreeEntryManager(t)
 	profilePath := withMutatedProfile(t, m, withoutWorktreeDeny)
 
-	out, err := runWorktreeScript(t, profilePath, worktree, `mv "$WT" "$WT.moved" && ln -s / "$WT"`)
+	out, err := runWorktreeScript(t, profilePath, worktree, "", `mv "$WT" "$WT.moved" && ln -s / "$WT"`)
 	if err != nil {
 		t.Fatalf("without the deny the swap still failed, so the positive test proves nothing.\nExit: %v\nOutput: %s\nProfile: %s",
 			err, out, profilePath)
@@ -161,7 +172,7 @@ func TestSandboxExecWorktreeEntry_BareRootReplaceableWithoutDeny(t *testing.T) {
 	m, worktree := newWorktreeEntryManager(t)
 	profilePath := withMutatedProfile(t, m, withoutWorktreeDeny)
 
-	out, err := runWorktreeScript(t, profilePath, worktree, `mv "$BARE" "$DEST/saved" && ln -s / "$BARE"`)
+	out, err := runWorktreeScript(t, profilePath, worktree, sessionTmpDirOf(t, m), `mv "$BARE" "$DEST/saved" && ln -s / "$BARE"`)
 	if err != nil {
 		t.Fatalf("without the deny the BareRoot swap still failed, so the positive test proves nothing about BareRoot.\nExit: %v\nOutput: %s\nProfile: %s",
 			err, out, profilePath)

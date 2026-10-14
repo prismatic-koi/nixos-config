@@ -2,7 +2,8 @@ package cmd
 
 // reset_instance_dirs_2960_test.go — issue #2960: `prism reset` must remove
 // the instance-ID-keyed work dir and podman-proxy audit dir for every
-// session it snapshots, not leave them behind.
+// session it snapshots, not leave them behind. Issue #3150 adds the
+// per-session TMPDIR to the same removal.
 
 import (
 	"os"
@@ -52,6 +53,14 @@ func TestRunReset_RemovesInstanceDirsForEverySnapshottedSession(t *testing.T) {
 	if err := os.MkdirAll(auditDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll(auditDir): %v", err)
 	}
+	t.Cleanup(container.SetSessionTmpRootForTest(t.TempDir()))
+	tmpDir, err := container.SessionTmpDirPath(instanceID)
+	if err != nil {
+		t.Fatalf("SessionTmpDirPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, "go-build1"), 0o700); err != nil {
+		t.Fatalf("MkdirAll(tmpDir): %v", err)
+	}
 
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
@@ -78,6 +87,9 @@ func TestRunReset_RemovesInstanceDirsForEverySnapshottedSession(t *testing.T) {
 	}
 	if _, err := os.Stat(auditDir); !os.IsNotExist(err) {
 		t.Errorf("audit dir %s still exists after reset (err=%v)", auditDir, err)
+	}
+	if _, err := os.Stat(tmpDir); !os.IsNotExist(err) {
+		t.Errorf("per-session TMPDIR %s still exists after reset (err=%v)", tmpDir, err)
 	}
 }
 

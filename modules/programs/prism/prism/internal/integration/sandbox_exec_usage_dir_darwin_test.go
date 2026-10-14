@@ -34,10 +34,9 @@ package integration_test
 // ~/.local/state/prism/usage — they create and delete files, and the real
 // directory holds live snapshots. They redirect $XDG_STATE_HOME to a temp
 // directory created under the REAL HOME rather than under t.TempDir():
-// t.TempDir() lives inside the Darwin per-user TMPDIR, which section 3b of
-// the profile already grants read-WRITE for bun's dylib extraction. A
-// fixture there would be readable and writable no matter what section 5j
-// says, making every assertion below vacuous.
+// t.TempDir() lives inside the Darwin per-user TMPDIR, which section 2 of
+// the profile already grants read. A fixture there would be readable no
+// matter what section 5j says, making every read assertion below vacuous.
 //
 // All tests use newProfileManagerWithBareRoot (then override
 // $XDG_STATE_HOME): production worker sessions always have BareRoot set, so

@@ -37,9 +37,13 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
 	// Remove the per-session work dir (generated ssh-config / gitconfig /
-	// allowed_signers, kube-cache, chromium skeleton).
+	// allowed_signers, kube-cache, chromium skeleton) and the per-session
+	// TMPDIR.
 	if sessionDir, err := m.sessionWorkDirPath(); err == nil {
 		_ = os.RemoveAll(sessionDir)
+	}
+	if tmpDir, err := m.sessionTmpDirPath(); err == nil {
+		_ = os.RemoveAll(tmpDir)
 	}
 
 	// Per-mode lifecycle cleanup lives on the registered Isolator. See
@@ -144,9 +148,12 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
-	// Remove the per-session work dir.
+	// Remove the per-session work dir and the per-session TMPDIR.
 	if sessionDir, err := m.sessionWorkDirPath(); err == nil {
 		_ = os.RemoveAll(sessionDir)
+	}
+	if tmpDir, err := m.sessionTmpDirPath(); err == nil {
+		_ = os.RemoveAll(tmpDir)
 	}
 
 	log.Printf("container: %q removed", m.name)

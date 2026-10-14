@@ -319,6 +319,7 @@ func TestGenerateProfile_NetworkAllow(t *testing.T) {
 // TestGenerateProfile_NetworkUnixSocketAllowlist asserts the section-17b
 // deny of every Unix-socket connect except an allowlist (#3066).
 func TestGenerateProfile_NetworkUnixSocketAllowlist(t *testing.T) {
+	useProductionSessionTmpRoot(t)
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName:     "repo@main",
 		Worktree:        "/Users/u/code/repo/main",
@@ -345,8 +346,6 @@ func TestGenerateProfile_NetworkUnixSocketAllowlist(t *testing.T) {
 		`(require-not (literal "/private/var/run/syslog"))`,
 		`(require-not (literal "/var/run/syslog"))`,
 		`(require-not (literal "/nix/var/nix/daemon-socket/socket"))`,
-		`(require-not (subpath "/private/tmp"))`,
-		`(require-not (subpath "/tmp"))`,
 		`(require-not (subpath "/Users/u/code/repo/main"))`,
 		`(require-not (subpath "/Users/u/code/repo"))`,
 	}
@@ -364,11 +363,25 @@ func TestGenerateProfile_NetworkUnixSocketAllowlist(t *testing.T) {
 		t.Errorf("section-17b deny missing the per-session work dir %s; clause:\n%s", want, clause)
 	}
 
-	// The podman machine socket lives under $TMPDIR (/var/folders on a real
-	// host), which is NOT in the allowlist, so no require-not names it. A
-	// require-not that reached /var/folders would re-open the #3066 hole.
-	if strings.Contains(clause, "/var/folders") {
-		t.Errorf("section-17b deny names /var/folders, which would re-open the podman machine socket (#3066); clause:\n%s", clause)
+	// The per-session TMPDIR is allowed in both /tmp symlink forms.
+	tmpDir, err := m.sessionTmpDirPath()
+	if err != nil {
+		t.Fatalf("sessionTmpDirPath: %v", err)
+	}
+	for _, form := range symlinkForms(tmpDir) {
+		if want := "(require-not (subpath " + quoteSBPL(form) + "))"; !strings.Contains(clause, want) {
+			t.Errorf("section-17b deny missing the per-session TMPDIR %s; clause:\n%s", want, clause)
+		}
+	}
+
+	// The podman machine socket lives under the user $TMPDIR (/var/folders on
+	// a real host), and tmux, the user ssh-agent, AeroSpace, and other host
+	// sockets live in /private/tmp. No require-not may name a shared temp
+	// tree, or a host socket there is reachable again (#3066, #3150).
+	for _, shared := range []string{"/var/folders", `(subpath "/private/tmp")`, `(subpath "/tmp")`} {
+		if strings.Contains(clause, shared) {
+			t.Errorf("section-17b deny names the shared temp tree %s, which makes its host sockets reachable; clause:\n%s", shared, clause)
+		}
 	}
 }
 
@@ -392,162 +405,10 @@ func TestGenerateProfile_NetworkUnixSocketDenyFollowsNetworkAllow(t *testing.T) 
 	}
 }
 
-// TestGenerateProfile_NetworkUnixSocketEscapeReDeny asserts the section-17c
-// re-deny of the host-escape sockets inside the /private/tmp allowance: tmux,
-// the user ssh-agent, AeroSpace, and the .NET diagnostic IPC socket.
-func TestGenerateProfile_NetworkUnixSocketEscapeReDeny(t *testing.T) {
-	m := newSandboxExecManager(Config{SessionName: "repo@main"})
-	profile := generateProfile(m)
-
-	if !strings.Contains(profile, hostEscapeSocketReDeny) {
-		t.Errorf("profile missing the section-17c escape re-deny:\n%s\nprofile:\n%s", hostEscapeSocketReDeny, profile)
-	}
-	for _, want := range []string{
-		`(regex #"^/private/tmp/tmux-[0-9]+/")`,
-		`(regex #"^/private/tmp/com\.apple\.launchd\.")`,
-		`(regex #"^/private/tmp/bobko\.aerospace-")`,
-		`(regex #"^/private/tmp/dotnet-diagnostic-")`,
-		// #3147 item 2: the podman machine socket in the TMPDIR-unset location.
-		`(regex #"^/private/tmp/podman/")`,
-		`(regex #"^/tmp/podman/")`,
-		// #3147 item 1: the nvim RPC socket in the TMPDIR-unset location.
-		`(regex #"^/private/tmp/nvim\.[^/]+/")`,
-		`(regex #"^/tmp/nvim\.[^/]+/")`,
-	} {
-		if !strings.Contains(profile, want) {
-			t.Errorf("section-17c re-deny missing %s; profile:\n%s", want, profile)
-		}
-	}
-}
-
-// TestGenerateProfile_NetworkUnixSocketEscapeReDenyFollowsAllowlist pins
-// section 17c after section 17b. With the 17b order test, it keeps the 17c
-// deny after section 17's (allow network*), which the later-rule-wins
-// resolution of SBPL requires.
-func TestGenerateProfile_NetworkUnixSocketEscapeReDenyFollowsAllowlist(t *testing.T) {
-	m := newSandboxExecManager(Config{SessionName: "repo@main"})
-	profile := generateProfile(m)
-
-	allowlistIdx := strings.Index(profile, "(deny network-outbound\n  (require-all")
-	reDenyIdx := strings.Index(profile, hostEscapeSocketReDeny)
-	if allowlistIdx < 0 || reDenyIdx < 0 {
-		t.Fatalf("profile missing section 17b or 17c:\nallowlistIdx=%d reDenyIdx=%d\n%s", allowlistIdx, reDenyIdx, profile)
-	}
-	if reDenyIdx < allowlistIdx {
-		t.Errorf("section-17c re-deny (idx %d) precedes section-17b allowlist (idx %d)", reDenyIdx, allowlistIdx)
-	}
-}
-
 // TestGenerateProfile_V3CryptexAndTmpRules verifies the v3-specific additions
-// required for the dyld shared cache and transient files. See F.1 §2.
-// TestGenerateProfile_HostSocketWriteDeny asserts the section-3d file-write*
-// deny that stops a rename from moving a protected socket to a path the
-// connect deny (sections 17b/17c) does not match. Each entry matches the
-// directory node and its contents, so a rename of the directory is denied as
-// well as a rename of the socket inside it (issue #3066).
-func TestGenerateProfile_HostSocketWriteDeny(t *testing.T) {
-	m := newSandboxExecManager(Config{SessionName: "repo@main"})
-	profile := generateProfile(m)
-
-	if !strings.Contains(profile, hostSocketWriteDeny) {
-		t.Errorf("profile missing the section-3d host-socket write deny:\n%s\nprofile:\n%s", hostSocketWriteDeny, profile)
-	}
-	clause := extractClause(t, profile, "(deny file-write*\n  (regex #\"^/var/folders/.*/podman")
-	for _, want := range []string{
-		`(regex #"^/var/folders/.*/podman(/|$)")`,
-		`(regex #"^/private/var/folders/.*/podman(/|$)")`,
-		// #3147 item 2: the podman machine dir in the TMPDIR-unset location.
-		`(regex #"^/private/tmp/podman(/|$)")`,
-		`(regex #"^/tmp/podman(/|$)")`,
-		// #3147 item 1: the nvim RPC directory and socket under $TMPDIR (set),
-		// and under /private/tmp + /tmp (the TMPDIR-unset location).
-		`(regex #"^/var/folders/.*/nvim\.[^/]+(/|$)")`,
-		`(regex #"^/private/var/folders/.*/nvim\.[^/]+(/|$)")`,
-		`(regex #"^/private/tmp/nvim\.[^/]+(/|$)")`,
-		`(regex #"^/tmp/nvim\.[^/]+(/|$)")`,
-		`(regex #"^/private/tmp/tmux-[0-9]+(/|$)")`,
-		`(regex #"^/private/tmp/com\.apple\.launchd\.[^/]+(/|$)")`,
-		`(regex #"^/private/tmp/bobko\.aerospace-")`,
-		`(regex #"^/private/tmp/dotnet-diagnostic-")`,
-	} {
-		if !strings.Contains(clause, want) {
-			t.Errorf("section-3d write deny missing %s; clause:\n%s", want, clause)
-		}
-	}
-}
-
-// TestGenerateProfile_HostSocketWriteDenyFollowsTmpWriteAllows pins the
-// ordering: the section-3d write deny MUST come after section 3 (file-write*
-// on /tmp and /private/tmp) and section 3b (file-write* on $TMPDIR). SBPL
-// resolves a conflict in favour of the later rule, so a deny placed before
-// those allows would be outranked and a protected socket could be moved
-// again.
-func TestGenerateProfile_HostSocketWriteDenyFollowsTmpWriteAllows(t *testing.T) {
-	m := newSandboxExecManager(Config{SessionName: "repo@main"})
-	profile := generateProfile(m)
-
-	// Section 3 is the /tmp + /private/tmp read-write allow. Section 3b is the
-	// $TMPDIR read-write allow. Both precede the section-3d write deny.
-	tmpAllowIdx := strings.Index(profile, "(allow file-read* file-write* file-test-existence file-map-executable\n  (subpath \"/private/tmp\")")
-	writeDenyIdx := strings.Index(profile, hostSocketWriteDeny)
-	if tmpAllowIdx < 0 || writeDenyIdx < 0 {
-		t.Fatalf("profile missing the /tmp write allow or the section-3d write deny:\ntmpAllowIdx=%d writeDenyIdx=%d\n%s", tmpAllowIdx, writeDenyIdx, profile)
-	}
-	if writeDenyIdx < tmpAllowIdx {
-		t.Errorf("section-3d write deny (idx %d) precedes the /tmp write allow (idx %d); SBPL would outrank the deny", writeDenyIdx, tmpAllowIdx)
-	}
-}
-
-// TestGenerateProfile_WritableAncestorRenameDeny asserts the section-3e deny
-// that stops a rename of a writable ancestor directory of a protected socket
-// (issue #3066, round-7 finding). A path-based connect or write deny is
-// bypassed if the agent renames an ancestor the profile lets it write, so the
-// socket appears at a new path. The ancestors a subpath write grant covers at
-// the node are /private/tmp and /tmp (section 3) and the $TMPDIR node (section
-// 3b). Each is denied as a LITERAL, so writes inside the directory still work.
-func TestGenerateProfile_WritableAncestorRenameDeny(t *testing.T) {
-	// Pin $TMPDIR so the derived literals are predictable.
-	t.Setenv("TMPDIR", "/var/folders/zz/abcdef/T")
-	m := newSandboxExecManager(Config{SessionName: "repo@main"})
-	profile := generateProfile(m)
-
-	clause := extractClause(t, profile, "(deny file-write-unlink file-write-create\n  (literal \"/private/tmp\")")
-	for _, want := range []string{
-		`(literal "/private/tmp")`,
-		`(literal "/tmp")`,
-		`(literal "/var/folders/zz/abcdef/T")`,
-		`(literal "/private/var/folders/zz/abcdef/T")`,
-	} {
-		if !strings.Contains(clause, want) {
-			t.Errorf("section-3e deny missing ancestor %s; clause:\n%s", want, clause)
-		}
-	}
-
-	// The nodes are literals, never subpaths: a subpath here would deny every
-	// write inside /tmp, /private/tmp, and $TMPDIR, which breaks go test.
-	if strings.Contains(clause, "(subpath ") {
-		t.Errorf("section-3e uses a subpath; it must use literals so writes inside the dirs still work; clause:\n%s", clause)
-	}
-}
-
-// TestGenerateProfile_WritableAncestorRenameDenyFollowsTmpWriteAllows pins the
-// order: the section-3e deny MUST come after section 3 (the /tmp +
-// /private/tmp write allow) and section 3b (the $TMPDIR write allow), whose
-// node-covering subpath grants it overrides.
-func TestGenerateProfile_WritableAncestorRenameDenyFollowsTmpWriteAllows(t *testing.T) {
-	m := newSandboxExecManager(Config{SessionName: "repo@main"})
-	profile := generateProfile(m)
-
-	tmpAllowIdx := strings.Index(profile, "(allow file-read* file-write* file-test-existence file-map-executable\n  (subpath \"/private/tmp\")")
-	ancestorDenyIdx := strings.Index(profile, "(deny file-write-unlink file-write-create\n  (literal \"/private/tmp\")")
-	if tmpAllowIdx < 0 || ancestorDenyIdx < 0 {
-		t.Fatalf("profile missing the /tmp write allow or the section-3e ancestor deny:\ntmpAllowIdx=%d ancestorDenyIdx=%d\n%s", tmpAllowIdx, ancestorDenyIdx, profile)
-	}
-	if ancestorDenyIdx < tmpAllowIdx {
-		t.Errorf("section-3e ancestor deny (idx %d) precedes the /tmp write allow (idx %d); SBPL would outrank the deny", ancestorDenyIdx, tmpAllowIdx)
-	}
-}
-
+// required for the dyld shared cache and transient files. See F.1 §2. The
+// transient files go to the per-session TMPDIR, so the shared /tmp tree has
+// no subpath rule.
 func TestGenerateProfile_V3CryptexAndTmpRules(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
@@ -561,12 +422,11 @@ func TestGenerateProfile_V3CryptexAndTmpRules(t *testing.T) {
 		t.Errorf("Cryptex block missing /System/Cryptexes; block:\n%s", cryptexBlock)
 	}
 
-	// /tmp read-write rule (rule 3).
-	if !strings.Contains(profile, `(subpath "/private/tmp")`) {
-		t.Errorf("profile missing (subpath \"/private/tmp\"); full profile:\n%s", profile)
-	}
-	if !strings.Contains(profile, `(subpath "/tmp")`) {
-		t.Errorf("profile missing (subpath \"/tmp\"); full profile:\n%s", profile)
+	// No rule covers the whole shared /tmp tree (#3150).
+	for _, shared := range []string{`(subpath "/private/tmp")`, `(subpath "/tmp")`} {
+		if strings.Contains(profile, shared) {
+			t.Errorf("profile has %s; the shared /tmp tree must have no subpath rule; full profile:\n%s", shared, profile)
+		}
 	}
 
 	// /dev/null write access (rule 8).

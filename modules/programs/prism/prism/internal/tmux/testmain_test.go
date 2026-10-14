@@ -5,18 +5,18 @@ package tmux_test
 // The tests in this package start real tmux servers with `-L <name>`. tmux
 // resolves such a socket under $TMUX_TMPDIR/tmux-<uid>/, or /tmp/tmux-<uid>/
 // when $TMUX_TMPDIR is unset. The default lands in /private/tmp/tmux-<uid>/,
-// which the sandbox-exec profile protects: section 3d denies file-write*
-// there and section 17c denies the connect (issue #3066). A worker that runs
-// `go test ./...` inside a sandbox-exec session then cannot create or reach a
-// test server, and tmuxtest.RequireServer does not skip, because the failure
-// is a socket-create denial, not the fork-denial signature it looks for.
+// where a sandbox-exec session can neither write nor connect (#3066,
+// #3150). A worker that runs `go test ./...` inside a sandbox-exec session
+// then cannot create or reach a test server, and tmuxtest.RequireServer does
+// not skip, because the failure is a socket-create denial, not the
+// fork-denial signature it looks for.
 //
-// This TestMain points $TMUX_TMPDIR at a fresh short-path scratch directory,
-// so every test socket resolves under /tmp/ptm-<rand>/tmux-<uid>/. That path
-// does not match the section-3d or section-17c regexes, which anchor on
-// tmux-<n> directly under /tmp or /private/tmp. The suite then behaves the
-// same inside and outside the sandbox. It also stops the suite from touching
-// the real user's tmux directory, the same isolation cmd and internal/session
+// This TestMain points $TMUX_TMPDIR at a fresh short-path scratch directory:
+// /tmp/ptm-<rand> in a host shell, or <TMPDIR>/ptm-<rand> in a sandbox-exec
+// session, where /tmp is not writable and TMPDIR is the per-session TMPDIR.
+// The session can write and connect there, so the suite behaves the same
+// inside and outside the sandbox. It also stops the suite from touching the
+// real user's tmux directory, the same isolation cmd and internal/session
 // already apply (cmd/tmux_isolation_test.go).
 //
 // The scratch directory uses /tmp first, not os.MkdirTemp(""), because a tmux

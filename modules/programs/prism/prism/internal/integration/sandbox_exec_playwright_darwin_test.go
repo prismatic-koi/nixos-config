@@ -113,6 +113,17 @@ func requirePlaywrightCLI(t *testing.T) string {
 // sandbox-exec rather than network policy.
 const playwrightDataURL = "data:text/html;charset=utf-8,<!doctype html><title>prism-2021</title><h1>prism-2021-sentinel</h1>"
 
+// playwrightSentinelTitle is the <title> of playwrightDataURL.
+const playwrightSentinelTitle = "prism-2021"
+
+// playwrightErrorMarker is what playwright-cli prints when a command fails
+// after the browser started. The exit code can still be 0.
+const playwrightErrorMarker = "### Error"
+
+// singletonDirFingerprint is the chromium error when it cannot create its
+// ProcessSingleton socket dir in its temp dir.
+const singletonDirFingerprint = "Failed to create socket directory"
+
 // segVFingerprint substrings: presence of any of these in the launcher
 // stderr indicates the canonical iokit-open denial SEGV from the issue.
 // The exact line in the crash log is `Received signal 11 SEGV_ACCERR`.
@@ -139,29 +150,21 @@ const crashpadEPERMFingerprint = "Operation not permitted"
 // even on a cold box; a successful run typically completes in ~3 s.
 const playwrightCLITimeout = 60 * time.Second
 
-// runPlaywrightCLI invokes sandbox-exec on the given profile path against
-// playwright-cli with the given CLI args (e.g. "open", <url> — or "close").
-// The env mirrors what agent_run_sandbox_exec_darwin.go does in
-// production: HOME and XDG_CACHE/CONFIG at the real host home, and
-// CFFIXED_USER_HOME at the per-session work dir so chromium's
-// NSHomeDirectory()-derived writes land under <sessionDir>/Library/...
-//
-// The launch CWD is the session work dir: node hard-fails at bootstrap
-// ("EPERM: process.cwd failed ... uv_cwd") when the sandboxed CWD is
-// unresolvable, so the process must start in a directory the profile
-// grants — mirroring production, where the agent's CWD is the granted
-// worktree. Callers must build the profile with the getcwd ancestor extras
-// (writeAugmentedPositiveProfileWithLaunchDir /
-// withMutatedProfileAndLaunchDir — see
-// sandbox_exec_launch_dir_darwin_test.go).
-func runPlaywrightCLI(t *testing.T, profilePath, playwrightBin, sessionDir string, cliArgs ...string) (combinedOutput string, runErr error) {
+// playwrightEnv returns the env of a sandboxed playwright-cli. It mirrors
+// what agent_run_sandbox_exec_darwin.go does in production: HOME and
+// XDG_CACHE/CONFIG at the real host home, CFFIXED_USER_HOME at the
+// per-session work dir so chromium's NSHomeDirectory()-derived writes land
+// under <sessionDir>/Library/..., TMPDIR and MAC_CHROMIUM_TMPDIR at the
+// per-session TMPDIR (the only temp dir that the profile lets the session
+// write), and PLAYWRIGHT_MCP_SANDBOX=false from the agent env vars
+// (modules/programs/prism/default.nix). Without PLAYWRIGHT_MCP_SANDBOX=false,
+// chromium tries to start its own sandbox inside sandbox-exec, the helper
+// gets `forbidden-sandbox-reinit`, and the page closes at once.
+func playwrightEnv(t *testing.T, sessionDir string) []string {
 	t.Helper()
 
 	realHome := realUserHome(t)
 
-	// The Nix-built playwright-cli is a #! /nix/store/.../bash script. We
-	// run it directly via sandbox-exec; the shebang line resolves to a
-	// Nix store bash that is covered by the system-paths /nix allow.
 	envVars := []string{
 		"HOME=" + realHome,
 		"CFFIXED_USER_HOME=" + sessionDir,
@@ -177,11 +180,52 @@ func runPlaywrightCLI(t *testing.T, profilePath, playwrightBin, sessionDir strin
 		// host-pollution hazard, so the redirects are load-bearing.
 		"PLAYWRIGHT_DAEMON_SESSION_DIR=" + filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "daemon"),
 		"PLAYWRIGHT_SERVER_REGISTRY=" + filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "b"),
+		"PLAYWRIGHT_MCP_SANDBOX=false",
 	}
+	envVars = append(envVars, container.SessionTmpDirEnv(playwrightSessionTmpDir(t, sessionDir))...)
 	if term := os.Getenv("TERM"); term != "" {
 		envVars = append(envVars, "TERM="+term)
 	}
+	return envVars
+}
 
+// playwrightSessionTmpDir returns the per-session TMPDIR of the session
+// whose work dir is sessionDir. The work dir is
+// <state>/prism/sessions/<instance ID>, so its base name is the instance ID
+// that keys the TMPDIR. PrepareSandboxExec created that dir.
+func playwrightSessionTmpDir(t *testing.T, sessionDir string) string {
+	t.Helper()
+	tmpDir, err := container.SessionTmpDirPath(filepath.Base(sessionDir))
+	if err != nil {
+		t.Fatalf("SessionTmpDirPath: %v", err)
+	}
+	return tmpDir
+}
+
+// runPlaywrightCLI invokes sandbox-exec on the given profile path against
+// playwright-cli with the given CLI args (e.g. "open", <url> — or "close"),
+// with the production env of playwrightEnv.
+//
+// The launch CWD is the session work dir: node hard-fails at bootstrap
+// ("EPERM: process.cwd failed ... uv_cwd") when the sandboxed CWD is
+// unresolvable, so the process must start in a directory the profile
+// grants — mirroring production, where the agent's CWD is the granted
+// worktree. Callers must build the profile with the getcwd ancestor extras
+// (writeAugmentedPositiveProfileWithLaunchDir /
+// writeProbePositiveProfileWithLaunchDir / withMutatedProfileAndLaunchDir —
+// see sandbox_exec_launch_dir_darwin_test.go).
+func runPlaywrightCLI(t *testing.T, profilePath, playwrightBin, sessionDir string, cliArgs ...string) (combinedOutput string, runErr error) {
+	t.Helper()
+	return runPlaywrightCLIEnv(t, profilePath, playwrightBin, sessionDir, playwrightEnv(t, sessionDir), cliArgs...)
+}
+
+// runPlaywrightCLIEnv is runPlaywrightCLI with the given env.
+func runPlaywrightCLIEnv(t *testing.T, profilePath, playwrightBin, sessionDir string, envVars []string, cliArgs ...string) (combinedOutput string, runErr error) {
+	t.Helper()
+
+	// The Nix-built playwright-cli is a #! /nix/store/.../bash script. We
+	// run it directly via sandbox-exec; the shebang line resolves to a
+	// Nix store bash that is covered by the system-paths /nix allow.
 	cmd := exec.Command(sandboxExecPath, "-f", profilePath,
 		"/usr/bin/env", "-i")
 	cmd.Args = append(cmd.Args, envVars...)
@@ -277,7 +321,10 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 		t.Fatalf("generated profile is missing the signal (target self) (target children) widening (issue #2021).\nProfile:\n%s", prepared.content)
 	}
 
-	testProfilePath := writeAugmentedPositiveProfileWithLaunchDir(t, prepared, sessionDir)
+	// The probe extras add no /tmp grant: the test-harness extras grant
+	// write on /private/tmp, which would hide a chromium temp write outside
+	// the per-session TMPDIR.
+	testProfilePath := writeProbePositiveProfileWithLaunchDir(t, prepared, sessionDir)
 
 	combined, runErr := runPlaywrightCLIOpen(t, testProfilePath, playwrightBin, sessionDir)
 	if runErr != nil {
@@ -301,6 +348,25 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 		t.Errorf("playwright-cli output contains %q (issue #2021).\n"+
 			"The signal allow lacks (target children); the node launcher\n"+
 			"cannot clean up its chromium grandchild.\nOutput:\n%s", killEPERMFingerprint, combined)
+	}
+
+	// playwright-cli exits 0 and prints "### Error" when the browser starts
+	// and its page then closes. The page must be live: its title must come
+	// back.
+	if strings.Contains(combined, playwrightErrorMarker) {
+		t.Errorf("playwright-cli open printed %q: the browser started, then failed.\nOutput:\n%s", playwrightErrorMarker, combined)
+	}
+	if evalOut, evalErr := runPlaywrightCLI(t, testProfilePath, playwrightBin, sessionDir, "eval", "() => document.title"); evalErr != nil || !strings.Contains(evalOut, playwrightSentinelTitle) {
+		t.Errorf("playwright-cli eval of document.title did not return %q: the page is not live.\nExit: %v\nOutput:\n%s", playwrightSentinelTitle, evalErr, evalOut)
+	}
+
+	// Chromium makes its own temp dir (the ProcessSingleton socket dir,
+	// com.google.chrome.for.testing.*) in MAC_CHROMIUM_TMPDIR, the
+	// per-session TMPDIR. Without that variable it uses the user $TMPDIR,
+	// which the profile does not let it write (see the paired negative).
+	tmpDir := playwrightSessionTmpDir(t, sessionDir)
+	if matches, _ := filepath.Glob(filepath.Join(tmpDir, "com.google.chrome.for.testing.*")); len(matches) == 0 {
+		t.Errorf("chromium made no com.google.chrome.for.testing.* dir in the per-session TMPDIR %s.\nEntries:\n%s", tmpDir, listTreeForDiag(tmpDir))
 	}
 
 	if strings.Contains(combined, crashpadEPERMFingerprint) {
@@ -481,6 +547,44 @@ func TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOPMrootDomainAllow(t *test
 			segVFingerprint, runErr, mutatedPath, combined)
 	} else {
 		t.Logf("ka pai \u2014 chromium correctly SIGSEGV'd without the iokit-open-service IOPMrootDomain allow (exit: %v)", runErr)
+	}
+}
+
+// TestSandboxExecProfile_PlaywrightCLIFailsWithoutMacChromiumTmpdir is the
+// paired negative for MAC_CHROMIUM_TMPDIR (#3150). The profile and the env
+// are those of the positive test, without MAC_CHROMIUM_TMPDIR. Chromium then
+// takes its temp dir from NSTemporaryDirectory(), the user $TMPDIR, which
+// the profile does not let the session write. It cannot create its
+// ProcessSingleton socket dir and exits. This proves that the variable is
+// what makes chromium start under the profile.
+func TestSandboxExecProfile_PlaywrightCLIFailsWithoutMacChromiumTmpdir(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	playwrightBin := requirePlaywrightCLI(t)
+
+	m := newProfileManagerWithBareRoot(t)
+	prepared, _ := preparePositiveProfile(t, m)
+	sessionDir, err := m.SessionWorkDir()
+	if err != nil {
+		t.Fatalf("SessionWorkDir: %v", err)
+	}
+	testProfilePath := writeProbePositiveProfileWithLaunchDir(t, prepared, sessionDir)
+
+	var env []string
+	for _, kv := range playwrightEnv(t, sessionDir) {
+		if !strings.HasPrefix(kv, "MAC_CHROMIUM_TMPDIR=") {
+			env = append(env, kv)
+		}
+	}
+	combined, runErr := runPlaywrightCLIEnv(t, testProfilePath, playwrightBin, sessionDir, env, "open", playwrightDataURL)
+	t.Cleanup(func() { _, _ = runPlaywrightCLIEnv(t, testProfilePath, playwrightBin, sessionDir, env, "close") })
+	if runErr == nil {
+		t.Errorf("playwright-cli open exited 0 without MAC_CHROMIUM_TMPDIR, so the positive test proves nothing about the variable.\nOutput:\n%s", combined)
+	}
+	if !strings.Contains(combined, singletonDirFingerprint) {
+		t.Errorf("playwright-cli failed without MAC_CHROMIUM_TMPDIR, but not with %q: the failure is not the temp-dir denial.\nExit: %v\nOutput:\n%s", singletonDirFingerprint, runErr, combined)
 	}
 }
 

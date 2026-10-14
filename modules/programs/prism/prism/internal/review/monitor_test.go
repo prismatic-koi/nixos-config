@@ -248,7 +248,7 @@ func TestMonitorFunc_DeliveryFailure_WritesFallbackFile(t *testing.T) {
 
 	// Use a unique PR number so the fallback file name is unique.
 	prNumber := "99991"
-	fallbackPath := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", prNumber, 1)
+	fallbackPath := filepath.Join(os.TempDir(), fmt.Sprintf("prism-review-%s-round-%d-result.md", prNumber, 1))
 	// Clean up any existing fallback file.
 	_ = os.Remove(fallbackPath)
 	t.Cleanup(func() { _ = os.Remove(fallbackPath) })
@@ -1145,7 +1145,7 @@ func TestWriteFallbackResult_WritesCorrectFile(t *testing.T) {
 	round := 3
 	content := "## Review complete\n\nAll agents failed to deliver.\n"
 
-	expectedPath := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", prNumber, round)
+	expectedPath := filepath.Join(os.TempDir(), fmt.Sprintf("prism-review-%s-round-%d-result.md", prNumber, round))
 	_ = os.Remove(expectedPath)
 	t.Cleanup(func() { _ = os.Remove(expectedPath) })
 

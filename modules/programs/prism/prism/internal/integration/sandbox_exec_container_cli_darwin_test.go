@@ -8,8 +8,9 @@ package integration_test
 // The pi deny list blocks a `podman` or `docker` command that it can see.
 // The profile deny stops a client that the deny list cannot see: `bash -c`
 // with an absolute path, or a symlink with another name. The tests plant
-// copies of Nix bash under the denied names in TMPDIR, which the profile
-// grants (section 3b) and from which exec otherwise works.
+// copies of Nix bash under the denied names in the user TMPDIR. Section 2
+// of the profile grants read and map-executable there, so exec from there
+// otherwise works.
 //
 // The positive test runs each planted name under the production profile
 // and expects exec to fail, while a control copy under another name runs.

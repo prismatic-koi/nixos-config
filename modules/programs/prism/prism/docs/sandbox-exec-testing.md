@@ -14,7 +14,8 @@ This issue is tracked in #1192.
 ## The convention
 
 > Any change to `internal/container/sandbox_exec.go::generateProfile`,
-> `Manager.PrepareSandboxExec`, or `Manager.PrepareSessionWorkDir` must be
+> `Manager.PrepareSandboxExec`, `Manager.PrepareSessionWorkDir`, or
+> `Manager.PrepareSessionTmpDir` must be
 > accompanied by at least one Darwin-only integration test under
 > `internal/integration/` that:
 >
@@ -77,7 +78,13 @@ The Darwin-only integration tests live in
 - `augmentProfileForTest(profile)` — appends the minimum SBPL extras a
   Nix-built binary needs to start under the sandbox during testing (root
   inode literal, `/dev`, `/private/tmp` write). These are testing
-  infrastructure only — they are NOT added to the production profile.
+  infrastructure only — they are NOT added to the production profile. The
+  `/private/tmp` write hides a `/tmp` rule.
+- `augmentProfileForProbe(profile)`, `writeProbePositiveProfile(t, p)`, and
+  `withMutatedProbeProfile(t, m, mutate)` — the same helpers with only the
+  root inode literal and `/dev`. Use them for a test of a `/tmp`,
+  `/private/tmp`, user `$TMPDIR`, or per-session TMPDIR rule. A static Go
+  probe needs no `/tmp` grant to start.
 - `withMutatedProfile(t, m, mutate)` — generates the profile via
   `Manager.PrepareSandboxExec()`, applies `mutate(string) string` to the
   profile content (for example, remove a specific allow rule), augments it for
@@ -193,8 +200,8 @@ In addition to the system-paths allow set (covered first by #1187 / #1192),
 integration test coverage exists for:
 
 - **Session work dir writes** — the per-session work dir
-  (`(subpath "<sessionDir>")`, the only per-session writable grant), plus
-  the worktree, bare repo, and host-API socket dir.
+  (`(subpath "<sessionDir>")`), plus the worktree, bare repo, and host-API
+  socket dir.
 - **Env-var credential reads** — sops-backed configs read through stable
   host paths (for example, `~/.config/aws/readonly-config` via `AWS_CONFIG_FILE`,
   `~/.config/kube/agents-config` via `KUBECONFIG`, the SSH keys via the
@@ -247,57 +254,58 @@ integration test coverage exists for:
   `sandbox_exec_worktree_readonly_darwin_test.go`.
 - **Network egress** — `(allow network*)` permits outbound TCP.
 - **The Unix-socket connect allowlist** — the section-17b deny on
-  `network-outbound` for every Unix-socket path except an allowlist, the
-  section-17c re-deny of the host-escape sockets inside the `/private/tmp`
-  allowance (tmux, the user ssh-agent, AeroSpace, the .NET diagnostic IPC
-  socket, and the podman machine socket and nvim RPC socket in the
-  TMPDIR-unset `/private/tmp` location), and the section-3d `file-write*`
-  deny that stops a rename from moving a protected socket to an allowed path. Under the production profile,
-  a connect to a socket in the podman machine location (`$TMPDIR`) fails. A
-  connect to a socket under `/private/tmp` and a loopback TCP connect both
-  succeed. A connect to a tmux-shaped socket and to a .NET-diagnostic-shaped
-  socket under `/private/tmp` fails. A move of the podman socket file, and of
-  the podman directory, into `/private/tmp` fails, so no connect follows. The
-  paired negatives neutralise the section-17b scope term, remove that term,
-  strip the section-17c re-deny, and strip the section-3d write deny. Each
-  negative then gives the opposite result. The connect probe is a CGO-disabled
-  Go binary that the test builds, so no extra Nix tool is necessary. It also
-  does the rename in-process (`os.Rename`), so the move test needs no shell.
-  See `sandbox_exec_container_socket_darwin_test.go` (issue #3066).
+  `network-outbound` for every Unix-socket path except an allowlist. The
+  allowlist holds the per-session TMPDIR and no shared temp tree: not
+  `/private/tmp`, not `/tmp`, and not the user `$TMPDIR` (#3066, #3147,
+  #3150). Under the production profile:
+  - A connect to a socket under the user `$TMPDIR` fails: the podman machine
+    location and an nvim-shaped location.
+  - A connect to each host-socket shape in `/private/tmp` fails: a socket
+    that the profile does not name (the model of `macron-type.sock`), a
+    tmux-shaped socket, a .NET-diagnostic-shaped socket, and the podman and
+    nvim sockets of the `TMPDIR`-unset location. The same socket by its
+    `/tmp` path fails too.
+  - A connect to a socket in the per-session TMPDIR and a loopback TCP
+    connect both succeed.
+  - A move of a host socket, or of the dir that holds it, from a shared temp
+    tree into the per-session TMPDIR fails, so no connect follows. The
+    session has no write grant on the source.
 
-  #3147 adds two more host-escape locations to the same test file, in the
-  same shape:
-  - **The nvim RPC socket** (sections 17c and 3d). nvim starts an RPC server
-    at `$TMPDIR/nvim.<user>/<rand>/nvim.<pid>.0`, and a client on it runs
-    `:!<cmd>` on the host. nvim resolves its temp dir in the order `$TMPDIR`,
-    `/tmp`, so the socket is under `/var/folders` with `TMPDIR` set, or under
-    `/tmp` (that is, `/private/tmp`) with `TMPDIR` unset.
-    - `TMPDIR` set: section 17b denies the direct connect (`/var/folders` is
-      outside the allowlist). The section-3d `nvim\.[^/]+(/|$)` `/var` pair
-      stops the agent from moving the socket file, or the `nvim.<user>`
-      directory, into `/private/tmp`. `...NvimDeniedUnderProductionProfile`
-      covers the direct connect and both moves. The paired
-      `...NvimRenameWorksWithoutWriteDeny` strips only the two `/var` nvim
-      lines, so the directory move then succeeds.
-    - `TMPDIR` unset: the socket lands in `/private/tmp`, inside the
-      section-17b allowance, so section 17c re-denies the connect and the
-      section-3d `/private/tmp` + `/tmp` nvim pair denies the move — the same
-      shape as the podman case below. `...NvimTmpDeniedUnderProductionProfile`
-      covers the connect. The paired `...NvimTmpConnectsWithoutReDeny` drops
-      the two nvim lines of section 17c and the connect then succeeds.
-    - The tests use a plain listener under an `nvim.<user>`-shaped directory,
-      because the deny is path-based and the macos-15 job (which fails on any
-      SKIP) has no nvim. Side effect: an nvim started inside the sandbox
-      (where `TMPDIR` is unset) cannot create its server dir under `/tmp`. It
-      falls back to the next writable temp dir and still starts. Agents do
-      not start nvim in normal use (`GIT_EDITOR` is `true`).
-  - **The podman machine socket in `/private/tmp`** (sections 17c and 3d).
-    When podman runs with `TMPDIR` unset, its machine runtime dir is
-    `/private/tmp/podman` (or `/tmp/podman`), inside the section-17b
-    allowance. Section 17c re-denies the connect. Section 3d denies the move
-    of the `podman` directory. The connect test binds a socket at
-    `/private/tmp/podman/<pid>-api.sock`. The paired negative drops the two
-    podman lines of section 17c, and the connect then succeeds.
+  The paired negatives make these changes to the profile:
+  - Neutralise the section-17b scope term.
+  - Remove that term.
+  - Add a `/private/tmp` and `/tmp` allowance to section 17b.
+  - Add a write grant on the shared temp trees.
+
+  Each negative then gives the opposite result. The probe is a CGO-disabled
+  Go binary that the test builds, so no extra Nix tool is necessary. It does
+  the connect, the bind, and the file operations in-process. Thus the tests
+  need no shell. Plain listeners stand in for podman, tmux, nvim, and the
+  other host services. The rule is path-based, and the macos-15 job (which
+  fails on any SKIP) has none of these services. See
+  `sandbox_exec_container_socket_darwin_test.go`.
+- **The per-session TMPDIR** — the section-3 read-write grant on
+  `/var/tmp/prism-<hash of the instance ID>` (both `/var` symlink forms) and
+  the section-21e deny on unlink and create of its node (#3150). The
+  dispatcher sets `TMPDIR` and `MAC_CHROMIUM_TMPDIR` to this dir. Under the
+  production profile:
+  - The session creates, reads, renames, and removes a file in its TMPDIR,
+    and binds and connects a socket at a 92-byte path there.
+  - The session cannot create, rename, or remove a file in `/private/tmp`,
+    `/tmp`, or the user `$TMPDIR`, and cannot move a file from there into
+    its TMPDIR.
+  - The session cannot read a file, create a file, or connect to a socket in
+    the TMPDIR of another session.
+  - The session cannot rename or remove the node of its TMPDIR.
+
+  The paired negatives make these changes to the profile:
+  - Point the TMPDIR rules at a missing path.
+  - Add a write grant on the shared temp trees.
+  - Point the TMPDIR rules at the TMPDIR of the other session.
+  - Strip the section-21e deny.
+
+  Each negative then gives the opposite result. See
+  `sandbox_exec_session_tmp_darwin_test.go`.
 
 Each positive case has a paired negative case that mutates the profile to
 remove the specific rule under test and asserts the operation fails.
@@ -313,6 +321,8 @@ Apply this convention to any change that touches:
 - `Manager.PrepareSessionWorkDir` (work-dir layout — the generated
   configs, kube cache, and chromium Library skeleton the env redirects
   point at)
+- `Manager.PrepareSessionTmpDir` (the per-session TMPDIR that `TMPDIR` and
+  `MAC_CHROMIUM_TMPDIR` point at)
 
 Pure refactors that do not change the generated SBPL output are exempt. The
 integration tests must continue to pass on the refactored code, which is
@@ -346,7 +356,7 @@ workflow already uses that same action. The job then runs the tests inside
 
 ```
 nix shell nixpkgs#bash nixpkgs#coreutils \
-  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket)' -race
+  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp)' -race
 ```
 
 The tests in `sandbox_exec_gitlab_token_darwin_test.go` and
@@ -356,7 +366,7 @@ The production secrets.d deny regexes key off that path. A bare `macos-15`
 runner starts with `TMPDIR` under `/private/tmp`, so the job exports
 `TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"` before it runs `go test`.
 
-**Selector scope: six named families, not the whole `TestSandboxExec*`
+**Selector scope: seven named families, not the whole `TestSandboxExec*`
 family.** Issue #2749's problem statement names exactly two affected files:
 `sandbox_exec_gitlab_token_darwin_test.go` and
 `sandbox_exec_grafana_config_darwin_test.go`. Issue #3061 adds a third file,
@@ -370,16 +380,19 @@ Issue #3079 adds a fifth file,
 read-only worktree deny. Like the worktree path deny, it needs only Nix
 bash and Nix coreutils.
 Issue #3066 adds a sixth file,
-`sandbox_exec_container_socket_darwin_test.go`, for the section-17b/17c
+`sandbox_exec_container_socket_darwin_test.go`, for the section-17b
 Unix-socket connect allowlist. It needs no Nix tool. The test builds its own
 CGO-disabled connect probe with the Go toolchain that the job sets up. The
 test process binds the listeners. The test relies on the same
 `TMPDIR`-under-`/var/folders` export as the gitlab/grafana tests. Thus its
-"podman-location" socket (under `os.TempDir()`) is outside the allowlist.
+"podman-location" socket (under `os.TempDir()`) is in the user `$TMPDIR`.
+Issue #3150 adds a seventh file, `sandbox_exec_session_tmp_darwin_test.go`,
+for the per-session TMPDIR. It uses the same probe and needs no Nix tool.
 The `-run` selector matches only the `TestSandboxExecGitLabToken_*`,
 `TestSandboxExecGrafanaConfig_*`, `TestSandboxExecWorktreeEntry_*`,
-`TestSandboxExecWorktreeReadOnly_*`, `TestSandboxExecContainerCLI_*`, and
-`TestSandboxExecContainerSocket_*` functions. A wider `^TestSandboxExec`
+`TestSandboxExecWorktreeReadOnly_*`, `TestSandboxExecContainerCLI_*`,
+`TestSandboxExecContainerSocket_*`, and `TestSandboxExecSessionTmp_*`
+functions. A wider `^TestSandboxExec`
 selector was tried first. PR #2785 (round-2 review) found that this
 selector skips several other sandbox-exec suites on a bare `macos-15`
 runner. For example, the playwright suite

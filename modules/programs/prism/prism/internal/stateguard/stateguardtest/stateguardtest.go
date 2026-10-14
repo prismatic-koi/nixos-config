@@ -19,8 +19,10 @@ import (
 // ShortTempDir returns a new directory with a short path and removes it at
 // cleanup. A Unix socket path must fit in sun_path (104 bytes on Darwin).
 // On macOS, os.TempDir() is a long /var/folders/... path in a host shell, so
-// there the directory goes under /tmp first. On other systems it goes under
-// os.TempDir() first, which the nix check phase points at /dev/shm.
+// there the directory goes under /tmp first. In a sandbox-exec session /tmp
+// is not writable, and the fallback, os.TempDir(), is the short per-session
+// TMPDIR. On other systems it goes under os.TempDir() first, which the nix
+// check phase points at /dev/shm.
 func ShortTempDir(t testing.TB, pattern string) string {
 	t.Helper()
 	dir, err := mkdirShort(pattern)

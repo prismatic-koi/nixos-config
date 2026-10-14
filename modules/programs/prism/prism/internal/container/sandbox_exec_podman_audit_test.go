@@ -96,9 +96,9 @@ func writeGrantedSBPLPaths(t *testing.T, profile string) []sbplPathRule {
 }
 
 // auditLocationTestHome is the synthetic HOME these tests render the
-// profile against. It is deliberately NOT a t.TempDir(): Go's temp dirs
-// live under os.TempDir(), which section 4 of the profile grants read-write
-// in full, so every path derived from such a HOME would report as
+// profile against. It is deliberately NOT a t.TempDir(): a test temp dir can
+// be under the per-session TMPDIR, which section 3 of the profile grants
+// read-write in full, so every path derived from such a HOME would report as
 // write-granted and the assertion would be meaningless. It matches the
 // production shape instead (a Darwin home under /Users). No test in this
 // file reads or writes the tree, so the path does not have to exist.

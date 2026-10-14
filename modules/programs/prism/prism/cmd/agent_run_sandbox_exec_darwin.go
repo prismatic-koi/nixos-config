@@ -459,6 +459,18 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		env = append(env, container.SessionWorkDirGlabEnv(sessionDir)...)
 	}
 
+	// TMPDIR + MAC_CHROMIUM_TMPDIR: point every temp file and every scratch
+	// Unix socket of the session at its per-session TMPDIR, which
+	// PrepareSandboxExec() created. The profile grants no write and no socket
+	// connect on /tmp, /private/tmp, or the user $TMPDIR, so this dir is the
+	// only temp tree the session can use. MinimalIsolatedExecEnv drops the
+	// host TMPDIR. Appended after AppendSandboxEnvVarsKV, so it wins over a
+	// TMPDIR in the profile-level agent.envVars (the last occurrence wins).
+	// See container.SessionTmpDirEnv.
+	if tmpDir, tmpDirErr := m.SessionTmpDir(); tmpDirErr == nil {
+		env = append(env, container.SessionTmpDirEnv(tmpDir)...)
+	}
+
 	// GOTOOLCHAIN=local: nix is authoritative for the Go toolchain inside the
 	// sandbox. A
 	// sandboxed agent must not silently download an unpinned toolchain from

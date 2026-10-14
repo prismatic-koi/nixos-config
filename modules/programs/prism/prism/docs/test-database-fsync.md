@@ -30,8 +30,8 @@ Before #2612 each of those statements committed in autocommit mode, and one
 inside one transaction and the same open costs **7** fsyncs. Measure it yourself:
 
 ```
-go test -c -o /tmp/pkg.test ./internal/db/
-strace -f -c -e trace=fsync /tmp/pkg.test -test.run '^TestProbeFreshOpen$'
+go test -c -o "${TMPDIR:-/tmp}/pkg.test" ./internal/db/
+strace -f -c -e trace=fsync "${TMPDIR:-/tmp}/pkg.test" -test.run '^TestProbeFreshOpen$'
 ```
 
 `TestProbeFreshOpen` in `internal/db` does one `db.Open` and nothing else, so

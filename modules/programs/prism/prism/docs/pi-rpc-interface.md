@@ -469,7 +469,7 @@ All paths are relative to the agent directory (`getAgentDir()` =
 | `~/.pi/agent/sessions/<encoded-cwd>/<ts>_<uuid>.jsonl` | Append-only conversation tree | Pi (every message, every tool call, every turn) |
 | `~/.pi/agent/atlassian-mcp-oauth.json` | Atlassian MCP OAuth tokens | Pi's `/login-atlassian` |
 | `~/.pi/agent/pi-debug.log` | Debug log (when enabled) | Pi (optional) |
-| `/tmp/pi-bash-<id>.log` | Full bash command output when truncated | Pi's bash executor (`dist/core/bash-executor.js` line 34) |
+| `$TMPDIR/pi-bash-<id>.log` (`/tmp` when `TMPDIR` is unset, the per-session TMPDIR in a `sandbox-exec` session) | Full bash command output when truncated | Pi's bash executor (`dist/core/bash-executor.js` line 34) |
 
 **Confirmed:** `~/.pi/agent/` is the canonical config directory. The design
 doc's §9.2 and §7.3 are correct in naming this directory.
@@ -481,8 +481,10 @@ a per-cwd directory, not files within a per-session-ID directory. See Q5.
 
 **No new write paths outside of tool calls:** In daemon mode (pi running
 unsandboxed), all pi writes occur to the paths above. Pi does not write to the
-worktree outside of tool calls. The `bash` executor writes to
-`/tmp/pi-bash-*.log` for large outputs. These are transient and not
+worktree outside of tool calls. The `bash` executor writes large outputs to
+`pi-bash-*.log` in the Node.js `os.tmpdir()` dir. That dir is `$TMPDIR`: the
+per-session TMPDIR in a `sandbox-exec` session, and `/tmp` when `TMPDIR` is
+unset. These are transient and not
 sensitive.
 
 **Atlassian MCP OAuth tokens** (`~/.pi/agent/atlassian-mcp-oauth.json`):

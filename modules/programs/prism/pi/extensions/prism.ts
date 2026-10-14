@@ -1091,8 +1091,8 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
       "across sessions race on a single LIFO stack and can silently swap " +
       "WIP between workers (issue #2202). Set WIP aside with a temp commit " +
       "(`git commit -am wip`, restore with `git reset --soft HEAD~1`) or a " +
-      "patch file (`git diff > /tmp/wip.patch` then `git restore .`, " +
-      "restore with `git apply /tmp/wip.patch`) instead \u2014 see AGENTS.md " +
+      "patch file (`git diff > \"${TMPDIR:-/tmp}/wip.patch\"` then `git restore .`, " +
+      "restore with `git apply \"${TMPDIR:-/tmp}/wip.patch\"`) instead \u2014 see AGENTS.md " +
       "\u00a7 'Setting WIP aside \u2014 do not use git stash'.",
   },
   {

@@ -98,10 +98,10 @@ Sanctioned WIP-set-aside patterns — both are worktree-local:
 - **Patch file**:
 
   ```bash
-  git diff > /tmp/wip.patch && git restore .   # set WIP aside
+  git diff > "${TMPDIR:-/tmp}/wip.patch" && git restore .   # set WIP aside
   # ... do the other thing ...
-  git apply --check /tmp/wip.patch              # verify before restore
-  git apply /tmp/wip.patch                      # restore
+  git apply --check "${TMPDIR:-/tmp}/wip.patch"              # verify before restore
+  git apply "${TMPDIR:-/tmp}/wip.patch"                      # restore
   ```
 
   If using the patch file pattern, **always** run `git apply --check` first, or test the exit status of `git apply`. Never suppress its stderr. `git apply` fails silently — it will not restore the tree if the patch does not apply cleanly. The prism-testing skill carries the full incident rationale (#2202 class incident). General rule: never run any tree-restoring command with stderr suppressed.
