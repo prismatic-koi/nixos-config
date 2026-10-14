@@ -249,9 +249,10 @@ integration test coverage exists for:
 - **The Unix-socket connect allowlist** — the section-17b deny on
   `network-outbound` for every Unix-socket path except an allowlist, the
   section-17c re-deny of the host-escape sockets inside the `/private/tmp`
-  allowance (tmux, the user ssh-agent, AeroSpace, and the .NET diagnostic IPC
-  socket), and the section-3d `file-write*` deny that stops a rename from
-  moving a protected socket to an allowed path. Under the production profile,
+  allowance (tmux, the user ssh-agent, AeroSpace, the .NET diagnostic IPC
+  socket, and the podman machine socket and nvim RPC socket in the
+  TMPDIR-unset `/private/tmp` location), and the section-3d `file-write*`
+  deny that stops a rename from moving a protected socket to an allowed path. Under the production profile,
   a connect to a socket in the podman machine location (`$TMPDIR`) fails. A
   connect to a socket under `/private/tmp` and a loopback TCP connect both
   succeed. A connect to a tmux-shaped socket and to a .NET-diagnostic-shaped
@@ -263,6 +264,40 @@ integration test coverage exists for:
   Go binary that the test builds, so no extra Nix tool is necessary. It also
   does the rename in-process (`os.Rename`), so the move test needs no shell.
   See `sandbox_exec_container_socket_darwin_test.go` (issue #3066).
+
+  #3147 adds two more host-escape locations to the same test file, in the
+  same shape:
+  - **The nvim RPC socket** (sections 17c and 3d). nvim starts an RPC server
+    at `$TMPDIR/nvim.<user>/<rand>/nvim.<pid>.0`, and a client on it runs
+    `:!<cmd>` on the host. nvim resolves its temp dir in the order `$TMPDIR`,
+    `/tmp`, so the socket is under `/var/folders` with `TMPDIR` set, or under
+    `/tmp` (that is, `/private/tmp`) with `TMPDIR` unset.
+    - `TMPDIR` set: section 17b denies the direct connect (`/var/folders` is
+      outside the allowlist). The section-3d `nvim\.[^/]+(/|$)` `/var` pair
+      stops the agent from moving the socket file, or the `nvim.<user>`
+      directory, into `/private/tmp`. `...NvimDeniedUnderProductionProfile`
+      covers the direct connect and both moves. The paired
+      `...NvimRenameWorksWithoutWriteDeny` strips only the two `/var` nvim
+      lines, so the directory move then succeeds.
+    - `TMPDIR` unset: the socket lands in `/private/tmp`, inside the
+      section-17b allowance, so section 17c re-denies the connect and the
+      section-3d `/private/tmp` + `/tmp` nvim pair denies the move — the same
+      shape as the podman case below. `...NvimTmpDeniedUnderProductionProfile`
+      covers the connect. The paired `...NvimTmpConnectsWithoutReDeny` drops
+      the two nvim lines of section 17c and the connect then succeeds.
+    - The tests use a plain listener under an `nvim.<user>`-shaped directory,
+      because the deny is path-based and the macos-15 job (which fails on any
+      SKIP) has no nvim. Side effect: an nvim started inside the sandbox
+      (where `TMPDIR` is unset) cannot create its server dir under `/tmp`. It
+      falls back to the next writable temp dir and still starts. Agents do
+      not start nvim in normal use (`GIT_EDITOR` is `true`).
+  - **The podman machine socket in `/private/tmp`** (sections 17c and 3d).
+    When podman runs with `TMPDIR` unset, its machine runtime dir is
+    `/private/tmp/podman` (or `/tmp/podman`), inside the section-17b
+    allowance. Section 17c re-denies the connect. Section 3d denies the move
+    of the `podman` directory. The connect test binds a socket at
+    `/private/tmp/podman/<pid>-api.sock`. The paired negative drops the two
+    podman lines of section 17c, and the connect then succeeds.
 
 Each positive case has a paired negative case that mutates the profile to
 remove the specific rule under test and asserts the operation fails.
