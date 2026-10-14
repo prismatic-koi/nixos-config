@@ -9,7 +9,8 @@ import (
 )
 
 // Theme colour vars loaded from config at package init.
-// Gruvbox-dark defaults are used when no config file is present.
+// Gruvbox-dark defaults are used when no config file is present and in a
+// test binary (config.LoadForInit).
 var (
 	ColorPrimary    string
 	ColorSecondary  string
@@ -23,7 +24,7 @@ var (
 )
 
 func init() {
-	cfg := config.Load()
+	cfg := config.LoadForInit()
 	ColorPrimary = cfg.ColorPrimary
 	ColorSecondary = cfg.ColorSecondary
 	ColorPurple = cfg.ColorPurple

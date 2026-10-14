@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -325,6 +326,18 @@ func Load() Config {
 		loaded = load()
 	})
 	return loaded
+}
+
+// LoadForInit is Load for a package init. In a test binary it returns the
+// defaults and reads no file. Go runs package init before TestMain, so a
+// test cannot isolate XDG_CONFIG_HOME first: Load would read the real
+// config.json of the user and cache it for the whole test run (#3146). In
+// any other binary it returns Load().
+func LoadForInit() Config {
+	if testing.Testing() {
+		return defaults()
+	}
+	return Load()
 }
 
 // LoadFresh loads the configuration without the singleton cache. Intended for

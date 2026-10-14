@@ -604,3 +604,26 @@ func TestMachineMountAllowlist(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadForInit_TestBinaryReadsNoFile shows that a package init in a test
+// binary gets the defaults, not the config file under XDG_CONFIG_HOME. In a
+// host-mode session that file is the real config of the user.
+func TestLoadForInit_TestBinaryReadsNoFile(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	want := config.LoadFresh().ColorPrimary
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "prism"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "prism", "config.json"), []byte(`{"color_primary": "#000000"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if got := config.LoadFresh().ColorPrimary; got != "#000000" || got == want {
+		t.Fatalf("LoadFresh().ColorPrimary = %q, want the file value #000000: the fixture is wrong", got)
+	}
+	if got := config.LoadForInit().ColorPrimary; got != want {
+		t.Errorf("LoadForInit().ColorPrimary = %q, want the default %q", got, want)
+	}
+}
