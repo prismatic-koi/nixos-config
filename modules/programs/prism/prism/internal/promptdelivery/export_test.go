@@ -13,3 +13,9 @@ func SetSidecarHostAPIPathFn(fn func(string) (string, error)) (restore func()) {
 	sidecarHostAPIPathFn = fn
 	return func() { sidecarHostAPIPathFn = prev }
 }
+
+// ErrorBodySnippet exposes errorBodySnippet for tests.
+var ErrorBodySnippet = errorBodySnippet
+
+// ErrorBodyLimit exposes errorBodyLimit for tests.
+const ErrorBodyLimit = errorBodyLimit

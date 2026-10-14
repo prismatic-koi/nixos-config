@@ -49,6 +49,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -379,7 +380,13 @@ func errorBodySnippet(r io.Reader) string {
 	buf, _ := io.ReadAll(io.LimitReader(r, errorBodyLimit+1))
 	truncated := len(buf) > errorBodyLimit
 	if truncated {
-		buf = buf[:errorBodyLimit]
+		// buf[errorBodyLimit] is the first dropped byte. If it continues a
+		// multi-byte rune, back up so the cut does not split that rune.
+		cut := errorBodyLimit
+		for cut > 0 && !utf8.RuneStart(buf[cut]) {
+			cut--
+		}
+		buf = buf[:cut]
 	}
 	s := strings.ToValidUTF8(strings.Join(strings.Fields(string(buf)), " "), "?")
 	if s == "" {
