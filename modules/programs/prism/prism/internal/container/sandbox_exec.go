@@ -354,7 +354,7 @@ func generateProfile(m *Manager) string {
 	//
 	// Both /var symlink forms are listed. file-map-executable lets a tool
 	// dlopen a native module that it extracts to TMPDIR. The literal
-	// metadata allow on each ancestor node of the TMPDIR (/var/tmp,
+	// metadata allow on each ancestor node of the TMPDIR (/var, /var/tmp,
 	// /private/var/tmp, /private/var, /private) lets a tool resolve the /var
 	// symlink (realpath, filepath.EvalSymlinks) when the section-6b ancestor
 	// allow is absent. It grants stat only, not a directory list.

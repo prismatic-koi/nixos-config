@@ -363,7 +363,7 @@ func TestGenerateProfile_NetworkUnixSocketAllowlist(t *testing.T) {
 		t.Errorf("section-17b deny missing the per-session work dir %s; clause:\n%s", want, clause)
 	}
 
-	// The per-session TMPDIR is allowed in both /tmp symlink forms.
+	// The per-session TMPDIR is allowed in both /var symlink forms.
 	tmpDir, err := m.sessionTmpDirPath()
 	if err != nil {
 		t.Fatalf("sessionTmpDirPath: %v", err)

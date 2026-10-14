@@ -455,7 +455,7 @@ func TestValidateSandboxExecArgs_OK(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	// PrepareSandboxExec also creates the per-session TMPDIR. Its production
-	// root, /tmp, is not writable in a sandboxed test process.
+	// root, /var/tmp, is not writable in a sandboxed test process.
 	t.Cleanup(container.SetSessionTmpRootForTest(t.TempDir()))
 	m := container.New(container.Config{
 		SessionName:   "repo@feat",

@@ -313,7 +313,7 @@ func preparePositiveProfile(t *testing.T, m *container.Manager) (preparedProfile
 		if sessionDir, dirErr := m.SessionWorkDir(); dirErr == nil {
 			_ = os.RemoveAll(sessionDir)
 		}
-		// It also creates the per-session TMPDIR under /tmp.
+		// It also creates the per-session TMPDIR under /var/tmp.
 		if tmpDir, dirErr := m.SessionTmpDir(); dirErr == nil {
 			_ = os.RemoveAll(tmpDir)
 		}
