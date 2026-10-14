@@ -190,7 +190,10 @@ func TestPrepareSessionTmpDir_TightensMode(t *testing.T) {
 	if _, err := m.PrepareSessionTmpDir(); err != nil {
 		t.Fatalf("PrepareSessionTmpDir: %v", err)
 	}
-	info, _ := os.Lstat(dir)
+	info, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatalf("Lstat: %v", err)
+	}
 	if perm := info.Mode().Perm(); perm != 0o700 {
 		t.Errorf("TMPDIR mode = %o after Prepare, want 700", perm)
 	}
@@ -217,8 +220,10 @@ func TestPrepareSessionTmpDir_RefusesPlant(t *testing.T) {
 		if info, err := os.Lstat(dir); err != nil || info.Mode()&os.ModeSymlink == 0 {
 			t.Errorf("the symlink at the TMPDIR path changed: %v", err)
 		}
-		if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0o755 {
-			t.Errorf("Prepare changed the mode of the symlink target: %v %v", info.Mode(), err)
+		if info, err := os.Stat(target); err != nil {
+			t.Errorf("Stat of the symlink target: %v", err)
+		} else if info.Mode().Perm() != 0o755 {
+			t.Errorf("Prepare changed the mode of the symlink target: %v", info.Mode())
 		}
 	})
 	t.Run("file", func(t *testing.T) {
@@ -248,8 +253,10 @@ func TestPrepareSessionTmpDir_RefusesPlant(t *testing.T) {
 		if _, err := m.PrepareSessionTmpDir(); err == nil || !strings.Contains(err.Error(), "another user") {
 			t.Errorf("Prepare accepted a TMPDIR that another user owns; err = %v", err)
 		}
-		if info, err := os.Lstat(dir); err != nil || info.Mode().Perm() != 0o755 {
-			t.Errorf("Prepare changed the mode of a dir of another user: %v %v", info.Mode(), err)
+		if info, err := os.Lstat(dir); err != nil {
+			t.Errorf("Lstat of the dir of another user: %v", err)
+		} else if info.Mode().Perm() != 0o755 {
+			t.Errorf("Prepare changed the mode of a dir of another user: %v", info.Mode())
 		}
 	})
 }
@@ -389,7 +396,7 @@ func newTmpDirProfile(t *testing.T, instanceID string) (*Manager, string) {
 
 // TestGenerateProfile_SessionTmpDirGrant: the profile grants read, write,
 // map-executable, and Unix-socket connect on the per-session TMPDIR, in
-// both /tmp symlink forms.
+// both /var symlink forms.
 func TestGenerateProfile_SessionTmpDirGrant(t *testing.T) {
 	m, profile := newTmpDirProfile(t, "instance-a")
 	tmpDir, _ := m.sessionTmpDirPath()

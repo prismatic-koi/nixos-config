@@ -9,7 +9,6 @@ package cmd
 //	prism prompt <session> --prompt-file /tmp/prompt.txt
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -236,53 +235,6 @@ func emitPromptOutcome(stdout io.Writer, jsonOut bool, sessionName, transport st
 			sessionName, outcome.DeliveryID)
 	default:
 		fmt.Fprintf(stdout, "prompt delivered to %s via %s\n", sessionName, transport)
-	}
-	return nil
-}
-
-// deliverViaSidecarHostAPI dials the per-session host-API Unix socket and
-// POSTs /prompt to deliver a prompt to a socket-pipe (e.g. PI) session. The
-// socket-pipe path bypasses the HTTP harness API (used for HTTP harnesses) and
-// instead routes through the sidecar's pipe-frame queue.
-//
-// deliverAs controls the delivery mode ("steer", "followUp", or "nextTurn").
-// It is forwarded as the "deliver_as" JSON field so the sidecar knows how to
-// inject the prompt. The sidecar validates unknown values and returns HTTP 400.
-//
-// The function dials the socket directly rather than going through the
-// PRISM_HOST_API proxy mechanism: PRISM_HOST_API is only set inside
-// containerised agent processes; the host-side prism CLI must look up the
-// per-session socket itself via session.SidecarHostAPIPath.
-func deliverViaSidecarHostAPI(sessionName, promptText, deliverAs string) error {
-	sockPath, err := session.SidecarHostAPIPath(sessionName)
-	if err != nil {
-		return fmt.Errorf("resolve sidecar host-api socket: %w", err)
-	}
-	if _, statErr := os.Stat(sockPath); statErr != nil {
-		return fmt.Errorf("sidecar host-api socket missing at %s: %w", sockPath, statErr)
-	}
-	client := newHostAPIClient(sockPath)
-
-	body, err := json.Marshal(map[string]string{
-		"session":    sessionName,
-		"prompt":     promptText,
-		"deliver_as": deliverAs,
-	})
-	if err != nil {
-		return fmt.Errorf("marshal prompt: %w", err)
-	}
-	req, err := http.NewRequest(http.MethodPost, "http://prism-hostapi/prompt", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("dial sidecar host-api: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("sidecar host-api returned HTTP %d", resp.StatusCode)
 	}
 	return nil
 }

@@ -183,7 +183,8 @@ jobs:
   # TestSandboxExecContainerCLI_* (#3065, the section-21c podman and
   # docker exec deny), TestSandboxExecContainerSocket_* (#3066, the
   # section-17b Unix-socket connect allowlist), and
-  # TestSandboxExecSessionTmp_* (#3150, the per-session TMPDIR), not the
+  # TestSandboxExecSessionTmp_* (#3150, the per-session TMPDIR and the
+  # section-21e deny on its node), not the
   # full TestSandboxExec* family. The ContainerSocket and SessionTmp suites
   # need no extra provisioning beyond the Go toolchain already set up above:
   # they build their own CGO-disabled probe and bind their listeners

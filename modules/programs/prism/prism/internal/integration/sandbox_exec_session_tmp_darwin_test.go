@@ -97,7 +97,7 @@ func TestSandboxExecSessionTmp_DeniedWithoutGrant(t *testing.T) {
 }
 
 // retargetSessionTmp replaces every rule path of the TMPDIR from with to, in
-// both /tmp symlink forms.
+// both /var symlink forms.
 func retargetSessionTmp(profile, from, to string) string {
 	for _, prefix := range []string{"/private", ""} {
 		profile = strings.ReplaceAll(profile, sbplQuoteForTest(prefix+from), sbplQuoteForTest(prefix+to))

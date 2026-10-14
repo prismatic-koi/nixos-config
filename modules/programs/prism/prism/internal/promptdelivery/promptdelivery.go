@@ -46,8 +46,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -255,7 +257,8 @@ func deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID st
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return outcome, fmt.Errorf("host-API /prompt returned HTTP %d for session %q", resp.StatusCode, sessionName)
+		return outcome, fmt.Errorf("host-API /prompt returned HTTP %d for session %q: %s",
+			resp.StatusCode, sessionName, errorBodySnippet(resp.Body))
 	}
 
 	// Parse the response envelope to surface {"buffered": true} /
@@ -364,4 +367,33 @@ func isStaleTombstoneSocket(sockPath string, dialErr error) bool {
 	}
 	_, statErr := os.Stat(sockPath)
 	return statErr == nil
+}
+
+// errorBodyLimit caps how many bytes of a non-2xx response body an error
+// carries.
+const errorBodyLimit = 512
+
+// errorBodySnippet reads at most errorBodyLimit bytes of r and returns them
+// as one line: whitespace runs collapse to one space, and a body that is cut
+// short ends with "...". An empty body returns "(empty body)".
+func errorBodySnippet(r io.Reader) string {
+	buf, _ := io.ReadAll(io.LimitReader(r, errorBodyLimit+1))
+	truncated := len(buf) > errorBodyLimit
+	if truncated {
+		// buf[errorBodyLimit] is the first dropped byte. If it continues a
+		// multi-byte rune, back up so the cut does not split that rune.
+		cut := errorBodyLimit
+		for cut > 0 && !utf8.RuneStart(buf[cut]) {
+			cut--
+		}
+		buf = buf[:cut]
+	}
+	s := strings.ToValidUTF8(strings.Join(strings.Fields(string(buf)), " "), "?")
+	if s == "" {
+		return "(empty body)"
+	}
+	if truncated {
+		s += "..."
+	}
+	return s
 }

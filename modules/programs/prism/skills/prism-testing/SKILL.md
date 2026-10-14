@@ -86,6 +86,8 @@ The test suite under `modules/programs/prism/prism/internal/sidecar/` is fully i
 
 If you add a new test that exercises notification delivery, use `sidecartest.NewIsolated` — do not construct a `sidecar.Config` that touches the host environment.
 
+Do not hard-code `/tmp` in a test. A test with `os.MkdirTemp("/tmp", ...)` passes in CI and fails in a sandbox-exec worker, where `/tmp` is not writable. Use `t.TempDir()`.
+
 ## Host-mode isolation (issue #3146)
 
 In a `host`-mode session, `go test ./...` inherits the real `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `TMPDIR`, and a `TMUX` of the user. A pane of a test tmux server runs the zsh of the user, and `~/.zshenv` sources `hm-session-vars.sh`, which sets the XDG paths back to the real ones. Before #3146 this let a test-built `prism switch` and `prism cleanup` act on the real database and end the real `obsidian` session. Obey these rules:

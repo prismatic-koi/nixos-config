@@ -148,10 +148,7 @@ func TestHostAPIBind_WorstCaseSessionName_DoesNotEINVAL(t *testing.T) {
 	// does not depend on the runner's TMPDIR length. The point of this
 	// regression test is the SUFFIX of the path; the prefix is owned by
 	// the deployment.
-	stateHome, err := shortStateHome(t)
-	if err != nil {
-		t.Fatalf("shortStateHome: %v", err)
-	}
+	stateHome := shortStateHome(t)
 	t.Setenv("XDG_STATE_HOME", stateHome)
 
 	sockPath, err := prismsession.SidecarHostAPIPath(worstCase)
@@ -180,9 +177,9 @@ func TestHostAPIBind_WorstCaseSessionName_DoesNotEINVAL(t *testing.T) {
 // stateguardtest.ShortTempDir (NOT under t.TempDir(), which Go derives from
 // TMPDIR and may itself be long enough to blow the budget on some runners).
 // The test cleans up via t.Cleanup.
-func shortStateHome(t *testing.T) (string, error) {
+func shortStateHome(t *testing.T) string {
 	t.Helper()
-	return stateguardtest.ShortTempDir(t, "p1050-"), nil
+	return stateguardtest.ShortTempDir(t, "p1050-")
 }
 
 // TestSidecarRun_BindFailureReturnsError is the regression test. It

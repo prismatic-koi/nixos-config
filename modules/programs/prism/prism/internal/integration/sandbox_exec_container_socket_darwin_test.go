@@ -14,6 +14,9 @@ package integration_test
 // machine, tmux, the user ssh-agent, AeroSpace, a .NET diagnostic socket,
 // nvim, or any other. The session has no write grant on a shared temp tree
 // either, so it cannot move such a socket into its per-session TMPDIR.
+// Section 21e denies unlink and create of the TMPDIR node, so the session
+// cannot swap the dir for a symlink (see
+// sandbox_exec_session_tmp_darwin_test.go).
 //
 // Each positive test runs a probe under the production profile. Each paired
 // negative mutates the profile and shows that the rule under test is what
