@@ -43,8 +43,9 @@ const (
 )
 
 // fixtureReader returns the testdata machine config at stubConfig. The
-// fixture follows the MachineConfig layout of podman 5.8.7. It is not
-// copied from a real machine.
+// fixture has the field names and the Mounts shape of a real applehv
+// machine config file, with the three default mounts. Paths, tags, and
+// ports are placeholders.
 func fixtureReader(t *testing.T) func(string) ([]byte, error) {
 	t.Helper()
 	data, err := os.ReadFile("testdata/podman-machine-config.json")
