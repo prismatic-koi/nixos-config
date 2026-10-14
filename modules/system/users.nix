@@ -17,9 +17,6 @@ in
       description = username;
       extraGroups = [
         "wheel"
-        # Read+write access to the podman socket (mode 0660 root:podman).
-        # See #2317.
-        "podman"
         (lib.mkIf config.networking.networkmanager.enable "networkmanager")
         (lib.mkIf config.hardware.openrazer.enable "openrazer")
       ];
