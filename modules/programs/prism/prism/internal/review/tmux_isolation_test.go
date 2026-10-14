@@ -84,6 +84,12 @@ func TestMain(m *testing.M) {
 		time.Sleep(50 * time.Millisecond)
 		os.Exit(0)
 	}
+	if os.Getenv(sidecarStubLongEnv) == "1" {
+		// A long-running sidecar stub that SIGTERM stops. The #3160 tests
+		// assert that a release or a cleanup stops it.
+		time.Sleep(60 * time.Second)
+		os.Exit(0)
+	}
 	if len(os.Args) > 1 && (os.Args[1] == "sidecar" || os.Args[1] == "monitor-review") {
 		// Re-invoked as a prism subcommand without the stub env var. Exit
 		// instead of recursively running the suite. "sidecar" comes from

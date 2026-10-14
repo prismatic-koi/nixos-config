@@ -364,8 +364,43 @@ func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 // If StopSidecar cannot read the command line of a live PID, it sends no
 // signal and writes a warning that names the PID. If this user owns that
 // PID, StopSidecar returns false: that PID can still be the sidecar.
+//
+// The PID file stays while the sidecar runs. Another stop that runs at the
+// same time then still finds the process, and does not report it as gone.
 func StopSidecar(sessionName string, timeout time.Duration) bool {
-	pid := readSidecarPID(sessionName)
+	exited, _ := stopSidecarPID(sessionName, readSidecarPID(sessionName), timeout, true)
+	return exited
+}
+
+// SidecarStopTimeout is the SIGTERM wait, and then the SIGKILL wait, that
+// the release, the session-closed hook, parent cleanup, and the ended-session
+// sweep give EnsureSidecarStopped.
+const SidecarStopTimeout = 3 * time.Second
+
+// EnsureSidecarStopped stops the sidecar of sessionName as StopSidecar does,
+// and reports whether no sidecar of the session runs when it returns. A
+// sidecar that exits only after SIGKILL counts as stopped.
+//
+// It returns false when the sidecar still runs, or when prism cannot read
+// the command line of the PID in the PID file. The PID file then stays, so
+// that a later stop finds the process again. A caller that ends the session
+// must keep the row and the port when it returns false: the process can
+// still write to the row and hold the port.
+func EnsureSidecarStopped(sessionName string, timeout time.Duration) bool {
+	_, gone := stopSidecarPID(sessionName, readSidecarPID(sessionName), timeout, false)
+	return gone
+}
+
+// stopSidecarPID is the shared body of StopSidecar, EnsureSidecarStopped,
+// and the ended-session sweep. It acts on pid, which the caller read from
+// the PID file, and does not read the file again: a sidecar that starts
+// for the session in the meantime writes a new PID, and that sidecar must
+// get no signal.
+//
+// exited reports an exit after SIGTERM, inside timeout. gone reports that
+// pid does not run the sidecar of the session at return. dropUnknown
+// removes the PID file of a PID whose command line prism cannot read.
+func stopSidecarPID(sessionName string, pid int, timeout time.Duration, dropUnknown bool) (exited, gone bool) {
 	owner := pidOwnerGone
 	if pid > 0 && sidecarProcessExists(pid) {
 		owner = sidecarPIDOwner(pid, sessionName)
@@ -373,29 +408,66 @@ func StopSidecar(sessionName string, timeout time.Duration) bool {
 	// EPERM means another user owns pid. The sidecar runs as this user, so a
 	// stale PID file names that process.
 	if owner == pidOwnerGone || owner == pidOwnerOther || syscall.Kill(pid, 0) == syscall.EPERM {
-		removeSidecarPIDFile(sessionName)
-		return true
+		removeSidecarPIDFileIf(sessionName, pid)
+		return true, true
 	}
 	if owner == pidOwnerUnknown {
-		removeSidecarPIDFile(sessionName)
-		return false
+		if dropUnknown {
+			removeSidecarPIDFileIf(sessionName, pid)
+		}
+		return false, false
 	}
-	if err := KillSidecarAndWait(sessionName, timeout); err == nil {
-		return true
+
+	deadline := time.Now().Add(timeout)
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+		fmt.Fprintf(os.Stderr, "warning: kill sidecar pid %d: %v\n", pid, err)
 	}
+	if waitSidecarExit(pid, deadline) {
+		removeSidecarPIDFileIf(sessionName, pid)
+		// Unlink only after the exit. See KillSidecarAndWait for the
+		// listener race that this order closes.
+		unlinkSidecarSockets(sessionName)
+		if sockPath, err := SidecarHostAPIPath(sessionName); err == nil {
+			waitForSocketGone(sockPath, deadline)
+		}
+		return true, true
+	}
+
 	if sidecarPIDOwner(pid, sessionName) == pidOwnerSidecar {
 		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
 			fmt.Fprintf(os.Stderr, "warning: SIGKILL sidecar pid %d (session %q): %v\n", pid, sessionName, err)
 		}
-		deadline := time.Now().Add(timeout)
-		for sidecarProcessExists(pid) && time.Now().Before(deadline) {
-			time.Sleep(25 * time.Millisecond)
+		waitSidecarExit(pid, time.Now().Add(timeout))
+	}
+	if sidecarProcessExists(pid) {
+		fmt.Fprintf(os.Stderr, "warning: sidecar pid %d (session %q) still runs after SIGTERM and SIGKILL\n", pid, sessionName)
+		return false, false
+	}
+	removeSidecarPIDFileIf(sessionName, pid)
+	unlinkSidecarSockets(sessionName)
+	return false, true
+}
+
+// waitSidecarExit polls until pid no longer runs or deadline passes. It
+// reports whether pid exited.
+func waitSidecarExit(pid int, deadline time.Time) bool {
+	for {
+		if !sidecarProcessExists(pid) {
+			return true
 		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-	if !sidecarProcessExists(pid) {
-		unlinkSidecarSockets(sessionName)
-	}
-	return false
+}
+
+// RemoveOwnSidecarPIDFile removes the sidecar PID file of sessionName when
+// it holds the PID of this process. A sidecar calls it as it exits. A file
+// that holds another PID belongs to a newer sidecar of the session, so it
+// stays.
+func RemoveOwnSidecarPIDFile(sessionName string) {
+	removeSidecarPIDFileIf(sessionName, os.Getpid())
 }
 
 // readSidecarPID returns the PID in the sidecar PID file of sessionName, or
@@ -416,10 +488,22 @@ func readSidecarPID(sessionName string) int {
 	return pid
 }
 
-func removeSidecarPIDFile(sessionName string) {
-	if pidPath, err := SidecarPIDPath(sessionName); err == nil {
-		_ = os.Remove(pidPath)
+// removeSidecarPIDFileIf removes the sidecar PID file of sessionName only
+// when it still holds pid. A pid of 0 matches a file that holds no PID. A
+// sidecar that starts for the session writes a new PID into the file, and
+// a stop of the old PID must not remove that file.
+func removeSidecarPIDFileIf(sessionName string, pid int) {
+	pidPath, err := SidecarPIDPath(sessionName)
+	if err != nil {
+		return
 	}
+	if _, statErr := os.Stat(pidPath); statErr != nil {
+		return
+	}
+	if readSidecarPID(sessionName) != pid {
+		return
+	}
+	_ = os.Remove(pidPath)
 }
 
 type pidOwner int

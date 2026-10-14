@@ -16,12 +16,21 @@ package review
 // # What a reap does, and does not do
 //
 // A reap is the `prism close --keep-worktree` primitive applied to one review
-// agent: kill the tmux session, kill the sidecar, drop the container's
+// agent: stop the sidecar, kill the tmux session, drop the container's
 // per-session temp state, release the harness port, stamp `ended_at`, and
 // purge queued bus messages. It is the same per-agent teardown that
-// `CleanupReviewSessionsForParent` already runs when the parent worker is
-// cleaned up, so the reaper introduces no new teardown behaviour — only a new
+// `CleanupReviewSessionsForParent` runs when the parent worker is cleaned
+// up, so the reaper introduces no new teardown behaviour — only a new
 // trigger for it.
+//
+// # Rows that another path already ended
+//
+// The candidate query skips a row whose `ended_at` is set. A row can be
+// ended before the release by a path that does not stop the sidecar: the
+// tmux `session-closed` hook, the `db.SetEnded` cascade from the parent, or
+// the monitor's force-terminate. The release therefore also runs
+// SweepEndedSidecars, which finds the sidecar of such a row by its PID file
+// (#3160).
 //
 // A reap never:
 //
@@ -103,7 +112,7 @@ var reviewAgentNamePattern = regexp.MustCompile(`^.+~review-\d+-.+$`)
 // production ordering.
 var (
 	reapKillTmuxSession = func(name string) { _ = tmux.KillSession(name) }
-	reapKillSidecar     = session.KillSidecar
+	stopAgentSidecar    = func(name string) bool { return session.EnsureSidecarStopped(name, session.SidecarStopTimeout) }
 	reapRemoveContainer = removeReviewAgentContainer
 )
 
@@ -121,6 +130,9 @@ type ReapResult struct {
 	Reaped []string
 	// Skipped names candidates rejected by the Go-side shape re-check.
 	Skipped []string
+	// Failed names candidates whose sidecar did not stop. Their tmux
+	// session, row, and port stay, and the next sweep tries again.
+	Failed []string
 }
 
 // ReapDeliveredReviewAgents releases every review-agent session that has been
@@ -162,7 +174,10 @@ func ReapDeliveredReviewAgents(d *db.DB, groupID string, now time.Time, grace ti
 			res.Skipped = append(res.Skipped, c.SessionName)
 			continue
 		}
-		reapOne(d, c)
+		if !reapOne(d, c) {
+			res.Failed = append(res.Failed, c.SessionName)
+			continue
+		}
 		res.Reaped = append(res.Reaped, c.SessionName)
 	}
 	if len(res.Reaped) > 0 {
@@ -173,9 +188,16 @@ func ReapDeliveredReviewAgents(d *db.DB, groupID string, now time.Time, grace ti
 }
 
 // reapOne applies the `prism close --keep-worktree` teardown to a single
-// review agent. Every step is best-effort and idempotent.
+// review agent. Every step is idempotent. It returns false when the sidecar
+// does not stop.
 //
-// The order has two constraints, and they act on different steps.
+// The order has three constraints, and they act on different steps.
+//
+// The sidecar stops before the tmux kill. If it does not stop, reapOne
+// returns and changes nothing else: the tmux session, the row, and the port
+// stay, so the next sweep retries the whole sequence. A sidecar that still
+// runs can write to its row and hold its port. The tmux kill must come
+// after the stop, because the `session-closed` hook it fires ends the row.
 //
 // `ended_at` is written LAST. If the process dies part-way, the next sweep
 // still sees `ended_at IS NULL` and retries the whole sequence. Writing it
@@ -191,11 +213,11 @@ func ReapDeliveredReviewAgents(d *db.DB, groupID string, now time.Time, grace ti
 // to record anything. Recording after the kill loses the cause on most
 // releases, which makes the cause-recording invariant false in practice.
 //
-// The two constraints do not conflict: `RecordSessionReap` appends an
-// `agent_events` row and never touches `ended_at`, so moving it to the front
+// The constraints do not conflict: `RecordSessionReap` appends an
+// `agent_events` row and never touches `ended_at`, so recording it first
 // leaves the retry property above exactly as it was. `ended_at` is still the
 // last thing this function writes to `agent_status`.
-func reapOne(d *db.DB, c db.ReapCandidate) {
+func reapOne(d *db.DB, c db.ReapCandidate) bool {
 	proglog.Infof("[prism reap] releasing %s (state=%s, group=%s, parent=%s)\n",
 		c.SessionName, c.State, c.GroupID, c.ParentSession)
 
@@ -232,8 +254,11 @@ func reapOne(d *db.DB, c db.ReapCandidate) {
 				time.UnixMilli(c.DeliveredAt).UTC().Format(time.RFC3339), ReapGracePeriod))
 	}
 
+	if !stopAgentSidecar(c.SessionName) {
+		proglog.Warnf("[prism reap] warning: sidecar of %q did not stop — keeping its tmux session, row, and port for the next sweep\n", c.SessionName)
+		return false
+	}
 	reapKillTmuxSession(c.SessionName)
-	reapKillSidecar(c.SessionName)
 	reapRemoveContainer(c.SessionName, c.IsolationMode)
 
 	// Release the harness port. A row whose port is already NULL is a
@@ -256,6 +281,55 @@ func reapOne(d *db.DB, c db.ReapCandidate) {
 	if err := d.PurgeBusMessages(c.SessionName); err != nil {
 		proglog.Warnf("[prism reap] warning: purge bus messages for %q: %v\n", c.SessionName, err)
 	}
+	return true
+}
+
+// SweepEndedSidecars runs session.SweepEndedSidecars with the release rule
+// for review agents. An ended review agent whose tmux session still exists
+// is released when its round was delivered at or before now minus
+// ReapGracePeriod: the sweep stops its sidecar and closes its tmux session.
+// That is the agent the candidate query skips because another path, such as
+// the monitor's force-terminate, ended its row first.
+//
+// Callers: the monitor's post-delivery release, the pre-spawn sweep of
+// `prism review`, `prism cleanup`, and the start of every sidecar.
+func SweepEndedSidecars(d *db.DB, now time.Time) (session.SweepResult, error) {
+	return sweepEndedSidecars(d, now, ReapGracePeriod)
+}
+
+// sweepEndedSidecars is SweepEndedSidecars with the release window as a
+// parameter, so that ReapGroupAfterGrace applies the same window to both of
+// its steps.
+func sweepEndedSidecars(d *db.DB, now time.Time, grace time.Duration) (session.SweepResult, error) {
+	res, err := session.SweepEndedSidecars(d, session.SweepOpts{
+		ReleaseLive: func(st *db.Status) bool { return roundReleased(d, st, now, grace) },
+		KillTmux:    reapKillTmuxSession,
+	})
+	if err != nil {
+		return res, err
+	}
+	if len(res.Stopped) > 0 || len(res.StaleRemoved) > 0 {
+		proglog.Infof("[prism reap] ended-session sweep: stopped %d sidecar(s), removed %d stale PID file(s)\n",
+			len(res.Stopped), len(res.StaleRemoved))
+	}
+	for _, name := range res.Failed {
+		proglog.Warnf("[prism reap] warning: sidecar of ended session %q did not stop\n", name)
+	}
+	return res, nil
+}
+
+// roundReleased reports whether st is a review agent whose round was
+// delivered at or before now minus grace. A read error gives false: the
+// sweep then leaves the session alone.
+func roundReleased(d *db.DB, st *db.Status, now time.Time, grace time.Duration) bool {
+	if st == nil || st.GroupID == nil || !reviewAgentNamePattern.MatchString(st.SessionName) {
+		return false
+	}
+	g, err := d.GetGroup(*st.GroupID)
+	if err != nil || g == nil || g.DeliveredAt == nil {
+		return false
+	}
+	return !g.DeliveredAt.After(now.Add(-grace))
 }
 
 // removeReviewAgentContainer drops the per-session container state for a
@@ -321,10 +395,17 @@ func ReapGroupAfterGrace(d *db.DB, groupID string, grace time.Duration) {
 	// holds by construction. Re-applying grace to the sweep is deliberate
 	// belt-and-braces — a monitor whose wait returned early (a stubbed sleep, a
 	// signal) must not reap ahead of the documented window.
-	res, err := ReapDeliveredReviewAgents(d, groupID, reapNow(), grace)
+	now := reapNow()
+	res, err := ReapDeliveredReviewAgents(d, groupID, now, grace)
 	if err != nil {
 		proglog.Warnf("[prism reap] warning: post-delivery reap of group %s: %v\n", groupID, err)
-		return
+	} else {
+		proglog.Infof("[prism reap] group %s: released %d agent(s)\n", groupID, len(res.Reaped))
 	}
-	proglog.Infof("[prism reap] group %s: released %d agent(s)\n", groupID, len(res.Reaped))
+	// The candidate query skips a member whose row another path ended. This
+	// sweep stops the sidecar of that member and removes the stale PID
+	// files of the round.
+	if _, sweepErr := sweepEndedSidecars(d, now, grace); sweepErr != nil {
+		proglog.Warnf("[prism reap] warning: post-delivery ended-session sweep: %v\n", sweepErr)
+	}
 }

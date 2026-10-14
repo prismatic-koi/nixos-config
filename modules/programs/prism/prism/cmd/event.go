@@ -26,6 +26,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/proglog"
+	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -476,6 +477,16 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 
 // --- tmux-session-end ---
 
+// hookStopSidecar and hookStopReviewChildren are the sidecar stops of the
+// tmux-session-end hook. Tests replace them, so that a hook test signals no
+// process and closes no tmux session.
+var (
+	hookStopSidecar = func(session string) bool {
+		return prismSession.EnsureSidecarStopped(session, prismSession.SidecarStopTimeout)
+	}
+	hookStopReviewChildren = review.StopReviewChildrenForEnd
+)
+
 var eventTmuxSessionEndCmd = &cobra.Command{
 	Use:   "tmux-session-end",
 	Short: "Mark the session as ended and write a tmux_session_end event",
@@ -517,10 +528,30 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 			return nil
 		}
 
+		// Stop the sidecar before this hook ends the row (#3160). The
+		// review release skips a row that is already ended, so a row that
+		// ends here with a live sidecar leaks that sidecar. If the sidecar
+		// does not stop, keep the row and the port: the process can still
+		// write to the row and hold the port.
+		//
+		// Ask tmux again just before the stop: if `prism switch` recreated
+		// the session after the check above, the sidecar in the PID file
+		// belongs to the new session.
+		if prismSession.TmuxSessionPresence(session) == prismSession.TmuxPresent {
+			return nil
+		}
+		if !hookStopSidecar(session) {
+			fmt.Fprintf(os.Stderr, "prism event tmux-session-end: sidecar of %q did not stop — keeping its row and port\n", session)
+			return nil
+		}
+		// SetEnded also ends the open review children of this session, so
+		// their sidecars stop first too.
+		keepChildren := hookStopReviewChildren(d, session)
+
 		if err := d.ReleasePort(session); err != nil {
 			return fmt.Errorf("event tmux-session-end: release port: %w", err)
 		}
-		if err := d.SetEnded(session); err != nil {
+		if err := d.SetEndedExcept(session, keepChildren); err != nil {
 			return fmt.Errorf("event tmux-session-end: set ended: %w", err)
 		}
 		// Update sessions.ended_at for the current instance so that
