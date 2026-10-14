@@ -483,7 +483,8 @@ prefix of 12 or more characters. Prism refuses each of these:
 - A container that does not carry the label of this session.
 - A container that has no prism label.
 - A container of this session that `start` did not make, for example a
-  container of `run`.
+  container of `run`. A label of the image cannot make a container of
+  `run` a service container.
 
 Prism does not change the container that it refuses.
 
@@ -535,7 +536,7 @@ The last line on stderr gives the reason for a `125`.
 | `--cpus` | `2` | CPU limit. |
 | `--pids-limit` | `1024` | Process limit. |
 | `--security-opt` | `no-new-privileges` | A process cannot get more privileges than its parent. |
-| `--label` | `prism.instance-id=<instance ID>` | The owner of the container. Prism finds and counts containers by this label. |
+| `--label` | `prism.instance-id=<instance ID>`, `prism.service=`, `prism.build=` | The owner and the kind of the container. Prism finds and counts containers by `prism.instance-id`. The empty values replace an image label with the same key. Thus a container of `run` is not a service container or an anchor container. |
 | `--name` | `prism-<instance token>-<folded session name>-<8 hex>` | The session prefix, for a human who reads `podman ps`. |
 | `--timeout` | The request timeout plus 60 seconds | Podman stops the container even if prism stops first. |
 | `--pull` | `never` | Prism pulls a missing image before the run, with `podman pull`. |
@@ -557,7 +558,7 @@ outbound connections. It cannot publish a port.
 |---|---|---|
 | `--detach` | | In place of `--rm`. `stop` or `prism cleanup` removes the container. |
 | `--timeout` | none | A service container runs until it is stopped. |
-| `--label` | `prism.service=<handle>` | In addition to `prism.instance-id`. It marks a service container, and holds its handle. |
+| `--label` | `prism.service=<handle>` | In place of the empty `prism.service` of `run`. It marks a service container, and holds its handle. |
 | `--publish` | `127.0.0.1::<port>/tcp` | One for each `--port`. The host address is always `127.0.0.1`. Podman picks the host port. |
 
 After the start, prism reads the published ports from podman. If podman
@@ -599,7 +600,8 @@ The process limit depends on the platform, because `podman build` has no
 On macOS, the anchor container has the memory, swap, CPU, and process
 limits of `run`, and `--security-opt no-new-privileges`, `--cap-drop all`,
 `--read-only`, and `--network none`. It has the labels
-`prism.instance-id=<instance ID>` and `prism.build=<build name>`, and a
+`prism.instance-id=<instance ID>`, `prism.service=` (empty), and
+`prism.build=<build name>`, and a
 podman `--timeout` of the build timeout plus 60 seconds.
 `--stop-signal KILL` makes the stop of the scope kill each build step at
 once.
@@ -647,6 +649,11 @@ start no container, so no limit refuses them.
 
 - Prism finds the containers and the built images of a session by the
   `prism.instance-id` label. Prism never decides ownership by the name.
+- Prism sets the `prism.instance-id`, `prism.service`, and `prism.build`
+  labels on the command line of each container that it creates. Podman
+  copies each label of an image to the container, but a command-line label
+  replaces the image label with the same key. Thus a `LABEL` in an image
+  cannot set the owner or the kind of a container.
 - `prism container run` removes its container before it returns. This also
   applies after a timeout and after a cancelled request.
 - A service container stays until `prism container stop` or

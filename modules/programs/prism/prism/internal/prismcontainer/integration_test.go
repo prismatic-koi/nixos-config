@@ -835,6 +835,86 @@ func TestIntegration_ServiceRefusesOtherContainers(t *testing.T) {
 	}
 }
 
+// TestIntegration_ImageLabelsDoNotSetIdentity: podman copies the labels of
+// an image to each container of the image. The labels that prism sets on
+// the command line replace the image labels with the same key. A run
+// container of an image with forged prism labels is thus a run container
+// of the caller, and exec, logs, and stop refuse it.
+func TestIntegration_ImageLabelsDoNotSetIdentity(t *testing.T) {
+	c := integrationCaller(t)
+	const forgedHandle = "cafef00d"
+	forgedOwner := uuid.New().String()
+	image := "localhost/prism-itest-forged-labels-" + forgedOwner[:8]
+	dir := t.TempDir()
+	containerfile := fmt.Sprintf("FROM alpine\nLABEL %s=%s %s=%s %s=prism-build-forged\n",
+		prismcontainer.LabelInstanceID, forgedOwner, prismcontainer.LabelService, forgedHandle, prismcontainer.LabelBuild)
+	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte(containerfile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("podman", "build", "--tag", image, dir).CombinedOutput(); err != nil {
+		t.Fatalf("podman build: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("podman", "rmi", "--force", image).Run() })
+
+	done := make(chan prismcontainer.RunResult, 1)
+	go func() {
+		done <- runReal(t, c, prismcontainer.RunRequest{Image: image, Mount: prismcontainer.MountNone, Command: []string{"sleep", "20"}})
+	}()
+	var fields []string
+	for deadline := time.Now().Add(time.Minute); len(fields) == 0 && time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		out, _ := exec.Command("podman", "ps", "--filter", "label="+prismcontainer.LabelInstanceID+"="+c.InstanceID, "--format", "{{.ID}} {{.Names}}").Output()
+		fields = strings.Fields(string(out))
+	}
+	if len(fields) != 2 {
+		t.Fatalf("podman ps of the run container = %q, want one ID and one name", fields)
+	}
+	id, name := fields[0], fields[1]
+
+	out, err := exec.Command("podman", "inspect", id).Output()
+	if err != nil {
+		t.Fatalf("podman inspect: %v", err)
+	}
+	var inspect []struct {
+		Config struct{ Labels map[string]string }
+	}
+	if err := json.Unmarshal(out, &inspect); err != nil || len(inspect) != 1 {
+		t.Fatalf("parse inspect: %v", err)
+	}
+	for key, want := range map[string]string{
+		prismcontainer.LabelInstanceID: c.InstanceID,
+		prismcontainer.LabelService:    "",
+		prismcontainer.LabelBuild:      "",
+	} {
+		if got, ok := inspect[0].Config.Labels[key]; !ok || got != want {
+			t.Errorf("label %s = %q (set %v), want %q from the podman command line", key, got, ok, want)
+		}
+	}
+
+	for _, handle := range []string{id, name, forgedHandle} {
+		want := "was not created by prism container start"
+		if handle == forgedHandle {
+			want = "does not exist in this session"
+		}
+		for op, r := range map[string]prismcontainer.RunResult{
+			"exec": execReal(c, handle, "true"),
+			"logs": prismcontainer.Logs(context.Background(), prismcontainer.Deps{}, c, prismcontainer.HandleRequest{Handle: handle}),
+			"stop": prismcontainer.Stop(context.Background(), prismcontainer.Deps{}, c, prismcontainer.HandleRequest{Handle: handle}),
+		} {
+			if r.ExitCode != prismcontainer.ExitRefused || !strings.Contains(r.Message, want) {
+				t.Errorf("%s %s = %+v, want a refusal with %q", op, handle, r, want)
+			}
+		}
+	}
+	list := prismcontainer.List(context.Background(), prismcontainer.Deps{}, c)
+	if list.ExitCode != 0 || len(list.Containers) != 1 || list.Containers[0].Kind != prismcontainer.KindRun {
+		t.Errorf("list = %+v, want the container as kind run", list)
+	}
+	// A refused stop leaves the container, so the run exits 0 after sleep.
+	if r := <-done; r.ExitCode != 0 {
+		t.Errorf("run = %+v (stderr %q)", r, r.Stderr)
+	}
+}
+
 // failingRunner makes one podman subcommand exit 125, as a podman that
 // fails during the sweep does.
 type failingRunner struct {

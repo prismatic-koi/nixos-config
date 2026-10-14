@@ -148,12 +148,21 @@ func TestRun_ArgvFixedOptions(t *testing.T) {
 				"--cpus":         prismcontainer.CPULimit,
 				"--pids-limit":   prismcontainer.PidsLimit,
 				"--security-opt": "no-new-privileges",
-				"--label":        prismcontainer.LabelInstanceID + "=" + testInstanceID,
 			}
 			for flag, val := range want {
 				if got := optionValue(opts, flag); !slices.Equal(got, []string{val}) {
 					t.Errorf("%s = %q, want exactly [%q]", flag, got, val)
 				}
+			}
+			// An empty service label and an empty build label stop an image
+			// label from making the container a service or an anchor.
+			wantLabels := []string{
+				prismcontainer.LabelInstanceID + "=" + testInstanceID,
+				prismcontainer.LabelService + "=",
+				prismcontainer.LabelBuild + "=",
+			}
+			if got := optionValue(opts, "--label"); !slices.Equal(got, wantLabels) {
+				t.Errorf("--label = %q, want exactly %q", got, wantLabels)
 			}
 			prefix := container.ResourceNamePrefixForOwner(testInstanceID, c.SessionName)
 			if names := optionValue(opts, "--name"); len(names) != 1 || !strings.HasPrefix(names[0], prefix) {

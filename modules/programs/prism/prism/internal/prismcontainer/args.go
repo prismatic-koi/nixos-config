@@ -106,6 +106,24 @@ const LabelService = "prism.service"
 // value is the unit name of the build.
 const LabelBuild = "prism.build"
 
+// identityLabels returns the --label options of the labels that prism reads
+// to decide the owner or the kind of a container: LabelInstanceID,
+// LabelService, and LabelBuild. Every container that prism creates gets
+// all three. A label that does not apply gets an empty value.
+//
+// The agent controls the labels of an image (LABEL), and podman copies each
+// image label to the container. A --label option replaces the image label
+// with the same key. Thus an image cannot set one of these labels, also
+// when its value here is empty. A new label that prism reads to decide the
+// owner or the kind of a container must go here too.
+func identityLabels(instanceID, service, build string) []string {
+	return []string{
+		"--label", LabelInstanceID + "=" + instanceID,
+		"--label", LabelService + "=" + service,
+		"--label", LabelBuild + "=" + build,
+	}
+}
+
 // AnchorImage is the image of the anchor container. Its one process waits
 // until a signal stops it. The digest pins the image.
 const AnchorImage = "registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a"
@@ -121,11 +139,9 @@ const AnchorImage = "registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a18
 // kills each build step at once. A RUN step that is PID 1 of its namespace
 // ignores the default SIGTERM, and the stop then waits 10 seconds.
 func anchorRunArgs(instanceID, unit string, timeout time.Duration) []string {
-	return []string{
-		"run", "--detach", "--rm",
-		"--name", unit,
-		"--label", LabelInstanceID + "=" + instanceID,
-		"--label", LabelBuild + "=" + unit,
+	args := []string{"run", "--detach", "--rm", "--name", unit}
+	args = append(args, identityLabels(instanceID, "", unit)...)
+	return append(args,
 		"--memory", MemoryLimit,
 		"--memory-swap", MemoryLimit,
 		"--cpus", CPULimit,
@@ -139,7 +155,7 @@ func anchorRunArgs(instanceID, unit string, timeout time.Duration) []string {
 		"--pull", "never",
 		"--timeout", strconv.FormatInt(int64((timeout+time.Second-1)/time.Second), 10),
 		AnchorImage,
-	}
+	)
 }
 
 // containerName returns a new container name with the session prefix.
@@ -159,19 +175,20 @@ func serviceName(c Caller) (name, handle string, err error) {
 	return container.ResourceNamePrefixForOwner(c.InstanceID, c.SessionName) + handle, handle, nil
 }
 
-// fixedOptions returns the options that run and start share. No agent
+// fixedOptions returns the options that run and start share. handle is
+// the handle of a service container, or "" for a run container. No agent
 // input reaches them.
-func fixedOptions(c Caller, name string) []string {
-	return []string{
-		"--name", name,
-		"--label", LabelInstanceID + "=" + c.InstanceID,
+func fixedOptions(c Caller, name, handle string) []string {
+	args := []string{"--name", name}
+	args = append(args, identityLabels(c.InstanceID, handle, "")...)
+	return append(args,
 		"--memory", MemoryLimit,
 		"--memory-swap", MemoryLimit,
 		"--cpus", CPULimit,
 		"--pids-limit", PidsLimit,
 		"--security-opt", "no-new-privileges",
 		"--pull", "never",
-	}
+	)
 }
 
 // appendWorkload appends the worktree mount, the environment, the image,
@@ -200,7 +217,7 @@ func appendWorkload(args []string, c Caller, v validRun) []string {
 // cannot start with "-", podman stops option parsing at the image, and every
 // value that follows a flag is one argument.
 func runArgs(c Caller, v validRun, name, cidFile string) []string {
-	args := append([]string{"run", "--rm"}, fixedOptions(c, name)...)
+	args := append([]string{"run", "--rm"}, fixedOptions(c, name, "")...)
 	args = append(args,
 		"--timeout", strconv.FormatInt(int64((v.timeout+conmonTimeoutGrace)/time.Second), 10),
 		"--cidfile", cidFile,
@@ -217,8 +234,8 @@ func runArgs(c Caller, v validRun, name, cidFile string) []string {
 // Each port is published on 127.0.0.1 only, with a random host port. The
 // agent gives the container port only, as one validated integer.
 func startArgs(c Caller, v validStart, name, handle, cidFile string) []string {
-	args := append([]string{"run", "--detach"}, fixedOptions(c, name)...)
-	args = append(args, "--label", LabelService+"="+handle, "--cidfile", cidFile)
+	args := append([]string{"run", "--detach"}, fixedOptions(c, name, handle)...)
+	args = append(args, "--cidfile", cidFile)
 	for _, p := range v.ports {
 		args = append(args, "--publish", PublishHost+"::"+strconv.Itoa(p)+"/tcp")
 	}
