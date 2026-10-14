@@ -142,9 +142,11 @@ const playwrightCLITimeout = 60 * time.Second
 // runPlaywrightCLI invokes sandbox-exec on the given profile path against
 // playwright-cli with the given CLI args (e.g. "open", <url> — or "close").
 // The env mirrors what agent_run_sandbox_exec_darwin.go does in
-// production: HOME and XDG_CACHE/CONFIG at the real host home, and
+// production: HOME and XDG_CACHE/CONFIG at the real host home,
 // CFFIXED_USER_HOME at the per-session work dir so chromium's
-// NSHomeDirectory()-derived writes land under <sessionDir>/Library/...
+// NSHomeDirectory()-derived writes land under <sessionDir>/Library/..., and
+// TMPDIR and MAC_CHROMIUM_TMPDIR at the per-session TMPDIR, the only temp
+// dir that the profile lets the session write.
 //
 // The launch CWD is the session work dir: node hard-fails at bootstrap
 // ("EPERM: process.cwd failed ... uv_cwd") when the sandboxed CWD is
@@ -178,6 +180,14 @@ func runPlaywrightCLI(t *testing.T, profilePath, playwrightBin, sessionDir strin
 		"PLAYWRIGHT_DAEMON_SESSION_DIR=" + filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "daemon"),
 		"PLAYWRIGHT_SERVER_REGISTRY=" + filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "b"),
 	}
+	// The session work dir is <state>/prism/sessions/<instance ID>, so its
+	// base name is the instance ID that keys the per-session TMPDIR.
+	// PrepareSandboxExec created that dir.
+	tmpDir, err := container.SessionTmpDirPath(filepath.Base(sessionDir))
+	if err != nil {
+		t.Fatalf("SessionTmpDirPath: %v", err)
+	}
+	envVars = append(envVars, container.SessionTmpDirEnv(tmpDir)...)
 	if term := os.Getenv("TERM"); term != "" {
 		envVars = append(envVars, "TERM="+term)
 	}

@@ -136,11 +136,12 @@ func runReset(cmd *cobra.Command, _ []string) error {
 	}
 
 	// ── Step 4c: Remove per-session instance directories ─────────────────────
-	// The work dir and podman-proxy audit dir are keyed by instance ID, not by
-	// session name, and no other reset step touches them. Every session
-	// snapshotted above (regardless of pi resume linkage) gets both trees
-	// removed here, closing the gap where `prism reset` left them behind for
-	// every session (issue #2960). Both removals are non-fatal and idempotent.
+	// The work dir, the per-session TMPDIR, and the podman-proxy audit dir are
+	// keyed by instance ID, not by session name, and no other reset step
+	// touches them. Every session snapshotted above (regardless of pi resume
+	// linkage) gets these trees removed here, closing the gap where `prism
+	// reset` left them behind for every session (issue #2960). The removals
+	// are non-fatal and idempotent.
 	// The prism-container audit dir goes only after a sweep of the
 	// incarnation succeeds, because no later cleanup finds its service
 	// containers and images without the dir.

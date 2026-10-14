@@ -3,7 +3,8 @@ package review_test
 // child_instance_dirs_2960_test.go — issue #2960: a review-agent child
 // session's own instance-ID-keyed directory trees (work dir and
 // podman-proxy audit dir) must be removed when the parent's cleanup
-// cascades to it, not left behind.
+// cascades to it, not left behind. Issue #3150 adds the per-session TMPDIR
+// to the same removal.
 
 import (
 	"os"
@@ -45,6 +46,24 @@ func mkInstanceDirs(t *testing.T, instanceID string) (workDir, auditDir string) 
 	return workDir, auditDir
 }
 
+// mkSessionTmpDir points the per-session TMPDIR root at a test dir and
+// creates a non-empty TMPDIR for instanceID. It returns the TMPDIR.
+func mkSessionTmpDir(t *testing.T, instanceID string) string {
+	t.Helper()
+	t.Cleanup(container.SetSessionTmpRootForTest(t.TempDir()))
+	tmpDir, err := container.SessionTmpDirPath(instanceID)
+	if err != nil {
+		t.Fatalf("SessionTmpDirPath: %v", err)
+	}
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll(tmpDir): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "pi-bash-1.log"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write pi-bash-1.log: %v", err)
+	}
+	return tmpDir
+}
+
 func mustNotExist(t *testing.T, path, label string) {
 	t.Helper()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -71,11 +90,13 @@ func TestCleanupAgentSession_RemovesChildInstanceDirs(t *testing.T) {
 	}
 
 	workDir, auditDir := mkInstanceDirs(t, instanceID)
+	tmpDir := mkSessionTmpDir(t, instanceID)
 
 	review.CleanupAgentSessionForTest(d, session, db.ReapCauseParentCleanup)
 
 	mustNotExist(t, workDir, "work dir")
 	mustNotExist(t, auditDir, "audit dir")
+	mustNotExist(t, tmpDir, "per-session TMPDIR")
 }
 
 // TestCleanupAgentSession_NoInstanceID_NoError verifies the edge case where
