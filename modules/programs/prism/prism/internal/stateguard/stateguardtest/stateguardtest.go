@@ -45,13 +45,18 @@ func mkdirShort(pattern string) (string, error) {
 // process that the suite starts.
 const SuiteRootEnv = "PRISM_TEST_SUITE_ROOT"
 
-// SuiteEnv names each variable that IsolateSuite sets.
-var SuiteEnv = []string{"XDG_STATE_HOME", "XDG_CONFIG_HOME", "SHELL", SuiteRootEnv}
+// SessionPathEnv names the variables that prism sets in the pane of a
+// session, with a path under the real state dir as the value. A test process
+// in a host-mode session inherits them. IsolateSuite unsets them.
+var SessionPathEnv = []string{"PRISM_INITIAL_PROMPT_FILE", "PRISM_AGENT_RUN_LOG", "PRISM_HARNESS_PIPE"}
+
+// SuiteEnv names each variable that IsolateSuite sets or unsets.
+var SuiteEnv = append([]string{"XDG_STATE_HOME", "XDG_CONFIG_HOME", "SHELL", SuiteRootEnv}, SessionPathEnv...)
 
 // IsolateSuite is for TestMain, before m.Run. It points XDG_STATE_HOME and
-// XDG_CONFIG_HOME at a new directory that the suite owns, and sets SHELL to
-// /bin/sh. It returns the directory and a function that restores the
-// environment and removes the directory.
+// XDG_CONFIG_HOME at a new directory that the suite owns, sets SHELL to
+// /bin/sh, and unsets the SessionPathEnv variables. It returns the directory
+// and a function that restores the environment and removes the directory.
 //
 // Every prism state and config path reads XDG_STATE_HOME or XDG_CONFIG_HOME
 // first, so no code under test reaches ~/.local/state/prism or
@@ -95,6 +100,9 @@ func IsolateSuite() (root string, restore func()) {
 	os.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	os.Setenv("SHELL", "/bin/sh")
 	os.Setenv(SuiteRootEnv, root)
+	for _, k := range SessionPathEnv {
+		os.Unsetenv(k)
+	}
 	return root, func() {
 		for k, s := range origs {
 			if s.had {
@@ -128,6 +136,11 @@ func RequireIsolated(t testing.TB, root string) {
 		v := os.Getenv(k)
 		if !inside(v, root) {
 			t.Errorf("%s=%q is outside the suite dir %q: the suite can reach the real prism state", k, v, root)
+		}
+	}
+	for _, k := range SessionPathEnv {
+		if v, ok := os.LookupEnv(k); ok {
+			t.Errorf("%s=%q is set: a session of the host can point it at the real prism state", k, v)
 		}
 	}
 }
