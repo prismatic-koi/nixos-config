@@ -196,19 +196,29 @@ func TestPrepareSessionTmpDir_TightensMode(t *testing.T) {
 	}
 }
 
-// TestPrepareSessionTmpDir_RefusesPlant: /tmp is writable by every local
-// user, so a node at the path that Prepare did not make is a possible plant.
-// Prepare refuses a symlink, a regular file, and a dir of another user.
+// TestPrepareSessionTmpDir_RefusesPlant: /var/tmp is writable by every
+// local user, so a node at the path that Prepare did not make is a possible
+// plant. Prepare refuses a symlink, a regular file, and a dir of another
+// user, and changes none of them.
 func TestPrepareSessionTmpDir_RefusesPlant(t *testing.T) {
 	t.Run("symlink", func(t *testing.T) {
 		m := newTmpDirTestManager(t)
 		dir, _ := m.sessionTmpDirPath()
 		target := t.TempDir()
+		if err := os.Chmod(target, 0o755); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
 		if err := os.Symlink(target, dir); err != nil {
 			t.Fatalf("symlink: %v", err)
 		}
 		if _, err := m.PrepareSessionTmpDir(); err == nil || !strings.Contains(err.Error(), "not a directory") {
 			t.Errorf("Prepare accepted a symlink at the TMPDIR path; err = %v", err)
+		}
+		if info, err := os.Lstat(dir); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("the symlink at the TMPDIR path changed: %v", err)
+		}
+		if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0o755 {
+			t.Errorf("Prepare changed the mode of the symlink target: %v %v", info.Mode(), err)
 		}
 	})
 	t.Run("file", func(t *testing.T) {
@@ -223,14 +233,23 @@ func TestPrepareSessionTmpDir_RefusesPlant(t *testing.T) {
 	})
 	t.Run("other user", func(t *testing.T) {
 		m := newTmpDirTestManager(t)
-		if _, err := m.PrepareSessionTmpDir(); err != nil {
-			t.Fatalf("PrepareSessionTmpDir: %v", err)
+		dir, _ := m.sessionTmpDirPath()
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
 		}
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		// The test process owns the dir, so the seam makes Prepare see
+		// another effective user.
 		orig := geteuid
 		geteuid = func() int { return orig() + 1 }
 		t.Cleanup(func() { geteuid = orig })
 		if _, err := m.PrepareSessionTmpDir(); err == nil || !strings.Contains(err.Error(), "another user") {
 			t.Errorf("Prepare accepted a TMPDIR that another user owns; err = %v", err)
+		}
+		if info, err := os.Lstat(dir); err != nil || info.Mode().Perm() != 0o755 {
+			t.Errorf("Prepare changed the mode of a dir of another user: %v %v", info.Mode(), err)
 		}
 	})
 }

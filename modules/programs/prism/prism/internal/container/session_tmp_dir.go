@@ -110,8 +110,10 @@ func SessionTmpDirEnv(dir string) []string {
 // restored session keeps its TMPDIR.
 //
 // It fails when the path is a symlink, is not a dir, or belongs to another
-// user. /tmp is writable by every local user, so any of these can be a
-// plant. The session must not start with a TMPDIR that it does not own.
+// user. /var/tmp is writable by every local user (mode 1777, like /tmp), so
+// any of these can be a plant. The session must not start with a TMPDIR
+// that it does not own. The checks use Lstat and run before the chmod, so a
+// refused path is not followed or changed.
 func (m *Manager) PrepareSessionTmpDir() (string, error) {
 	dir, err := m.sessionTmpDirPath()
 	if err != nil {
