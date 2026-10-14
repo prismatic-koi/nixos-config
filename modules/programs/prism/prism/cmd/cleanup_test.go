@@ -736,22 +736,7 @@ func TestCleanupYes_RedirectsClientsAndKillsSession(t *testing.T) {
 		t.Skip("git not found in PATH — skipping integration test")
 	}
 
-	// Redirect XDG_STATE_HOME so the prism binary uses an isolated DB and
-	// sidecar state dir instead of the production ~/.local/state/prism/ path.
-	// Must be set before newCmdTestServer starts the tmux server.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	// Clear PRISM_HOST_API so the spawned binary runs its host-side cleanup
-	// path directly rather than proxying to a sidecar that doesn't know
-	// about the test's isolated tmux server. This env var is inherited when
-	// the test itself runs inside a prism-managed session.
-	t.Setenv("PRISM_HOST_API", "")
-	// Ignore the host's global gitconfig so the spawned prism binary is not
-	// affected by host-level signing config (gpgsign=true without a key
-	// available would break any git commit it runs).
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
-
-	prismBin := buildPrismBinary(t)
+	prismBin, root := isolatedPrismBinary(t)
 
 	_, worktreePath, branchName := setupMinimalBareRepo(t)
 
@@ -759,6 +744,7 @@ func TestCleanupYes_RedirectsClientsAndKillsSession(t *testing.T) {
 	withCmdServer(t, s)
 
 	targetSession := "myrepo@" + branchName // "myrepo@feature"
+	seedTestDBRow(t, root, targetSession, "myrepo", worktreePath)
 
 	// Create the target session with its first window (index 0) rooted at
 	// worktreePath. We'll rename it "agent" so that worktreePathFromSession
@@ -839,6 +825,7 @@ func TestCleanupYes_RedirectsClientsAndKillsSession(t *testing.T) {
 		t.Errorf("clientOther session = %q, want %q — unrelated client was incorrectly moved",
 			gotOther, "other")
 	}
+	requireTestDBRowEnded(t, root, targetSession)
 }
 
 // TestCleanupYes_DefaultBranch verifies that the headless (--yes) cleanup of a
@@ -857,22 +844,7 @@ func TestCleanupYes_DefaultBranch(t *testing.T) {
 		t.Skip("git not found in PATH — skipping integration test")
 	}
 
-	// Redirect XDG_STATE_HOME so the prism binary uses an isolated DB and
-	// sidecar state dir instead of the production ~/.local/state/prism/ path.
-	// Must be set before newCmdTestServer starts the tmux server.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	// Clear PRISM_HOST_API so the spawned binary runs its host-side cleanup
-	// path directly rather than proxying to a sidecar that doesn't know
-	// about the test's isolated tmux server. This env var is inherited when
-	// the test itself runs inside a prism-managed session.
-	t.Setenv("PRISM_HOST_API", "")
-	// Ignore the host's global gitconfig so the spawned prism binary is not
-	// affected by host-level signing config (gpgsign=true without a key
-	// available would break any git commit it runs).
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
-
-	prismBin := buildPrismBinary(t)
+	prismBin, root := isolatedPrismBinary(t)
 
 	bareRoot, _, _ := setupMinimalBareRepo(t)
 	// The default branch worktree is at bareRoot/main.
@@ -882,6 +854,7 @@ func TestCleanupYes_DefaultBranch(t *testing.T) {
 	withCmdServer(t, s)
 
 	targetSession := "myrepo@main"
+	seedTestDBRow(t, root, targetSession, "myrepo", mainWorktreePath)
 
 	// Create the target session rooted at the main worktree.
 	if err := s.run("new-session", "-ds", targetSession, "-c", mainWorktreePath); err != nil {
@@ -960,6 +933,7 @@ func TestCleanupYes_DefaultBranch(t *testing.T) {
 		t.Errorf("clientOther session = %q, want %q — unrelated client was incorrectly moved",
 			gotOther, "other")
 	}
+	requireTestDBRowEnded(t, root, targetSession)
 }
 
 // ── non-worktree session tests ─────────────────────────────────────────────────
@@ -1053,24 +1027,16 @@ func TestCleanupYes_NonWorktreeSession(t *testing.T) {
 	// Uses withCmdServer which mutates TmuxBin — must not be parallel.
 	skipIfSandboxPTY(t)
 
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	// Ignore the host's global gitconfig so the spawned prism binary is not
-	// affected by host-level signing config (gpgsign=true without a key
-	// available would break any git commit it runs).
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
-	// Clear PRISM_HOST_API so the spawned binary runs its host-side cleanup
-	// path directly rather than proxying to a sidecar that doesn't know
-	// about the test's isolated tmux server. This env var is inherited when
-	// the test itself runs inside a prism-managed session.
-	t.Setenv("PRISM_HOST_API", "")
-
-	prismBin := buildPrismBinary(t)
+	prismBin, root := isolatedPrismBinary(t)
 
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
 	targetSession := "obsidian"
+
+	// The real host can have a live session with this name. The cleanup must
+	// end this row of the test database, not that session.
+	seedTestDBRow(t, root, targetSession, "obsidian", "/tmp")
 
 	// Create the target session.
 	if err := s.run("new-session", "-ds", targetSession, "-c", "/tmp"); err != nil {
@@ -1133,6 +1099,8 @@ func TestCleanupYes_NonWorktreeSession(t *testing.T) {
 		t.Errorf("clientOther session = %q, want %q — unrelated client was incorrectly moved",
 			gotOtherNW, "other")
 	}
+
+	requireTestDBRowEnded(t, root, targetSession)
 }
 
 // TestIsCoordinatorFromDB verifies the DB-backed coordinator detection helper.

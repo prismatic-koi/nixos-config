@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/prismatic-koi/prism/cmd"
+	"github.com/prismatic-koi/prism/internal/stateguard"
 )
 
 // exitCoder is implemented by errors that want to override the default exit
@@ -16,6 +17,10 @@ type exitCoder interface {
 }
 
 func main() {
+	if err := stateguard.Check(os.Getenv); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if err := cmd.Execute(); err != nil {
 		var ec exitCoder
 		if errors.As(err, &ec) {

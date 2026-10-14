@@ -70,6 +70,9 @@ func TestReExecInterception_ProductionArgvShapes(t *testing.T) {
 		// it to tmux.NewWindow. tmux invokes the binary outside Go's
 		// process tree.
 		{"agent-run", []string{"agent-run", "--session", "prism-test@reexec-guard"}},
+		// ensureDashSession (cmd/dashboard.go) starts `<self> dashboard` in a
+		// tmux pane.
+		{"dashboard", []string{"dashboard"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -7,8 +7,9 @@ package integration_test
 // The prism PI extension reads ~/.config/prism/agents/<role>.md at
 // before_agent_start and injects it as the role system prompt. The
 // capability is the explicit RO (subpath ~/.config/prism/agents) grant in
-// the section-5f block emitted by generateProfile, evaluated at the REAL
-// host path.
+// the section-5f block emitted by generateProfile, evaluated at the path
+// under HOME. Each test runs with a test-owned HOME (useTestHome), so no test
+// reads or writes the real ~/.config/prism/agents of the user.
 //
 // Read-target strategy: on deployed hosts the
 // agents dir is home-manager-managed — typically a read-only symlink into
@@ -55,15 +56,15 @@ import (
 // management).
 const rolePromptSentinelContent = "PRISM-2032-ROLE-PROMPT-SENTINEL"
 
-// rolePromptAgentsDir returns the real-host path of the role-prompt agents
+// rolePromptAgentsDir returns the path under HOME of the role-prompt agents
 // dir governed by the section-5f grant.
 func rolePromptAgentsDir(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(realUserHome(t), ".config", "prism", "agents")
 }
 
-// plantRolePromptSentinel attempts to plant a sentinel role file in the real
-// agents dir. Returns (path, true) on success. Returns ("", false) when the
+// plantRolePromptSentinel attempts to plant a sentinel role file in the
+// agents dir under HOME. Returns (path, true) on success. Returns ("", false) when the
 // dir hierarchy cannot be created or written — e.g. on home-manager-managed
 // hosts where ~/.config/prism/agents is a read-only symlink into the nix
 // store. Cleanup removes only what this call created.
@@ -129,6 +130,7 @@ func TestSandboxExecProfile_RolePromptReadable(t *testing.T) {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
+	useTestHome(t)
 	nixBash := requireNixBash(t)
 
 	deployed := filepath.Join(rolePromptAgentsDir(t), "worker.md")
@@ -188,6 +190,7 @@ func TestSandboxExecProfile_RolePromptDeniedWithoutGrantBlock(t *testing.T) {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
+	useTestHome(t)
 	nixBash := requireNixBash(t)
 
 	deployed := filepath.Join(rolePromptAgentsDir(t), "worker.md")
@@ -240,6 +243,7 @@ func TestSandboxExecProfile_RolePromptWriteDenied(t *testing.T) {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
+	useTestHome(t)
 	nixBash := requireNixBash(t)
 
 	agentsDir := rolePromptAgentsDir(t)

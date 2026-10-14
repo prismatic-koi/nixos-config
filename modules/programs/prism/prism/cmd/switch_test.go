@@ -20,37 +20,12 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/session"
 )
-
-// buildPrismBinary compiles the prism binary from the module root into a temp
-// directory and returns the path to the resulting executable.
-func buildPrismBinary(t *testing.T) string {
-	t.Helper()
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go not found in PATH — skipping integration test")
-	}
-	// Module root is one directory above this file's package (cmd/ → prism/).
-	// In Go tests, the working directory is the package directory (cmd/), so
-	// the module root is one level up.
-	moduleRoot, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatalf("resolve module root: %v", err)
-	}
-	outDir := t.TempDir()
-	outBin := filepath.Join(outDir, "prism")
-	cmd := exec.Command("go", "build", "-o", outBin, ".")
-	cmd.Dir = moduleRoot
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
-	return outBin
-}
 
 // runInNewWindow launches cmd as the command for a new temporary window in
 // targetSession and returns immediately (does not wait for the command to
@@ -81,23 +56,7 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 	// must NOT run in parallel.
 	skipIfSandboxPTY(t)
 
-	// Redirect XDG_STATE_HOME to a per-test temp dir so the prism binary
-	// writes its DB and sidecar state to an isolated location instead of the
-	// production ~/.local/state/prism/ path.  Must be set before newCmdTestServer
-	// starts the tmux server (which inherits the environment).
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	// Ignore the host's global gitconfig so the spawned prism binary is not
-	// affected by host-level signing config (gpgsign=true without a key
-	// available would break any git commit it runs).
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
-	// Clear PRISM_HOST_API so the spawned binary runs the host-side switch
-	// path directly rather than proxying to a sidecar that doesn't know
-	// about the test's isolated tmux server. This env var is inherited when
-	// the test itself runs inside a prism-managed session.
-	t.Setenv("PRISM_HOST_API", "")
-
-	prismBin := buildPrismBinary(t)
+	prismBin, root := isolatedPrismBinary(t)
 
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
@@ -148,6 +107,7 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 		t.Errorf("client %q session = %q, want %q (timed out waiting for switch)",
 			clientName, gotSession, expectedSession)
 	}
+	requireTestDBRow(t, root, expectedSession)
 }
 
 // TestSwitchPath_OnlyMovesTargetClient verifies that when two clients are
@@ -158,19 +118,7 @@ func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 	// Mutates TmuxBin via withCmdServer — must not be parallel.
 	skipIfSandboxPTY(t)
 
-	// Redirect XDG_STATE_HOME to a per-test temp dir so the prism binary
-	// writes its DB and sidecar state to an isolated location instead of the
-	// production ~/.local/state/prism/ path.  Must be set before newCmdTestServer
-	// starts the tmux server (which inherits the environment).
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	// Ignore the host's global gitconfig and unset PRISM_HOST_API for the
-	// same reasons as the first test in this file — see
-	// TestSwitchPath_SwitchesClientToNewSession.
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
-	t.Setenv("PRISM_HOST_API", "")
-
-	prismBin := buildPrismBinary(t)
+	prismBin, root := isolatedPrismBinary(t)
 
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
@@ -232,4 +180,5 @@ func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 	if gotB != "" && gotB != "sessionB" {
 		t.Errorf("clientB session = %q, want %q — unrelated client was incorrectly moved", gotB, "sessionB")
 	}
+	requireTestDBRow(t, root, expectedSession)
 }

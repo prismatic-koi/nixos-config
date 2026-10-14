@@ -53,8 +53,9 @@ func roGrantBlock5f(t *testing.T) string {
 		"  (subpath " + sbplQuoteForTest(filepath.Join(home, ".config", "prism", "agents")) + "))\n"
 }
 
-// prepareClipboardSentinel creates ~/.cache/prism/clipboard under the real
-// HOME (when absent) and plants a sentinel file inside it. Cleanup removes
+// prepareClipboardSentinel creates ~/.cache/prism/clipboard under HOME (when
+// absent) and plants a sentinel file inside it. The clipboard tests run with
+// a test-owned HOME (useTestHome). Cleanup removes
 // only what the test created.
 func prepareClipboardSentinel(t *testing.T) (clipboardDir, sentinelPath string) {
 	t.Helper()
@@ -88,6 +89,7 @@ func TestSandboxExecClipboard_RealPathReadable(t *testing.T) {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
+	useTestHome(t)
 	nixBash := requireNixBash(t)
 
 	_, sentinelPath := prepareClipboardSentinel(t)
@@ -126,6 +128,7 @@ func TestSandboxExecClipboard_DeniedWithoutGrantBlock(t *testing.T) {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
+	useTestHome(t)
 	nixBash := requireNixBash(t)
 
 	_, sentinelPath := prepareClipboardSentinel(t)
@@ -158,6 +161,7 @@ func TestSandboxExecClipboard_WriteDenied(t *testing.T) {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
+	useTestHome(t)
 	nixBash := requireNixBash(t)
 
 	clipboardDir, _ := prepareClipboardSentinel(t)

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
 // TestMain points the package temp-path seam (tempDir, container.go) at a
@@ -30,9 +32,19 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	tempDir = func() string { return dir }
+	var restoreState func()
+	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
 	code := m.Run()
+	restoreState()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// suiteStateRoot is the directory that TestMain gives to IsolateSuite.
+var suiteStateRoot string
+
+func TestSuiteStateIsolation_XDGInsideSuiteDir(t *testing.T) {
+	stateguardtest.RequireIsolated(t, suiteStateRoot)
 }
 
 // ── containerName tests ──────────────────────────────────────────────────────

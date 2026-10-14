@@ -29,6 +29,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
 // hostAPIReExecSubcommands lists every argv[1] this package's production code
@@ -59,5 +61,16 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 
-	os.Exit(m.Run())
+	var restoreState func()
+	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
+	code := m.Run()
+	restoreState()
+	os.Exit(code)
+}
+
+// suiteStateRoot is the directory that TestMain gives to IsolateSuite.
+var suiteStateRoot string
+
+func TestSuiteStateIsolation_XDGInsideSuiteDir(t *testing.T) {
+	stateguardtest.RequireIsolated(t, suiteStateRoot)
 }

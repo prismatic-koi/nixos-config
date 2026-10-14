@@ -20,6 +20,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
 // TestMain intercepts execution when this test binary is re-invoked as a fake
@@ -79,17 +81,21 @@ func TestMain(m *testing.M) {
 	}
 
 	restoreTmuxEnv := isolateSuiteFromHostTmux()
-	// Host-mode command building reads profiles.json. Point it at an empty
-	// dir so the suite never sees the developer's real profiles.
-	cfgDir, mkErr := os.MkdirTemp("", "prism-session-cfg-")
-	if mkErr != nil {
-		panic(mkErr)
-	}
-	os.Setenv("XDG_CONFIG_HOME", cfgDir)
+	// IsolateSuite also points XDG_CONFIG_HOME at an empty dir, so
+	// host-mode command building never sees the real profiles.json.
+	var restoreState func()
+	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
 	code := m.Run()
+	restoreState()
 	restoreTmuxEnv()
-	os.RemoveAll(cfgDir)
 	os.Exit(code)
+}
+
+// suiteStateRoot is the directory that TestMain gives to IsolateSuite.
+var suiteStateRoot string
+
+func TestSuiteStateIsolation_XDGInsideSuiteDir(t *testing.T) {
+	stateguardtest.RequireIsolated(t, suiteStateRoot)
 }
 
 // ── path helper tests ────────────────────────────────────────────────────────

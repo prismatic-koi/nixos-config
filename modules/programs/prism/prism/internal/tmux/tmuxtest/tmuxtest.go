@@ -107,3 +107,24 @@ func probeServerStart(bin string) (string, error) {
 	_ = exec.Command(bin, "-L", socket, "kill-server").Run()
 	return string(out), err
 }
+
+// HoldStdinOpen gives cmd a stdin pipe that stays open until t ends. Call it
+// before cmd.Start for a script(1) command that attaches a tmux client.
+//
+// script(1) copies its stdin to the pty. When its stdin is at end-of-file,
+// script sends ^D to the attached client, the pane shell exits, and tmux
+// closes the session and detaches the client. A test process has no terminal
+// on stdin in an agent session, in CI, or under `go test` with a redirect, so
+// without this the client goes away before the test can use it.
+func HoldStdinOpen(t testing.TB, cmd *exec.Cmd) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("tmuxtest: create stdin pipe: %v", err)
+	}
+	cmd.Stdin = r
+	t.Cleanup(func() {
+		_ = w.Close()
+		_ = r.Close()
+	})
+}

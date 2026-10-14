@@ -42,6 +42,46 @@ func requireSandboxExec(t *testing.T) {
 	sandboxexectest.Require(t)
 }
 
+// stateHomeOutsideTmp returns a new XDG_STATE_HOME for a profile test. It
+// is under HOME and not under t.TempDir(), as the production work dir is
+// under ~/.local/state. The profile allows the whole TMPDIR tree, so a work
+// dir there makes a deny test vacuous. git also walks up from a work dir
+// under TMPDIR to /private/var, which the profile denies. When HOME is not
+// writable (the nix build sandbox), it falls back to t.TempDir().
+func stateHomeOutsideTmp(t *testing.T) string {
+	t.Helper()
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if dir, err := os.MkdirTemp(home, ".prism-3146-state-*"); err == nil {
+			t.Cleanup(func() { _ = os.RemoveAll(dir) })
+			return dir
+		}
+	}
+	return t.TempDir()
+}
+
+// useTestHome points HOME at a new directory under the real home, clears
+// REAL_HOME, and returns the new directory. The profile derives its
+// home-relative rules from os.UserHomeDir(), which reads HOME, so a test
+// then checks those rules against files that it owns, not against the real
+// ~/.config/prism of the user (issue #3146). The directory is under the real
+// home and not under t.TempDir(): the profile allows the whole TMPDIR tree,
+// so a deny test there cannot fail. Call it before the profile is built.
+func useTestHome(t *testing.T) string {
+	t.Helper()
+	real, err := os.UserHomeDir()
+	if err != nil || real == "" {
+		t.Skipf("cannot determine user home: %v", err)
+	}
+	home, err := os.MkdirTemp(real, ".prism-3146-home-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp(home) for the test home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	t.Setenv("REAL_HOME", "")
+	return home
+}
+
 // requireNixBash resolves the Nix-built bash binary via PATH → symlink chain
 // and returns its /nix/store/... absolute path. Skips the test when bash is
 // not found or does not resolve to a Nix store path.
@@ -81,21 +121,15 @@ func requireNixBash(t *testing.T) string {
 // that read symlink targets under HOME) should use
 // newProfileManagerWithBareRoot.
 //
-// XDG_STATE_HOME is redirected to a t.TempDir() so the per-session work
-// dir lives under the tempdir rather than the real ~/.local/state. This
-// keeps test state confined to t.TempDir() and — critically — makes the
-// integration suite tractable inside the nix-build homeless-shelter
-// sandbox, where $HOME=/homeless-shelter is read-only and any path
-// derived from it fails on os.MkdirAll. This matches the sidecar tests'
-// XDG_STATE_HOME redirection pattern (the AGENTS.md "Test-suite
-// isolation" convention).
+// XDG_STATE_HOME is redirected to stateHomeOutsideTmp, so the per-session
+// work dir lives in a test-owned dir rather than the real ~/.local/state.
 //
 // Note: container.New() initialises the Manager with a hostIsolator by
 // default, but Manager.PrepareSandboxExec() creates its own
 // sandboxExecIsolator internally, so no isolator override is needed.
 func newProfileManager(t *testing.T) *container.Manager {
 	t.Helper()
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", stateHomeOutsideTmp(t))
 	// Sanitise the test name for use as an InstanceID: remove characters that
 	// are invalid in filesystem paths (e.g. "/" from subtest names).
 	instanceID := "integ-sbx-" + strings.ReplaceAll(t.Name(), "/", "-")
@@ -128,11 +162,11 @@ func newProfileManager(t *testing.T) *container.Manager {
 // (subpath "/etc") is removed, masking the regression the test is trying
 // to catch.
 //
-// XDG_STATE_HOME is redirected to a t.TempDir() for the same reason as in
-// newProfileManager — see that helper's doc for the rationale.
+// XDG_STATE_HOME is redirected to stateHomeOutsideTmp, as in
+// newProfileManager.
 func newProfileManagerWithBareRoot(t *testing.T) *container.Manager {
 	t.Helper()
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", stateHomeOutsideTmp(t))
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		t.Skipf("cannot determine user home: %v", err)
@@ -171,11 +205,11 @@ func newProfileManagerWithBareRoot(t *testing.T) *container.Manager {
 // (subpath ~/.pi/agent) RW allow. Identical to newProfileManagerWithBareRoot
 // but sets Harness="pi" on the Config.
 //
-// XDG_STATE_HOME is redirected to a t.TempDir() for the same reason as in
-// newProfileManager — see that helper's doc for the rationale.
+// XDG_STATE_HOME is redirected to stateHomeOutsideTmp, as in
+// newProfileManager.
 func newProfileManagerWithBareRootAndPi(t *testing.T) *container.Manager {
 	t.Helper()
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", stateHomeOutsideTmp(t))
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		t.Skipf("cannot determine user home: %v", err)

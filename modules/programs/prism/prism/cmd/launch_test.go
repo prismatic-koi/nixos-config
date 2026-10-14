@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/dashboard"
+	"github.com/prismatic-koi/prism/internal/tmux/tmuxtest"
 )
 
 // resetLaunchFlags resets the package-level launch flag vars to their zero
@@ -72,6 +73,7 @@ func runViaPTYAndWaitForClient(t *testing.T, s *cmdTestServer, cmd *exec.Cmd) st
 	var scriptStderr bytes.Buffer
 	ptyCmd := exec.Command("script", scriptCmdArgs(cmdStr)...)
 	ptyCmd.Stderr = &scriptStderr
+	tmuxtest.HoldStdinOpen(t, ptyCmd)
 	if err := ptyCmd.Start(); err != nil {
 		t.Fatalf("run tmux command via pty: %v", err)
 	}

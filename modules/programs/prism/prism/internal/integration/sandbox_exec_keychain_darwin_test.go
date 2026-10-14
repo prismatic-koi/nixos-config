@@ -317,6 +317,23 @@ func logShowAvailable(t *testing.T) bool {
 	return false
 }
 
+// keychainProbeDenyLines returns the kernel deny lines of the form
+// "Sandbox: keychain_probe(<pid>) deny(...) ... login.keychain-db" from the
+// `log show` output since since, or "" if there are none. The raw output can
+// also hold the command line of `log` itself, which holds every word of the
+// predicate, and a deny of another sandboxed process on the host. Neither one
+// is a deny of the probe.
+func keychainProbeDenyLines(t *testing.T, since time.Time) string {
+	var lines []string
+	for _, line := range strings.Split(queryLogShowForKeychainDeny(t, since), "\n") {
+		if strings.Contains(line, "Sandbox: keychain_probe(") && strings.Contains(line, "deny(") &&
+			strings.Contains(line, "login.keychain-db") {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // queryLogShowForKeychainDeny invokes `log show` from since and returns
 // the matching deny lines (or "" if none) referencing login.keychain-db.
 // The kernel emits a Sandbox subsystem entry on every denial; the
@@ -386,7 +403,7 @@ func TestSandboxExecProfile_KeychainLookupAllowed(t *testing.T) {
 		// a moment to flush so a real denial would show up by the time
 		// we query.
 		time.Sleep(500 * time.Millisecond)
-		denies := queryLogShowForKeychainDeny(t, since)
+		denies := keychainProbeDenyLines(t, since)
 		if strings.Contains(denies, "login.keychain-db") {
 			t.Errorf("kernel log carries a sandbox deny on ~/Library/Keychains/login.keychain-db over the probe window — the §5i grant is not effective.\nDeny lines:\n%s\nProbe output:\n%s\nProfile: %s",
 				denies, out, profilePath)

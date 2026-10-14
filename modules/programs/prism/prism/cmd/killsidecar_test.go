@@ -24,6 +24,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -37,8 +38,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prismatic-koi/prism/internal/db"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
 // TestMain serves several purposes:
@@ -55,22 +56,18 @@ import (
 //     test binary mid-run — t.Cleanup will not fire in that case, but the
 //     SIGTERM handler will.
 //
-//  3. Leak guard: snapshots the live agent_status and sessions tables and
-//     the live worktree root before running tests, then asserts no new
-//     entries appear after the suite completes. This catches any test that
-//     creates real DB rows or worktrees in the live environment. The guard
-//     uses the DB path that was live at suite start (before any test
-//     overrides XDG_STATE_HOME), so it reliably reads the production
-//     database. The guard does not diff live tmux sessions: the suite-wide
-//     tmux isolation makes this package's code under test unable to reach
-//     the live server by construction, so a live-server diff could only
-//     observe concurrent host activity (e.g. a parallel worker's review
-//     agents spawning mid-suite) and misattribute it to the suite. cmd/
-//     isolation regressions are caught deterministically by
-//     TestSuiteTmuxIsolation_HostServerUnreachable (tmux_isolation_test.go).
-//     The DB-row and worktree diffs are retained because no equivalent
-//     by-construction isolation exists for them (tests opt in per-test via
-//     XDG_STATE_HOME / SetTestDBPath / PRISM_SPAWN_PATH overrides).
+//  3. State isolation and worktree leak guard: stateguardtest.IsolateSuite
+//     points XDG_STATE_HOME and XDG_CONFIG_HOME at a directory that the
+//     suite owns, so no code under test can reach the real prism database,
+//     ~/.local/state/prism, or ~/.config/prism. The guard does not open the
+//     real database: db.Open applies the migrations of the branch under
+//     test to it. TestSuiteStateIsolation_XDGInsideSuiteDir catches a lost
+//     IsolateSuite call. The guard snapshots the live worktree root before
+//     the tests and fails the suite if a new worktree appears, because no
+//     by-construction isolation exists for it (tests opt in per test via
+//     PRISM_SPAWN_PATH). The guard does not diff live tmux sessions: the
+//     suite-wide tmux isolation makes the live server unreachable by
+//     construction (TestSuiteTmuxIsolation_HostServerUnreachable).
 //
 //  4. Tmux isolation: clears $TMUX and redirects $TMUX_TMPDIR to an
 //     empty directory so no code under test can reach the live host tmux
@@ -128,6 +125,13 @@ func TestMain(m *testing.M) {
 		// Re-exec argv defence — see purpose 6 in the doc comment above.
 		os.Exit(0)
 	}
+	if len(os.Args) > 1 && os.Args[1] == "dashboard" {
+		// ensureDashSession starts `<self> dashboard` in a tmux pane. A
+		// dashboard stays open, and tests check that its session exists, so
+		// read stdin until it ends: the pane pty closes with the server.
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}
 
 	// Register a SIGTERM handler that cleans up orphaned tmux test servers.
 	sigCh := make(chan os.Signal, 1)
@@ -138,12 +142,10 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}()
 
-	// Leak guard: snapshot live environment before tests.
-	// Capture the DB path now, before any test overrides XDG_STATE_HOME.
-	liveDBPath := dbPath()
-	beforeAgentStatusRows := snapshotAgentStatusRows(liveDBPath)
-	beforeSessionsRows := snapshotSessionsRows(liveDBPath)
 	beforeWorktrees := snapshotWorktreeDirs()
+
+	var restoreStateEnv func()
+	suiteStateRoot, restoreStateEnv = stateguardtest.IsolateSuite()
 
 	// Tmux isolation.
 	restoreTmuxEnv := isolateSuiteFromHostTmux()
@@ -151,48 +153,18 @@ func TestMain(m *testing.M) {
 	// so the suite controls its full environment surface.
 	restoreSandboxEnv := isolateSuiteFromSandboxEnv()
 
-	// Host-mode command building reads profiles.json. Point it at an empty
-	// dir so the suite never sees the developer's real profiles.
-	cfgDir, mkErr := os.MkdirTemp("", "prism-cmd-cfg-")
-	if mkErr != nil {
-		panic(mkErr)
-	}
-	os.Setenv("XDG_CONFIG_HOME", cfgDir)
-
 	code := m.Run()
 
-	os.RemoveAll(cfgDir)
+	restoreStateEnv()
 	restoreSandboxEnv()
 	restoreTmuxEnv()
 
-	// Leak guard: assert no new sessions or DB rows were created in the live
-	// environment. We skip the check if the suite failed — a failing test may
-	// have left intentional state, and we don't want to obscure the primary
-	// failure with a secondary leak report.
+	// Leak guard: assert no new worktree was created in the live environment.
+	// We skip the check if the suite failed — a failing test may have left
+	// intentional state, and we don't want to obscure the primary failure with
+	// a secondary leak report.
 	if code == 0 {
-		afterAgentStatusRows := snapshotAgentStatusRows(liveDBPath)
-		afterSessionsRows := snapshotSessionsRows(liveDBPath)
 		afterWorktrees := snapshotWorktreeDirs()
-		if leaked := setDiff(afterAgentStatusRows, beforeAgentStatusRows); len(leaked) > 0 {
-			fmt.Fprintf(os.Stderr,
-				"\n[LEAK GUARD] cmd test suite created %d new live agent_status row(s):\n",
-				len(leaked))
-			for _, s := range leaked {
-				fmt.Fprintf(os.Stderr, "  - %s\n", s)
-			}
-			fmt.Fprintln(os.Stderr, "Fix: ensure tests use SetTestDBPath() or XDG_STATE_HOME isolation.")
-			code = 1
-		}
-		if leaked := setDiff(afterSessionsRows, beforeSessionsRows); len(leaked) > 0 {
-			fmt.Fprintf(os.Stderr,
-				"\n[LEAK GUARD] cmd test suite created %d new live sessions row(s):\n",
-				len(leaked))
-			for _, s := range leaked {
-				fmt.Fprintf(os.Stderr, "  - %s\n", s)
-			}
-			fmt.Fprintln(os.Stderr, "Fix: ensure tests use SetTestDBPath() or XDG_STATE_HOME isolation.")
-			code = 1
-		}
 		if leaked := setDiff(afterWorktrees, beforeWorktrees); len(leaked) > 0 {
 			fmt.Fprintf(os.Stderr,
 				"\n[LEAK GUARD] cmd test suite created %d new worktree director(ies) in ~/code/nixos-config/:\n",
@@ -208,54 +180,11 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// snapshotAgentStatusRows returns the sorted list of session_names in
-// agent_status with ended_at IS NULL, using the given DB path. Returns nil if
-// the DB cannot be opened (e.g. first run with no DB yet).
-func snapshotAgentStatusRows(dbFilePath string) []string {
-	if dbFilePath == "" {
-		return nil
-	}
-	d, err := db.Open(dbFilePath)
-	if err != nil {
-		return nil
-	}
-	defer d.Close()
-	rows, qErr := d.AllActiveStatus()
-	if qErr != nil {
-		return nil
-	}
-	names := make([]string, len(rows))
-	for i, r := range rows {
-		names[i] = r.SessionName
-	}
-	sort.Strings(names)
-	return names
-}
+// suiteStateRoot is the directory that TestMain gives to IsolateSuite.
+var suiteStateRoot string
 
-// snapshotSessionsRows returns the sorted list of instance_ids in the sessions
-// table where ended_at IS NULL, using the given DB path. Returns nil if the DB
-// cannot be opened (e.g. first run with no DB yet).
-func snapshotSessionsRows(dbFilePath string) []string {
-	if dbFilePath == "" {
-		return nil
-	}
-	d, err := db.Open(dbFilePath)
-	if err != nil {
-		return nil
-	}
-	defer d.Close()
-	rows, qErr := d.AllSessions()
-	if qErr != nil {
-		return nil
-	}
-	var ids []string
-	for _, r := range rows {
-		if r.EndedAt == nil {
-			ids = append(ids, r.InstanceID)
-		}
-	}
-	sort.Strings(ids)
-	return ids
+func TestSuiteStateIsolation_XDGInsideSuiteDir(t *testing.T) {
+	stateguardtest.RequireIsolated(t, suiteStateRoot)
 }
 
 // worktreeDirPattern matches prism worktree directory names created by
