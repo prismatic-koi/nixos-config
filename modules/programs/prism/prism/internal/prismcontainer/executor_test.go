@@ -634,10 +634,12 @@ func waitGone(t *testing.T, pid int, what string) {
 }
 
 // sleepingClient writes a client script that writes its PID to pidFile and
-// then sleeps as the same process.
+// then sleeps as the same process. The script is not named "podman": a
+// prism sandbox denies the exec of any file with that name (#3154), and the
+// guard accepts any client path.
 func sleepingClient(t *testing.T, pidFile string) string {
 	t.Helper()
-	return writeScript(t, t.TempDir(), "podman", `echo $$ > "`+pidFile+`"`+"\nexec sleep 300\n")
+	return writeScript(t, t.TempDir(), "build-client", `echo $$ > "`+pidFile+`"`+"\nexec sleep 300\n")
 }
 
 // TestGuardedClient_CancelKillsClient: when ctx ends, the guard kills the

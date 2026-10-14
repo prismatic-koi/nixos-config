@@ -60,35 +60,9 @@ type machineConfig struct {
 // mounts a host path outside allowlist. readFile reads the machine config
 // file. Every error is a refusal.
 func checkMachineMounts(ctx context.Context, r Runner, readFile func(string) ([]byte, error), allowlist []string) error {
-	name, err := defaultMachine(ctx, r)
+	name, mounts, err := MachineMounts(ctx, r, readFile)
 	if err != nil {
 		return err
-	}
-	configDir, err := machineConfigDir(ctx, r, name)
-	if err != nil {
-		return err
-	}
-	path := filepath.Join(configDir, name+".json")
-	data, err := readFile(path)
-	if err != nil {
-		return fmt.Errorf("prism cannot read the mounts of podman machine %q from %s (%v), so it cannot make sure that the build cannot read Mac files", name, path, err)
-	}
-	var cfg machineConfig
-	var mounts []MachineMount
-	err = json.Unmarshal(data, &cfg)
-	if err == nil && len(cfg.Mounts) == 0 {
-		err = fmt.Errorf("no Mounts field")
-	}
-	if err == nil {
-		err = json.Unmarshal(cfg.Mounts, &mounts)
-	}
-	if err != nil {
-		return fmt.Errorf("prism cannot parse the mounts of podman machine %q in %s (%v), so it cannot make sure that the build cannot read Mac files", name, path, err)
-	}
-	for i, m := range mounts {
-		if m.Source == "" {
-			return fmt.Errorf("prism cannot parse the mounts of podman machine %q in %s (mount %d has no Source), so it cannot make sure that the build cannot read Mac files", name, path, i)
-		}
 	}
 	var bad []MachineMount
 	for _, m := range mounts {
@@ -100,6 +74,43 @@ func checkMachineMounts(ctx context.Context, r Runner, readFile func(string) ([]
 		return nil
 	}
 	return machineMountRefusal(name, bad, allowlist)
+}
+
+// MachineMounts returns the name and the mounts of the default podman
+// machine, read from its config file. readFile reads that file. Every
+// error means that the mounts are unknown.
+func MachineMounts(ctx context.Context, r Runner, readFile func(string) ([]byte, error)) (string, []MachineMount, error) {
+	name, err := defaultMachine(ctx, r)
+	if err != nil {
+		return "", nil, err
+	}
+	configDir, err := machineConfigDir(ctx, r, name)
+	if err != nil {
+		return "", nil, err
+	}
+	path := filepath.Join(configDir, name+".json")
+	data, err := readFile(path)
+	if err != nil {
+		return "", nil, fmt.Errorf("prism cannot read the mounts of podman machine %q from %s (%v), so it cannot make sure that the build cannot read Mac files", name, path, err)
+	}
+	var cfg machineConfig
+	var mounts []MachineMount
+	err = json.Unmarshal(data, &cfg)
+	if err == nil && len(cfg.Mounts) == 0 {
+		err = fmt.Errorf("no Mounts field")
+	}
+	if err == nil {
+		err = json.Unmarshal(cfg.Mounts, &mounts)
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("prism cannot parse the mounts of podman machine %q in %s (%v), so it cannot make sure that the build cannot read Mac files", name, path, err)
+	}
+	for i, m := range mounts {
+		if m.Source == "" {
+			return "", nil, fmt.Errorf("prism cannot parse the mounts of podman machine %q in %s (mount %d has no Source), so it cannot make sure that the build cannot read Mac files", name, path, i)
+		}
+	}
+	return name, mounts, nil
 }
 
 // defaultMachine returns the name of the default podman machine.
