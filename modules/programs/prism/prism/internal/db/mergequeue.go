@@ -293,8 +293,9 @@ UPDATE pending_merges
 //   - "" or "watching" → only watching rows for instanceID
 //   - "failed"         → failed rows for instanceID
 //   - "all"            → all non-abandoned rows for instanceID from the last 7 days
-//   - "abandoned"      → abandoned rows for the same session_name but a different
-//     instanceID (previous coordinator incarnations)
+//   - "abandoned"      → abandoned rows for the same session_name, from every
+//     coordinator incarnation. The current instanceID is included: a
+//     restore can continue the instance after a stop abandoned its rows.
 //
 // instance_id is unique per coordinator (and every coordinator only ever
 // writes rows for its own repo), so this selector is already
@@ -318,9 +319,9 @@ func (d *DB) MergeQueueForInstance(instanceID, sessionName, filter string) ([]Pe
 		q = `SELECT repo, pr, session_name, instance_id, queue_position, status, title, error,
 		            queued_at, last_checked_at, merged_at, ended_at
 		       FROM pending_merges
-		      WHERE session_name = ? AND instance_id != ? AND status = 'abandoned'
+		      WHERE session_name = ? AND status = 'abandoned'
 		      ORDER BY queue_position ASC`
-		args = []any{sessionName, instanceID}
+		args = []any{sessionName}
 	case "all":
 		// Include all terminal states (merged, cancelled, failed, abandoned) plus
 		// watching, from the last 7 days, scoped to this instanceID.

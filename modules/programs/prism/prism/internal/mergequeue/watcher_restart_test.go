@@ -101,10 +101,11 @@ func equalInts(a, b []int) bool {
 }
 
 // TestRestart_ResumesQueueInOrder covers the restart that continues the
-// instance. Without the resume, the abandoned rows are in no view that
-// `prism merges` shows and the watcher polls nothing: that is the lost
-// entry of #3166. With the resume, the restored watcher merges each PR one
-// time, in the queue order of before the restart.
+// instance. Without the resume, the rows are abandoned and the watcher
+// polls nothing: that is the lost entry of #3166. `prism merges list
+// --abandoned` must list them, although they carry the current instance
+// ID. With the resume, the restored watcher merges each PR one time, in the
+// queue order of before the restart.
 func TestRestart_ResumesQueueInOrder(t *testing.T) {
 	f := newRestartFixture(t, "inst-restart", 31, 32, 33)
 	queued := f.queued(t)
@@ -113,8 +114,8 @@ func TestRestart_ResumesQueueInOrder(t *testing.T) {
 	if got := f.listed(t, f.inst, ""); len(got) != 0 {
 		t.Fatalf("watching rows after the stop = %v, want none", got)
 	}
-	if got := f.listed(t, f.inst, "abandoned"); len(got) != 0 {
-		t.Errorf("--abandoned rows for the same instance = %v; the cause of #3166 is that they are hidden", got)
+	if got := f.listed(t, f.inst, "abandoned"); !equalInts(got, []int{31, 32, 33}) {
+		t.Errorf("--abandoned rows for the same instance = %v, want [31 32 33]", got)
 	}
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
 	w := f.watcher(f.inst, gh)
@@ -128,6 +129,9 @@ func TestRestart_ResumesQueueInOrder(t *testing.T) {
 	}
 	if got := f.listed(t, f.inst, ""); !equalInts(got, []int{31, 32, 33}) {
 		t.Errorf("watching rows after the resume = %v, want [31 32 33]", got)
+	}
+	if got := f.listed(t, f.inst, "abandoned"); len(got) != 0 {
+		t.Errorf("--abandoned rows after the resume = %v, want none", got)
 	}
 	for _, pr := range []int{31, 32, 33} {
 		row, err := f.db.PendingMergeByPR(pr, "myrepo")
@@ -240,6 +244,25 @@ func TestRestart_NewIncarnationOwnsQueue(t *testing.T) {
 	}
 	if got := f.listed(t, newInst, ""); len(got) != 0 {
 		t.Errorf("watching rows after the new sidecar stops = %v, want none", got)
+	}
+}
+
+// TestRestart_StillWatchingRowChangesOwner covers an old sidecar that got
+// SIGKILL before its Shutdown abandoned the rows. Restore starts a new
+// instance, and the rows that are still watching move to it.
+func TestRestart_StillWatchingRowChangesOwner(t *testing.T) {
+	f := newRestartFixture(t, "inst-killed", 81, 82)
+	queued := f.queued(t)
+
+	const newInst = "inst-after-kill"
+	if resumed := f.resume(t, newInst, queued); !equalInts(resumed, []int{81, 82}) {
+		t.Errorf("resumed = %v, want [81 82]", resumed)
+	}
+	if got := f.listed(t, newInst, ""); !equalInts(got, []int{81, 82}) {
+		t.Errorf("watching rows of the new instance = %v, want [81 82]", got)
+	}
+	if got := f.listed(t, f.inst, ""); len(got) != 0 {
+		t.Errorf("watching rows of the old instance = %v, want none", got)
 	}
 }
 

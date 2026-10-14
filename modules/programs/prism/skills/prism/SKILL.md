@@ -660,7 +660,7 @@ A queued PR moves through states keyed off GitHub's `mergeStateStatus`: `watchin
 | `prism merges` | Show the queue scoped to the current coordinator session (alias for `prism merges list`). |
 | `prism merges list` | Same as above. |
 | `prism merges list --failed` | Show only failed entries. |
-| `prism merges list --abandoned` | Show entries left behind by a previous coordinator incarnation. |
+| `prism merges list --abandoned` | Show entries that a stop of the coordinator sidecar left behind, from every incarnation of the session, the current one included. |
 | `prism merges list --all` | Include terminal-state history (last 7 days). |
 | `prism merges cancel <pr>` | Remove a `watching` entry from the queue. |
 
@@ -762,7 +762,7 @@ When a merge-queue notification arrives, treat it as high-priority (same as a wo
 | `PR #N CI failed: <check names>. ...` | Do NOT clean up — the branch is still needed. `prism prompt <worker-session>` with the failed check names so the worker fixes and pushes. Re-run `prism merge <pr>` after the fix lands; the row is terminal, so it does not resume on its own. |
 | `PR #N has conflicts. Worker needs to rebase.` (mid-poll) | Do NOT clean up. `prism prompt <worker-session>` to rebase and push, then `prism merge <pr>` again; the row is terminal and the queue has moved on. |
 | `PR #N merge failed: <error>` | Read the error, decide whether to retry (`prism merge <pr>`) or escalate to the user. |
-| `abandoned` (via `--abandoned` listing) | A new coordinator decides whether to re-enqueue with `prism merge <pr>`. |
+| `abandoned` (via `--abandoned` listing) | The coordinator decides whether to re-enqueue with `prism merge <pr>`. |
 
 ### Why workers cannot invoke it
 

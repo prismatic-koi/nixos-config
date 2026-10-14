@@ -426,7 +426,8 @@ func TestMergeQueueForInstance_Filters(t *testing.T) {
 }
 
 // TestMergeQueueForInstance_AbandonedFilter verifies that the abandoned filter
-// returns rows from a different instanceID for the same session_name.
+// returns the abandoned rows of the session_name from every instanceID, the
+// current one included, and no rows of another session_name.
 func TestMergeQueueForInstance_AbandonedFilter(t *testing.T) {
 	d := openTestDB(t)
 	session := "myrepo@main"
@@ -453,6 +454,28 @@ func TestMergeQueueForInstance_AbandonedFilter(t *testing.T) {
 	}
 	if len(abandoned) != 1 || abandoned[0].PR != 77 {
 		t.Errorf("abandoned filter: got %d rows, want 1 (PR 77)", len(abandoned))
+	}
+
+	// A restore can continue the instance after a stop abandoned its rows
+	// (#3166). Those rows carry the current instance ID and must still show.
+	if _, err := d.EnqueueMerge(99, "myrepo", session, newInstance, nil); err != nil {
+		t.Fatalf("EnqueueMerge(99): %v", err)
+	}
+	if _, err := d.EnqueueMerge(55, "other", "other@main", "inst-other", nil); err != nil {
+		t.Fatalf("EnqueueMerge(other): %v", err)
+	}
+	if err := d.TerminateMerge(99, "myrepo", "abandoned", "coordinator session ended"); err != nil {
+		t.Fatalf("TerminateMerge(99): %v", err)
+	}
+	if err := d.AbandonWatchingMerges("inst-other"); err != nil {
+		t.Fatalf("AbandonWatchingMerges(other): %v", err)
+	}
+	abandoned, err = d.MergeQueueForInstance(newInstance, session, "abandoned")
+	if err != nil {
+		t.Fatalf("MergeQueueForInstance(abandoned): %v", err)
+	}
+	if len(abandoned) != 2 || abandoned[0].PR != 77 || abandoned[1].PR != 99 {
+		t.Errorf("abandoned filter with a same-instance row: got %+v, want PR 77 and PR 99", abandoned)
 	}
 
 	// Watching filter from new instance sees only PR 88.
