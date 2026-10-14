@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
@@ -110,12 +111,36 @@ func TestMain(m *testing.M) {
 	// child; they never start a tmux server, so the redirect applies only
 	// here, around m.Run().
 	restore := isolateTmuxTmpdir()
+	restoreTmpRoot := sessionTmpRootForSuite()
 	var restoreState func()
 	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
 	code := m.Run()
 	restoreState()
+	restoreTmpRoot()
 	restore()
 	os.Exit(code)
+}
+
+// sessionTmpRootForSuite keeps the production root (/tmp) of the
+// per-session TMPDIR when the test process can write /tmp. A test process in
+// a sandbox-exec session cannot, so Manager.PrepareSandboxExec fails there.
+// In that case the root moves to a new dir under os.TempDir(), the
+// per-session TMPDIR of the session. The sandbox-exec tests skip in such a
+// session, and the profile-content tests still run.
+func sessionTmpRootForSuite() (restore func()) {
+	if probe, err := os.MkdirTemp("/tmp", "pst-"); err == nil {
+		_ = os.Remove(probe)
+		return func() {}
+	}
+	dir, err := os.MkdirTemp("", "pst-")
+	if err != nil {
+		return func() {}
+	}
+	restoreRoot := container.SetSessionTmpRootForTest(dir)
+	return func() {
+		restoreRoot()
+		_ = os.RemoveAll(dir)
+	}
 }
 
 // suiteStateRoot is the directory that TestMain gives to IsolateSuite.
