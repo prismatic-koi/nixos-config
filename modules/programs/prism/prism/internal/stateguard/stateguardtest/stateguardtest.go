@@ -41,8 +41,12 @@ func mkdirShort(pattern string) (string, error) {
 	return filepath.EvalSymlinks(dir)
 }
 
+// SuiteRootEnv holds the suite directory of IsolateSuite, for a helper
+// process that the suite starts.
+const SuiteRootEnv = "PRISM_TEST_SUITE_ROOT"
+
 // SuiteEnv names each variable that IsolateSuite sets.
-var SuiteEnv = []string{"XDG_STATE_HOME", "XDG_CONFIG_HOME", "SHELL"}
+var SuiteEnv = []string{"XDG_STATE_HOME", "XDG_CONFIG_HOME", "SHELL", SuiteRootEnv}
 
 // IsolateSuite is for TestMain, before m.Run. It points XDG_STATE_HOME and
 // XDG_CONFIG_HOME at a new directory that the suite owns, and sets SHELL to
@@ -59,7 +63,16 @@ var SuiteEnv = []string{"XDG_STATE_HOME", "XDG_CONFIG_HOME", "SHELL"}
 //
 // HOME is not changed: the nix build sandbox sets HOME to an unwritable
 // path, and that catches a test that writes under HOME.
+//
+// A test can start its own test binary again as a helper process, and can
+// kill it before its TestMain restores. Such a helper inherits the isolated
+// environment, so IsolateSuite keeps the suite directory of the parent and
+// returns a restore that does nothing. The parent removes the directory.
 func IsolateSuite() (root string, restore func()) {
+	if parent := os.Getenv(SuiteRootEnv); parent != "" &&
+		inside(os.Getenv("XDG_STATE_HOME"), parent) && inside(os.Getenv("XDG_CONFIG_HOME"), parent) {
+		return parent, func() {}
+	}
 	root, err := mkdirShort("prism-suite-" + strings.TrimSuffix(filepath.Base(os.Args[0]), ".test") + "-")
 	if err != nil {
 		panic(fmt.Sprintf("stateguardtest: create suite dir: %v", err))
@@ -81,6 +94,7 @@ func IsolateSuite() (root string, restore func()) {
 	os.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	os.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	os.Setenv("SHELL", "/bin/sh")
+	os.Setenv(SuiteRootEnv, root)
 	return root, func() {
 		for k, s := range origs {
 			if s.had {
@@ -93,6 +107,15 @@ func IsolateSuite() (root string, restore func()) {
 	}
 }
 
+// inside reports whether path is root or a path below root.
+func inside(path, root string) bool {
+	if path == "" || root == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // RequireIsolated fails t when an XDG variable that IsolateSuite sets does
 // not point inside root. A package calls it from a test, to detect a TestMain
 // that lost its IsolateSuite call.
@@ -103,8 +126,7 @@ func RequireIsolated(t testing.TB, root string) {
 	}
 	for _, k := range []string{"XDG_STATE_HOME", "XDG_CONFIG_HOME"} {
 		v := os.Getenv(k)
-		rel, err := filepath.Rel(root, v)
-		if v == "" || err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if !inside(v, root) {
 			t.Errorf("%s=%q is outside the suite dir %q: the suite can reach the real prism state", k, v, root)
 		}
 	}

@@ -26,9 +26,11 @@ func TestMain(m *testing.M) {
 	containersDir := userContainersConfigDir()
 	var restore func()
 	suiteStateRoot, restore = stateguardtest.IsolateSuite()
-	if containersDir != "" {
+	link := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "containers")
+	// A helper process of this suite shares the suite dir, and the link is
+	// there already.
+	if _, err := os.Lstat(link); err != nil && containersDir != "" && containersDir != link {
 		if _, err := os.Stat(containersDir); err == nil {
-			link := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "containers")
 			if err := os.Symlink(containersDir, link); err != nil {
 				fmt.Fprintf(os.Stderr, "prismcontainer: TestMain: link the containers config: %v\n", err)
 				restore()
