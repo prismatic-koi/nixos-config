@@ -37,6 +37,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
 // EnvRestrictHostAPI is the environment variable name that, when set to any
@@ -116,12 +117,9 @@ func NewIsolated(t *testing.T, invokerSession string) *Bus {
 	t.Helper()
 
 	// 1. Point XDG_STATE_HOME at a tempdir so all host-path resolution is
-	//    sandboxed. t.Setenv restores the original value on t.Cleanup.
-	xdgTmp, err := os.MkdirTemp("", "sidecartest-xdg-")
-	if err != nil {
-		t.Fatalf("sidecartest: create XDG temp dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(xdgTmp) })
+	//    sandboxed. t.Setenv restores the original value on t.Cleanup. The
+	//    dir is short, so the hostapi.sock path under it fits in sun_path.
+	xdgTmp := stateguardtest.ShortTempDir(t, "sidecartest-xdg-")
 	t.Setenv("XDG_STATE_HOME", xdgTmp)
 
 	// 2. Activate the test-mode guard so deliverViaSidecarSocket refuses to

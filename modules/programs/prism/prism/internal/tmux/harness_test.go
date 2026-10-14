@@ -273,6 +273,7 @@ func (s *server) attachClientToSession(t *testing.T, targetSession string) strin
 	var scriptStderr bytes.Buffer
 	cmd := exec.Command("script", scriptArgs(s.bin+" -L "+s.socket+" -f /dev/null attach-session -t "+targetSession)...)
 	cmd.Stderr = &scriptStderr
+	tmuxtest.HoldStdinOpen(t, cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("attach client to %q: %v", targetSession, err)
 	}

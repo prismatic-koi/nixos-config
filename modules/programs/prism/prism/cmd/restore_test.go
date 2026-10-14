@@ -155,6 +155,14 @@ func seedStatus(t *testing.T, d *db.DB, sessionName, worktree string, harnessSes
 	panic("unreachable")
 }
 
+// keepDeadPanes keeps a pane and its window after the pane command exits.
+// The agent window runs `<test binary> agent-run`, and TestMain makes that
+// exit at once. Without this, the window count depends on how fast the pane
+// command exits.
+func keepDeadPanes(s *cmdTestServer) {
+	s.setGlobal("remain-on-exit", "on")
+}
+
 // windowNames returns the window names for the given session in creation order,
 // using list-windows.
 func windowNames(t *testing.T, s *cmdTestServer, session string) []string {
@@ -212,6 +220,7 @@ func TestRestoreSession_BareLayout(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
+	keepDeadPanes(s)
 
 	d := openRestoreTestDB(t)
 
@@ -261,6 +270,7 @@ func TestRestoreSession_NonBare(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
+	keepDeadPanes(s)
 
 	d := openRestoreTestDB(t)
 
@@ -462,6 +472,7 @@ func TestRestoreSession_AllThreeWindows(t *testing.T) {
 	t.Setenv("PRISM_CMD_TEST_STUB", "1")
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
+	keepDeadPanes(s)
 
 	d := openRestoreTestDB(t)
 

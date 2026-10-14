@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/review"
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -93,9 +94,19 @@ func TestMain(m *testing.M) {
 	}
 
 	restore := isolateSuiteFromHostTmux()
+	var restoreState func()
+	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
 	code := m.Run()
+	restoreState()
 	restore()
 	os.Exit(code)
+}
+
+// suiteStateRoot is the directory that TestMain gives to IsolateSuite.
+var suiteStateRoot string
+
+func TestSuiteStateIsolation_XDGInsideSuiteDir(t *testing.T) {
+	stateguardtest.RequireIsolated(t, suiteStateRoot)
 }
 
 // isolateSuiteFromHostTmux applies the suite-wide tmux neutralisation

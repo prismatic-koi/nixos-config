@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -81,7 +82,8 @@ type cmdTestServer struct {
 // newCmdTestServer starts an isolated tmux server for a cmd test. Skips (via
 // tmuxtest.RequireServer) when tmux is absent from PATH or when tmux server
 // creation is blocked by the sandbox (fork EPERM inside prism sandbox-exec
-// worker sessions).
+// worker sessions). It puts stub `pi` and `nvim` commands first on PATH with
+// t.Setenv, so it must not run in a parallel test.
 func newCmdTestServer(t *testing.T) *cmdTestServer {
 	t.Helper()
 	bin := tmuxtest.RequireServer(t)
@@ -99,6 +101,19 @@ func newCmdTestServer(t *testing.T) *cmdTestServer {
 	// after CombinedOutput is safe and correct.
 	startCmd := exec.Command(bin, "-L", socket, "-f", "/dev/null", "new-session", "-ds", "bootstrap", "-c", "/tmp")
 	startCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A session layout starts `nvim` in its edit window and `pi` in a
+	// host-mode agent window. The stubs keep those panes alive, and keep the
+	// real editor, the real agent harness, and the real HOME out of the test.
+	// A real nvim also writes under XDG_STATE_HOME while t.TempDir removes it.
+	// tmux gives a new session the PATH of the client that runs new-session,
+	// and the test process is that client, directly or through a pane.
+	stubDir := t.TempDir()
+	for _, name := range []string{"pi", "nvim"} {
+		if err := os.WriteFile(filepath.Join(stubDir, name), []byte("#!/bin/sh\nexec sleep 300\n"), 0o755); err != nil {
+			t.Fatalf("write stub %s: %v", name, err)
+		}
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	startOut, err := startCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("start test tmux server: %v\n%s", err, startOut)
@@ -126,6 +141,12 @@ func newCmdTestServer(t *testing.T) *cmdTestServer {
 		killFn()
 		deregister()
 	})
+
+	// A pane with no command runs a login shell by default, and /etc/profile
+	// can rebuild PATH without the stub dir. A plain /bin/sh keeps PATH.
+	if err := s.run("set-option", "-g", "default-command", "/bin/sh"); err != nil {
+		t.Fatalf("set default-command: %v", err)
+	}
 	return s
 }
 
@@ -354,6 +375,7 @@ func (s *cmdTestServer) attachClientToSession(t *testing.T, targetSession string
 	var scriptStderr bytes.Buffer
 	cmd := exec.Command("script", scriptCmdArgs(s.bin+" -L "+s.socket+" -f /dev/null attach-session -t "+targetSession)...)
 	cmd.Stderr = &scriptStderr
+	tmuxtest.HoldStdinOpen(t, cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("attach client to %q: %v", targetSession, err)
 	}
@@ -863,24 +885,12 @@ func TestDashViewShowsHelpHint(t *testing.T) {
 	}
 }
 
-// withCurrentClient overrides dashboard.CurrentClientFunc for the duration of
-// the test so that the persistent model's cmd closures (which query the current
-// client at switch time) return the specified client name. This is necessary
-// because the test process is not running inside the test tmux server's pane,
-// so tmux.CurrentClient() would fail.
-func withCurrentClient(t *testing.T, client string) {
-	t.Helper()
-	orig := dashboard.CurrentClientFunc
-	dashboard.CurrentClientFunc = func() (string, error) { return client, nil }
-	t.Cleanup(func() { dashboard.CurrentClientFunc = orig })
-}
-
 // TestPersistentModelEnterSwitchesClient verifies that Enter in persistent mode
 // switches the current client to the selected session and stays alive — the TUI
 // does NOT quit (no tea.QuitMsg returned).
 //
-// The persistent model queries CurrentClientFunc at switch time (inside the
-// tea.Cmd closure) to determine the correct client, rather than using a cached
+// The persistent model resolves the client attached to the dashboard session
+// at switch time (inside the tea.Cmd closure), rather than using a cached
 // m.Client value that may be stale.
 func TestPersistentModelEnterSwitchesClient(t *testing.T) {
 	skipIfSandboxPTY(t)
@@ -888,13 +898,13 @@ func TestPersistentModelEnterSwitchesClient(t *testing.T) {
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
 	s.newSession("nixos-config@feature")
+	s.newSession(dashboard.DashSession)
 
-	client := s.attachClientToSession(t, "nixos-config@main")
-	withCurrentClient(t, client)
+	client := s.attachClientToSession(t, dashboard.DashSession)
 
 	// Build a PersistentModel. The Client field is set for display purposes
 	// (e.g. the "you are here" indicator), but the switch-client operation
-	// uses CurrentClientFunc at execution time.
+	// resolves the client attached to the dashboard session at execution time.
 	model := dashboard.NewPersistentModel(client, "nixos-config@main")
 	model.Sessions = []dashboard.AgentSession{{Name: "nixos-config@feature"}}
 	model.Displayed = model.Sessions
@@ -945,12 +955,12 @@ func TestPersistentModelQuitSwitchesClientLast(t *testing.T) {
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
 	s.newSession("nixos-config@feature")
+	s.newSession(dashboard.DashSession)
 
 	client := s.attachClientToSession(t, "nixos-config@main")
-	withCurrentClient(t, client)
 
-	// Switch the client to feature (so "last" = main).
-	if err := tmux.SwitchClient(client, "nixos-config@feature"); err != nil {
+	// Switch the client to the dashboard (so "last" = main).
+	if err := tmux.SwitchClient(client, dashboard.DashSession); err != nil {
 		t.Fatalf("setup SwitchClient: %v", err)
 	}
 
@@ -974,7 +984,7 @@ func TestPersistentModelQuitSwitchesClientLast(t *testing.T) {
 		t.Fatalf("cmd() returned unexpected message: %v", resultMsg)
 	}
 
-	// Poll for client to return to main (the "last" session before feature).
+	// Poll for client to return to main (the "last" session before the dashboard).
 	var got string
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1127,25 +1137,23 @@ func TestSortDisplayed(t *testing.T) {
 
 // TestPersistentModelEnterMultiClient verifies that pressing Enter in client
 // A's persistentModel switches only client A to the selected session. Client B,
-// a bystander viewing the same session, must remain unaffected.
+// a bystander, must remain unaffected.
 //
-// CurrentClientFunc is overridden to return client A, simulating client A being
-// the one that pressed Enter (tmux's "current client" for the pane is the one
-// that most recently sent input).
+// Client A views the dashboard session, so the model resolves A as the client
+// that pressed Enter. Client B views nixos-config@main.
 func TestPersistentModelEnterMultiClient(t *testing.T) {
 	skipIfSandboxPTY(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
 	s.newSession("nixos-config@feature")
+	s.newSession(dashboard.DashSession)
 
-	// Attach two real clients to the same session.
-	clientA := s.attachClientToSession(t, "nixos-config@main")
+	clientA := s.attachClientToSession(t, dashboard.DashSession)
 	clientB := s.attachClientToSession(t, "nixos-config@main")
-	withCurrentClient(t, clientA)
 
 	// Build a PersistentModel. m.Client is set to clientA for display purposes,
-	// but the switch operation uses CurrentClientFunc (overridden above).
+	// but the switch operation resolves the client attached to the dashboard.
 	model := dashboard.NewPersistentModel(clientA, "nixos-config@main")
 	model.Sessions = []dashboard.AgentSession{{Name: "nixos-config@feature"}}
 	model.Displayed = model.Sessions
@@ -1199,17 +1207,17 @@ func TestPersistentModelEnterMultiClient(t *testing.T) {
 // (@prism_caller_client) points to client B and m.Client was overwritten by
 // a stale FocusMsg from client B.
 //
-// The model does not use m.Client for the switch operation. It calls
-// CurrentClientFunc at switch time, which returns the client that most
-// recently sent input to the pane (simulated here by overriding the func).
+// The model does not use m.Client for the switch operation. It resolves the
+// client attached to the dashboard session at switch time.
 func TestPersistentModelEnterStaleStamp(t *testing.T) {
 	skipIfSandboxPTY(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
 	s.newSession("nixos-config@feature")
+	s.newSession(dashboard.DashSession)
 
-	clientA := s.attachClientToSession(t, "nixos-config@main")
+	clientA := s.attachClientToSession(t, dashboard.DashSession)
 	clientB := s.attachClientToSession(t, "nixos-config@main")
 
 	// Set a global option pointing to client B, simulating B having opened
@@ -1221,10 +1229,6 @@ func TestPersistentModelEnterStaleStamp(t *testing.T) {
 	if got := s.getGlobal("@prism_caller_client"); got != clientB {
 		t.Fatalf("setup: @prism_caller_client = %q, want clientB=%q", got, clientB)
 	}
-
-	// Override CurrentClientFunc to return clientA — simulating A being the
-	// one that pressed Enter, even though m.Client may point to B.
-	withCurrentClient(t, clientA)
 
 	// Build a PersistentModel with m.Client deliberately set to clientB,
 	// simulating the stale FocusMsg scenario where B focused last.
@@ -1274,9 +1278,9 @@ func TestPersistentModelEnterStaleStamp(t *testing.T) {
 
 // TestPersistentModelEnterIgnoresStaleClient verifies that when m.Client is
 // stale (pointing to client B because B triggered FocusMsg most recently),
-// pressing Enter still switches client A — because the model queries
-// CurrentClientFunc at switch time rather than using the cached m.Client
-// value. If m.Client is used directly in the Enter handler, B is switched
+// pressing Enter still switches client A — because the model resolves the
+// client attached to the dashboard session at switch time rather than using
+// the cached m.Client value. If m.Client is used directly in the Enter handler, B is switched
 // instead of A.
 func TestPersistentModelEnterIgnoresStaleClient(t *testing.T) {
 	skipIfSandboxPTY(t)
@@ -1284,15 +1288,10 @@ func TestPersistentModelEnterIgnoresStaleClient(t *testing.T) {
 	withCmdServer(t, s)
 	s.newSession("nixos-config@main")
 	s.newSession("nixos-config@feature")
+	s.newSession(dashboard.DashSession)
 
-	// Both clients are viewing the same session (as they would when both are
-	// on prism-dashboard).
-	clientA := s.attachClientToSession(t, "nixos-config@main")
+	clientA := s.attachClientToSession(t, dashboard.DashSession)
 	clientB := s.attachClientToSession(t, "nixos-config@main")
-
-	// Override CurrentClientFunc to return clientA — this simulates A being
-	// the client that pressed Enter.
-	withCurrentClient(t, clientA)
 
 	// Build a PersistentModel with m.Client = clientB, simulating the
 	// stale-FocusMsg scenario: B was the last to focus, overwriting m.Client.
@@ -1312,8 +1311,8 @@ func TestPersistentModelEnterIgnoresStaleClient(t *testing.T) {
 		t.Fatalf("cmd() returned unexpected message: %v", resultMsg)
 	}
 
-	// Client A should be on the target session (because CurrentClientFunc
-	// returned A, not the stale m.Client value of B).
+	// Client A should be on the target session (because A is the client on
+	// the dashboard, not the stale m.Client value of B).
 	var gotA string
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1326,7 +1325,7 @@ func TestPersistentModelEnterIgnoresStaleClient(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if gotA != "nixos-config@feature" {
-		t.Errorf("clientA session = %q, want %q (CurrentClientFunc should override stale m.Client)", gotA, "nixos-config@feature")
+		t.Errorf("clientA session = %q, want %q (the dashboard client should override stale m.Client)", gotA, "nixos-config@feature")
 	}
 
 	// Client B must remain on nixos-config@main — the stale m.Client=B must
@@ -1341,7 +1340,7 @@ func TestPersistentModelEnterIgnoresStaleClient(t *testing.T) {
 }
 
 // TestPersistentModelQuitMultiClient verifies that pressing q in the persistent
-// model calls SwitchClientLast for the current client (A) while client B,
+// model calls SwitchClientLast for the client on the dashboard (A) while client B,
 // viewing a different session, is unaffected.
 func TestPersistentModelQuitMultiClient(t *testing.T) {
 	skipIfSandboxPTY(t)
@@ -1350,18 +1349,18 @@ func TestPersistentModelQuitMultiClient(t *testing.T) {
 	s.newSession("nixos-config@main")
 	s.newSession("nixos-config@feature")
 	s.newSession("nixos-config@other")
+	s.newSession(dashboard.DashSession)
 
-	// Attach client A to main, then switch it to feature so "last" = main.
+	// Attach client A to main, then switch it to the dashboard so "last" = main.
 	clientA := s.attachClientToSession(t, "nixos-config@main")
-	if err := s.run("switch-client", "-c", clientA, "-t", "nixos-config@feature"); err != nil {
-		t.Fatalf("setup: switch clientA to feature: %v", err)
+	if err := s.run("switch-client", "-c", clientA, "-t", dashboard.DashSession); err != nil {
+		t.Fatalf("setup: switch clientA to the dashboard: %v", err)
 	}
 
 	// Attach client B to a completely separate session.
 	clientB := s.attachClientToSession(t, "nixos-config@other")
-	withCurrentClient(t, clientA)
 
-	// Build a PersistentModel for client A while it is on nixos-config@feature.
+	// Build a PersistentModel for client A while it is on the dashboard.
 	// Note: CursorActive is intentionally left as the default (false) from
 	// NewPersistentModel — the q handler in PersistentModel.Update fires
 	// unconditionally regardless of CursorActive, so there is no need to

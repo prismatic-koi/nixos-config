@@ -22,6 +22,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
 // isolateTmuxTmpdir points $TMUX_TMPDIR at a fresh short-path scratch
@@ -109,9 +111,19 @@ func TestMain(m *testing.M) {
 	// child; they never start a tmux server, so the redirect applies only
 	// here, around m.Run().
 	restore := isolateTmuxTmpdir()
+	var restoreState func()
+	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
 	code := m.Run()
+	restoreState()
 	restore()
 	os.Exit(code)
+}
+
+// suiteStateRoot is the directory that TestMain gives to IsolateSuite.
+var suiteStateRoot string
+
+func TestSuiteStateIsolation_XDGInsideSuiteDir(t *testing.T) {
+	stateguardtest.RequireIsolated(t, suiteStateRoot)
 }
 
 // runFakeHarnessNormal writes 3 valid JSONL event frames to stdout and exits.

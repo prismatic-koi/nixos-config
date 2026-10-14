@@ -19,6 +19,7 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/pi" // register pi harness for ShapeOf("pi") in tests
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
 // TestDeliverToSession_HTTPFallbackPath verifies that DeliverToSession routes
@@ -191,14 +192,10 @@ func TestDeliverToSession_PiPath_DeliverAsForwarded(t *testing.T) {
 			// Redirect XDG_STATE_HOME into a per-subtest temp dir so that
 			// SidecarHostAPIPath never falls back to $HOME — which is
 			// /homeless-shelter (unwritable) inside the Nix build sandbox.
-			// Use os.MkdirTemp with a short prefix rather than t.TempDir() to
-			// keep the resulting socket path under the 108-byte sun_path limit
-			// (t.TempDir embeds the full subtest name which pushes it over).
-			xdgTmp, mkTmpErr := os.MkdirTemp("", "prism-pd-*")
-			if mkTmpErr != nil {
-				t.Fatalf("create temp dir: %v", mkTmpErr)
-			}
-			t.Cleanup(func() { _ = os.RemoveAll(xdgTmp) })
+			// Use a short temp dir rather than t.TempDir() to keep the
+			// resulting socket path inside sun_path (104 bytes on Darwin):
+			// t.TempDir embeds the full subtest name.
+			xdgTmp := stateguardtest.ShortTempDir(t, "prism-pd-")
 			t.Setenv("XDG_STATE_HOME", xdgTmp)
 
 			// Derive a session name that maps to a socket path we can control.
@@ -273,13 +270,9 @@ func TestDeliverToSession_PiPath_DeliverAsForwarded(t *testing.T) {
 // reproduce the abnormal-exit shape. The same technique is used by
 // internal/sidecar/sidecar_hostapi_bind_test.go for the sidecar-side check.
 func TestDeliverToSession_StaleTombstoneSocket(t *testing.T) {
-	// Use a short prefix (not t.TempDir) to keep the resulting sun_path
-	// under the 108-byte Linux limit — t.TempDir embeds the test name.
-	xdgTmp, err := os.MkdirTemp("", "prism-pd-tomb-*")
-	if err != nil {
-		t.Fatalf("create temp dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(xdgTmp) })
+	// Use a short temp dir (not t.TempDir) to keep the resulting socket path
+	// inside sun_path (104 bytes on Darwin) — t.TempDir embeds the test name.
+	xdgTmp := stateguardtest.ShortTempDir(t, "prism-pd-tomb-")
 	t.Setenv("XDG_STATE_HOME", xdgTmp)
 
 	sessionName := "myrepo@tomb"
@@ -350,22 +343,14 @@ func TestDeliverToSession_StaleTombstoneSocket(t *testing.T) {
 // (SetSidecarHostAPIPathFn) is documented in export_test.go and exists
 // purely to make this branch testable — keep its use limited to this test.
 func TestDeliverToSession_RestrictHostapiGuard_RefusesOutOfXDG(t *testing.T) {
-	xdgTmp, err := os.MkdirTemp("", "prism-pd-guard-xdg-*")
-	if err != nil {
-		t.Fatalf("create temp dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(xdgTmp) })
+	xdgTmp := stateguardtest.ShortTempDir(t, "prism-pd-guard-xdg-")
 	t.Setenv("XDG_STATE_HOME", xdgTmp)
 	t.Setenv(promptdelivery.EnvRestrictHostAPI, "1")
 
 	// Stand up a real Unix-socket listener at an outside path. If the guard
 	// fails to fire and a dial is attempted, this listener will record the
 	// connection and the test will detect it.
-	outside, err := os.MkdirTemp("", "prism-pd-guard-outside-*")
-	if err != nil {
-		t.Fatalf("create outside dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	outside := stateguardtest.ShortTempDir(t, "prism-pd-guard-outside-")
 
 	outsideSock := filepath.Join(outside, "hostapi.sock")
 	var dialed bool
@@ -396,7 +381,7 @@ func TestDeliverToSession_RestrictHostapiGuard_RefusesOutOfXDG(t *testing.T) {
 		Harness:     &piHarness,
 	}
 
-	err = promptdelivery.DeliverToSession("myrepo@guard", status, "hello", nil, "", "")
+	err := promptdelivery.DeliverToSession("myrepo@guard", status, "hello", nil, "", "")
 	if err == nil {
 		t.Fatal("expected guard error, got nil")
 	}

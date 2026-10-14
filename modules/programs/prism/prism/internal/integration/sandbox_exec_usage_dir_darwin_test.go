@@ -66,7 +66,7 @@ const usageSnapshotPayload = `{"captured_at":"2026-08-03T00:00:00Z","account":"w
 func newUsageFixtureManager(t *testing.T) (m *container.Manager, usageDir string) {
 	t.Helper()
 
-	// newProfileManagerWithBareRoot sets $XDG_STATE_HOME to a t.TempDir();
+	// newProfileManagerWithBareRoot sets $XDG_STATE_HOME to its own dir;
 	// override it AFTERWARDS so ours wins. Nothing state-home-derived is
 	// captured at construction time — container.New stores only the Config,
 	// and both the session work dir and the profile are resolved lazily

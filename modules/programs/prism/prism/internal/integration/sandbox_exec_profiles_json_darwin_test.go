@@ -17,17 +17,14 @@ package integration_test
 // Per docs/sandbox-exec-testing.md the coverage is a positive/negative pair
 // plus a write-denied negative for the RO/security guarantee:
 //
+// Each test runs with a test-owned HOME (useTestHome) and a planted
+// profiles.json in it, so no test reads or writes the real profiles config
+// of the user. A real home-manager profiles.json is a symlink into
+// /nix/store, where a broader allow covers the read, so the negative test
+// needs a regular file.
+//
 //   - TestSandboxExecProfile_PrismProfilesJSONReadable proves the generated
-//     profile permits opening the file for reading. The test NEVER creates
-//     or modifies the real host file (it is the user's actual prism
-//     profiles config), so it asserts on whichever state the host is in:
-//     when the file exists the read must exit 0; when it is absent the
-//     open must be attempted and fail with ENOENT ("No such file or
-//     directory") — NOT EPERM ("Operation not permitted"). Both branches
-//     prove the sandbox allowed the open. The ENOENT branch also covers
-//     the missing-file case: a missing host file follows LoadProfiles'
-//     normal missing-file path (preserving the existing error message)
-//     instead of failing for sandbox reasons.
+//     profile permits opening the file for reading: the read must exit 0.
 //
 //   - TestSandboxExecProfile_PrismProfilesJSONDeniedWithoutRule mutates the
 //     profile to remove the section-5h allow block and asserts the same
@@ -37,8 +34,6 @@ package integration_test
 //   - TestSandboxExecProfile_PrismProfilesJSONWriteDenied proves the
 //     security AC: under the PRODUCTION profile, writing to profiles.json
 //     from inside the sandbox fails — RO must not silently become RW.
-//     Skipped when the file is absent on the host (no target to attempt a
-//     write against without disturbing the user's real config).
 //
 // All three tests use newProfileManagerWithBareRoot: production worker
 // sessions always have BareRoot set, so the ancestor metadata block is
@@ -56,16 +51,31 @@ import (
 	"testing"
 )
 
-// prismProfilesJSONPath returns the host path of the prism declarative
-// profiles config, derived the same way generateProfile derives it
-// (os.UserHomeDir() + .config/prism/profiles.json).
-func prismProfilesJSONPath(t *testing.T) string {
+// prismProfilesJSONTarget returns the path of the prism declarative profiles
+// config, derived the same way generateProfile derives it
+// (os.UserHomeDir() + .config/prism/profiles.json). Call useTestHome first,
+// so the path is in the test home.
+func prismProfilesJSONTarget(t *testing.T) string {
 	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		t.Skipf("cannot determine user home: %v", err)
 	}
 	return filepath.Join(home, ".config", "prism", "profiles.json")
+}
+
+// prismProfilesJSONPath returns prismProfilesJSONTarget and plants a regular
+// file there.
+func prismProfilesJSONPath(t *testing.T) string {
+	t.Helper()
+	path := prismProfilesJSONTarget(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("create %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("plant %s: %v", path, err)
+	}
+	return path
 }
 
 // TestSandboxExecProfile_PrismProfilesJSONReadable is the positive half:
@@ -77,6 +87,7 @@ func TestSandboxExecProfile_PrismProfilesJSONReadable(t *testing.T) {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
+	useTestHome(t)
 	nixBash := requireNixBash(t)
 	target := prismProfilesJSONPath(t)
 
@@ -88,8 +99,6 @@ func TestSandboxExecProfile_PrismProfilesJSONReadable(t *testing.T) {
 		nixBash, "-c", "cat "+shQuote(target))
 	out, runErr := cmd.CombinedOutput()
 
-	// Regardless of whether the host file exists, the sandbox must not be
-	// the thing that blocks the open.
 	if strings.Contains(string(out), "Operation not permitted") {
 		t.Errorf("read of %s was denied by the sandbox (EPERM) under the production profile.\n"+
 			"The prism profiles.json allow (issue #2286) is missing or not load-bearing —\n"+
@@ -98,29 +107,38 @@ func TestSandboxExecProfile_PrismProfilesJSONReadable(t *testing.T) {
 			target, runErr, string(out), profilePath)
 	}
 
-	// Branch on actual host state — the test must never create or modify
-	// the user's real profiles.json.
-	if _, statErr := os.Stat(target); statErr == nil {
-		// File exists on the host: the sandboxed read must succeed outright.
-		if runErr != nil {
-			t.Errorf("host file %s exists but the sandboxed read failed.\nExit: %v\nOutput: %s\nProfile: %s",
-				target, runErr, string(out), profilePath)
-		}
-	} else if os.IsNotExist(statErr) {
-		// File absent on the host: the open must have been attempted and
-		// failed with ENOENT — the sane missing-file path LoadProfiles
-		// tolerates (the missing-file case: the existing host error message
-		// must be preserved on a fresh install).
-		if runErr == nil {
-			t.Errorf("cat of missing file %s exited 0 — test environment is inconsistent.\nOutput: %s",
-				target, string(out))
-		}
-		if !strings.Contains(string(out), "No such file or directory") {
-			t.Errorf("cat of missing file %s did not fail with ENOENT; the sandbox may be interfering.\nExit: %v\nOutput: %s\nProfile: %s",
-				target, runErr, string(out), profilePath)
-		}
-	} else {
-		t.Fatalf("stat %s: %v", target, statErr)
+	if runErr != nil {
+		t.Errorf("the sandboxed read of %s failed.\nExit: %v\nOutput: %s\nProfile: %s",
+			target, runErr, string(out), profilePath)
+	}
+}
+
+// TestSandboxExecProfile_PrismProfilesJSONMissingKeepsENOENT is the
+// missing-file case of #2286: with no profiles.json, the sandboxed open must
+// fail with ENOENT ("No such file or directory"), the error LoadProfiles
+// already handles, and not with EPERM ("Operation not permitted").
+func TestSandboxExecProfile_PrismProfilesJSONMissingKeepsENOENT(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	useTestHome(t)
+	nixBash := requireNixBash(t)
+	target := prismProfilesJSONTarget(t)
+
+	m := newProfileManagerWithBareRoot(t)
+	prepared, _ := preparePositiveProfile(t, m)
+	profilePath := writeAugmentedPositiveProfile(t, prepared)
+
+	cmd := exec.Command(sandboxExecPath, "-f", profilePath,
+		nixBash, "-c", "cat "+shQuote(target))
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("cat of missing file %s exited 0.\nOutput: %s", target, string(out))
+	}
+	if !strings.Contains(string(out), "No such file or directory") {
+		t.Errorf("cat of missing file %s did not fail with ENOENT, so the sandbox changed the result.\nExit: %v\nOutput: %s\nProfile: %s",
+			target, runErr, string(out), profilePath)
 	}
 }
 
@@ -134,6 +152,7 @@ func TestSandboxExecProfile_PrismProfilesJSONDeniedWithoutRule(t *testing.T) {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
+	useTestHome(t)
 	nixBash := requireNixBash(t)
 	target := prismProfilesJSONPath(t)
 
@@ -169,25 +188,18 @@ func TestSandboxExecProfile_PrismProfilesJSONDeniedWithoutRule(t *testing.T) {
 // into a (subpath ...) RW grant or promotes the allow to include
 // file-write*.
 //
-// The test does not need to (and must not) actually overwrite the user's
-// real profiles.json: the sandbox deny must fire BEFORE any host-side
-// write. We attempt to append a sentinel byte and assert the append fails;
-// then we double-check the file is unchanged. Skipped when the file is
-// absent on the host (no target to write against. The bwrap-side
-// fresh-install case is covered separately by the OptionalIfMissing
-// unit-test pair in bwrap_test.go).
+// We attempt to append a sentinel byte to the planted file and assert the
+// append fails; then we double-check the file is unchanged.
 func TestSandboxExecProfile_PrismProfilesJSONWriteDenied(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
+	useTestHome(t)
 	nixBash := requireNixBash(t)
 	target := prismProfilesJSONPath(t)
 
 	infoBefore, statErr := os.Stat(target)
-	if os.IsNotExist(statErr) {
-		t.Skipf("~/.config/prism/profiles.json absent on this host; write-denied AC covered for fresh installs by the bwrap OptionalIfMissing unit tests")
-	}
 	if statErr != nil {
 		t.Fatalf("stat %s: %v", target, statErr)
 	}

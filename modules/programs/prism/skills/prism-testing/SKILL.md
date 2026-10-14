@@ -80,11 +80,23 @@ The macOS build executor (the anchor container) has live tests of its own: `Test
 
 The test suite under `modules/programs/prism/prism/internal/sidecar/` is fully isolated from host bus / DB / tmux state:
 
-- Tests that construct a `sidecar.Sidecar` must use `sidecartest.NewIsolated(t, ...)` which redirects `$XDG_STATE_HOME` to a `t.TempDir()` and sets the `PRISM_TEST_MODE_RESTRICT_HOSTAPI` guard.
+- Tests that construct a `sidecar.Sidecar` must use `sidecartest.NewIsolated(t, ...)` which redirects `$XDG_STATE_HOME` to a short test-owned dir (`stateguardtest.ShortTempDir`) and sets the `PRISM_TEST_MODE_RESTRICT_HOSTAPI` guard.
 - Test session names use the `prism-test@` prefix, never `nixos-config@main` or any other slug that matches a live coordinator on the developer's host.
 - Running `go test ./...` will not deliver any notification to a live coordinator, write to the real `prism.db`, create files under `$XDG_STATE_HOME/prism/run/`, or invoke `tmux` against the host server.
 
 If you add a new test that exercises notification delivery, use `sidecartest.NewIsolated` — do not construct a `sidecar.Config` that touches the host environment.
+
+## Host-mode isolation (issue #3146)
+
+In a `host`-mode session, `go test ./...` inherits the real `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `TMPDIR`, and a `TMUX` of the user. A pane of a test tmux server runs the zsh of the user, and `~/.zshenv` sources `hm-session-vars.sh`, which sets the XDG paths back to the real ones. Before #3146 this let a test-built `prism switch` and `prism cleanup` act on the real database and end the real `obsidian` session. Obey these rules:
+
+- If the code under test in a package can reach prism state or config, call `stateguardtest.IsolateSuite()` in the `TestMain` of the package, and add `TestSuiteStateIsolation_XDGInsideSuiteDir`. To find the reach, compare `go list -test -deps ./<pkg>` with the packages that read `XDG_STATE_HOME` or `XDG_CONFIG_HOME`. `IsolateSuite` also unsets `PRISM_INITIAL_PROMPT_FILE`, `PRISM_AGENT_RUN_LOG`, and `PRISM_HARNESS_PIPE`, which a host-mode session inherits from its pane with real state paths as values, and `PRISM_CONFIG_FILE`.
+- If a test runs a real prism binary, get it from `isolatedPrismBinary` (`cmd/prism_binary_test.go`). The helper gives the test its own `HOME`, XDG dirs, and tmux socket dir, and builds the binary with `stateguard.Root`. The binary then refuses a path outside the test root. The cleanup stops each process of the binary by its path.
+- Do not read config in a package `init`. Go runs package init before `TestMain`. Use `config.LoadForInit`.
+- If a test attaches a tmux client with `script(1)`, call `tmuxtest.HoldStdinOpen`. With stdin at end-of-file, `script` sends `^D` to the pane, and the session closes.
+- If a test binds a Unix socket, put it under `stateguardtest.ShortTempDir`. A `/var/folders` path overflows `sun_path` (104 bytes on Darwin).
+
+To find real-state access, run the suite under an outer `sandbox-exec` profile that allows everything except the real `~/.local/state/prism`, `~/.config/prism`, and the default tmux socket, with `(with send-signal SIGKILL)` on the deny. The kernel kills a process that reads an existing path or writes in those trees. If that process is the test binary, its package fails. If it is a child, such as `tmux`, `git`, or `sh`, the test fails only when it checks the exit status of the child. The profile does not catch a lookup of a missing path: a stat, a read, or a socket connect to a path that does not exist returns ENOENT, and the process keeps running. So a clean run is not proof by itself. Also make sure that each package in reach has `IsolateSuite`, as the first rule says. Do not use the kernel violation log as proof: macOS drops repeat reports.
 
 ## test-database convention — open with `sidecartest.OpenDB` (issue #2598)
 
