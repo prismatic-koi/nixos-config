@@ -98,7 +98,10 @@ func IsSandboxForkDenial(output string) bool {
 // server it manages to start is killed before returning. -f /dev/null
 // suppresses the user's tmux.conf so no hooks fire against live prism state.
 func probeServerStart(bin string) (string, error) {
-	socket := fmt.Sprintf("prism-tmuxtest-probe-%d-%d", os.Getpid(), time.Now().UnixNano())
+	// A short name: the socket path is $TMUX_TMPDIR/tmux-<uid>/<name>, and a
+	// path past sun_path makes the probe fail with an error that is not the
+	// fork-denial signature, so the caller does not skip.
+	socket := fmt.Sprintf("ptp-%d-%x", os.Getpid(), time.Now().UnixNano())
 	cmd := exec.Command(bin, "-L", socket, "-f", "/dev/null",
 		"new-session", "-ds", "probe", "-c", os.TempDir())
 	out, err := cmd.CombinedOutput()

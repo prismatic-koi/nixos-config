@@ -146,7 +146,7 @@ The **Layer 1** (per-process) defence pairs with it: agents spawned via the bwra
 
 ## sandbox-exec testing convention
 
-Any change to `internal/container/sandbox_exec.go::generateProfile`, `Manager.PrepareSandboxExec`, or `Manager.PrepareSessionWorkDir` must be paired with a Darwin-only integration test under `internal/integration/` that invokes `/usr/bin/sandbox-exec` against a Nix-built test binary, plus a negative test that mutates the profile to prove the positive is not a no-op. Substring assertions on profile content are necessary but not sufficient. See `modules/programs/prism/prism/docs/sandbox-exec-testing.md` for the full convention and helpers (issue #1192).
+Any change to `internal/container/sandbox_exec.go::generateProfile`, `Manager.PrepareSandboxExec`, `Manager.PrepareSessionWorkDir`, or `Manager.PrepareSessionTmpDir` must be paired with a Darwin-only integration test under `internal/integration/` that invokes `/usr/bin/sandbox-exec` against a Nix-built test binary, plus a negative test that mutates the profile to prove the positive is not a no-op. Substring assertions on profile content are necessary but not sufficient. See `modules/programs/prism/prism/docs/sandbox-exec-testing.md` for the full convention and helpers (issue #1192).
 
 ## stdout-capture testing convention
 

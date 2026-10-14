@@ -26,16 +26,25 @@ The sandbox also blocks a direct connection to the container runtime. On
 macOS, a connect to a Unix domain socket is a `network-outbound` operation
 that carries the socket path. The sandbox-exec profile denies
 `network-outbound` to every Unix socket except an allowlist: the host-API
-socket, DNS, the system log, the nix daemon, and the scratch trees for the
-test suite. The podman machine API socket sits under the per-user `$TMPDIR`,
-or under `/private/tmp/podman` when `TMPDIR` is unset. A connect to it fails
-with a sandbox denial (`EPERM`) in either location. A TCP connect carries an
-IP endpoint, not a path, so this deny leaves normal network use untouched.
-The same deny stops the tmux control socket, the user ssh-agent, the
-AeroSpace window-manager socket, the .NET diagnostic IPC socket, and the
-nvim RPC socket, which are each a host escape. On Linux, the bwrap sandbox binds no container
-socket, so the same connection is absent. Use `prism container` for every
-container action in place of a direct socket.
+socket, DNS, the system log, the nix daemon, the session work dir, the
+worktree, the bare repo, and the per-session TMPDIR. The podman machine API
+socket sits under the per-user `$TMPDIR`, or under `/private/tmp/podman`
+when `TMPDIR` is unset. A connect to it fails with a sandbox denial
+(`EPERM`) in either location. A TCP connect carries an IP endpoint, not a
+path, so this deny leaves normal network use untouched. The same deny stops every other host
+socket in `/private/tmp` or in the per-user `$TMPDIR`: the tmux control
+socket, the user ssh-agent, the AeroSpace window-manager socket, the .NET
+diagnostic IPC socket, the nvim RPC socket, and any socket that the profile
+does not name. On Linux, the bwrap sandbox binds no container socket, so the
+same connection is absent. Use `prism container` for every container action
+in place of a direct socket.
+
+In a sandbox-exec session, `TMPDIR` is a per-session dir,
+`/tmp/prism-<hash>`. It is the only temp dir that the session can write.
+The session cannot create, rename, or delete a file in `/tmp`,
+`/private/tmp`, or the per-user `$TMPDIR`, and cannot read the TMPDIR of
+another session. Put temp files in `$TMPDIR`, not in `/tmp`. `prism
+cleanup` removes the dir.
 
 The command works for every session role and in every isolation mode:
 `bwrap`, `sandbox-exec`, and `host`. It needs no spawn flag.

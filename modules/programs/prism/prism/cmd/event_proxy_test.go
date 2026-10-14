@@ -14,11 +14,12 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
 // fakeEventAPIServer is a minimal mirror of the sidecar's /event route.
@@ -56,11 +57,7 @@ func (s *fakeEventAPIServer) handler() http.Handler {
 // sockaddr_un.sun_path limits on Darwin (104 bytes).
 func startFakeEventAPIServer(t *testing.T) (*fakeEventAPIServer, string) {
 	t.Helper()
-	sockDir, err := os.MkdirTemp("/tmp", "pe")
-	if err != nil {
-		t.Fatalf("mkdir short sock dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sockDir := stateguardtest.ShortTempDir(t, "pe")
 	sockPath := filepath.Join(sockDir, "host.sock")
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {

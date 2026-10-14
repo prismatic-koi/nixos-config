@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -23,6 +22,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
 // fakeWaitProbeServer mirrors the three host-API wait-probe endpoints.
@@ -106,11 +106,7 @@ func (s *fakeWaitProbeServer) handler() http.Handler {
 // macOS sun_path-104 reason documented in merge_proxy_test.go.
 func startFakeWaitProbeServer(t *testing.T) (*fakeWaitProbeServer, string) {
 	t.Helper()
-	sockDir, err := os.MkdirTemp("/tmp", "wp")
-	if err != nil {
-		t.Fatalf("mkdir short sock dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sockDir := stateguardtest.ShortTempDir(t, "wp")
 	sockPath := filepath.Join(sockDir, "h.sock")
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -258,11 +254,7 @@ func TestWaitForReviewTerminal_RoutesViaHostAPI(t *testing.T) {
 func TestRunReviewsList_RoutesViaHostAPIInSandbox(t *testing.T) {
 	openMergeTestDB(t) // clears PRISM_HOST_API; we set it next.
 
-	sockDir, err := os.MkdirTemp("/tmp", "rl")
-	if err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sockDir := stateguardtest.ShortTempDir(t, "rl")
 	sockPath := filepath.Join(sockDir, "h.sock")
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {

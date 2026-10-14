@@ -191,7 +191,9 @@ func ensureGoCacheDirs() {
 //   - Read-only system roots with file-test-existence, file-map-executable,
 //     file-read-metadata alongside file-read* (required by dyld/AMFI)
 //   - /bin, /sbin, and /var/... symlink-alias forms (v3 additions)
-//   - /tmp read-write for xcrun and transient files
+//   - The per-session TMPDIR read-write (/tmp/prism-<hash>) — the only temp
+//     tree the session can write. /tmp, /private/tmp, and the user $TMPDIR
+//     have no write grant
 //   - Deny of sensitive /private/etc subtrees (wireguard, wpa_supplicant, ssh),
 //     both /etc/... and /private/etc/... forms (symlink non-transparency)
 //   - sops secrets.d deny (read + write) with named re-allow exceptions for
@@ -212,18 +214,16 @@ func ensureGoCacheDirs() {
 //     ~/Library/Caches/go-build — so the repo AGENTS.md quality gate
 //     (`go build ./...` / `go test ./...`) runs as documented
 //   - Session work dir / worktree / bare repo / host-API socket dir (RW) —
-//     the work dir (subpath <sessionDir>) is the ONLY per-session writable
-//     grant
+//     the work dir (subpath <sessionDir>) and the per-session TMPDIR are
+//     the two per-session writable grants
 //   - Process and IPC primitives required by dyld, AMFI, and the agent
 //   - (allow network*), narrowed by a deny of every Unix-socket connect
-//     except an allowlist (section 17b), plus a re-deny of the host-escape
-//     sockets inside the /private/tmp allowance (section 17c) — tmux, the
-//     user ssh-agent, AeroSpace, a .NET diagnostic socket, and the podman
-//     and nvim sockets in the TMPDIR-unset /private/tmp location
-//   - A file-write* deny on the protected sockets and their directories
-//     (section 3d) — including the nvim RPC directory under $TMPDIR and under
-//     /private/tmp, and the podman dir under /private/tmp — so a rename
-//     cannot move a socket to a path the connect deny does not match
+//     except an allowlist (section 17b). No shared temp tree is on the
+//     allowlist, so a host socket in /private/tmp or in the user $TMPDIR
+//     (tmux, the user ssh-agent, AeroSpace, podman, nvim, and any other)
+//     is not reachable
+//   - A final deny on unlink and create of the per-session TMPDIR node
+//     (section 21e), so the session cannot swap the dir for a symlink
 //
 // New top-level allow/deny clauses require an explanatory comment in the
 // generator.
@@ -236,6 +236,13 @@ func generateProfile(m *Manager) string {
 	// Derive the per-session work dir. When it cannot be
 	// determined (e.g. no home dir) the derived rules are simply omitted.
 	sessionDir, sessionDirErr := m.sessionWorkDirPath()
+
+	// The per-session TMPDIR, in both /tmp symlink forms. Empty when the
+	// path cannot be derived; Prepare then fails before the profile is used.
+	var sessionTmpForms []string
+	if sessionTmpDir, err := m.sessionTmpDirPath(); err == nil {
+		sessionTmpForms = symlinkForms(sessionTmpDir)
+	}
 
 	var sb strings.Builder
 	// ── Version 3 header and deny-default ────────────────────────────────
@@ -271,11 +278,10 @@ func generateProfile(m *Manager) string {
 	//   /var is a symlink to /private/var; both forms needed. See F.1 §2.
 	// /private/var/db/timezone, /var/db/timezone — timezone data.
 	// /private/var/select, /var/select — xcode-select developer_dir.
-	// /private/var/folders, /var/folders — Darwin per-user TMPDIR. Listed
-	//   here for read access; write access is granted separately below because
-	//   bun (pi's runtime) extracts native dylibs (libopentui, etc.) to
-	//   hidden files under the user TMPDIR and dlopen()s them — requiring both
-	//   file-write* and file-map-executable on that subtree.
+	// /private/var/folders, /var/folders — Darwin per-user TMPDIR. Read
+	//   only: the sops secrets resolve into it (section 3c narrows the read).
+	//   No rule grants a write there. The session writes temp files in its
+	//   per-session TMPDIR (section 3).
 	// /dev/null, /dev/random, /dev/urandom — device nodes.
 	// /dev/dtracehelper — Apple-signed binaries probe at startup.
 	// /             — required by libignition's openat(2) root probe.
@@ -319,58 +325,56 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("  (literal \"/\"))\n")
 	sb.WriteString("\n")
 
-	// ── 3. /tmp read-write ────────────────────────────────────────────────
-	// /tmp and /private/tmp are used by xcrun, git, and other tools for
-	// transient files. Both symlink forms needed. See F.1 §2 rule 3.
+	// ── 3. Per-session TMPDIR read-write ──────────────────────────────────
+	// The dispatcher sets TMPDIR and MAC_CHROMIUM_TMPDIR to this dir
+	// (session_tmp_dir.go). Thus the tools that read TMPDIR (go test, node,
+	// bun, nix) and chromium put their temp files and their Unix sockets
+	// here. Section 17b allows a connect to a socket in it.
 	//
-	// file-map-executable is required: pi's TUI (OpenTUI) and the
-	// file-watcher binding extract native .dylib/.node files to /tmp and
-	// dlopen() them. dlopen calls mmap(PROT_EXEC) on the extracted file,
-	// which requires file-map-executable. Without it the sandbox returns
-	// EPERM on mmap, the TUI fails to initialise, and session.created is
-	// never emitted — causing the sidecar readiness gate to time out.
-	sb.WriteString("(allow file-read* file-write* file-test-existence file-map-executable\n")
-	sb.WriteString("  (subpath \"/private/tmp\")\n")
-	sb.WriteString("  (subpath \"/tmp\"))\n")
-	sb.WriteString("\n")
-
-	// ── 3b. Darwin per-user TMPDIR read-write ─────────────────────────────
-	// bun (pi's runtime) extracts native dylibs — libopentui, the
-	// file-watcher binding, etc. — to hidden files under the Darwin per-user
-	// TMPDIR (/private/var/folders/<hash>/T/) and dlopen()s them. Without
-	// file-write* the extraction fails silently (EPERM) and the TUI library
-	// is never loaded, causing pi to crash with exit 255.
-	// file-map-executable is required for the subsequent dlopen(PROT_EXEC).
+	// It is the only temp tree that the session can write. /tmp,
+	// /private/tmp, and the user $TMPDIR (/var/folders/<a>/<b>/T) have no
+	// write grant and no section-17b connect allowance. Thus the session
+	// cannot create, rename, or remove a file there, and cannot reach a
+	// socket there: tmux, the user ssh-agent, AeroSpace, a .NET diagnostic
+	// socket, the podman machine, nvim, or any other (#3150). A connect
+	// through a symlink matches the resolved path, and the profile has no
+	// file-link allow, so the session cannot plant a hard link either.
 	//
-	// We allow only the specific per-user TMPDIR (os.TempDir()), NOT all of
-	// /private/var/folders, to avoid giving the sandbox read access to other
-	// users' temp directories. On Darwin, os.TempDir() may return either the
-	// /var/folders/... symlink form or the /private/var/folders/... canonical
-	// form depending on OS version. sandbox-exec does not follow the
-	// /var → /private/var symlink transparently, so both forms must be listed
-	// (same pattern as /etc → /private/etc). We emit whichever form
-	// os.TempDir() returns plus its counterpart.
-	tmpDir := os.TempDir()
-	if tmpDir != "" {
-		sb.WriteString("(allow file-read* file-write* file-test-existence file-map-executable\n")
-		sb.WriteString("  (subpath " + quoteSBPL(tmpDir) + ")\n")
-		// Always emit both the /var/... and /private/var/... forms.
-		// os.TempDir() may return either form depending on the OS version;
-		// sandbox-exec does not follow the /var → /private/var symlink
-		// transparently, so both must be listed explicitly.
-		if strings.HasPrefix(tmpDir, "/private/var/") {
-			varAlias := strings.TrimPrefix(tmpDir, "/private")
-			sb.WriteString("  (subpath " + quoteSBPL(varAlias) + ")\n")
-		} else if strings.HasPrefix(tmpDir, "/var/") {
-			privateAlias := "/private" + tmpDir
-			sb.WriteString("  (subpath " + quoteSBPL(privateAlias) + ")\n")
+	// Do not add a write grant on a shared temp tree, and do not add one to
+	// section 17b. A path-based connect deny holds only while the session
+	// cannot rename the socket or an ancestor dir of it: with a write grant,
+	// the session moves a host socket into its TMPDIR and connects there.
+	//
+	// The dir of another session is a sibling under /private/tmp. No rule
+	// covers it, so the session cannot read it, write it, or connect in it.
+	//
+	// Both /tmp symlink forms are listed. file-map-executable lets a tool
+	// dlopen a native module that it extracts to TMPDIR. The literal
+	// metadata allow on /tmp, /private/tmp, and /private lets a tool resolve
+	// the /tmp symlink (realpath, filepath.EvalSymlinks) when the section-6b
+	// ancestor allow is absent. It grants stat only, not a directory list.
+	//
+	// The session can write the node of its own TMPDIR, because a subpath
+	// covers its root. Section 21e takes back unlink and create on the node.
+	if len(sessionTmpForms) > 0 {
+		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata file-map-executable\n")
+		for i, p := range sessionTmpForms {
+			sb.WriteString("  (subpath " + quoteSBPL(p) + ")")
+			if i == len(sessionTmpForms)-1 {
+				sb.WriteString(")")
+			}
+			sb.WriteString("\n")
 		}
-		sb.WriteString(")\n")
+		sb.WriteString("\n")
+		sb.WriteString("(allow file-read-metadata file-test-existence\n")
+		sb.WriteString("  (literal \"/private\")\n")
+		sb.WriteString("  (literal \"/private/tmp\")\n")
+		sb.WriteString("  (literal \"/tmp\"))\n")
 		sb.WriteString("\n")
 	}
 
 	// ── 3c. sops secrets.d deny + named re-allow exceptions ─
-	// The broad /private/var/folders allows above (sections 2 and 3b) expose
+	// The broad /private/var/folders read allow above (section 2) exposes
 	// the entire home-manager sops-nix secrets tree
 	// (~/.config/sops-nix/secrets → /var/folders/<…>/T/secrets.d/<N>/) to the
 	// sandbox: the daily-driver GitHub PAT, full-power AWS config, admin kube
@@ -411,9 +415,8 @@ func generateProfile(m *Manager) string {
 	// match any counter ([0-9]+), so allowlisted reads survive a rotation
 	// mid-session and denied reads stay denied — by construction. The deny
 	// prefixes are static regexes covering both the /var and /private/var
-	// symlink forms (same dual-form pattern as 3b) and do not depend on
-	// os.TempDir(), so an unset or odd TMPDIR cannot silently re-expose the
-	// real tree.
+	// symlink forms and do not depend on os.TempDir(), so an unset or odd
+	// TMPDIR cannot silently re-expose the real tree.
 	//
 	// Accepted residual: file-test-existence on the subtree stays allowed
 	// (via the section-2 allow), so an in-sandbox process can probe which
@@ -435,86 +438,6 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("    (require-not (regex #\"/secrets\\.d/[0-9]+/" + regexQuotePath(name) + "$\"))\n")
 	}
 	sb.WriteString("))\n")
-	sb.WriteString("\n")
-
-	// ── 3d. Host-socket write deny — a protected socket cannot be moved ────
-	// Sections 17b and 17c deny a `network-outbound` connect by the socket
-	// PATH. Section 3 grants file-write* on /tmp and /private/tmp, and section
-	// 3b grants it on $TMPDIR. So without this deny, a sandboxed agent renames
-	// a protected socket, or the directory that holds it, into /private/tmp
-	// under a name the connect deny does not match, and then connects. The
-	// move keeps the socket inode and its listener, so the connect reaches the
-	// real service. Confirmed on m4mac: a direct connect is EPERM, and a
-	// connect after `mv <socket> /private/tmp/x` is CONNECTED.
-	//
-	// This deny removes that move. It denies file-write* on each protected
-	// socket and on the directory that holds it, so the agent can neither
-	// unlink the socket out of its directory nor rename the directory. It is
-	// the same pattern as the section-3c secrets.d write deny, which pairs a
-	// write deny with the read deny so the agent cannot move a secret either.
-	//
-	// Each regex matches the directory node and its contents with `(/|$)`, so
-	// a rename of the directory itself is denied as well as a rename of the
-	// socket inside it. Both the /var and /private/var forms, and both the
-	// /tmp and /private/tmp forms, are listed (same dual-form reason as 3b).
-	//
-	// The agent has no reason to write any of these paths: they belong to the
-	// podman machine, to another process's tmux server, to the user ssh-agent,
-	// to AeroSpace, to a .NET process, or to the user's nvim. The go-test
-	// scratch sockets have random names under /tmp that match none of these
-	// regexes, so the broad section-3/3b write grants still cover them.
-	//
-	// The nvim entries and the /private/tmp + /tmp podman entries join the
-	// list for #3147. nvim is a host escape: a client runs `:!<cmd>` on the
-	// host. nvim resolves its temp dir in the order $TMPDIR, /tmp, so its
-	// socket is under /var/folders with TMPDIR set, or under /tmp (that is,
-	// /private/tmp) with TMPDIR unset. This deny stops the move of the
-	// nvim.<user> directory, or the socket, out of either location. The podman
-	// /private/tmp + /tmp entries cover the TMPDIR-unset podman machine dir.
-	// Both TMPDIR-unset cases are paired with a section-17c re-deny of the
-	// connect, because /private/tmp and /tmp are inside the section-17b
-	// allowance.
-	//
-	// This clause stops a rename of the socket or of its own directory.
-	// Section 3e stops a rename of a writable ANCESTOR directory ($TMPDIR,
-	// /private/tmp, /tmp), which is the sibling bypass.
-	// TestSandboxExecContainerSocket_* cover the file and directory rename
-	// with paired negatives.
-	sb.WriteString(hostSocketWriteDeny)
-	sb.WriteString("\n")
-
-	// ── 3e. Writable-ancestor rename deny ─────────────────────────────────
-	// Section 3d stops the agent from moving a protected socket or its own
-	// directory. A path-based deny also fails one level up: the agent can
-	// rename ANY ancestor directory it can write, because the socket then
-	// appears at a new path that sections 17b and 17c do not match. Round 5
-	// was the socket and its directory; round 7 was the $TMPDIR node, an
-	// ancestor of the podman directory.
-	//
-	// A directory node is renamable when a subpath write grant covers the
-	// node itself, because macOS checks file-write-unlink against the node,
-	// not its parent. The ancestors of a protected socket that such a grant
-	// covers are:
-	//   - /private/tmp and /tmp — section 3 grants (subpath ...) over the
-	//     node, and they are the parents of the tmux, ssh-agent, AeroSpace,
-	//     and .NET sockets, and (with TMPDIR unset) of the podman and
-	//     nvim.<user> directories;
-	//   - the $TMPDIR node — section 3b grants (subpath os.TempDir()) over the
-	//     node, and it is the parent of the podman and nvim.<user> directories.
-	// Their own parents (/private, /, and the /var/folders hash directory)
-	// carry only the section-2 read grant, so the chain stops there.
-	//
-	// This clause denies file-write-unlink and file-write-create on each such
-	// node as a LITERAL. A literal matches the node only, never its contents,
-	// so go test and bun keep their writes inside /tmp, /private/tmp, and
-	// $TMPDIR. The clause must follow sections 3 and 3b, whose node-covering
-	// subpath grants it overrides. $TMPDIR is derived from
-	// filepath.Clean(os.TempDir()) the same way section 3b derives its grant,
-	// in both the /var and /private/var forms.
-	// TestGenerateProfile_WritableAncestorRenameDeny and
-	// TestGenerateProfile_WritableAncestorRenameDenyFollowsTmpWriteAllows pin
-	// the content and the order.
-	sb.WriteString(hostSocketAncestorWriteDeny())
 	sb.WriteString("\n")
 
 	// ── 4. Sensitive /etc subtree denies ──────────────────────────────────
@@ -890,8 +813,9 @@ func generateProfile(m *Manager) string {
 	// file-test-existence and file-read-metadata added alongside file-read*
 	// and file-write* for dyld/AMFI compatibility in the v3 profile.
 	//
-	// The first entry is the per-session work dir — the ONLY
-	// per-session writable grant. It covers the generated ssh-config /
+	// The first entry is the per-session work dir — one of the two
+	// per-session writable grants (the other is the section-3 TMPDIR). It
+	// covers the generated ssh-config /
 	// gitconfig / allowed_signers, kubectl's KUBECACHEDIR cache, glab's
 	// GLAB_CONFIG_DIR config dir, AND the chromium Library
 	// skeleton (CFFIXED_USER_HOME points chromium's
@@ -1227,17 +1151,22 @@ func generateProfile(m *Manager) string {
 	//   - mDNSResponder: DNS name resolution;
 	//   - syslog: libsystem logging;
 	//   - the nix daemon socket: `nix build`;
-	//   - /tmp, /private/tmp, the session work dir, the worktree, and the bare
-	//     repo: the scratch trees where `go test ./...` binds and dials its own
-	//     Unix sockets. Section 5k makes that quality gate runnable in-sandbox.
-	//     The in-sandbox TMPDIR is unset, so the test sockets land in /tmp.
-	//     Remove these entries and about 60 socket tests in internal/sidecar,
-	//     internal/session, and cmd fail.
+	//   - the per-session TMPDIR (section 3), the session work dir, the
+	//     worktree, and the bare repo: the scratch trees where `go test ./...`
+	//     binds and dials its own Unix sockets. Section 5k makes that quality
+	//     gate runnable in-sandbox. The in-sandbox TMPDIR is the per-session
+	//     TMPDIR, so most test sockets land there. Remove these entries and
+	//     about 60 socket tests in internal/sidecar, internal/session, and cmd
+	//     fail.
 	//
-	// $TMPDIR (/var/folders) is not in the set, so the podman machine socket
-	// stays denied. Section 17c re-denies the host-escape sockets that live
-	// inside the /private/tmp allowance.
-	sb.WriteString(networkUnixSocketDeny(m, sessionDir, sessionDirErr))
+	// No shared temp tree is in the set: not /tmp, not /private/tmp, and not
+	// the user $TMPDIR (/var/folders). The host sockets there stay denied:
+	// the podman machine, tmux, the user ssh-agent, AeroSpace, a .NET
+	// diagnostic socket, nvim, and any other that the profile does not name
+	// (#3066, #3147, #3150). The session cannot move such a socket into an
+	// allowed tree either: it has no write grant on /tmp, /private/tmp, or
+	// the user $TMPDIR, so it cannot unlink the socket from its dir.
+	sb.WriteString(networkUnixSocketDeny(m, sessionDir, sessionDirErr, sessionTmpForms))
 
 	// ── 18. Socket options ────────────────────────────────────────────────
 	// CRITICAL: (allow network*) in v3 does NOT cover setsockopt/getsockopt.
@@ -1336,6 +1265,25 @@ func generateProfile(m *Manager) string {
 		sb.WriteString(worktreeReadOnlyDeny(m.cfg.Worktree))
 	}
 
+	// ── 21e. FINAL DENY — the per-session TMPDIR node cannot be replaced ─
+	// Section 3 grants (subpath <TMPDIR>), which covers the TMPDIR node
+	// itself. Without this deny, the session can rename its TMPDIR away and
+	// put a symlink at the path, because a create at the root of a subpath
+	// grant matches the grant. The host side acts on that path: Prepare on a
+	// restore and the cleanup removal. With the deny, the path stays the dir
+	// that Prepare made, so host-side code never meets a planted symlink.
+	//
+	// The rules are literals, so they match the node only, and files below
+	// it keep the section-3 grant. /private/tmp, the parent, has no write
+	// grant, so the chain stops there. The deny must follow every allow,
+	// because SBPL resolves a conflict in favour of the later rule.
+	// TestGenerateProfile_SessionTmpDirNodeDenyFollowsEveryAllow pins the
+	// order.
+	if len(sessionTmpForms) > 0 {
+		sb.WriteString("\n")
+		sb.WriteString(sessionTmpNodeDeny(sessionTmpForms))
+	}
+
 	// ── 22. FINAL DENIES — Go module cache is not executable ─
 	// The module cache holds downloaded dependency SOURCE. Section 5k grants
 	// it read-write because the toolchain must populate it. Without this deny,
@@ -1410,6 +1358,15 @@ func worktreeReadOnlyDeny(worktree string) string {
 	return clause + ")\n"
 }
 
+// sessionTmpNodeDeny is the section-21e clause of generateProfile.
+func sessionTmpNodeDeny(forms []string) string {
+	clause := "(deny file-write-unlink file-write-create"
+	for _, p := range forms {
+		clause += "\n  (literal " + quoteSBPL(p) + ")"
+	}
+	return clause + ")\n"
+}
+
 // containerCLIExecDeny is the section-21c clause of generateProfile.
 const containerCLIExecDeny = "(deny process-exec*\n" +
 	"  (regex #\"/podman$\")\n" +
@@ -1417,169 +1374,15 @@ const containerCLIExecDeny = "(deny process-exec*\n" +
 	"  (regex #\"/\\.podman-wrapped$\")\n" +
 	"  (regex #\"/\\.docker-wrapped$\"))\n"
 
-// hostEscapeSocketReDeny is the section-17c clause of generateProfile. It
-// re-denies `network-outbound` to the host-escape Unix sockets that live
-// inside the /private/tmp allowance of section 17b. The clause must follow
-// section 17's (allow network*), because SBPL resolves a conflict in favour
-// of the later rule.
-// TestGenerateProfile_NetworkUnixSocketDenyFollowsNetworkAllow and
-// TestGenerateProfile_NetworkUnixSocketEscapeReDenyFollowsAllowlist pin the
-// order.
-//
-// Each socket lets a client act on the host outside the sandbox:
-//   - the tmux control socket (/private/tmp/tmux-<uid>/<name>) runs any
-//     command through `tmux new-session` or `send-keys`;
-//   - the user ssh-agent (SSH_AUTH_SOCK, /private/tmp/com.apple.launchd.*/)
-//     signs with the user's keys;
-//   - the AeroSpace window-manager socket
-//     (/private/tmp/bobko.aerospace-<user>.sock) runs the exec-and-forget
-//     commands of its config bindings through `aerospace trigger-binding`;
-//   - a .NET diagnostic IPC socket (/private/tmp/dotnet-diagnostic-*) takes
-//     an AttachProfiler command, which loads a native library from a path
-//     that the client gives into the target process;
-//   - the podman machine API socket (/private/tmp/podman/<machine>-api.sock)
-//     drives the podman machine with no filter. podman puts its machine
-//     runtime dir at $TMPDIR/podman, or at /tmp/podman when TMPDIR is unset
-//     (for example a launchd job). The $TMPDIR form is under /var/folders,
-//     outside the section-17b allowlist, so it is denied already; the
-//     /private/tmp form is inside the allowance and needs this re-deny
-//     (#3147 item 2);
-//   - the nvim RPC socket in the TMPDIR-unset location
-//     (/private/tmp/nvim.<user>/<rand>/nvim.<pid>.0). nvim resolves its temp
-//     dir in the order $TMPDIR, /tmp, so with TMPDIR unset the socket lands
-//     in /tmp, inside the section-17b allowance. A client on it runs
-//     `:!<cmd>` on the host (#3147 item 1). The TMPDIR-set form, under
-//     /var/folders, is denied by section 17b already; this re-deny covers
-//     the TMPDIR-unset form, the same shape as the podman item above.
-//
-// Both the /tmp and the /private/tmp forms are listed. The kernel resolves a
-// connect path through the /tmp symlink before it matches, so the
-// /private/tmp form is the one that normally matches. The /tmp form guards a
-// path that reaches the socket unresolved.
-const hostEscapeSocketReDeny = "(deny network-outbound\n" +
-	"  (regex #\"^/private/tmp/tmux-[0-9]+/\")\n" +
-	"  (regex #\"^/tmp/tmux-[0-9]+/\")\n" +
-	"  (regex #\"^/private/tmp/com\\.apple\\.launchd\\.\")\n" +
-	"  (regex #\"^/tmp/com\\.apple\\.launchd\\.\")\n" +
-	"  (regex #\"^/private/tmp/bobko\\.aerospace-\")\n" +
-	"  (regex #\"^/tmp/bobko\\.aerospace-\")\n" +
-	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +
-	"  (regex #\"^/tmp/dotnet-diagnostic-\")\n" +
-	"  (regex #\"^/private/tmp/podman/\")\n" +
-	"  (regex #\"^/tmp/podman/\")\n" +
-	"  (regex #\"^/private/tmp/nvim\\.[^/]+/\")\n" +
-	"  (regex #\"^/tmp/nvim\\.[^/]+/\"))\n"
-
-// hostSocketWriteDeny is the section-3d clause of generateProfile. It denies
-// file-write* on each socket that sections 17b and 17c protect by path, and
-// on the directory that holds it, so a sandboxed agent cannot move the socket
-// to a path the connect deny does not match. Without it, the path-based
-// connect deny is bypassed by a rename (see the section-3d comment).
-//
-// The clause must follow sections 3 and 3b, whose broad file-write* grants on
-// /tmp, /private/tmp, and $TMPDIR it overrides. SBPL resolves a conflict in
-// favour of the later rule, and no later rule grants write on these paths.
-// TestGenerateProfile_HostSocketWriteDenyFollowsTmpWriteAllows pins the order.
-//
-// The podman regex matches any `podman` directory under /var/folders, so it
-// does not depend on os.TempDir() reading back the current $TMPDIR (same
-// reason the section-3c regexes are TMPDIR-independent). The /private/tmp
-// entries mirror the section-17c families, with `(/|$)` in place of the
-// trailing `/` so the directory node is matched as well as its contents.
-//
-// Two families join the list for #3147:
-//   - the nvim RPC socket. nvim starts an RPC server at
-//     $TMPDIR/nvim.<user>/<rand>/nvim.<pid>.0, and a client on it runs
-//     `:!<cmd>` on the host — the same escape class as the tmux socket.
-//     nvim resolves its temp dir in the order $TMPDIR, /tmp, so the socket
-//     is under /var/folders with TMPDIR set, or under /tmp (that is,
-//     /private/tmp) with TMPDIR unset. All three forms are denied, so a
-//     rename cannot move the nvim.<user> directory or the socket to a
-//     connect-allowed path. The `nvim\.[^/]+(/|$)` pair matches the
-//     nvim.<user> directory node, the socket file nvim.<pid>.0, and every
-//     path under nvim.<user>/. (Side effect: an nvim started inside the
-//     sandbox, where TMPDIR is unset, cannot create its server dir under
-//     /tmp; it falls back to the next writable temp dir and still starts.
-//     Agents do not start nvim in normal use — GIT_EDITOR is `true`, see
-//     modules/programs/prism/default.nix.)
-//   - the podman machine dir in /private/tmp and /tmp, for the TMPDIR-unset
-//     case (section 17c re-denies the connect; this denies the move).
-const hostSocketWriteDeny = "(deny file-write*\n" +
-	"  (regex #\"^/var/folders/.*/podman(/|$)\")\n" +
-	"  (regex #\"^/private/var/folders/.*/podman(/|$)\")\n" +
-	"  (regex #\"^/private/tmp/podman(/|$)\")\n" +
-	"  (regex #\"^/tmp/podman(/|$)\")\n" +
-	"  (regex #\"^/var/folders/.*/nvim\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/private/var/folders/.*/nvim\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/private/tmp/nvim\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/tmp/nvim\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/private/tmp/tmux-[0-9]+(/|$)\")\n" +
-	"  (regex #\"^/tmp/tmux-[0-9]+(/|$)\")\n" +
-	"  (regex #\"^/private/tmp/com\\.apple\\.launchd\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/tmp/com\\.apple\\.launchd\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/private/tmp/bobko\\.aerospace-\")\n" +
-	"  (regex #\"^/tmp/bobko\\.aerospace-\")\n" +
-	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +
-	"  (regex #\"^/tmp/dotnet-diagnostic-\"))\n"
-
-// hostSocketAncestorWriteDeny is the section-3e clause of generateProfile. It
-// denies file-write-unlink and file-write-create on each ancestor directory
-// of a protected socket that a subpath write grant covers at the node, so the
-// agent cannot rename that ancestor into a connect-allowed path. See the
-// section-3e comment for the full reasoning.
-//
-// The nodes are literals, so the deny matches each directory node only and
-// never its contents: writes inside /tmp, /private/tmp, and $TMPDIR still
-// work. $TMPDIR is derived from filepath.Clean(os.TempDir()) and emitted in
-// both the /var and /private/var forms, the same derivation as section 3b.
-func hostSocketAncestorWriteDeny() string {
-	var nodes []string
-	seen := map[string]bool{}
-	add := func(p string) {
-		if p != "" && !seen[p] {
-			seen[p] = true
-			nodes = append(nodes, p)
-		}
-	}
-	// Section 3 grants (subpath ...) over these nodes. They are the parents
-	// of the tmux, ssh-agent, AeroSpace, and .NET sockets, and (with TMPDIR
-	// unset) of the podman and nvim.<user> directories.
-	add("/private/tmp")
-	add("/tmp")
-	// Section 3b grants (subpath os.TempDir()) over the $TMPDIR node, the
-	// parent of the podman and nvim.<user> directories. Deny both symlink
-	// forms.
-	if tmpDir := filepath.Clean(os.TempDir()); tmpDir != "" && tmpDir != "." && tmpDir != "/" {
-		add(tmpDir)
-		if strings.HasPrefix(tmpDir, "/private/var/") {
-			add(strings.TrimPrefix(tmpDir, "/private"))
-		} else if strings.HasPrefix(tmpDir, "/var/") {
-			add("/private" + tmpDir)
-		}
-	}
-
-	var sb strings.Builder
-	sb.WriteString("(deny file-write-unlink file-write-create\n")
-	for i, n := range nodes {
-		sb.WriteString("  (literal " + quoteSBPL(n) + ")")
-		if i == len(nodes)-1 {
-			sb.WriteString(")")
-		}
-		sb.WriteString("\n")
-	}
-	return sb.String()
-}
-
-// networkUnixSocketDeny returns the section-17b allowlist deny and the
-// section-17c re-deny (hostEscapeSocketReDeny). It is the single source of
-// the Unix-socket connect policy.
+// networkUnixSocketDeny returns the section-17b allowlist deny. It is the
+// single source of the Unix-socket connect policy.
 //
 // The allowlist deny is `(deny network-outbound (require-all (subpath "/")
 // (require-not <allowed>) ...))`. The leading `(subpath "/")` scopes the
 // rule to Unix-domain connects: a TCP or UDP connect carries no path, so
 // `(subpath "/")` never matches it. Remove that term and the rule denies
 // every outbound connection, HTTPS included.
-func networkUnixSocketDeny(m *Manager, sessionDir string, sessionDirErr error) string {
+func networkUnixSocketDeny(m *Manager, sessionDir string, sessionDirErr error, sessionTmpForms []string) string {
 	var allowed []string
 	// Per-session host-API socket dir — hostapi.sock is the one Unix socket a
 	// session connects to for prism prompt/escalate/review. Grant the dir, not
@@ -1598,12 +1401,10 @@ func networkUnixSocketDeny(m *Manager, sessionDir string, sessionDirErr error) s
 		"(literal \"/nix/var/nix/daemon-socket/socket\")",
 	)
 	// Scratch trees for the in-sandbox `go test ./...` quality gate. See the
-	// section-17b comment for why these are load-bearing. /tmp and /private/tmp
-	// are a symlink pair, so both forms are listed.
-	allowed = append(allowed,
-		"(subpath \"/private/tmp\")",
-		"(subpath \"/tmp\")",
-	)
+	// section-17b comment for why these are load-bearing.
+	for _, p := range sessionTmpForms {
+		allowed = append(allowed, "(subpath "+quoteSBPL(p)+")")
+	}
 	if sessionDirErr == nil && sessionDir != "" {
 		allowed = append(allowed, "(subpath "+quoteSBPL(sessionDir)+")")
 	}
@@ -1622,8 +1423,6 @@ func networkUnixSocketDeny(m *Manager, sessionDir string, sessionDirErr error) s
 		sb.WriteString("    (require-not " + a + ")\n")
 	}
 	sb.WriteString("))\n")
-	sb.WriteString("\n")
-	sb.WriteString(hostEscapeSocketReDeny)
 	sb.WriteString("\n")
 	return sb.String()
 }

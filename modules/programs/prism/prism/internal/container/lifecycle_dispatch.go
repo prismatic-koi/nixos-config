@@ -214,15 +214,16 @@ func (s *sandboxExecIsolator) Reset(ctx context.Context) error {
 	return nil
 }
 
-// Prepare prepares the per-session work dir, writes the SBPL profile, and
-// returns the complete sandbox-exec argument list. Mirrors the
-// body of Manager.PrepareSandboxExec.
+// Prepare prepares the per-session work dir and the per-session TMPDIR,
+// writes the SBPL profile, and returns the complete sandbox-exec argument
+// list. Mirrors the body of Manager.PrepareSandboxExec.
 //
 // If PrepareSessionWorkDir fails, Prepare returns an error immediately and
 // does not write the profile or launch the session (hard-fail posture): a
 // session without the work-dir configs would have no git identity and no ssh
 // auth route, and the missing-git-identity hard error must surface at
-// Prepare time.
+// Prepare time. A PrepareSessionTmpDir failure is a hard fail too: the
+// session has no other writable temp tree.
 func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string, error) {
 	// Prepare the per-session work dir: the
 	// generated ssh-config / gitconfig / allowed_signers the dispatcher wires
@@ -230,6 +231,9 @@ func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string
 	// skeleton.
 	if _, err := m.PrepareSessionWorkDir(); err != nil {
 		return nil, fmt.Errorf("container: sandbox-exec: cannot prepare session work dir: %w", err)
+	}
+	if _, err := m.PrepareSessionTmpDir(); err != nil {
+		return nil, fmt.Errorf("container: sandbox-exec: cannot prepare session TMPDIR: %w", err)
 	}
 
 	// ── Go cache dirs ────────────────────────────────

@@ -31,6 +31,7 @@ import (
 
 	pih "github.com/prismatic-koi/prism/internal/harness/pi"
 	prismsession "github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
 // ── helpers ───────────────────────────────────────────────────
@@ -134,8 +135,8 @@ func waitForHostAPIReady(t *testing.T, sockPath string) {
 // asserted independently in
 // internal/session.TestSidecarHostAPIPath_LengthInvariant_*.
 //
-// The bind is performed under a freshly-created temp directory rooted at /tmp
-// (kept deliberately short so the per-test path itself stays inside the
+// The bind is performed under a freshly-created short temp directory
+// (stateguardtest.ShortTempDir, kept deliberately short so the per-test path itself stays inside the
 // kernel limit on every CI runner). This means the test exercises the
 // SessionDirName-derived suffix shape: the long input session name does not
 // pollute the on-disk path.
@@ -175,17 +176,13 @@ func TestHostAPIBind_WorstCaseSessionName_DoesNotEINVAL(t *testing.T) {
 	defer ln.Close()
 }
 
-// shortStateHome creates a short-prefix directory under /tmp (NOT under
-// t.TempDir(), which Go derives from TMPDIR and may itself be long enough to
-// blow the budget on some runners). The test cleans up via t.Cleanup.
+// shortStateHome creates a short-prefix directory with
+// stateguardtest.ShortTempDir (NOT under t.TempDir(), which Go derives from
+// TMPDIR and may itself be long enough to blow the budget on some runners).
+// The test cleans up via t.Cleanup.
 func shortStateHome(t *testing.T) (string, error) {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "p1050-")
-	if err != nil {
-		return "", err
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir, nil
+	return stateguardtest.ShortTempDir(t, "p1050-"), nil
 }
 
 // TestSidecarRun_BindFailureReturnsError is the regression test. It

@@ -30,14 +30,13 @@ import (
 // directory and clears $TMUX, and returns a function that restores the
 // previous environment. The tmux-harness integration tests start real tmux
 // servers with `-L <name>`. Without this redirect the socket lands in
-// /private/tmp/tmux-<uid>/, which the sandbox-exec profile protects: section
-// 3d denies file-write* there and section 17c denies the connect (issue
-// #3066). The scratch path /tmp/ptm-<rand>/tmux-<uid>/ matches neither regex,
-// because both anchor on tmux-<n> directly under /tmp or /private/tmp. So the
-// tmux tests behave the same inside and outside the sandbox, and the suite
-// does not touch the real user's tmux directory. /tmp is used first, not
-// os.MkdirTemp(""), because a /var/folders path overflows the Darwin
-// sun_path limit once tmux appends tmux-<uid>/<name>. Mirrors
+// /private/tmp/tmux-<uid>/, where a sandbox-exec session can neither write
+// nor connect (#3066, #3150). The scratch path is /tmp/ptm-<rand> in a host
+// shell, or <TMPDIR>/ptm-<rand> in a sandbox-exec session (the per-session
+// TMPDIR). So the tmux tests behave the same inside and outside the sandbox,
+// and the suite does not touch the real user's tmux directory. /tmp is used
+// first, not os.MkdirTemp(""), because a /var/folders path overflows the
+// Darwin sun_path limit once tmux appends tmux-<uid>/<name>. Mirrors
 // cmd/tmux_isolation_test.go and internal/tmux/testmain_test.go.
 func isolateTmuxTmpdir() func() {
 	origTmux, hadTmux := os.LookupEnv("TMUX")

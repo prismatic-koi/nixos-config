@@ -454,6 +454,9 @@ func TestValidateSandboxExecArgs_OK(t *testing.T) {
 	// sandbox (AGENTS.md § "the homeless-shelter failure class").
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
+	// PrepareSandboxExec also creates the per-session TMPDIR. Its production
+	// root, /tmp, is not writable in a sandboxed test process.
+	t.Cleanup(container.SetSessionTmpRootForTest(t.TempDir()))
 	m := container.New(container.Config{
 		SessionName:   "repo@feat",
 		AllocatedPort: 14010,
@@ -488,6 +491,7 @@ func TestValidateSandboxExecArgs_MissingProfile(t *testing.T) {
 	// TestValidateSandboxExecArgs_OK for the rationale.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
+	t.Cleanup(container.SetSessionTmpRootForTest(t.TempDir()))
 	m := container.New(container.Config{
 		SessionName:   "repo@gone",
 		AllocatedPort: 14011,

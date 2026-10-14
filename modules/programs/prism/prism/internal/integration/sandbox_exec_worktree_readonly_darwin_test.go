@@ -76,7 +76,7 @@ func TestSandboxExecWorktreeReadOnly_WriteDenied(t *testing.T) {
 	prepared, _ := preparePositiveProfile(t, m)
 	profilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	if out, err := runWorktreeScript(t, profilePath, worktree, `cat "$WT/main.go"`); err != nil || !strings.Contains(string(out), "package main") {
+	if out, err := runWorktreeScript(t, profilePath, worktree, "", `cat "$WT/main.go"`); err != nil || !strings.Contains(string(out), "package main") {
 		t.Fatalf("read of a worktree file failed under the read-only profile: %v\nOutput: %s\nProfile: %s", err, out, profilePath)
 	}
 	for _, script := range []string{
@@ -84,7 +84,7 @@ func TestSandboxExecWorktreeReadOnly_WriteDenied(t *testing.T) {
 		`touch "$WT/new.go"`,
 		`rm "$WT/main.go"`,
 	} {
-		out, err := runWorktreeScript(t, profilePath, worktree, script)
+		out, err := runWorktreeScript(t, profilePath, worktree, "", script)
 		if err == nil {
 			t.Errorf("%q succeeded under the read-only profile.\nOutput: %s\nProfile: %s", script, out, profilePath)
 			continue
@@ -113,7 +113,7 @@ func TestSandboxExecWorktreeReadOnly_WorkerCanWrite(t *testing.T) {
 	prepared, _ := preparePositiveProfile(t, m)
 	profilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	if out, err := runWorktreeScript(t, profilePath, worktree, worktreeWriteScript); err != nil {
+	if out, err := runWorktreeScript(t, profilePath, worktree, "", worktreeWriteScript); err != nil {
 		t.Fatalf("a write to the worktree of a worker failed (exit 10: change, 11: create).\nExit: %v\nOutput: %s\nProfile: %s",
 			err, out, profilePath)
 	}
@@ -134,7 +134,7 @@ func TestSandboxExecWorktreeReadOnly_WritableWithoutDeny(t *testing.T) {
 	deny := regexp.MustCompile(`\(deny file-write\*\n  \(subpath "` + regexp.QuoteMeta(worktree) + `"\)\)\n`)
 	profilePath := withMutatedProfile(t, m, func(p string) string { return deny.ReplaceAllString(p, "") })
 
-	if out, err := runWorktreeScript(t, profilePath, worktree, worktreeWriteScript); err != nil {
+	if out, err := runWorktreeScript(t, profilePath, worktree, "", worktreeWriteScript); err != nil {
 		t.Fatalf("without the deny a write to the worktree still failed, so the positive test proves nothing (exit 10: change, 11: create).\nExit: %v\nOutput: %s\nProfile: %s",
 			err, out, profilePath)
 	}

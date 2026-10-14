@@ -25,6 +25,9 @@ import (
 // written by a sibling worker's test process. The directory is
 // removed after the run, so the suite also stops accumulating stale
 // prism-* files under the host temp dir.
+//
+// The same directory is the root of the per-session TMPDIRs that Prepare
+// creates (sessionTmpRoot). A sandboxed test process cannot write /tmp.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "prism-container-test-")
 	if err != nil {
@@ -32,6 +35,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	tempDir = func() string { return dir }
+	sessionTmpRoot = dir
 	var restoreState func()
 	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
 	code := m.Run()

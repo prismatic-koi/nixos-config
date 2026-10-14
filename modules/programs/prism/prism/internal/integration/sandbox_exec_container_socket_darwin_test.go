@@ -3,22 +3,26 @@
 package integration_test
 
 // sandbox_exec_container_socket_darwin_test.go — the Unix-socket connect
-// policy of the sandbox-exec profile (sections 17b and 17c of
-// generateProfile, #3066).
+// policy of the sandbox-exec profile (section 17b of generateProfile; #3066,
+// #3147, #3150).
 //
 // Section 17b denies `network-outbound` for every Unix-socket path except an
 // allowlist. Its leading (subpath "/") scopes the deny to path-bearing
-// connects, so TCP stays open. The podman machine socket is under $TMPDIR,
-// outside the allowlist. Section 17c re-denies the host-escape sockets inside
-// the /private/tmp allowance: tmux, the user ssh-agent, AeroSpace, and the
-// .NET diagnostic IPC socket.
+// connects, so TCP stays open. The allowlist holds the per-session TMPDIR
+// and no shared temp tree: not /private/tmp, not /tmp, and not the user
+// $TMPDIR. Thus a host socket in a shared temp tree is denied: the podman
+// machine, tmux, the user ssh-agent, AeroSpace, a .NET diagnostic socket,
+// nvim, or any other. The session has no write grant on a shared temp tree
+// either, so it cannot move such a socket into its per-session TMPDIR.
 //
-// Each positive test runs a connect probe under the production profile. Each
-// paired negative mutates the profile and shows that the rule under test is
-// what decides the result. See docs/sandbox-exec-testing.md.
+// Each positive test runs a probe under the production profile. Each paired
+// negative mutates the profile and shows that the rule under test is what
+// decides the result. See docs/sandbox-exec-testing.md.
 //
 // The probe is a small Go program built with CGO disabled, so the macos-15 CI
-// job needs no C compiler. It exits 0 when the connect succeeds.
+// job needs no C compiler. The tests of a /tmp rule use the probe extras
+// (augmentProfileForProbe), not the test-harness extras, because the
+// test-harness extras grant write on /private/tmp.
 
 import (
 	"net"
@@ -29,19 +33,25 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/container"
 )
 
-// connectProbeSrc is the source of the connect probe.
+// connectProbeSrc is the source of the probe.
 //
 //	probe <path>                      connect to a Unix socket
 //	probe tcp:<host:port>             connect over TCP
 //	probe --move <src> <dst> <path>   os.Rename(src, dst), then connect to <path>
+//	probe --bind <path>               listen on <path>, then connect to it
+//	probe --create <path>             write a new file
+//	probe --read <path>               read a file
+//	probe --remove <path>             remove a file or an empty dir
+//	probe --rename <src> <dst>        os.Rename(src, dst)
 //
-// The --move mode models the rename-bypass attack: move a protected socket
-// (or its directory) to an allowed path, then connect. It prints
-// RENAME-DENIED and exits 2 when the sandbox denies the rename.
+// A connect that succeeds prints CONNECTED. A --create, --read, --remove, or
+// --rename that succeeds prints OP-OK. A failed --move rename prints
+// RENAME-DENIED and exits 2. Every failure exits non-zero.
 const connectProbeSrc = `package main
 
 import (
@@ -51,13 +61,53 @@ import (
 	"time"
 )
 
+func fail(marker string, err error, code int) {
+	os.Stderr.WriteString(err.Error() + "\n")
+	if marker != "" {
+		os.Stdout.WriteString(marker + "\n")
+	}
+	os.Exit(code)
+}
+
+func op(err error) {
+	if err != nil {
+		fail("", err, 3)
+	}
+	os.Stdout.WriteString("OP-OK\n")
+	os.Exit(0)
+}
+
 func main() {
 	args := os.Args[1:]
-	if len(args) >= 4 && args[0] == "--move" {
+	switch {
+	case len(args) >= 2 && args[0] == "--create":
+		op(os.WriteFile(args[1], []byte("x"), 0o600))
+	case len(args) >= 2 && args[0] == "--read":
+		_, err := os.ReadFile(args[1])
+		op(err)
+	case len(args) >= 2 && args[0] == "--remove":
+		op(os.Remove(args[1]))
+	case len(args) >= 3 && args[0] == "--rename":
+		op(os.Rename(args[1], args[2]))
+	case len(args) >= 2 && args[0] == "--bind":
+		ln, err := net.Listen("unix", args[1])
+		if err != nil {
+			fail("", err, 4)
+		}
+		defer ln.Close()
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				c.Close()
+			}
+		}()
+		args = args[1:]
+	case len(args) >= 4 && args[0] == "--move":
 		if err := os.Rename(args[1], args[2]); err != nil {
-			os.Stderr.WriteString(err.Error() + "\n")
-			os.Stdout.WriteString("RENAME-DENIED\n")
-			os.Exit(2)
+			fail("RENAME-DENIED", err, 2)
 		}
 		args = args[3:]
 	}
@@ -67,8 +117,7 @@ func main() {
 	}
 	c, err := net.DialTimeout(network, addr, 3*time.Second)
 	if err != nil {
-		os.Stderr.WriteString(err.Error() + "\n")
-		os.Exit(1)
+		fail("", err, 1)
 	}
 	_ = c.Close()
 	os.Stdout.WriteString("CONNECTED\n")
@@ -78,14 +127,17 @@ func main() {
 // connectedMarker is what the probe prints when its connect succeeds.
 const connectedMarker = "CONNECTED"
 
+// opOKMarker is what the probe prints when a file operation succeeds.
+const opOKMarker = "OP-OK"
+
 // sectionNetworkScope is the opening of the section-17b deny. It is unique in
 // the profile: the secrets.d require-all (section 3c) opens with
 // (require-any), and the only other (subpath "/") is in a plain allow.
 const sectionNetworkScope = "(require-all\n    (subpath \"/\")\n"
 
 // buildConnectProbe compiles the probe into a t.TempDir(). That dir is under
-// os.TempDir(), which section 3b of the profile grants, so sandbox-exec can
-// run the probe.
+// the user $TMPDIR, which section 2 of the profile grants read and
+// map-executable, so sandbox-exec can run the probe.
 func buildConnectProbe(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -139,7 +191,7 @@ func acceptAndClose(ln net.Listener) {
 }
 
 // runProbe runs the probe under the profile with the given probe args. A nil
-// error means the connect succeeded.
+// error means the probe succeeded.
 func runProbe(t *testing.T, profilePath, probe string, probeArgs ...string) (string, error) {
 	t.Helper()
 	args := append([]string{"-f", profilePath, probe}, probeArgs...)
@@ -168,6 +220,27 @@ func podmanLocationSocket(t *testing.T) string {
 	return socketInNewDir(t, os.TempDir(), "p3066pod")
 }
 
+// privateTmpSocket binds a listener at a unique path directly in
+// /private/tmp and returns it. It models a user socket there that the
+// profile does not name, such as macron-type.sock on m4mac.
+func privateTmpSocket(t *testing.T) string {
+	t.Helper()
+	sock := filepath.Join("/private/tmp", "prism-3150-"+strconv.Itoa(os.Getpid())+"-"+strconv.FormatInt(time.Now().UnixNano(), 36)+".sock")
+	startUnixListener(t, sock)
+	t.Cleanup(func() { _ = os.Remove(sock) })
+	return sock
+}
+
+// sessionTmpSocket binds a listener in the per-session TMPDIR of m and
+// returns the socket path in the /tmp form, the form that TMPDIR holds.
+// Prepare must have run, so the dir exists.
+func sessionTmpSocket(t *testing.T, m *container.Manager, name string) string {
+	t.Helper()
+	sock := filepath.Join(sessionTmpDirOf(t, m), name)
+	startUnixListener(t, sock)
+	return sock
+}
+
 func expectDenied(t *testing.T, profilePath, probe, target, why string) {
 	t.Helper()
 	if out, err := runProbe(t, profilePath, probe, target); err == nil {
@@ -183,9 +256,10 @@ func expectConnected(t *testing.T, profilePath, probe, target, why string) {
 }
 
 // TestSandboxExecContainerSocket_DeniedUnderProductionProfile: under the
-// production profile, a connect to the podman machine location fails. A
-// connect to a socket under the allowlisted /private/tmp and a loopback TCP
-// connect both succeed.
+// production profile, a connect to a socket under the user $TMPDIR (the
+// podman machine location, and an nvim-shaped location) fails. A connect to
+// a socket in the per-session TMPDIR and a loopback TCP connect both
+// succeed.
 func TestSandboxExecContainerSocket_DeniedUnderProductionProfile(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -194,17 +268,20 @@ func TestSandboxExecContainerSocket_DeniedUnderProductionProfile(t *testing.T) {
 	probe := buildConnectProbe(t)
 
 	podmanSock := podmanLocationSocket(t)
-	allowedSock := socketInNewDir(t, "/private/tmp", "prism-3066-allowed")
+	nvimSock, _ := nvimShapedSocket(t)
 	tcpAddr := startTCPListener(t)
 
 	m := newProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
-	profilePath := writeAugmentedPositiveProfile(t, prepared)
+	profilePath := writeProbePositiveProfile(t, prepared)
+	ownSock := sessionTmpSocket(t, m, "a.sock")
 
 	expectDenied(t, profilePath, probe, podmanSock,
-		"section 17b did not deny the podman machine location")
-	expectConnected(t, profilePath, probe, allowedSock,
-		"section 17b denies the /private/tmp scratch tree, where go test binds its sockets")
+		"section 17b did not deny the podman machine location under the user $TMPDIR")
+	expectDenied(t, profilePath, probe, nvimSock,
+		"section 17b did not deny the nvim RPC location under the user $TMPDIR")
+	expectConnected(t, profilePath, probe, ownSock,
+		"section 17b denies the per-session TMPDIR, where go test binds its sockets")
 	expectConnected(t, profilePath, probe, tcpAddr,
 		"section 17b denies TCP; its (subpath \"/\") scope must match Unix-socket connects only")
 }
@@ -252,60 +329,78 @@ func TestSandboxExecContainerSocket_TCPDeniedWithoutScope(t *testing.T) {
 		"TCP still connects without the (subpath \"/\") scope, so the TCP check in the positive test proves nothing")
 }
 
-// TestSandboxExecContainerSocket_EscapeDeniedUnderProductionProfile: under the
-// production profile, a socket under a tmux-shaped dir and a socket under a
-// .NET-diagnostic-shaped name in /private/tmp are denied. Section 17b allows
-// /private/tmp, so section 17c is what denies them.
-func TestSandboxExecContainerSocket_EscapeDeniedUnderProductionProfile(t *testing.T) {
+// sharedTmpSockets binds the host-socket shapes of /private/tmp: a socket
+// directly in /private/tmp that the profile does not name, a tmux-shaped
+// socket, a .NET-diagnostic-shaped socket, and the podman and nvim sockets
+// of the TMPDIR-unset location. The last entry is the generic socket by its
+// /tmp path.
+func sharedTmpSockets(t *testing.T) []string {
+	t.Helper()
+	generic := privateTmpSocket(t)
+	return []string{
+		generic,
+		// os.MkdirTemp appends digits, so the dir names do not collide with
+		// a real tmux dir or a concurrent test run.
+		socketInNewDir(t, "/private/tmp", "tmux-"),
+		socketInNewDir(t, "/private/tmp", "dotnet-diagnostic-"),
+		podmanTmpSocket(t),
+		nvimTmpSocket(t),
+		strings.TrimPrefix(generic, "/private"),
+	}
+}
+
+// TestSandboxExecContainerSocket_SharedTmpDeniedUnderProductionProfile:
+// under the production profile, a connect to each host-socket shape in
+// /private/tmp fails. No profile rule names them: section 17b has no
+// /private/tmp or /tmp allowance, so the class is closed (#3150).
+func TestSandboxExecContainerSocket_SharedTmpDeniedUnderProductionProfile(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
 	probe := buildConnectProbe(t)
 
-	// os.MkdirTemp appends digits, so the dir names match the 17c regexes
-	// and do not collide with a real tmux dir or a concurrent test run.
-	tmuxSock := socketInNewDir(t, "/private/tmp", "tmux-")
-	dotnetSock := socketInNewDir(t, "/private/tmp", "dotnet-diagnostic-")
+	socks := sharedTmpSockets(t)
 
 	m := newProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
-	profilePath := writeAugmentedPositiveProfile(t, prepared)
+	profilePath := writeProbePositiveProfile(t, prepared)
 
-	expectDenied(t, profilePath, probe, tmuxSock,
-		"section 17c did not re-deny the tmux-shaped socket")
-	expectDenied(t, profilePath, probe, dotnetSock,
-		"section 17c did not re-deny the .NET-diagnostic-shaped socket")
+	for _, sock := range socks {
+		expectDenied(t, profilePath, probe, sock,
+			"section 17b did not deny a socket in the shared /tmp tree")
+	}
 }
 
-// TestSandboxExecContainerSocket_EscapeConnectsWithoutReDeny is the paired
-// negative for section 17c. With the re-deny removed, both sockets connect.
-func TestSandboxExecContainerSocket_EscapeConnectsWithoutReDeny(t *testing.T) {
+// TestSandboxExecContainerSocket_SharedTmpConnectsWithAllowance is the paired
+// negative: with a /private/tmp and /tmp allowance added to section 17b, every
+// socket of the positive test connects. This proves that the missing
+// allowance is what denies them.
+func TestSandboxExecContainerSocket_SharedTmpConnectsWithAllowance(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
 	probe := buildConnectProbe(t)
 
-	tmuxSock := socketInNewDir(t, "/private/tmp", "tmux-")
-	dotnetSock := socketInNewDir(t, "/private/tmp", "dotnet-diagnostic-")
+	socks := sharedTmpSockets(t)
 
 	m := newProfileManager(t)
-	mutatedPath := withMutatedProfile(t, m, func(p string) string {
-		return strings.Replace(p, escapeReDenyBlock, "", 1)
+	mutatedPath := withMutatedProbeProfile(t, m, func(p string) string {
+		return strings.Replace(p, sectionNetworkScope, sectionNetworkScope+
+			"    (require-not (subpath \"/private/tmp\"))\n    (require-not (subpath \"/tmp\"))\n", 1)
 	})
 
-	for _, sock := range []string{tmuxSock, dotnetSock} {
+	for _, sock := range socks {
 		expectConnected(t, mutatedPath, probe, sock,
-			"the connect still fails with section 17c removed, so the positive test proves nothing")
+			"the connect still fails with a /private/tmp allowance, so the positive test proves nothing")
 	}
 }
 
 // podmanShapedSocket creates <$TMPDIR>/<rand>/podman/api.sock with a live
-// listener and returns the socket path and the podman directory. The path
-// matches the section-3d regex `^/var/folders/.*/podman(/|$)`. The `podman`
-// component is nested under a MkdirTemp parent, so the test never touches the
-// real podman machine directory at <$TMPDIR>/podman.
+// listener and returns the socket path and the podman directory. The
+// `podman` component is nested under a MkdirTemp parent, so the test never
+// touches the real podman machine directory at <$TMPDIR>/podman.
 func podmanShapedSocket(t *testing.T) (sock, podmanDir string) {
 	t.Helper()
 	base, err := os.MkdirTemp(os.TempDir(), "prism-3066-")
@@ -322,87 +417,17 @@ func podmanShapedSocket(t *testing.T) (sock, podmanDir string) {
 	return sock, podmanDir
 }
 
-// TestSandboxExecContainerSocket_RenameBypassDeniedUnderProductionProfile:
-// under the production profile, a sandboxed process cannot move a protected
-// socket, or the directory that holds it, to an allowed path. The connect
-// deny (sections 17b/17c) filters by path, so a successful rename would reach
-// the socket at its new path. Section 3d denies the rename.
-//
-// The test moves from the podman location under $TMPDIR. The source unlink is
-// denied there, so the destination does not matter. (A /private/tmp source,
-// for the tmux family, cannot be exercised here: writeAugmentedPositiveProfile
-// appends a broad `(allow file-write* (subpath "/private/tmp"))` for the test
-// binary, which outranks section 3d inside /private/tmp. The production
-// profile has no such allow; the content test
-// TestGenerateProfile_HostSocketWriteDeny asserts the tmux/launchd/aerospace/
-// dotnet entries are present.)
-func TestSandboxExecContainerSocket_RenameBypassDeniedUnderProductionProfile(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-	requireSandboxExec(t)
-	probe := buildConnectProbe(t)
-
-	sock, podmanDir := podmanShapedSocket(t)
-
-	m := newProfileManager(t)
-	prepared, _ := preparePositiveProfile(t, m)
-	profilePath := writeAugmentedPositiveProfile(t, prepared)
-
-	// Move the socket FILE out of the podman dir into /private/tmp.
-	movedFile := "/private/tmp/prism-3066-mv-file.sock"
-	t.Cleanup(func() { _ = os.Remove(movedFile) })
-	if out, runErr := runProbe(t, profilePath, probe, "--move", sock, movedFile, movedFile); runErr == nil || strings.Contains(out, connectedMarker) {
-		t.Errorf("moved the podman socket file and connected — section 3d did not deny the file rename.\nOutput: %s\nProfile: %s", out, profilePath)
-	}
-	// Move the podman DIRECTORY (with the socket inside) into /private/tmp.
-	movedDir := "/private/tmp/prism-3066-mv-dir"
-	t.Cleanup(func() { _ = os.RemoveAll(movedDir) })
-	if out, runErr := runProbe(t, profilePath, probe, "--move", podmanDir, movedDir, filepath.Join(movedDir, "api.sock")); runErr == nil || strings.Contains(out, connectedMarker) {
-		t.Errorf("moved the podman directory and connected — section 3d did not deny the directory rename.\nOutput: %s\nProfile: %s", out, profilePath)
-	}
-}
-
-// TestSandboxExecContainerSocket_RenameBypassWorksWithoutWriteDeny is the
-// paired negative for section 3d. With the write deny removed, the rename
-// succeeds and the connect to the moved socket succeeds — which is the bypass
-// section 3d closes.
-func TestSandboxExecContainerSocket_RenameBypassWorksWithoutWriteDeny(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-	requireSandboxExec(t)
-	probe := buildConnectProbe(t)
-
-	sock, _ := podmanShapedSocket(t)
-	moved := "/private/tmp/prism-3066-mv-neg.sock"
-	t.Cleanup(func() { _ = os.Remove(moved) })
-
-	m := newProfileManager(t)
-	mutatedPath := withMutatedProfile(t, m, func(p string) string {
-		return strings.Replace(p, hostSocketWriteDenyBlock, "", 1)
-	})
-
-	if out, runErr := runProbe(t, mutatedPath, probe, "--move", sock, moved, moved); runErr != nil || !strings.Contains(out, connectedMarker) {
-		t.Errorf("the move+connect still failed with section 3d removed, so the positive test proves nothing.\nExit: %v\nOutput: %s\nProfile: %s", runErr, out, mutatedPath)
-	}
-}
-
 // nvimShapedSocket creates <$TMPDIR>/<rand>/nvim.<user>/<rand2>/nvim.<pid>.0
 // with a live listener and returns the socket path and the nvim.<user>
-// directory. The paths match the section-3d regex
-// `^/var/folders/.*/nvim\.[^/]+(/|$)`, and the socket is under $TMPDIR,
-// outside the section-17b allowlist, so a direct connect is denied by 17b -
-// the same location class as the real host nvim RPC socket. The nvim.<user>
-// component sits under a MkdirTemp parent, so the test never touches the real
-// host nvim directory at <$TMPDIR>/nvim.<user>. A plain listener stands in for
-// nvim: the deny is path-based, so it decides the result without a live nvim,
-// and the macos-15 CI job (which fails on any SKIP) has no nvim to depend on.
+// directory: the location class of the real host nvim RPC socket. The
+// nvim.<user> component sits under a MkdirTemp parent, so the test never
+// touches the real host nvim directory. A plain listener stands in for nvim:
+// the deny is path-based, and the macos-15 CI job (which fails on any SKIP)
+// has no nvim to depend on.
 func nvimShapedSocket(t *testing.T) (sock, nvimDir string) {
 	t.Helper()
 	// Short names keep <$TMPDIR>/<base>/nvim.u/r/nvim.1.0 under the Darwin
-	// sun_path limit (~104 bytes), the same reason fakeTmpdirLayout uses a
-	// short prefix.
+	// sun_path limit (~104 bytes).
 	base, err := os.MkdirTemp(os.TempDir(), "p3147n")
 	if err != nil {
 		t.Fatalf("mkdir temp base: %v", err)
@@ -418,74 +443,11 @@ func nvimShapedSocket(t *testing.T) (sock, nvimDir string) {
 	return sock, nvimDir
 }
 
-// TestSandboxExecContainerSocket_NvimDeniedUnderProductionProfile is #3147
-// item 1. Under the production profile, a direct connect to an nvim RPC
-// socket under $TMPDIR is denied (section 17b), and a sandboxed process
-// cannot move the socket file or its nvim.<user> directory into /private/tmp
-// (section 3d) to reach it at an allowed path.
-func TestSandboxExecContainerSocket_NvimDeniedUnderProductionProfile(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-	requireSandboxExec(t)
-	probe := buildConnectProbe(t)
-
-	sock, nvimDir := nvimShapedSocket(t)
-
-	m := newProfileManager(t)
-	prepared, _ := preparePositiveProfile(t, m)
-	profilePath := writeAugmentedPositiveProfile(t, prepared)
-
-	// A direct connect at the socket's own path under $TMPDIR is denied by 17b.
-	expectDenied(t, profilePath, probe, sock,
-		"section 17b did not deny a direct connect to the nvim RPC socket under $TMPDIR")
-
-	// Move the socket FILE out of its nvim dir into /private/tmp.
-	movedFile := "/private/tmp/prism-3147-nvim-mv-file.sock"
-	t.Cleanup(func() { _ = os.Remove(movedFile) })
-	if out, runErr := runProbe(t, profilePath, probe, "--move", sock, movedFile, movedFile); runErr == nil || strings.Contains(out, connectedMarker) {
-		t.Errorf("moved the nvim socket file and connected - section 3d did not deny the file rename.\nOutput: %s\nProfile: %s", out, profilePath)
-	}
-	// Move the nvim.<user> DIRECTORY (with the socket inside) into /private/tmp.
-	movedDir := "/private/tmp/prism-3147-nvim-mv-dir"
-	t.Cleanup(func() { _ = os.RemoveAll(movedDir) })
-	if out, runErr := runProbe(t, profilePath, probe, "--move", nvimDir, movedDir, filepath.Join(movedDir, "r", "nvim.1.0")); runErr == nil || strings.Contains(out, connectedMarker) {
-		t.Errorf("moved the nvim.<user> directory and connected - section 3d did not deny the directory rename.\nOutput: %s\nProfile: %s", out, profilePath)
-	}
-}
-
-// TestSandboxExecContainerSocket_NvimRenameWorksWithoutWriteDeny is the
-// paired negative for the #3147 nvim lines of section 3d. With those two
-// lines stripped, the nvim.<user> directory move succeeds and the connect to
-// the moved socket succeeds - the exact bypass the lines close. Only the
-// nvim lines are stripped, so the test isolates them from the rest of 3d.
-func TestSandboxExecContainerSocket_NvimRenameWorksWithoutWriteDeny(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-	requireSandboxExec(t)
-	probe := buildConnectProbe(t)
-
-	_, nvimDir := nvimShapedSocket(t)
-	moved := "/private/tmp/prism-3147-nvim-neg"
-	t.Cleanup(func() { _ = os.RemoveAll(moved) })
-
-	m := newProfileManager(t)
-	mutatedPath := withMutatedProfile(t, m, func(p string) string {
-		return strings.Replace(p, nvimWriteDenyLines, "", 1)
-	})
-
-	connectPath := filepath.Join(moved, "r", "nvim.1.0")
-	if out, runErr := runProbe(t, mutatedPath, probe, "--move", nvimDir, moved, connectPath); runErr != nil || !strings.Contains(out, connectedMarker) {
-		t.Errorf("the nvim directory move+connect still failed with the section-3d nvim lines removed, so the positive test proves nothing.\nExit: %v\nOutput: %s\nProfile: %s", runErr, out, mutatedPath)
-	}
-}
-
 // podmanTmpSocket creates /private/tmp/podman/<unique>-api.sock with a live
 // listener and returns the socket path. This models the podman machine API
-// socket location when podman runs with TMPDIR unset (#3147 item 2). The
-// socket name is unique, and the directory is removed only when this helper
-// created it, so the helper never clobbers a real podman runtime dir.
+// socket location when podman runs with TMPDIR unset. The socket name is
+// unique, and the directory is removed only when this helper created it, so
+// the helper never clobbers a real podman runtime dir.
 func podmanTmpSocket(t *testing.T) string {
 	t.Helper()
 	dir := "/private/tmp/podman"
@@ -501,57 +463,10 @@ func podmanTmpSocket(t *testing.T) string {
 	return sock
 }
 
-// TestSandboxExecContainerSocket_PodmanTmpDeniedUnderProductionProfile is
-// #3147 item 2. Under the production profile, a connect to the podman machine
-// API socket in /private/tmp/podman (the TMPDIR-unset location) fails.
-// Section 17b allows /private/tmp, so section 17c is what denies it.
-func TestSandboxExecContainerSocket_PodmanTmpDeniedUnderProductionProfile(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-	requireSandboxExec(t)
-	probe := buildConnectProbe(t)
-
-	podmanSock := podmanTmpSocket(t)
-
-	m := newProfileManager(t)
-	prepared, _ := preparePositiveProfile(t, m)
-	profilePath := writeAugmentedPositiveProfile(t, prepared)
-
-	expectDenied(t, profilePath, probe, podmanSock,
-		"section 17c did not re-deny the podman machine socket in /private/tmp/podman")
-}
-
-// TestSandboxExecContainerSocket_PodmanTmpConnectsWithoutReDeny is the paired
-// negative for the #3147 podman lines of section 17c. With those two lines
-// dropped, the connect to the /private/tmp/podman socket succeeds.
-func TestSandboxExecContainerSocket_PodmanTmpConnectsWithoutReDeny(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-	requireSandboxExec(t)
-	probe := buildConnectProbe(t)
-
-	podmanSock := podmanTmpSocket(t)
-
-	m := newProfileManager(t)
-	mutatedPath := withMutatedProfile(t, m, func(p string) string {
-		return strings.Replace(p, podmanReDenyLines, "", 1)
-	})
-
-	expectConnected(t, mutatedPath, probe, podmanSock,
-		"the connect still failed with the section-17c podman lines removed, so the positive test proves nothing")
-}
-
 // nvimTmpSocket creates /private/tmp/nvim.<unique>/<rand>/nvim.1.0 with a live
 // listener and returns the socket path. This models the nvim RPC socket
-// location when nvim runs with TMPDIR unset (#3147 item 1): nvim falls back
-// from $TMPDIR to /tmp, so the socket lands in /private/tmp, inside the
-// section-17b allowance. The nvim.<x> name is unique, so the helper never
-// collides with a real host nvim dir at /private/tmp/nvim.<user>; the section
-// 17c regex matches nvim.<anything>, so the suffix is free. A plain listener
-// stands in for nvim: the deny is path-based, and the macos-15 CI job (which
-// fails on any SKIP) has no nvim to depend on.
+// location when nvim runs with TMPDIR unset. The nvim.<x> name is unique, so
+// the helper never collides with a real host nvim dir.
 func nvimTmpSocket(t *testing.T) string {
 	t.Helper()
 	nvimDir := filepath.Join("/private/tmp", "nvim.p3147-"+strconv.Itoa(os.Getpid()))
@@ -565,226 +480,114 @@ func nvimTmpSocket(t *testing.T) string {
 	return sock
 }
 
-// TestSandboxExecContainerSocket_NvimTmpDeniedUnderProductionProfile is #3147
-// item 1, the TMPDIR-unset case. Under the production profile, a connect to an
-// nvim RPC socket in /private/tmp/nvim.<user> fails. Section 17b allows
-// /private/tmp, so section 17c is what denies it — the same shape as the
-// podman TMPDIR-unset case.
-func TestSandboxExecContainerSocket_NvimTmpDeniedUnderProductionProfile(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-	requireSandboxExec(t)
-	probe := buildConnectProbe(t)
-
-	nvimSock := nvimTmpSocket(t)
-
-	m := newProfileManager(t)
-	prepared, _ := preparePositiveProfile(t, m)
-	profilePath := writeAugmentedPositiveProfile(t, prepared)
-
-	expectDenied(t, profilePath, probe, nvimSock,
-		"section 17c did not re-deny the nvim RPC socket in the TMPDIR-unset /private/tmp location")
+// renameBypassCase is one move of a host socket, or of the dir that holds
+// it, into the per-session TMPDIR, where section 17b allows the connect.
+type renameBypassCase struct {
+	name    string
+	src     string // the node to move
+	dstName string // the new name in the per-session TMPDIR
+	connect string // the socket path below the moved node, "" for the node itself
 }
 
-// TestSandboxExecContainerSocket_NvimTmpConnectsWithoutReDeny is the paired
-// negative for the #3147 nvim lines of section 17c. With those two lines
-// dropped, the connect to the /private/tmp/nvim.<user> socket succeeds.
-func TestSandboxExecContainerSocket_NvimTmpConnectsWithoutReDeny(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-	requireSandboxExec(t)
-	probe := buildConnectProbe(t)
-
-	nvimSock := nvimTmpSocket(t)
-
-	m := newProfileManager(t)
-	mutatedPath := withMutatedProfile(t, m, func(p string) string {
-		return strings.Replace(p, nvimReDenyTail, nvimReDenyTailStripped, 1)
-	})
-
-	expectConnected(t, mutatedPath, probe, nvimSock,
-		"the connect still failed with the section-17c nvim lines removed, so the positive test proves nothing")
-}
-
-// escapeReDenyBlock is the section-17c clause of generateProfile
-// (hostEscapeSocketReDeny, unexported). withMutatedProfile fails when the
-// text is not in the profile, so a copy that drifts from the generator
-// fails the negative test.
-const escapeReDenyBlock = "(deny network-outbound\n" +
-	"  (regex #\"^/private/tmp/tmux-[0-9]+/\")\n" +
-	"  (regex #\"^/tmp/tmux-[0-9]+/\")\n" +
-	"  (regex #\"^/private/tmp/com\\.apple\\.launchd\\.\")\n" +
-	"  (regex #\"^/tmp/com\\.apple\\.launchd\\.\")\n" +
-	"  (regex #\"^/private/tmp/bobko\\.aerospace-\")\n" +
-	"  (regex #\"^/tmp/bobko\\.aerospace-\")\n" +
-	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +
-	"  (regex #\"^/tmp/dotnet-diagnostic-\")\n" +
-	"  (regex #\"^/private/tmp/podman/\")\n" +
-	"  (regex #\"^/tmp/podman/\")\n" +
-	"  (regex #\"^/private/tmp/nvim\\.[^/]+/\")\n" +
-	"  (regex #\"^/tmp/nvim\\.[^/]+/\"))\n"
-
-// podmanReDenyLines are the #3147 podman lines of section 17c. They are a
-// middle pair (the nvim lines follow them), so the negative test drops them
-// with a plain removal and the connect to a /private/tmp/podman socket then
-// succeeds.
-const podmanReDenyLines = "  (regex #\"^/private/tmp/podman/\")\n" +
-	"  (regex #\"^/tmp/podman/\")\n"
-
-// nvimReDenyTail and nvimReDenyTailStripped bracket the #3147 nvim lines of
-// section 17c, which are the last pair in the clause. The negative test
-// replaces the first with the second to drop the two nvim connect denies and
-// re-close the clause, so the connect to a /private/tmp/nvim.<user> socket
-// then succeeds.
-const nvimReDenyTail = "  (regex #\"^/tmp/podman/\")\n" +
-	"  (regex #\"^/private/tmp/nvim\\.[^/]+/\")\n" +
-	"  (regex #\"^/tmp/nvim\\.[^/]+/\"))\n"
-const nvimReDenyTailStripped = "  (regex #\"^/tmp/podman/\"))\n"
-
-// hostSocketWriteDenyBlock is the section-3d clause of generateProfile
-// (hostSocketWriteDeny, unexported). Kept in sync by the same
-// withMutatedProfile no-op guard as escapeReDenyBlock.
-const hostSocketWriteDenyBlock = "(deny file-write*\n" +
-	"  (regex #\"^/var/folders/.*/podman(/|$)\")\n" +
-	"  (regex #\"^/private/var/folders/.*/podman(/|$)\")\n" +
-	"  (regex #\"^/private/tmp/podman(/|$)\")\n" +
-	"  (regex #\"^/tmp/podman(/|$)\")\n" +
-	"  (regex #\"^/var/folders/.*/nvim\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/private/var/folders/.*/nvim\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/private/tmp/nvim\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/tmp/nvim\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/private/tmp/tmux-[0-9]+(/|$)\")\n" +
-	"  (regex #\"^/tmp/tmux-[0-9]+(/|$)\")\n" +
-	"  (regex #\"^/private/tmp/com\\.apple\\.launchd\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/tmp/com\\.apple\\.launchd\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/private/tmp/bobko\\.aerospace-\")\n" +
-	"  (regex #\"^/tmp/bobko\\.aerospace-\")\n" +
-	"  (regex #\"^/private/tmp/dotnet-diagnostic-\")\n" +
-	"  (regex #\"^/tmp/dotnet-diagnostic-\"))\n"
-
-// nvimWriteDenyLines are the two #3147 nvim lines of section 3d. The negative
-// test strips them so the move of the nvim.<user> directory into /private/tmp
-// then succeeds.
-const nvimWriteDenyLines = "  (regex #\"^/var/folders/.*/nvim\\.[^/]+(/|$)\")\n" +
-	"  (regex #\"^/private/var/folders/.*/nvim\\.[^/]+(/|$)\")\n"
-
-// fakeTmpdirLayout builds base/{T, wt} under the real $TMPDIR, with a podman
-// socket under T, points $TMPDIR at base/T, and returns a Manager whose
-// worktree is base/wt — OUTSIDE base/T. The generated profile then grants
-// section 3b over base/T (so the node is writable), denies section 3e on the
-// base/T node, and — because the worktree is base/wt, not under base/T —
-// section 21b lists base/wt and its ancestors but NOT base/T. So section 3e
-// is the only rule that protects the base/T node, which is the production
-// situation (a worktree under ~/code, a $TMPDIR under /var/folders). This
-// never touches the real $TMPDIR. Returns the manager and the base/T path.
-func fakeTmpdirLayout(t *testing.T) (*container.Manager, string) {
+// renameBypassCases builds a host socket in each shared temp tree and
+// returns the moves that would reach it from the per-session TMPDIR.
+func renameBypassCases(t *testing.T) []renameBypassCase {
 	t.Helper()
-	// A short prefix under the real $TMPDIR, NOT t.TempDir(): the long test
-	// name would push the socket path past the Darwin sun_path limit (~104
-	// bytes). The base stays under /var/folders so the fake $TMPDIR node is
-	// connect-denied (section 17b allowlists /tmp and /private/tmp, not
-	// /var/folders), which models the real $TMPDIR.
-	base, err := os.MkdirTemp(os.TempDir(), "r")
-	if err != nil {
-		t.Fatalf("mkdir short base under $TMPDIR: %v", err)
+	podmanSock, podmanDir := podmanShapedSocket(t)
+	_, nvimDir := nvimShapedSocket(t)
+	tmpSock := privateTmpSocket(t)
+	tmuxSock := socketInNewDir(t, "/private/tmp", "tmux-")
+	return []renameBypassCase{
+		{"podman socket file in $TMPDIR", podmanSock, "mv-podman.sock", ""},
+		{"podman dir in $TMPDIR", podmanDir, "mv-podman", "api.sock"},
+		{"nvim dir in $TMPDIR", nvimDir, "mv-nvim", filepath.Join("r", "nvim.1.0")},
+		{"socket file in /private/tmp", tmpSock, "mv-tmp.sock", ""},
+		{"tmux dir in /private/tmp", filepath.Dir(tmuxSock), "mv-tmux", "a.sock"},
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(base) })
-	fakeTmp := filepath.Join(base, "T")
-	if err := os.MkdirAll(filepath.Join(fakeTmp, "podman"), 0o700); err != nil {
-		t.Fatalf("mkdir fake $TMPDIR podman dir: %v", err)
-	}
-	wt := filepath.Join(base, "wt")
-	if err := os.MkdirAll(wt, 0o700); err != nil {
-		t.Fatalf("mkdir worktree: %v", err)
-	}
-	startUnixListener(t, filepath.Join(fakeTmp, "podman", "api.sock"))
-
-	// os.TempDir() reads $TMPDIR, so the generator treats base/T as $TMPDIR.
-	t.Setenv("TMPDIR", fakeTmp)
-	t.Setenv("XDG_STATE_HOME", filepath.Join(base, "state"))
-
-	m := container.New(container.Config{
-		SessionName:  "integ-sandbox-exec-ancestor-test",
-		InstanceID:   "integ-sbx-ancestor-" + strings.ReplaceAll(t.Name(), "/", "-"),
-		Worktree:     wt,
-		BareRoot:     base,
-		GitUserName:  "test-user",
-		GitUserEmail: "test@example.com",
-	})
-	return m, fakeTmp
 }
 
-// TestSandboxExecContainerSocket_TmpdirNodeRenameDenied is the round-7
-// regression test. Under the production profile, the agent cannot rename the
-// $TMPDIR node to a connect-allowed path. The worktree is outside $TMPDIR, so
-// section 21b does not list the $TMPDIR node by chance — section 3e is the
-// only rule that denies the rename.
-func TestSandboxExecContainerSocket_TmpdirNodeRenameDenied(t *testing.T) {
+func (c renameBypassCase) probeArgs(tmpDir string) []string {
+	dst := filepath.Join(tmpDir, c.dstName)
+	target := dst
+	if c.connect != "" {
+		target = filepath.Join(dst, c.connect)
+	}
+	return []string{"--move", c.src, dst, target}
+}
+
+// TestSandboxExecContainerSocket_RenameBypassDeniedUnderProductionProfile:
+// under the production profile, the session cannot move a host socket, or
+// the dir that holds it, from a shared temp tree into its per-session
+// TMPDIR, where a connect is allowed. It has no write grant on the source,
+// so the unlink of the source fails.
+func TestSandboxExecContainerSocket_RenameBypassDeniedUnderProductionProfile(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
 	probe := buildConnectProbe(t)
 
-	m, fakeTmp := fakeTmpdirLayout(t)
+	cases := renameBypassCases(t)
+
+	m := newProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
-	profilePath := writeAugmentedPositiveProfile(t, prepared)
+	profilePath := writeProbePositiveProfile(t, prepared)
+	tmpDir := sessionTmpDirOf(t, m)
 
-	// A direct connect to the socket under the $TMPDIR node is denied by 17b.
-	expectDenied(t, profilePath, probe, filepath.Join(fakeTmp, "podman", "api.sock"),
-		"section 17b did not deny a connect to a socket under the $TMPDIR node")
-
-	// Renaming the $TMPDIR node into /private/tmp must fail (section 3e).
-	moved := "/private/tmp/prism-3066-tmpdir-moved"
-	t.Cleanup(func() { _ = os.RemoveAll(moved) })
-	connectPath := filepath.Join(moved, "podman", "api.sock")
-	if out, runErr := runProbe(t, profilePath, probe, "--move", fakeTmp, moved, connectPath); runErr == nil || strings.Contains(out, connectedMarker) {
-		t.Errorf("renamed the $TMPDIR node and connected — section 3e did not deny the ancestor rename.\nOutput: %s\nProfile: %s", out, profilePath)
+	for _, c := range cases {
+		out, runErr := runProbe(t, profilePath, probe, c.probeArgs(tmpDir)...)
+		if runErr == nil || strings.Contains(out, connectedMarker) {
+			t.Errorf("%s: moved into the per-session TMPDIR and connected — the shared temp tree is writable.\nOutput: %s\nProfile: %s", c.name, out, profilePath)
+		}
+		if !strings.Contains(out, "RENAME-DENIED") {
+			t.Errorf("%s: the move was not the step that failed.\nExit: %v\nOutput: %s", c.name, runErr, out)
+		}
 	}
 }
 
-// TestSandboxExecContainerSocket_TmpdirNodeRenameWorksWithoutDeny is the
-// paired negative. With the section-3e clause stripped, the $TMPDIR-node
-// rename succeeds and the connect to the moved socket succeeds — the exact
-// round-7 bypass that section 3e closes.
-func TestSandboxExecContainerSocket_TmpdirNodeRenameWorksWithoutDeny(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
+// sharedTmpWriteGrant is the write grant on the shared temp trees that the
+// profile does not have. The paired negatives append it.
+func sharedTmpWriteGrant() string {
+	g := "(allow file-read* file-write*\n  (subpath \"/private/tmp\")\n  (subpath \"/tmp\")"
+	for _, p := range []string{os.TempDir(), resolvedTempDir()} {
+		g += "\n  (subpath " + sbplQuoteForTest(filepath.Clean(p)) + ")"
 	}
-	requireSandboxExec(t)
-	probe := buildConnectProbe(t)
-
-	m, fakeTmp := fakeTmpdirLayout(t)
-	moved := "/private/tmp/prism-3066-tmpdir-moved-neg"
-	t.Cleanup(func() { _ = os.RemoveAll(moved) })
-
-	// Strip the section-3e clause only. It is the first
-	// (deny file-write-unlink file-write-create ...) in the profile, opening
-	// with the /private/tmp literal; section 21b's later clause opens with
-	// the worktree literal instead.
-	mutatedPath := withMutatedProfile(t, m, stripSection3e)
-
-	connectPath := filepath.Join(moved, "podman", "api.sock")
-	if out, runErr := runProbe(t, mutatedPath, probe, "--move", fakeTmp, moved, connectPath); runErr != nil || !strings.Contains(out, connectedMarker) {
-		t.Errorf("the $TMPDIR-node rename+connect still failed with section 3e removed, so the positive test proves nothing.\nExit: %v\nOutput: %s\nProfile: %s", runErr, out, mutatedPath)
-	}
+	return g + ")\n"
 }
 
-// stripSection3e removes the section-3e clause from a profile. That clause is
-// the first (deny file-write-unlink file-write-create ...) and opens with the
-// /private/tmp literal. Section 21b's clause of the same verb opens with the
-// worktree literal, so the marker is unambiguous.
-func stripSection3e(p string) string {
-	const marker = "(deny file-write-unlink file-write-create\n  (literal \"/private/tmp\")"
-	start := strings.Index(p, marker)
-	if start < 0 {
-		return p // no change — withMutatedProfile fails loudly on a no-op
-	}
-	end := strings.Index(p[start:], "))\n")
-	if end < 0 {
+// resolvedTempDir returns os.TempDir() with its symlinks resolved, or
+// os.TempDir() when that fails.
+func resolvedTempDir() string {
+	if p, err := filepath.EvalSymlinks(os.TempDir()); err == nil {
 		return p
 	}
-	return p[:start] + p[start+end+len("))\n"):]
+	return os.TempDir()
+}
+
+// TestSandboxExecContainerSocket_RenameBypassWorksWithSharedTmpWrite is the
+// paired negative: with a write grant on /private/tmp, /tmp, and the user
+// $TMPDIR added, each move succeeds and the connect to the moved socket
+// succeeds. This proves that the missing write grant is what stops the
+// bypass.
+func TestSandboxExecContainerSocket_RenameBypassWorksWithSharedTmpWrite(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	probe := buildConnectProbe(t)
+
+	cases := renameBypassCases(t)
+
+	m := newProfileManager(t)
+	mutatedPath := withMutatedProbeProfile(t, m, func(p string) string {
+		return p + "\n" + sharedTmpWriteGrant()
+	})
+	tmpDir := sessionTmpDirOf(t, m)
+
+	for _, c := range cases {
+		out, runErr := runProbe(t, mutatedPath, probe, c.probeArgs(tmpDir)...)
+		if runErr != nil || !strings.Contains(out, connectedMarker) {
+			t.Errorf("%s: the move+connect still failed with a shared-tmp write grant, so the positive test proves nothing.\nExit: %v\nOutput: %s\nProfile: %s", c.name, runErr, out, mutatedPath)
+		}
+	}
 }

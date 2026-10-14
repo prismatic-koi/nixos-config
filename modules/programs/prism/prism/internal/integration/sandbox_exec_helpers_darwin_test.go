@@ -253,13 +253,22 @@ func newProfileManagerWithBareRootAndPi(t *testing.T) *container.Manager {
 // These additions are testing infrastructure only. They are NOT added to the
 // production profile. They do not affect whether the rule under test is
 // active — that is determined solely by the rule (or its absence) in the
-// generated profile.
+// generated profile. The /private/tmp extra also covers every per-session
+// TMPDIR (/private/tmp/prism-<hash>), so a test of a /tmp or TMPDIR rule
+// uses augmentProfileForProbe instead.
 func augmentProfileForTest(profile string) string {
-	extras := "\n" +
-		";; --- test-harness extras (not in production profile) ---\n" +
-		"(allow file-read* (literal \"/\") (subpath \"/dev\"))\n" +
+	return augmentProfileForProbe(profile) +
 		"(allow file-read* file-write* (subpath \"/private/tmp\"))\n"
-	return profile + extras
+}
+
+// augmentProfileForProbe appends only the extras that a static Go probe
+// needs to start: the root inode and /dev. It adds no /tmp grant, so the
+// /tmp, /private/tmp, and per-session TMPDIR rules of the production profile
+// decide every file and socket operation of the probe.
+func augmentProfileForProbe(profile string) string {
+	return profile + "\n" +
+		";; --- test-harness extras (not in production profile) ---\n" +
+		"(allow file-read* (literal \"/\") (subpath \"/dev\"))\n"
 }
 
 // sbplQuoteForTest is a test-local copy of the SBPL quoter from
@@ -305,6 +314,10 @@ func preparePositiveProfile(t *testing.T, m *container.Manager) (preparedProfile
 		if sessionDir, dirErr := m.SessionWorkDir(); dirErr == nil {
 			_ = os.RemoveAll(sessionDir)
 		}
+		// It also creates the per-session TMPDIR under /tmp.
+		if tmpDir, dirErr := m.SessionTmpDir(); dirErr == nil {
+			_ = os.RemoveAll(tmpDir)
+		}
 		if len(args) >= 3 {
 			_ = os.Remove(args[2])
 		}
@@ -340,6 +353,36 @@ func writeAugmentedPositiveProfile(t *testing.T, p preparedProfile) string {
 	}
 	t.Cleanup(func() { _ = os.Remove(testProfilePath) })
 	return testProfilePath
+}
+
+// writeProbePositiveProfile is writeAugmentedPositiveProfile with the
+// probe extras (augmentProfileForProbe) in place of the test-harness extras.
+func writeProbePositiveProfile(t *testing.T, p preparedProfile) string {
+	t.Helper()
+	testProfilePath := p.path + ".integ-probe"
+	if err := os.WriteFile(testProfilePath, []byte(augmentProfileForProbe(p.content)), 0o600); err != nil {
+		t.Fatalf("write probe profile: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(testProfilePath) })
+	return testProfilePath
+}
+
+// withMutatedProbeProfile is withMutatedProfile with the probe extras
+// (augmentProfileForProbe) in place of the test-harness extras.
+func withMutatedProbeProfile(t *testing.T, m *container.Manager, mutate func(string) string) string {
+	t.Helper()
+	prepared, _ := preparePositiveProfile(t, m)
+	mutated := mutate(prepared.content)
+	if mutated == prepared.content {
+		t.Fatalf("withMutatedProbeProfile: mutate returned identical content — the substitution did not match anything in the profile.\nProfile:\n%s",
+			prepared.content)
+	}
+	mutatedPath := prepared.path + ".integ-probe-mutated"
+	if err := os.WriteFile(mutatedPath, []byte(augmentProfileForProbe(mutated)), 0o600); err != nil {
+		t.Fatalf("write mutated probe profile: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(mutatedPath) })
+	return mutatedPath
 }
 
 // withMutatedProfile generates the SBPL profile via

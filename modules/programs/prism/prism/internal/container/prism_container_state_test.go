@@ -124,10 +124,10 @@ func TestGenerateProfile_WorktreeEntryDenyFollowsEveryAllow(t *testing.T) {
 	m := newAuditLocationTestManager(t)
 	profile := generateProfile(m)
 
-	// Anchor on the worktree literal: section 3e also opens with
+	// Anchor on the worktree literal: section 21e also opens with
 	// (deny file-write-unlink file-write-create ...), but its first literal is
-	// /private/tmp, while the section-21b worktree deny's first literal is the
-	// worktree itself.
+	// the per-session TMPDIR, while the section-21b worktree deny's first
+	// literal is the worktree itself.
 	denyAt := strings.Index(profile, "(deny file-write-unlink file-write-create\n  (literal "+quoteSBPL(m.cfg.Worktree)+")")
 	if denyAt < 0 {
 		t.Fatalf("profile has no worktree path deny.\nprofile:\n%s", profile)
