@@ -380,6 +380,8 @@ func resolveService(ctx context.Context, r Runner, c Caller, handle string) (psE
 			other = append(other, e)
 		}
 	}
+	// Test the value, not the presence of the key: prism sets an empty
+	// LabelService on every container that start did not create.
 	switch {
 	case len(own) == 1 && own[0].Labels[LabelService] == "":
 		return psEntry{}, fmt.Sprintf("container %q was not created by prism container start: exec, logs, and stop act only on a service container", handle), nil

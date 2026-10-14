@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
 	"github.com/prismatic-koi/prism/internal/prismcontainer/prismcontainertest"
 )
@@ -127,8 +128,14 @@ func TestStart_ArgvFixedOptions(t *testing.T) {
 		}
 	}
 	labels := optionValue(opts, "--label")
-	if len(labels) != 2 || labels[0] != prismcontainer.LabelInstanceID+"="+testInstanceID || !strings.HasPrefix(labels[1], prismcontainer.LabelService+"=") {
-		t.Errorf("labels = %q", labels)
+	handle := onlyContainer(t, f).Labels[prismcontainer.LabelService]
+	wantLabels := []string{
+		prismcontainer.LabelInstanceID + "=" + testInstanceID,
+		prismcontainer.LabelService + "=" + handle,
+		prismcontainer.LabelBuild + "=",
+	}
+	if handle == "" || !slices.Equal(labels, wantLabels) {
+		t.Errorf("labels = %q, want %q with a handle", labels, wantLabels)
 	}
 	if got := args[img+1:]; !slices.Equal(got, []string{"--privileged", "--cap-add=ALL", "-p", "0.0.0.0:1:1"}) {
 		t.Errorf("command = %q", got)
@@ -302,6 +309,8 @@ func TestServiceOps_RefuseOtherContainers(t *testing.T) {
 	runCtr := prismcontainertest.Container{ID: "fedcba9876543210fedc", Name: "prism-mine-run", State: "running",
 		Labels: map[string]string{prismcontainer.LabelInstanceID: testInstanceID}}
 	host := prismcontainertest.Container{ID: "aaaaaaaaaaaabbbbbbbb", Name: "postgres", State: "running"}
+	emptySvc := prismcontainertest.Container{ID: "abcdef0123456789abcd", Name: "prism-mine-empty-svc", State: "running",
+		Labels: map[string]string{prismcontainer.LabelInstanceID: testInstanceID, prismcontainer.LabelService: ""}}
 	targets := []target{
 		{"other session handle", "cafef00d", "does not carry the label of this session"},
 		{"other session ID", other.ID, "does not carry the label of this session"},
@@ -311,6 +320,8 @@ func TestServiceOps_RefuseOtherContainers(t *testing.T) {
 		{"unlabelled container ID", host.ID, "does not exist in this session"},
 		{"run container name", runCtr.Name, "was not created by prism container start"},
 		{"run container ID", runCtr.ID, "was not created by prism container start"},
+		{"empty service label name", emptySvc.Name, "was not created by prism container start"},
+		{"empty service label ID", emptySvc.ID, "was not created by prism container start"},
 		{"short ID prefix", other.ID[:6], "does not exist in this session"},
 	}
 	ops := map[string]func(prismcontainer.Deps, prismcontainer.Caller, string) prismcontainer.RunResult{
@@ -332,6 +343,7 @@ func TestServiceOps_RefuseOtherContainers(t *testing.T) {
 				f.Add(other)
 				f.Add(runCtr)
 				f.Add(host)
+				f.Add(emptySvc)
 				res := op(deps(f), c, tg.handle)
 				if res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(res.Message, tg.want) {
 					t.Errorf("result = %+v, want a refusal with %q", res, tg.want)
@@ -341,14 +353,94 @@ func TestServiceOps_RefuseOtherContainers(t *testing.T) {
 						t.Errorf("podman %s ran: %q", sub, calls)
 					}
 				}
-				if n := len(f.Containers()); n != 3 {
-					t.Errorf("containers = %d, want 3 unchanged", n)
+				if n := len(f.Containers()); n != 4 {
+					t.Errorf("containers = %d, want 4 unchanged", n)
 				}
 				lines := readAudit(t, testInstanceID)
 				if last := lines[len(lines)-1]; last["decision"] != "refused" || last["command"] != opName {
 					t.Errorf("audit line = %v", last)
 				}
 			})
+		}
+	}
+}
+
+// TestServiceOps_RefuseImageLabelledRunContainer: podman copies each image
+// label to the container, and the agent controls the labels of an image. A
+// run container of an image that carries the labels of prism is still a
+// run container of the caller. exec, logs, and stop refuse it.
+func TestServiceOps_RefuseImageLabelledRunContainer(t *testing.T) {
+	c := newCaller(t)
+	f := &prismcontainertest.Fake{ImagePresent: true}
+	const forgedHandle = "cafef00d"
+	f.AddImage(prismcontainertest.Image{Names: []string{"docker.io/library/forged"}, Labels: map[string]string{
+		prismcontainer.LabelInstanceID: otherInstanceID,
+		prismcontainer.LabelService:    forgedHandle,
+		prismcontainer.LabelBuild:      "prism-build-" + container.InstanceTokenForID(testInstanceID) + "-0000beef",
+	}})
+
+	// The checks run while the run container exists. OnRun runs on another
+	// goroutine, so it only records, and the test goroutine asserts.
+	type outcome struct {
+		op, target string
+		res        prismcontainer.RunResult
+	}
+	var (
+		live     []prismcontainertest.Container
+		list     prismcontainer.ListResult
+		outcomes []outcome
+		calls    [][]string
+	)
+	f.OnRun = func(context.Context, io.Writer, io.Writer, []string) (int, error) {
+		live = f.Containers()
+		if len(live) != 1 {
+			return 0, nil
+		}
+		list = prismcontainer.List(context.Background(), deps(f), c)
+		for _, target := range []string{live[0].Name, live[0].ID, forgedHandle} {
+			outcomes = append(outcomes,
+				outcome{"exec", target, prismcontainer.Exec(context.Background(), deps(f), c, prismcontainer.ExecRequest{Handle: target, Command: []string{"id"}})},
+				outcome{"logs", target, prismcontainer.Logs(context.Background(), deps(f), c, prismcontainer.HandleRequest{Handle: target})},
+				outcome{"stop", target, prismcontainer.Stop(context.Background(), deps(f), c, prismcontainer.HandleRequest{Handle: target})},
+			)
+		}
+		calls = f.Calls()
+		return 0, nil
+	}
+	if res := prismcontainer.Run(context.Background(), deps(f), c, prismcontainer.RunRequest{Image: "forged", Command: []string{"sleep", "1"}}); res.ExitCode != 0 {
+		t.Fatalf("run = %+v", res)
+	}
+	if len(live) != 1 {
+		t.Fatalf("containers during the run = %+v, want one", live)
+	}
+	ctr := live[0]
+	for key, want := range map[string]string{
+		prismcontainer.LabelInstanceID: testInstanceID,
+		prismcontainer.LabelService:    "",
+		prismcontainer.LabelBuild:      "",
+	} {
+		if got, ok := ctr.Labels[key]; !ok || got != want {
+			t.Errorf("label %s = %q (set %v), want %q from the podman command line", key, got, ok, want)
+		}
+	}
+	if len(list.Containers) != 1 || list.Containers[0].Kind != prismcontainer.KindRun || list.Containers[0].Handle != ctr.Name {
+		t.Errorf("list = %+v, want the container as kind run", list)
+	}
+	for _, o := range outcomes {
+		want := "was not created by prism container start"
+		if o.target == forgedHandle {
+			want = "does not exist in this session"
+		}
+		if o.res.ExitCode != prismcontainer.ExitRefused || !strings.Contains(o.res.Message, want) {
+			t.Errorf("%s %s = %+v, want a refusal with %q", o.op, o.target, o.res, want)
+		}
+	}
+	if len(outcomes) != 9 {
+		t.Errorf("outcomes = %d, want 9", len(outcomes))
+	}
+	for _, call := range calls {
+		if call[0] == "exec" || call[0] == "logs" || call[0] == "rm" {
+			t.Errorf("podman %q ran against the run container", call)
 		}
 	}
 }

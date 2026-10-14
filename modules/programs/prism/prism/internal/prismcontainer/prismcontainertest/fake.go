@@ -507,6 +507,19 @@ func (f *Fake) run(ctx context.Context, stdout, stderr io.Writer, args []string)
 			c.Ports = append(c.Ports, Port{HostIP: parts[0], ContainerPort: cport, HostPort: 40000 + f.nextID})
 		}
 	}
+	// podman copies each label of the image to the container, unless a
+	// --label option sets the same key.
+	for _, img := range f.images {
+		if !slices.Contains(img.Names, c.Image) {
+			continue
+		}
+		for k, v := range img.Labels {
+			if _, set := c.Labels[k]; !set {
+				c.Labels[k] = v
+			}
+		}
+		break
+	}
 	f.nextID++
 	c.ID = fmt.Sprintf("fake%04d", f.nextID)
 	f.containers = append(f.containers, c)
@@ -670,7 +683,7 @@ func MaskRunArgs(args []string) []string {
 			out[i+1] = "<name>"
 		case out[i] == "--cidfile":
 			out[i+1] = "<cidfile>"
-		case out[i] == "--label" && strings.HasPrefix(out[i+1], prismcontainer.LabelService+"="):
+		case out[i] == "--label" && strings.HasPrefix(out[i+1], prismcontainer.LabelService+"=") && out[i+1] != prismcontainer.LabelService+"=":
 			out[i+1] = prismcontainer.LabelService + "=<handle>"
 		}
 	}

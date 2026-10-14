@@ -46,9 +46,10 @@ func TestTailBuffer(t *testing.T) {
 	}
 }
 
-// TestAnchorBuildName_ForgedLabels: an image LABEL reaches the labels of
-// each container of the image, so only a container that prism named after
-// the label, with a suffix of newBuildSuffix, is an anchor. A forged label
+// TestAnchorBuildName_ForgedLabels: a container that prism did not label
+// with identityLabels can carry any prism.build label, so only a container
+// that prism named after the label, with a suffix of newBuildSuffix, is an
+// anchor. A forged label
 // must not reach the path of a build marker.
 func TestAnchorBuildName_ForgedLabels(t *testing.T) {
 	const id = "0f0e0d0c-0b0a-4908-8706-050403020100"

@@ -65,9 +65,11 @@ var buildSuffixPattern = regexp.MustCompile(`^[0-9a-f]{8}$`)
 // anchorBuildName returns the build name (buildName) of an anchor
 // container, or "" when e is not an anchor.
 //
-// The agent controls the labels of an image (LABEL), and podman copies
-// them to each container of the image. Thus the prism.build label alone
-// does not make an anchor. Prism sets the name of every container, and it
+// Prism sets the prism.build label of each container that it creates
+// (identityLabels), so an image LABEL cannot set it there. The label alone
+// still does not make an anchor, because a container that prism did not
+// label in this way can carry it, for example a container that an earlier
+// prism version started. Prism sets the name of every container, and it
 // gives an anchor its unit name, so the name must equal the label. The
 // suffix must have the form of newBuildSuffix, because the build name
 // becomes the path of a build marker.

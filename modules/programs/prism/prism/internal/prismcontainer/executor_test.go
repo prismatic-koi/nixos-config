@@ -545,6 +545,7 @@ func TestAnchorRunArgs(t *testing.T) {
 		"run", "--detach", "--rm",
 		"--name", unit,
 		"--label", "prism.instance-id=" + id,
+		"--label", "prism.service=",
 		"--label", "prism.build=" + unit,
 		"--memory", "4g", "--memory-swap", "4g", "--cpus", "2", "--pids-limit", "1024",
 		"--security-opt", "no-new-privileges", "--cap-drop", "all", "--read-only",

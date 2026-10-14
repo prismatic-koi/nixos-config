@@ -41,7 +41,7 @@ func anchorExecutor(f *prismcontainertest.Fake) prismcontainer.AnchorExecutor {
 // isAnchorRun reports whether a podman argument vector starts an anchor.
 func isAnchorRun(args []string) bool {
 	return len(args) > 0 && args[0] == "run" && slices.ContainsFunc(optionValue(args, "--label"), func(l string) bool {
-		return strings.HasPrefix(l, prismcontainer.LabelBuild+"=")
+		return strings.HasPrefix(l, prismcontainer.LabelBuild+"=") && l != prismcontainer.LabelBuild+"="
 	})
 }
 
@@ -1104,7 +1104,7 @@ func forgedAnchorLabel(dir string) string {
 }
 
 // TestAnchorExecutor_StopBuildsIgnoresForgedLabel: a service container
-// whose image has a prism.build label is not an anchor. StopBuilds does
+// with a forged prism.build label is not an anchor. StopBuilds does
 // not pause it, does not remove it, and does not open the path in its
 // label. The agent can put a FIFO there, and an open of the FIFO waits for
 // a writer.
