@@ -86,6 +86,18 @@ The test suite under `modules/programs/prism/prism/internal/sidecar/` is fully i
 
 If you add a new test that exercises notification delivery, use `sidecartest.NewIsolated` — do not construct a `sidecar.Config` that touches the host environment.
 
+## Host-mode isolation (issue #3146)
+
+In a `host`-mode session, `go test ./...` inherits the real `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `TMPDIR`, and a `TMUX` of the user. A pane of a test tmux server runs the zsh of the user, and `~/.zshenv` sources `hm-session-vars.sh`, which sets the XDG paths back to the real ones. Before #3146 this let a test-built `prism switch` and `prism cleanup` act on the real database and end the real `obsidian` session. Obey these rules:
+
+- If the code under test in a package can reach prism state or config, call `stateguardtest.IsolateSuite()` in the `TestMain` of the package, and add `TestSuiteStateIsolation_XDGInsideSuiteDir`.
+- If a test runs a real prism binary, get it from `isolatedPrismBinary` (`cmd/prism_binary_test.go`). The helper gives the test its own `HOME`, XDG dirs, and tmux socket dir, and builds the binary with `stateguard.Root`. The binary then refuses a path outside the test root. The cleanup stops each process of the binary by its path.
+- Do not read config in a package `init`. Go runs package init before `TestMain`. Use `config.LoadForInit`.
+- If a test attaches a tmux client with `script(1)`, call `tmuxtest.HoldStdinOpen`. With stdin at end-of-file, `script` sends `^D` to the pane, and the session closes.
+- If a test binds a Unix socket, put it under `stateguardtest.ShortTempDir`. A `/var/folders` path overflows `sun_path` (104 bytes on Darwin).
+
+To prove a change, run the suite under an outer `sandbox-exec` profile that allows everything except the real `~/.local/state/prism`, `~/.config/prism`, and the default tmux socket, with `(with send-signal SIGKILL)` on the deny. A package that touches one of them is killed and fails. Do not rely on the kernel violation log for this: macOS drops repeat reports.
+
 ## test-database convention — open with `sidecartest.OpenDB` (issue #2598)
 
 Open a test database with `sidecartest.OpenDB(t, path)`. Do not call `db.Open` directly from a test.
