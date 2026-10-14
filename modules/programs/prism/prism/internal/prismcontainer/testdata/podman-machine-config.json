@@ -1,71 +1,85 @@
 {
-  "ConfigPath": {
-    "Path": "/Users/u/.config/containers/podman/machine/applehv/podman-machine-default.json"
-  },
-  "Created": "2026-10-01T09:00:00.000000+13:00",
+  "Created": "2026-01-01T09:00:00.000000+13:00",
   "GvProxy": {
-    "GvProxy": "/opt/podman/bin/gvproxy",
-    "HostSocks": null,
-    "RemoteSocket": {
-      "Path": "/var/folders/xx/T/podman/podman-machine-default-api.sock"
-    }
+    "Debug": false,
+    "MTU": 0,
+    "LogFile": "",
+    "PidFile": "",
+    "SSHPort": 0
   },
   "HostUser": {
-    "Modified": false,
     "Rootful": false,
-    "UID": 501
+    "UID": 501,
+    "HostUserModified": false
   },
-  "LastUp": "2026-10-10T08:00:00.000000+13:00",
+  "LastUp": "0001-01-01T00:00:00Z",
   "Mounts": [
     {
+      "OriginalInput": "",
       "ReadOnly": false,
       "Source": "/Users",
-      "Tag": "a2a0ee2c717462feb1de2f5afd59de5f",
+      "Tag": "tag-users",
       "Target": "/Users",
       "Type": "virtiofs",
-      "VSockNumber": null,
-      "OriginalInput": "/Users:/Users"
+      "VSockNumber": null
     },
     {
+      "OriginalInput": "",
       "ReadOnly": false,
       "Source": "/private",
-      "Tag": "71708eb255bc230cd7c91dd26f7667a7",
+      "Tag": "tag-private",
       "Target": "/private",
       "Type": "virtiofs",
-      "VSockNumber": null,
-      "OriginalInput": "/private:/private"
+      "VSockNumber": null
     },
     {
+      "OriginalInput": "",
       "ReadOnly": false,
       "Source": "/var/folders",
-      "Tag": "a0bb3a2c8b0b02ba5958b0576f0d6530",
+      "Tag": "tag-var-folders",
       "Target": "/var/folders",
       "Type": "virtiofs",
-      "VSockNumber": null,
-      "OriginalInput": "/var/folders:/var/folders"
+      "VSockNumber": null
     }
   ],
   "Name": "podman-machine-default",
   "Resources": {
     "CPUs": 4,
     "DiskSize": 100,
-    "Memory": 8192,
+    "Memory": 2048,
     "USBs": []
   },
   "SSH": {
     "IdentityPath": "/Users/u/.local/share/containers/podman/machine/machine",
-    "Port": 53321,
+    "Port": 50000,
     "RemoteUsername": "core"
   },
-  "Starting": false,
   "Version": 1,
+  "Swap": 0,
+  "ImagePath": {
+    "Path": "/Users/u/.local/share/containers/podman/machine/applehv/podman-machine-default-arm64.raw"
+  },
   "AppleHypervisor": {
     "Vfkit": {
-      "Endpoint": "http://localhost:51234",
-      "BinaryPath": {
-        "Path": "/opt/podman/bin/vfkit"
+      "LogLevel": "panic",
+      "Endpoint": "http://localhost:50001",
+      "BinaryPath": null,
+      "VirtualMachine": {
+        "vcpus": 4,
+        "memoryBytes": 2147483648,
+        "bootloader": {
+          "kind": "efiBootloader",
+          "efiVariableStorePath": "/Users/u/.local/share/containers/podman/machine/applehv/efi-bl-podman-machine-default",
+          "createVariableStore": true
+        }
       },
       "Rosetta": true
     }
+  },
+  "Starting": false,
+  "Rosetta": false,
+  "Ansible": null,
+  "ConfigPath": {
+    "Path": "/Users/u/.config/containers/podman/machine/applehv/podman-machine-default.json"
   }
 }
