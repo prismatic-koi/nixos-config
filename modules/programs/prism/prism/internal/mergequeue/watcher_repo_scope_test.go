@@ -10,6 +10,8 @@ package mergequeue
 // row belonging to another repo.
 
 import (
+	"context"
+	"net/http"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
@@ -40,11 +42,8 @@ func TestMergeQueueHead_CarriesRepoOnRow(t *testing.T) {
 
 // TestWatcher_TerminateOnlyAffectsOwnRepo is the end-to-end regression:
 // two coordinators (one per repo) both enqueue their own PR N. When
-// watcher A terminates its row, watcher B's row must remain watching.
-//
-// We simulate the watcher's terminal-write behaviour by calling
-// TerminateMerge with the head row's Repo field, mirroring what the
-// production `succeedAndNotify` / `failAndNotify` code paths do.
+// watcher A merges its row through the production tick, watcher B's row
+// must remain watching.
 func TestWatcher_TerminateOnlyAffectsOwnRepo(t *testing.T) {
 	d := openTestDB(t)
 
@@ -58,20 +57,12 @@ func TestWatcher_TerminateOnlyAffectsOwnRepo(t *testing.T) {
 		t.Fatalf("EnqueueMerge repo-b: %v", err)
 	}
 
-	// Watcher A looks up its own head via session_name scoping.
-	headA, err := d.MergeQueueHead("repo-a@main")
-	if err != nil || headA == nil {
-		t.Fatalf("MergeQueueHead repo-a: %v (row=%v)", err, headA)
-	}
-	if headA.Repo != "repo-a" {
-		t.Fatalf("headA.Repo = %q, want repo-a", headA.Repo)
-	}
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	newTickWatcher(d, "inst-a", "repo-a@main", http.DefaultClient, gh).tick(context.Background())
 
-	// Watcher A terminates its head. The production code passes
-	// head.Repo to TerminateMerge (see watcher.go), which scopes the
-	// terminal write to this coordinator's repo.
-	if err := d.TerminateMerge(headA.PR, headA.Repo, "merged", ""); err != nil {
-		t.Fatalf("TerminateMerge headA: %v", err)
+	rowA, err := d.PendingMergeByPR(pr, "repo-a")
+	if err != nil || rowA == nil || rowA.Status != "merged" {
+		t.Fatalf("repo-a row = %+v (err %v), want merged", rowA, err)
 	}
 
 	// Repo B's row must remain untouched.
@@ -88,9 +79,8 @@ func TestWatcher_TerminateOnlyAffectsOwnRepo(t *testing.T) {
 }
 
 // TestWatcher_UpdateLastCheckedOnlyAffectsOwnRepo covers the same
-// invariant for the per-tick heartbeat. The `tick()` method calls
-// UpdateMergeLastChecked(head.PR, head.Repo) so a heartbeat on one repo
-// cannot bump the timestamp of a same-numbered row on another repo.
+// invariant for the per-tick heartbeat: a tick of watcher A must not bump
+// the timestamp of a same-numbered row on another repo.
 func TestWatcher_UpdateLastCheckedOnlyAffectsOwnRepo(t *testing.T) {
 	d := openTestDB(t)
 
@@ -102,13 +92,8 @@ func TestWatcher_UpdateLastCheckedOnlyAffectsOwnRepo(t *testing.T) {
 		t.Fatalf("EnqueueMerge repo-b: %v", err)
 	}
 
-	headA, _ := d.MergeQueueHead("repo-a@main")
-	if headA == nil {
-		t.Fatal("headA is nil")
-	}
-	if err := d.UpdateMergeLastChecked(headA.PR, headA.Repo); err != nil {
-		t.Fatalf("UpdateMergeLastChecked: %v", err)
-	}
+	gh := newGHFake(t, blockedInfo("APPROVED", []checkEntry{{Name: "pr-gate", Status: "IN_PROGRESS"}}))
+	newTickWatcher(d, "inst-a", "repo-a@main", http.DefaultClient, gh).tick(context.Background())
 
 	rowA, _ := d.PendingMergeByPR(pr, "repo-a")
 	rowB, _ := d.PendingMergeByPR(pr, "repo-b")

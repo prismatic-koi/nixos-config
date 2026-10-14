@@ -9,8 +9,7 @@ package mergequeue
 //  1. Table-driven unit tests over failedRequiredChecks, the pure function
 //     that discriminates "may still resolve" from "will never resolve".
 //  2. Integration tests that drive the real Watcher.tick through an injected
-//     gh runner, so the assertions cover the production state machine rather
-//     than the fakeWatcher mirror used elsewhere in this package.
+//     gh runner, so the assertions cover the production state machine.
 
 import (
 	"context"

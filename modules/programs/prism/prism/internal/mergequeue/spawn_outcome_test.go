@@ -1,7 +1,8 @@
 package mergequeue
 
 // The merge-queue watcher persists pr_merged_at on the worker's
-// spawn_outcome row inside succeedAndNotify.
+// spawn_outcome row inside succeedAndNotify. The tests reach it through the
+// production tick.
 //
 // The watcher already has the timestamp at hand (it is the same wall-clock
 // it passes to TerminateMerge to set pending_merges.merged_at), and it has
@@ -13,7 +14,7 @@ package mergequeue
 //
 // Tests here exercise the integration end-to-end against an isolated DB:
 //
-//   - happy path: worker has pr_number set → succeedAndNotify writes
+//   - happy path: worker has pr_number set → a merge writes
 //     pr_merged_at on the worker's spawn_outcome row.
 //   - negative-mutation guard: no worker row matches pr_number → write is
 //     a silent no-op, no orphan spawn_outcome row gets created.
@@ -71,28 +72,22 @@ func TestSucceedAndNotify_PersistsPRMergedAt(t *testing.T) {
 	// Seed the worker session + pr_number on its spawn_outcome row.
 	seedWorkerWithPR(t, d, workerIID, workerSess, pr)
 
-	// Enqueue the merge row that succeedAndNotify will terminate.
+	// Enqueue the merge row that the tick merges.
 	if _, err := d.EnqueueMerge(pr, "myrepo", coordSession, coordIID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	head, err := d.PendingMergeByPR(pr, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if head == nil {
-		t.Fatal("PendingMergeByPR: nil after enqueue")
-	}
 
-	// Build a watcher just enough to call succeedAndNotify. We do NOT call
-	// .Run() — only the success handler is under test. The repo field is
-	// set via New (looks up coordinator status); a missing port is fine
-	// because the failing notify path just logs.
-	w := New(d, coordIID, coordSession, http.DefaultClient)
-	// Capture the wall-clock right before invoking succeedAndNotify so the
-	// assertion below has a tight upper bound on the persisted value.
+	// A missing port is fine because the failing notify path just logs.
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	w := newTickWatcher(d, coordIID, coordSession, http.DefaultClient, gh)
+	// Capture the wall-clock right before the tick so the assertion below
+	// has a tight upper bound on the persisted value.
 	wantAtLeast := time.Now().UnixMilli()
-	w.succeedAndNotify(context.Background(), head, mergeOutcomePrismDriven, nil)
+	w.tick(context.Background())
 	wantAtMost := time.Now().UnixMilli()
+	if len(gh.merged) != 1 {
+		t.Fatalf("gh pr merge calls = %v, want [%d]", gh.merged, pr)
+	}
 
 	// The worker's spawn_outcome row must now carry a pr_merged_at value.
 	out, err := d.SpawnOutcomeByInstanceID(workerIID)
@@ -106,11 +101,11 @@ func TestSucceedAndNotify_PersistsPRMergedAt(t *testing.T) {
 		t.Fatalf("PRNumber: got %v, want %d (must survive merge-queue write)", out.PRNumber, pr)
 	}
 	if out.PRMergedAt == nil {
-		t.Fatal("PRMergedAt: nil — write trigger did not fire on succeedAndNotify")
+		t.Fatal("PRMergedAt: nil — write trigger did not fire on the merge")
 	}
 	got := *out.PRMergedAt
 	if got < wantAtLeast || got > wantAtMost {
-		t.Errorf("PRMergedAt = %d, want in [%d, %d] (within the succeedAndNotify call window)", got, wantAtLeast, wantAtMost)
+		t.Errorf("PRMergedAt = %d, want in [%d, %d] (within the tick call window)", got, wantAtLeast, wantAtMost)
 	}
 
 	// Pending_merges must also have been transitioned to 'merged' with
@@ -121,7 +116,7 @@ func TestSucceedAndNotify_PersistsPRMergedAt(t *testing.T) {
 		t.Fatalf("PendingMergeByPR(after): %v", err)
 	}
 	if pm == nil || pm.Status != "merged" || pm.MergedAt == nil {
-		t.Fatalf("pending_merges after succeedAndNotify: status=%v merged_at=%v, want status=merged and merged_at set", pm, pm)
+		t.Fatalf("pending_merges after the merge: %+v, want status=merged and merged_at set", pm)
 	}
 }
 
@@ -144,13 +139,8 @@ func TestSucceedAndNotify_NoWorkerRow_SkipsPRMergedAt(t *testing.T) {
 	if _, err := d.EnqueueMerge(pr, "myrepo", coordSession, coordIID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	head, err := d.PendingMergeByPR(pr, "myrepo")
-	if err != nil || head == nil {
-		t.Fatalf("PendingMergeByPR: err=%v head=%v", err, head)
-	}
-
-	w := New(d, coordIID, coordSession, http.DefaultClient)
-	w.succeedAndNotify(context.Background(), head, mergeOutcomePrismDriven, nil)
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	newTickWatcher(d, coordIID, coordSession, http.DefaultClient, gh).tick(context.Background())
 
 	// pending_merges must still have transitioned to merged.
 	pm, err := d.PendingMergeByPR(pr, "myrepo")

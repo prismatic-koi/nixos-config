@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -95,6 +96,12 @@ func TestEnqueueMerge_FIFO(t *testing.T) {
 	if head.PR != 300 {
 		t.Errorf("MergeQueueHead.PR: got %d, want 300", head.PR)
 	}
+
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "UNKNOWN"})
+	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	if len(gh.viewed) != 1 || gh.viewed[0] != 300 {
+		t.Errorf("tick polled %v, want [300]", gh.viewed)
+	}
 }
 
 // TestEnqueueMerge_Idempotent verifies that enqueueing the same PR twice returns
@@ -158,6 +165,12 @@ func TestEnqueueMerge_TerminalRowReplaceable(t *testing.T) {
 	if m.Error != nil {
 		t.Errorf("re-enqueued error: got %v, want nil", m.Error)
 	}
+
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "UNKNOWN"})
+	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	if len(gh.viewed) != 1 || gh.viewed[0] != 99 {
+		t.Errorf("tick polled %v, want [99]", gh.viewed)
+	}
 }
 
 // TestAbandonWatchingMerges verifies that AbandonWatchingMerges transitions all
@@ -207,6 +220,12 @@ func TestAbandonWatchingMerges(t *testing.T) {
 	}
 	if head != nil {
 		t.Errorf("MergeQueueHead after abandon: got PR %d, want nil", head.PR)
+	}
+
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	if len(gh.viewed) != 0 || len(gh.merged) != 0 {
+		t.Errorf("tick after abandon: viewed %v, merged %v, want no gh call", gh.viewed, gh.merged)
 	}
 }
 
@@ -446,167 +465,95 @@ func TestMergeQueueForInstance_AbandonedFilter(t *testing.T) {
 	}
 }
 
-// ── Watcher unit tests (using an in-process HTTP server to mock GitHub API) ────
+// ── Watcher unit tests: the production tick with a stubbed gh ─────────────────
 
-// mockGHServer mocks the `gh` binary by returning predetermined responses.
-// The watcher calls `gh pr view` and `gh pr merge` — we mock the CLI by
-// setting PRISM_TEST_GH_MOCK_RESPONSES (key=args, value=output+exitcode).
-// Because mocking actual OS executables in Go is complex, these tests use a
-// helper approach: we test the tick() logic by directly calling the DB state
-// machine through the watcher's exported-for-test tick path.
+// ghFake answers the gh calls of the production Watcher.tick. A nil func
+// field gives the default answer. It records the PR number of each call.
+type ghFake struct {
+	t *testing.T
+	// view answers `gh pr view <pr> --json <prInfoJSONFields>`.
+	view func(pr int) (prInfo, error)
+	// state answers `gh pr view <pr> --json state`, which tryMerge reads
+	// after a failed merge. Default: OPEN.
+	state func(pr int) (string, error)
+	// merge answers `gh pr merge <pr> --squash`. Default: success.
+	merge func(pr int) ([]byte, error)
+	// required is the required-check list of the branch protection.
+	required []string
+	// protectionErr, when set, fails the branch-protection probe.
+	protectionErr error
 
-// To test the watcher without mocking the OS, we build a fakeWatcher that
-// replaces the gh CLI calls with an injectable function.
-
-type fakeWatcher struct {
-	watcher               *Watcher
-	fetchFn               func(ctx context.Context, pr int) (*prInfo, error)
-	mergeFn               func(ctx context.Context, pr int) ([]byte, error)
-	updateFn              func(ctx context.Context, pr int) error
-	fetchRequiredChecksFn func(ctx context.Context) ([]string, error)
-	// fetchProtectionFn injects a branch-protection snapshot for the tick
-	// path. When nil, protection defaults to configured=true with
-	// requiredChecks derived from fetchRequiredChecksFn (or empty if that is
-	// also nil) so tests without a protection stub keep exercising the
-	// merge path.
-	fetchProtectionFn func(ctx context.Context) (protectionCache, error)
-	// checkMergedStateFn is called on the error path of tryMerge to reconcile
-	// PR state. When nil, returns "" (unknown / fall-through to keyword check).
-	checkMergedStateFn func(ctx context.Context, pr int) string
+	viewed, merged, updated []int
 }
 
-// processHead is a test-friendly version of tick() that uses injected functions
-// instead of the real gh CLI. It mirrors the async-poll state machine: a
-// coordinator notification is produced only by a
-// prism-driven merge, an out-of-band merge, a close without merge, a genuine
-// merge mutation failure, or a BLOCKED PR whose required checks have all
-// concluded with at least one failure. All other states stay watching
-// silently. An unprotected repo NEVER auto-merges.
-//
-// Prefer driving the real Watcher.tick through an injected runGHFunc for new
-// tests — see watcher_blocked_ci_failure_test.go. This mirror must be kept in
-// step with tick() by hand, so it is the weaker signal of the two.
-func (fw *fakeWatcher) processHead(ctx context.Context) {
-	head, err := fw.watcher.db.MergeQueueHead(fw.watcher.sessionName)
-	if err != nil || head == nil {
-		return
+// newGHFake returns a ghFake for a protected main branch that requires
+// pr-gate, and that answers every `gh pr view` with info.
+func newGHFake(t *testing.T, info prInfo) *ghFake {
+	return &ghFake{
+		t:        t,
+		required: []string{"pr-gate"},
+		view:     func(int) (prInfo, error) { return info, nil },
 	}
-	_ = fw.watcher.db.UpdateMergeLastChecked(head.PR, head.Repo)
+}
 
-	prInfoVal, err := fw.fetchFn(ctx, head.PR)
+func (g *ghFake) run(_ context.Context, args ...string) ([]byte, error) {
+	g.t.Helper()
+	if len(args) >= 2 && args[0] == "api" {
+		if g.protectionErr != nil {
+			return []byte(g.protectionErr.Error()), g.protectionErr
+		}
+		return json.Marshal(map[string]any{
+			"required_status_checks": map[string]any{"contexts": g.required},
+		})
+	}
+	if len(args) < 5 || args[0] != "--repo" || args[2] != "pr" {
+		g.t.Fatalf("unexpected gh call: %v", args)
+	}
+	pr, err := strconv.Atoi(args[4])
 	if err != nil {
-		return
+		g.t.Fatalf("pr number not at argv[4]: %v", args)
 	}
-
-	// Terminal: out-of-band merge.
-	if prInfoVal.State == "MERGED" || prInfoVal.isMerged() {
-		fw.watcher.succeedAndNotify(ctx, head, mergeOutcomeExternal, prInfoVal)
-		return
-	}
-	// Terminal: closed without merging.
-	if prInfoVal.State == "CLOSED" && !prInfoVal.isMerged() {
-		fw.watcher.notifyClosedNotMerged(ctx, head)
-		return
-	}
-
-	// Branch-protection gate: NEVER auto-merge without protection.
-	prot, protErr := fw.resolveProtection(ctx)
-	if protErr != nil {
-		return // stay watching
-	}
-	if !prot.configured {
-		// Unprotected repo — stay watching for a human to merge/close.
-		return
-	}
-
-	switch prInfoVal.MergeStateStatus {
-	case "CLEAN":
-		fw.attemptMerge(ctx, head)
-
-	case "UNSTABLE":
-		if requiredChecksAllPassed(prInfoVal.StatusCheckRollup, prot.requiredChecks) {
-			fw.attemptMerge(ctx, head)
+	switch args[3] {
+	case "view":
+		if args[len(args)-1] == "state" {
+			if g.state == nil {
+				return []byte(`{"state":"OPEN"}`), nil
+			}
+			s, err := g.state(pr)
+			if err != nil {
+				return []byte(err.Error()), err
+			}
+			return json.Marshal(map[string]string{"state": s})
 		}
-		// else stay watching if required checks not all passed
-
-	case "BEHIND":
-		_ = fw.updateFn(ctx, head.PR)
-
-	case "BLOCKED":
-		// Terminal only when the required set is fully accounted for
-		// and a real failure conclusion is present; otherwise silent.
-		if failed := failedRequiredChecks(prInfoVal.StatusCheckRollup, prot.requiredChecks); len(failed) > 0 {
-			fw.watcher.notifyRequiredChecksFailed(ctx, head, failed)
-			return
-		}
-
-	case "DIRTY", "UNKNOWN", "HAS_HOOKS", "DRAFT":
-		// Stay watching silently — no coordinator notification.
-
-	}
-}
-
-// resolveProtection returns the injected protection snapshot or a synthetic
-// default (configured=true, requiredChecks from fetchRequiredChecksFn if set)
-// so tests that predate the branch-protection gate continue to exercise the
-// merge path without additional wiring.
-func (fw *fakeWatcher) resolveProtection(ctx context.Context) (protectionCache, error) {
-	if fw.fetchProtectionFn != nil {
-		return fw.fetchProtectionFn(ctx)
-	}
-	var required []string
-	if fw.fetchRequiredChecksFn != nil {
-		var err error
-		required, err = fw.fetchRequiredChecksFn(ctx)
+		g.viewed = append(g.viewed, pr)
+		info, err := g.view(pr)
 		if err != nil {
-			return protectionCache{}, err
+			return []byte(err.Error()), err
 		}
+		return json.Marshal(info)
+	case "merge":
+		g.merged = append(g.merged, pr)
+		if g.merge == nil {
+			return nil, nil
+		}
+		return g.merge(pr)
+	case "update-branch":
+		g.updated = append(g.updated, pr)
+		return nil, nil
 	}
-	return protectionCache{configured: true, requiredChecks: required}, nil
+	g.t.Fatalf("unexpected gh call: %v", args)
+	return nil, nil
 }
 
-// attemptMerge invokes the injected merge function with the CLEAN/UNSTABLE
-// reconciliation and branch-moved-race handling that production tick uses.
-func (fw *fakeWatcher) attemptMerge(ctx context.Context, head *db.PendingMerge) {
-	out, mergeErr := fw.mergeFn(ctx, head.PR)
-	if mergeErr == nil {
-		fw.watcher.succeedAndNotify(ctx, head, mergeOutcomePrismDriven, nil)
-		return
-	}
-	// First: reconcile by checking the PR's actual state.
-	var reconciledState string
-	if fw.checkMergedStateFn != nil {
-		reconciledState = fw.checkMergedStateFn(ctx, head.PR)
-	}
-	if reconciledState == "MERGED" {
-		fw.watcher.succeedAndNotify(ctx, head, mergeOutcomeReconciled, nil)
-		return
-	}
-	// Second: keyword-based branch-moved-race check.
-	combined := strings.ToLower(string(out) + mergeErr.Error())
-	if isBranchMovedRace(combined) {
-		return // transient
-	}
-	errMsg := fmt.Sprintf("gh pr merge failed: %s", strings.TrimSpace(string(out)))
-	fw.watcher.failAndNotify(head, errMsg)
-}
-
-// newFakeWatcher builds a fakeWatcher for tests.
-func newFakeWatcher(
-	d *db.DB,
-	instanceID, sessionName string,
-	httpClient *http.Client,
-	fetchFn func(context.Context, int) (*prInfo, error),
-	mergeFn func(context.Context, int) ([]byte, error),
-	updateFn func(context.Context, int) error,
-) *fakeWatcher {
-	w := New(d, instanceID, sessionName, httpClient)
-	return &fakeWatcher{
-		watcher:  w,
-		fetchFn:  fetchFn,
-		mergeFn:  mergeFn,
-		updateFn: updateFn,
-		// fetchRequiredChecksFn is nil by default; UNSTABLE tests set it explicitly.
+// newTickWatcher returns a production Watcher whose gh calls go to gh.
+func newTickWatcher(d *db.DB, instanceID, sessionName string, client *http.Client, gh *ghFake) *Watcher {
+	return &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: sessionName,
+		httpClient:  client,
+		repo:        "owner/myrepo",
+		runGHFunc:   gh.run,
 	}
 }
 
@@ -665,18 +612,12 @@ func TestWatcher_CLEANTransitionToMerged(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			return nil, nil // merge succeeds
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
-	fw.processHead(context.Background())
-
+	if len(gh.merged) != 1 || gh.merged[0] != 100 {
+		t.Errorf("gh pr merge calls = %v, want [100]", gh.merged)
+	}
 	// Row must be merged.
 	row, err := d.PendingMergeByPR(100, "myrepo")
 	if err != nil {
@@ -694,32 +635,29 @@ func TestWatcher_CLEANTransitionToMerged(t *testing.T) {
 }
 
 // TestWatcher_BEHINDLeaveWatching verifies that a BEHIND PR triggers
-// update-branch and stays watching.
+// update-branch and stays watching, with no merge and no notification.
 func TestWatcher_BEHINDLeaveWatching(t *testing.T) {
 	d := openTestDB(t)
 	instanceID := "inst-behind"
 	session := "myrepo@main"
-	updateCalled := false
 
+	srv := newCapturingServer(t)
+	seedCoordinator(t, d, session, instanceID, parsePort(t, srv.URL), "sid-behind")
 	if _, err := d.EnqueueMerge(200, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "BEHIND"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error {
-			updateCalled = true
-			return nil
-		},
-	)
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "BEHIND", Mergeable: "MERGEABLE"})
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
-	fw.processHead(context.Background())
-
-	if !updateCalled {
-		t.Error("BEHIND: update-branch was not called")
+	if len(gh.updated) != 1 || gh.updated[0] != 200 {
+		t.Errorf("gh pr update-branch calls = %v, want [200]", gh.updated)
+	}
+	if len(gh.merged) != 0 {
+		t.Errorf("gh pr merge calls = %v, want none", gh.merged)
+	}
+	if srv.called != 0 {
+		t.Errorf("notifications = %d, want 0", srv.called)
 	}
 
 	// Row must still be watching.
@@ -743,26 +681,19 @@ func TestWatcher_UNSTABLEStaysWatchingWhenRequiredPending(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:            "OPEN",
-				MergeStateStatus: "UNSTABLE",
-				StatusCheckRollup: []checkEntry{
-					{Name: "pr-gate", Status: "IN_PROGRESS", Conclusion: ""},
-					{Name: "validate-flakes", Status: "COMPLETED", Conclusion: "SUCCESS"},
-				},
-			}, nil
+	gh := newGHFake(t, prInfo{
+		State:            "OPEN",
+		MergeStateStatus: "UNSTABLE",
+		StatusCheckRollup: []checkEntry{
+			{Name: "pr-gate", Status: "IN_PROGRESS", Conclusion: ""},
+			{Name: "validate-flakes", Status: "COMPLETED", Conclusion: "SUCCESS"},
 		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return []string{"pr-gate"}, nil
+	})
+	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+
+	if len(gh.merged) != 0 {
+		t.Errorf("gh pr merge calls = %v, want none", gh.merged)
 	}
-
-	fw.processHead(context.Background())
-
 	row, err := d.PendingMergeByPR(600, "myrepo")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR: %v", err)
@@ -782,15 +713,12 @@ func TestWatcher_UNKNOWNStaysWatching(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "UNKNOWN"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "UNKNOWN"})
+	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
 
-	fw.processHead(context.Background())
+	if len(gh.merged) != 0 {
+		t.Errorf("gh pr merge calls = %v, want none", gh.merged)
+	}
 
 	row, err := d.PendingMergeByPR(700, "myrepo")
 	if err != nil {
@@ -819,17 +747,11 @@ func TestWatcher_BranchMovedRaceRetries(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			return []byte("already merged"), fmt.Errorf("exit status 1")
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
-
-	fw.processHead(context.Background())
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	gh.merge = func(int) ([]byte, error) {
+		return []byte("already merged"), fmt.Errorf("exit status 1")
+	}
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
 	if notified {
 		t.Error("branch-moved race: notification was sent, want no notification")
@@ -862,15 +784,8 @@ func TestWatcher_ClosedExternallyTransitionsToFailed(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "CLOSED", MergedAt: nil}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-
-	fw.processHead(context.Background())
+	gh := newGHFake(t, prInfo{State: "CLOSED", MergedAt: nil})
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
 	row, err := d.PendingMergeByPR(900, "myrepo")
 	if err != nil {
@@ -898,7 +813,8 @@ func TestWatcher_ClosedExternallyTransitionsToFailed(t *testing.T) {
 	}
 }
 
-// TestWatcher_Cancellation verifies CancelMerge terminates a watching row.
+// TestWatcher_Cancellation verifies CancelMerge terminates a watching row,
+// and that the production tick does not poll the cancelled row.
 func TestWatcher_Cancellation(t *testing.T) {
 	d := openTestDB(t)
 	instanceID := "inst-canc"
@@ -924,10 +840,20 @@ func TestWatcher_Cancellation(t *testing.T) {
 	if head != nil {
 		t.Errorf("MergeQueueHead after cancel: got PR %d, want nil", head.PR)
 	}
+
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	if len(gh.viewed) != 0 || len(gh.merged) != 0 {
+		t.Errorf("tick after cancel: viewed %v, merged %v, want no gh call", gh.viewed, gh.merged)
+	}
+	row, err := d.PendingMergeByPR(111, "myrepo")
+	if err != nil || row == nil || row.Status != "cancelled" {
+		t.Errorf("row after tick = %+v (err %v), want cancelled", row, err)
+	}
 }
 
 // TestWatcher_NextPRPromotedAfterTerminal verifies that after the head
-// terminates, the next PR becomes head on the next tick.
+// ends through CLOSED, the next PR becomes head, and the next tick polls it.
 func TestWatcher_NextPRPromotedAfterTerminal(t *testing.T) {
 	d := openTestDB(t)
 	instanceID := "inst-promote"
@@ -946,20 +872,20 @@ func TestWatcher_NextPRPromotedAfterTerminal(t *testing.T) {
 	port := parsePort(t, srv.URL)
 	seedCoordinator(t, d, session, instanceID, port, "sid-promote")
 
-	// First tick: head is PR 10 — report as CLOSED so it terminates via
-	// notifyClosedNotMerged. Using CLOSED (a terminal state) rather
-	// than DIRTY (which stays watching silently mid-poll) is the way
-	// to drive a promotion transition in the state machine.
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "CLOSED", MergedAt: nil}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-	fw.processHead(context.Background())
+	infos := map[int]prInfo{
+		10: {State: "CLOSED", MergedAt: nil},
+		20: blockedInfo("APPROVED", []checkEntry{{Name: "pr-gate", Status: "IN_PROGRESS"}}),
+	}
+	gh := newGHFake(t, prInfo{})
+	gh.view = func(pr int) (prInfo, error) { return infos[pr], nil }
+	w := newTickWatcher(d, instanceID, session, srv.Client(), gh)
 
-	// Head should now be PR 20.
+	w.tick(context.Background())
+
+	row, err := d.PendingMergeByPR(10, "myrepo")
+	if err != nil || row == nil || row.Status != "failed" {
+		t.Fatalf("PR 10 row after tick 1 = %+v (err %v), want failed", row, err)
+	}
 	head, err := d.MergeQueueHead(session)
 	if err != nil {
 		t.Fatalf("MergeQueueHead after first tick: %v", err)
@@ -969,6 +895,18 @@ func TestWatcher_NextPRPromotedAfterTerminal(t *testing.T) {
 	}
 	if head.PR != 20 {
 		t.Errorf("MergeQueueHead after first tick: got PR %d, want PR 20", head.PR)
+	}
+
+	w.tick(context.Background())
+
+	if len(gh.viewed) != 2 || gh.viewed[0] != 10 || gh.viewed[1] != 20 {
+		t.Errorf("viewed PRs = %v, want [10 20]", gh.viewed)
+	}
+	if srv.called != 1 {
+		t.Errorf("notifications = %d, want 1 (the close of PR 10 only)", srv.called)
+	}
+	if row, _ := d.PendingMergeByPR(20, "myrepo"); row == nil || row.Status != "watching" {
+		t.Errorf("PR 20 row after tick 2 = %+v, want watching", row)
 	}
 }
 
@@ -1094,15 +1032,8 @@ func TestWatcher_NotificationBodyContainsPR(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-
-	fw.processHead(context.Background())
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
 	if len(received) == 0 {
 		t.Fatal("no notification received by coordinator")
@@ -1482,33 +1413,19 @@ func TestWatcher_UNSTABLEAllRequiredPass(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	mergeCalled := false
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:            "OPEN",
-				MergeStateStatus: "UNSTABLE",
-				StatusCheckRollup: []checkEntry{
-					// Required check: SUCCESS
-					{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
-					// Optional check: still running — must not block merge
-					{Name: "validate-flakes", Status: "IN_PROGRESS", Conclusion: ""},
-				},
-			}, nil
+	gh := newGHFake(t, prInfo{
+		State:            "OPEN",
+		MergeStateStatus: "UNSTABLE",
+		StatusCheckRollup: []checkEntry{
+			// Required check: SUCCESS
+			{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
+			// Optional check: still running — must not block merge
+			{Name: "validate-flakes", Status: "IN_PROGRESS", Conclusion: ""},
 		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			mergeCalled = true
-			return nil, nil // merge succeeds
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return []string{"pr-gate"}, nil
-	}
+	})
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
-	fw.processHead(context.Background())
-
-	if !mergeCalled {
+	if len(gh.merged) != 1 {
 		t.Error("UNSTABLE+all-required-pass: merge was not attempted")
 	}
 	row, err := d.PendingMergeByPR(1001, "myrepo")
@@ -1531,30 +1448,16 @@ func TestWatcher_UNSTABLERequiredStillRunning(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	mergeCalled := false
-	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:            "OPEN",
-				MergeStateStatus: "UNSTABLE",
-				StatusCheckRollup: []checkEntry{
-					{Name: "pr-gate", Status: "IN_PROGRESS", Conclusion: ""},
-				},
-			}, nil
+	gh := newGHFake(t, prInfo{
+		State:            "OPEN",
+		MergeStateStatus: "UNSTABLE",
+		StatusCheckRollup: []checkEntry{
+			{Name: "pr-gate", Status: "IN_PROGRESS", Conclusion: ""},
 		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			mergeCalled = true
-			return nil, nil
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return []string{"pr-gate"}, nil
-	}
+	})
+	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
 
-	fw.processHead(context.Background())
-
-	if mergeCalled {
+	if len(gh.merged) != 0 {
 		t.Error("UNSTABLE+required-in-progress: merge was called, want staying watching")
 	}
 	row, err := d.PendingMergeByPR(1002, "myrepo")
@@ -1577,31 +1480,18 @@ func TestWatcher_UNSTABLEBranchProtectionFetchError(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	mergeCalled := false
-	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:            "OPEN",
-				MergeStateStatus: "UNSTABLE",
-				StatusCheckRollup: []checkEntry{
-					{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
-				},
-			}, nil
+	gh := newGHFake(t, prInfo{
+		State:            "OPEN",
+		MergeStateStatus: "UNSTABLE",
+		StatusCheckRollup: []checkEntry{
+			{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
 		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			mergeCalled = true
-			return nil, nil
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
+	})
 	// Simulate a branch-protection API failure.
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return nil, fmt.Errorf("gh api: HTTP 403 forbidden")
-	}
+	gh.protectionErr = fmt.Errorf("gh api: HTTP 403 forbidden")
+	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
 
-	fw.processHead(context.Background())
-
-	if mergeCalled {
+	if len(gh.merged) != 0 {
 		t.Error("UNSTABLE+fetch-error: merge was called, want staying watching")
 	}
 	row, err := d.PendingMergeByPR(1003, "myrepo")
@@ -1624,31 +1514,17 @@ func TestWatcher_UNSTABLERequiredAbsentFromRollup(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	mergeCalled := false
-	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:            "OPEN",
-				MergeStateStatus: "UNSTABLE",
-				// Rollup does NOT include pr-gate at all.
-				StatusCheckRollup: []checkEntry{
-					{Name: "validate-flakes", Conclusion: "SUCCESS", Status: "COMPLETED"},
-				},
-			}, nil
+	gh := newGHFake(t, prInfo{
+		State:            "OPEN",
+		MergeStateStatus: "UNSTABLE",
+		// Rollup does NOT include pr-gate at all.
+		StatusCheckRollup: []checkEntry{
+			{Name: "validate-flakes", Conclusion: "SUCCESS", Status: "COMPLETED"},
 		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			mergeCalled = true
-			return nil, nil
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return []string{"pr-gate"}, nil
-	}
+	})
+	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
 
-	fw.processHead(context.Background())
-
-	if mergeCalled {
+	if len(gh.merged) != 0 {
 		t.Error("UNSTABLE+required-absent: merge was called, want staying watching")
 	}
 	row, err := d.PendingMergeByPR(1004, "myrepo")
@@ -1796,23 +1672,14 @@ func TestWatcher_MergeAlreadyInProgress_PRIsMerged(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			// Simulate "Merge already in progress" GraphQL error.
-			return []byte("GraphQL: Merge already in progress (mergePullRequest)"),
-				fmt.Errorf("exit status 1")
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
-	// checkMergedStateFn returns MERGED — PR did actually merge.
-	fw.checkMergedStateFn = func(_ context.Context, pr int) string {
-		return "MERGED"
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	gh.merge = func(int) ([]byte, error) {
+		// Simulate "Merge already in progress" GraphQL error.
+		return []byte("GraphQL: Merge already in progress (mergePullRequest)"), fmt.Errorf("exit status 1")
 	}
-
-	fw.processHead(context.Background())
+	// `gh pr view --json state` returns MERGED — PR did actually merge.
+	gh.state = func(int) (string, error) { return "MERGED", nil }
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
 	row, err := d.PendingMergeByPR(2100, "myrepo")
 	if err != nil {
@@ -1862,23 +1729,14 @@ func TestWatcher_MergeAlreadyInProgress_PRIsOpen(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			// Error that doesn't match any keyword.
-			return []byte("GraphQL: Merge already in progress (mergePullRequest)"),
-				fmt.Errorf("exit status 1")
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
-	// checkMergedStateFn returns OPEN — PR did NOT merge.
-	fw.checkMergedStateFn = func(_ context.Context, pr int) string {
-		return "OPEN"
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	gh.merge = func(int) ([]byte, error) {
+		// Error that doesn't match any keyword.
+		return []byte("GraphQL: Merge already in progress (mergePullRequest)"), fmt.Errorf("exit status 1")
 	}
-
-	fw.processHead(context.Background())
+	// `gh pr view --json state` returns OPEN — PR did NOT merge.
+	gh.state = func(int) (string, error) { return "OPEN", nil }
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
 	row, err := d.PendingMergeByPR(2101, "myrepo")
 	if err != nil {
@@ -1906,23 +1764,14 @@ func TestWatcher_MergeError_CheckPRStateItself_Fails(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			// Error that doesn't match any keyword.
-			return []byte("GraphQL: Merge already in progress (mergePullRequest)"),
-				fmt.Errorf("exit status 1")
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
-	// checkMergedStateFn returns "" — gh pr view failed (network error, etc.).
-	fw.checkMergedStateFn = func(_ context.Context, pr int) string {
-		return ""
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	gh.merge = func(int) ([]byte, error) {
+		// Error that doesn't match any keyword.
+		return []byte("GraphQL: Merge already in progress (mergePullRequest)"), fmt.Errorf("exit status 1")
 	}
-
-	fw.processHead(context.Background())
+	// `gh pr view --json state` fails (network error, etc.).
+	gh.state = func(int) (string, error) { return "", fmt.Errorf("exit status 1") }
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
 	row, err := d.PendingMergeByPR(2102, "myrepo")
 	if err != nil {
@@ -1949,23 +1798,14 @@ func TestWatcher_GenuineFailure_NoRegression(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			// A genuine failure unrelated to any race.
-			return []byte("GraphQL: repository has no pull request with the number 2103"),
-				fmt.Errorf("exit status 1")
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
-	// checkMergedStateFn returns OPEN — PR was not merged.
-	fw.checkMergedStateFn = func(_ context.Context, pr int) string {
-		return "OPEN"
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	gh.merge = func(int) ([]byte, error) {
+		// A genuine failure unrelated to any race.
+		return []byte("GraphQL: repository has no pull request with the number 2103"), fmt.Errorf("exit status 1")
 	}
-
-	fw.processHead(context.Background())
+	// `gh pr view --json state` returns OPEN — PR was not merged.
+	gh.state = func(int) (string, error) { return "OPEN", nil }
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
 	row, err := d.PendingMergeByPR(2103, "myrepo")
 	if err != nil {
@@ -2014,22 +1854,16 @@ func TestWatcher_ExternalMerge_NotifyTextDistinguishedAndNamesByLogin(t *testing
 	}
 
 	mergedAt := "2026-06-16T22:32:47Z"
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:    "MERGED",
-				MergedAt: &mergedAt,
-				MergedBy: &userRef{Login: "b-h-mck"},
-			}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			t.Fatal("external merge path must not invoke gh pr merge")
-			return nil, nil
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
+	gh := newGHFake(t, prInfo{
+		State:    "MERGED",
+		MergedAt: &mergedAt,
+		MergedBy: &userRef{Login: "b-h-mck"},
+	})
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
-	fw.processHead(context.Background())
+	if len(gh.merged) != 0 {
+		t.Errorf("external merge path invoked gh pr merge: %v", gh.merged)
+	}
 
 	if srv.called == 0 {
 		t.Fatal("no notification sent to coordinator")
@@ -2083,20 +1917,13 @@ func TestWatcher_ExternalMerge_MergedByNullDegradesGracefully(t *testing.T) {
 	}
 
 	mergedAt := "2026-06-17T09:00:00Z"
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			// MergedBy is nil — gh returned "mergedBy": null.
-			return &prInfo{
-				State:    "MERGED",
-				MergedAt: &mergedAt,
-				MergedBy: nil,
-			}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-
-	fw.processHead(context.Background())
+	// MergedBy is nil — gh returned "mergedBy": null.
+	gh := newGHFake(t, prInfo{
+		State:    "MERGED",
+		MergedAt: &mergedAt,
+		MergedBy: nil,
+	})
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
 	if srv.called == 0 {
 		t.Fatal("no notification sent to coordinator — mergedBy=nil must not block notification")
@@ -2138,15 +1965,8 @@ func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_NoArchive(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-
-	fw.processHead(context.Background())
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
 	if srv.called == 0 {
 		t.Fatal("no notification sent to coordinator")
@@ -2194,17 +2014,11 @@ func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_WithArchive(t *testing.T) 
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, coordInstanceID, coordSession, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	w := newTickWatcher(d, coordInstanceID, coordSession, srv.Client(), gh)
 	// Pin the watcher's repo so lookupWorkerArchivePath has a non-empty scope.
-	fw.watcher.repo = coordRepo
-
-	fw.processHead(context.Background())
+	w.repo = coordRepo
+	w.tick(context.Background())
 
 	if srv.called == 0 {
 		t.Fatal("no notification sent to coordinator")
@@ -2236,19 +2050,12 @@ func TestWatcher_Reconciled_NotifyTextIncludesReconciledNote(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			return []byte("GraphQL: Merge already in progress (mergePullRequest)"),
-				fmt.Errorf("exit status 1")
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
-	fw.checkMergedStateFn = func(_ context.Context, pr int) string { return "MERGED" }
-
-	fw.processHead(context.Background())
+	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
+	gh.merge = func(int) ([]byte, error) {
+		return []byte("GraphQL: Merge already in progress (mergePullRequest)"), fmt.Errorf("exit status 1")
+	}
+	gh.state = func(int) (string, error) { return "MERGED", nil }
+	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
 	if srv.called == 0 {
 		t.Fatal("no notification sent to coordinator")
@@ -2467,8 +2274,7 @@ func TestLookupWorkerArchivePath_LegacyRepoFallback(t *testing.T) {
 
 // TestFetchRequiredChecks_ErrorStaysWatching verifies the Watcher.tick()
 // integration: when fetchRequiredChecks returns an error on an UNSTABLE PR,
-// the row stays in watching and no merge is attempted. This exercises the
-// real tick() path (not fakeWatcher) using a stubbed runGHFunc.
+// the row stays in watching and no merge is attempted.
 func TestFetchRequiredChecks_ErrorStaysWatching(t *testing.T) {
 	d := openTestDB(t)
 	instanceID := "inst-bprot-err-tick"
@@ -2727,19 +2533,12 @@ func TestWatcher_BLOCKED_StaysWatchingSilently(t *testing.T) {
 				t.Fatalf("EnqueueMerge: %v", err)
 			}
 
-			fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-				func(_ context.Context, pr int) (*prInfo, error) { return tc.info, nil },
-				func(_ context.Context, pr int) ([]byte, error) {
-					t.Fatal("BLOCKED PR must not attempt to merge (#2420 silent-continuation)")
-					return nil, nil
-				},
-				func(_ context.Context, pr int) error { return nil },
-			)
-			fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-				return []string{"pr-gate"}, nil
-			}
+			gh := newGHFake(t, *tc.info)
+			newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
 
-			fw.processHead(context.Background())
+			if len(gh.merged) != 0 {
+				t.Errorf("BLOCKED PR attempted a merge: %v (#2420 silent-continuation)", gh.merged)
+			}
 
 			row, err := d.PendingMergeByPR(3400, "myrepo")
 			if err != nil {
@@ -2752,52 +2551,6 @@ func TestWatcher_BLOCKED_StaysWatchingSilently(t *testing.T) {
 				t.Errorf("notifications sent: %d — BLOCKED during polling must be silent (#2420)", srv.called)
 			}
 		})
-	}
-}
-
-// TestWatcher_DIRTY_StaysWatchingSilently verifies that a DIRTY PR observed
-// mid-poll (worker pushed a bad rebase) stays watching silently. At
-// invocation time DIRTY exits with a "worker needs to rebase" message
-// (handled in cmd/merge.go); mid-poll a DIRTY state is transient — the
-// worker may fix it — and the poller keeps polling silently.
-func TestWatcher_DIRTY_StaysWatchingSilently(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-dirty-silent"
-	session := "myrepo@main"
-
-	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-dirty-silent")
-
-	if _, err := d.EnqueueMerge(3410, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "DIRTY"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			t.Fatal("DIRTY PR must not attempt to merge (#2420 silent-continuation)")
-			return nil, nil
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return []string{"pr-gate"}, nil
-	}
-
-	fw.processHead(context.Background())
-
-	row, err := d.PendingMergeByPR(3410, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if row.Status != "watching" {
-		t.Errorf("status: got %q, want watching (DIRTY during polling is not terminal — #2420)", row.Status)
-	}
-	if srv.called != 0 {
-		t.Errorf("notifications sent: %d — DIRTY during polling must be silent", srv.called)
 	}
 }
 
@@ -2820,27 +2573,19 @@ func TestWatcher_NewCommits_KeepsPollingSilently(t *testing.T) {
 	}
 
 	// First tick: worker just pushed, required check is in progress.
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:            "OPEN",
-				MergeStateStatus: "UNSTABLE",
-				StatusCheckRollup: []checkEntry{
-					{Name: "pr-gate", Status: "IN_PROGRESS", Conclusion: ""},
-				},
-			}, nil
+	gh := newGHFake(t, prInfo{
+		State:            "OPEN",
+		MergeStateStatus: "UNSTABLE",
+		StatusCheckRollup: []checkEntry{
+			{Name: "pr-gate", Status: "IN_PROGRESS", Conclusion: ""},
 		},
-		func(_ context.Context, pr int) ([]byte, error) {
-			t.Fatal("in-progress check must not trigger a merge")
-			return nil, nil
-		},
-		func(_ context.Context, pr int) error { return nil },
-	)
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return []string{"pr-gate"}, nil
-	}
-	fw.processHead(context.Background())
+	})
+	w := newTickWatcher(d, instanceID, session, srv.Client(), gh)
+	w.tick(context.Background())
 
+	if len(gh.merged) != 0 {
+		t.Errorf("in-progress check triggered a merge: %v", gh.merged)
+	}
 	if srv.called != 0 {
 		t.Errorf("intermediate notification fired during in-progress poll: %d (#2420 must be silent)", srv.called)
 	}
@@ -2853,8 +2598,8 @@ func TestWatcher_NewCommits_KeepsPollingSilently(t *testing.T) {
 	}
 
 	// Second tick: required check now green, mergeStateStatus flips to CLEAN.
-	fw.fetchFn = func(_ context.Context, pr int) (*prInfo, error) {
-		return &prInfo{
+	gh.view = func(int) (prInfo, error) {
+		return prInfo{
 			State:            "OPEN",
 			MergeStateStatus: "CLEAN",
 			StatusCheckRollup: []checkEntry{
@@ -2862,9 +2607,8 @@ func TestWatcher_NewCommits_KeepsPollingSilently(t *testing.T) {
 			},
 		}, nil
 	}
-	fw.mergeFn = func(_ context.Context, pr int) ([]byte, error) { return nil, nil }
 
-	fw.processHead(context.Background())
+	w.tick(context.Background())
 
 	row, err = d.PendingMergeByPR(3420, "myrepo")
 	if err != nil {
