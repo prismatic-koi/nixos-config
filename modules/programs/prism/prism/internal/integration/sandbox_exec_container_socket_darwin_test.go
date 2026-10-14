@@ -232,7 +232,7 @@ func privateTmpSocket(t *testing.T) string {
 }
 
 // sessionTmpSocket binds a listener in the per-session TMPDIR of m and
-// returns the socket path in the /tmp form, the form that TMPDIR holds.
+// returns the socket path in the /var/tmp form, the form that TMPDIR holds.
 // Prepare must have run, so the dir exists.
 func sessionTmpSocket(t *testing.T, m *container.Manager, name string) string {
 	t.Helper()

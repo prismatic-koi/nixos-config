@@ -121,14 +121,15 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// sessionTmpRootForSuite keeps the production root (/tmp) of the
-// per-session TMPDIR when the test process can write /tmp. A test process in
-// a sandbox-exec session cannot, so Manager.PrepareSandboxExec fails there.
+// sessionTmpRootForSuite keeps the production root (/var/tmp) of the
+// per-session TMPDIR when the test process can write /var/tmp. A test
+// process in a sandbox-exec session cannot, so Manager.PrepareSandboxExec
+// fails there.
 // In that case the root moves to a new dir under os.TempDir(), the
 // per-session TMPDIR of the session. The sandbox-exec tests skip in such a
 // session, and the profile-content tests still run.
 func sessionTmpRootForSuite() (restore func()) {
-	if probe, err := os.MkdirTemp("/tmp", "pst-"); err == nil {
+	if probe, err := os.MkdirTemp("/var/tmp", "pst-"); err == nil {
 		_ = os.Remove(probe)
 		return func() {}
 	}

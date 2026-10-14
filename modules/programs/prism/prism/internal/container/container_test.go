@@ -27,7 +27,7 @@ import (
 // prism-* files under the host temp dir.
 //
 // The same directory is the root of the per-session TMPDIRs that Prepare
-// creates (sessionTmpRoot). A sandboxed test process cannot write /tmp.
+// creates (sessionTmpRoot). A sandboxed test process cannot write /var/tmp.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "prism-container-test-")
 	if err != nil {

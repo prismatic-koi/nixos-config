@@ -40,7 +40,7 @@ same connection is absent. Use `prism container` for every container action
 in place of a direct socket.
 
 In a sandbox-exec session, `TMPDIR` is a per-session dir,
-`/tmp/prism-<hash>`. It is the only temp dir that the session can write.
+`/var/tmp/prism-<hash>`. It is the only temp dir that the session can write.
 The session cannot create, rename, or delete a file in `/tmp`,
 `/private/tmp`, or the per-user `$TMPDIR`, and cannot read the TMPDIR of
 another session. Put temp files in `$TMPDIR`, not in `/tmp`. `prism

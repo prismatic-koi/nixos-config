@@ -12,12 +12,12 @@ import (
 	"testing"
 )
 
-// useProductionSessionTmpRoot points the per-session TMPDIR root at /tmp, the
-// production root, for the rest of t. Only tests that do not create the dir
+// useProductionSessionTmpRoot points the per-session TMPDIR root at
+// /var/tmp, the production root, for the rest of t. Only tests that do not create the dir
 // call it: a content test then checks the production paths.
 func useProductionSessionTmpRoot(t *testing.T) {
 	t.Helper()
-	t.Cleanup(SetSessionTmpRootForTest("/tmp"))
+	t.Cleanup(SetSessionTmpRootForTest("/var/tmp"))
 }
 
 // grantedSBPLPaths returns every path term of every allow clause whose
@@ -90,20 +90,20 @@ func TestSessionTmpDirPath_ShortStableAndPerInstance(t *testing.T) {
 	if a1 == b {
 		t.Errorf("two instance IDs share the TMPDIR %q", a1)
 	}
-	if !strings.HasPrefix(a1, "/tmp/prism-") || len(filepath.Base(a1)) != len("prism-")+sessionTmpDirHashLen {
-		t.Errorf("TMPDIR %q is not /tmp/prism-<%d hex chars>", a1, sessionTmpDirHashLen)
+	if !strings.HasPrefix(a1, "/var/tmp/prism-") || len(filepath.Base(a1)) != len("prism-")+sessionTmpDirHashLen {
+		t.Errorf("TMPDIR %q is not /var/tmp/prism-<%d hex chars>", a1, sessionTmpDirHashLen)
 	}
 
 	// The go test suite binds Unix sockets several levels below TMPDIR, and
 	// a socket path must fit in sun_path (104 bytes with the NUL on Darwin).
-	// At 31 bytes in the resolved form the suite passes in a sandbox-exec
+	// At 35 bytes in the resolved form the suite passes in a sandbox-exec
 	// session; each extra byte is one byte less for those socket paths.
 	resolved := symlinkForms(a1)[0]
 	if resolved != "/private"+a1 {
 		t.Fatalf("resolved form = %q, want %q", resolved, "/private"+a1)
 	}
-	if len(resolved) > 31 {
-		t.Errorf("resolved TMPDIR %q is %d bytes; keep it at 31 or less so the socket paths of go test fit in sun_path", resolved, len(resolved))
+	if len(resolved) > 35 {
+		t.Errorf("resolved TMPDIR %q is %d bytes; keep it at 35 or less so the socket paths of go test fit in sun_path", resolved, len(resolved))
 	}
 
 	if _, err := SessionTmpDirPath(""); err == nil {
@@ -115,6 +115,7 @@ func TestSymlinkForms(t *testing.T) {
 	cases := map[string][]string{
 		"/tmp/prism-x":             {"/private/tmp/prism-x", "/tmp/prism-x"},
 		"/private/tmp/prism-x":     {"/private/tmp/prism-x", "/tmp/prism-x"},
+		"/var/tmp/prism-x":         {"/private/var/tmp/prism-x", "/var/tmp/prism-x"},
 		"/var/folders/a/T":         {"/private/var/folders/a/T", "/var/folders/a/T"},
 		"/private/var/folders/a/T": {"/private/var/folders/a/T", "/var/folders/a/T"},
 		"/tmpfoo/x":                {"/tmpfoo/x"},
@@ -129,8 +130,8 @@ func TestSymlinkForms(t *testing.T) {
 }
 
 func TestSessionTmpDirEnv(t *testing.T) {
-	got := SessionTmpDirEnv("/tmp/prism-abc")
-	want := []string{"TMPDIR=/tmp/prism-abc", "MAC_CHROMIUM_TMPDIR=/tmp/prism-abc"}
+	got := SessionTmpDirEnv("/var/tmp/prism-abc")
+	want := []string{"TMPDIR=/var/tmp/prism-abc", "MAC_CHROMIUM_TMPDIR=/var/tmp/prism-abc"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("SessionTmpDirEnv = %q, want %q", got, want)
 	}
@@ -376,7 +377,20 @@ func TestGenerateProfile_SessionTmpDirGrant(t *testing.T) {
 
 	clause := extractClause(t, profile, "(allow file-read* file-write* file-test-existence file-read-metadata file-map-executable\n  (subpath "+quoteSBPL("/private"+tmpDir)+")")
 	if !strings.Contains(clause, "(subpath "+quoteSBPL(tmpDir)+")") {
-		t.Errorf("the TMPDIR grant lacks the /tmp form %q; clause:\n%s", tmpDir, clause)
+		t.Errorf("the TMPDIR grant lacks the /var form %q; clause:\n%s", tmpDir, clause)
+	}
+
+	// Stat on each ancestor node, as literals: a tool can resolve the /var
+	// symlink without the section-6b ancestor allow, and gets no directory
+	// list of /var/tmp.
+	want := "(allow file-read-metadata file-test-existence\n" +
+		"  (literal \"/private/var/tmp\")\n" +
+		"  (literal \"/private/var\")\n" +
+		"  (literal \"/private\")\n" +
+		"  (literal \"/var/tmp\")\n" +
+		"  (literal \"/var\"))\n"
+	if !strings.Contains(profile, want) {
+		t.Errorf("profile lacks the ancestor stat allow of the TMPDIR:\n%s\nprofile:\n%s", want, profile)
 	}
 
 	writes := grantedSBPLPaths(profile, func(ops string) bool { return strings.Contains(ops, "file-write") })
@@ -397,8 +411,8 @@ func TestGenerateProfile_SessionTmpDirGrant(t *testing.T) {
 }
 
 // TestGenerateProfile_NoSharedTmpGrant is the class fix of #3150: no write
-// grant and no Unix-socket connect allowance covers /tmp, /private/tmp, or
-// the user $TMPDIR. A host socket there (tmux, the ssh-agent, AeroSpace,
+// grant and no Unix-socket connect allowance covers /tmp, /private/tmp, the
+// user $TMPDIR, or /var/tmp outside the session's own TMPDIR. A host socket there (tmux, the ssh-agent, AeroSpace,
 // podman, nvim, or one that the profile does not name) is then
 // unreachable, and the session cannot create, rename, or delete a file
 // there. TestGenerateProfile_SessionTmpDirGrant is the control: the same
@@ -421,6 +435,11 @@ func TestGenerateProfile_NoSharedTmpGrant(t *testing.T) {
 		"/var/folders/zz/abcdef/T/podman/podman-machine-default-api.sock",
 		"/private/var/folders/zz/abcdef/T",
 		"/private/var/folders/zz/abcdef/T/nvim.u/r/nvim.1.0",
+		// The parent of the per-session TMPDIRs is a shared tree too.
+		"/private/var/tmp",
+		"/private/var/tmp/x.sock",
+		"/var/tmp",
+		"/var/tmp/x.sock",
 	} {
 		if r, ok := anyCovers(writes, p); ok {
 			t.Errorf("write grant (%s %q) covers the shared temp path %s.\nclause:\n%s", r.form, r.path, p, r.clause)

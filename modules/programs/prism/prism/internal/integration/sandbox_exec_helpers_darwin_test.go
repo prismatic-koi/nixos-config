@@ -253,9 +253,8 @@ func newProfileManagerWithBareRootAndPi(t *testing.T) *container.Manager {
 // These additions are testing infrastructure only. They are NOT added to the
 // production profile. They do not affect whether the rule under test is
 // active — that is determined solely by the rule (or its absence) in the
-// generated profile. The /private/tmp extra also covers every per-session
-// TMPDIR (/private/tmp/prism-<hash>), so a test of a /tmp or TMPDIR rule
-// uses augmentProfileForProbe instead.
+// generated profile. The /private/tmp extra hides a /tmp rule, so a test of
+// a /tmp or TMPDIR rule uses augmentProfileForProbe instead.
 func augmentProfileForTest(profile string) string {
 	return augmentProfileForProbe(profile) +
 		"(allow file-read* file-write* (subpath \"/private/tmp\"))\n"

@@ -79,8 +79,7 @@ The Darwin-only integration tests live in
   Nix-built binary needs to start under the sandbox during testing (root
   inode literal, `/dev`, `/private/tmp` write). These are testing
   infrastructure only — they are NOT added to the production profile. The
-  `/private/tmp` write also covers every per-session TMPDIR, so it hides a
-  `/tmp` or TMPDIR rule.
+  `/private/tmp` write hides a `/tmp` rule.
 - `augmentProfileForProbe(profile)`, `writeProbePositiveProfile(t, p)`, and
   `withMutatedProbeProfile(t, m, mutate)` — the same helpers with only the
   root inode literal and `/dev`. Use them for a test of a `/tmp`,
@@ -286,12 +285,12 @@ integration test coverage exists for:
   fails on any SKIP) has none of these services. See
   `sandbox_exec_container_socket_darwin_test.go`.
 - **The per-session TMPDIR** — the section-3 read-write grant on
-  `/tmp/prism-<hash of the instance ID>` (both `/tmp` symlink forms) and
+  `/var/tmp/prism-<hash of the instance ID>` (both `/var` symlink forms) and
   the section-21e deny on unlink and create of its node (#3150). The
   dispatcher sets `TMPDIR` and `MAC_CHROMIUM_TMPDIR` to this dir. Under the
   production profile:
   - The session creates, reads, renames, and removes a file in its TMPDIR,
-    and binds and connects a socket at an 88-byte path there.
+    and binds and connects a socket at a 92-byte path there.
   - The session cannot create, rename, or remove a file in `/private/tmp`,
     `/tmp`, or the user `$TMPDIR`, and cannot move a file from there into
     its TMPDIR.

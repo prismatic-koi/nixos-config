@@ -4,22 +4,28 @@ package container
 //
 // Each sandbox-exec session gets its own temp dir:
 //
-//	/tmp/prism-<first 12 hex chars of sha256(instance ID)>
+//	/var/tmp/prism-<first 12 hex chars of sha256(instance ID)>
 //
 // The dispatcher (cmd/agent_run_sandbox_exec_darwin.go) sets TMPDIR and
 // MAC_CHROMIUM_TMPDIR to this dir. The SBPL profile grants read-write and
 // Unix-socket connect on it, and on no other temp tree: /tmp, /private/tmp,
 // and the user $TMPDIR under /var/folders stay closed to the session (#3150).
 //
-// The dir is under /tmp because a Unix socket path must fit in sun_path
-// (104 bytes on Darwin). The go test suite binds sockets several levels
-// below TMPDIR. A dir under the session work dir or under /var/folders
-// leaves too few bytes for those paths.
+// The dir is short because a Unix socket path must fit in sun_path (104
+// bytes on Darwin). The go test suite binds sockets several levels below
+// TMPDIR. A dir under the session work dir or under /var/folders leaves too
+// few bytes for those paths.
+//
+// The dir is under /var/tmp, not /tmp: macOS tmp_cleaner
+// (/usr/libexec/tmp_cleaner, daily) deletes an empty dir under /tmp that
+// has not changed for 3 days. The session cannot make its TMPDIR again,
+// because the profile denies a create at the node (section 21e) and in the
+// parent. tmp_cleaner does not clean /var/tmp.
 //
 // The name derives from the instance ID, so cleanup finds the dir from the
-// DB row alone and no session can steer the path. /tmp is writable by every
-// local user, so Prepare refuses a dir at that path that it did not make:
-// a symlink, a file, or a dir of another user.
+// DB row alone and no session can steer the path. /var/tmp is writable by
+// every local user, so Prepare refuses a dir at that path that it did not
+// make: a symlink, a file, or a dir of another user.
 
 import (
 	"crypto/sha256"
@@ -35,9 +41,9 @@ import (
 
 // sessionTmpRoot is the parent dir of every per-session TMPDIR. It is a test
 // seam: production code never reassigns it. Tests point it at a test-owned
-// dir, because a sandboxed test process cannot write /tmp and the nix build
-// sandbox can have no /tmp.
-var sessionTmpRoot = "/tmp"
+// dir, because a sandboxed test process cannot write /var/tmp and the nix
+// build sandbox can have no /var/tmp.
+var sessionTmpRoot = "/var/tmp"
 
 // SetSessionTmpRootForTest points the per-session TMPDIR root at dir and
 // returns a function that restores the previous root. Only tests call it.

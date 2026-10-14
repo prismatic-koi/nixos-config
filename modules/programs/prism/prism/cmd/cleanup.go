@@ -1791,7 +1791,7 @@ var severGateForceAlwaysSever bool
 //   - the per-session work dir, which also covers staging-HOME remnants
 //     that legacy sessions left nested at <sessionDir>/home/,
 //   - the per-session TMPDIR of a sandbox-exec session
-//     (/tmp/prism-<hash>, see internal/container/session_tmp_dir.go),
+//     (/var/tmp/prism-<hash>, see internal/container/session_tmp_dir.go),
 //   - the per-session podman-proxy audit dir, which sits outside the work
 //     dir so the agent has no write path to its own audit trail (see
 //     internal/container/podman_proxy_audit.go) and therefore needs its

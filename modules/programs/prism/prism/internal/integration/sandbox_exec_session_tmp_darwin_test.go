@@ -5,7 +5,7 @@ package integration_test
 // sandbox_exec_session_tmp_darwin_test.go — the per-session TMPDIR of the
 // sandbox-exec profile (sections 3 and 21e of generateProfile, #3150).
 //
-// Each session has its own TMPDIR, /tmp/prism-<hash of the instance ID>.
+// Each session has its own TMPDIR, /var/tmp/prism-<hash of the instance ID>.
 // The session can write files and bind and connect Unix sockets there. It
 // cannot create, rename, or delete a file in /private/tmp, /tmp, or the user
 // $TMPDIR, and it cannot read, write, or connect in the TMPDIR of another
@@ -40,7 +40,7 @@ func expectOp(t *testing.T, profilePath, probe string, wantOK bool, why string, 
 }
 
 // longSocketName is a 64-byte socket name. A path of the form
-// <TMPDIR>/<longSocketName> is 88 bytes in the /tmp form, inside the 104-byte
+// <TMPDIR>/<longSocketName> is 92 bytes in the /var/tmp form, inside the 104-byte
 // Darwin sun_path limit, and has the depth of a go test socket below a
 // t.TempDir()-style directory.
 var longSocketName = strings.Repeat("s", 59) + ".sock"

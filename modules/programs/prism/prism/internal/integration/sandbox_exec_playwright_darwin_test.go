@@ -322,8 +322,8 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 	}
 
 	// The probe extras add no /tmp grant: the test-harness extras grant
-	// write on /private/tmp, which covers the per-session TMPDIR and would
-	// hide a chromium temp write outside it.
+	// write on /private/tmp, which would hide a chromium temp write outside
+	// the per-session TMPDIR.
 	testProfilePath := writeProbePositiveProfileWithLaunchDir(t, prepared, sessionDir)
 
 	combined, runErr := runPlaywrightCLIOpen(t, testProfilePath, playwrightBin, sessionDir)

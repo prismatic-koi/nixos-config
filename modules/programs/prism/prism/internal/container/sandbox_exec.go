@@ -191,7 +191,7 @@ func ensureGoCacheDirs() {
 //   - Read-only system roots with file-test-existence, file-map-executable,
 //     file-read-metadata alongside file-read* (required by dyld/AMFI)
 //   - /bin, /sbin, and /var/... symlink-alias forms (v3 additions)
-//   - The per-session TMPDIR read-write (/tmp/prism-<hash>) — the only temp
+//   - The per-session TMPDIR read-write (/var/tmp/prism-<hash>) — the only temp
 //     tree the session can write. /tmp, /private/tmp, and the user $TMPDIR
 //     have no write grant
 //   - Deny of sensitive /private/etc subtrees (wireguard, wpa_supplicant, ssh),
@@ -237,7 +237,7 @@ func generateProfile(m *Manager) string {
 	// determined (e.g. no home dir) the derived rules are simply omitted.
 	sessionDir, sessionDirErr := m.sessionWorkDirPath()
 
-	// The per-session TMPDIR, in both /tmp symlink forms. Empty when the
+	// The per-session TMPDIR, in both /var symlink forms. Empty when the
 	// path cannot be derived; Prepare then fails before the profile is used.
 	var sessionTmpForms []string
 	if sessionTmpDir, err := m.sessionTmpDirPath(); err == nil {
@@ -345,14 +345,19 @@ func generateProfile(m *Manager) string {
 	// cannot rename the socket or an ancestor dir of it: with a write grant,
 	// the session moves a host socket into its TMPDIR and connects there.
 	//
-	// The dir of another session is a sibling under /private/tmp. No rule
+	// The dir of another session is a sibling under /private/var/tmp. No rule
 	// covers it, so the session cannot read it, write it, or connect in it.
 	//
-	// Both /tmp symlink forms are listed. file-map-executable lets a tool
+	// The dir is under /var/tmp, not /tmp: macOS tmp_cleaner deletes an
+	// empty dir under /tmp that has not changed for 3 days, and the session
+	// cannot make it again (see session_tmp_dir.go).
+	//
+	// Both /var symlink forms are listed. file-map-executable lets a tool
 	// dlopen a native module that it extracts to TMPDIR. The literal
-	// metadata allow on /tmp, /private/tmp, and /private lets a tool resolve
-	// the /tmp symlink (realpath, filepath.EvalSymlinks) when the section-6b
-	// ancestor allow is absent. It grants stat only, not a directory list.
+	// metadata allow on each ancestor node of the TMPDIR (/var/tmp,
+	// /private/var/tmp, /private/var, /private) lets a tool resolve the /var
+	// symlink (realpath, filepath.EvalSymlinks) when the section-6b ancestor
+	// allow is absent. It grants stat only, not a directory list.
 	//
 	// The session can write the node of its own TMPDIR, because a subpath
 	// covers its root. Section 21e takes back unlink and create on the node.
@@ -366,10 +371,7 @@ func generateProfile(m *Manager) string {
 			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
-		sb.WriteString("(allow file-read-metadata file-test-existence\n")
-		sb.WriteString("  (literal \"/private\")\n")
-		sb.WriteString("  (literal \"/private/tmp\")\n")
-		sb.WriteString("  (literal \"/tmp\"))\n")
+		sb.WriteString(ancestorMetadataAllow(sessionTmpForms))
 		sb.WriteString("\n")
 	}
 
@@ -1274,7 +1276,7 @@ func generateProfile(m *Manager) string {
 	// that Prepare made, so host-side code never meets a planted symlink.
 	//
 	// The rules are literals, so they match the node only, and files below
-	// it keep the section-3 grant. /private/tmp, the parent, has no write
+	// it keep the section-3 grant. /private/var/tmp, the parent, has no write
 	// grant, so the chain stops there. The deny must follow every allow,
 	// because SBPL resolves a conflict in favour of the later rule.
 	// TestGenerateProfile_SessionTmpDirNodeDenyFollowsEveryAllow pins the
@@ -1356,6 +1358,24 @@ func worktreeReadOnlyDeny(worktree string) string {
 		clause += "\n  (subpath " + quoteSBPL(real) + ")"
 	}
 	return clause + ")\n"
+}
+
+// ancestorMetadataAllow is the section-3 allow of file-read-metadata and
+// file-test-existence on each ancestor node of the given paths, as
+// literals, from the parent up to and without "/" (section 2 lists "/").
+func ancestorMetadataAllow(paths []string) string {
+	var nodes []string
+	seen := map[string]bool{}
+	for _, p := range paths {
+		for dir := filepath.Dir(filepath.Clean(p)); dir != "/" && dir != "." && !seen[dir]; dir = filepath.Dir(dir) {
+			seen[dir] = true
+			nodes = append(nodes, "  (literal "+quoteSBPL(dir)+")")
+		}
+	}
+	if len(nodes) == 0 {
+		return ""
+	}
+	return "(allow file-read-metadata file-test-existence\n" + strings.Join(nodes, "\n") + ")\n"
 }
 
 // sessionTmpNodeDeny is the section-21e clause of generateProfile.
