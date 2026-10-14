@@ -6,7 +6,9 @@
 //	go build -ldflags "-X github.com/prismatic-koi/prism/internal/stateguard.Root=<dir>"
 //
 // Check then refuses to let the binary run when its home, state, config, or
-// tmux socket path is outside Root. The guard is in the binary, so it holds
+// tmux socket path is outside Root. main calls it first. Package init runs
+// before main, so config.LoadForInit also calls it and reads no config file
+// when it fails. The guard is in the binary, so it holds
 // when a shell startup file, for example a home-manager ~/.zshenv, sets
 // XDG_STATE_HOME or XDG_CONFIG_HOME back to the real paths of the user. Each
 // process that the binary starts (the sidecar, `prism event`, `prism
@@ -45,6 +47,9 @@ func Check(getenv func(string) string) error {
 		{"XDG_STATE_HOME", state},
 		{"XDG_CONFIG_HOME", config},
 		{"tmux socket", tmuxSocketDir(getenv)},
+	}
+	if f := getenv("PRISM_CONFIG_FILE"); f != "" {
+		checks = append(checks, struct{ name, path string }{"PRISM_CONFIG_FILE", f})
 	}
 	for _, c := range checks {
 		if !within(c.path, Root) {

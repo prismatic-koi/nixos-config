@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -18,8 +19,8 @@ import (
 // ShortTempDir returns a new directory with a short path and removes it at
 // cleanup. A Unix socket path must fit in sun_path (104 bytes on Darwin).
 // On macOS, os.TempDir() is a long /var/folders/... path in a host shell, so
-// the directory goes under /tmp first. If /tmp is not writable, it goes under
-// os.TempDir().
+// there the directory goes under /tmp first. On other systems it goes under
+// os.TempDir() first, which the nix check phase points at /dev/shm.
 func ShortTempDir(t testing.TB, pattern string) string {
 	t.Helper()
 	dir, err := mkdirShort(pattern)
@@ -31,9 +32,13 @@ func ShortTempDir(t testing.TB, pattern string) string {
 }
 
 func mkdirShort(pattern string) (string, error) {
-	dir, err := os.MkdirTemp("/tmp", pattern)
+	first, second := "", "/tmp"
+	if runtime.GOOS == "darwin" {
+		first, second = "/tmp", ""
+	}
+	dir, err := os.MkdirTemp(first, pattern)
 	if err != nil {
-		dir, err = os.MkdirTemp("", pattern)
+		dir, err = os.MkdirTemp(second, pattern)
 	}
 	if err != nil {
 		return "", err
@@ -45,17 +50,18 @@ func mkdirShort(pattern string) (string, error) {
 // process that the suite starts.
 const SuiteRootEnv = "PRISM_TEST_SUITE_ROOT"
 
-// SessionPathEnv names the variables that prism sets in the pane of a
-// session, with a path under the real state dir as the value. A test process
-// in a host-mode session inherits them. IsolateSuite unsets them.
-var SessionPathEnv = []string{"PRISM_INITIAL_PROMPT_FILE", "PRISM_AGENT_RUN_LOG", "PRISM_HARNESS_PIPE"}
+// InheritedPathEnv names the variables that can point prism at a real state
+// or config path. prism sets the first three in the pane of a session, so a
+// test process in a host-mode session inherits them. PRISM_CONFIG_FILE
+// replaces the config path of XDG_CONFIG_HOME. IsolateSuite unsets them.
+var InheritedPathEnv = []string{"PRISM_INITIAL_PROMPT_FILE", "PRISM_AGENT_RUN_LOG", "PRISM_HARNESS_PIPE", "PRISM_CONFIG_FILE"}
 
 // SuiteEnv names each variable that IsolateSuite sets or unsets.
-var SuiteEnv = append([]string{"XDG_STATE_HOME", "XDG_CONFIG_HOME", "SHELL", SuiteRootEnv}, SessionPathEnv...)
+var SuiteEnv = append([]string{"XDG_STATE_HOME", "XDG_CONFIG_HOME", "SHELL", SuiteRootEnv}, InheritedPathEnv...)
 
 // IsolateSuite is for TestMain, before m.Run. It points XDG_STATE_HOME and
 // XDG_CONFIG_HOME at a new directory that the suite owns, sets SHELL to
-// /bin/sh, and unsets the SessionPathEnv variables. It returns the directory
+// /bin/sh, and unsets the InheritedPathEnv variables. It returns the directory
 // and a function that restores the environment and removes the directory.
 //
 // Every prism state and config path reads XDG_STATE_HOME or XDG_CONFIG_HOME
@@ -70,13 +76,17 @@ var SuiteEnv = append([]string{"XDG_STATE_HOME", "XDG_CONFIG_HOME", "SHELL", Sui
 // path, and that catches a test that writes under HOME.
 //
 // A test can start its own test binary again as a helper process, and can
-// kill it before its TestMain restores. Such a helper inherits the isolated
-// environment, so IsolateSuite keeps the suite directory of the parent and
-// returns a restore that does nothing. The parent removes the directory.
+// kill it before its TestMain restores. Such a helper inherits the
+// environment of its parent test: the suite isolated it, and the test can
+// have narrowed it, for example with XDG_STATE_HOME=t.TempDir(). So when
+// SuiteRootEnv names an existing directory, IsolateSuite changes nothing,
+// and returns that directory and a restore that does nothing. The parent
+// removes the directory.
 func IsolateSuite() (root string, restore func()) {
-	if parent := os.Getenv(SuiteRootEnv); parent != "" &&
-		inside(os.Getenv("XDG_STATE_HOME"), parent) && inside(os.Getenv("XDG_CONFIG_HOME"), parent) {
-		return parent, func() {}
+	if parent := os.Getenv(SuiteRootEnv); parent != "" {
+		if info, err := os.Stat(parent); err == nil && info.IsDir() {
+			return parent, func() {}
+		}
 	}
 	root, err := mkdirShort("prism-suite-" + strings.TrimSuffix(filepath.Base(os.Args[0]), ".test") + "-")
 	if err != nil {
@@ -100,7 +110,7 @@ func IsolateSuite() (root string, restore func()) {
 	os.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	os.Setenv("SHELL", "/bin/sh")
 	os.Setenv(SuiteRootEnv, root)
-	for _, k := range SessionPathEnv {
+	for _, k := range InheritedPathEnv {
 		os.Unsetenv(k)
 	}
 	return root, func() {
@@ -138,9 +148,9 @@ func RequireIsolated(t testing.TB, root string) {
 			t.Errorf("%s=%q is outside the suite dir %q: the suite can reach the real prism state", k, v, root)
 		}
 	}
-	for _, k := range SessionPathEnv {
+	for _, k := range InheritedPathEnv {
 		if v, ok := os.LookupEnv(k); ok {
-			t.Errorf("%s=%q is set: a session of the host can point it at the real prism state", k, v)
+			t.Errorf("%s=%q is set: it can point prism at the real state or config", k, v)
 		}
 	}
 }

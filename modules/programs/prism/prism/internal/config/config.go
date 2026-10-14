@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/stateguard"
 )
 
 // IsolationMode represents the isolation mechanism for agent sessions.
@@ -331,10 +333,12 @@ func Load() Config {
 // LoadForInit is Load for a package init. In a test binary it returns the
 // defaults and reads no file. Go runs package init before TestMain, so a
 // test cannot isolate XDG_CONFIG_HOME first: Load would read the real
-// config.json of the user and cache it for the whole test run (#3146). In
-// any other binary it returns Load().
+// config.json of the user and cache it for the whole test run (#3146). It
+// also returns the defaults in a binary that a test built and that
+// stateguard refuses, because init runs before main can refuse. In any other
+// binary it returns Load().
 func LoadForInit() Config {
-	if testing.Testing() {
+	if testing.Testing() || stateguard.Check(os.Getenv) != nil {
 		return defaults()
 	}
 	return Load()

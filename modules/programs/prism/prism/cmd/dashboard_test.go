@@ -1137,7 +1137,7 @@ func TestSortDisplayed(t *testing.T) {
 
 // TestPersistentModelEnterMultiClient verifies that pressing Enter in client
 // A's persistentModel switches only client A to the selected session. Client B,
-// a bystander viewing the same session, must remain unaffected.
+// a bystander, must remain unaffected.
 //
 // Client A views the dashboard session, so the model resolves A as the client
 // that pressed Enter. Client B views nixos-config@main.

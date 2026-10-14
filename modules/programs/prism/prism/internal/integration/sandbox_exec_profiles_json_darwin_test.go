@@ -51,17 +51,24 @@ import (
 	"testing"
 )
 
-// prismProfilesJSONPath returns the path of the prism declarative profiles
+// prismProfilesJSONTarget returns the path of the prism declarative profiles
 // config, derived the same way generateProfile derives it
-// (os.UserHomeDir() + .config/prism/profiles.json), and plants a regular
-// file there. Call useTestHome first, so the path is in the test home.
-func prismProfilesJSONPath(t *testing.T) string {
+// (os.UserHomeDir() + .config/prism/profiles.json). Call useTestHome first,
+// so the path is in the test home.
+func prismProfilesJSONTarget(t *testing.T) string {
 	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		t.Skipf("cannot determine user home: %v", err)
 	}
-	path := filepath.Join(home, ".config", "prism", "profiles.json")
+	return filepath.Join(home, ".config", "prism", "profiles.json")
+}
+
+// prismProfilesJSONPath returns prismProfilesJSONTarget and plants a regular
+// file there.
+func prismProfilesJSONPath(t *testing.T) string {
+	t.Helper()
+	path := prismProfilesJSONTarget(t)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("create %s: %v", filepath.Dir(path), err)
 	}
@@ -102,6 +109,35 @@ func TestSandboxExecProfile_PrismProfilesJSONReadable(t *testing.T) {
 
 	if runErr != nil {
 		t.Errorf("the sandboxed read of %s failed.\nExit: %v\nOutput: %s\nProfile: %s",
+			target, runErr, string(out), profilePath)
+	}
+}
+
+// TestSandboxExecProfile_PrismProfilesJSONMissingKeepsENOENT is the
+// missing-file case of #2286: with no profiles.json, the sandboxed open must
+// fail with ENOENT ("No such file or directory"), the error LoadProfiles
+// already handles, and not with EPERM ("Operation not permitted").
+func TestSandboxExecProfile_PrismProfilesJSONMissingKeepsENOENT(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	useTestHome(t)
+	nixBash := requireNixBash(t)
+	target := prismProfilesJSONTarget(t)
+
+	m := newProfileManagerWithBareRoot(t)
+	prepared, _ := preparePositiveProfile(t, m)
+	profilePath := writeAugmentedPositiveProfile(t, prepared)
+
+	cmd := exec.Command(sandboxExecPath, "-f", profilePath,
+		nixBash, "-c", "cat "+shQuote(target))
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("cat of missing file %s exited 0.\nOutput: %s", target, string(out))
+	}
+	if !strings.Contains(string(out), "No such file or directory") {
+		t.Errorf("cat of missing file %s did not fail with ENOENT, so the sandbox changed the result.\nExit: %v\nOutput: %s\nProfile: %s",
 			target, runErr, string(out), profilePath)
 	}
 }

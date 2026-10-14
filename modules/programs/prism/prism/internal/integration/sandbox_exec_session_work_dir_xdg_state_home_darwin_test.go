@@ -58,8 +58,9 @@ func TestSandboxExecSessionWorkDir_XDGStateHomeBranch_GrantsWrites(t *testing.T)
 	requireSandboxExec(t)
 	nixBash := requireNixBash(t)
 
-	// newProfileManager sets XDG_STATE_HOME=t.TempDir(). Capture it
-	// here so we can assert sessionDir is rooted under it, not under $HOME.
+	// newProfileManager sets XDG_STATE_HOME to a test-owned dir
+	// (stateHomeOutsideTmp). Capture it here so we can assert sessionDir is
+	// rooted under it, not under $HOME/.local/state.
 	m := newProfileManager(t)
 	xdgStateHome := os.Getenv("XDG_STATE_HOME")
 	if xdgStateHome == "" {

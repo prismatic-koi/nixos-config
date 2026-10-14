@@ -167,12 +167,21 @@ func requireTestDBRow(t *testing.T, root, sessionName string) {
 }
 
 // requireTestDBRowEnded fails t unless the row for sessionName in the test
-// database is ended. It shows that a destructive verb acted on the test state
-// dir.
+// database is ended within 10 seconds. It shows that a destructive verb
+// acted on the test state dir. The cleanup binary writes ended_at after it
+// kills the tmux session, so the test waits for the write.
 func requireTestDBRowEnded(t *testing.T, root, sessionName string) {
 	t.Helper()
-	if st := testDBStatus(t, root, sessionName); st == nil || st.EndedAt == nil {
-		t.Errorf("the %q row of the test database is not ended: the cleanup did not act on the test state dir", sessionName)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if st := testDBStatus(t, root, sessionName); st != nil && st.EndedAt != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("the %q row of the test database is not ended: the cleanup did not act on the test state dir", sessionName)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

@@ -71,6 +71,7 @@ func TestCheck_RefusesPathOutsideRoot(t *testing.T) {
 		{"empty home", map[string]string{"HOME": ""}, "HOME"},
 		{"tmux socket of another server", map[string]string{"TMUX": "/private/tmp/tmux-501/default,99,0"}, "tmux socket"},
 		{"default tmux server", map[string]string{"TMUX_TMPDIR": ""}, "tmux socket"},
+		{"real config file", map[string]string{"PRISM_CONFIG_FILE": "/Users/someone/.config/prism/config.json"}, "PRISM_CONFIG_FILE"},
 		{"sibling with the root as a name prefix", map[string]string{"XDG_STATE_HOME": root + "-other/state"}, "XDG_STATE_HOME"},
 		{"relative path", map[string]string{"XDG_STATE_HOME": "state"}, "XDG_STATE_HOME"},
 		{"parent traversal", map[string]string{"XDG_STATE_HOME": filepath.Join(root, "..", "state")}, "XDG_STATE_HOME"},
@@ -89,8 +90,8 @@ func TestCheck_RefusesPathOutsideRoot(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Check = nil, want an error that names %s", tc.wantName)
 			}
-			if !strings.Contains(err.Error(), tc.wantName) {
-				t.Errorf("Check error = %q, want it to name %s", err, tc.wantName)
+			if want := "The " + tc.wantName + " path"; !strings.Contains(err.Error(), want) {
+				t.Errorf("Check error = %q, want it to contain %q", err, want)
 			}
 		})
 	}
