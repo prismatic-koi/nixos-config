@@ -54,8 +54,9 @@ type prViewJSON struct {
 // against different PRs in the same worktree do not collide. The round suffix
 // disambiguates multiple rounds against the same PR.
 //
-// When stateDir is empty the function falls back to /tmp (host-mode review
-// agents, Darwin sandbox-exec).
+// When stateDir is empty the function falls back to /tmp. Only a host-mode
+// review agent can read it there: a sandbox-exec agent cannot read /tmp, so
+// a sandbox-exec review needs a stateDir (cmd/review.go always gives one).
 func diffFilePath(stateDir, prNumber string, round int) string {
 	if round <= 0 {
 		round = 1
@@ -69,9 +70,10 @@ func diffFilePath(stateDir, prNumber string, round int) string {
 		return fmt.Sprintf("%s/pr-%s-round-%d.diff", stateDir, prNumber, round)
 	}
 	// Fallback: /tmp — used when StateDir was not provided. Host-mode agents
-	// share the host filesystem directly; sandbox-exec agents allow file-read*
-	// on (subpath "/tmp") so /tmp is reachable. This also covers any future
-	// isolation mode where the worktree path is not Dst==Src.
+	// share the host filesystem directly. A sandbox-exec agent cannot read
+	// /tmp (its profile grants only its per-session TMPDIR there). This also
+	// covers any future isolation mode where the worktree path is not
+	// Dst==Src.
 	return fmt.Sprintf("/tmp/prism-review-%s-round-%d.diff", prNumber, round)
 }
 

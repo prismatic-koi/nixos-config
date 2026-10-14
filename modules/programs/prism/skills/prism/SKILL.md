@@ -107,8 +107,8 @@ are interpreted by the shell and silently corrupted if you are not careful.
 1. **`--prompt-file <path>`** — Write the prompt to a temp file; the shell never
    touches its contents:
    ```bash
-   printf 'run `gh pr view 42` and review the diff' > /tmp/prompt.txt
-   prism spawn --prompt-file /tmp/prompt.txt
+   printf 'run `gh pr view 42` and review the diff' > "${TMPDIR:-/tmp}/prompt.txt"
+   prism spawn --prompt-file "${TMPDIR:-/tmp}/prompt.txt"
    ```
 
 2. **`--prompt -` (read from stdin)** — The literal value `-` is a reserved
@@ -587,7 +587,7 @@ Use `prism investigate` to spawn a read-only research session from within a pris
 
 ```bash
 prism investigate --prompt "question"
-prism investigate --prompt-file /tmp/question.txt
+prism investigate --prompt-file "${TMPDIR:-/tmp}/question.txt"
 prism investigate --name my-analysis --prompt "question"
 ```
 
@@ -1189,8 +1189,8 @@ Use `prism prompt <session> --prompt <text>` to send a follow-up message to the 
 prism prompt nixos-config@update-plex --prompt 'looks good, go ahead and open a PR'
 
 # Prompt with backticks or complex content — use --prompt-file
-printf 'run `make test` and fix any failures' > /tmp/p.txt
-prism prompt nixos-config@update-plex --prompt-file /tmp/p.txt
+printf 'run `make test` and fix any failures' > "${TMPDIR:-/tmp}/p.txt"
+prism prompt nixos-config@update-plex --prompt-file "${TMPDIR:-/tmp}/p.txt"
 
 # Or via stdin
 prism prompt nixos-config@update-plex --prompt - <<'EOF'
@@ -1441,7 +1441,7 @@ The `--deliver` flag short-circuits the usual "pipe stdout into something" two-s
 ```bash
 prism logs <session>                                      # stdout (default)
 prism logs <session> --deliver=stdout                     # explicit stdout
-prism logs <session> --deliver=file:/tmp/sidecar.log      # atomic write to a file
+prism logs <session> --deliver=file:"${TMPDIR:-/tmp}/sidecar.log"   # atomic write to a file
 prism logs <session> --deliver=webhook:https://example.com/triage
 prism logs <session> --harness-events --deliver=webhook:https://example.com/frames
 ```

@@ -27,7 +27,7 @@ mechanically.
 You do not write code, even one-liners. You do not edit files. You do not open
 PRs. You do not file GitHub issues. You do not spawn other agents.
 
-You may write scratch files under `/tmp` to reproduce a failure or hold command output; never copy them into a repo or system location.
+You may write scratch files under `${TMPDIR:-/tmp}` to reproduce a failure or hold command output; never copy them into a repo or system location. In a sandbox-exec session, `TMPDIR` is the per-session TMPDIR, and `/tmp` is not writable.
 
 If a fix is obvious, surface it as a finding in your report. The coordinator
 will spawn a worker to action it.

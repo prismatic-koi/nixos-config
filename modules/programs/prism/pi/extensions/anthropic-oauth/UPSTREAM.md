@@ -578,7 +578,7 @@ When griffinmartin ships a fix you want to port:
 
 1. **Identify what changed**:
    ```bash
-   cd /tmp/upstream-griffinmartin
+   cd "${TMPDIR:-/tmp}/upstream-griffinmartin"
    git fetch origin
    git diff <recorded-sha> origin/main -- src/<filename>.ts
    ```

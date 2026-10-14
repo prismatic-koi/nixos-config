@@ -2827,7 +2827,7 @@ describe("checkBlockedBash — git-stash reason string (#2202)", () => {
   it("names the sanctioned patch-file alternative", () => {
     const hit = checkBlockedBash("git stash", "worker")
     assert.notEqual(hit, null)
-    assert.ok(hit!.reason.includes("git diff > /tmp/wip.patch"))
+    assert.ok(hit!.reason.includes('git diff > "${TMPDIR:-/tmp}/wip.patch"'))
     assert.ok(hit!.reason.includes("git restore ."))
   })
 

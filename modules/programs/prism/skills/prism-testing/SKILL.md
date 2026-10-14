@@ -197,7 +197,7 @@ One worker ran the patch-file restore leg with stderr suppressed (`2>/dev/null`)
 
 Safeguards:
 - Prefer the temp-commit pattern (`git add -A && git commit -m wip`, then `git reset --soft HEAD~1` to restore). It cannot half-apply — `git reset --soft` is atomic.
-- If using patch files, **always** run `git apply --check /tmp/wip.patch` first to verify the patch applies cleanly before running `git apply /tmp/wip.patch`. Never suppress stderr of `git apply` or any tree-restoring command.
+- If using patch files, **always** run `git apply --check "${TMPDIR:-/tmp}/wip.patch"` first to verify the patch applies cleanly before running `git apply "${TMPDIR:-/tmp}/wip.patch"`. Never suppress stderr of `git apply` or any tree-restoring command.
 - General rule: never run any tree-modifying or tree-restoring command with stderr suppressed (`2>/dev/null`).
 
 ## Reviewer-requested guards and side effects from surrounding calls (#2649 / PR #2676)
