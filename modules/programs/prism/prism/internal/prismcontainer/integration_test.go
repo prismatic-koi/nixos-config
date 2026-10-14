@@ -31,7 +31,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
-	"github.com/prismatic-koi/prism/internal/prismcontainer/prismcontainertest"
 )
 
 func integrationCaller(t *testing.T) prismcontainer.Caller {
@@ -43,7 +42,7 @@ func integrationCaller(t *testing.T) prismcontainer.Caller {
 	c := prismcontainer.Caller{
 		SessionName: "prism-test@integration",
 		InstanceID:  uuid.New().String(),
-		Worktree:    prismcontainertest.RealTempDir(t),
+		Worktree:    integrationWorktree(t),
 	}
 	t.Cleanup(func() { assertNoLabelledContainer(t, c.InstanceID) })
 	return c
@@ -622,7 +621,7 @@ func secondCaller(t *testing.T, c prismcontainer.Caller) prismcontainer.Caller {
 	o := prismcontainer.Caller{
 		SessionName: c.SessionName + "-other",
 		InstanceID:  uuid.New().String(),
-		Worktree:    prismcontainertest.RealTempDir(t),
+		Worktree:    integrationWorktree(t),
 	}
 	t.Cleanup(func() { assertNoLabelledContainer(t, o.InstanceID) })
 	return o
