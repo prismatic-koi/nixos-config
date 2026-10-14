@@ -444,11 +444,13 @@ other required job.
 sidecar owner-check tests of issue #3136. On Darwin, `StopSidecar` and
 `KillSidecar` read the command line of a PID with the `kern.procargs2`
 sysctl, not from `/proc`. The ubuntu `go-tests` job cannot run that code.
-This step runs directly on the runner, with no `nix shell` and no
+The step also runs the tests of `EnsureSidecarStopped` and of the
+ended-session sweep (#3160). Both use the owner check, and the
+review-sidecar leak was measured on Darwin. This step runs directly on the runner, with no `nix shell` and no
 `sandbox-exec` profile:
 
 ```
-go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2)' -race -count=1
+go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile)' -race -count=1
 ```
 
 The selector has `TestKillSidecar_*` with the underscore, so it does not

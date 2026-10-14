@@ -3,25 +3,21 @@ package cmd
 // cleanup_orphan_sidecars.go — find and SIGTERM orphan review-group and
 // investigator-group sidecar processes that outlived their DB rows.
 //
-// Background: when a worker session is cleaned up after its PR
-// is merged, `prism cleanup --yes --session <worker>` clears the worker's
-// own state and runs review.CleanupReviewSessionsForParent which cleans up
-// DB rows for known review children. However, sidecar processes spawned
-// for review-group children (`<worker>~review-N-<role>`) and investigator
-// children (`<worker>~investigate-<slug>`) are not always reachable through
-// the DB by the time cleanup runs — their DB rows may have been ended /
-// purged earlier, or they may have been spawned without a DB row at all.
-// The OS-level sidecar processes then leak: each holds bwrap mounts, a
-// port allocation, and resident memory.
+// This scan is NOT the sidecar stop of a review child. The stop runs on
+// every platform: review.CleanupReviewSessionsForParent stops each child
+// sidecar with session.EnsureSidecarStopped through its PID file, and
+// review.SweepEndedSidecars stops the sidecar of every ended session
+// (#3160).
 //
-// The traversal here is the cleanup-side safety net. It is intentionally
-// process-tree based rather than DB-based so it works regardless of DB
-// state, regardless of whether the worker's worktree still exists, and
-// regardless of when in the cleanup sequence it runs.
+// The scan is an extra, Linux-only safety net for a child sidecar that
+// those stops do not reach: an investigator child, which
+// CleanupReviewSessionsForParent does not cover, or a review child whose
+// PID file is gone. It finds the process by its argv, so it works
+// regardless of DB state and of when in the cleanup sequence it runs.
 //
-// Linux-only: it walks /proc. On other platforms it is a no-op (NixOS is
-// the supported deployment target and prism CI runs on Linux). macOS dev
-// boxes still call this; it returns silently rather than erroring.
+// Linux-only: it walks /proc. On other platforms it is a no-op and returns
+// silently. Do not read that as "Darwin has no sidecar stop": the stops
+// named above cover Darwin.
 
 import (
 	"os"
@@ -47,8 +43,7 @@ import (
 // processes the second time.
 //
 // On non-Linux platforms this is a no-op (returns immediately). The
-// project's deployment target is NixOS; macOS-side cleanup of leaked
-// sidecars is out of scope.
+// PID-file stops in the header of this file cover every platform.
 //
 // The parentSession argument must not be empty — callers should guard
 // against that (it would otherwise match every sidecar process whose
