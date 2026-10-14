@@ -241,6 +241,16 @@ func sessionTmpSocket(t *testing.T, m *container.Manager, name string) string {
 	return sock
 }
 
+// newSocketProfileManager returns a Manager with BareRoot set, the
+// production shape. Section 6b then grants file-test-existence and
+// file-read-metadata on every path, as in a real session. Without BareRoot,
+// the lookup of a path under /private/tmp fails first, and that denial, not
+// the rule under test, decides the result.
+func newSocketProfileManager(t *testing.T) *container.Manager {
+	t.Helper()
+	return newProfileManagerWithBareRoot(t)
+}
+
 func expectDenied(t *testing.T, profilePath, probe, target, why string) {
 	t.Helper()
 	if out, err := runProbe(t, profilePath, probe, target); err == nil {
@@ -271,7 +281,7 @@ func TestSandboxExecContainerSocket_DeniedUnderProductionProfile(t *testing.T) {
 	nvimSock, _ := nvimShapedSocket(t)
 	tcpAddr := startTCPListener(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
 	profilePath := writeProbePositiveProfile(t, prepared)
 	ownSock := sessionTmpSocket(t, m, "a.sock")
@@ -299,7 +309,7 @@ func TestSandboxExecContainerSocket_PodmanConnectsWithoutAllowlistDeny(t *testin
 
 	podmanSock := podmanLocationSocket(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
 		return strings.Replace(p, sectionNetworkScope, "(require-all\n    (subpath \"/prism-3066-nonexistent\")\n", 1)
 	})
@@ -320,7 +330,7 @@ func TestSandboxExecContainerSocket_TCPDeniedWithoutScope(t *testing.T) {
 
 	tcpAddr := startTCPListener(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
 		return strings.Replace(p, sectionNetworkScope, "(require-all\n", 1)
 	})
@@ -362,7 +372,7 @@ func TestSandboxExecContainerSocket_SharedTmpDeniedUnderProductionProfile(t *tes
 
 	socks := sharedTmpSockets(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
 	profilePath := writeProbePositiveProfile(t, prepared)
 
@@ -385,7 +395,7 @@ func TestSandboxExecContainerSocket_SharedTmpConnectsWithAllowance(t *testing.T)
 
 	socks := sharedTmpSockets(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	mutatedPath := withMutatedProbeProfile(t, m, func(p string) string {
 		return strings.Replace(p, sectionNetworkScope, sectionNetworkScope+
 			"    (require-not (subpath \"/private/tmp\"))\n    (require-not (subpath \"/tmp\"))\n", 1)
@@ -493,7 +503,10 @@ type renameBypassCase struct {
 // returns the moves that would reach it from the per-session TMPDIR.
 func renameBypassCases(t *testing.T) []renameBypassCase {
 	t.Helper()
-	podmanSock, podmanDir := podmanShapedSocket(t)
+	// Each case has its own fixture: in a paired negative, every move
+	// succeeds, so a shared fixture would be gone for the next case.
+	podmanSock, _ := podmanShapedSocket(t)
+	_, podmanDir := podmanShapedSocket(t)
 	_, nvimDir := nvimShapedSocket(t)
 	tmpSock := privateTmpSocket(t)
 	tmuxSock := socketInNewDir(t, "/private/tmp", "tmux-")
@@ -529,7 +542,7 @@ func TestSandboxExecContainerSocket_RenameBypassDeniedUnderProductionProfile(t *
 
 	cases := renameBypassCases(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
 	profilePath := writeProbePositiveProfile(t, prepared)
 	tmpDir := sessionTmpDirOf(t, m)
@@ -578,7 +591,7 @@ func TestSandboxExecContainerSocket_RenameBypassWorksWithSharedTmpWrite(t *testi
 
 	cases := renameBypassCases(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	mutatedPath := withMutatedProbeProfile(t, m, func(p string) string {
 		return p + "\n" + sharedTmpWriteGrant()
 	})

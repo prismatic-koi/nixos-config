@@ -55,7 +55,7 @@ func TestSandboxExecSessionTmp_UsableUnderProductionProfile(t *testing.T) {
 	requireSandboxExec(t)
 	probe := buildConnectProbe(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
 	profilePath := writeProbePositiveProfile(t, prepared)
 	tmpDir := sessionTmpDirOf(t, m)
@@ -83,7 +83,7 @@ func TestSandboxExecSessionTmp_DeniedWithoutGrant(t *testing.T) {
 	requireSandboxExec(t)
 	probe := buildConnectProbe(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	tmpDir := sessionTmpDirOf(t, m)
 	mutatedPath := withMutatedProbeProfile(t, m, func(p string) string {
 		return retargetSessionTmp(p, tmpDir, tmpDir+".prism-3150-disabled")
@@ -151,7 +151,7 @@ func TestSandboxExecSessionTmp_SharedTmpWriteDenied(t *testing.T) {
 
 	fx := sharedTmpFixtures(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
 	profilePath := writeProbePositiveProfile(t, prepared)
 	tmpDir := sessionTmpDirOf(t, m)
@@ -179,7 +179,7 @@ func TestSandboxExecSessionTmp_SharedTmpWritableWithGrant(t *testing.T) {
 
 	fx := sharedTmpFixtures(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	mutatedPath := withMutatedProbeProfile(t, m, func(p string) string {
 		return p + "\n" + sharedTmpWriteGrant()
 	})
@@ -223,7 +223,7 @@ func TestSandboxExecSessionTmp_OtherSessionDenied(t *testing.T) {
 
 	otherDir := otherSession(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
 	profilePath := writeProbePositiveProfile(t, prepared)
 	if own := sessionTmpDirOf(t, m); own == otherDir {
@@ -248,7 +248,7 @@ func TestSandboxExecSessionTmp_OtherSessionReachableWithItsGrant(t *testing.T) {
 
 	otherDir := otherSession(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	tmpDir := sessionTmpDirOf(t, m)
 	mutatedPath := withMutatedProbeProfile(t, m, func(p string) string {
 		return retargetSessionTmp(p, tmpDir, otherDir)
@@ -290,7 +290,7 @@ func TestSandboxExecSessionTmp_NodeCannotBeReplaced(t *testing.T) {
 	requireSandboxExec(t)
 	probe := buildConnectProbe(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	prepared, _ := preparePositiveProfile(t, m)
 	profilePath := writeProbePositiveProfile(t, prepared)
 	tmpDir := sessionTmpDirOf(t, m)
@@ -313,7 +313,7 @@ func TestSandboxExecSessionTmp_NodeReplaceableWithoutDeny(t *testing.T) {
 	requireSandboxExec(t)
 	probe := buildConnectProbe(t)
 
-	m := newProfileManager(t)
+	m := newSocketProfileManager(t)
 	tmpDir := sessionTmpDirOf(t, m)
 	mutatedPath := withMutatedProbeProfile(t, m, func(p string) string {
 		return strings.Replace(p, sessionTmpNodeDenyBlock(tmpDir), "", 1)
