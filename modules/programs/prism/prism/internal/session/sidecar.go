@@ -15,6 +15,7 @@ package session
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -170,8 +171,9 @@ func AgentRunLogPath(sessionName string) (string, error) {
 }
 
 // KillSidecar reads the PID file for the named session, sends SIGTERM to the
-// recorded process, and removes the PID file. It handles missing or stale PID
-// files gracefully — no error is returned in those cases.
+// recorded process, and removes the PID file. It reports whether it sent
+// SIGTERM. It handles missing or stale PID files gracefully — no error is
+// returned in those cases.
 //
 // This function is safe to call from test teardown: if StartSidecar was never
 // reached (e.g. the test failed before the session was created) the missing PID
@@ -181,25 +183,33 @@ func AgentRunLogPath(sessionName string) (string, error) {
 // sidecar markers), the kill is skipped and the file is removed.  If the
 // command line of a live PID cannot be read, the kill is skipped, a warning
 // names the PID, and the file is removed.
-func KillSidecar(sessionName string) {
+func KillSidecar(sessionName string) bool {
+	_, owner := killSidecar(sessionName)
+	return owner == pidOwnerSidecar
+}
+
+// killSidecar is the body of KillSidecar. It returns the PID in the PID
+// file (0 when the file is absent or does not hold a PID) and the owner of
+// that PID. It sent SIGTERM only when the owner is pidOwnerSidecar.
+func killSidecar(sessionName string) (int, pidOwner) {
 	pidPath, err := SidecarPIDPath(sessionName)
 	if err != nil {
 		// Can't derive the path — nothing to clean up.
-		return
+		return 0, pidOwnerGone
 	}
 
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		// PID file absent — sidecar was never started or already cleaned up.
-		return
+		return 0, pidOwnerGone
 	}
 
 	pidStr := strings.TrimSpace(string(data))
 	pid, err := strconv.Atoi(pidStr)
-	if err != nil {
+	if err != nil || pid <= 0 {
 		// Corrupt PID file — remove it and move on.
 		_ = os.Remove(pidPath)
-		return
+		return 0, pidOwnerGone
 	}
 
 	// Guard against same-user PID recycling: verify the PID belongs to a
@@ -223,12 +233,12 @@ func KillSidecar(sessionName string) {
 		// PID has been recycled to an unrelated process — do not kill it.
 		fmt.Fprintf(os.Stderr, "warning: sidecar pid %d does not appear to be a prism sidecar process — skipping kill\n", pid)
 		_ = os.Remove(pidPath)
-		return
+		return pid, owner
 	case pidOwnerGone, pidOwnerUnknown:
 		// Fail closed: do not signal a PID that prism cannot prove is a
 		// sidecar.
 		_ = os.Remove(pidPath)
-		return
+		return pid, owner
 	}
 
 	// Send SIGTERM; ignore ESRCH (no such process — already gone).
@@ -238,7 +248,12 @@ func KillSidecar(sessionName string) {
 	}
 
 	_ = os.Remove(pidPath)
+	return pid, owner
 }
+
+// ErrSidecarNotSignalled is the error of KillSidecarAndWait when the PID
+// file names a live process that it sent no signal to.
+var ErrSidecarNotSignalled = errors.New("sent no signal to the sidecar")
 
 // KillSidecarAndWait sends SIGTERM to the sidecar for sessionName (via
 // KillSidecar) and then waits for the process to actually exit AND for its
@@ -273,36 +288,33 @@ func KillSidecar(sessionName string) {
 // the old socket to be observably down there is a real race between SIGTERM
 // and the new sidecar's probe.
 //
-// The PID is read from the PID file before the kill is sent. If the PID file
-// is absent, corrupt, or points to a recycled process, KillSidecar handles
-// all those cases gracefully and this function returns nil immediately (no
-// process to wait for and no socket to clean up beyond what KillSidecar
-// already does).
+// The PID is read from the PID file before the kill is sent. When
+// KillSidecar sends no signal, this function does not wait:
+//
+//   - PID file absent or corrupt: it returns nil at once.
+//   - The PID no longer runs: it unlinks the sockets and returns nil.
+//   - The PID was recycled to another process (its command line does not
+//     carry the sidecar markers): it returns an error that wraps
+//     ErrSidecarNotSignalled at once.
+//   - The PID runs, but its command line cannot be read: KillSidecar writes
+//     a warning that names the PID, and this function returns an error that
+//     wraps ErrSidecarNotSignalled at once. That process can still be the
+//     sidecar.
+//
+// In each case KillSidecar removes the PID file.
 func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
-	// Read the PID before calling KillSidecar so we know which process to
-	// wait on. KillSidecar removes the PID file, so we must read it first.
-	pidPath, err := SidecarPIDPath(sessionName)
-	if err != nil {
-		// Can't derive the path — nothing to wait for.
+	// killSidecar reads the PID before it removes the PID file, so we know
+	// which process to wait on.
+	pid, owner := killSidecar(sessionName)
+	switch {
+	case pid <= 0:
+		// No PID file, or a corrupt one — nothing to wait for.
 		return nil
+	case owner == pidOwnerOther:
+		return fmt.Errorf("kill sidecar: pid %d is not a prism sidecar (session %q): %w", pid, sessionName, ErrSidecarNotSignalled)
+	case owner == pidOwnerUnknown:
+		return fmt.Errorf("kill sidecar: cannot read the command line of pid %d (session %q): %w", pid, sessionName, ErrSidecarNotSignalled)
 	}
-
-	data, err := os.ReadFile(pidPath)
-	if err != nil {
-		// PID file absent — sidecar was never started or already cleaned up.
-		return nil
-	}
-
-	pidStr := strings.TrimSpace(string(data))
-	pid, err := strconv.Atoi(pidStr)
-	if err != nil || pid <= 0 {
-		// Corrupt PID file — KillSidecar will clean it up; nothing to wait for.
-		KillSidecar(sessionName)
-		return nil
-	}
-
-	// Send SIGTERM and remove the PID file.
-	KillSidecar(sessionName)
 
 	// Poll for process exit. On Linux we probe /proc/<pid>; on other
 	// platforms we use kill(pid, 0) which returns ESRCH when the process

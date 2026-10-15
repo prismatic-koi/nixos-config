@@ -65,7 +65,7 @@ func (s *sandboxExecIsolator) Name() config.IsolationMode {
 
 // Capabilities returns the sandbox-exec feature flags:
 //   - RequiresProfilesFile: profiles.json supplies the per-role slot.
-//   - NeedsHostAPISocket: the sidecar binds the host-API socket for in-sandbox proxy calls.
+//   - IsSandboxed: the agent runs in a sandbox (see Capabilities.IsSandboxed).
 //   - RestartOnExit is false: sandbox-exec replaces the agent-run process via
 //     syscall.Exec, so the sidecar does not observe process exit to restart.
 func (s *sandboxExecIsolator) Capabilities() Capabilities {
@@ -73,7 +73,7 @@ func (s *sandboxExecIsolator) Capabilities() Capabilities {
 		IsContainer:                false,
 		OwnsContainerLifecycle:     false,
 		RequiresProfilesFile:       true,
-		NeedsHostAPISocket:         true,
+		IsSandboxed:                true,
 		UsesContainerHarness:       false,
 		RestartOnExit:              false,
 		NeedsStartupConnectTimeout: false,

@@ -836,21 +836,15 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		// cleaning here removes operator toil and prevents stale DB rows from
 		// blocking a retry with the same session name.
 		//
-		// Cleanup primitive set (same as readiness-timeout path above):
-		//   - KillSidecar:              stops any sidecar that was started before
-		//                               the tmux step failed (spawnAgentOnlyLayout
-		//                               starts the sidecar first).
-		//   - cleanupHalfAliveSession:  marks agent_status ended, releases the
-		//                               port, purges bus messages, and writes
-		//                               sessions.ended_at.
-		//   - tmux.KillSession:         removes any partial tmux session created
-		//                               before the failure (e.g. NewSessionDetached
-		//                               succeeded but NewWindow failed).
-		//   - removeInitialPrompt:      drops the per-session prompt file so a
-		//                               retry with the same name starts fresh.
-		KillSidecar(opts.SessionName)
-		cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID, db.ReapCauseSpawnFailure)
-		_ = tmux.KillSession(opts.SessionName)
+		// Cleanup primitive set (same as readiness-timeout path below):
+		//   - cleanupFailedSpawn:   stops any sidecar that was started before
+		//                           the tmux step failed (spawnAgentOnlyLayout
+		//                           starts the sidecar first), then ends the
+		//                           row, releases the port, and removes any
+		//                           partial tmux session.
+		//   - removeInitialPrompt:  drops the per-session prompt file so a
+		//                           retry with the same name starts fresh.
+		cleanupFailedSpawn(d, opts, db.ReapCauseSpawnFailure)
 		removeInitialPrompt(opts.SessionName)
 		// Durable failure event + best-effort bus-message notification to
 		// the invoker. Written AFTER cleanupHalfAliveSession so
@@ -924,12 +918,9 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			}
 			// Clean up: the sidecar is still running and reporting
 			// `connection refused` to its own log, but the agent never came
-			// up. KillSidecar releases the sidecar process, the DB cleanup
-			// releases the port and marks the row ended, and tmux.KillSession
-			// releases the pane. All three are best-effort and idempotent.
-			KillSidecar(opts.SessionName)
-			cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID, db.ReapCauseReadinessGate, readyErr.Error())
-			_ = tmux.KillSession(opts.SessionName)
+			// up. cleanupFailedSpawn stops the sidecar, releases the port,
+			// marks the row ended, and releases the pane.
+			cleanupFailedSpawn(d, opts, db.ReapCauseReadinessGate, readyErr.Error())
 			// Drop the per-session prompt file so a retry starts fresh.
 			removeInitialPrompt(opts.SessionName)
 			// Durable failure event + best-effort bus-message notification
@@ -1009,6 +1000,27 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 	}
 }
 
+// stopFailedSpawnSidecar stops the sidecar of a spawn that failed. Tests
+// replace it.
+var stopFailedSpawnSidecar = func(sessionName string) bool {
+	return EnsureSidecarStopped(sessionName, SidecarStopTimeout)
+}
+
+// cleanupFailedSpawn stops the sidecar of a spawn that failed, then runs
+// cleanupHalfAliveSession and closes the tmux session. If the sidecar does
+// not stop, it keeps the tmux session, the row, and the port, and only
+// marks the row "error": the process can still write to the row and hold
+// the port (#3168).
+func cleanupFailedSpawn(d *db.DB, opts SpawnOpts, cause db.SessionReapCause, detail ...string) {
+	if !stopFailedSpawnSidecar(opts.SessionName) {
+		fmt.Fprintf(os.Stderr, "warning: sidecar of %q did not stop — keeping its tmux session, row, and port\n", opts.SessionName)
+		markHalfAliveSessionError(d, opts.SessionName, cause, detail...)
+		return
+	}
+	cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID, cause, detail...)
+	_ = tmux.KillSession(opts.SessionName)
+}
+
 // cleanupHalfAliveSession releases the DB resources for a session that was
 // spawned but failed its readiness gate. Mirrors the cleanupAgentSession
 // helper in internal/review/review.go but lives here so the session package
@@ -1038,17 +1050,7 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 // unguarded record on an already-closed row would overwrite the true cause
 // with a false one.
 func cleanupHalfAliveSession(d *db.DB, sessionName, instanceID string, cause db.SessionReapCause, detail ...string) {
-	st, lookupErr := d.CurrentStatus(sessionName)
-	if lookupErr == nil && st != nil && st.EndedAt == nil {
-		d.RecordReapBestEffort(sessionName, cause, detail...)
-	}
-	if lookupErr == nil && st != nil {
-		// UpsertStatus is idempotent and validates the transition (idle →
-		// error is allowed; error → error is a no-op-shaped repeat). We
-		// preserve repo/worktree from the existing row so we do not blank
-		// them out with empty strings.
-		_ = d.UpsertStatus(sessionName, st.Repo, st.Worktree, "error", nil, nil)
-	}
+	markHalfAliveSessionError(d, sessionName, cause, detail...)
 	_ = d.ReleasePort(sessionName)
 	_ = d.SetEnded(sessionName)
 	_ = d.PurgeBusMessages(sessionName)
@@ -1072,6 +1074,22 @@ func cleanupHalfAliveSession(d *db.DB, sessionName, instanceID string, cause db.
 				"warning: cleanupHalfAliveSession: UpdateSessionEnded(%s): %v\n",
 				instanceID, updErr)
 		}
+	}
+}
+
+// markHalfAliveSessionError records cause and sets the state of the row of
+// sessionName to "error". It does not end the row.
+func markHalfAliveSessionError(d *db.DB, sessionName string, cause db.SessionReapCause, detail ...string) {
+	st, lookupErr := d.CurrentStatus(sessionName)
+	if lookupErr == nil && st != nil && st.EndedAt == nil {
+		d.RecordReapBestEffort(sessionName, cause, detail...)
+	}
+	if lookupErr == nil && st != nil {
+		// UpsertStatus is idempotent and validates the transition (idle →
+		// error is allowed; error → error is a no-op-shaped repeat). We
+		// preserve repo/worktree from the existing row so we do not blank
+		// them out with empty strings.
+		_ = d.UpsertStatus(sessionName, st.Repo, st.Worktree, "error", nil, nil)
 	}
 }
 

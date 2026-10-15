@@ -45,7 +45,7 @@
 // (DefaultReviewReadinessTimeout). On timeout, the gate emits
 // "<role> failed to start: not ready within 30s" via OnProgress, populates
 // the spawn-failure slot for that agent, and runs the standard cleanup
-// (KillSidecar + cleanupAgentSession + tmux.KillSession). The other agents
+// (cleanupFailedAgentSession). The other agents
 // are unaffected; the review proceeds with the survivors.
 //
 // Per-agent startup log:

@@ -161,8 +161,8 @@ func TestCapabilities_Bwrap(t *testing.T) {
 	if !caps.RequiresProfilesFile {
 		t.Error("bwrap: RequiresProfilesFile should be true")
 	}
-	if !caps.NeedsHostAPISocket {
-		t.Error("bwrap: NeedsHostAPISocket should be true")
+	if !caps.IsSandboxed {
+		t.Error("bwrap: IsSandboxed should be true")
 	}
 	if !caps.RestartOnExit {
 		t.Error("bwrap: RestartOnExit should be true")
@@ -185,8 +185,8 @@ func TestCapabilities_SandboxExec(t *testing.T) {
 	if !caps.RequiresProfilesFile {
 		t.Error("sandbox-exec: RequiresProfilesFile should be true")
 	}
-	if !caps.NeedsHostAPISocket {
-		t.Error("sandbox-exec: NeedsHostAPISocket should be true")
+	if !caps.IsSandboxed {
+		t.Error("sandbox-exec: IsSandboxed should be true")
 	}
 	if caps.RestartOnExit {
 		t.Error("sandbox-exec: RestartOnExit should be false")
@@ -203,8 +203,8 @@ func TestCapabilities_Host(t *testing.T) {
 	if caps.RequiresProfilesFile {
 		t.Error("host: RequiresProfilesFile should be false")
 	}
-	if caps.NeedsHostAPISocket {
-		t.Error("host: NeedsHostAPISocket should be false")
+	if caps.IsSandboxed {
+		t.Error("host: IsSandboxed should be false")
 	}
 	if caps.RestartOnExit {
 		t.Error("host: RestartOnExit should be false")

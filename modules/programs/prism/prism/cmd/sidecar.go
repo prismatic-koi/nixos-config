@@ -144,18 +144,18 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// below reads from isoCaps rather than comparing against raw mode constants.
 	isoCaps := container.CapabilitiesFor(isolationMode)
 
-	// needsHostAPI is true for any mode where the agent runs in a sandbox
+	// sandboxed is true for any mode where the agent runs in a sandbox
 	// without direct access to host tmux — bwrap and sandbox-exec
-	// (NeedsHostAPISocket). The agent in such a sandbox reaches the host only
+	// (IsSandboxed). The agent in such a sandbox reaches the host only
 	// through the host-API socket. The sidecar binds that socket in every
 	// mode (resolveHostAPISockPath), so this flag gates only the
 	// sandbox-specific steps.
-	needsHostAPI := isoCaps.NeedsHostAPISocket || isoCaps.IsContainer
+	sandboxed := isoCaps.IsSandboxed || isoCaps.IsContainer
 
 	// useContainerHarness is true for modes where the agent is pre-created with
 	// --prompt at launch (bwrap, sandbox-exec), so the harness uses
 	// GET /session to retrieve the existing session ID rather than POST /session.
-	useContainerHarness := isoCaps.NeedsHostAPISocket || isoCaps.IsContainer
+	useContainerHarness := isoCaps.IsSandboxed || isoCaps.IsContainer
 
 	// Derive repo and worktree from session name and environment. The worktree
 	// is expected to be passed via environment (PRISM_WORKTREE) or derived
@@ -253,7 +253,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// gets the socket mounted and PRISM_HOST_API injected.
 	// In bwrap and sandbox-exec modes ctrCfg is nil — the sandbox args
 	// are built by the isolator at prism agent-run time, not here.
-	if needsHostAPI && ctrCfg != nil {
+	if sandboxed && ctrCfg != nil {
 		ctrCfg.HostAPISockPath = hostAPISockPath
 	}
 
@@ -460,7 +460,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// fire-and-forget; errors are non-fatal (logged by runClipboardClean itself).
 	// Runs for bwrap and sandbox-exec modes (both run the agent in a sandbox
 	// where the clipboard staging dir is mounted).
-	if needsHostAPI {
+	if sandboxed {
 		go func() {
 			_ = runClipboardClean(nil, nil)
 		}()
@@ -588,9 +588,9 @@ func runSignalHandler(sigCh <-chan os.Signal, shutdownFn func(), cancelFn func()
 // notification to it, deliver through the host-API socket of the target. A
 // session with no socket cannot receive a prompt (issue #3135).
 //
-// A sandboxed mode (NeedsHostAPISocket) also requires a non-zero port.
+// A sandboxed mode (IsSandboxed) also requires a non-zero port.
 func resolveHostAPISockPath(sessionName string, isoCaps container.Capabilities, port int) (string, error) {
-	if port == 0 && isoCaps.NeedsHostAPISocket {
+	if port == 0 && isoCaps.IsSandboxed {
 		return "", fmt.Errorf("sidecar: --port is required in bwrap/sandbox-exec mode")
 	}
 	sockPath, err := prismSession.SidecarHostAPIPath(sessionName)
