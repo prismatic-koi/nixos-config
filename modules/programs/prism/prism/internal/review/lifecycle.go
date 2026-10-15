@@ -242,6 +242,35 @@ func stopAgentSidecars(names []string) (stopped, failed []string) {
 	return stopped, failed
 }
 
+// cleanupFailedAgentSession is the cleanup of a review agent whose spawn
+// or readiness gate failed. It stops the sidecar first, then runs
+// cleanupAgentSession and closes the tmux session. If the sidecar does not
+// stop, it keeps the tmux session, the row, and the port, and only marks
+// the row "error", so that the round can complete. The release stops the
+// sidecar of that row later (#3168).
+func cleanupFailedAgentSession(d *db.DB, agentSession string, cause db.SessionReapCause, detail string) {
+	if !stopAgentSidecar(agentSession) {
+		proglog.Warnf("[prism] warning: sidecar of %q did not stop — keeping its tmux session, row, and port\n", agentSession)
+		_, _ = markAgentSessionError(d, agentSession, cause, detail)
+		return
+	}
+	cleanupAgentSession(d, agentSession, cause, detail)
+	_ = tmux.KillSession(agentSession)
+}
+
+// markAgentSessionError records cause and moves a non-terminal row to state
+// "error". It does not end the row. It returns the row as it read it.
+func markAgentSessionError(d *db.DB, agentSession string, cause db.SessionReapCause, detail ...string) (*db.Status, error) {
+	st, lookupErr := d.CurrentStatus(agentSession)
+	if lookupErr == nil && st != nil && st.EndedAt == nil {
+		d.RecordReapBestEffort(agentSession, cause, detail...)
+	}
+	if lookupErr == nil && st != nil && !isTerminalAgentState(st.State) {
+		_ = d.UpsertStatus(agentSession, st.Repo, st.Worktree, "error", nil, nil)
+	}
+	return st, lookupErr
+}
+
 // cleanupAgentSession cleans up the DB state for a completed agent session.
 //
 // In addition to releasing the port and marking the row ended, this transitions
@@ -268,13 +297,7 @@ func stopAgentSidecars(names []string) (stopped, failed []string) {
 // that is false. A wrong cause is worse than the disjunction this all
 // replaces.
 func cleanupAgentSession(d *db.DB, agentSession string, cause db.SessionReapCause, detail ...string) {
-	st, lookupErr := d.CurrentStatus(agentSession)
-	if lookupErr == nil && st != nil && st.EndedAt == nil {
-		d.RecordReapBestEffort(agentSession, cause, detail...)
-	}
-	if lookupErr == nil && st != nil && !isTerminalAgentState(st.State) {
-		_ = d.UpsertStatus(agentSession, st.Repo, st.Worktree, "error", nil, nil)
-	}
+	st, lookupErr := markAgentSessionError(d, agentSession, cause, detail...)
 	_ = d.ReleasePort(agentSession)
 	_ = d.SetEnded(agentSession)
 	_ = d.PurgeBusMessages(agentSession)

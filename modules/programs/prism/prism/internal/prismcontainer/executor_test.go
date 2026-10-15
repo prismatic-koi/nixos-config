@@ -474,12 +474,13 @@ func TestRemoveBuildCopy_SubUIDFiles(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Geteuid() == 0 {
 		t.Skip("needs Linux and a user that file permissions apply to")
 	}
-	bin := t.TempDir()
 	argsFile := filepath.Join(t.TempDir(), "podman.args")
-	writeScript(t, bin, "podman", `printf '%s\n' "$@" > "$FAKE_PODMAN_ARGS"
+	fake := writeScript(t, t.TempDir(), "fake-ctr", `printf '%s\n' "$@" > "$FAKE_PODMAN_ARGS"
 chmod -R u+w "$5" && rm -rf "$5"
 `)
-	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	prev := podmanCommand
+	podmanCommand = fake
+	t.Cleanup(func() { podmanCommand = prev })
 	t.Setenv("FAKE_PODMAN_ARGS", argsFile)
 
 	plain := filepath.Join(t.TempDir(), "plain")

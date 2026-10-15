@@ -104,6 +104,8 @@ let
     agent_max_open_files_soft = config.nx.programs.prism.agentMaxOpenFilesSoft;
     agent_max_open_files_hard = config.nx.programs.prism.agentMaxOpenFilesHard;
     container_host_limit = config.nx.programs.prism.containerHostLimit;
+    spawn_budget_limit = config.nx.programs.prism.spawnBudget.limit;
+    spawn_budget_prometheus_url = config.nx.programs.prism.spawnBudget.prometheusUrl;
     container_machine_mount_allowlist = config.nx.programs.prism.containerMachineMountAllowlist;
     pi_extension_dir = config.nx.programs.prism.piExtensionDir;
     # github_token_path: absolute path to the sops-decrypted GitHub token file.
@@ -222,6 +224,34 @@ in
         service container of `prism container start` counts while it runs.
         Written to config.json as container_host_limit. Each session can run
         one container or build at a time, independent of this option.
+      '';
+    };
+
+    nx.programs.prism.spawnBudget.limit = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 120;
+      description = ''
+        Limit of worker spawns per 7 days, across all hosts (issue #3177).
+        Each `prism spawn` of a worker prints the 7-day worker spawn count
+        and this limit. At 95% of the limit or more, it tells the user to
+        finish the current work and stop for the day. At the limit or
+        more, it prints an over-limit warning. It still starts the worker.
+        The exporter publishes the value as the gauge `prism_spawn_limit`.
+        Written to config.json as spawn_budget_limit.
+      '';
+    };
+
+    nx.programs.prism.spawnBudget.prometheusUrl = lib.mkOption {
+      type = lib.types.str;
+      default = "http://ts-metrics-ingest.tailnet.internal:9090";
+      description = ''
+        Base URL of the Prometheus that holds `prism_spawns_total` for all
+        hosts. prism sends the 7-day worker spawn query to
+        `<url>/api/v1/query`, with a hard timeout of 2 seconds. The default
+        is the tailnet name of the Prometheus that Alloy writes to
+        (`nx.services.alloy.prometheusRemoteWriteUrl`). Empty disables the
+        query: the count then covers this host only. Written to
+        config.json as spawn_budget_prometheus_url.
       '';
     };
 

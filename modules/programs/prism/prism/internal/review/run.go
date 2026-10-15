@@ -212,9 +212,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			// Clean up this agent's resources (sidecar, DB row, tmux session).
 			// SpawnSession may have partially progressed; be defensive so a
 			// second spawn attempt with the same name doesn't see stale state.
-			session.KillSidecar(agentSession)
-			cleanupAgentSession(d, agentSession, db.ReapCauseSpawnFailure, sanitizeSpawnError(opts.PRNumber, ag.Name, spawnSessErr))
-			_ = tmux.KillSession(agentSession)
+			cleanupFailedAgentSession(d, agentSession, db.ReapCauseSpawnFailure, sanitizeSpawnError(opts.PRNumber, ag.Name, spawnSessErr))
 			spawnErr[i] = fmt.Errorf("spawn session for %s: %w", ag.Name, spawnSessErr)
 			continue
 		}
@@ -472,9 +470,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			if opts.OnProgress != nil {
 				opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnSessErr)))
 			}
-			session.KillSidecar(agentSession)
-			cleanupAgentSession(d, agentSession, db.ReapCauseSpawnFailure, sanitizeSpawnError(opts.PRNumber, ag.Name, spawnSessErr))
-			_ = tmux.KillSession(agentSession)
+			cleanupFailedAgentSession(d, agentSession, db.ReapCauseSpawnFailure, sanitizeSpawnError(opts.PRNumber, ag.Name, spawnSessErr))
 			spawnErr[i] = fmt.Errorf("spawn session for %s: %w", ag.Name, spawnSessErr)
 			continue
 		}

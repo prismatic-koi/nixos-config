@@ -214,7 +214,7 @@ func activeReviewSessionEntries(projectPath string, worktrees []string) []entry 
 			continue
 		}
 		// The session must also exist in tmux.
-		if !tmux.HasSession(s.SessionName) {
+		if !session.HasExactSession(s.SessionName) {
 			continue
 		}
 		if _, exists := groupSessions[rk]; !exists {
@@ -294,7 +294,7 @@ func handleReviewGroupPick(groupKey string) error {
 		if rk != groupKey {
 			continue
 		}
-		if !tmux.HasSession(s.SessionName) {
+		if !session.HasExactSession(s.SessionName) {
 			continue
 		}
 		// Label: e.g. "~review-1-review-goal"
@@ -392,7 +392,7 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 			if releaseErr := d.ReleasePort(oldSessionName); releaseErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: release port for old session %q: %v\n", oldSessionName, releaseErr)
 			}
-			_ = d.SetEnded(oldSessionName)
+			_ = setEndedStoppingReviewChildren(d, oldSessionName)
 			_ = d.PurgeBusMessages(oldSessionName)
 			d.Close()
 		} else {

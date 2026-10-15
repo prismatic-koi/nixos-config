@@ -101,6 +101,41 @@ func TestEventTmuxSessionEnd_LiveSession(t *testing.T) {
 	}
 }
 
+// TestEventTmuxSessionEnd_PrefixSibling verifies that a live session whose
+// name starts with the closed name does not block the row end (#3172).
+func TestEventTmuxSessionEnd_PrefixSibling(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not found in PATH — skipping integration test")
+	}
+	const session = "myrepo@feat"
+	dbFile := setupEventTestDB(t, session)
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+	s.newSession("myrepo@feature-x")
+	s.newSession("myrepo@feat~review-1-review-goal")
+	s.newSession("myrepo@feat.v2")
+
+	rootCmd.SetArgs([]string{"event", "tmux-session-end", "--session", session})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error %v, want nil", err)
+	}
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+	status, err := d2.CurrentStatus(session)
+	if err != nil || status == nil {
+		t.Fatalf("CurrentStatus: %v, %v", status, err)
+	}
+	if status.EndedAt == nil {
+		t.Errorf("ended_at is nil — a prefix sibling blocked the row end")
+	}
+}
+
 // TestEventTmuxSessionEnd_DeadSession verifies that the handler writes ended_at
 // when the session no longer exists in tmux.
 func TestEventTmuxSessionEnd_DeadSession(t *testing.T) {

@@ -19,6 +19,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/exporter"
 )
 
@@ -99,6 +100,10 @@ func runExporter(cmd *cobra.Command, _ []string) error {
 		UsageDir:   exporterFlagUsageDir,
 		ListenAddr: net.JoinHostPort(exporterFlagListen, strconv.Itoa(exporterFlagPort)),
 		Logger:     log.New(cmd.ErrOrStderr(), "prism-exporter: ", log.LstdFlags),
+		// LoadFresh, not Load: a switch rewrites config.json but does not
+		// restart this daemon, and prism_spawn_limit must show the value
+		// that `prism spawn` reads now.
+		SpawnLimit: func() int { return config.LoadFresh().SpawnBudgetLimit },
 	})
 	if err != nil {
 		return err

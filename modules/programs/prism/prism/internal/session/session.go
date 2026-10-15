@@ -762,7 +762,7 @@ func IsHostLaunchCmdTooLarge(err error) bool {
 // session is treated as live and creation is skipped (returns false).
 // When d is nil and ForceFresh is true, kills the existing session unconditionally.
 func startupGuardKillOld(name string, d *db.DB, forceFresh bool) bool {
-	if !tmux.HasSession(name) {
+	if !HasExactSession(name) {
 		return true // session does not exist — safe to create
 	}
 

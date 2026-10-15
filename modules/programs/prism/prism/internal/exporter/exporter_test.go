@@ -193,9 +193,10 @@ func TestExporter_ServesParseablePrometheusText(t *testing.T) {
 	}
 }
 
-// Two base metrics (build_info, agent_events_total); seven lifecycle and
-// outcome counters; three cost/token counters and the prism_account_info
-// gauge; four state gauges; two sidecar-liveness gauges.
+// Two base metrics (build_info, agent_events_total); the spawn budget
+// limit gauge; seven lifecycle and outcome counters; three cost/token
+// counters and the prism_account_info gauge; four state gauges; two
+// sidecar-liveness gauges.
 func TestExporter_ShipsExactlyTheSpecifiedMetrics(t *testing.T) {
 	h := newHarness(t)
 	h.start(h.exp)
@@ -220,6 +221,7 @@ func TestExporter_ShipsExactlyTheSpecifiedMetrics(t *testing.T) {
 		exporter.MetricSessionsEndedTotal,
 		exporter.MetricSidecarsLive,
 		exporter.MetricSidecarsStale,
+		exporter.MetricSpawnLimit,
 		exporter.MetricSpawnsTotal,
 		exporter.MetricSpendByProfileUSDTotal,
 	}
@@ -544,6 +546,7 @@ func TestExporter_ExposesNoUnboundedLabel(t *testing.T) {
 	bounds := map[string]int{
 		exporter.MetricAgentEventsTotal: exporter.MaxAgentEventsSeries,
 		exporter.MetricBuildInfo:        1,
+		exporter.MetricSpawnLimit:       1,
 		// The seven lifecycle counters have no closed-set enforcement of their
 		// own: repo, agent_role, isolation_mode, end_state, profile, and
 		// verdict are all pre-sanctioned safe labels, so there is

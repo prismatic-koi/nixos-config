@@ -2154,6 +2154,15 @@ func TestTruncateProgressMsg_Cap(t *testing.T) {
 	if !strings.Contains(out, "[...truncated; full error in ") {
 		t.Errorf("truncateProgressMsg: truncated message does not contain expected suffix\nmessage:\n%s", out)
 	}
+	// The forensic log goes in the suite dir, which TestMain removes, and
+	// not in os.TempDir() (#3168).
+	logPath := filepath.Join(suiteStateRoot, "prism-review-error-"+prNumber+"-"+agentName+".log")
+	if !strings.Contains(out, "full error in "+logPath+"]") {
+		t.Errorf("truncated message does not name %s:\n%s", logPath, out[len(out)-200:])
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Errorf("forensic log not in the suite dir: %v", err)
+	}
 }
 
 // TestTruncateProgressMsg_ShortPassthrough verifies that a short message is
