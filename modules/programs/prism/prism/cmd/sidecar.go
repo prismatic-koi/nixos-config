@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -49,6 +50,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
+	"github.com/prismatic-koi/prism/internal/review"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/sidecar"
@@ -109,6 +111,9 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	if _, ok := harness.Lookup(harnessName); !ok {
 		return fmt.Errorf("sidecar: unknown harness %q: valid harnesses: %s", harnessName, strings.Join(harness.Names(), ", "))
 	}
+	// A PID file that names an exited sidecar is stale. A stop then has
+	// nothing to find, and the sweep must classify the PID again.
+	defer prismSession.RemoveOwnSidecarPIDFile(sessionName)
 
 	// Parse --model-override flags into a role→model map.
 	// Each entry is expected to be "role=model"; malformed entries are logged
@@ -426,6 +431,29 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 
 	runSignalHandler(sigCh, sc.Shutdown, cancel)
 
+	// Exit when the tmux session is gone, also when no prism process sends
+	// a signal (#3160). The synthetic SIGTERM takes the same Shutdown path
+	// as a real one.
+	go watchTmuxSession(ctx, func() prismSession.TmuxPresence {
+		return prismSession.TmuxSessionPresence(sessionName)
+	}, sidecarTmuxGoneGrace, sidecarTmuxPollInterval, func() {
+		fmt.Fprintf(os.Stderr, "[prism sidecar] tmux session %q gone for %s — shutting down\n", sessionName, sidecarTmuxGoneGrace)
+		select {
+		case sigCh <- syscall.SIGTERM:
+		default:
+		}
+	})
+
+	// Stop the sidecars of ended sessions that an earlier path left behind,
+	// for example a review round whose monitor stopped before its release.
+	// The sweep fails closed and runs in the background, so that it does not
+	// delay this sidecar.
+	go func() {
+		if _, err := review.SweepEndedSidecars(d, time.Now()); err != nil {
+			proglog.Warnf("[prism sidecar] warning: ended-session sweep: %v\n", err)
+		}
+	}()
+
 	// Run clipboard staging dir cleanup in the background at sidecar startup.
 	// This implements the TTL sweep that prevents ~/.cache/prism/clipboard/ from
 	// growing unboundedly across multiple paste operations. The sweep is
@@ -447,6 +475,54 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 
 	proglog.Infof("[prism sidecar] shutting down\n")
 	return nil
+}
+
+// sidecarTmuxGoneGrace is how long the tmux session of a sidecar must stay
+// gone before the sidecar exits by itself. It is longer than any gap in a
+// normal lifecycle: a review agent starts its sidecar a moment before its
+// tmux session, and `prism restart` replaces the tmux server.
+const sidecarTmuxGoneGrace = 2 * time.Minute
+
+// sidecarTmuxPollInterval is how often a sidecar asks tmux for its session.
+const sidecarTmuxPollInterval = 15 * time.Second
+
+// watchTmuxSession calls onGone once, when probe has reported the session
+// gone on every poll for at least grace. It returns after onGone, or when
+// ctx is done.
+//
+// It arms only after probe has reported the session present once. A sidecar
+// that never sees its session, for example because its tmux socket differs
+// from the socket of the session, must not exit. An unknown answer resets
+// the gone period, so only a continuous, proven absence counts.
+func watchTmuxSession(ctx context.Context, probe func() prismSession.TmuxPresence, grace, interval time.Duration, onGone func()) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	armed := false
+	var goneSince time.Time
+	for {
+		switch probe() {
+		case prismSession.TmuxPresent:
+			armed = true
+			goneSince = time.Time{}
+		case prismSession.TmuxGone:
+			if armed {
+				if goneSince.IsZero() {
+					goneSince = time.Now()
+				}
+				if time.Since(goneSince) >= grace {
+					onGone()
+					return
+				}
+			}
+		default:
+			goneSince = time.Time{}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // sidecarForceExit is the function called on the second signal to immediately

@@ -254,9 +254,9 @@ review cycles without convergence, stop and escalate to the coordinator via
 ### How long review-agent sessions stay live
 
 A review agent is released **15 minutes** after the review-complete prompt is
-delivered for its round (issue #2649). The release kills the tmux session and
-returns the harness port to the pool. It runs on its own — no operator command
-is needed.
+delivered for its round (issue #2649). The release stops the sidecar, kills the
+tmux session, and returns the harness port to the pool. It runs on its own — no
+operator command is needed.
 
 The release keeps every database row. It deletes no `agent_status` row, no
 `agent_events` row, and no `session_groups` row. It removes no worktree and

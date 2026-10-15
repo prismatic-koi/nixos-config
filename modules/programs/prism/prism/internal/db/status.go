@@ -438,22 +438,43 @@ WHERE session_name = ?
 // pattern prefix (using the same escaping as AllStatusesWithPrefix) so that
 // session names containing `%`, `_`, or `\` are handled correctly.
 func (d *DB) SetEnded(sessionName string) error {
+	return d.SetEndedExcept(sessionName, nil)
+}
+
+// SetEndedExcept is SetEnded, but the cascade leaves the rows named in keep
+// open. A caller passes the review children whose sidecar did not stop, so
+// that their rows and their ports stay reserved (#3160). A name in keep that
+// equals sessionName is ignored: the row of sessionName always ends.
+func (d *DB) SetEndedExcept(sessionName string, keep []string) error {
 	now := time.Now().UnixMilli()
 	// Escape LIKE special characters in sessionName so that literal `%`, `_`,
 	// and `\` in the name are matched exactly, not as wildcards.
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(sessionName)
+
+	keepClause := ""
+	keepArgs := make([]any, 0, len(keep))
+	for _, k := range keep {
+		if k == sessionName {
+			continue
+		}
+		keepArgs = append(keepArgs, k)
+	}
+	if len(keepArgs) > 0 {
+		keepClause = "\n  AND  session_name NOT IN (" + strings.TrimSuffix(strings.Repeat("?,", len(keepArgs)), ",") + ")"
+	}
+
 	tx, err := d.conn.Begin()
 	if err != nil {
 		return fmt.Errorf("db: set ended: begin tx: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	const agentStatusQ = `
+	agentStatusQ := `
 UPDATE agent_status
 SET    ended_at = ?
 WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
-  AND  ended_at IS NULL`
-	if _, err := tx.Exec(agentStatusQ, now, sessionName, escaped); err != nil {
+  AND  ended_at IS NULL` + keepClause
+	if _, err := tx.Exec(agentStatusQ, append([]any{now, sessionName, escaped}, keepArgs...)...); err != nil {
 		return fmt.Errorf("db: set ended: agent_status update: %w", err)
 	}
 
@@ -461,7 +482,7 @@ WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
 	// end_state 'reset' is used because SetEnded is called before the caller
 	// knows the final lifecycle outcome; UpdateSessionEnded may overwrite with
 	// a more specific end_state (e.g. 'finished') in the same cleanup pass.
-	const sessionsQ = `
+	sessionsQ := `
 UPDATE sessions
 SET    ended_at  = ?,
        end_state = 'reset'
@@ -469,10 +490,10 @@ WHERE  instance_id IN (
          SELECT instance_id
          FROM   agent_status
          WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
-           AND  instance_id IS NOT NULL
+           AND  instance_id IS NOT NULL` + keepClause + `
        )
   AND  ended_at IS NULL`
-	if _, err := tx.Exec(sessionsQ, now, sessionName, escaped); err != nil {
+	if _, err := tx.Exec(sessionsQ, append([]any{now, sessionName, escaped}, keepArgs...)...); err != nil {
 		return fmt.Errorf("db: set ended: sessions update: %w", err)
 	}
 

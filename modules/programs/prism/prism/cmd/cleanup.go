@@ -247,6 +247,7 @@ type cleanupDoneMsg struct{ err error }
 
 func (m cleanupModel) doCleanup() tea.Cmd {
 	return func() tea.Msg {
+		defer sweepEndedSidecarsAfterCleanup()
 		// Resolve the actual branch name BEFORE the worktree is removed —
 		// git.RemoveWorktree deletes worktreePath's .git file, after which
 		// resolveBranchName can no longer read HEAD. m.branchName is normally
@@ -318,7 +319,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			stopAndRemoveChildContainers(d, m.session)
 			// Kill and clean up all review sessions spawned by this parent session,
 			// including their port allocations and DB rows.
-			review.CleanupReviewSessionsForParent(d, m.session)
+			keepChildren := review.CleanupReviewSessionsForParent(d, m.session)
 			if isolationModeFromDB(d, m.session) != "host" {
 				removeContainerIfExists(m.session)
 			}
@@ -335,7 +336,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			}
 			instanceIDForSessions := instanceIDFromStatus(d, m.session)
 			isolationMode := isolationModeFromDB(d, m.session)
-			_ = d.SetEnded(m.session)
+			_ = d.SetEndedExcept(m.session, keepChildren)
 			if instanceIDForSessions != "" {
 				if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 					proglog.Errorf("[prism] doCleanup: update session ended: %v\n", updErr)
@@ -653,7 +654,11 @@ type cleanupResult struct {
 // sever is DB-only and the transcript is preserved, but the same helper still
 // owns the sequencing so both modes route through one code path. Callers
 // populate result.HarnessSessionIDCleared from that helper's outcome.
-func applyDBLifecycleClears(d *db.DB, sessionName string, result *cleanupResult) {
+//
+// keepChildren names review children whose sidecar did not stop (the
+// return value of review.CleanupReviewSessionsForParent). The ended_at
+// cascade leaves their rows open, so their rows and ports stay reserved.
+func applyDBLifecycleClears(d *db.DB, sessionName string, result *cleanupResult, keepChildren ...string) {
 	// 0. Record WHY this row is about to close. A closed row in
 	//    state "error" is otherwise indistinguishable from one a review
 	//    readiness gate or the monitor's safety sweep closed, and the review
@@ -685,8 +690,8 @@ func applyDBLifecycleClears(d *db.DB, sessionName string, result *cleanupResult)
 	// 2. Stamp ended_at. SetEnded internally guards with `AND ended_at IS
 	//    NULL` so re-invocations on an already-ended row succeed as a
 	//    no-op (idempotent). The LIKE cascade also stamps ended_at on any
-	//    review-child rows whose parent is sessionName.
-	if err := d.SetEnded(sessionName); err != nil {
+	//    review-child rows whose parent is sessionName, except keepChildren.
+	if err := d.SetEndedExcept(sessionName, keepChildren); err != nil {
 		result.EndedAtStamped = err.Error()
 		proglog.Errorf("[prism] cleanup: set ended for %s: %v\n", sessionName, err)
 	} else {
@@ -763,6 +768,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		return proxyCleanupToHostAPI(apiURL, session, true, jsonMode, false)
 	}
+	defer sweepEndedSidecarsAfterCleanup()
 
 	result := cleanupResult{Session: session}
 
@@ -882,7 +888,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		stopAndRemoveChildContainers(d, session)
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
-		review.CleanupReviewSessionsForParent(d, session)
+		keepChildren := review.CleanupReviewSessionsForParent(d, session)
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
@@ -907,7 +913,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		// Apply the lifecycle clears — release harness_port and stamp
 		// ended_at — and capture per-update outcomes for the JSON envelope. The
 		// harness_session_id clear runs later, after the archive.
-		applyDBLifecycleClears(d, session, &result)
+		applyDBLifecycleClears(d, session, &result, keepChildren...)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				proglog.Errorf("[prism] headlessCleanup: update session ended: %v\n", updErr)
@@ -1004,6 +1010,7 @@ func applySessionResourceSweep(session string, result *cleanupResult, scope swee
 // delete the branch — used for default-branch sessions where the checkout
 // must remain intact.
 func closeSession(session string) error {
+	defer sweepEndedSidecarsAfterCleanup()
 	// Ensure scratchpad exists.
 	if !tmux.HasSession("scratchpad") {
 		home, _ := os.UserHomeDir()
@@ -1108,6 +1115,7 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		// see proxyCloseToHostAPI in close.go, which goes through /close.
 		return proxyCleanupToHostAPI(apiURL, session, true, jsonMode, false)
 	}
+	defer sweepEndedSidecarsAfterCleanup()
 
 	result := cleanupResult{Session: session}
 	printLine := func(format string, a ...any) {
@@ -1150,7 +1158,7 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		stopAndRemoveChildContainers(d, session)
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
-		review.CleanupReviewSessionsForParent(d, session)
+		keepChildren := review.CleanupReviewSessionsForParent(d, session)
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
@@ -1169,7 +1177,7 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		// Apply the lifecycle clears — release harness_port and stamp
 		// ended_at — and capture per-update outcomes for the JSON envelope. The
 		// harness_session_id clear runs later, after the archive.
-		applyDBLifecycleClears(d, session, &result)
+		applyDBLifecycleClears(d, session, &result, keepChildren...)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				proglog.Errorf("[prism] headlessCloseSession: update session ended: %v\n", updErr)
