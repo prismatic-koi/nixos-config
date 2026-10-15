@@ -129,9 +129,9 @@ func (r Result) Line() string {
 	if !r.Known {
 		reason := r.LocalOnlyReason
 		if r.LocalErr != nil {
-			reason += "; local count failed"
+			reason += ", and the local count failed"
 		}
-		return fmt.Sprintf("%s count not available (%s). The limit is %d worker spawns in 7 days.",
+		return fmt.Sprintf("%s the count is not available (%s). The limit is %d worker spawns in 7 days.",
 			LinePrefix, reason, r.Limit)
 	}
 	base := fmt.Sprintf("%s %d of %d worker spawns in the last 7 days (%d%%, %s).",
@@ -284,13 +284,13 @@ var (
 func fleetFailureReason(err error, timeout time.Duration) string {
 	switch {
 	case errors.Is(err, errNotConfigured):
-		return "no Prometheus URL configured"
+		return "no Prometheus URL is configured"
 	case errors.Is(err, ErrNoData):
 		return "Prometheus returned no data"
 	case errors.Is(err, context.DeadlineExceeded):
 		return fmt.Sprintf("Prometheus did not answer in %s", timeout)
 	default:
-		return "Prometheus unreachable"
+		return "cannot reach Prometheus"
 	}
 }
 

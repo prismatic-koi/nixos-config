@@ -63,13 +63,13 @@ func TestLine_OneLinePerLevel(t *testing.T) {
 		},
 		{
 			name: "local only",
-			r:    spawnbudget.Result{Count: 40, Limit: 120, Known: true, LocalOnlyReason: "Prometheus unreachable"},
-			want: []string{"40 of 120", "this host only: Prometheus unreachable"},
+			r:    spawnbudget.Result{Count: 40, Limit: 120, Known: true, LocalOnlyReason: "cannot reach Prometheus"},
+			want: []string{"40 of 120", "this host only: cannot reach Prometheus"},
 		},
 		{
 			name: "unknown",
-			r:    spawnbudget.Result{Limit: 120, LocalOnlyReason: "Prometheus unreachable", LocalErr: errors.New("boom")},
-			want: []string{"count not available", "Prometheus unreachable", "local count failed", "120"},
+			r:    spawnbudget.Result{Limit: 120, LocalOnlyReason: "cannot reach Prometheus", LocalErr: errors.New("boom")},
+			want: []string{"the count is not available", "cannot reach Prometheus", "the local count failed", "120"},
 		},
 	}
 	for _, tc := range cases {
@@ -235,8 +235,8 @@ func TestLookup_PrometheusUnreachable_UsesLocalCountForThisHostOnly(t *testing.T
 	if r.Fleet || !r.Known || r.Count != 33 {
 		t.Fatalf("Fleet=%v Known=%v Count=%d, want false/true/33", r.Fleet, r.Known, r.Count)
 	}
-	if !strings.Contains(r.Line(), "this host only: Prometheus unreachable") {
-		t.Errorf("line %q does not say this host only: Prometheus unreachable", r.Line())
+	if !strings.Contains(r.Line(), "this host only: cannot reach Prometheus") {
+		t.Errorf("line %q does not say this host only: cannot reach Prometheus", r.Line())
 	}
 }
 
@@ -263,7 +263,7 @@ func TestLookup_NoPrometheusURL_UsesLocalCountForThisHostOnly(t *testing.T) {
 	if r.Fleet || r.Count != 7 {
 		t.Fatalf("Fleet=%v Count=%d, want false/7", r.Fleet, r.Count)
 	}
-	if !strings.Contains(r.Line(), "this host only: no Prometheus URL configured") {
+	if !strings.Contains(r.Line(), "this host only: no Prometheus URL is configured") {
 		t.Errorf("line %q", r.Line())
 	}
 }
@@ -349,7 +349,7 @@ func TestLookup_BothSourcesFail_CountNotAvailable(t *testing.T) {
 	if r.Level() != spawnbudget.LevelUnder {
 		t.Errorf("Level = %v, want LevelUnder for an unknown count", r.Level())
 	}
-	if !strings.Contains(r.Line(), "count not available") {
+	if !strings.Contains(r.Line(), "the count is not available") {
 		t.Errorf("line %q", r.Line())
 	}
 }

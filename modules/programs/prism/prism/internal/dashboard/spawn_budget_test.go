@@ -48,11 +48,11 @@ func TestSpawnBudgetStat_ShowsCountLimitAndLevelMark(t *testing.T) {
 		},
 		{
 			name: "this host only",
-			d:    sharedWithBudget(spawnbudget.Result{Count: 40, Limit: 120, Known: true, LocalOnlyReason: "Prometheus unreachable"}),
+			d:    sharedWithBudget(spawnbudget.Result{Count: 40, Limit: 120, Known: true, LocalOnlyReason: "cannot reach Prometheus"}),
 			want: []string{"7d spawns 40/120 (this host)"},
 		},
 		{
-			name: "count not available",
+			name: "the count is not available",
 			d:    sharedWithBudget(spawnbudget.Result{Limit: 120}),
 			want: []string{"7d spawns ?/120"},
 		},
