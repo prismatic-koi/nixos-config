@@ -382,3 +382,42 @@ func TestCounterVec_ConcurrentAddIsRaceFree(t *testing.T) {
 		t.Errorf("value = %v, want %d", v, goroutines*perGoroutine)
 	}
 }
+
+func TestCounterVec_ZeroFirstSample(t *testing.T) {
+	c := metrics.NewCounterVec("x_total", "h", []string{"a"})
+	_ = c.Inc("pre") // before arming: reports its value at once
+	c.ArmZeroFirstSample()
+	_ = c.Inc("new")
+	collect := func(c *metrics.CounterVec) map[string]float64 {
+		out := map[string]float64{}
+		for _, s := range c.Collect() {
+			out[s.LabelValues[0]] = s.Value
+		}
+		return out
+	}
+	first := collect(c)
+	if first["pre"] != 1 || first["new"] != 0 {
+		t.Errorf("first collect = %v, want pre=1 new=0", first)
+	}
+	if second := collect(c); second["new"] != 1 {
+		t.Errorf("second collect = %v, want new=1", second)
+	}
+	// Snapshot holds the real value even before the first Collect.
+	_ = c.Inc("fresh")
+	var sum float64
+	for _, v := range c.Snapshot() {
+		sum += v
+	}
+	if sum != 3 {
+		t.Errorf("snapshot sum = %v, want 3", sum)
+	}
+	// A restored series reports its real value at once.
+	r := metrics.NewCounterVec("x_total", "h", []string{"a"})
+	r.ArmZeroFirstSample()
+	if err := r.Restore(c.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if got := collect(r); got["fresh"] != 1 || got["new"] != 1 {
+		t.Errorf("restored collect = %v, want fresh=1 new=1", got)
+	}
+}
