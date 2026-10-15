@@ -7,7 +7,7 @@ package cmd
 //	prism merges                         alias for `prism merges list`
 //	prism merges list                    current watching queue (this coordinator)
 //	prism merges list --failed           failed entries
-//	prism merges list --abandoned        abandoned entries from previous coordinator
+//	prism merges list --abandoned        abandoned entries of this coordinator session
 //	prism merges list --all              all non-abandoned rows from the last 7 days
 //	prism merges cancel <pr>             cancel a watching entry
 //
@@ -66,14 +66,14 @@ No-op (exit 0 with message) when:
 
 func init() {
 	mergesListCmd.Flags().Bool("failed", false, "Show failed entries")
-	mergesListCmd.Flags().Bool("abandoned", false, "Show abandoned entries from previous coordinator incarnations")
+	mergesListCmd.Flags().Bool("abandoned", false, "Show abandoned entries of this coordinator session, from every incarnation")
 	mergesListCmd.Flags().Bool("all", false, "Show all non-abandoned entries from the last 7 days")
 	mergesListCmd.Flags().Bool("json", false, "Emit a JSON array of merge-queue entries to stdout instead of the human-readable table")
 
 	// Also add the filter flags to the root mergesCmd so `prism merges --failed`
 	// works as a shorthand for `prism merges list --failed`.
 	mergesCmd.Flags().Bool("failed", false, "Show failed entries")
-	mergesCmd.Flags().Bool("abandoned", false, "Show abandoned entries from previous coordinator incarnations")
+	mergesCmd.Flags().Bool("abandoned", false, "Show abandoned entries of this coordinator session, from every incarnation")
 	mergesCmd.Flags().Bool("all", false, "Show all non-abandoned entries from the last 7 days")
 	mergesCmd.Flags().Bool("json", false, "Emit a JSON array of merge-queue entries to stdout instead of the human-readable table")
 
@@ -431,7 +431,7 @@ func emptyMergesMessage(filter string) string {
 	case "failed":
 		return "no failed merge queue entries"
 	case "abandoned":
-		return "no abandoned merge queue entries from previous coordinator sessions"
+		return "no abandoned merge queue entries"
 	case "all":
 		return "no merge queue entries in the last 7 days"
 	default:

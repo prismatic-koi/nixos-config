@@ -32,8 +32,9 @@ const (
 )
 
 // runSlowStopSidecarStub acts as a sidecar that is slow to stop. On SIGTERM
-// it waits for the delay and then writes one agent_events row with the
-// instance ID it holds, as the Shutdown of a real sidecar does.
+// it abandons the watching merge-queue rows of its instance ID, waits for
+// the delay, and then writes one agent_events row with that instance ID, in
+// the order of the Shutdown of a real coordinator sidecar.
 func runSlowStopSidecarStub() int {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM)
@@ -42,8 +43,6 @@ func runSlowStopSidecarStub() int {
 	case <-time.After(60 * time.Second):
 		return 0
 	}
-	delay, _ := time.ParseDuration(os.Getenv(slowStopDelayEnv))
-	time.Sleep(delay)
 
 	sessionName := ""
 	for i := 1; i+1 < len(os.Args); i++ {
@@ -57,6 +56,11 @@ func runSlowStopSidecarStub() int {
 	}
 	defer d.Close()
 	iid := os.Getenv(slowStopIIDEnv)
+	if err := d.AbandonWatchingMerges(iid); err != nil {
+		return 1
+	}
+	delay, _ := time.ParseDuration(os.Getenv(slowStopDelayEnv))
+	time.Sleep(delay)
 	if err := d.WriteEvent(db.Event{
 		ID: uuid.New().String(), SessionName: sessionName, Repo: "testrepo",
 		Worktree: "/wt", Type: "state_change", Payload: `{"state":"interrupted"}`,
@@ -338,30 +342,18 @@ func TestRestoreSession_ContinuesIncarnation(t *testing.T) {
 	}
 }
 
-// TestRestoreSession_OldSidecarDoesNotStop restores a session whose old
-// sidecar does not stop inside the wait and writes an event with its
-// instance ID later, as a slow Shutdown does. Restore must start a new
-// incarnation, and the old sidecar must not write an event with the
-// instance ID of an ended session.
-func TestRestoreSession_OldSidecarDoesNotStop(t *testing.T) {
-	d := startRestoreTest(t)
-	prevTimeout := restoreSidecarStopTimeout
-	restoreSidecarStopTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { restoreSidecarStopTimeout = prevTimeout })
-
-	const sessionName = "testrepo@restart-slow-3027"
-	status := seedStatus(t, d, sessionName, t.TempDir(), nil)
-	oldIID := uuid.New().String()
-	seedIncarnation(t, d, sessionName, oldIID, "tier-heavy", time.Time{})
-	status.InstanceID = &oldIID
-
+// startSlowStopStub starts the slow-stop sidecar stub as the sidecar of
+// sessionName with instance ID iid, and returns its wait status when it
+// exits.
+func startSlowStopStub(t *testing.T, d *db.DB, sessionName, iid, delay string) <-chan syscall.WaitStatus {
+	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
 	stub := exec.Command(self, "sidecar", "--session", sessionName)
 	stub.Env = append(os.Environ(),
-		slowStopDBEnv+"="+d.Path(), slowStopIIDEnv+"="+oldIID, slowStopDelayEnv+"=1s")
+		slowStopDBEnv+"="+d.Path(), slowStopIIDEnv+"="+iid, slowStopDelayEnv+"="+delay)
 	if err := stub.Start(); err != nil {
 		t.Fatalf("start slow-stop stub: %v", err)
 	}
@@ -384,6 +376,27 @@ func TestRestoreSession_OldSidecarDoesNotStop(t *testing.T) {
 	}
 	// Give the stub time to install its SIGTERM handler.
 	time.Sleep(200 * time.Millisecond)
+	return stubDone
+}
+
+// TestRestoreSession_OldSidecarDoesNotStop restores a session whose old
+// sidecar does not stop inside the wait and writes an event with its
+// instance ID later, as a slow Shutdown does. Restore must start a new
+// incarnation, and the old sidecar must not write an event with the
+// instance ID of an ended session.
+func TestRestoreSession_OldSidecarDoesNotStop(t *testing.T) {
+	d := startRestoreTest(t)
+	prevTimeout := restoreSidecarStopTimeout
+	restoreSidecarStopTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { restoreSidecarStopTimeout = prevTimeout })
+
+	const sessionName = "testrepo@restart-slow-3027"
+	status := seedStatus(t, d, sessionName, t.TempDir(), nil)
+	oldIID := uuid.New().String()
+	seedIncarnation(t, d, sessionName, oldIID, "tier-heavy", time.Time{})
+	status.InstanceID = &oldIID
+
+	stubDone := startSlowStopStub(t, d, sessionName, oldIID, "1s")
 
 	t.Setenv("PRISM_CMD_TEST_STUB", "1")
 	if err := callRestoreSession(d, status); err != nil {

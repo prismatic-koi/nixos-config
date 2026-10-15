@@ -644,6 +644,8 @@ audit log.
 
 The merge queue is a local serial FIFO queue running in the coordinator's sidecar process. The sidecar polls the head of the queue every 30 seconds; only one PR is in flight at a time. The watcher's lifetime equals the coordinator session's lifetime — there is no persistent daemon.
 
+`prism restart` and `prism restore` do not end the coordinator session. Each `watching` entry stays in the queue, in the same order, and the restored sidecar continues to watch it. The restore output names the entries (`merge queue resumed: PR #N, ...`). No notification is sent for the restart (issue #3166).
+
 `prism merge <pr>` is **async, poll-and-notify** (issue #2420, same shape as `prism review`): the command emits a synchronous initial-state message describing the detected state and what will happen next, then — for non-terminal states — hands off to the background poller. When the outcome is decided, the watcher delivers a `prism prompt` to the coordinator. For terminal states at invocation (already merged, closed without merge, or merge conflict) the command exits immediately without enqueueing.
 
 **Core rule (#2420):** `prism merge` NEVER squash-merges without a positive signal. On a repo with no branch protection at all, the watcher waits for a human to review, approve, or merge — it does not auto-merge just because GitHub reports the PR as mergeable. Branch-protection presence is a description of the required gates, not a licence.
@@ -658,7 +660,7 @@ A queued PR moves through states keyed off GitHub's `mergeStateStatus`: `watchin
 | `prism merges` | Show the queue scoped to the current coordinator session (alias for `prism merges list`). |
 | `prism merges list` | Same as above. |
 | `prism merges list --failed` | Show only failed entries. |
-| `prism merges list --abandoned` | Show entries left behind by a previous coordinator incarnation. |
+| `prism merges list --abandoned` | Show entries that a stop of the coordinator sidecar left behind, from every incarnation of the session, the current one included. |
 | `prism merges list --all` | Include terminal-state history (last 7 days). |
 | `prism merges cancel <pr>` | Remove a `watching` entry from the queue. |
 
@@ -742,7 +744,7 @@ One CI outcome is terminal (issue #2525). When `mergeStateStatus` is `BLOCKED`, 
 | BLOCKED, required check concluded in failure | `PR #N CI failed: <check names>. Worker needs to fix and push. No merge will happen until then.` |
 | PR became DIRTY or CONFLICTING while queued (mid-poll) | `PR #N has conflicts. Worker needs to rebase.` |
 | Genuine `gh pr merge` failure (rare fallback) | `PR #N merge failed: <error>` |
-| Coordinator session ended while watching | Row transitions to `abandoned` — surfaces via `prism merges list --abandoned` only; no live notification. |
+| Coordinator session ended while watching | Row transitions to `abandoned` — surfaces via `prism merges list --abandoned` only; no live notification. A `prism restart` or `prism restore` is not an end: the row stays `watching` (issue #3166). |
 
 Every *completion* notification contains the exact phrase **"Please clean up the branch and worktree"** and does NOT imply prism performed the cleanup itself — the coordinator does the cleanup, prism does not.
 
@@ -760,7 +762,7 @@ When a merge-queue notification arrives, treat it as high-priority (same as a wo
 | `PR #N CI failed: <check names>. ...` | Do NOT clean up — the branch is still needed. `prism prompt <worker-session>` with the failed check names so the worker fixes and pushes. Re-run `prism merge <pr>` after the fix lands; the row is terminal, so it does not resume on its own. |
 | `PR #N has conflicts. Worker needs to rebase.` (mid-poll) | Do NOT clean up. `prism prompt <worker-session>` to rebase and push, then `prism merge <pr>` again; the row is terminal and the queue has moved on. |
 | `PR #N merge failed: <error>` | Read the error, decide whether to retry (`prism merge <pr>`) or escalate to the user. |
-| `abandoned` (via `--abandoned` listing) | A new coordinator decides whether to re-enqueue with `prism merge <pr>`. |
+| `abandoned` (via `--abandoned` listing) | The coordinator decides whether to re-enqueue with `prism merge <pr>`. |
 
 ### Why workers cannot invoke it
 
