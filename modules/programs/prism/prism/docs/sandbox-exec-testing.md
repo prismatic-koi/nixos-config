@@ -454,7 +454,7 @@ go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSide
 ```
 
 The selector has `TestKillSidecar_*` with the underscore, so it does not
-match the `TestKillSidecarAndWait*` tests. Those tests skip on Darwin, and
+match the `TestKillSidecarAndWait*` tests. Some of those tests skip on Darwin, and
 a SKIP fails the guard. The step has its own guard step. The guard fails
 the job on any SKIP, or if no `TestStopSidecar*` test runs. These tests need
 no nested sandbox, so they also run inside a prism worker on Darwin. Only

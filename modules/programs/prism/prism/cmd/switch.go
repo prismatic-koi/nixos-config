@@ -6,6 +6,7 @@ package cmd
 // (or $PRISM_CONFIG_FILE) via the internal/config package.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -120,7 +121,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	//     unconditionally without re-querying the DB. Falls through.
 	//  3. Session does not exist, or no DB available → no change to ForceFresh.
 	//     Falls through to normal create path (or legacy no-op if d==nil).
-	if !opts.ForceFresh && tmux.HasSession(sessionName) {
+	if !opts.ForceFresh && session.HasExactSession(sessionName) {
 		if d == nil {
 			// No DB — can't determine liveness. Treat as live:
 			// attach without touching anything.
@@ -178,7 +179,10 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		// stops, and the tmux-session-start seed then mints a new instance
 		// ID.
 		proglog.Infof("[prism switch] stale-zombie session %q: killing old sidecar before restart\n", sessionName)
-		if waitErr := session.KillSidecarAndWait(sessionName, killSidecarTimeout); waitErr != nil {
+		if waitErr := session.KillSidecarAndWait(sessionName, killSidecarTimeout); errors.Is(waitErr, session.ErrSidecarNotSignalled) {
+			// KillSidecar already wrote a warning that names the PID.
+			proglog.Infof("[prism switch] %v\n", waitErr)
+		} else if waitErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: %v\n", waitErr)
 		}
 		opts.ForceFresh = true

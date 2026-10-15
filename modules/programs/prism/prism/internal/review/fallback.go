@@ -20,7 +20,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
-	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // refusalStopReasons are the provider stop reasons that start a fallback.
@@ -247,9 +246,7 @@ func spawnFallbackSession(d *db.DB, in reviewerSpawnInput) error {
 	}
 	in.HarnessHandle = h
 	if spawnErr := session.SpawnSession(d, newReviewerSpawnOpts(in)); spawnErr != nil {
-		session.KillSidecar(in.AgentSession)
-		cleanupAgentSession(d, in.AgentSession, db.ReapCauseSpawnFailure, spawnErr.Error())
-		_ = tmux.KillSession(in.AgentSession)
+		cleanupFailedAgentSession(d, in.AgentSession, db.ReapCauseSpawnFailure, spawnErr.Error())
 		return spawnErr
 	}
 	return nil

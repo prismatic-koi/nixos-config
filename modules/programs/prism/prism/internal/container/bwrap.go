@@ -48,7 +48,7 @@ func (b *bwrapIsolator) Name() config.IsolationMode {
 
 // Capabilities returns the bwrap feature flags:
 //   - RequiresProfilesFile: profiles.json supplies the per-role slot.
-//   - NeedsHostAPISocket: the sandboxed agent reaches the host only through the host-API socket.
+//   - IsSandboxed: the agent runs in a sandbox (see Capabilities.IsSandboxed).
 //   - RestartOnExit: the sidecar restart-loop fires to relaunch agent-run on exit.
 //   - NeedsStartupConnectTimeout: bwrap-specific startup-connect timeout in the sidecar.
 func (b *bwrapIsolator) Capabilities() Capabilities {
@@ -56,7 +56,7 @@ func (b *bwrapIsolator) Capabilities() Capabilities {
 		IsContainer:                false,
 		OwnsContainerLifecycle:     false,
 		RequiresProfilesFile:       true,
-		NeedsHostAPISocket:         true,
+		IsSandboxed:                true,
 		UsesContainerHarness:       false,
 		RestartOnExit:              true,
 		NeedsStartupConnectTimeout: true,
