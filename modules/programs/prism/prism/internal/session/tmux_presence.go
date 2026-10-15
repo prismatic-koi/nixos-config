@@ -60,3 +60,9 @@ func classifyTmuxListError(msg string) TmuxPresence {
 		return TmuxPresenceUnknown
 	}
 }
+
+// HasExactSession reports whether a tmux session with exactly the name
+// exists. It answers false when tmux cannot be queried.
+func HasExactSession(sessionName string) bool {
+	return TmuxSessionPresence(sessionName) == TmuxPresent
+}

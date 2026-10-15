@@ -9,13 +9,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // runCheckinSessionLegacy is the screen-scrape fallback path, used when a
 // session has no DB rows.
 func runCheckinSessionLegacy(session string, height int) error {
-	if !tmux.HasSession(session) {
+	if !prismSession.HasExactSession(session) {
 		return fmt.Errorf("session %q not found\nrun `prism sessions list` to see available sessions", session)
 	}
 
