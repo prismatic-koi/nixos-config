@@ -11,6 +11,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"io"
 	"net"
 	"net/http"
@@ -250,6 +251,10 @@ func TestEventProxy_TmuxSessionEndProxies(t *testing.T) {
 	// Use a name that definitely does not exist in any local tmux server so
 	// HasSession returns false and the liveness guard passes.
 	const sess = "nonexistent-proxy-test@no-branch"
+	// A sandboxed hook cannot query tmux: unknown must still proxy.
+	prev := hookTmuxPresence
+	hookTmuxPresence = func(string) prismSession.TmuxPresence { return prismSession.TmuxPresenceUnknown }
+	t.Cleanup(func() { hookTmuxPresence = prev })
 	_ = eventTmuxSessionEndCmd.Flags().Set("session", sess)
 	t.Cleanup(func() { _ = eventTmuxSessionEndCmd.Flags().Set("session", "") })
 

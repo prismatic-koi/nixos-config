@@ -484,6 +484,9 @@ var (
 		return prismSession.EnsureSidecarStopped(session, prismSession.SidecarStopTimeout)
 	}
 	hookStopReviewChildren = review.StopReviewChildrenForEnd
+	// hookTmuxPresence is the first presence check of the hook. Tests
+	// replace it, so that a test does not depend on a tmux server.
+	hookTmuxPresence = prismSession.TmuxSessionPresence
 )
 
 var eventTmuxSessionEndCmd = &cobra.Command{
@@ -504,8 +507,17 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		// The check compares exact names: a `-t` target matches by prefix,
 		// so `repo@feat` would match a live `repo@feature-x` (#3172). If
 		// tmux cannot be queried, keep the row (fail closed).
-		if prismSession.TmuxSessionPresence(session) != prismSession.TmuxGone {
+		//
+		// A sandboxed caller (PRISM_HOST_API set) has no tmux access, so an
+		// unknown answer says nothing there: it proxies to the host as it
+		// did before, and only a proven live session stops it.
+		switch hookTmuxPresence(session) {
+		case prismSession.TmuxPresent:
 			return nil
+		case prismSession.TmuxPresenceUnknown:
+			if sandboxenv.HostAPISocket() == "" {
+				return nil
+			}
 		}
 
 		if proxied, err := proxyEventToHostAPI("tmux-session-end", session, map[string]string{}); proxied {
