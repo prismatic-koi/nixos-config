@@ -3,6 +3,7 @@ package container
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -2369,6 +2370,89 @@ func TestBwrapBuildArgs_SystemRootsBeforeWorktree(t *testing.T) {
 	}
 	if nixIdx >= worktreeIdx {
 		t.Errorf("system root /nix (idx %d) should appear before worktree bind (idx %d)", nixIdx, worktreeIdx)
+	}
+}
+
+// ── /usr/bin/env (read-only, on a read-only /usr) ────────────────────────────
+
+// usrBinEnvWant is the mount sequence that BuildArgs must emit for
+// /usr/bin/env.
+var usrBinEnvWant = []string{
+	"--tmpfs", "/usr",
+	"--ro-bind-try", "/usr/bin/env", "/usr/bin/env",
+	"--remount-ro", "/usr",
+}
+
+// TestBwrapBuildArgs_UsrBinEnvReadOnly: BuildArgs gives the sandbox the host
+// /usr/bin/env through a read-only bind on a /usr that bwrap remounts
+// read-only. The sequence is contiguous, so no other mount can come between
+// the tmpfs and its remount. The argv is the same when the host has no
+// /usr/bin/env: --ro-bind-try skips a missing source.
+func TestBwrapBuildArgs_UsrBinEnvReadOnly(t *testing.T) {
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	args := (&bwrapIsolator{name: m.name}).BuildArgs(m)
+
+	idx := -1
+	for i := 0; i+len(usrBinEnvWant) <= len(args); i++ {
+		if slices.Equal(args[i:i+len(usrBinEnvWant)], usrBinEnvWant) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("BuildArgs has no contiguous %q: %v", usrBinEnvWant, redactedArgs(args))
+	}
+}
+
+// TestBwrapBuildArgs_UsrBinEnvOnlyUsrMounts: the /usr/bin/env sequence holds
+// the only mount operations under /usr. A second bind there, or a writable
+// mount, would give the sandbox a host path or a writable path that the
+// grant does not cover.
+func TestBwrapBuildArgs_UsrBinEnvOnlyUsrMounts(t *testing.T) {
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	args := (&bwrapIsolator{name: m.name}).BuildArgs(m)
+
+	srcDstFlags := map[string]bool{
+		"--bind": true, "--bind-try": true, "--ro-bind": true, "--ro-bind-try": true,
+		"--dev-bind": true, "--dev-bind-try": true, "--symlink": true,
+	}
+	dstFlags := map[string]bool{
+		"--tmpfs": true, "--dir": true, "--remount-ro": true, "--file": true,
+		"--bind-data": true, "--ro-bind-data": true, "--proc": true, "--dev": true,
+	}
+	underUsr := func(p string) bool { return p == "/usr" || strings.HasPrefix(p, "/usr/") }
+
+	var got []string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case srcDstFlags[args[i]] && i+2 < len(args):
+			if underUsr(args[i+2]) {
+				got = append(got, args[i:i+3]...)
+			}
+			i += 2
+		case dstFlags[args[i]] && i+1 < len(args):
+			if underUsr(args[i+1]) {
+				got = append(got, args[i:i+2]...)
+			}
+			i++
+		case args[i] == "--setenv":
+			i += 2
+		}
+	}
+	if !slices.Equal(got, usrBinEnvWant) {
+		t.Errorf("mount operations under /usr = %q, want only %q", got, usrBinEnvWant)
 	}
 }
 

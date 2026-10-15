@@ -252,6 +252,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	} {
 		args = append(args, "--ro-bind", sysRoot, sysRoot)
 	}
+	args = append(args, bwrapUsrBinEnvArgs(hostUsrBinEnv)...)
 
 	// ── Security: shadow sensitive /etc subtrees with empty tmpfs ──────────
 	// The /etc ro-bind above exposes all of /etc to the sandbox, including
@@ -719,6 +720,34 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	args = append(args, PIInvocation(cfg)...)
 
 	return args
+}
+
+// hostUsrBinEnv is the host path of the env binary that the sandbox gets
+// at /usr/bin/env. On NixOS it is a symlink into /nix/store
+// (environment.usrbinenv).
+const hostUsrBinEnv = "/usr/bin/env"
+
+// bwrapUsrBinEnvArgs returns the mounts that give the sandbox a
+// read-only /usr/bin/env, so that a "#!/usr/bin/env <interpreter>"
+// shebang runs. src is the host path of the env binary.
+//
+// The sandbox root is a writable tmpfs, and bwrap creates the parents of
+// a bind destination as directories that the sandbox user owns. A bare
+// bind of /usr/bin/env thus gives the agent a writable /usr and /usr/bin.
+// The --tmpfs and --remount-ro pair puts /usr on its own tmpfs and makes
+// it read-only after bwrap creates /usr/bin in it. The sandbox has no
+// capabilities, so it cannot remount /usr read-write.
+//
+// --ro-bind-try skips the bind when src does not exist. A host without
+// /usr/bin/env thus still starts the sandbox, with an empty read-only
+// /usr. The bind follows a symlink at src, so on NixOS the sandbox sees
+// the env file in /nix/store, which the /nix bind already exposes.
+func bwrapUsrBinEnvArgs(src string) []string {
+	return []string{
+		"--tmpfs", "/usr",
+		"--ro-bind-try", src, "/usr/bin/env",
+		"--remount-ro", "/usr",
+	}
 }
 
 // bwrapWorktreeBind returns the bind triple of the worktree: --ro-bind when

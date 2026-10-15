@@ -743,6 +743,8 @@ One CI outcome is terminal (issue #2525). When `mergeStateStatus` is `BLOCKED`, 
 | PR closed without merging (mid-poll) | `PR #N closed without merge. Please clean up the branch and worktree.` |
 | BLOCKED, required check concluded in failure | `PR #N CI failed: <check names>. Worker needs to fix and push. No merge will happen until then.` |
 | PR became DIRTY or CONFLICTING while queued (mid-poll) | `PR #N has conflicts. Worker needs to rebase.` |
+| `gh pr update-branch` refused with a permanent error (issue #3180) | `PR #N is BEHIND and gh pr update-branch failed with an error that no retry fixes: <error>. Worker needs to rebase onto the base branch and push.` |
+| `gh pr update-branch` failed 5 polls in a row with an unknown error (issue #3180) | `PR #N: gh pr update-branch failed 5 polls in a row. The row stays watching. Last error: <error>` |
 | Genuine `gh pr merge` failure (rare fallback) | `PR #N merge failed: <error>` |
 | Coordinator session ended while watching | Row transitions to `abandoned` — surfaces via `prism merges list --abandoned` only; no live notification. A `prism restart` or `prism restore` is not an end: the row stays `watching` (issue #3166). |
 
@@ -761,6 +763,8 @@ When a merge-queue notification arrives, treat it as high-priority (same as a wo
 | `PR #N closed without merge. ...` | `prism cleanup --yes --session <worker-session>`. Usually nothing else — the PR was closed deliberately. Investigate if unexpected. |
 | `PR #N CI failed: <check names>. ...` | Do NOT clean up — the branch is still needed. `prism prompt <worker-session>` with the failed check names so the worker fixes and pushes. Re-run `prism merge <pr>` after the fix lands; the row is terminal, so it does not resume on its own. |
 | `PR #N has conflicts. Worker needs to rebase.` (mid-poll) | Do NOT clean up. `prism prompt <worker-session>` to rebase and push, then `prism merge <pr>` again; the row is terminal and the queue has moved on. |
+| `PR #N is BEHIND and gh pr update-branch failed with an error that no retry fixes: ...` | Do NOT clean up. `prism prompt <worker-session>` to rebase onto the base branch and push, then `prism merge <pr>` again; the row is terminal and the queue has moved on. Do NOT run `gh pr update-branch` yourself. |
+| `PR #N: gh pr update-branch failed 5 polls in a row. ...` | The row is still `watching`. Read the error. If it is a network or GitHub fault, wait. Otherwise `prism prompt <worker-session>` to rebase and push. |
 | `PR #N merge failed: <error>` | Read the error, decide whether to retry (`prism merge <pr>`) or escalate to the user. |
 | `abandoned` (via `--abandoned` listing) | The coordinator decides whether to re-enqueue with `prism merge <pr>`. |
 
