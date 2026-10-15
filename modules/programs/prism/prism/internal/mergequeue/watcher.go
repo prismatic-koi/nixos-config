@@ -105,6 +105,36 @@ type Watcher struct {
 	// so tests can inject a stub that captures argv. When nil, runGH falls back
 	// to execGH (the real os/exec implementation).
 	runGHFunc func(ctx context.Context, args ...string) ([]byte, error)
+
+	// Consecutive unknown update-branch failures for one head PR (issue
+	// #3180). Reset on success, on a non-BEHIND poll, and when the head
+	// changes. The watcher runs tick from one goroutine, so no lock.
+	updateFailPR    int
+	updateFailCount int
+}
+
+// updateFailThreshold is N: the count of consecutive unknown update-branch
+// failures on one head PR that triggers a single notification.
+const updateFailThreshold = 5
+
+// permanentUpdateBranchErrors are lower-case stderr fragments of failures
+// that no retry fixes (issue #3180). An error that matches none is unknown,
+// never permanent.
+var permanentUpdateBranchErrors = []string{
+	// The token lacks the `workflow` scope and main changed a workflow file.
+	"without `workflow` scope",
+	// The token or app has no permission to update this branch.
+	"resource not accessible by",
+}
+
+func isPermanentUpdateBranchError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, frag := range permanentUpdateBranchErrors {
+		if strings.Contains(msg, frag) {
+			return true
+		}
+	}
+	return false
 }
 
 // New creates a Watcher. instanceID and sessionName identify the coordinator
@@ -248,6 +278,10 @@ func (w *Watcher) tick(ctx context.Context) {
 		return
 	}
 
+	if head.PR != w.updateFailPR {
+		w.updateFailPR, w.updateFailCount = 0, 0
+	}
+
 	log.Printf("[mergequeue] polling head PR #%d (queue_pos=%d)", head.PR, head.QueuePosition)
 	// Pass head.Repo so the heartbeat update only touches the row belonging
 	// to this coordinator's repo, never a same-numbered row from another
@@ -303,6 +337,9 @@ func (w *Watcher) tick(ctx context.Context) {
 	// reviews, up-to-date-with-base) as the positive signal for CLEAN, and
 	// use the required-checks list to disambiguate UNSTABLE (optional
 	// checks failing but required ones green).
+	if prInfo.MergeStateStatus != "BEHIND" {
+		w.updateFailCount = 0
+	}
 	switch prInfo.MergeStateStatus {
 	case "CLEAN":
 		w.tryMerge(ctx, head)
@@ -322,7 +359,20 @@ func (w *Watcher) tick(ctx context.Context) {
 	case "BEHIND":
 		log.Printf("[mergequeue] PR #%d is BEHIND — calling gh pr update-branch", head.PR)
 		if err := w.updateBranch(ctx, head.PR); err != nil {
-			log.Printf("[mergequeue] gh pr update-branch PR #%d: %v — leaving watching", head.PR, err)
+			if isPermanentUpdateBranchError(err) {
+				w.notifyUpdateBranchPermanent(ctx, head, err)
+				return
+			}
+			w.updateFailPR = head.PR
+			w.updateFailCount++
+			log.Printf("[mergequeue] gh pr update-branch PR #%d: %v — leaving watching (%d consecutive)", head.PR, err, w.updateFailCount)
+			if w.updateFailCount == updateFailThreshold {
+				w.notify(ctx, head.SessionName, head.InstanceID, fmt.Sprintf(
+					"PR #%d: gh pr update-branch failed %d polls in a row. The row stays watching. Last error: %v",
+					head.PR, updateFailThreshold, err))
+			}
+		} else {
+			w.updateFailCount = 0
 		}
 		// Leave row as watching; next tick will pick up the rebased state.
 
@@ -389,6 +439,18 @@ func (w *Watcher) notifyConflicting(ctx context.Context, head *db.PendingMerge) 
 		log.Printf("[mergequeue] TerminateMerge(conflict) PR #%d: %v", head.PR, err)
 	}
 	text := fmt.Sprintf("PR #%d has conflicts. Worker needs to rebase.", head.PR)
+	log.Printf("[mergequeue] %s", text)
+	w.notify(ctx, head.SessionName, head.InstanceID, text)
+}
+
+// notifyUpdateBranchPermanent ends the head row (status='failed') and
+// notifies the coordinator once (issue #3180). The row is no longer the head,
+// so later polls move on and do not repeat the notification.
+func (w *Watcher) notifyUpdateBranchPermanent(ctx context.Context, head *db.PendingMerge, cause error) {
+	if err := w.db.TerminateMerge(head.PR, head.Repo, "failed", "update-branch refused"); err != nil {
+		log.Printf("[mergequeue] TerminateMerge(update-branch) PR #%d: %v", head.PR, err)
+	}
+	text := fmt.Sprintf("PR #%d is BEHIND and gh pr update-branch failed with an error that no retry fixes: %v. Worker needs to rebase onto the base branch and push.", head.PR, cause)
 	log.Printf("[mergequeue] %s", text)
 	w.notify(ctx, head.SessionName, head.InstanceID, text)
 }

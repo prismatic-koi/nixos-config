@@ -505,6 +505,8 @@ type ghFake struct {
 	required []string
 	// protectionErr, when set, fails the branch-protection probe.
 	protectionErr error
+	// update answers `gh pr update-branch <pr>`. Default: success.
+	update func(pr int) error
 
 	viewed, merged, updated []int
 }
@@ -562,6 +564,9 @@ func (g *ghFake) run(_ context.Context, args ...string) ([]byte, error) {
 		return g.merge(pr)
 	case "update-branch":
 		g.updated = append(g.updated, pr)
+		if g.update != nil {
+			return nil, g.update(pr)
+		}
 		return nil, nil
 	}
 	g.t.Fatalf("unexpected gh call: %v", args)
