@@ -53,11 +53,30 @@ import (
 // can reach the live host tmux server via the default-socket fallback. See
 // tmux_isolation_test.go for the full rationale and the regression guard.
 // The original environment is restored after m.Run().
+// stubReadyFileEnv names the file a stub creates once it has installed its
+// signal disposition. startSidecarStub waits for it.
+const stubReadyFileEnv = "PRISM_TEST_STUB_READY_FILE"
+
+// signalStubReady creates the ready file, if the parent asked for one. The
+// rename makes the file appear only when complete.
+func signalStubReady() {
+	path := os.Getenv(stubReadyFileEnv)
+	if path == "" {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte("ready\n"), 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
+}
+
 func TestMain(m *testing.M) {
 	if probe := os.Getenv(seedProbeEnvVar); probe != "" && len(os.Args) > 1 && os.Args[1] == "event" {
 		os.Exit(runSeedProbe(probe, os.Args[2:]))
 	}
 	if os.Getenv("PRISM_TEST_SUBPROCESS") == "1" {
+		signalStubReady()
 		// We are the child process acting as the sidecar stub.
 		// Sleep briefly so the parent can read the PID file, then exit.
 		time.Sleep(50 * time.Millisecond)
@@ -65,11 +84,13 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv("PRISM_TEST_STUB_IGNORE_TERM") == "1" {
 		signal.Ignore(syscall.SIGTERM)
+		signalStubReady()
 		time.Sleep(60 * time.Second)
 		os.Exit(0)
 	}
 	if os.Getenv("PRISM_TEST_STUB_LONG") == "1" {
 		// Long-running stub: sleep 60s, interruptible by SIGTERM.
+		signalStubReady()
 		time.Sleep(60 * time.Second)
 		os.Exit(0)
 	}
