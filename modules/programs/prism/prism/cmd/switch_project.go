@@ -392,7 +392,7 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 			if releaseErr := d.ReleasePort(oldSessionName); releaseErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: release port for old session %q: %v\n", oldSessionName, releaseErr)
 			}
-			_ = d.SetEnded(oldSessionName)
+			_ = setEndedStoppingReviewChildren(d, oldSessionName)
 			_ = d.PurgeBusMessages(oldSessionName)
 			d.Close()
 		} else {

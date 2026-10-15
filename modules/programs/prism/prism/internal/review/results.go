@@ -78,6 +78,11 @@ func stripEnvPayload(s string) string {
 	return s[:idx] + "[PRISM_INITIAL_PROMPT redacted]"
 }
 
+// progressLogDir returns the directory of the forensic log that
+// truncateProgressMsg writes. The test suite points it at a directory that
+// the suite removes.
+var progressLogDir = os.TempDir
+
 // truncateProgressMsg truncates msg to maxProgressMsgBytes, respecting UTF-8
 // boundaries. When truncated, a suffix is appended that names a forensic log
 // path where the full message can be read. The log path includes both prNumber
@@ -104,7 +109,7 @@ func truncateProgressMsg(prNumber, agentName, msg string) string {
 
 	safePR := sanitisePRNumber(prNumber)
 	safeAgent := sanitisePRNumber(agentName)
-	logPath := filepath.Join(os.TempDir(), fmt.Sprintf("prism-review-error-%s-%s.log", safePR, safeAgent))
+	logPath := filepath.Join(progressLogDir(), fmt.Sprintf("prism-review-error-%s-%s.log", safePR, safeAgent))
 	suffix := fmt.Sprintf("\n[...truncated; full error in %s]", logPath)
 	// Write full message to the forensic path (best-effort, non-fatal).
 	_ = os.WriteFile(logPath, []byte(msg), 0o600)

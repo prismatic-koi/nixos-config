@@ -1048,7 +1048,7 @@ func closeSession(session string) error {
 		}
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
-		_ = d.SetEnded(session)
+		_ = setEndedStoppingReviewChildren(d, session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				proglog.Errorf("[prism] closeSession: update session ended: %v\n", updErr)

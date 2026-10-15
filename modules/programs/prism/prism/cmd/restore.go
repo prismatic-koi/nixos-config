@@ -220,12 +220,12 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	directory := s.Worktree
 	if directory == "" {
 		fmt.Fprintf(os.Stderr, "restore %q: no worktree recorded — marking ended\n", s.SessionName)
-		return restoreOutcomeSkipped, d.SetEnded(s.SessionName)
+		return restoreOutcomeSkipped, setEndedStoppingReviewChildren(d, s.SessionName)
 	}
 	if _, err := os.Stat(directory); err != nil {
 		fmt.Fprintf(os.Stderr, "restore %q: worktree %q not accessible (%v) — marking ended\n",
 			s.SessionName, directory, err)
-		return restoreOutcomeSkipped, d.SetEnded(s.SessionName)
+		return restoreOutcomeSkipped, setEndedStoppingReviewChildren(d, s.SessionName)
 	}
 
 	// Build opts for the full three-window layout. SkipStatusSeed prevents

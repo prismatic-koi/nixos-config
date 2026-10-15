@@ -12,8 +12,7 @@ package review_test
 //     "now".
 //   - On timeout: emit "<role> failed to start: not ready within Xs", populate
 //     spawnErr[i] with a *session.ReadinessTimeoutError (wrapped), and clean
-//     up the half-alive session via KillSidecar / cleanupAgentSession /
-//     tmux.KillSession.
+//     up the half-alive session via cleanupFailedAgentSession.
 
 import (
 	"path/filepath"

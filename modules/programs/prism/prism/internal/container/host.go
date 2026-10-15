@@ -42,7 +42,7 @@ func (h *hostIsolator) Capabilities() Capabilities {
 		IsContainer:                false,
 		OwnsContainerLifecycle:     false,
 		RequiresProfilesFile:       false,
-		NeedsHostAPISocket:         false,
+		IsSandboxed:                false,
 		UsesContainerHarness:       false,
 		RestartOnExit:              false,
 		NeedsStartupConnectTimeout: false,

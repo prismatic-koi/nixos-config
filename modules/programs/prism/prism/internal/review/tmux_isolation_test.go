@@ -102,6 +102,9 @@ func TestMain(m *testing.M) {
 	restore := isolateSuiteFromHostTmux()
 	var restoreState func()
 	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
+	// restoreState removes the suite dir, and the forensic logs of
+	// truncateProgressMsg with it.
+	review.SetProgressLogDirForTest(suiteStateRoot)
 	code := m.Run()
 	restoreState()
 	restore()

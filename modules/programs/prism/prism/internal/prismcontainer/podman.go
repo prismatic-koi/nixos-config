@@ -26,8 +26,13 @@ type Runner interface {
 // ExecRunner runs the podman binary from PATH.
 type ExecRunner struct{}
 
+// podmanCommand is the command that ExecRunner runs. A test sets it to a
+// fake with another name: a prism sandbox denies the exec of any file named
+// podman (#3154).
+var podmanCommand = "podman"
+
 func (ExecRunner) Run(ctx context.Context, stdout, stderr io.Writer, args ...string) (int, error) {
-	cmd := exec.CommandContext(ctx, "podman", args...)
+	cmd := exec.CommandContext(ctx, podmanCommand, args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	// A podman descendant can keep the output pipes open after podman exits.

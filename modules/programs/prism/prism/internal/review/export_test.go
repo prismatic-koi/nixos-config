@@ -155,6 +155,12 @@ func SanitizeSpawnErrorForTest(prNumber, agentName string, err error) string {
 	return sanitizeSpawnError(prNumber, agentName, err)
 }
 
+// SetProgressLogDirForTest makes truncateProgressMsg write its forensic log
+// in dir.
+func SetProgressLogDirForTest(dir string) {
+	progressLogDir = func() string { return dir }
+}
+
 // TruncateProgressMsgForTest is an exported wrapper around truncateProgressMsg
 // for use in external test packages.
 func TruncateProgressMsgForTest(prNumber, agentName, msg string) string {
@@ -379,4 +385,9 @@ func StartRecoveryFallbacksForTest(d *db.DB, groupID string, fn func(d *db.DB, c
 			GroupID: in.GroupID,
 		})
 	})
+}
+
+// CleanupFailedAgentSessionForTest exposes cleanupFailedAgentSession.
+func CleanupFailedAgentSessionForTest(d *db.DB, agentSession string, cause db.SessionReapCause, detail string) {
+	cleanupFailedAgentSession(d, agentSession, cause, detail)
 }

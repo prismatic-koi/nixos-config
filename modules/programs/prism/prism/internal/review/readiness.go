@@ -12,8 +12,7 @@ package review
 // successfully-spawned agent. The gate completes when every agent has either
 // signalled readiness or timed out. Per-agent outcomes are written back into
 // the caller-provided spawnErr slice (timeouts produce a *session.ReadinessTimeoutError),
-// and the standard cleanup path (KillSidecar + cleanupAgentSession +
-// tmux.KillSession) fires for any agent whose gate trips so a subsequent
+// and the standard cleanup path (cleanupFailedAgentSession) fires for any agent whose gate trips so a subsequent
 // spawn with the same name does not see stale state.
 //
 // Progress callback contract:
@@ -34,7 +33,6 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
-	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // DefaultReviewReadinessTimeout is the per-agent readiness window used by
@@ -114,9 +112,7 @@ func gateReviewAgents(
 				// The cleanup closes the row in state "error", which is the
 				// same shape a force-terminate leaves behind. Pass the cause
 				// so the round report can tell the two apart.
-				session.KillSidecar(agentSession)
-				cleanupAgentSession(d, agentSession, db.ReapCauseReadinessGate, readyErr.Error())
-				_ = tmux.KillSession(agentSession)
+				cleanupFailedAgentSession(d, agentSession, db.ReapCauseReadinessGate, readyErr.Error())
 				return
 			}
 			// Reset spawnTimes[i] to "ready" time so the polling phase
