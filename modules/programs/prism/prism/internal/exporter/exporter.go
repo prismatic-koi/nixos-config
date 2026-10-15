@@ -134,6 +134,7 @@ type Exporter struct {
 
 	eventsTotal *metrics.CounterVec
 	lifecycle   *lifecycleCounters
+	zeroArmed   bool
 	cost        *costCounters
 	tailers     []tailcursor.Advancer
 
@@ -430,6 +431,15 @@ func (e *Exporter) refreshLocked(ctx context.Context) error {
 		changed bool
 		errs    []error
 	)
+	defer func() {
+		// The first refresh applies any backlog from before a restart. Arm
+		// after it, so a series that the backlog creates reports its real
+		// value at once and adds no spawns from before the window.
+		if !e.zeroArmed && len(errs) == 0 {
+			e.zeroArmed = true
+			e.lifecycle.spawnsTotal.ArmZeroFirstSample()
+		}
+	}()
 	for _, t := range e.tailers {
 		before := t.Cursor()
 		applied, err := t.Advance(ctx)

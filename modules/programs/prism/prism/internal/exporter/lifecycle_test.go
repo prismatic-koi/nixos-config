@@ -637,3 +637,71 @@ func TestExporter_LifecycleCountersCarryNoUnboundedLabel(t *testing.T) {
 		}
 	}
 }
+
+// ── #3187: increase() must see the first spawn of a new series ───────────
+
+var firstSpawnLabels = map[string]string{"repo": "nixos-config", "agent_role": "worker", "isolation_mode": "bwrap", "profile": "max"}
+
+func spawnSample(t *testing.T, h *harness, e *exporter.Exporter) (float64, bool) {
+	t.Helper()
+	v, ok := h.scrape(e).Value(exporter.MetricSpawnsTotal, firstSpawnLabels)
+	return v, ok
+}
+
+func TestExporter_SpawnsTotalNewSeriesStepsFromZero(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+	h.scrape(h.exp) // first refresh: the exporter is now live
+
+	if _, ok := spawnSample(t, h, h.exp); ok {
+		t.Fatal("series exists before any spawn: the exporter must not pre-create series")
+	}
+	h.spawnFixture("nixos-config", "worker", "bwrap", "max")
+	if v, ok := spawnSample(t, h, h.exp); !ok || v != 0 {
+		t.Fatalf("first sample = %v (exists %v), want 0", v, ok)
+	}
+	if v, _ := spawnSample(t, h, h.exp); v != 1 {
+		t.Fatalf("second sample = %v, want 1", v)
+	}
+	h.spawnFixture("nixos-config", "worker", "bwrap", "max")
+	if v, _ := spawnSample(t, h, h.exp); v != 2 {
+		t.Fatalf("third sample = %v, want 2", v)
+	}
+}
+
+func TestExporter_SpawnsTotalBacklogAfterRestartAddsNoZeroStep(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+	h.scrape(h.exp)
+	if err := h.exp.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Spawns that happen while the exporter is down (a host back after a
+	// long absence) are replayed on restart. They must show their value at
+	// once, so increase() does not count them as inside the window.
+	h.spawnFixture("nixos-config", "worker", "bwrap", "max")
+	h.spawnFixture("nixos-config", "worker", "bwrap", "max")
+	restarted := h.newExporter()
+	h.start(restarted)
+	if v, _ := spawnSample(t, h, restarted); v != 2 {
+		t.Fatalf("first sample after replay = %v, want 2", v)
+	}
+}
+
+func TestExporter_SpawnsTotalNeverDecreasesAcrossRestart(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+	h.scrape(h.exp)
+	h.spawnFixture("nixos-config", "worker", "bwrap", "max")
+	first, _ := spawnSample(t, h, h.exp) // 0
+	// Restart before the series was ever exposed at its real value.
+	if err := h.exp.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	restarted := h.newExporter()
+	h.start(restarted)
+	after, ok := spawnSample(t, h, restarted)
+	if !ok || after < first || after != 1 {
+		t.Fatalf("after restart = %v (exists %v), before = %v, want 1 and no decrease", after, ok, first)
+	}
+}

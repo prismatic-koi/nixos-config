@@ -25,11 +25,33 @@ type CounterVec struct {
 
 	mu     sync.RWMutex
 	values map[string]*counterEntry
+	// zeroFirst is set by ArmZeroFirstSample.
+	zeroFirst bool
 }
 
 type counterEntry struct {
 	labelValues []string
 	value       float64
+	// exposed is false for a series created by Add while the counter is armed
+	// and not yet collected. Its first Collect reports 0, so Prometheus sees
+	// the step 0 -> n and increase() counts the first spawn.
+	exposed bool
+}
+
+// ArmZeroFirstSample makes every series that Add creates from now on report 0
+// on its first Collect, and its real value from the second Collect on.
+// Prometheus increase() ignores the first sample of a series, so without this
+// the first increments of a new series are lost.
+//
+// The reported value never goes below an earlier reported value: 0, then the
+// real value. Snapshot always holds the real value. A series that Restore
+// loaded was already exposed by an earlier process, so it reports its real
+// value at once. Call this after any catch-up replay, because a series that a
+// replay creates holds events from before the window and must not be counted.
+func (c *CounterVec) ArmZeroFirstSample() {
+	c.mu.Lock()
+	c.zeroFirst = true
+	c.mu.Unlock()
 }
 
 // CounterOption customises a CounterVec.
@@ -142,7 +164,7 @@ func (c *CounterVec) Add(delta float64, labelValues ...string) error {
 	if !ok {
 		vals := make([]string, len(labelValues))
 		copy(vals, labelValues)
-		e = &counterEntry{labelValues: vals}
+		e = &counterEntry{labelValues: vals, exposed: !c.zeroFirst}
 		c.values[key] = e
 	}
 	e.value += delta
@@ -180,10 +202,15 @@ func (c *CounterVec) Cardinality() int {
 // cannot corrupt the family by mutating a returned Sample. GaugeFunc.Collect
 // does the same.
 func (c *CounterVec) Collect() []Sample {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	out := make([]Sample, 0, len(c.values))
 	for _, e := range c.values {
+		reported := e.value
+		if !e.exposed {
+			reported = 0
+			e.exposed = true
+		}
 		vals := make([]string, len(e.labelValues))
 		copy(vals, e.labelValues)
 		names := make([]string, len(c.labelNames))
@@ -191,7 +218,7 @@ func (c *CounterVec) Collect() []Sample {
 		out = append(out, Sample{
 			LabelNames:  names,
 			LabelValues: vals,
-			Value:       e.value,
+			Value:       reported,
 		})
 	}
 	return out
@@ -244,7 +271,7 @@ func (c *CounterVec) Restore(values map[string]float64) error {
 			existing.value += v
 			continue
 		}
-		next[normalisedKey] = &counterEntry{labelValues: labelValues, value: v}
+		next[normalisedKey] = &counterEntry{labelValues: labelValues, value: v, exposed: true}
 	}
 	c.mu.Lock()
 	c.values = next
