@@ -1429,11 +1429,13 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 	// Both-or-neither: if either leg failed, tear down any session that did start.
 	if results[0].err != nil || results[1].err != nil {
 		for _, r := range results {
+			stopFailed := false
 			if r.err == nil && r.sessionName != "" {
 				// Stop the sidecar first. When it does not stop, keep the
 				// tmux session, the row, and the port (#3168).
 				if !session.EnsureSidecarStopped(r.sessionName, session.SidecarStopTimeout) {
-					proglog.Warnf("[prism spawn] warning: sidecar of %q did not stop — keeping its tmux session, row, and port\n", r.sessionName)
+					proglog.Warnf("[prism spawn] warning: sidecar of %q did not stop — keeping its tmux session, row, port, and worktree\n", r.sessionName)
+					stopFailed = true
 				} else {
 					_ = tmux.KillSession(r.sessionName)
 					if killDBErr := setEndedStoppingReviewChildren(d, r.sessionName); killDBErr != nil {
@@ -1443,7 +1445,7 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 			}
 			// Remove the worktree even when sessionName is empty — the
 			// worktree may have been created before the session started.
-			if r.worktreePath != "" {
+			if r.worktreePath != "" && !stopFailed {
 				if rmErr := git.RemoveWorktree(bareRoot, r.worktreePath); rmErr != nil {
 					proglog.Warnf("[prism spawn] warning: cleanup worktree %q failed: %v\n", r.worktreePath, rmErr)
 				}
