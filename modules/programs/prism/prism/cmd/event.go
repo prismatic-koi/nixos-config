@@ -510,7 +510,9 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		//
 		// A sandboxed caller (PRISM_HOST_API set) has no tmux access, so an
 		// unknown answer says nothing there: it proxies to the host as it
-		// did before, and only a proven live session stops it.
+		// did before, and only a proven live session stops it. The host
+		// /event handler then runs this command without PRISM_HOST_API, so
+		// the host run decides, with tmux access and fail closed.
 		switch hookTmuxPresence(session) {
 		case prismSession.TmuxPresent:
 			return nil
