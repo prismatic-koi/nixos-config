@@ -141,7 +141,8 @@ var prCmd = &cobra.Command{
 				// spawn launched from a binary a switch has since replaced.
 				// Empty in the common case — the field is simply absent
 				// from the JSON then.
-				Warning string `json:"warning"`
+				Warning     string `json:"warning"`
+				SpawnBudget string `json:"spawn_budget"`
 			}
 			body := map[string]any{
 				"repo":                   repo,
@@ -171,6 +172,7 @@ var prCmd = &cobra.Command{
 			if proxyErr := proxyToHostAPI(apiURL, "/spawn", body, &resp); proxyErr != nil {
 				return proxyErr
 			}
+			printProxiedSpawnBudget(cmd.ErrOrStderr(), resp.SpawnBudget)
 			fmt.Printf("session %q created\n", resp.SessionName)
 			if resp.Warning != "" {
 				fmt.Fprintln(os.Stderr, resp.Warning)
