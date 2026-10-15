@@ -59,6 +59,13 @@ func readStatus(t *testing.T, dbFile, name string) *db.Status {
 	return st
 }
 
+func withHookPresenceGone(t *testing.T) {
+	t.Helper()
+	prev := hookTmuxPresence
+	hookTmuxPresence = func(string) prismSession.TmuxPresence { return prismSession.TmuxGone }
+	t.Cleanup(func() { hookTmuxPresence = prev })
+}
+
 func withHookStops(t *testing.T, self func(string) bool, children func(*db.DB, string) []string) {
 	t.Helper()
 	prevSelf, prevChildren := hookStopSidecar, hookStopReviewChildren
@@ -68,6 +75,7 @@ func withHookStops(t *testing.T, self func(string) bool, children func(*db.DB, s
 
 func runTmuxSessionEnd(t *testing.T, session string) {
 	t.Helper()
+	withHookPresenceGone(t)
 	rootCmd.SetArgs([]string{"event", "tmux-session-end", "--session", session})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("event tmux-session-end: %v", err)
@@ -302,4 +310,23 @@ func startNamedSidecarStub(t *testing.T, name string) <-chan struct{} {
 		close(done)
 	}()
 	return done
+}
+
+// The hook fails closed: when tmux cannot be queried, the row stays (#3172).
+func TestEventTmuxSessionEnd_UnknownTmuxKeepsRow_3172(t *testing.T) {
+	const session = "myrepo@hook-unknown"
+	dbFile := seedHookRows(t, session)
+	withHookStops(t, func(string) bool { return true }, func(*db.DB, string) []string { return nil })
+	t.Setenv("PRISM_HOST_API", "")
+	prev := hookTmuxPresence
+	hookTmuxPresence = func(string) prismSession.TmuxPresence { return prismSession.TmuxPresenceUnknown }
+	t.Cleanup(func() { hookTmuxPresence = prev })
+
+	rootCmd.SetArgs([]string{"event", "tmux-session-end", "--session", session})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("event tmux-session-end: %v", err)
+	}
+	if readStatus(t, dbFile, session).EndedAt != nil {
+		t.Error("row ended although tmux could not be queried")
+	}
 }

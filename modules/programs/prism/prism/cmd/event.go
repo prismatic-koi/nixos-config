@@ -29,7 +29,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
-	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // proxyEventToHostAPI sends a prism event write to the host sidecar when
@@ -485,6 +484,9 @@ var (
 		return prismSession.EnsureSidecarStopped(session, prismSession.SidecarStopTimeout)
 	}
 	hookStopReviewChildren = review.StopReviewChildrenForEnd
+	// hookTmuxPresence is the first presence check of the hook. Tests
+	// replace it, so that a test does not depend on a tmux server.
+	hookTmuxPresence = prismSession.TmuxSessionPresence
 )
 
 var eventTmuxSessionEndCmd = &cobra.Command{
@@ -502,8 +504,22 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		// display-popup is dismissed (tmux reports the popup's pseudo-session
 		// name as the outer session). If the session still exists in tmux it
 		// is a spurious fire — exit 0 without writing anything to the DB.
-		if tmux.HasSession(session) {
+		// The check compares exact names: a `-t` target matches by prefix,
+		// so `repo@feat` would match a live `repo@feature-x` (#3172). If
+		// tmux cannot be queried, keep the row (fail closed).
+		//
+		// A sandboxed caller (PRISM_HOST_API set) has no tmux access, so an
+		// unknown answer says nothing there: it proxies to the host as it
+		// did before, and only a proven live session stops it. The host
+		// /event handler then runs this command without PRISM_HOST_API, so
+		// the host run decides, with tmux access and fail closed.
+		switch hookTmuxPresence(session) {
+		case prismSession.TmuxPresent:
 			return nil
+		case prismSession.TmuxPresenceUnknown:
+			if sandboxenv.HostAPISocket() == "" {
+				return nil
+			}
 		}
 
 		if proxied, err := proxyEventToHostAPI("tmux-session-end", session, map[string]string{}); proxied {

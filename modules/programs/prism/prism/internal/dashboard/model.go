@@ -17,6 +17,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/prismatic-koi/prism/internal/spawnbudget"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -71,6 +72,11 @@ type GithubStatsMsg struct {
 	Err     bool // true = fetch failed, keep showing previous value
 }
 
+// SpawnBudgetMsg carries the result of a spawn budget lookup.
+type SpawnBudgetMsg struct {
+	Result spawnbudget.Result
+}
+
 // ── timing constants ──────────────────────────────────────────────────────────
 
 // CursorTimeout is how long the cursor bar stays visible after the last keypress
@@ -98,6 +104,10 @@ type Shared struct {
 	Height            int
 	GhOpenPRs         int
 	GhLoaded          bool // false = still fetching, show "…"
+	// SpawnBudget is the last 7-day worker spawn count and limit. It is
+	// valid only when SpawnBudgetLoaded is true.
+	SpawnBudget       spawnbudget.Result
+	SpawnBudgetLoaded bool
 	Loading           bool // true = first fetch not yet returned; show skeleton
 	// filter mode: activated by '/', cancelled by esc/ctrl+c
 	FilterActive bool
@@ -152,6 +162,18 @@ func (d Shared) ApplySessionsMsg(msg SessionsMsg, snapSession string) (Shared, b
 		}
 	}
 	return d, needsSnap
+}
+
+// ApplySpawnBudgetMsg stores a spawn budget result. A result with no count
+// does not replace a known count: like a failed GitHub fetch, a failed
+// lookup keeps the last value on screen.
+func (d Shared) ApplySpawnBudgetMsg(msg SpawnBudgetMsg) Shared {
+	if !msg.Result.Known && d.SpawnBudgetLoaded && d.SpawnBudget.Known {
+		return d
+	}
+	d.SpawnBudget = msg.Result
+	d.SpawnBudgetLoaded = true
+	return d
 }
 
 // HandleFilterKey handles a key press in filter mode. Returns the updated

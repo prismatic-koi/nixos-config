@@ -42,7 +42,7 @@ func NewPopupModel(client, callerSession string) PopupModel {
 }
 
 func (m PopupModel) Init() tea.Cmd {
-	return tea.Batch(FetchSessionsFromDB, FetchGitHubStats, GhTick())
+	return tea.Batch(FetchSessionsFromDB, FetchGitHubStats, FetchSpawnBudget, GhTick())
 }
 
 func (m PopupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -60,13 +60,16 @@ func (m PopupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case GhTickMsg:
-		return m, tea.Batch(FetchGitHubStats, GhTick())
+		return m, tea.Batch(FetchGitHubStats, FetchSpawnBudget, GhTick())
 
 	case GithubStatsMsg:
 		if !msg.Err {
 			m.GhOpenPRs = msg.OpenPRs
 		}
 		m.GhLoaded = true
+
+	case SpawnBudgetMsg:
+		m.Shared = m.Shared.ApplySpawnBudgetMsg(msg)
 
 	case SessionsMsg:
 		m.Shared, _ = m.Shared.ApplySessionsMsg(msg, m.CurrentSession)
@@ -174,7 +177,7 @@ func (m PopupModel) View() string {
 // exists on disk it recreates a bare shell session there, then switches.
 // Returns a non-empty error string on failure; returns "" on success.
 func ensureSessionAndSwitch(sessionName, target string) string {
-	if tmux.HasSession(sessionName) {
+	if session.HasExactSession(sessionName) {
 		_ = tmux.SelectAgentWindow(sessionName)
 		if target != "" {
 			if err := tmux.SwitchClient(target, sessionName); err != nil {

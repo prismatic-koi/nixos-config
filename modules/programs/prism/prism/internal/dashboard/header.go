@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	colorful "github.com/lucasb-eyer/go-colorful"
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/spawnbudget"
 )
 
 // ── header art ────────────────────────────────────────────────────────────────
@@ -98,6 +99,40 @@ func RainbowLineWidth(line string, totalWidth int) string {
 	return sb.String()
 }
 
+// Spawn budget markers. Text marks the 95% and 100% levels as well as
+// colour, so the level shows on a terminal without colour.
+const (
+	SpawnBudgetNearMark = "[95%+]"
+	SpawnBudgetOverMark = "[OVER LIMIT]"
+)
+
+// SpawnBudgetStat renders the 7-day worker spawn count and the limit for the
+// header, coloured and marked by level.
+func SpawnBudgetStat(d Shared) string {
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+	if !d.SpawnBudgetLoaded {
+		return dim.Render("7d spawns …")
+	}
+	r := d.SpawnBudget
+	if !r.Known {
+		return dim.Render(fmt.Sprintf("7d spawns ?/%d", r.Limit))
+	}
+	text := fmt.Sprintf("7d spawns %d/%d", r.Count, r.Limit)
+	if !r.Fleet {
+		text += " (this host)"
+	}
+	switch r.Level() {
+	case spawnbudget.LevelOver:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed)).Bold(true).
+			Render(text + " " + SpawnBudgetOverMark)
+	case spawnbudget.LevelNear:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ColorYellow)).Bold(true).
+			Render(text + " " + SpawnBudgetNearMark)
+	default:
+		return dim.Render(text)
+	}
+}
+
 // RenderHeader composites the stats panel (left) with the art block (right)
 // into a single header string that fills termWidth on each line.
 // When the terminal is too short, a compact 2-line header is used instead.
@@ -160,7 +195,7 @@ func RenderHeader(d Shared, styleDim lipgloss.Style) string {
 		// blank line 2 for breathing room.
 		sessionCount := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(d.Sessions)))
 		stateStr := styleStatDim.Render(stateLine)
-		leftContent := sessionCount + "  " + stateStr
+		leftContent := sessionCount + "  " + stateStr + "  " + SpawnBudgetStat(d)
 		leftW := lipgloss.Width(leftContent)
 		pad := d.Width - leftW - wordmarkW
 		if pad < 1 {
@@ -185,20 +220,21 @@ func RenderHeader(d Shared, styleDim lipgloss.Style) string {
 	prRendered := styleStatDim.Render(prLine)
 	stateRendered := styleStatDim.Render(stateLine)
 	sessionCountLine := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(d.Sessions)))
+	budgetRendered := SpawnBudgetStat(d)
 
 	// Dynamically compute statsW from the actual visible widths of all stat
 	// content lines, so that a long state line (e.g. all 5 status categories)
 	// never overflows into the art column.
 	const minStatsW = 20
 	statsW := minStatsW
-	for _, s := range []string{sessionCountLine, stateRendered, prRendered} {
+	for _, s := range []string{sessionCountLine, stateRendered, prRendered, budgetRendered} {
 		if w := lipgloss.Width(s); w > statsW {
 			statsW = w
 		}
 	}
 
 	// 7 stat lines matching artHeight, each exactly statsW wide.
-	// Lines 0-2: blank  3: sessions  4: states  5: PRs  6: blank
+	// Lines 0-2: blank  3: sessions  4: states  5: PRs  6: spawn budget
 	statLines := []string{
 		strings.Repeat(" ", statsW),
 		strings.Repeat(" ", statsW),
@@ -206,7 +242,7 @@ func RenderHeader(d Shared, styleDim lipgloss.Style) string {
 		padTo(sessionCountLine, statsW),
 		padTo(stateRendered, statsW),
 		padTo(prRendered, statsW),
-		strings.Repeat(" ", statsW),
+		padTo(budgetRendered, statsW),
 	}
 
 	// Only render art if there is enough horizontal room.

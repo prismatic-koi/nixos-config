@@ -13,8 +13,10 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/forge"
+	"github.com/prismatic-koi/prism/internal/spawnbudget"
 )
 
 // FetchSessionsFromDB queries agent_status for all active sessions. Used by
@@ -150,6 +152,32 @@ func FetchGitHubStats() tea.Msg {
 	return GithubStatsMsg{OpenPRs: n}
 }
 
+// spawnBudgetLookup runs the spawn budget lookup for the dashboard. Tests
+// replace it. It uses LoadFresh, not Load: the persistent dashboard runs
+// across a switch, and it must show the limit that `prism spawn` reads now.
+var spawnBudgetLookup = func() spawnbudget.Result {
+	cfg := config.LoadFresh()
+	return spawnbudget.Lookup(context.Background(), spawnbudget.Options{
+		PrometheusURL: cfg.SpawnBudgetPrometheusURL,
+		Limit:         cfg.SpawnBudgetLimit,
+		Local: func(ctx context.Context, since time.Time) (int, error) {
+			d, err := openDB()
+			if err != nil {
+				return 0, err
+			}
+			defer d.Close()
+			return spawnbudget.LocalCounter(d)(ctx, since)
+		},
+	})
+}
+
+// FetchSpawnBudget looks up the 7-day worker spawn count and the limit, the
+// same lookup that `prism spawn` runs for a worker. It runs as a tea.Cmd, so
+// its timeout (spawnbudget.LookupTimeout) never blocks the render loop.
+func FetchSpawnBudget() tea.Msg {
+	return SpawnBudgetMsg{Result: spawnBudgetLookup()}
+}
+
 // parseGHCount extracts a non-negative decimal integer from s into out.
 func parseGHCount(s string, out *int) {
 	for _, ch := range s {
@@ -159,7 +187,8 @@ func parseGHCount(s string, out *int) {
 	}
 }
 
-// GhTick returns a tea.Cmd that fires a GhTickMsg after 60 seconds.
+// GhTick returns a tea.Cmd that fires a GhTickMsg after 60 seconds. The
+// GhTickMsg handlers also refresh the spawn budget on this tick.
 func GhTick() tea.Cmd {
 	return tea.Tick(60*time.Second, func(t time.Time) tea.Msg {
 		return GhTickMsg(t)

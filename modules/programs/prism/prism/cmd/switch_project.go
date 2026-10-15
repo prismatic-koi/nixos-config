@@ -214,7 +214,7 @@ func activeReviewSessionEntries(projectPath string, worktrees []string) []entry 
 			continue
 		}
 		// The session must also exist in tmux.
-		if !tmux.HasSession(s.SessionName) {
+		if !session.HasExactSession(s.SessionName) {
 			continue
 		}
 		if _, exists := groupSessions[rk]; !exists {
@@ -294,7 +294,7 @@ func handleReviewGroupPick(groupKey string) error {
 		if rk != groupKey {
 			continue
 		}
-		if !tmux.HasSession(s.SessionName) {
+		if !session.HasExactSession(s.SessionName) {
 			continue
 		}
 		// Label: e.g. "~review-1-review-goal"
