@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// stubReadyTimeout bounds the wait for the stub ready signal. A normal stub
+// signals in milliseconds; the bound only limits the failure case.
+const stubReadyTimeout = 30 * time.Second
+
 // startSidecarStub starts this test binary with argv and the extra env, and
 // writes its PID to the sidecar PID file of sessionName. The returned wait
 // function reaps the process and returns its wait status.
@@ -20,7 +24,8 @@ func startSidecarStub(t *testing.T, sessionName string, argv []string, env ...st
 		t.Fatalf("os.Executable: %v", err)
 	}
 	cmd := exec.Command(self, argv...)
-	cmd.Env = append(os.Environ(), env...)
+	readyPath := filepath.Join(t.TempDir(), "stub-ready")
+	cmd.Env = append(append(os.Environ(), env...), stubReadyFileEnv+"="+readyPath)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start stub: %v", err)
 	}
@@ -41,8 +46,14 @@ func startSidecarStub(t *testing.T, sessionName string, argv []string, env ...st
 		done <- ws
 	}()
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
-	// Give the stub time to install its signal disposition.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the stub to report that its signal disposition is installed.
+	deadline := time.Now().Add(stubReadyTimeout)
+	for !fileExists(readyPath) {
+		if time.Now().After(deadline) {
+			t.Fatalf("sidecar stub (pid %d, argv %v, env %v) did not signal ready within %v", cmd.Process.Pid, argv, env, stubReadyTimeout)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	return cmd.Process.Pid, func() syscall.WaitStatus {
 		select {
 		case ws := <-done:
