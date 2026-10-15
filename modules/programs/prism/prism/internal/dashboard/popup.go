@@ -174,7 +174,7 @@ func (m PopupModel) View() string {
 // exists on disk it recreates a bare shell session there, then switches.
 // Returns a non-empty error string on failure; returns "" on success.
 func ensureSessionAndSwitch(sessionName, target string) string {
-	if tmux.HasSession(sessionName) {
+	if session.HasExactSession(sessionName) {
 		_ = tmux.SelectAgentWindow(sessionName)
 		if target != "" {
 			if err := tmux.SwitchClient(target, sessionName); err != nil {

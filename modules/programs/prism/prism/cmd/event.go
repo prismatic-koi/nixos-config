@@ -29,7 +29,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
-	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // proxyEventToHostAPI sends a prism event write to the host sidecar when
@@ -502,7 +501,10 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		// display-popup is dismissed (tmux reports the popup's pseudo-session
 		// name as the outer session). If the session still exists in tmux it
 		// is a spurious fire — exit 0 without writing anything to the DB.
-		if tmux.HasSession(session) {
+		// The check compares exact names: a `-t` target matches by prefix,
+		// so `repo@feat` would match a live `repo@feature-x` (#3172). If
+		// tmux cannot be queried, keep the row (fail closed).
+		if prismSession.TmuxSessionPresence(session) != prismSession.TmuxGone {
 			return nil
 		}
 

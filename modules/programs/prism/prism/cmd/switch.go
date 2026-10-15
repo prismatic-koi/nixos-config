@@ -120,7 +120,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	//     unconditionally without re-querying the DB. Falls through.
 	//  3. Session does not exist, or no DB available → no change to ForceFresh.
 	//     Falls through to normal create path (or legacy no-op if d==nil).
-	if !opts.ForceFresh && tmux.HasSession(sessionName) {
+	if !opts.ForceFresh && session.HasExactSession(sessionName) {
 		if d == nil {
 			// No DB — can't determine liveness. Treat as live:
 			// attach without touching anything.
