@@ -12,6 +12,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/authz"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/spawnbudget"
 )
 
 // ── host-API request decoding ────────────────────────────────────────────────
@@ -345,6 +346,18 @@ func parseSpawnSessionName(output string) string {
 		// inner should now be a quoted string like `"name"`.
 		if len(inner) >= 2 && inner[0] == '"' && inner[len(inner)-1] == '"' {
 			return inner[1 : len(inner)-1]
+		}
+	}
+	return ""
+}
+
+// parseSpawnBudgetLine returns the first line of output that starts with
+// spawnbudget.LinePrefix, or "" when there is none.
+func parseSpawnBudgetLine(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, spawnbudget.LinePrefix) {
+			return line
 		}
 	}
 	return ""

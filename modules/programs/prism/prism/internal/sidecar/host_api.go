@@ -1788,6 +1788,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// resolve one side, in which case the field is omitted.
 		staleWarning := s.binaryStaleDiag
 
+		// The host-side spawn prints the spawn budget line only for a worker.
+		// Relay it, because the caller sees this JSON, not the child output.
+		budgetLine := parseSpawnBudgetLine(outStr)
+
 		// Abtest path: prism spawn --abtest prints two session lines.
 		// Parse both and return them in "session_names".
 		if len(req.Abtest) == 2 {
@@ -1801,6 +1805,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			resp := map[string]any{"session_names": sessionNames}
 			if staleWarning != "" {
 				resp["warning"] = staleWarning
+			}
+			if budgetLine != "" {
+				resp["spawn_budget"] = budgetLine
 			}
 			writeJSON(w, http.StatusOK, resp)
 			return
@@ -1816,6 +1823,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		respFields := map[string]string{"session_name": sessionName}
 		if staleWarning != "" {
 			respFields["warning"] = staleWarning
+		}
+		if budgetLine != "" {
+			respFields["spawn_budget"] = budgetLine
 		}
 		writeJSON(w, http.StatusOK, respFields)
 	})

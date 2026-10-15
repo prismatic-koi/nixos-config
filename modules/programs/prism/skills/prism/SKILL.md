@@ -157,6 +157,17 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 - The prompt is sent to the agent automatically after startup — no manual input needed.
 - Each spawned session gets its own worktree, so changes are isolated from other branches.
 
+### Spawn budget line
+
+Each `prism spawn` of a worker prints one line on stderr that starts with `spawn budget:`. A spawn of a coordinator, an investigator, or a review agent prints no line.
+
+- The line gives the count of worker spawns in the last 7 days, in all repos, and the limit. The limit is `nx.programs.prism.spawnBudget.limit` (default 120).
+- The count is the higher of two values: the fleet-wide count from Prometheus (all hosts) and the count in the local prism database (this host).
+- At 95% of the limit or more, the line tells the user to finish the current work and stop for the day.
+- At the limit or more, the line says that the count is over the limit. Prism still starts the worker.
+- If prism cannot use the Prometheus count, the line says that the count covers this host only, and gives the cause. The causes are: no Prometheus URL is set, prism cannot reach Prometheus, Prometheus does not answer in 2 seconds, or Prometheus returns no data.
+- The prism dashboard shows the same count and limit, with a `[95%+]` or `[OVER LIMIT]` mark.
+
 ## Delegating work to another repo
 
 When you need to delegate work to a repo you are not the coordinator for, route it through that repo's **root session**. The root session has full context about that repo's conventions, open work, and branch state.

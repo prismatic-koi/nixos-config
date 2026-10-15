@@ -42,7 +42,7 @@ func NewPopupModel(client, callerSession string) PopupModel {
 }
 
 func (m PopupModel) Init() tea.Cmd {
-	return tea.Batch(FetchSessionsFromDB, FetchGitHubStats, GhTick())
+	return tea.Batch(FetchSessionsFromDB, FetchGitHubStats, FetchSpawnBudget, GhTick())
 }
 
 func (m PopupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -60,13 +60,16 @@ func (m PopupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case GhTickMsg:
-		return m, tea.Batch(FetchGitHubStats, GhTick())
+		return m, tea.Batch(FetchGitHubStats, FetchSpawnBudget, GhTick())
 
 	case GithubStatsMsg:
 		if !msg.Err {
 			m.GhOpenPRs = msg.OpenPRs
 		}
 		m.GhLoaded = true
+
+	case SpawnBudgetMsg:
+		m.Shared = m.Shared.ApplySpawnBudgetMsg(msg)
 
 	case SessionsMsg:
 		m.Shared, _ = m.Shared.ApplySessionsMsg(msg, m.CurrentSession)

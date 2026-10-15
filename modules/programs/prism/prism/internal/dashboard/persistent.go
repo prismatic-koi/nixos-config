@@ -44,7 +44,7 @@ func (m PersistentModel) Init() tea.Cmd {
 	// SessionSyncTick schedules a 10-second periodic full re-fetch from the DB so
 	// that sessions spawned or cleaned up after Init are reflected without manual
 	// refresh. This complements push events, which only update existing sessions.
-	return tea.Batch(FetchSessionsFromDB, FetchGitHubStats, GhTick(), SessionSyncTick())
+	return tea.Batch(FetchSessionsFromDB, FetchGitHubStats, FetchSpawnBudget, GhTick(), SessionSyncTick())
 }
 
 func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -79,13 +79,16 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case GhTickMsg:
-		return m, tea.Batch(FetchGitHubStats, GhTick())
+		return m, tea.Batch(FetchGitHubStats, FetchSpawnBudget, GhTick())
 
 	case GithubStatsMsg:
 		if !msg.Err {
 			m.GhOpenPRs = msg.OpenPRs
 		}
 		m.GhLoaded = true
+
+	case SpawnBudgetMsg:
+		m.Shared = m.Shared.ApplySpawnBudgetMsg(msg)
 
 	case CursorTimeoutMsg:
 		// Do not deactivate the cursor while the filter is open — the selection
