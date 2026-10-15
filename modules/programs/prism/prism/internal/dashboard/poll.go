@@ -153,9 +153,10 @@ func FetchGitHubStats() tea.Msg {
 }
 
 // spawnBudgetLookup runs the spawn budget lookup for the dashboard. Tests
-// replace it.
+// replace it. It uses LoadFresh, not Load: the persistent dashboard runs
+// across a switch, and it must show the limit that `prism spawn` reads now.
 var spawnBudgetLookup = func() spawnbudget.Result {
-	cfg := config.Load()
+	cfg := config.LoadFresh()
 	return spawnbudget.Lookup(context.Background(), spawnbudget.Options{
 		PrometheusURL: cfg.SpawnBudgetPrometheusURL,
 		Limit:         cfg.SpawnBudgetLimit,

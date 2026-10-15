@@ -365,8 +365,10 @@ func LoadForInit() Config {
 	return Load()
 }
 
-// LoadFresh loads the configuration without the singleton cache. Intended for
-// tests that need to exercise different config file paths.
+// LoadFresh loads the configuration without the singleton cache. Tests use it
+// to read different config file paths. A long-running process (a sidecar, the
+// exporter, the persistent dashboard) uses it to see a config.json that a
+// switch rewrote after the process started.
 func LoadFresh() Config {
 	return load()
 }

@@ -165,7 +165,7 @@ Each `prism spawn` of a worker prints one line on stderr that starts with `spawn
 - The count is the higher of two values: the fleet-wide count from Prometheus (all hosts) and the count in the local prism database (this host).
 - At 95% of the limit or more, the line tells the user to finish the current work and stop for the day.
 - At the limit or more, the line says that the count is over the limit. Prism still starts the worker.
-- If Prometheus does not answer in 2 seconds, or returns no data, the line says that the count covers this host only.
+- If prism cannot use the Prometheus count, the line says that the count covers this host only, and gives the cause. The causes are: no Prometheus URL is set, prism cannot reach Prometheus, Prometheus does not answer in 2 seconds, or Prometheus returns no data.
 - The prism dashboard shows the same count and limit, with a `[95%+]` or `[OVER LIMIT]` mark.
 
 ## Delegating work to another repo
