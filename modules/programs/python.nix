@@ -15,6 +15,7 @@
       home.packages = with pkgs; [
         (python3.withPackages (ps: [
           ps.beautifulsoup4
+          ps.pyyaml
           ps.requests
           (ps.buildPythonPackage rec {
             pname = "specify-cli";
