@@ -338,6 +338,11 @@ func runReview(cmd *cobra.Command, args []string) error {
 		if _, reapErr := review.ReapDeliveredReviewAgents(dReap, "", time.Now(), 0); reapErr != nil {
 			proglog.Warnf("[prism review] warning: pre-spawn reap sweep: %v — continuing\n", reapErr)
 		}
+		// The reap skips a row that another path already ended. This sweep
+		// stops the sidecar of every ended session (#3160).
+		if _, sweepErr := review.SweepEndedSidecars(dReap, time.Now()); sweepErr != nil {
+			proglog.Warnf("[prism review] warning: pre-spawn ended-session sweep: %v — continuing\n", sweepErr)
+		}
 		dReap.Close()
 	} else {
 		proglog.Warnf("[prism review] warning: pre-spawn reap sweep: open db: %v — continuing\n", reapDBErr)
