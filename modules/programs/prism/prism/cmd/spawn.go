@@ -1429,27 +1429,7 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 	// Both-or-neither: if either leg failed, tear down any session that did start.
 	if results[0].err != nil || results[1].err != nil {
 		for _, r := range results {
-			stopFailed := false
-			if r.err == nil && r.sessionName != "" {
-				// Stop the sidecar first. When it does not stop, keep the
-				// tmux session, the row, and the port (#3168).
-				if !session.EnsureSidecarStopped(r.sessionName, session.SidecarStopTimeout) {
-					proglog.Warnf("[prism spawn] warning: sidecar of %q did not stop — keeping its tmux session, row, port, and worktree\n", r.sessionName)
-					stopFailed = true
-				} else {
-					_ = tmux.KillSession(r.sessionName)
-					if killDBErr := setEndedStoppingReviewChildren(d, r.sessionName); killDBErr != nil {
-						proglog.Warnf("[prism spawn] warning: cleanup DB for %q failed: %v\n", r.sessionName, killDBErr)
-					}
-				}
-			}
-			// Remove the worktree even when sessionName is empty — the
-			// worktree may have been created before the session started.
-			if r.worktreePath != "" && !stopFailed {
-				if rmErr := git.RemoveWorktree(bareRoot, r.worktreePath); rmErr != nil {
-					proglog.Warnf("[prism spawn] warning: cleanup worktree %q failed: %v\n", r.worktreePath, rmErr)
-				}
-			}
+			teardownAbtestLeg(d, bareRoot, r.sessionName, r.worktreePath, r.err == nil)
 		}
 		// Return the first non-nil error.
 		if results[0].err != nil {
@@ -1463,6 +1443,40 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 		fmt.Printf("  session %q created\n", r.sessionName)
 	}
 	return nil
+}
+
+// Seams for teardownAbtestLeg. Tests replace them so that a test signals no
+// process, closes no tmux session, and removes no worktree.
+var (
+	abtestStopSidecar    = session.EnsureSidecarStopped
+	abtestKillTmux       = tmux.KillSession
+	abtestRemoveWorktree = git.RemoveWorktree
+)
+
+// teardownAbtestLeg is the both-or-neither teardown of one --abtest leg.
+// started is true when the leg started its session. It stops the sidecar
+// first. When the stop fails, it keeps the tmux session, the row, the port,
+// and the worktree, because the process can still use them (#3168).
+func teardownAbtestLeg(d *db.DB, bareRoot, sessionName, worktreePath string, started bool) {
+	stopFailed := false
+	if started && sessionName != "" {
+		if !abtestStopSidecar(sessionName, session.SidecarStopTimeout) {
+			proglog.Warnf("[prism spawn] warning: sidecar of %q did not stop \u2014 keeping its tmux session, row, port, and worktree\n", sessionName)
+			stopFailed = true
+		} else {
+			_ = abtestKillTmux(sessionName)
+			if killDBErr := setEndedStoppingReviewChildren(d, sessionName); killDBErr != nil {
+				proglog.Warnf("[prism spawn] warning: cleanup DB for %q failed: %v\n", sessionName, killDBErr)
+			}
+		}
+	}
+	// Remove the worktree even when sessionName is empty — the worktree may
+	// have been created before the session started.
+	if worktreePath != "" && !stopFailed {
+		if rmErr := abtestRemoveWorktree(bareRoot, worktreePath); rmErr != nil {
+			proglog.Warnf("[prism spawn] warning: cleanup worktree %q failed: %v\n", worktreePath, rmErr)
+		}
+	}
 }
 
 // spawnOneAbtestArgs bundles the arguments for spawnOneAbtest.
