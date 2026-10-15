@@ -302,14 +302,16 @@ jobs:
       # The sidecar owner check reads the command line of a PID with a
       # different mechanism on Darwin (kern.procargs2) than on Linux
       # (/proc). The go-tests job runs on Linux only, so these tests run
-      # here too (#3136). The selector excludes TestKillSidecarAndWait*,
-      # which skip on Darwin.
-      - name: go test ./internal/session -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2)' -race
+      # here too (#3136). The ended-session sweep and EnsureSidecarStopped
+      # depend on that owner check, and Darwin is where the review-sidecar
+      # leak was measured, so they run here as well (#3160). The selector
+      # excludes TestKillSidecarAndWait*, which skip on Darwin.
+      - name: go test ./internal/session -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile)' -race
         if: always() && steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism
         run: |
           set -o pipefail
-          go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2)' -race -count=1 2>&1 | tee /tmp/go-test-macos-sidecar-owner.log
+          go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile)' -race -count=1 2>&1 | tee /tmp/go-test-macos-sidecar-owner.log
       - name: Guard against SKIP-as-PASS and a zero-test run (sidecar owner check)
         if: always() && steps.changes.outputs.go == 'true'
         run: |

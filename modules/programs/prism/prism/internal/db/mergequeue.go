@@ -98,7 +98,8 @@ SELECT repo, pr, session_name, instance_id, queue_position, status, title, error
 // when prism merge mints a fresh UUID on the fly). Incarnation isolation —
 // preventing stale rows from a previous sidecar from being re-processed — is
 // handled by AbandonWatchingMerges on sidecar shutdown, which sets rows to
-// 'abandoned' before the new sidecar starts.
+// 'abandoned' before the new sidecar starts. prism restore continues the
+// session, so it gives those rows back with ResumeMerges.
 //
 // session_name embeds the repo (`<repo>@<branch>` convention), so this
 // selector remains implicitly repo-scoped without an explicit repo filter.
@@ -171,6 +172,9 @@ UPDATE pending_merges
 // AbandonWatchingMerges transitions all watching rows for instanceID to
 // 'abandoned' with error = 'coordinator session ended'. Called on sidecar
 // shutdown so that a new coordinator never inherits stale watching rows.
+// The sidecar cannot tell a restart from an end. When prism restore
+// restarts the coordinator session, it gives the rows back with
+// ResumeMerges.
 //
 // Scoping by instance_id is already sufficient to prevent cross-repo
 // spillover: instance_id is unique per coordinator and each coordinator
@@ -188,6 +192,74 @@ UPDATE pending_merges
 		return fmt.Errorf("db: abandon watching merges: %w", err)
 	}
 	return nil
+}
+
+// WatchingMerges returns the watching rows of the coordinator session
+// sessionName, in queue order, whatever their instance_id.
+func (d *DB) WatchingMerges(sessionName string) ([]PendingMerge, error) {
+	const q = `
+SELECT repo, pr, session_name, instance_id, queue_position, status, title, error,
+       queued_at, last_checked_at, merged_at, ended_at
+  FROM pending_merges
+ WHERE session_name = ? AND status = 'watching'
+ ORDER BY queue_position ASC`
+	rows, err := d.conn.Query(q, sessionName)
+	if err != nil {
+		return nil, fmt.Errorf("db: watching merges: %w", err)
+	}
+	defer rows.Close()
+	var merges []PendingMerge
+	for rows.Next() {
+		m, err := scanPendingMergeRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("db: watching merges: scan: %w", err)
+		}
+		merges = append(merges, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: watching merges: iterate: %w", err)
+	}
+	return merges, nil
+}
+
+// ResumeMerges gives each row of merges back to the queue of sessionName,
+// owned by instanceID. A row that AbandonWatchingMerges ended becomes
+// watching again. A row that is still watching only changes owner. A row in
+// any other status does not change: the old watcher already decided its
+// outcome and notified the coordinator. queue_position does not change, so
+// the queue order stays the same. It returns the PR numbers of the rows that
+// are watching after the call.
+func (d *DB) ResumeMerges(sessionName, instanceID string, merges []PendingMerge) ([]int, error) {
+	if len(merges) == 0 {
+		return nil, nil
+	}
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("db: resume merges: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	const q = `
+UPDATE pending_merges
+   SET status      = 'watching',
+       instance_id = ?,
+       error       = NULL,
+       ended_at    = NULL
+ WHERE repo = ? AND pr = ? AND session_name = ?
+   AND status IN ('watching', 'abandoned')`
+	var resumed []int
+	for _, m := range merges {
+		res, err := tx.Exec(q, instanceID, m.Repo, m.PR, sessionName)
+		if err != nil {
+			return nil, fmt.Errorf("db: resume merges: PR #%d: %w", m.PR, err)
+		}
+		if n, err := res.RowsAffected(); err == nil && n > 0 {
+			resumed = append(resumed, m.PR)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("db: resume merges: commit: %w", err)
+	}
+	return resumed, nil
 }
 
 // CancelMerge transitions a watching row owned by instanceID to 'cancelled'.
@@ -221,8 +293,9 @@ UPDATE pending_merges
 //   - "" or "watching" → only watching rows for instanceID
 //   - "failed"         → failed rows for instanceID
 //   - "all"            → all non-abandoned rows for instanceID from the last 7 days
-//   - "abandoned"      → abandoned rows for the same session_name but a different
-//     instanceID (previous coordinator incarnations)
+//   - "abandoned"      → abandoned rows for the same session_name, from every
+//     coordinator incarnation. The current instanceID is included: a
+//     restore can continue the instance after a stop abandoned its rows.
 //
 // instance_id is unique per coordinator (and every coordinator only ever
 // writes rows for its own repo), so this selector is already
@@ -246,9 +319,9 @@ func (d *DB) MergeQueueForInstance(instanceID, sessionName, filter string) ([]Pe
 		q = `SELECT repo, pr, session_name, instance_id, queue_position, status, title, error,
 		            queued_at, last_checked_at, merged_at, ended_at
 		       FROM pending_merges
-		      WHERE session_name = ? AND instance_id != ? AND status = 'abandoned'
+		      WHERE session_name = ? AND status = 'abandoned'
 		      ORDER BY queue_position ASC`
-		args = []any{sessionName, instanceID}
+		args = []any{sessionName}
 	case "all":
 		// Include all terminal states (merged, cancelled, failed, abandoned) plus
 		// watching, from the last 7 days, scoped to this instanceID.

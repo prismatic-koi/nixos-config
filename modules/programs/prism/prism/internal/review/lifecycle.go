@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/container"
@@ -135,7 +136,13 @@ func KillReviewSessionsForParentWithDB(d *db.DB, parentSession string) {
 // the cleanup to all review sessions.
 // Uses DB group membership (GroupMembersForParent) as the primary source, with
 // a name-prefix fallback for pre-migration rows where group_id is not set.
-func CleanupReviewSessionsForParent(d *db.DB, parentSession string) {
+//
+// It stops the sidecar of each review session first, on every platform.
+// It returns the sessions whose sidecar did not stop. For those it changes
+// nothing else: the tmux session, the row, and the port stay. The caller
+// must pass them to db.SetEndedExcept when it ends the parent, because the
+// db.SetEnded cascade would end their rows too.
+func CleanupReviewSessionsForParent(d *db.DB, parentSession string) (failed []string) {
 	prefix := parentSession + "~review-"
 
 	// Try DB-backed group membership first (post-migration rows).
@@ -144,12 +151,16 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession string) {
 		// DB-backed: clean up only the actual group members.
 		names := make([]string, 0, len(members))
 		for _, row := range members {
-			cleanupAgentSession(d, row.SessionName, db.ReapCauseParentCleanup)
 			names = append(names, row.SessionName)
 		}
+		var stopped []string
+		stopped, failed = stopAgentSidecars(names)
+		for _, name := range stopped {
+			cleanupAgentSession(d, name, db.ReapCauseParentCleanup)
+		}
 		// Kill the tmux sessions (best effort, idempotent).
-		KillSessionsByNames(names)
-		return
+		KillSessionsByNames(stopped)
+		return failed
 	}
 	if err != nil {
 		proglog.Warnf("[prism] warning: CleanupReviewSessionsForParent: DB group error for %q: %v — using name-prefix fallback\n", parentSession, err)
@@ -159,13 +170,76 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession string) {
 	// Find all review session rows in the DB.
 	rows, err := d.AllStatusesWithPrefix(prefix)
 	if err == nil {
+		names := make([]string, 0, len(rows))
 		for _, row := range rows {
-			cleanupAgentSession(d, row.SessionName, db.ReapCauseParentCleanup)
+			names = append(names, row.SessionName)
+		}
+		var stopped []string
+		stopped, failed = stopAgentSidecars(names)
+		for _, name := range stopped {
+			cleanupAgentSession(d, name, db.ReapCauseParentCleanup)
+		}
+		if len(failed) > 0 {
+			// A prefix kill would also close the tmux session of a review
+			// agent whose sidecar still runs.
+			KillSessionsByNames(stopped)
+			return failed
 		}
 	}
 
 	// Kill the tmux sessions (best effort, idempotent).
 	KillSessionPrefix(prefix)
+	return failed
+}
+
+// StopReviewChildrenForEnd prepares db.SetEnded(parent). That call also
+// ends every open `<parent>~review-*` row, so each of those rows must lose
+// its sidecar first. For each open child row it stops the sidecar and then
+// closes the tmux session of the child. It returns the children whose
+// sidecar still runs. Pass them to db.SetEndedExcept, so that their rows and
+// their ports stay reserved.
+func StopReviewChildrenForEnd(d *db.DB, parent string) []string {
+	rows, err := d.AllStatusesWithPrefix(parent + "~review-")
+	if err != nil {
+		proglog.Warnf("[prism] warning: list review children of %q: %v\n", parent, err)
+		return nil
+	}
+	var open []string
+	for _, row := range rows {
+		if row.EndedAt == nil {
+			open = append(open, row.SessionName)
+		}
+	}
+	stopped, failed := stopAgentSidecars(open)
+	for _, name := range stopped {
+		reapKillTmuxSession(name)
+	}
+	return failed
+}
+
+// stopAgentSidecars stops the sidecars of names at the same time, so that
+// several slow stops cost one stop timeout. It returns the names in their
+// input order, split by the result.
+func stopAgentSidecars(names []string) (stopped, failed []string) {
+	ok := make([]bool, len(names))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			ok[i] = stopAgentSidecar(name)
+		}(i, name)
+	}
+	wg.Wait()
+	for i, name := range names {
+		if ok[i] {
+			stopped = append(stopped, name)
+		} else {
+			proglog.Warnf("[prism] warning: sidecar of %q did not stop — keeping its tmux session, row, and port\n", name)
+			failed = append(failed, name)
+		}
+	}
+	return stopped, failed
 }
 
 // cleanupAgentSession cleans up the DB state for a completed agent session.

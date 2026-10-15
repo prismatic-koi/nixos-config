@@ -263,21 +263,30 @@ func ReviewAgentActivityWindowForTest() time.Duration {
 // under the real state root. Pass nil for a hook the test does not assert on
 // and it becomes a no-op.
 func ReapSideEffectsForTest(killTmux func(string), killSidecar func(string), removeContainer func(sessionName, isolationMode string)) func() {
-	prevTmux, prevSidecar, prevContainer := reapKillTmuxSession, reapKillSidecar, reapRemoveContainer
-	noopOne := func(string) {}
-	noopTwo := func(string, string) {}
-	if killTmux == nil {
-		killTmux = noopOne
+	var stop func(string) bool
+	if killSidecar != nil {
+		stop = func(name string) bool { killSidecar(name); return true }
 	}
-	if killSidecar == nil {
-		killSidecar = noopOne
+	return ReapSideEffectsWithStopForTest(killTmux, stop, removeContainer)
+}
+
+// ReapSideEffectsWithStopForTest is ReapSideEffectsForTest with a sidecar
+// stop that reports whether the sidecar stopped, so that a test can make a
+// stop fail. A nil stop reports success.
+func ReapSideEffectsWithStopForTest(killTmux func(string), stopSidecar func(string) bool, removeContainer func(sessionName, isolationMode string)) func() {
+	prevTmux, prevSidecar, prevContainer := reapKillTmuxSession, stopAgentSidecar, reapRemoveContainer
+	if killTmux == nil {
+		killTmux = func(string) {}
+	}
+	if stopSidecar == nil {
+		stopSidecar = func(string) bool { return true }
 	}
 	if removeContainer == nil {
-		removeContainer = noopTwo
+		removeContainer = func(string, string) {}
 	}
-	reapKillTmuxSession, reapKillSidecar, reapRemoveContainer = killTmux, killSidecar, removeContainer
+	reapKillTmuxSession, stopAgentSidecar, reapRemoveContainer = killTmux, stopSidecar, removeContainer
 	return func() {
-		reapKillTmuxSession, reapKillSidecar, reapRemoveContainer = prevTmux, prevSidecar, prevContainer
+		reapKillTmuxSession, stopAgentSidecar, reapRemoveContainer = prevTmux, prevSidecar, prevContainer
 	}
 }
 

@@ -96,7 +96,7 @@ func TestEmptyMergesMessage(t *testing.T) {
 	cases := map[string]string{
 		"":          "merge queue is empty",
 		"failed":    "no failed merge queue entries",
-		"abandoned": "no abandoned merge queue entries from previous coordinator sessions",
+		"abandoned": "no abandoned merge queue entries",
 		"all":       "no merge queue entries in the last 7 days",
 	}
 	for filter, want := range cases {
