@@ -180,6 +180,18 @@
             legacy_commands = false, -- Disable legacy commands
           })
 
+          -- Mirrors `Obsidian today [N]`, but opens with :edit in the current window.
+          -- Obsidian's api.open_note switches to :drop when any window already shows
+          -- the note, which jumps to zen-mode's hidden parent window and closes zen.
+          local open_daily = function(offset_from_today)
+          	local note = require("obsidian.daily").daily({ offset = offset_from_today })
+          	if not note:exists() then
+          		note:write()
+          	end
+          	vim.cmd.edit(vim.fn.fnameescape(tostring(note.path)))
+          	vim.b[vim.api.nvim_get_current_buf()].note = note
+          end
+
           -- custom commands for previous and next daily note
           local offset_daily = function(relative_offset_from_current_note)
           	local current_filename = vim.fn.expand("%:t:r") -- e.g., "2017-04-23"
@@ -226,8 +238,7 @@
           	-- Divide by seconds in a day (24*60*60) and round to nearest whole number
           	local total_offset_from_today = math.floor((target_note_timestamp - today_timestamp) / (24 * 60 * 60) + 0.5)
 
-          	-- Call ObsidianToday with the calculated offset from today
-          	vim.cmd("Obsidian today " .. total_offset_from_today)
+          	open_daily(total_offset_from_today)
           	return true
           end
 
@@ -287,26 +298,17 @@
             end,
           })
 
-          vim.keymap.set("n", "<leader>od", "<cmd>Obsidian today<cr>", { desc = "[O]bsidian [D]aily note for Today" })
-          vim.keymap.set("n", "<leader>odt", "<cmd>Obsidian today<cr>", { desc = "[O]bsidian [D]aily note for [T]oday" })
-          vim.keymap.set(
-          	"n",
-          	"<leader>oy",
-          	-- have to use Today-1 because Yesterday uses weekday only
-          	function()
-          		vim.cmd("Obsidian today -1")
-          	end,
-          	{ desc = "[O]bsidian [Y]esterday note" }
-          )
-          vim.keymap.set(
-          	"n",
-          	"<leader>ody",
-          	-- have to use Today-1 because Yesterday uses weekday only
-          	function()
-          		vim.cmd("Obsidian today -1")
-          	end,
-          	{ desc = "[O]bsidian [D]aily [Y]esterday note" }
-          )
+          local open_today = function()
+          	open_daily(0)
+          end
+          -- offset -1 rather than daily.yesterday(), which honours workdays_only
+          local open_yesterday = function()
+          	open_daily(-1)
+          end
+          vim.keymap.set("n", "<leader>od", open_today, { desc = "[O]bsidian [D]aily note for Today" })
+          vim.keymap.set("n", "<leader>odt", open_today, { desc = "[O]bsidian [D]aily note for [T]oday" })
+          vim.keymap.set("n", "<leader>oy", open_yesterday, { desc = "[O]bsidian [Y]esterday note" })
+          vim.keymap.set("n", "<leader>ody", open_yesterday, { desc = "[O]bsidian [D]aily [Y]esterday note" })
           vim.keymap.set("n", "<leader>odr", function()
           	vim.cmd("Obsidian dailies -30 7")
           end, { desc = "[O]bsidian [D]aily [R]ecent" })
