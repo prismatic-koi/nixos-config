@@ -1430,11 +1430,15 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 	if results[0].err != nil || results[1].err != nil {
 		for _, r := range results {
 			if r.err == nil && r.sessionName != "" {
-				// Best-effort teardown of the session that did start.
-				_ = tmux.KillSession(r.sessionName)
-				session.KillSidecar(r.sessionName)
-				if killDBErr := d.SetEnded(r.sessionName); killDBErr != nil {
-					proglog.Warnf("[prism spawn] warning: cleanup DB for %q failed: %v\n", r.sessionName, killDBErr)
+				// Stop the sidecar first. When it does not stop, keep the
+				// tmux session, the row, and the port (#3168).
+				if !session.EnsureSidecarStopped(r.sessionName, session.SidecarStopTimeout) {
+					proglog.Warnf("[prism spawn] warning: sidecar of %q did not stop — keeping its tmux session, row, and port\n", r.sessionName)
+				} else {
+					_ = tmux.KillSession(r.sessionName)
+					if killDBErr := setEndedStoppingReviewChildren(d, r.sessionName); killDBErr != nil {
+						proglog.Warnf("[prism spawn] warning: cleanup DB for %q failed: %v\n", r.sessionName, killDBErr)
+					}
 				}
 			}
 			// Remove the worktree even when sessionName is empty — the
