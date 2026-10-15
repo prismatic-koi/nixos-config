@@ -164,6 +164,11 @@ let
   # See the StandardOutPath comment in the Darwin branch below for why
   # this is not /var/log/prism-exporter.log (issue #2781).
   darwinLogPath = "${darwinStateDir}/prism-exporter.log";
+
+  # The exporter reads config.json on each scrape for the value of
+  # `prism_spawn_limit` (issue #3177). With no `$HOME`, prism cannot find
+  # the file, so the Darwin daemon names it in PRISM_CONFIG_FILE.
+  darwinConfigFile = "${config.home-manager.users.${username}.xdg.configHome}/prism/config.json";
 in
 {
   options.nx.services.prismExporter = {
@@ -305,6 +310,8 @@ in
             # first runs -- see "Restart behaviour" above).
             RunAtLoad = true;
             KeepAlive = true;
+
+            EnvironmentVariables.PRISM_CONFIG_FILE = darwinConfigFile;
 
             # Logs go to the run-as user's own state directory, NOT to
             # /var/log. launchd opens these two redirects AFTER it

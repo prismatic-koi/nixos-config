@@ -176,7 +176,8 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 			// set only when the sidecar that handled this spawn launched from a
 			// binary a switch has since replaced. Empty in the common case —
 			// the field is simply absent from the JSON then.
-			Warning string `json:"warning"`
+			Warning     string `json:"warning"`
+			SpawnBudget string `json:"spawn_budget"`
 		}
 		body := map[string]any{
 			"prompt":                 promptFlag,
@@ -233,6 +234,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		if err := proxyToHostAPI(apiURL, "/spawn", body, &resp); err != nil {
 			return err
 		}
+		printProxiedSpawnBudget(cmd.ErrOrStderr(), resp.SpawnBudget)
 		for _, sn := range resp.SessionNames {
 			fmt.Printf("session %q created\n", sn)
 		}
@@ -254,7 +256,8 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		// set only when the sidecar that handled this spawn launched from a
 		// binary a switch has since replaced. Empty in the common case —
 		// the field is simply absent from the JSON then.
-		Warning string `json:"warning"`
+		Warning     string `json:"warning"`
+		SpawnBudget string `json:"spawn_budget"`
 	}
 	body := map[string]any{
 		"prompt":                 promptFlag,
@@ -317,6 +320,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	if err := proxyToHostAPI(apiURL, "/spawn", body, &resp); err != nil {
 		return err
 	}
+	printProxiedSpawnBudget(cmd.ErrOrStderr(), resp.SpawnBudget)
 	// --wait: route through waitForSpawnTerminal using the sandbox-aware
 	// probe. Without this the proxy path silently drops --wait and returns
 	// immediately even though the caller asked for synchronous behaviour.
@@ -757,15 +761,8 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// The gate does not check --model / --variant / --provider: a state file
 	// naming a profile that cannot be read is broken whether or not an
 	// override accompanies it.
+	plannedRole := plannedSpawnRole(agentFlag, branch)
 	if resolvedProfile != "" {
-		plannedRole := agentFlag
-		if plannedRole == "" {
-			if branch == "main" {
-				plannedRole = "coordinator"
-			} else {
-				plannedRole = "worker"
-			}
-		}
 		if err := config.RequireSlot(pf, resolvedProfile, plannedRole); err != nil {
 			// When the failure stems from the state file (not the flag),
 			// add a hint pointing at `prism profile use` so users have a
@@ -783,6 +780,10 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 			harnessFlag = "pi"
 		}
 	}
+
+	// The spawn budget line. It runs after every early return that starts no
+	// session (dedupe refusal, reuse) and before the first side effect.
+	printWorkerSpawnBudget(cmd.ErrOrStderr(), plannedRole, cfg)
 
 	// Create the worktree (handles local, remote-tracking, and new branches).
 	//
@@ -1323,14 +1324,7 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 	}
 
 	// The planned session role (for slot validation and agent assignment).
-	plannedRole := agentFlag
-	if plannedRole == "" {
-		if baseBranch == "main" {
-			plannedRole = "coordinator"
-		} else {
-			plannedRole = "worker"
-		}
-	}
+	plannedRole := plannedSpawnRole(agentFlag, baseBranch)
 
 	// Validate both profiles exist and have the required slot BEFORE any
 	// side effects (no worktree, no tmux session, no DB row on failure).
@@ -1361,6 +1355,10 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 			harnessName: legHarness,
 		})
 	}
+
+	// One budget line for the pair. Both arms count, but the lookup runs
+	// once, before either arm starts.
+	printWorkerSpawnBudget(cmd.ErrOrStderr(), plannedRole, cfg)
 
 	pairID := generateAbtestPairID()
 

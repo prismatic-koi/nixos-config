@@ -279,6 +279,40 @@ func TestContainerHostLimit(t *testing.T) {
 	}
 }
 
+// TestSpawnBudgetSettings verifies the default limit of 120, an explicit
+// limit, the fallback for a limit below 1, and the Prometheus URL, which
+// has no compiled-in value (issue #3177).
+func TestSpawnBudgetSettings(t *testing.T) {
+	cases := []struct {
+		raw       string
+		wantLimit int
+		wantURL   string
+	}{
+		{`{}`, 120, ""},
+		{`{"spawn_budget_limit": 80}`, 80, ""},
+		{`{"spawn_budget_limit": 0}`, 120, ""},
+		{`{"spawn_budget_limit": -3}`, 120, ""},
+		{`{"spawn_budget_prometheus_url": "http://prom.example:9090"}`, 120, "http://prom.example:9090"},
+	}
+	for _, tc := range cases {
+		cfgPath := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(cfgPath, []byte(tc.raw), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+		cfg := config.LoadFresh()
+		if cfg.SpawnBudgetLimit != tc.wantLimit {
+			t.Errorf("%s: SpawnBudgetLimit = %d, want %d", tc.raw, cfg.SpawnBudgetLimit, tc.wantLimit)
+		}
+		if cfg.SpawnBudgetPrometheusURL != tc.wantURL {
+			t.Errorf("%s: SpawnBudgetPrometheusURL = %q, want %q", tc.raw, cfg.SpawnBudgetPrometheusURL, tc.wantURL)
+		}
+	}
+	if config.DefaultSpawnBudgetLimit != 120 {
+		t.Errorf("DefaultSpawnBudgetLimit = %d, want 120", config.DefaultSpawnBudgetLimit)
+	}
+}
+
 // TestSidecarCircuitBreakerThresholdSilentlyIgnored verifies the
 // [edge-case] AC: an existing config.json on a user's machine that still
 // carries a `sidecar_circuit_breaker_threshold` field (from an older prism

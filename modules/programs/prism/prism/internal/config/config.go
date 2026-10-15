@@ -204,6 +204,19 @@ type Config struct {
 	// DefaultIsolationMode). Keys must exactly match the path after "~/"
 	// expansion; no glob or prefix matching.
 	ProjectIsolationOverrides map[string]string `json:"project_isolation_overrides,omitempty"`
+
+	// SpawnBudgetLimit is the limit of worker spawns per 7 days, across all
+	// hosts (issue #3177). Set by the Nix option
+	// nx.programs.prism.spawnBudget.limit. Values below 1 select
+	// DefaultSpawnBudgetLimit.
+	SpawnBudgetLimit int `json:"spawn_budget_limit"`
+
+	// SpawnBudgetPrometheusURL is the base URL of the Prometheus that holds
+	// the fleet-wide prism_spawns_total series. prism appends
+	// /api/v1/query. Set by the Nix option
+	// nx.programs.prism.spawnBudget.prometheusUrl. Empty means no fleet
+	// query: the spawn budget uses the count of this host only.
+	SpawnBudgetPrometheusURL string `json:"spawn_budget_prometheus_url,omitempty"`
 }
 
 // parsedConfig mirrors Config but uses pointer slices so that a JSON null or
@@ -242,6 +255,8 @@ type parsedConfig struct {
 	ProjectSpecific           *[]string          `json:"project_specific"`
 	ProjectIsolationOverrides *map[string]string `json:"project_isolation_overrides"`
 	FeedbackEndpoint          string             `json:"feedback_endpoint"`
+	SpawnBudgetLimit          *int               `json:"spawn_budget_limit"`
+	SpawnBudgetPrometheusURL  string             `json:"spawn_budget_prometheus_url"`
 }
 
 // DefaultBwrapConcurrencyCap is the compiled-in default maximum number of
@@ -285,6 +300,11 @@ const (
 // DefaultContainerHostLimit is the compiled-in default of ContainerHostLimit.
 const DefaultContainerHostLimit = 4
 
+// DefaultSpawnBudgetLimit is the compiled-in default of SpawnBudgetLimit:
+// 120 worker spawns per 7 days. The Nix option
+// nx.programs.prism.spawnBudget.limit carries the same default.
+const DefaultSpawnBudgetLimit = 120
+
 // defaults returns the compiled-in fallback Config (gruvbox-dark palette,
 // standard paths). These values are used whenever no config file is found.
 func defaults() Config {
@@ -307,6 +327,7 @@ func defaults() Config {
 		AgentMaxOpenFilesSoft:     DefaultAgentMaxOpenFilesSoft,
 		AgentMaxOpenFilesHard:     DefaultAgentMaxOpenFilesHard,
 		ContainerHostLimit:        DefaultContainerHostLimit,
+		SpawnBudgetLimit:          DefaultSpawnBudgetLimit,
 		WorktreeExclude:           []string{"obsidian"},
 		ProjectLocations:          []string{"~/code"},
 		ProjectSpecific:           []string{"~/documents/obsidian"},
@@ -443,6 +464,9 @@ func load() Config {
 	if parsed.FeedbackEndpoint != "" {
 		cfg.FeedbackEndpoint = parsed.FeedbackEndpoint
 	}
+	if parsed.SpawnBudgetPrometheusURL != "" {
+		cfg.SpawnBudgetPrometheusURL = parsed.SpawnBudgetPrometheusURL
+	}
 
 	// For integer pointer fields: nil means absent (keep default); non-nil
 	// means use the parsed value (including 0 and negative values).
@@ -463,6 +487,9 @@ func load() Config {
 	}
 	if parsed.ContainerHostLimit != nil && *parsed.ContainerHostLimit >= 1 {
 		cfg.ContainerHostLimit = *parsed.ContainerHostLimit
+	}
+	if parsed.SpawnBudgetLimit != nil && *parsed.SpawnBudgetLimit >= 1 {
+		cfg.SpawnBudgetLimit = *parsed.SpawnBudgetLimit
 	}
 	if parsed.ContainerMachineAllowlist != nil {
 		cfg.ContainerMachineMountAllowlist = *parsed.ContainerMachineAllowlist

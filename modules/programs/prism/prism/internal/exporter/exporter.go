@@ -34,6 +34,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/metrics"
 	"github.com/prismatic-koi/prism/internal/tailcursor"
@@ -78,6 +79,7 @@ const (
 const (
 	MetricBuildInfo        = "prism_exporter_build_info"
 	MetricAgentEventsTotal = "prism_agent_events_total"
+	MetricSpawnLimit       = "prism_spawn_limit"
 
 	// TailerAgentEvents is the key the agent_events cursor is stored under
 	// in the state file. Changing it makes a running daemon lose its place
@@ -116,6 +118,10 @@ type Config struct {
 	// Version overrides the version label of prism_exporter_build_info.
 	// Zero uses the package-level Version.
 	Version string
+	// SpawnLimit returns the spawn budget limit for prism_spawn_limit. It is
+	// called on every scrape, so a changed setting shows without a restart.
+	// Nil reports config.DefaultSpawnBudgetLimit.
+	SpawnLimit func() int
 }
 
 // Exporter is the daemon. Construct with New and run with Run.
@@ -206,6 +212,18 @@ func New(cfg Config) (*Exporter, error) {
 		[]string{"version", "go_version"},
 		[]string{version, runtime.Version()},
 		func() float64 { return 1 },
+	))
+
+	spawnLimit := cfg.SpawnLimit
+	if spawnLimit == nil {
+		spawnLimit = func() int { return config.DefaultSpawnBudgetLimit }
+	}
+	e.registry.MustRegister(metrics.NewGaugeFunc(
+		MetricSpawnLimit,
+		"The spawn budget: the configured limit of worker spawns per 7 days across all hosts. "+
+			"Compare it with sum(increase(prism_spawns_total{agent_role=\"worker\"}[7d])).",
+		nil, nil,
+		func() float64 { return float64(spawnLimit()) },
 	))
 
 	// Counter — produced by the tail cursor, never by an aggregate.
