@@ -28,6 +28,14 @@
           DO_NOT_TRACK = "1";
           # Nix supplies upgrades, so the background update notifier has no use.
           TWG_BACKGROUND_UPDATE_CHECK = "false";
+          # twg keeps its help index and last-error.json here. The
+          # sandbox-exec profile does not grant the macOS default,
+          # ~/Library/Caches/twg. Without this value, twg in an agent session
+          # rebuilds the help index on each call. The prism RW grants for
+          # ~/.cache/twg (internal/container: mounts.go, sandbox_exec.go)
+          # must name the same path. Do not persist this directory: it is a
+          # cache.
+          TWG_CACHE_DIR = "$HOME/.cache/twg";
         };
         description = "Environment variables for twg, set in the host shell and for prism agents.";
       };

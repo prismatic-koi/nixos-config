@@ -1371,9 +1371,9 @@ func TestGenerateProfile_ClaudeConfigDirRWSubpathRule(t *testing.T) {
 
 // TestGenerateProfile_RWRealPathGrants3e verifies that generateProfile emits
 // the section-5e RW grant block on the real host paths for ~/.cache/nix,
-// ~/.cache/bun, ~/.npm, ~/.mcp-auth, and ~/.config/twg. None of the paths is
-// sops-backed, so this grant — not the secrets.d allowlist — is the sole
-// in-sandbox capability.
+// ~/.cache/bun, ~/.cache/twg, ~/.npm, ~/.mcp-auth, and ~/.config/twg. None of
+// the paths is sops-backed, so this grant — not the secrets.d allowlist — is
+// the sole in-sandbox capability.
 //
 // The block must be emitted even when none of the dirs exists on the host —
 // sandbox-exec silently ignores (subpath ...) rules for non-existent paths,
@@ -1381,7 +1381,7 @@ func TestGenerateProfile_ClaudeConfigDirRWSubpathRule(t *testing.T) {
 func TestGenerateProfile_RWRealPathGrants3e(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
-	// Deliberately create NONE of the five dirs — emission is unconditional.
+	// Deliberately create NONE of the six dirs — emission is unconditional.
 
 	m := newSandboxExecManager(Config{SessionName: "repo@3e-grants"})
 	profile := generateProfile(m)
@@ -1389,6 +1389,7 @@ func TestGenerateProfile_RWRealPathGrants3e(t *testing.T) {
 	wantBlock := "(allow file-read* file-write* file-test-existence file-read-metadata\n" +
 		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, ".cache", "nix")) + ")\n" +
 		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, ".cache", "bun")) + ")\n" +
+		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, ".cache", "twg")) + ")\n" +
 		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, ".npm")) + ")\n" +
 		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, ".mcp-auth")) + ")\n" +
 		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, ".config", "twg")) + "))\n"
@@ -1420,6 +1421,32 @@ func TestGenerateProfile_TwgConfigRWGrant(t *testing.T) {
 	clause := profile[clauseStart+1 : idx]
 	if !strings.Contains(clause, "file-read*") || !strings.Contains(clause, "file-write*") {
 		t.Errorf("~/.config/twg allow clause must carry file-read* and file-write*; clause: %q", clause)
+	}
+}
+
+// TestGenerateProfile_TwgCacheRWGrant verifies that the ~/.cache/twg subpath
+// rule sits inside an allow clause that carries both file-read* and
+// file-write*. twg writes its help index there, so a read-only grant makes
+// twg rebuild the index on each call.
+func TestGenerateProfile_TwgCacheRWGrant(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := newSandboxExecManager(Config{SessionName: "repo@twg-cache-grant"})
+	profile := generateProfile(m)
+
+	rule := "(subpath " + quoteSBPL(filepath.Join(fakeHome, ".cache", "twg")) + ")"
+	idx := strings.Index(profile, rule)
+	if idx < 0 {
+		t.Fatalf("profile has no %s rule; full profile:\n%s", rule, profile)
+	}
+	clauseStart := strings.LastIndex(profile[:idx], "\n(")
+	if clauseStart < 0 || !strings.HasPrefix(profile[clauseStart+1:], "(allow ") {
+		t.Fatalf("~/.cache/twg subpath rule is not inside an (allow ...) clause; full profile:\n%s", profile)
+	}
+	clause := profile[clauseStart+1 : idx]
+	if !strings.Contains(clause, "file-read*") || !strings.Contains(clause, "file-write*") {
+		t.Errorf("~/.cache/twg allow clause must carry file-read* and file-write*; clause: %q", clause)
 	}
 }
 
@@ -1466,6 +1493,70 @@ func TestGenerateProfile_ConfigDirAllowsPinned(t *testing.T) {
 	}
 	if !maps.Equal(got, want) {
 		t.Errorf("allow rules under ~/.config differ from the pinned set\ngot:  %v\nwant: %v", got, want)
+	}
+}
+
+// TestGenerateProfile_CacheAndLibraryAllowsPinned pins the full set of paths
+// under ~/.cache and ~/Library that an allow clause names. A new path here
+// exposes host cache data to every sandbox-exec session: add it to the want
+// set only after a security review. A rule on ~/.cache, ~/Library, or
+// ~/Library/Caches itself fails the test. The fake home holds the twg cache
+// at both locations, so a grant of the macOS default ~/Library/Caches/twg
+// cannot hide by being absent.
+func TestGenerateProfile_CacheAndLibraryAllowsPinned(t *testing.T) {
+	fakeHome := newFakeHome(t)
+	for _, d := range []string{
+		filepath.Join(".cache", "twg"),
+		filepath.Join(".cache", "decoy"),
+		filepath.Join("Library", "Caches", "twg"),
+	} {
+		if err := os.MkdirAll(filepath.Join(fakeHome, d), 0o755); err != nil {
+			t.Fatalf("MkdirAll %q: %v", d, err)
+		}
+	}
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@cache-pinned",
+		Worktree:    t.TempDir(),
+	})
+	profile := generateProfile(m)
+
+	want := map[string]bool{
+		".cache/nix":              true,
+		".cache/bun":              true,
+		".cache/twg":              true,
+		".cache/prism/clipboard":  true,
+		"Library/Caches/go-build": true,
+		// Section 5i: an RO literal on the file, never (subpath ~/Library/Keychains).
+		"Library/Keychains/login.keychain-db": true,
+	}
+	parents := map[string]bool{
+		filepath.Join(fakeHome, ".cache"):            true,
+		filepath.Join(fakeHome, "Library"):           true,
+		filepath.Join(fakeHome, "Library", "Caches"): true,
+	}
+	got := map[string]bool{}
+	// Each top-level clause starts with "(" at the start of a line.
+	for _, clause := range strings.Split(profile, "\n(") {
+		if !strings.HasPrefix(clause, "allow ") {
+			continue
+		}
+		for _, field := range strings.Split(clause, `"`) {
+			if parents[field] {
+				t.Errorf("an allow clause names the parent dir %s; clause: %q", field, clause)
+				continue
+			}
+			rel, ok := strings.CutPrefix(field, fakeHome+string(filepath.Separator))
+			if !ok {
+				continue
+			}
+			if strings.HasPrefix(rel, ".cache/") || strings.HasPrefix(rel, "Library/") {
+				got[filepath.ToSlash(rel)] = true
+			}
+		}
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("allow rules under ~/.cache and ~/Library differ from the pinned set\ngot:  %v\nwant: %v", got, want)
 	}
 }
 
@@ -1623,6 +1714,7 @@ func TestPrepareSandboxExec_MinimalHomeNoOptionalDirs(t *testing.T) {
 	for _, want := range []string{
 		"(subpath " + quoteSBPL(filepath.Join(fakeHome, ".mcp-auth")) + ")",
 		"(subpath " + quoteSBPL(filepath.Join(fakeHome, ".config", "twg")) + ")",
+		"(subpath " + quoteSBPL(filepath.Join(fakeHome, ".cache", "twg")) + ")",
 		"(subpath " + quoteSBPL(filepath.Join(fakeHome, ".npm")) + ")",
 		"(subpath " + quoteSBPL(filepath.Join(fakeHome, ".config", "prism", "agents")) + ")",
 		"(literal " + quoteSBPL(filepath.Join(fakeHome, ".nix-profile")) + ")",

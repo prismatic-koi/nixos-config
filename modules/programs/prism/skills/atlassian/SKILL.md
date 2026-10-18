@@ -324,7 +324,14 @@ The host shell and prism agents get these variables:
   Do not change it to `keychain`. The owner does not want Keychain storage.
 - `DO_NOT_TRACK=1` stops the runtime telemetry of `twg`.
 - `TWG_BACKGROUND_UPDATE_CHECK=false` stops the background update notifier.
+- `TWG_CACHE_DIR=$HOME/.cache/twg` moves the cache out of the macOS default,
+  `~/Library/Caches/twg`. The sandboxes do not give access to that default.
 
 The bwrap and sandbox-exec sandboxes give read-write access to
 `~/.config/twg`. `twg` writes `install.json` in that directory on each run.
 It also writes there when it refreshes the 8-hour access token.
+
+The sandboxes also give read-write access to `~/.cache/twg`. `twg help
+<topic>` writes its help index to `~/.cache/twg/help-index`, and `twg` writes
+`last-error.json` to `~/.cache/twg/feedback`. Do not unset or change
+`TWG_CACHE_DIR`: if you do, `twg` cannot keep its cache.
