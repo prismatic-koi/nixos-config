@@ -1,6 +1,6 @@
 ---
 name: atlassian
-description: Load this skill when reading from or writing to Jira Cloud or Confluence Cloud — searching issues, fetching a specific Jira issue or Confluence page, listing or performing workflow transitions, creating/updating issues, commenting on issues, publishing or updating Confluence pages, or understanding the atlassian MCP tools.
+description: Load this skill when reading from or writing to Jira Cloud or Confluence Cloud — searching issues, fetching a specific Jira issue or Confluence page, listing or performing workflow transitions, creating/updating issues, commenting on issues, publishing or updating Confluence pages, understanding the atlassian MCP tools, or running the `twg` CLI.
 ---
 
 # Atlassian Skill — Jira and Confluence via pi atlassian-mcp
@@ -24,7 +24,7 @@ Load this skill when:
 
 ## Integration: pi atlassian-mcp extension
 
-Atlassian operations are performed via the **pi atlassian-mcp extension** — a TypeScript extension bundled with pi that connects to `mcp.atlassian.com` using OAuth PKCE. Use the MCP tools listed below; there is no separate command-line surface.
+Atlassian operations are performed via the **pi atlassian-mcp extension** — a TypeScript extension bundled with pi that connects to `mcp.atlassian.com` using OAuth PKCE. Use the MCP tools listed below. They are the primary surface. Some hosts also have the `twg` CLI — see "twg CLI (secondary surface)" at the end of this skill.
 
 ### First: activate the tool family
 
@@ -286,3 +286,45 @@ compact enough to fit in context.
   permissions.
 - **Debug logging**: set `ATLASSIAN_MCP_DEBUG=1` in the environment to get
   MCP request/response logs on stderr.
+
+---
+
+## twg CLI (secondary surface)
+
+The Atlassian Teamwork Graph CLI, `twg`, is on `PATH` on a host that sets
+`nx.programs.twg.enable = true`. The MCP tools above stay the primary
+surface. Unless your task tells you to use `twg`, use the MCP tools for
+Jira and Confluence work.
+
+### Login is host-only
+
+`twg` reads its credentials from `~/.config/twg/auth-profiles.json`. The
+owner logs in one time, on the host, in a terminal outside prism. An agent
+cannot log in, because the login needs a real terminal and a browser.
+
+If `twg` reports that no login exists, or that the login has expired, stop.
+Tell the user to run `twg login` in a host terminal.
+
+### Commands that agents must not run
+
+- `twg login` — needs a terminal and a browser, and replaces the login of
+  the owner.
+- `twg setup` — starts the interactive first-run flow, which includes the
+  login.
+- `twg upgrade` — Nix supplies `twg`. A self-upgrade conflicts with the Nix
+  package.
+- `twg upkeep enable` — installs a background helper that points at a Nix
+  store path. That path changes on each upgrade.
+
+### Environment and sandbox access
+
+The host shell and prism agents get these variables:
+
+- `TWG_SECRET_STORE=file` keeps the credentials in the plain-file store.
+  Do not change it to `keychain`. The owner does not want Keychain storage.
+- `DO_NOT_TRACK=1` stops the runtime telemetry of `twg`.
+- `TWG_BACKGROUND_UPDATE_CHECK=false` stops the background update notifier.
+
+The bwrap and sandbox-exec sandboxes give read-write access to
+`~/.config/twg`. `twg` writes `install.json` in that directory on each run.
+It also writes there when it refreshes the 8-hour access token.

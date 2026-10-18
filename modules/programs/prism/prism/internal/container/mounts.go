@@ -211,6 +211,25 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 			OptionalIfMissing: true,
 		},
 
+		// ── ~/.config/twg (RW, conditional) ──────────────────────────────
+		// twg CLI OAuth credentials (auth-profiles.json). RW because twg
+		// writes install.json on each run, and writes back the 8-hour
+		// access token when it refreshes it.
+		// Mounted only when the directory exists on the host — hosts
+		// without nx.programs.twg.enable are unaffected.
+		//
+		// LEAF ONLY. Bind ~/.config/twg itself, never ~/.config: a wider
+		// bind exposes host config and secrets.
+		//
+		// sandbox-exec does not walk this slice (see the package comment):
+		// there generateProfile emits an explicit RW (subpath ~/.config/twg)
+		// grant on the real host path (section 5e).
+		{
+			HostPath:          filepath.Join(hostHome, ".config", "twg"),
+			SandboxPath:       filepath.Join(sandboxHomeDir, ".config", "twg"),
+			OptionalIfMissing: true,
+		},
+
 		// ── ~/.npm (RW, conditional) ─────────────────────────────────────
 		// npx caches downloaded packages (e.g. mcp-remote) under
 		// ~/.npm/_npx/. Without this mount, an npx-fetched tool inside

@@ -43,6 +43,7 @@
     ./signal.nix
     ./ssh.nix
     ./tailscale-client
+    ./twg.nix
     ./vimiv.nix
     ./virt-manager.nix
     ./wgnord.nix

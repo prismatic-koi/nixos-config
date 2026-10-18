@@ -4,7 +4,7 @@ package integration_test
 
 // sandbox_exec_rw_real_paths_darwin_test.go — integration coverage for the
 // section-5e RW grant block on the real host paths: ~/.cache/nix,
-// ~/.cache/bun, ~/.npm, ~/.mcp-auth.
+// ~/.cache/bun, ~/.npm, ~/.mcp-auth, ~/.config/twg.
 //
 // The explicit (subpath ...) RW grants emitted by generateProfile are the
 // sole in-sandbox capability (none of the paths is sops-backed, so the
@@ -47,10 +47,11 @@ func rwRealPaths3e(t *testing.T) map[string]string {
 	t.Helper()
 	home := realUserHome(t)
 	candidates := map[string]string{
-		"cache-nix": filepath.Join(home, ".cache", "nix"),
-		"cache-bun": filepath.Join(home, ".cache", "bun"),
-		"npm":       filepath.Join(home, ".npm"),
-		"mcp-auth":  filepath.Join(home, ".mcp-auth"),
+		"cache-nix":  filepath.Join(home, ".cache", "nix"),
+		"cache-bun":  filepath.Join(home, ".cache", "bun"),
+		"npm":        filepath.Join(home, ".npm"),
+		"mcp-auth":   filepath.Join(home, ".mcp-auth"),
+		"config-twg": filepath.Join(home, ".config", "twg"),
 	}
 	present := map[string]string{}
 	for label, dir := range candidates {
@@ -76,7 +77,8 @@ func rwGrantBlock5e(t *testing.T) string {
 		"  (subpath " + sbplQuoteForTest(filepath.Join(home, ".cache", "nix")) + ")\n" +
 		"  (subpath " + sbplQuoteForTest(filepath.Join(home, ".cache", "bun")) + ")\n" +
 		"  (subpath " + sbplQuoteForTest(filepath.Join(home, ".npm")) + ")\n" +
-		"  (subpath " + sbplQuoteForTest(filepath.Join(home, ".mcp-auth")) + "))\n"
+		"  (subpath " + sbplQuoteForTest(filepath.Join(home, ".mcp-auth")) + ")\n" +
+		"  (subpath " + sbplQuoteForTest(filepath.Join(home, ".config", "twg")) + "))\n"
 }
 
 // TestSandboxExecRWRealPaths_RoundTrip is the positive integration test for
