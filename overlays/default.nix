@@ -92,6 +92,9 @@ rec {
       # (issue #2990).
       flate = final.callPackage ../pkgs/flate.nix { };
 
+      # twg: Atlassian Teamwork Graph CLI, prebuilt and unfree (issue #3195).
+      twg = final.callPackage ../pkgs/twg.nix { };
+
       prism = final.callPackage ../pkgs/prism.nix { };
 
       # battery-monitor: Linux-only Go daemon (UPower + sysfs +
