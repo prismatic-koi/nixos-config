@@ -1372,9 +1372,8 @@ func TestGenerateProfile_ClaudeConfigDirRWSubpathRule(t *testing.T) {
 // TestGenerateProfile_RWRealPathGrants3e verifies that generateProfile emits
 // the section-5e RW grant block on the real host paths for ~/.cache/nix,
 // ~/.cache/bun, ~/.cache/twg, ~/.npm, ~/.mcp-auth, and ~/.config/twg. None of
-// the paths is
-// sops-backed, so this grant — not the secrets.d allowlist — is the sole
-// in-sandbox capability.
+// the paths is sops-backed, so this grant — not the secrets.d allowlist — is
+// the sole in-sandbox capability.
 //
 // The block must be emitted even when none of the dirs exists on the host —
 // sandbox-exec silently ignores (subpath ...) rules for non-existent paths,

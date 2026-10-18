@@ -525,7 +525,7 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	//     binaries that are typically on the host's PATH. A sandboxed agent
 	//     must not be able to plant an executable the user later runs.
 	//   - NOT ~/.cache: the user's whole cache tree. The sandbox binds the
-	//     leaves it needs (nix, bun, prism/clipboard) and nothing else.
+	//     leaves it needs (nix, bun, twg, prism/clipboard) and nothing else.
 	//
 	// EXEC ASYMMETRY WITH DARWIN, accepted. goCacheDir carries
 	// execDenied, true for the module cache: on Darwin the profile emits
