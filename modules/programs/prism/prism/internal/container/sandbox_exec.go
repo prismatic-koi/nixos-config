@@ -204,7 +204,8 @@ func ensureGoCacheDirs() {
 //   - Literal RO grant for the real ~/.ssh/known_hosts — never (subpath ~/.ssh)
 //   - RW subpath grant for ~/.config/claude — claude-code's config dir,
 //     reached via the CLAUDE_CONFIG_DIR env var
-//   - RW subpath grants for ~/.cache/nix, ~/.cache/bun, ~/.npm, ~/.mcp-auth
+//   - RW subpath grants for ~/.cache/nix, ~/.cache/bun, ~/.npm, ~/.mcp-auth,
+//     ~/.config/twg
 //   - RO subpath grants for ~/.cache/prism/clipboard and
 //     ~/.config/prism/agents, plus an RO grant for the ~/.nix-profile
 //     symlink and its resolved target
@@ -558,11 +559,15 @@ func generateProfile(m *Manager) string {
 
 	// ── 5e. RW cache/auth dir grants at the real host paths ─
 	// Explicit RW subpath grants on the real host paths
-	// for ~/.cache/nix, ~/.cache/bun, ~/.npm, and ~/.mcp-auth. The consumers
-	// derive the paths from $HOME / XDG_CACHE_HOME, which point at the real
-	// host paths, so these grants are load-bearing. None of these
+	// for ~/.cache/nix, ~/.cache/bun, ~/.npm, ~/.mcp-auth, and ~/.config/twg.
+	// The consumers derive the paths from $HOME / XDG_CACHE_HOME, which point
+	// at the real host paths, so these grants are load-bearing. None of these
 	// paths is sops-backed — the allowlist plays no part; these grants
 	// are the sole capability.
+	//
+	// ~/.config/twg holds the twg CLI OAuth credentials. twg refreshes the
+	// access token on demand, so the grant is RW. Grant the leaf only, never
+	// (subpath ~/.config): a wider grant exposes host config and secrets.
 	//
 	// Mirrors bwrap's --bind (RW) treatment of the same dirs in mounts.go
 	// StandardSandboxMounts. Emitted even when a dir does not exist on the
@@ -574,7 +579,8 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".cache", "nix")) + ")\n")
 		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".cache", "bun")) + ")\n")
 		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".npm")) + ")\n")
-		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".mcp-auth")) + "))\n")
+		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".mcp-auth")) + ")\n")
+		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".config", "twg")) + "))\n")
 		sb.WriteString("\n")
 	}
 

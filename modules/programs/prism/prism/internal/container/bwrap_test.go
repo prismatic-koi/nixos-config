@@ -1,6 +1,7 @@
 package container
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -103,6 +104,7 @@ func bwrapFixture(t *testing.T, cfg Config) (m *Manager, fakeHome string, cleanu
 	dirs := []string{
 		filepath.Join(fakeHome, ".config", "claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
+		filepath.Join(fakeHome, ".config", "twg"),
 		filepath.Join(fakeHome, ".npm"),
 		filepath.Join(fakeHome, ".cache", "nix"),
 	}
@@ -1920,6 +1922,113 @@ func TestBwrapBuildArgs_MissingMcpAuthOmitted(t *testing.T) {
 
 	if hasBind(args, mcpAuthDir) {
 		t.Errorf("missing ~/.mcp-auth should be omitted but found as --bind in args: %v", redactedArgs(args))
+	}
+}
+
+// TestBwrapBuildArgs_TwgConfigBound pins the RW Dst==Src bind of
+// ~/.config/twg when the host directory exists. twg refreshes its OAuth
+// access token on demand and writes it back, so the bind must be RW. Parity
+// with sandbox-exec's section-5e RW (subpath ~/.config/twg) grant.
+func TestBwrapBuildArgs_TwgConfigBound(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	twgDir := filepath.Join(fakeHome, ".config", "twg")
+	if !hasBind(args, twgDir) {
+		t.Errorf("~/.config/twg %q not found as --bind SRC SRC in args: %v", twgDir, redactedArgs(args))
+	}
+	if hasROBind(args, twgDir) {
+		t.Errorf("~/.config/twg %q must be RW (--bind), not RO (--ro-bind): %v", twgDir, redactedArgs(args))
+	}
+}
+
+// TestBwrapBuildArgs_MissingTwgConfigOmitted pins the conditional-on-existence
+// semantics: bwrap aborts on a missing bind source, so when ~/.config/twg does
+// not exist on the host the argv must not name the path at all. Mirrors
+// TestBwrapBuildArgs_MissingMcpAuthOmitted.
+func TestBwrapBuildArgs_MissingTwgConfigOmitted(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	twgDir := filepath.Join(fakeHome, ".config", "twg")
+	if err := os.RemoveAll(twgDir); err != nil {
+		t.Fatalf("RemoveAll twg config: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasArg(args, twgDir) {
+		t.Errorf("missing ~/.config/twg %q must not be referenced in args (OptionalIfMissing): %v", twgDir, redactedArgs(args))
+	}
+}
+
+// TestBwrapBuildArgs_ConfigDirMountsPinned pins the full set of mount
+// destinations under ~/.config. The fixture creates every host artefact that
+// a mount can name under ~/.config, plus decoys, so a conditional entry
+// cannot hide by being absent. A new entry here exposes host config to
+// every bwrap session: add it to the want set only after a security review.
+func TestBwrapBuildArgs_ConfigDirMountsPinned(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	configDir := filepath.Join(fakeHome, ".config")
+	for _, d := range []string{"prism/agents", "gh", "sops/age"} {
+		if err := os.MkdirAll(filepath.Join(configDir, d), 0o755); err != nil {
+			t.Fatalf("MkdirAll %q: %v", d, err)
+		}
+	}
+	for _, f := range []string{"aws/credentials", "prism/profiles.json", "prism/config.json", "gh/hosts.yml", "sops/age/keys.txt"} {
+		if err := os.WriteFile(filepath.Join(configDir, f), []byte("fake"), 0o600); err != nil {
+			t.Fatalf("WriteFile %q: %v", f, err)
+		}
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	want := map[string]string{
+		"claude":              "--bind",
+		"twg":                 "--bind",
+		"aws/readonly-config": "--ro-bind",
+		"aws/credentials":     "--ro-bind",
+		"kube/agents-config":  "--ro-bind",
+		"prism/agents":        "--ro-bind",
+		"prism/profiles.json": "--ro-bind",
+	}
+	got := map[string]string{}
+	for i := 0; i+2 < len(args); i++ {
+		flag := args[i]
+		if !strings.HasPrefix(flag, "--") || !strings.Contains(flag, "bind") {
+			continue
+		}
+		for _, p := range args[i+1 : i+3] {
+			if p == configDir {
+				t.Errorf("argv mounts ~/.config itself (%s %q): %v", flag, p, redactedArgs(args))
+				continue
+			}
+			if rel, ok := strings.CutPrefix(p, configDir+string(filepath.Separator)); ok {
+				got[rel] = flag
+			}
+		}
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("mounts under ~/.config differ from the pinned set\ngot:  %v\nwant: %v", got, want)
 	}
 }
 

@@ -3,6 +3,7 @@ package container
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1370,7 +1371,7 @@ func TestGenerateProfile_ClaudeConfigDirRWSubpathRule(t *testing.T) {
 
 // TestGenerateProfile_RWRealPathGrants3e verifies that generateProfile emits
 // the section-5e RW grant block on the real host paths for ~/.cache/nix,
-// ~/.cache/bun, ~/.npm, and ~/.mcp-auth. None of the paths is
+// ~/.cache/bun, ~/.npm, ~/.mcp-auth, and ~/.config/twg. None of the paths is
 // sops-backed, so this grant — not the secrets.d allowlist — is the sole
 // in-sandbox capability.
 //
@@ -1380,7 +1381,7 @@ func TestGenerateProfile_ClaudeConfigDirRWSubpathRule(t *testing.T) {
 func TestGenerateProfile_RWRealPathGrants3e(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
-	// Deliberately create NONE of the four dirs — emission is unconditional.
+	// Deliberately create NONE of the five dirs — emission is unconditional.
 
 	m := newSandboxExecManager(Config{SessionName: "repo@3e-grants"})
 	profile := generateProfile(m)
@@ -1389,9 +1390,82 @@ func TestGenerateProfile_RWRealPathGrants3e(t *testing.T) {
 		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, ".cache", "nix")) + ")\n" +
 		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, ".cache", "bun")) + ")\n" +
 		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, ".npm")) + ")\n" +
-		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, ".mcp-auth")) + "))\n"
+		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, ".mcp-auth")) + ")\n" +
+		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, ".config", "twg")) + "))\n"
 	if !strings.Contains(profile, wantBlock) {
 		t.Errorf("profile missing the 3e RW grant block:\n%s\nfull profile:\n%s", wantBlock, profile)
+	}
+}
+
+// TestGenerateProfile_TwgConfigRWGrant verifies that the ~/.config/twg
+// subpath rule sits inside an allow clause that carries both file-read* and
+// file-write*. twg refreshes its OAuth access token on demand and writes it
+// back, so a read-only grant breaks every twg call after 8 hours.
+func TestGenerateProfile_TwgConfigRWGrant(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := newSandboxExecManager(Config{SessionName: "repo@twg-grant"})
+	profile := generateProfile(m)
+
+	rule := "(subpath " + quoteSBPL(filepath.Join(fakeHome, ".config", "twg")) + ")"
+	idx := strings.Index(profile, rule)
+	if idx < 0 {
+		t.Fatalf("profile has no %s rule; full profile:\n%s", rule, profile)
+	}
+	clauseStart := strings.LastIndex(profile[:idx], "\n(")
+	if clauseStart < 0 || !strings.HasPrefix(profile[clauseStart+1:], "(allow ") {
+		t.Fatalf("~/.config/twg subpath rule is not inside an (allow ...) clause; full profile:\n%s", profile)
+	}
+	clause := profile[clauseStart+1 : idx]
+	if !strings.Contains(clause, "file-read*") || !strings.Contains(clause, "file-write*") {
+		t.Errorf("~/.config/twg allow clause must carry file-read* and file-write*; clause: %q", clause)
+	}
+}
+
+// TestGenerateProfile_ConfigDirAllowsPinned pins the full set of paths under
+// ~/.config that an allow clause names. A new path here exposes host config
+// to every sandbox-exec session: add it to the want set only after a security
+// review. A rule on ~/.config itself fails the test. The populated fake home
+// and the config-driven secret paths make sure that a conditional rule cannot
+// hide by being absent.
+func TestGenerateProfile_ConfigDirAllowsPinned(t *testing.T) {
+	fakeHome := newFakeHome(t)
+	configDir := filepath.Join(fakeHome, ".config")
+	secretsDir := filepath.Join(configDir, "sops-nix", "secrets")
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName:       "repo@config-pinned",
+		Worktree:          t.TempDir(),
+		GrafanaConfigPath: filepath.Join(secretsDir, "grafana_config_home"),
+		GitLabTokenPath:   filepath.Join(secretsDir, "gitlab_token"),
+	})
+	profile := generateProfile(m)
+
+	want := map[string]bool{
+		"claude":              true,
+		"twg":                 true,
+		"prism/agents":        true,
+		"prism/profiles.json": true,
+	}
+	got := map[string]bool{}
+	// Each top-level clause starts with "(" at the start of a line.
+	for _, clause := range strings.Split(profile, "\n(") {
+		if !strings.HasPrefix(clause, "allow ") {
+			continue
+		}
+		for _, field := range strings.Split(clause, `"`) {
+			if field == configDir {
+				t.Errorf("an allow clause names ~/.config itself; clause: %q", clause)
+				continue
+			}
+			if rel, ok := strings.CutPrefix(field, configDir+string(filepath.Separator)); ok {
+				got[rel] = true
+			}
+		}
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("allow rules under ~/.config differ from the pinned set\ngot:  %v\nwant: %v", got, want)
 	}
 }
 
@@ -1548,6 +1622,7 @@ func TestPrepareSandboxExec_MinimalHomeNoOptionalDirs(t *testing.T) {
 	profile := string(profileBytes)
 	for _, want := range []string{
 		"(subpath " + quoteSBPL(filepath.Join(fakeHome, ".mcp-auth")) + ")",
+		"(subpath " + quoteSBPL(filepath.Join(fakeHome, ".config", "twg")) + ")",
 		"(subpath " + quoteSBPL(filepath.Join(fakeHome, ".npm")) + ")",
 		"(subpath " + quoteSBPL(filepath.Join(fakeHome, ".config", "prism", "agents")) + ")",
 		"(literal " + quoteSBPL(filepath.Join(fakeHome, ".nix-profile")) + ")",
