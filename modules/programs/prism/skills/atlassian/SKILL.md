@@ -293,8 +293,8 @@ compact enough to fit in context.
 
 The Atlassian Teamwork Graph CLI, `twg`, is on `PATH` on a host that sets
 `nx.programs.twg.enable = true`. The MCP tools above stay the primary
-surface. Use them for Jira and Confluence work, unless your task tells you
-to use `twg`.
+surface. Unless your task tells you to use `twg`, use the MCP tools for
+Jira and Confluence work.
 
 ### Login is host-only
 
@@ -321,11 +321,10 @@ Tell the user to run `twg login` in a host terminal.
 The host shell and prism agents get these variables:
 
 - `TWG_SECRET_STORE=file` keeps the credentials in the plain-file store.
-  Do not change it to `keychain`. A sandboxed agent cannot reach the macOS
-  Keychain.
+  Do not change it to `keychain`. The owner does not want Keychain storage.
 - `DO_NOT_TRACK=1` stops the runtime telemetry of `twg`.
 - `TWG_BACKGROUND_UPDATE_CHECK=false` stops the background update notifier.
 
 The bwrap and sandbox-exec sandboxes give read-write access to
-`~/.config/twg`. `twg` writes to that directory when it refreshes the
-8-hour access token.
+`~/.config/twg`. `twg` writes `install.json` in that directory on each run.
+It also writes there when it refreshes the 8-hour access token.

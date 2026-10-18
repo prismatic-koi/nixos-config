@@ -22,8 +22,7 @@
         default = {
           # Keeps credentials in the plain-file store under ~/.config/twg.
           # The other value, "keychain", puts the root key in the macOS
-          # Keychain. The owner does not want that, and a sandboxed agent
-          # cannot reach the Keychain.
+          # Keychain. The owner does not want Keychain storage.
           TWG_SECRET_STORE = "file";
           # twg reads exactly "1" as the switch that stops runtime telemetry.
           DO_NOT_TRACK = "1";

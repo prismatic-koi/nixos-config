@@ -1399,8 +1399,8 @@ func TestGenerateProfile_RWRealPathGrants3e(t *testing.T) {
 
 // TestGenerateProfile_TwgConfigRWGrant verifies that the ~/.config/twg
 // subpath rule sits inside an allow clause that carries both file-read* and
-// file-write*. twg refreshes its OAuth access token on demand and writes it
-// back, so a read-only grant breaks every twg call after 8 hours.
+// file-write*. twg writes install.json on each run and writes back its OAuth
+// access token when it refreshes it, so a read-only grant breaks twg.
 func TestGenerateProfile_TwgConfigRWGrant(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)

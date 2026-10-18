@@ -163,8 +163,9 @@
           )
           //
             # twg variables (issue #3195). They live in agent.envVars for the
-            # same reason NOTION_MCP_REPOS does: only agent.envVars is applied
-            # by all three isolators (bwrap starts with --clearenv).
+            # same reason NOTION_MCP_REPOS does: agent.envVars is the only
+            # channel that all three isolators apply (bwrap starts with
+            # --clearenv).
             # modules/programs/twg.nix holds the values, so the host shell
             # and the agents cannot differ.
             lib.optionalAttrs config.nx.programs.twg.enable config.nx.programs.twg.envVars;

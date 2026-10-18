@@ -213,7 +213,8 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 
 		// ── ~/.config/twg (RW, conditional) ──────────────────────────────
 		// twg CLI OAuth credentials (auth-profiles.json). RW because twg
-		// refreshes the 8-hour access token on demand and writes it back.
+		// writes install.json on each run, and writes back the 8-hour
+		// access token when it refreshes it.
 		// Mounted only when the directory exists on the host — hosts
 		// without nx.programs.twg.enable are unaffected.
 		//

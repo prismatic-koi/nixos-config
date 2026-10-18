@@ -565,8 +565,9 @@ func generateProfile(m *Manager) string {
 	// paths is sops-backed — the allowlist plays no part; these grants
 	// are the sole capability.
 	//
-	// ~/.config/twg holds the twg CLI OAuth credentials. twg refreshes the
-	// access token on demand, so the grant is RW. Grant the leaf only, never
+	// ~/.config/twg holds the twg CLI OAuth credentials. twg writes
+	// install.json on each run and writes back the access token when it
+	// refreshes it, so the grant is RW. Grant the leaf only, never
 	// (subpath ~/.config): a wider grant exposes host config and secrets.
 	//
 	// Mirrors bwrap's --bind (RW) treatment of the same dirs in mounts.go
