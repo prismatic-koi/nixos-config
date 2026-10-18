@@ -2109,7 +2109,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// The child's context must outlive this request: after the
 		// acknowledgement the handler returns while the child is still being
 		// reaped in the background.
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), reviewExecTimeout)
+		ctx, cancel := reviewExecContext(context.WithoutCancel(r.Context()))
 		defer func() {
 			if !handedOff {
 				cancel()
@@ -4364,6 +4364,13 @@ var hostAPILoadProfiles = config.LoadProfiles
 // reviewExecTimeout bounds the host `prism review` child. It is a variable so
 // a test can shorten it.
 var reviewExecTimeout = 30 * time.Second
+
+// reviewExecContext returns the context that bounds the host `prism review`
+// child: reviewExecTimeout from now. It is a variable so a test can expire
+// the deadline at a chosen point in the child's output.
+var reviewExecContext = func(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, reviewExecTimeout)
+}
 
 // reviewAckPrefix starts the first line `prism review` prints after RunAsync
 // registered the round.
