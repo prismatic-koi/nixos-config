@@ -27,7 +27,7 @@ func (s *Sidecar) containerDeps() prismcontainer.Deps {
 func (s *Sidecar) containerCaller() prismcontainer.Caller {
 	return prismcontainer.Caller{
 		SessionName:      s.cfg.SessionName,
-		InstanceID:       s.cfg.InstanceID,
+		InstanceID:       s.instanceID(),
 		Worktree:         s.cfg.Worktree,
 		WorktreeReadOnly: s.cfg.WorktreeReadOnly,
 	}

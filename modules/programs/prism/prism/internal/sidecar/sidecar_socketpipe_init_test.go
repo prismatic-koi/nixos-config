@@ -107,8 +107,8 @@ func TestSocketPipeInit_CoordinatorInstanceIDAndWatcher(t *testing.T) {
 	}
 
 	// Assert instance_id is populated.
+	instanceID := sc.instanceID()
 	sc.mu.Lock()
-	instanceID := sc.cfg.InstanceID
 	watcherCancel := sc.mergeWatcherCancel
 	sc.mu.Unlock()
 
@@ -159,8 +159,8 @@ func TestSocketPipeInit_WorkerInstanceIDNoWatcher(t *testing.T) {
 	}
 
 	// Assert instance_id is populated.
+	instanceID := sc.instanceID()
 	sc.mu.Lock()
-	instanceID := sc.cfg.InstanceID
 	watcherCancel := sc.mergeWatcherCancel
 	sc.mu.Unlock()
 

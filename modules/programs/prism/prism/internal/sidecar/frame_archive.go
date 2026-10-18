@@ -63,10 +63,7 @@ func (s *Sidecar) archiveFrame(direction string, payload []byte) {
 	_ = json.Unmarshal(payload, &typeOnly)
 
 	var instanceIDPtr *string
-	if s.cfg.InstanceID != "" {
-		// Take a copy so callers mutating cfg.InstanceID later cannot
-		// retroactively change persisted frames.
-		iid := s.cfg.InstanceID
+	if iid := s.instanceID(); iid != "" {
 		instanceIDPtr = &iid
 	}
 

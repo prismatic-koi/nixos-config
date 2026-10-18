@@ -2109,7 +2109,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// The child's context must outlive this request: after the
 		// acknowledgement the handler returns while the child is still being
 		// reaped in the background.
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), reviewExecTimeout)
+		ctx, cancel := reviewExecContext(context.WithoutCancel(r.Context()))
 		defer func() {
 			if !handedOff {
 				cancel()
@@ -2611,7 +2611,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, http.StatusBadRequest, "pr is required and must be a positive integer")
 			return
 		}
-		if s.cfg.InstanceID == "" {
+		instanceID := s.instanceID()
+		if instanceID == "" {
 			s.logger().Printf("sidecar: host-API /merge: no instance_id — sidecar startup did not run correctly")
 			writeError(w, http.StatusInternalServerError,
 				"sidecar has no instance_id — sidecar startup did not run")
@@ -2624,7 +2625,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// keyed on (repo, pr) so PR numbers can safely collide across repos
 		// sharing one prism.db. This is the architectural reason for routing
 		// through the sidecar at all.
-		row, err := s.cfg.DB.EnqueueMerge(req.PR, s.cfg.Repo, s.cfg.SessionName, s.cfg.InstanceID, req.Title)
+		row, err := s.cfg.DB.EnqueueMerge(req.PR, s.cfg.Repo, s.cfg.SessionName, instanceID, req.Title)
 		if err != nil {
 			s.logger().Printf("sidecar: host-API /merge: EnqueueMerge: %v", err)
 			writeError(w, http.StatusInternalServerError, "enqueue merge: "+err.Error())
@@ -2650,7 +2651,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if !requireCoordinator(w, "merges") {
 			return
 		}
-		if s.cfg.InstanceID == "" {
+		instanceID := s.instanceID()
+		if instanceID == "" {
 			s.logger().Printf("sidecar: host-API /merges: no instance_id — sidecar startup did not run correctly")
 			writeError(w, http.StatusInternalServerError,
 				"sidecar has no instance_id — sidecar startup did not run")
@@ -2658,7 +2660,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		filter := r.URL.Query().Get("filter")
-		merges, err := s.cfg.DB.MergeQueueForInstance(s.cfg.InstanceID, s.cfg.SessionName, filter)
+		merges, err := s.cfg.DB.MergeQueueForInstance(instanceID, s.cfg.SessionName, filter)
 		if err != nil {
 			s.logger().Printf("sidecar: host-API /merges: MergeQueueForInstance: %v", err)
 			writeError(w, http.StatusInternalServerError, "list merges: "+err.Error())
@@ -2698,7 +2700,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, http.StatusBadRequest, "pr is required and must be a positive integer")
 			return
 		}
-		if s.cfg.InstanceID == "" {
+		instanceID := s.instanceID()
+		if instanceID == "" {
 			s.logger().Printf("sidecar: host-API /merges/cancel: no instance_id — sidecar startup did not run correctly")
 			writeError(w, http.StatusInternalServerError,
 				"sidecar has no instance_id — sidecar startup did not run")
@@ -2709,7 +2712,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// same-numbered row belonging to another repo sharing this prism.db.
 		// The instance_id filter continues to prevent one
 		// coordinator incarnation from cancelling another's rows.
-		cancelled, err := s.cfg.DB.CancelMerge(req.PR, s.cfg.Repo, s.cfg.InstanceID)
+		cancelled, err := s.cfg.DB.CancelMerge(req.PR, s.cfg.Repo, instanceID)
 		if err != nil {
 			s.logger().Printf("sidecar: host-API /merges/cancel: CancelMerge: %v", err)
 			writeError(w, http.StatusInternalServerError, "cancel merge: "+err.Error())
@@ -4361,6 +4364,13 @@ var hostAPILoadProfiles = config.LoadProfiles
 // reviewExecTimeout bounds the host `prism review` child. It is a variable so
 // a test can shorten it.
 var reviewExecTimeout = 30 * time.Second
+
+// reviewExecContext returns the context that bounds the host `prism review`
+// child: reviewExecTimeout from now. It is a variable so a test can expire
+// the deadline at a chosen point in the child's output.
+var reviewExecContext = func(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, reviewExecTimeout)
+}
 
 // reviewAckPrefix starts the first line `prism review` prints after RunAsync
 // registered the round.
