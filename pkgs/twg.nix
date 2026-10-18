@@ -7,7 +7,8 @@
 
 let
   version = "1.3.6";
-  # Hashes from SHA256SUMS-v1.3.6 at the base URL.
+  # SRI form of the hashes in
+  # https://teamwork-graph.atlassian.com/cli/SHA256SUMS-v1.3.6
   sources = {
     aarch64-darwin = {
       platform = "darwin-arm64";
