@@ -603,6 +603,125 @@ func TestBwrapBuildArgs_BunCacheDirAbsentNoBind(t *testing.T) {
 	}
 }
 
+// TestBwrapBuildArgs_TwgCacheDirBound pins the RW Dst==Src bind of
+// ~/.cache/twg when the host directory exists. twg writes its help index
+// there, so the bind must be RW. Parity with sandbox-exec's section-5e RW
+// (subpath ~/.cache/twg) grant.
+func TestBwrapBuildArgs_TwgCacheDirBound(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	// The fixture does not pre-create ~/.cache/twg — create it so the
+	// conditional mount fires.
+	twgCacheDir := filepath.Join(fakeHome, ".cache", "twg")
+	if err := os.MkdirAll(twgCacheDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll ~/.cache/twg: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasBind(args, twgCacheDir) {
+		t.Errorf("~/.cache/twg %q not found as --bind SRC SRC in args: %v", twgCacheDir, redactedArgs(args))
+	}
+	if hasROBind(args, twgCacheDir) {
+		t.Errorf("~/.cache/twg %q must be RW (--bind), not RO (--ro-bind): %v", twgCacheDir, redactedArgs(args))
+	}
+}
+
+// TestBwrapBuildArgs_TwgCacheDirAbsentNoBind pins the conditional half: bwrap
+// aborts on a missing bind source, so when ~/.cache/twg does not exist on the
+// host the argv must not name the path at all.
+func TestBwrapBuildArgs_TwgCacheDirAbsentNoBind(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	twgCacheDir := filepath.Join(fakeHome, ".cache", "twg")
+	if _, err := os.Stat(twgCacheDir); err == nil {
+		t.Fatalf("fixture unexpectedly created ~/.cache/twg — update this test")
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasArg(args, twgCacheDir) {
+		t.Errorf("missing ~/.cache/twg %q must not be referenced in args (OptionalIfMissing): %v", twgCacheDir, redactedArgs(args))
+	}
+}
+
+// TestBwrapBuildArgs_CacheAndLibraryMountsPinned pins the full set of mount
+// sources and destinations under ~/.cache and ~/Library. The fixture creates
+// every host directory that a mount can name there, plus decoys, so a
+// conditional entry cannot hide by being absent. A new entry here exposes
+// host cache data to every bwrap session: add it to the want set only after
+// a security review.
+func TestBwrapBuildArgs_CacheAndLibraryMountsPinned(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	_, goBuildCache := goCacheLinuxLeaves(fakeHome)
+	for _, d := range []string{
+		filepath.Join(fakeHome, ".cache", "bun"),
+		filepath.Join(fakeHome, ".cache", "twg"),
+		filepath.Join(fakeHome, ".cache", "prism", "clipboard"),
+		goBuildCache,
+		filepath.Join(fakeHome, ".cache", "pi"),
+		filepath.Join(fakeHome, ".cache", "decoy"),
+		filepath.Join(fakeHome, "Library", "Caches", "twg"),
+		filepath.Join(fakeHome, "Library", "Caches", "go-build"),
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("MkdirAll %q: %v", d, err)
+		}
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	want := map[string]string{
+		".cache/nix":             "--bind",
+		".cache/bun":             "--bind",
+		".cache/twg":             "--bind",
+		".cache/go-build":        "--bind",
+		".cache/prism/clipboard": "--ro-bind",
+	}
+	got := map[string]string{}
+	for i := 0; i+2 < len(args); i++ {
+		flag := args[i]
+		if !strings.HasPrefix(flag, "--") || !strings.Contains(flag, "bind") {
+			continue
+		}
+		for _, p := range args[i+1 : i+3] {
+			rel, ok := strings.CutPrefix(p, fakeHome+string(filepath.Separator))
+			if !ok {
+				continue
+			}
+			if rel == ".cache" || rel == "Library" || rel == filepath.Join("Library", "Caches") {
+				t.Errorf("argv mounts the parent dir %s (%s %q): %v", rel, flag, p, redactedArgs(args))
+				continue
+			}
+			if strings.HasPrefix(rel, ".cache/") || strings.HasPrefix(rel, "Library/") {
+				got[filepath.ToSlash(rel)] = flag
+			}
+		}
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("mounts under ~/.cache and ~/Library differ from the pinned set\ngot:  %v\nwant: %v", got, want)
+	}
+}
+
 // TestBwrapBuildArgs_PrismProfilesJSONROBound pins the
 // ~/.config/prism/profiles.json single-file RO mount. The CLI's
 // `prism profile list` / `prism profile show` and the available_profiles

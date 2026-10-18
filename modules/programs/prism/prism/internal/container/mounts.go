@@ -277,6 +277,24 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 			OptionalIfMissing: true,
 		},
 
+		// ── ~/.cache/twg (RW, conditional) ──────────────────────────────
+		// twg CLI cache (help index, last-error.json), reached via the
+		// TWG_CACHE_DIR env var that modules/programs/twg.nix sets. RW
+		// because twg writes the help index on its first call. Dst==Src,
+		// skipped when absent.
+		//
+		// LEAF ONLY. Bind ~/.cache/twg itself, never ~/.cache: a wider
+		// bind exposes the whole host cache tree.
+		//
+		// sandbox-exec does not walk this slice (see the package comment):
+		// there generateProfile emits an explicit RW (subpath ~/.cache/twg)
+		// grant on the real host path (section 5e).
+		{
+			HostPath:          filepath.Join(hostHome, ".cache", "twg"),
+			SandboxPath:       filepath.Join(sandboxHomeDir, ".cache", "twg"),
+			OptionalIfMissing: true,
+		},
+
 		// ── AWS readonly-config (RO, EvalSymlinks, Dst==Src at XDG path) ─
 		// The aws CLI resolves its config and shared-credentials files via
 		// the AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars at the

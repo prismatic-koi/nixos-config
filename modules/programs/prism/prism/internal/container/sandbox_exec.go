@@ -204,8 +204,8 @@ func ensureGoCacheDirs() {
 //   - Literal RO grant for the real ~/.ssh/known_hosts — never (subpath ~/.ssh)
 //   - RW subpath grant for ~/.config/claude — claude-code's config dir,
 //     reached via the CLAUDE_CONFIG_DIR env var
-//   - RW subpath grants for ~/.cache/nix, ~/.cache/bun, ~/.npm, ~/.mcp-auth,
-//     ~/.config/twg
+//   - RW subpath grants for ~/.cache/nix, ~/.cache/bun, ~/.cache/twg, ~/.npm,
+//     ~/.mcp-auth, ~/.config/twg
 //   - RO subpath grants for ~/.cache/prism/clipboard and
 //     ~/.config/prism/agents, plus an RO grant for the ~/.nix-profile
 //     symlink and its resolved target
@@ -559,11 +559,16 @@ func generateProfile(m *Manager) string {
 
 	// ── 5e. RW cache/auth dir grants at the real host paths ─
 	// Explicit RW subpath grants on the real host paths
-	// for ~/.cache/nix, ~/.cache/bun, ~/.npm, ~/.mcp-auth, and ~/.config/twg.
-	// The consumers derive the paths from $HOME / XDG_CACHE_HOME, which point
-	// at the real host paths, so these grants are load-bearing. None of these
-	// paths is sops-backed — the allowlist plays no part; these grants
-	// are the sole capability.
+	// for ~/.cache/nix, ~/.cache/bun, ~/.cache/twg, ~/.npm, ~/.mcp-auth, and
+	// ~/.config/twg. The consumers derive the paths from $HOME /
+	// XDG_CACHE_HOME / TWG_CACHE_DIR, which point at the real host paths, so
+	// these grants are load-bearing. None of these paths is sops-backed — the
+	// allowlist plays no part; these grants are the sole capability.
+	//
+	// ~/.cache/twg holds the twg CLI help index and last-error.json, reached
+	// via TWG_CACHE_DIR (modules/programs/twg.nix). Grant the leaf only,
+	// never (subpath ~/.cache) and never the macOS default
+	// ~/Library/Caches/twg: a wider grant exposes the host cache tree.
 	//
 	// ~/.config/twg holds the twg CLI OAuth credentials. twg writes
 	// install.json on each run and writes back the access token when it
@@ -579,6 +584,7 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
 		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".cache", "nix")) + ")\n")
 		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".cache", "bun")) + ")\n")
+		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".cache", "twg")) + ")\n")
 		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".npm")) + ")\n")
 		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".mcp-auth")) + ")\n")
 		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".config", "twg")) + "))\n")
