@@ -1088,9 +1088,9 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 				// This only acts on completed bash invocations (the surrounding
 				// `status == "completed"` guard rules out errored runs whose
 				// output contains the gh error text rather than a URL).
-				if isGhPRCreateCommand(cmd) && s.cfg.DB != nil && s.cfg.InstanceID != "" {
+				if iid := s.instanceID(); isGhPRCreateCommand(cmd) && s.cfg.DB != nil && iid != "" {
 					if prNum, ok := extractPRNumberFromGhOutput(fmt.Sprintf("%v", part.State.Output)); ok {
-						if err := s.cfg.DB.UpdateSpawnOutcomePR(s.cfg.InstanceID, prNum); err != nil {
+						if err := s.cfg.DB.UpdateSpawnOutcomePR(iid, prNum); err != nil {
 							s.logger().Printf("sidecar: UpdateSpawnOutcomePR(pr=%d): %v", prNum, err)
 						} else {
 							s.logger().Printf("sidecar: captured pr_number=%d from gh pr create output", prNum)
@@ -1156,7 +1156,8 @@ func (s *Sidecar) notePRCreateToolCall(line []byte) {
 //
 // Caller holds s.mu (handlePipeFrame).
 func (s *Sidecar) capturePRNumberFromToolResult(line []byte) {
-	if s.prCreateToolCallID == "" || s.cfg.DB == nil || s.cfg.InstanceID == "" {
+	iid := s.instanceID()
+	if s.prCreateToolCallID == "" || s.cfg.DB == nil || iid == "" {
 		return
 	}
 	var frame struct {
@@ -1175,7 +1176,7 @@ func (s *Sidecar) capturePRNumberFromToolResult(line []byte) {
 	if !ok {
 		return
 	}
-	if err := s.cfg.DB.UpdateSpawnOutcomePR(s.cfg.InstanceID, prNum); err != nil {
+	if err := s.cfg.DB.UpdateSpawnOutcomePR(iid, prNum); err != nil {
 		s.logger().Printf("sidecar: UpdateSpawnOutcomePR(pr=%d): %v", prNum, err)
 		return
 	}

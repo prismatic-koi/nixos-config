@@ -1,13 +1,42 @@
 package sidecar
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
+
+// expirableDeadline is a context whose deadline expires when expire is
+// called, not at a wall-clock time. Err reports context.DeadlineExceeded, the
+// same as a real deadline.
+type expirableDeadline struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newExpirableDeadline(parent context.Context) *expirableDeadline {
+	return &expirableDeadline{Context: parent, done: make(chan struct{})}
+}
+
+func (c *expirableDeadline) Done() <-chan struct{} { return c.done }
+
+func (c *expirableDeadline) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func (c *expirableDeadline) expire() { c.once.Do(func() { close(c.done) }) }
 
 func runReviewWithStub(t *testing.T, script string) string {
 	t.Helper()
@@ -39,8 +68,57 @@ func runReviewWithStub(t *testing.T, script string) string {
 
 // A child killed by the exec deadline after it printed the acknowledgement
 // has registered the round, so the response must report success.
+//
+// The order of events does not depend on the scheduler. The stub opens a
+// FIFO after it prints the acknowledgement, and the deadline expires only
+// when that open completes. The drain grace is longer than the test, so the
+// response ends when the killed child closes its output, and the handler
+// must decide from the deadline result.
 func TestHostAPI_Review_DeadlineAfterAckIsStarted(t *testing.T) {
-	body := runReviewWithStub(t, "#!/bin/sh\necho 'Review in progress — PR #1, round 1 (group: g)'\nexec sleep 5\n")
+	ackFIFO := filepath.Join(t.TempDir(), "ack-printed")
+	if err := syscall.Mkfifo(ackFIFO, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	t.Setenv("PRISM_TEST_REVIEW_ACK_FIFO", ackFIFO)
+
+	oldGrace := reviewAckDrainGrace
+	reviewAckDrainGrace = time.Hour
+	t.Cleanup(func() { reviewAckDrainGrace = oldGrace })
+
+	ackPrinted := make(chan struct{})
+	oldExecContext := reviewExecContext
+	reviewExecContext = func(parent context.Context) (context.Context, context.CancelFunc) {
+		ctx := newExpirableDeadline(parent)
+		go func() {
+			defer ctx.expire()
+			// Open blocks until the stub opens the FIFO to write.
+			f, err := os.Open(ackFIFO)
+			if err != nil {
+				return
+			}
+			_ = f.Close()
+			close(ackPrinted)
+		}()
+		return ctx, ctx.expire
+	}
+	t.Cleanup(func() {
+		reviewExecContext = oldExecContext
+		// Release the reader goroutine if the stub never opened the FIFO.
+		if f, err := os.OpenFile(ackFIFO, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			_ = f.Close()
+		}
+	})
+
+	body := runReviewWithStub(t, "#!/bin/sh\n"+
+		"echo 'Review in progress — PR #1, round 1 (group: g)'\n"+
+		": > \"$PRISM_TEST_REVIEW_ACK_FIFO\" || exit 1\n"+
+		"exec sleep 60\n")
+
+	select {
+	case <-ackPrinted:
+	default:
+		t.Fatalf("the stub did not open the FIFO, so the deadline did not expire after the acknowledgement; body = %q", body)
+	}
 	if !strings.Contains(body, ReviewSentinelPassed) || strings.Contains(body, ReviewSentinelFailed) {
 		t.Errorf("want passed sentinel only; body = %q", body)
 	}

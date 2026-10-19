@@ -1,6 +1,7 @@
 package container
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -103,6 +104,7 @@ func bwrapFixture(t *testing.T, cfg Config) (m *Manager, fakeHome string, cleanu
 	dirs := []string{
 		filepath.Join(fakeHome, ".config", "claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
+		filepath.Join(fakeHome, ".config", "twg"),
 		filepath.Join(fakeHome, ".npm"),
 		filepath.Join(fakeHome, ".cache", "nix"),
 	}
@@ -598,6 +600,125 @@ func TestBwrapBuildArgs_BunCacheDirAbsentNoBind(t *testing.T) {
 	}
 	if hasROBind(args, bunCacheDir) {
 		t.Errorf("missing ~/.cache/bun should be omitted but found as --ro-bind in args: %v", redactedArgs(args))
+	}
+}
+
+// TestBwrapBuildArgs_TwgCacheDirBound pins the RW Dst==Src bind of
+// ~/.cache/twg when the host directory exists. twg writes its help index
+// there, so the bind must be RW. Parity with sandbox-exec's section-5e RW
+// (subpath ~/.cache/twg) grant.
+func TestBwrapBuildArgs_TwgCacheDirBound(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	// The fixture does not pre-create ~/.cache/twg — create it so the
+	// conditional mount fires.
+	twgCacheDir := filepath.Join(fakeHome, ".cache", "twg")
+	if err := os.MkdirAll(twgCacheDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll ~/.cache/twg: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasBind(args, twgCacheDir) {
+		t.Errorf("~/.cache/twg %q not found as --bind SRC SRC in args: %v", twgCacheDir, redactedArgs(args))
+	}
+	if hasROBind(args, twgCacheDir) {
+		t.Errorf("~/.cache/twg %q must be RW (--bind), not RO (--ro-bind): %v", twgCacheDir, redactedArgs(args))
+	}
+}
+
+// TestBwrapBuildArgs_TwgCacheDirAbsentNoBind pins the conditional half: bwrap
+// aborts on a missing bind source, so when ~/.cache/twg does not exist on the
+// host the argv must not name the path at all.
+func TestBwrapBuildArgs_TwgCacheDirAbsentNoBind(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	twgCacheDir := filepath.Join(fakeHome, ".cache", "twg")
+	if _, err := os.Stat(twgCacheDir); err == nil {
+		t.Fatalf("fixture unexpectedly created ~/.cache/twg — update this test")
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasArg(args, twgCacheDir) {
+		t.Errorf("missing ~/.cache/twg %q must not be referenced in args (OptionalIfMissing): %v", twgCacheDir, redactedArgs(args))
+	}
+}
+
+// TestBwrapBuildArgs_CacheAndLibraryMountsPinned pins the full set of mount
+// sources and destinations under ~/.cache and ~/Library. The fixture creates
+// every host directory that a mount can name there, plus decoys, so a
+// conditional entry cannot hide by being absent. A new entry here exposes
+// host cache data to every bwrap session: add it to the want set only after
+// a security review.
+func TestBwrapBuildArgs_CacheAndLibraryMountsPinned(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	_, goBuildCache := goCacheLinuxLeaves(fakeHome)
+	for _, d := range []string{
+		filepath.Join(fakeHome, ".cache", "bun"),
+		filepath.Join(fakeHome, ".cache", "twg"),
+		filepath.Join(fakeHome, ".cache", "prism", "clipboard"),
+		goBuildCache,
+		filepath.Join(fakeHome, ".cache", "pi"),
+		filepath.Join(fakeHome, ".cache", "decoy"),
+		filepath.Join(fakeHome, "Library", "Caches", "twg"),
+		filepath.Join(fakeHome, "Library", "Caches", "go-build"),
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("MkdirAll %q: %v", d, err)
+		}
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	want := map[string]string{
+		".cache/nix":             "--bind",
+		".cache/bun":             "--bind",
+		".cache/twg":             "--bind",
+		".cache/go-build":        "--bind",
+		".cache/prism/clipboard": "--ro-bind",
+	}
+	got := map[string]string{}
+	for i := 0; i+2 < len(args); i++ {
+		flag := args[i]
+		if !strings.HasPrefix(flag, "--") || !strings.Contains(flag, "bind") {
+			continue
+		}
+		for _, p := range args[i+1 : i+3] {
+			rel, ok := strings.CutPrefix(p, fakeHome+string(filepath.Separator))
+			if !ok {
+				continue
+			}
+			if rel == ".cache" || rel == "Library" || rel == filepath.Join("Library", "Caches") {
+				t.Errorf("argv mounts the parent dir %s (%s %q): %v", rel, flag, p, redactedArgs(args))
+				continue
+			}
+			if strings.HasPrefix(rel, ".cache/") || strings.HasPrefix(rel, "Library/") {
+				got[filepath.ToSlash(rel)] = flag
+			}
+		}
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("mounts under ~/.cache and ~/Library differ from the pinned set\ngot:  %v\nwant: %v", got, want)
 	}
 }
 
@@ -1920,6 +2041,158 @@ func TestBwrapBuildArgs_MissingMcpAuthOmitted(t *testing.T) {
 
 	if hasBind(args, mcpAuthDir) {
 		t.Errorf("missing ~/.mcp-auth should be omitted but found as --bind in args: %v", redactedArgs(args))
+	}
+}
+
+// TestBwrapBuildArgs_TwgConfigBound pins the RW Dst==Src bind of
+// ~/.config/twg when the host directory exists. twg writes install.json on
+// each run and writes back its OAuth access token when it refreshes it, so
+// the bind must be RW. Parity with sandbox-exec's section-5e RW
+// (subpath ~/.config/twg) grant.
+func TestBwrapBuildArgs_TwgConfigBound(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	twgDir := filepath.Join(fakeHome, ".config", "twg")
+	if !hasBind(args, twgDir) {
+		t.Errorf("~/.config/twg %q not found as --bind SRC SRC in args: %v", twgDir, redactedArgs(args))
+	}
+	if hasROBind(args, twgDir) {
+		t.Errorf("~/.config/twg %q must be RW (--bind), not RO (--ro-bind): %v", twgDir, redactedArgs(args))
+	}
+}
+
+// TestBwrapBuildArgs_MissingTwgConfigOmitted pins the conditional-on-existence
+// semantics: bwrap aborts on a missing bind source, so when ~/.config/twg does
+// not exist on the host the argv must not name the path at all. Mirrors
+// TestBwrapBuildArgs_MissingMcpAuthOmitted.
+func TestBwrapBuildArgs_MissingTwgConfigOmitted(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	twgDir := filepath.Join(fakeHome, ".config", "twg")
+	if err := os.RemoveAll(twgDir); err != nil {
+		t.Fatalf("RemoveAll twg config: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasArg(args, twgDir) {
+		t.Errorf("missing ~/.config/twg %q must not be referenced in args (OptionalIfMissing): %v", twgDir, redactedArgs(args))
+	}
+}
+
+// TestBwrapBuildArgs_ConfigDirMountsPinned pins the full set of mount
+// sources and destinations under ~/.config, for the default branch and for
+// the pi harness branch of BuildArgs. The fixture creates every host artefact
+// that a mount can name under ~/.config, plus decoys, so a conditional entry
+// cannot hide by being absent. A new entry here exposes host config to
+// every bwrap session: add it to the want set only after a security review.
+func TestBwrapBuildArgs_ConfigDirMountsPinned(t *testing.T) {
+	base := map[string]string{
+		"claude":              "--bind",
+		"twg":                 "--bind",
+		"aws/readonly-config": "--ro-bind",
+		"aws/credentials":     "--ro-bind",
+		"kube/agents-config":  "--ro-bind",
+		"prism/agents":        "--ro-bind",
+		"prism/profiles.json": "--ro-bind",
+	}
+	withPI := maps.Clone(base)
+	withPI["prism/pi-agent"] = "--bind"
+	withPI["prism/pi-extensions"] = "--ro-bind"
+
+	cases := []struct {
+		name string
+		pi   bool
+		want map[string]string
+	}{
+		{name: "default", want: base},
+		{name: "pi-harness", pi: true, want: withPI},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{
+				SessionName:   "repo@main",
+				Worktree:      t.TempDir(),
+				AllocatedPort: 14010,
+			}
+			if tc.pi {
+				piBin := filepath.Join(t.TempDir(), "pi")
+				if err := os.WriteFile(piBin, []byte("#!/bin/sh"), 0o755); err != nil {
+					t.Fatalf("write fake pi binary: %v", err)
+				}
+				extDir := t.TempDir()
+				if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
+					t.Fatalf("write pi extension: %v", err)
+				}
+				cfg.Harness = "pi"
+				cfg.PIBinaryPath = piBin
+				cfg.PIExtensionHostDir = extDir
+				// PIExtensionSandboxDir and PIAgentConfigSandboxDir stay
+				// empty, so BuildArgs uses its production defaults under
+				// ~/.config/prism.
+			}
+			m, fakeHome, cleanup := bwrapFixture(t, cfg)
+			defer cleanup()
+			if tc.pi {
+				agentDir := filepath.Join(fakeHome, ".pi", "agent")
+				if err := os.MkdirAll(agentDir, 0o700); err != nil {
+					t.Fatalf("MkdirAll %q: %v", agentDir, err)
+				}
+				m.cfg.PIAgentConfigHostDir = agentDir
+			}
+
+			configDir := filepath.Join(fakeHome, ".config")
+			for _, d := range []string{"prism/agents", "gh", "sops/age"} {
+				if err := os.MkdirAll(filepath.Join(configDir, d), 0o755); err != nil {
+					t.Fatalf("MkdirAll %q: %v", d, err)
+				}
+			}
+			for _, f := range []string{"aws/credentials", "prism/profiles.json", "prism/config.json", "gh/hosts.yml", "sops/age/keys.txt"} {
+				if err := os.WriteFile(filepath.Join(configDir, f), []byte("fake"), 0o600); err != nil {
+					t.Fatalf("WriteFile %q: %v", f, err)
+				}
+			}
+
+			b := &bwrapIsolator{name: m.name}
+			args := b.BuildArgs(m)
+			if m.piBwrapErr != nil {
+				t.Fatalf("BuildArgs pi mounts: %v", m.piBwrapErr)
+			}
+
+			got := map[string]string{}
+			for i := 0; i+2 < len(args); i++ {
+				flag := args[i]
+				if !strings.HasPrefix(flag, "--") || !strings.Contains(flag, "bind") {
+					continue
+				}
+				for _, p := range args[i+1 : i+3] {
+					if p == configDir {
+						t.Errorf("argv mounts ~/.config itself (%s %q): %v", flag, p, redactedArgs(args))
+						continue
+					}
+					if rel, ok := strings.CutPrefix(p, configDir+string(filepath.Separator)); ok {
+						got[rel] = flag
+					}
+				}
+			}
+			if !maps.Equal(got, tc.want) {
+				t.Errorf("mounts under ~/.config differ from the pinned set\ngot:  %v\nwant: %v", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -218,6 +218,8 @@ type Config struct {
 	// tmux-session-start event handler. When non-empty it is written as
 	// to_instance_id on bus messages addressed to the coordinator, so that the
 	// coordinator only receives messages intended for its current instance.
+	// Run sets it when it is empty, so after New read it through
+	// Sidecar.instanceID().
 	InstanceID string
 	// WorktreeReadOnly is agent_status.worktree_readonly. When true, the
 	// prism container routes refuse --mount rw.
@@ -412,6 +414,12 @@ const seenUnknownCap = 50
 type Sidecar struct {
 	cfg     Config
 	harness harness.Harness // agent runtime adapter; injected via Config.Harness
+
+	// instanceIDMu guards cfg.InstanceID. Run can set the ID while Shutdown
+	// and the host-API handlers already run, so read it through instanceID()
+	// and set it through setInstanceID(). It is a leaf lock: a caller that
+	// holds mu can take it.
+	instanceIDMu sync.RWMutex
 
 	// notifyWG tracks every goroutine spawned via goNotify — the family of
 	// finish/error notifications (notifyCoordinator,
@@ -835,6 +843,20 @@ func New(cfg Config) *Sidecar {
 // after New() runs (New defaults a nil Logger to log.Default()).
 func (s *Sidecar) logger() *log.Logger { return s.cfg.Logger }
 
+// instanceID returns the instance ID of this incarnation. It returns "" until
+// Run loads or mints the ID, when the spawn did not pass one.
+func (s *Sidecar) instanceID() string {
+	s.instanceIDMu.RLock()
+	defer s.instanceIDMu.RUnlock()
+	return s.cfg.InstanceID
+}
+
+func (s *Sidecar) setInstanceID(id string) {
+	s.instanceIDMu.Lock()
+	defer s.instanceIDMu.Unlock()
+	s.cfg.InstanceID = id
+}
+
 // containerMgr holds the container.Manager when running in container mode.
 // It is set in Run before the SSE loop starts, and used by Shutdown.
 type containerMgr struct {
@@ -940,16 +962,22 @@ func (s *Sidecar) Run(ctx context.Context) error {
 
 	// Stage 1: Mint or load instance_id. This is transport-agnostic and
 	// must run for ALL transport shapes (HTTP-port, socket-pipe, stdio-pipe).
-	// When --instance-id was passed at spawn time, s.cfg.InstanceID is already
+	// When --instance-id was passed at spawn time, the instance ID is already
 	// set (fast path). Otherwise, query the DB: if the row has a non-NULL
 	// instance_id, load it; if not, mint a fresh UUID and write it.
 	// This runs before the merge-queue watcher so the watcher always has an
 	// identity to key on.
-	if s.cfg.InstanceID == "" && s.cfg.DB != nil {
+	//
+	// The host-API server above and the signal handler of cmd/sidecar.go
+	// already run, so a handler or Shutdown can read the ID during this
+	// stage. They read "" until setInstanceID runs.
+	instanceID := s.instanceID()
+	if instanceID == "" && s.cfg.DB != nil {
 		status, _ := s.cfg.DB.CurrentStatus(s.cfg.SessionName)
 		if status != nil && status.InstanceID != nil && *status.InstanceID != "" {
-			s.cfg.InstanceID = *status.InstanceID
-			s.logger().Printf("sidecar: instance_id loaded from DB (%s)", s.cfg.InstanceID)
+			instanceID = *status.InstanceID
+			s.setInstanceID(instanceID)
+			s.logger().Printf("sidecar: instance_id loaded from DB (%s)", instanceID)
 		} else {
 			minted := uuid.New().String()
 			// Defensively ensure the row exists before writing instance_id.
@@ -957,14 +985,15 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			if err := s.cfg.DB.SetInstanceID(s.cfg.SessionName, minted); err != nil {
 				s.logger().Printf("sidecar: warning: could not write minted instance_id: %v", err)
 			} else {
-				s.cfg.InstanceID = minted
-				s.logger().Printf("sidecar: instance_id minted (%s)", s.cfg.InstanceID)
+				instanceID = minted
+				s.setInstanceID(instanceID)
+				s.logger().Printf("sidecar: instance_id minted (%s)", instanceID)
 			}
 		}
 	}
 
 	// FK guard. Any subsequent writeEvent call sets agent_events.instance_id
-	// to s.cfg.InstanceID, which is a foreign key into sessions(instance_id). In
+	// to the instance ID, which is a foreign key into sessions(instance_id). In
 	// production the parent row is inserted by the tmux-session-start handler
 	// (cmd/event.go) or by session.SpawnSession before the sidecar runs, but the
 	// sidecar may also be started in contexts where that did not happen — sidecar
@@ -972,13 +1001,13 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// inline above. InsertSession uses INSERT OR IGNORE so the call is a no-op
 	// when the row already exists; this guarantees that downstream event writes
 	// never fail with FOREIGN KEY constraint failed (787).
-	if s.cfg.InstanceID != "" && s.cfg.DB != nil {
+	if instanceID != "" && s.cfg.DB != nil {
 		harnessName := s.cfg.HarnessName
 		if harnessName == "" {
 			harnessName = "pi"
 		}
 		sess := db.Session{
-			InstanceID:  s.cfg.InstanceID,
+			InstanceID:  instanceID,
 			SessionName: s.cfg.SessionName,
 			Repo:        s.cfg.Repo,
 			Worktree:    s.cfg.Worktree,
@@ -989,7 +1018,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			sess.AgentRole = &role
 		}
 		if err := s.cfg.DB.InsertSession(sess); err != nil {
-			s.logger().Printf("sidecar: warning: InsertSession for instance %s failed (FK-guard): %v", s.cfg.InstanceID, err)
+			s.logger().Printf("sidecar: warning: InsertSession for instance %s failed (FK-guard): %v", instanceID, err)
 		}
 	}
 
@@ -1007,14 +1036,14 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// abandon-watching-rows SQL runs (preventing a race where the watcher fires
 	// a terminal transition after AbandonWatchingMerges clears the rows).
 	if s.cfg.AgentRole == "coordinator" || isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
-		if s.cfg.InstanceID != "" {
+		if instanceID != "" {
 			watcherCtx, watcherCancel := context.WithCancel(ctx)
 			s.mu.Lock()
 			s.mergeWatcherCancel = watcherCancel
 			s.mu.Unlock()
-			watcher := mergequeue.New(s.cfg.DB, s.cfg.InstanceID, s.cfg.SessionName, s.cfg.HTTPClient)
+			watcher := mergequeue.New(s.cfg.DB, instanceID, s.cfg.SessionName, s.cfg.HTTPClient)
 			go watcher.Run(watcherCtx)
-			s.logger().Printf("sidecar: merge-queue watcher started (instance=%s)", s.cfg.InstanceID)
+			s.logger().Printf("sidecar: merge-queue watcher started (instance=%s)", instanceID)
 		} else {
 			s.logger().Printf("sidecar: merge-queue watcher NOT started — no instance_id")
 		}
@@ -1293,13 +1322,13 @@ func (s *Sidecar) Shutdown() {
 	}
 
 	// Abandon all watching merge rows for this coordinator incarnation.
-	if s.cfg.InstanceID != "" {
-		if err := s.cfg.DB.AbandonWatchingMerges(s.cfg.InstanceID); err != nil {
+	if instanceID := s.instanceID(); instanceID != "" {
+		if err := s.cfg.DB.AbandonWatchingMerges(instanceID); err != nil {
 			s.logger().Printf("sidecar: AbandonWatchingMerges: %v", err)
 		} else {
-			s.logger().Printf("sidecar: watching merge rows abandoned (instance=%s)", s.cfg.InstanceID)
+			s.logger().Printf("sidecar: watching merge rows abandoned (instance=%s)", instanceID)
 		}
-		if err := s.cfg.DB.UpdateSessionEnded(s.cfg.InstanceID, "finished"); err != nil {
+		if err := s.cfg.DB.UpdateSessionEnded(instanceID, "finished"); err != nil {
 			s.logger().Printf("sidecar: UpdateSessionEnded: %v", err)
 		}
 	}

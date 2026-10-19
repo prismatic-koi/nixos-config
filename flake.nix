@@ -164,6 +164,16 @@
 
         # flate: agent sessions need it on PATH (issue #2990).
         flate = pkgs.callPackage ./pkgs/flate.nix { };
+
+        # twg is unfree, and the plain nixpkgs set refuses unfree packages.
+        # Allow twg by name only. Do not set allowUnfree here.
+        twg =
+          (import nixpkgs {
+            inherit (pkgs.stdenv.hostPlatform) system;
+            config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "twg";
+          }).callPackage
+            ./pkgs/twg.nix
+            { };
       });
 
       apps = forEachSystem (pkgs: {

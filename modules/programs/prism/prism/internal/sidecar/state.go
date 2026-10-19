@@ -294,8 +294,7 @@ func (s *Sidecar) writeEvent(eventType string, payload any, harnessSessionID *st
 	}
 
 	var instanceIDPtr *string
-	if s.cfg.InstanceID != "" {
-		iid := s.cfg.InstanceID
+	if iid := s.instanceID(); iid != "" {
 		instanceIDPtr = &iid
 	}
 

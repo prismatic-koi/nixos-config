@@ -160,7 +160,15 @@
               # binds are needed for the binary itself.
               PI_GRAFANA_MCP_BIN = "${pkgs.mcp-grafana}/bin/mcp-grafana";
             }
-          );
+          )
+          //
+            # twg variables (issue #3195). They live in agent.envVars for the
+            # same reason NOTION_MCP_REPOS does: agent.envVars is the only
+            # channel that all three isolators apply (bwrap starts with
+            # --clearenv).
+            # modules/programs/twg.nix holds the values, so the host shell
+            # and the agents cannot differ.
+            lib.optionalAttrs config.nx.programs.twg.enable config.nx.programs.twg.envVars;
           description = "Environment variables to set for the AI agent (pi)";
         };
 
