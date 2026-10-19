@@ -71,6 +71,7 @@ in
       qutebrowser.enable = false; # broken, due to https://github.com/NixOS/nixpkgs/issues/514179
       tailscaleClient.enable = true;
       twg.enable = true;
+      gcalcli.enable = true;
     };
     desktop = {
       theme = "edge";
