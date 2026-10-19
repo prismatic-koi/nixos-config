@@ -335,3 +335,5 @@ The sandboxes also give read-write access to `~/.cache/twg`. `twg help
 <topic>` writes its help index to `~/.cache/twg/help-index`, and `twg` writes
 `last-error.json` to `~/.cache/twg/feedback`. Do not unset or change
 `TWG_CACHE_DIR`: if you do, `twg` cannot keep its cache.
+
+For sprint, story-point, and bulk Jira work, load the `twg` skill.

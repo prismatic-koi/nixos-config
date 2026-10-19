@@ -260,7 +260,7 @@
       # the persisted ~/.pi/agent/skills/ directory that would dangle after
       # nix-collect-garbage removes the store paths they pointed to.
       skillsDir = pkgs.runCommand "pi-skills" { } ''
-        mkdir -p $out/prism $out/aws $out/acceptance-criteria $out/retro $out/atlassian $out/change-request $out/grill-me $out/wip-branch $out/complexity-triage $out/prism-container $out/prism-testing $out/infrastructure-as-code $out/comment-discipline
+        mkdir -p $out/prism $out/aws $out/acceptance-criteria $out/retro $out/atlassian $out/change-request $out/grill-me $out/wip-branch $out/complexity-triage $out/prism-container $out/prism-testing $out/infrastructure-as-code $out/comment-discipline $out/twg
         cp -r ${./skills/prism}/* $out/prism/
         cp -r ${./skills/playwright-cli} $out/playwright-cli
         cp ${awsSkillFile} $out/aws/SKILL.md
@@ -275,6 +275,7 @@
         cp -r ${./skills/prism-testing}/* $out/prism-testing/
         cp -r ${./skills/infrastructure-as-code}/* $out/infrastructure-as-code/
         cp -r ${./skills/comment-discipline}/* $out/comment-discipline/
+        cp -r ${./skills/twg}/* $out/twg/
         cp -r ${./skills/simple-english} $out/simple-english
       '';
 
