@@ -7,7 +7,11 @@ description: Load this skill for Jira work with the `twg` CLI — sprints, board
 
 `twg` is the Atlassian CLI. The Atlassian MCP has no sprint or board tools, and `twg` has them. This skill covers `twg` for Jira.
 
-For host-only login, the commands that you must not run (`login`, `setup`, `upgrade`, `upkeep enable`), and the environment variables, read the section "twg CLI (secondary surface)" in the `atlassian` skill. Do not repeat those rules here. Unless your task tells you to use `twg`, follow the `atlassian` skill.
+For host-only login, the commands that you must not run (`login`, `setup`, `upgrade`, `upkeep enable`), and the environment variables, read the section "twg CLI (secondary surface)" in the `atlassian` skill. Do not repeat those rules here. The `atlassian` skill says to use the MCP tools unless your task tells you to use `twg`. Use `twg` when your task is in the list below.
+
+## When to load
+
+Load this skill for sprint work, story points, bulk Jira updates, ticket history, and JQL searches.
 
 ## Setup facts
 
@@ -54,12 +58,10 @@ One `workitem update` call can set the sprint, points, priority, and labels toge
 | Add a ticket to a sprint | `workitem update --id PLAT-N --sprint 352` |
 | Remove a ticket from a sprint | `workitem update --id PLAT-N --sprint none` |
 | Set story points | `workitem update --id PLAT-N --story-points 3` |
-| Set priority, labels, due date | `--priority high`, `--add-labels x`, `--remove-labels x`, `--due-date 2026-10-20` |
-| Add a comment | `--comment "..." --comment-format plain` |
-| Close a ticket with a comment | `--status "Not Doing" --transition-comment "..." --transition-comment-format plain` |
+| Set priority, labels, due date | `workitem update --id PLAT-N --priority high --add-labels x --remove-labels x --due-date 2026-10-20` |
+| Add a comment | `workitem update --id PLAT-N --comment "..." --comment-format plain` |
+| Close a ticket with a comment | `workitem update --id PLAT-N --status "Not Doing" --transition-comment "..." --transition-comment-format plain` |
 | Link tickets | `workitem link workitem --id A --link-type-id Duplicate --target-id B` |
-
-The flag rows (priority, comment, close) extend `workitem update --id PLAT-N`.
 
 ## Reading output
 
