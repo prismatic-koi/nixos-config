@@ -155,6 +155,17 @@ func (d *DB) ReopenSession(instanceID string) error {
 	return nil
 }
 
+// ClearOpenSessionRoles sets agent_role and root_agent_name to NULL on the
+// sessions row for instanceID, when that row is open (ended_at IS NULL). An
+// ended row is history and keeps its values. A missing row is not an error.
+func (d *DB) ClearOpenSessionRoles(instanceID string) error {
+	const q = `UPDATE sessions SET agent_role = NULL, root_agent_name = NULL WHERE instance_id = ? AND ended_at IS NULL`
+	if _, err := d.conn.Exec(q, instanceID); err != nil {
+		return fmt.Errorf("db: clear open session roles: %w", err)
+	}
+	return nil
+}
+
 // UpdateSessionArchivePath sets archive_path on the sessions row for
 // instanceID. Called during prism cleanup after the archive copy completes
 // successfully. It is a no-op when no row exists for instanceID (returns nil).

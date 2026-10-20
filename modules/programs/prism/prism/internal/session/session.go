@@ -945,27 +945,52 @@ func agentPaneEnvVars(opts Opts) map[string]string {
 	}
 }
 
-// clearStaleRootAgentName clears root_agent_name when prism starts the root
-// session of a non-worktree project with no role. For any other start it
-// does nothing. When d is nil, it opens the DB.
+// ClearStaleNonWorktreeRootRole clears every stored role of a session when
+// prism starts it as the root session of a non-worktree project with no role.
+// For any other start it does nothing. When d is nil, it opens the DB.
+//
+// It clears two records:
+//
+//   - agent_status.root_agent_name.
+//   - agent_role and root_agent_name on the open sessions row of the
+//     incarnation that this start continues. instanceID names it. When
+//     instanceID is "", the incarnation is agent_status.instance_id.
 //
 // The start path gives that session no role, so a stored value is stale (see
-// DefaultAgentForSession). With the value cleared, agent_status agrees with
-// the start config of the sidecar. The direct CLI route then gives the session
-// the same role as the host API (authz.IsNonWorktreeRootFromDB).
-func clearStaleRootAgentName(d *db.DB, name, directory, agent string) error {
+// DefaultAgentForSession). With both records cleared, the DB agrees with the
+// start config of the sidecar. The direct CLI route then gives the session the
+// same role as the host API (authz.IsNonWorktreeRootFromDB), and the exporter
+// labels the incarnation with no agent_role. `prism restore` writes the
+// sessions row before session.Create, so this clear runs after that write.
+// An ended sessions row is history and keeps its values.
+func ClearStaleNonWorktreeRootRole(d *db.DB, name, directory, agent, instanceID string) error {
 	if agent != "" || !authz.IsNonWorktreeRoot(name, "", directory) {
 		return nil
 	}
 	if d == nil {
 		opened, err := openDB()
 		if err != nil {
-			return fmt.Errorf("open DB to clear root_agent_name for %q: %w", name, err)
+			return fmt.Errorf("open DB to clear the stored role of %q: %w", name, err)
 		}
 		defer opened.Close()
 		d = opened
 	}
-	return d.ClearRootAgentName(name)
+	if instanceID == "" {
+		st, err := d.CurrentStatus(name)
+		if err != nil {
+			return fmt.Errorf("read agent_status of %q: %w", name, err)
+		}
+		if st != nil && st.InstanceID != nil {
+			instanceID = *st.InstanceID
+		}
+	}
+	if err := d.ClearRootAgentName(name); err != nil {
+		return err
+	}
+	if instanceID == "" {
+		return nil
+	}
+	return d.ClearOpenSessionRoles(instanceID)
 }
 
 // setupFullLayout configures the three-window layout for a project session:
@@ -987,7 +1012,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// Clear before the seed, the sidecar, and the agent window. Each of them
 	// reads root_agent_name, and `prism agent-run` turns it into the --agent
 	// flag of the agent.
-	if err := clearStaleRootAgentName(opts.DB, name, directory, opts.Agent); err != nil {
+	if err := ClearStaleNonWorktreeRootRole(opts.DB, name, directory, opts.Agent, opts.InstanceID); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: setupFullLayout: %v\n", err)
 	}
 

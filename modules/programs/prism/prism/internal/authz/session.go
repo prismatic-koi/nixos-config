@@ -138,13 +138,20 @@ func IsCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool
 // session an explicit role, and a spawned worker always starts in a worktree
 // of a bare repo. Only the root-session start path (`prism switch`, `prism
 // restore`) starts a session with no role in a directory outside every
-// bare+worktree layout. That is the case where session.DefaultAgent returns
-// "". This function and DefaultAgent read the same git.BareRoot rule.
+// bare+worktree layout. session.DefaultAgent returns "" for that directory.
+// This function reads the same git.BareRoot rule as DefaultAgent.
 //
-// Three name checks narrow the grant and never widen it. A descendant ("~")
-// and a meta-session are never a root, whatever the record says. A name with
-// a branch ("@") is never a non-worktree root: the root-session start path
+// Name checks narrow the grant and never widen it. A descendant ("~") and a
+// meta-session are never a root, whatever the record says. A name with a
+// branch ("@") is never a non-worktree root: the root-session start path
 // names a non-worktree session with session.NameFor, which gives a bare name.
+// A name with no repo part is malformed and fails closed.
+//
+// A start directory that itself holds ".bare" is the project root of a
+// bare+worktree layout, not a non-worktree project. git.BareRoot starts its
+// search at the parent, so this function refuses that directory explicitly.
+// Without the check, a session started there is a second coordinator of the
+// repo, beside "<repo>@main".
 //
 // Each route supplies its own record. The host-API route passes the start
 // config of the sidecar (Config.AgentRole, Config.Worktree), which the agent
@@ -154,10 +161,13 @@ func IsNonWorktreeRoot(sessionName, startRole, startDir string) bool {
 	if sessionname.IsMeta(sessionName) || sessionname.IsDescendant(sessionName) || sessionname.HasBranch(sessionName) {
 		return false
 	}
+	if sessionname.Repo(sessionName) == "" {
+		return false
+	}
 	if startRole != "" || startDir == "" {
 		return false
 	}
-	return git.BareRoot(startDir) == ""
+	return !git.IsBareRepo(startDir) && git.BareRoot(startDir) == ""
 }
 
 // IsNonWorktreeRootFromDB applies IsNonWorktreeRoot to the start record in the

@@ -19,13 +19,11 @@ package cmd
 // PRISM_HOST_API, and uses "prism-test" session names.
 
 import (
-	"context"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/prismatic-koi/prism/internal/authz"
 	"github.com/prismatic-koi/prism/internal/db"
@@ -145,29 +143,27 @@ func TestNonWorktreeRoot_DirectCheckinTiers(t *testing.T) {
 	})
 }
 
-// TestNonWorktreeRoot_StartRecordsNoWorkerRole pins AC3. The root-session
-// start path gives the session the role session.DefaultAgent returns for its
-// directory, and seeds agent_status through tmux-session-start with that
-// role. Neither agent_status.root_agent_name nor sessions.agent_role may say
-// "worker", and the worker spawn count (the same sessions join that labels
-// prism_spawns_total) must not include the session.
+// TestNonWorktreeRoot_StartRecordsNoWorkerRole pins AC3 for `prism switch`.
+// The root-session start path gives the session the role that
+// session.DefaultAgent returns for its directory, and seeds agent_status
+// through tmux-session-start with that role. Neither
+// agent_status.root_agent_name nor sessions.agent_role may say "worker".
+// prism_spawns_total and prism_sessions_ended_total both take agent_role from
+// that sessions row (exporter.LifecycleEventsTailSQL).
 func TestNonWorktreeRoot_StartRecordsNoWorkerRole(t *testing.T) {
+	// Cobra keeps a flag value between Execute calls. Without the reset, a
+	// test that ran earlier with --agent-role worker seeds that role here.
+	resetRootCmdFlags(t)
 	t.Setenv("PRISM_HOST_API", "")
 	worktree := t.TempDir()
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
-	since := time.Now().Add(-time.Minute)
 
-	role := session.DefaultAgent(worktree, "")
-	if role != "" {
+	if role := session.DefaultAgent(worktree, ""); role != "" {
 		t.Fatalf("DefaultAgent(non-worktree dir) = %q, want \"\" — the root-session start path gives no role", role)
 	}
-	args := []string{"event", "tmux-session-start", "--session", nwrCLIRoot, "--worktree", worktree}
-	if role != "" {
-		args = append(args, "--agent-role", role)
-	}
-	rootCmd.SetArgs(args)
+	rootCmd.SetArgs([]string{"event", "tmux-session-start", "--session", nwrCLIRoot, "--worktree", worktree})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("tmux-session-start: %v", err)
 	}
@@ -188,23 +184,104 @@ func TestNonWorktreeRoot_StartRecordsNoWorkerRole(t *testing.T) {
 	if st.InstanceID == nil {
 		t.Fatal("agent_status.instance_id is NULL after tmux-session-start")
 	}
-	sess, err := d.SessionByInstanceID(*st.InstanceID)
-	if err != nil || sess == nil {
-		t.Fatalf("SessionByInstanceID: sess=%v err=%v", sess, err)
-	}
-	if sess.AgentRole != nil && *sess.AgentRole == "worker" {
-		t.Errorf("sessions.agent_role = %q, want not \"worker\"", *sess.AgentRole)
-	}
-
-	n, err := d.CountRoleEventsSince(context.Background(), session.EventSpawnIntent, "worker", since)
-	if err != nil {
-		t.Fatalf("CountRoleEventsSince: %v", err)
-	}
-	if n != 0 {
-		t.Errorf("worker spawn count = %d, want 0 — the root session is not a worker spawn", n)
-	}
+	assertNoSessionRole(t, d, *st.InstanceID)
 
 	if !authz.IsNonWorktreeRootFromDB(nwrCLIRoot, d) {
 		t.Error("IsNonWorktreeRootFromDB = false after the root start — the direct route does not see the coordinator role")
+	}
+}
+
+// assertNoSessionRole fails unless the sessions row for instanceID has NULL
+// agent_role and NULL root_agent_name.
+func assertNoSessionRole(t *testing.T, d *db.DB, instanceID string) {
+	t.Helper()
+	sess, err := d.SessionByInstanceID(instanceID)
+	if err != nil || sess == nil {
+		t.Fatalf("SessionByInstanceID(%q): sess=%v err=%v", instanceID, sess, err)
+	}
+	if sess.AgentRole != nil {
+		t.Errorf("sessions.agent_role = %q, want NULL", *sess.AgentRole)
+	}
+	if sess.RootAgentName != nil {
+		t.Errorf("sessions.root_agent_name = %q, want NULL", *sess.RootAgentName)
+	}
+}
+
+// TestNonWorktreeRoot_RestoreRecordsNoStaleRole pins AC3 for `prism restore`.
+//
+// A legacy root row holds root_agent_name = "worker" (written before #954),
+// and its sessions row holds the same value. restoreProjectSession first
+// takes the role from session.DefaultAgentForSession, then writes the
+// sessions row with restoredInstanceID, then calls session.Create. Create
+// runs session.ClearStaleNonWorktreeRootRole with opts.InstanceID. This test
+// runs the same steps in the same order, on both restore paths:
+//
+//   - reopen: the old sidecar stopped, so restore reopens the sessions row
+//     that agent_status names. ReopenSession keeps agent_role and
+//     root_agent_name.
+//   - new incarnation: the old sidecar did not stop, so restore inserts a new
+//     row with restoredSessionRow, which copies prev.AgentRole and
+//     s.RootAgentName.
+//
+// If the clear stops reaching the sessions row, prism_sessions_ended_total
+// labels the restored incarnation agent_role="worker".
+func TestNonWorktreeRoot_RestoreRecordsNoStaleRole(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		oldSidecarStopped bool
+	}{
+		{"reopen path", true},
+		{"new incarnation path", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, err := db.Open(filepath.Join(t.TempDir(), "prism.db"))
+			if err != nil {
+				t.Fatalf("db.Open: %v", err)
+			}
+			defer d.Close()
+			worktree := t.TempDir()
+			const prevInstance = "inst-legacy"
+
+			if err := d.UpsertStatusSeedRootAgentName(nwrCLIRoot, nwrCLIRoot, worktree, "idle", nil, nil, "worker", "", "host"); err != nil {
+				t.Fatalf("seed agent_status: %v", err)
+			}
+			if err := d.SetInstanceID(nwrCLIRoot, prevInstance); err != nil {
+				t.Fatalf("SetInstanceID: %v", err)
+			}
+			stale := "worker"
+			if err := d.InsertSession(db.Session{
+				InstanceID: prevInstance, SessionName: nwrCLIRoot, AgentRole: &stale, RootAgentName: &stale,
+				Repo: nwrCLIRoot, Worktree: worktree, Harness: "pi",
+			}); err != nil {
+				t.Fatalf("InsertSession: %v", err)
+			}
+			if err := d.UpdateSessionEnded(prevInstance, "finished"); err != nil {
+				t.Fatalf("UpdateSessionEnded: %v", err)
+			}
+
+			st, err := d.CurrentStatus(nwrCLIRoot)
+			if err != nil || st == nil {
+				t.Fatalf("CurrentStatus: st=%v err=%v", st, err)
+			}
+			agent := session.DefaultAgentForSession(nwrCLIRoot, worktree, "", d)
+			if agent != "" {
+				t.Fatalf("restore role = %q, want \"\" — a stale role must not become the start role", agent)
+			}
+			instanceID := restoredInstanceID(d, *st, agent, tc.oldSidecarStopped)
+			if instanceID == "" {
+				t.Fatal("restoredInstanceID returned no instance ID")
+			}
+			if err := session.ClearStaleNonWorktreeRootRole(d, nwrCLIRoot, worktree, agent, instanceID); err != nil {
+				t.Fatalf("ClearStaleNonWorktreeRootRole: %v", err)
+			}
+
+			assertNoSessionRole(t, d, instanceID)
+			if name, _, _ := d.RootAgentName(nwrCLIRoot); name != "" {
+				t.Errorf("agent_status.root_agent_name = %q, want NULL", name)
+			}
+			if !authz.IsNonWorktreeRootFromDB(nwrCLIRoot, d) {
+				t.Error("IsNonWorktreeRootFromDB = false after restore — the direct route does not see the coordinator role")
+			}
+		})
 	}
 }

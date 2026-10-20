@@ -66,6 +66,8 @@ func TestIsNonWorktreeRoot(t *testing.T) {
 		{"worktree-shaped name", "repo@feature", "", plain, false},
 		{"coordinator-shaped name", "repo@main", "", plain, false},
 		{"no start directory", "obsidian", "", "", false},
+		{"empty name", "", "", plain, false},
+		{"project root of a bare+worktree layout", "repo", "", filepath.Dir(wtFeature), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
