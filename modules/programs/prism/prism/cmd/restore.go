@@ -29,7 +29,6 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
-	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // restoreOutcome describes what restoreSession did for a given session.
@@ -178,7 +177,7 @@ func Restore(dryRun bool) error {
 // sessions (e.g. obsidian) are restored correctly even if the session name
 // would not match what sessionNameFor() would compute from the worktree.
 func restoreSession(d *db.DB, s db.Status, pendingStagger *bool, staggerDelay time.Duration) (restoreOutcome, error) {
-	if tmux.HasSession(s.SessionName) {
+	if session.HasExactSession(s.SessionName) {
 		return restoreOutcomeSkipped, nil
 	}
 
@@ -327,7 +326,7 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	// agent_status row. This is as late as we can usefully check — the
 	// remaining window (between here and tmux new-session inside Create) is
 	// unavoidable and is handled by Create's own inner guard.
-	if tmux.HasSession(s.SessionName) {
+	if session.HasExactSession(s.SessionName) {
 		return restoreOutcomeSkipped, nil
 	}
 

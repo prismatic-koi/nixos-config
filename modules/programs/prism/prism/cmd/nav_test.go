@@ -62,6 +62,7 @@ func withNavSpy(t *testing.T, sessionName, clientName string) string {
 		"    esac\n" +
 		"    exit 0\n" +
 		"    ;;\n" +
+		"  list-sessions) printf '%s\\n' " + shellQuote(sessionName) + " repo@feature; exit 0 ;;\n" +
 		"  *) exit 0 ;;\n" +
 		"esac\n"
 

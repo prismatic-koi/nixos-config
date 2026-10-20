@@ -954,3 +954,20 @@ func encodePiCWDForTest(cwd string) string {
 	replaced := strings.NewReplacer("/", "-", "\\", "-", ":", "-").Replace(stripped)
 	return "--" + replaced + "--"
 }
+
+// TestRestoreSession_PrefixSiblingDoesNotSkip_3184 verifies that a live
+// `repo@feature-x` does not make restore skip `repo@feat`.
+func TestRestoreSession_PrefixSiblingDoesNotSkip_3184(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+	d := openRestoreTestDB(t)
+
+	s.newSession("nixos-config@feature-x")
+	status := seedStatus(t, d, "nixos-config@feat", t.TempDir(), nil)
+	pending := false
+	outcome, err := restoreSession(d, status, &pending, 0)
+	if err == nil && outcome == restoreOutcomeSkipped {
+		t.Fatalf("restore skipped nixos-config@feat because of a prefix sibling")
+	}
+}
