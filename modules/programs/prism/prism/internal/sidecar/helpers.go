@@ -281,6 +281,19 @@ func (s *Sidecar) startedAsNonWorktreeRoot() bool {
 	return authz.IsNonWorktreeRoot(s.cfg.SessionName, s.cfg.AgentRole, s.cfg.Worktree)
 }
 
+// callerHasCoordinatorRole is the caller-role rule of the per-session
+// endpoints (/set-model, /apply-profile, /register-provider,
+// /set-active-tools, /abort). A caller with this role can target another
+// session. Any other caller can target only its own session.
+//
+// An explicit AgentRole wins. With no AgentRole, the DB-backed
+// isCoordinatorSession decides, and so does startedAsNonWorktreeRoot.
+func (s *Sidecar) callerHasCoordinatorRole() bool {
+	return s.cfg.AgentRole == "coordinator" ||
+		(s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger())) ||
+		s.startedAsNonWorktreeRoot()
+}
+
 // isRootSession returns true when the session is the root session of its own
 // project: a "<repo>@main" coordinator, or a non-worktree session with a bare
 // name. See authz.IsRootSession for the full rule and for why it is a narrower

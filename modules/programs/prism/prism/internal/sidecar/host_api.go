@@ -3458,7 +3458,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// (the target's own session name), so the guard passes correctly.
 		// There is no sidecar-to-sidecar authentication beyond the per-session
 		// Unix socket filesystem permissions (same as /register-provider-direct).
-		callerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger())) || s.startedAsNonWorktreeRoot()
+		callerIsCoordinator := s.callerHasCoordinatorRole()
 		if !callerIsCoordinator && req.Session != s.cfg.SessionName {
 			writeError(w, http.StatusForbidden, "workers can only call /set-model for their own session")
 			return
@@ -3518,7 +3518,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// Permission: global and coordinator scopes require coordinator role.
-		applyCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger())) || s.startedAsNonWorktreeRoot()
+		applyCallerIsCoordinator := s.callerHasCoordinatorRole()
 		if req.Scope == "global" || req.Scope == "coordinator" {
 			if !applyCallerIsCoordinator {
 				writeError(w, http.StatusForbidden,
@@ -3654,7 +3654,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// Permission: global and coordinator scopes require coordinator role.
-		regCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger())) || s.startedAsNonWorktreeRoot()
+		regCallerIsCoordinator := s.callerHasCoordinatorRole()
 		if req.Scope == "global" || req.Scope == "coordinator" {
 			if !regCallerIsCoordinator {
 				writeError(w, http.StatusForbidden,
@@ -3795,7 +3795,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		// Workers may only target their own session.
-		satCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger())) || s.startedAsNonWorktreeRoot()
+		satCallerIsCoordinator := s.callerHasCoordinatorRole()
 		if !satCallerIsCoordinator && req.Session != s.cfg.SessionName {
 			writeError(w, http.StatusForbidden, "workers can only call /set-active-tools for their own session")
 			return
@@ -3839,7 +3839,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		// Workers may only target their own session.
-		abortCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger())) || s.startedAsNonWorktreeRoot()
+		abortCallerIsCoordinator := s.callerHasCoordinatorRole()
 		if !abortCallerIsCoordinator && req.Session != s.cfg.SessionName {
 			writeError(w, http.StatusForbidden, "workers can only call /abort for their own session")
 			return

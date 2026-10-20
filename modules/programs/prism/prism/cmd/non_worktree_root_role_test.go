@@ -23,6 +23,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/authz"
@@ -281,6 +282,76 @@ func TestNonWorktreeRoot_RestoreRecordsNoStaleRole(t *testing.T) {
 			}
 			if !authz.IsNonWorktreeRootFromDB(nwrCLIRoot, d) {
 				t.Error("IsNonWorktreeRootFromDB = false after restore — the direct route does not see the coordinator role")
+			}
+		})
+	}
+}
+
+// nwrCLICallerShapes are the two callers that the inline guards in
+// cmd/merge.go and cmd/profile.go must tell apart. Both have the same bare
+// name and a non-worktree worktree. Only the recorded role differs.
+var nwrCLICallerShapes = []struct {
+	name      string
+	role      string // root_agent_name; "" = NULL
+	wantGuard bool   // true = the coordinator-only refusal fires
+}{
+	{"root session of a non-worktree project", "", false},
+	{"bare-named worker", "worker", true},
+}
+
+// TestRunMerge_NonWorktreeRootPassesCoordinatorGuard drives the inline guard in
+// runMerge. The row has no instance_id, so a caller that passes the guard
+// stops at the instance_id check, before any gh call. If runMerge calls
+// session.IsCoordinatorSession alone, the root session gets the
+// coordinator-only refusal.
+func TestRunMerge_NonWorktreeRootPassesCoordinatorGuard(t *testing.T) {
+	for _, tc := range nwrCLICallerShapes {
+		t.Run(tc.name, func(t *testing.T) {
+			openMergeTestDB(t)
+			d, err := openDB()
+			if err != nil {
+				t.Fatalf("openDB: %v", err)
+			}
+			seedErr := d.UpsertStatusSeedRootAgentName(nwrCLIRoot, nwrCLIRoot, t.TempDir(), "idle", nil, nil, tc.role, "", "host")
+			d.Close()
+			if seedErr != nil {
+				t.Fatalf("seed: %v", seedErr)
+			}
+			t.Setenv("PRISM_SESSION_NAME", nwrCLIRoot)
+			t.Setenv("TMUX", "")
+
+			err = runMerge(mergeCmd, []string{"999"})
+			if err == nil {
+				t.Fatal("runMerge returned nil, want an error (the guard, or the missing instance_id)")
+			}
+			if got := strings.Contains(err.Error(), "coordinator sessions only"); got != tc.wantGuard {
+				t.Fatalf("coordinator-only refusal = %v, want %v (error: %v)", got, tc.wantGuard, err)
+			}
+			if !tc.wantGuard && !strings.Contains(err.Error(), "no instance_id") {
+				t.Errorf("error %q, want the missing instance_id error after the guard", err)
+			}
+		})
+	}
+}
+
+// TestProfileUse_NonWorktreeRootPassesCoordinatorScopeGuard drives the inline
+// guard in runProfileUse for --scope coordinator. A caller that passes the
+// guard fails later, when it dials a sidecar socket that does not exist in the
+// temp state dir. Only the error text of the guard matters here.
+func TestProfileUse_NonWorktreeRootPassesCoordinatorScopeGuard(t *testing.T) {
+	for _, tc := range nwrCLICallerShapes {
+		t.Run(tc.name, func(t *testing.T) {
+			withProfileFixture(t, sampleProfilesJSON)
+			d := openProfileTestDB(t)
+			if err := d.UpsertStatusSeedRootAgentName(nwrCLIRoot, nwrCLIRoot, t.TempDir(), "active", nil, nil, tc.role, "", "host"); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			t.Setenv("PRISM_SESSION_NAME", nwrCLIRoot)
+
+			_, err := runProfileUseWithScope(t, "coordinator", true, []string{"anthropic"})
+			got := err != nil && strings.Contains(err.Error(), "coordinator sessions only")
+			if got != tc.wantGuard {
+				t.Fatalf("coordinator-only refusal = %v, want %v (error: %v)", got, tc.wantGuard, err)
 			}
 		})
 	}

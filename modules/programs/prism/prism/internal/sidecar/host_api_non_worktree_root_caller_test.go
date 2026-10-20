@@ -33,14 +33,18 @@ package sidecar
 // and the bare-named worker cases fail.
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	pih "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/sidecar/sidecartest"
 )
 
@@ -76,7 +80,7 @@ func nwrSidecar(t *testing.T, sessionName, agentRole, worktree, callerRootAgent,
 	bus := sidecartest.NewIsolated(t, "")
 	d := bus.DB
 
-	repo := strings.SplitN(sessionName, "~", 2)[0]
+	repo := sessionname.Repo(sessionName)
 	if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, worktree, "active", nil, nil, callerRootAgent, "", ""); err != nil {
 		t.Fatalf("seed caller: %v", err)
 	}
@@ -187,11 +191,22 @@ func TestHostAPI_BareNamedWorker_PromptStaysWorker(t *testing.T) {
 	}
 }
 
-// nwrCoordinatorOnly is the requireCoordinator surface, as listed in
-// TestHostAPI_CoordinatorOnly_DeniesWorker.
+// nwrCoordinatorOnly is every host-API gate that needs the coordinator role:
+// the requireCoordinator surface (as listed in
+// TestHostAPI_CoordinatorOnly_DeniesWorker), /list-sessions?all=true, and
+// the gates that let a coordinator act on another session. Each request
+// below targets another session, so a caller without the role gets 403.
 var nwrCoordinatorOnly = []struct {
 	method, path, body string
 }{
+	{http.MethodPost, "/escalate", `{"prompt":"kia ora","from":"prism-test-nwother@feature"}`},
+	{http.MethodPost, "/set-model", `{"session":"prism-test-nwother@main","model":"m"}`},
+	{http.MethodPost, "/apply-profile", `{"profile":"p","scope":"session","session":"prism-test-nwother@main"}`},
+	{http.MethodPost, "/apply-profile", `{"profile":"p","scope":"coordinator"}`},
+	{http.MethodPost, "/register-provider", `{"name":"n","scope":"session","session":"prism-test-nwother@main"}`},
+	{http.MethodPost, "/register-provider", `{"name":"n","scope":"coordinator"}`},
+	{http.MethodPost, "/set-active-tools", `{"session":"prism-test-nwother@main","tools":[]}`},
+	{http.MethodPost, "/abort", `{"session":"prism-test-nwother@main"}`},
 	{http.MethodPost, "/spawn", `{"branch":"feature-x","prompt":"do the thing"}`},
 	{http.MethodPost, "/cleanup", `{"session":"prism-test-nwroot","yes":true}`},
 	{http.MethodPost, "/close", `{"session":"prism-test-nwroot"}`},
@@ -214,7 +229,7 @@ var nwrCoordinatorOnly = []struct {
 // 403 shows that the gate admitted the caller.
 func TestHostAPI_NonWorktreeRoot_CoordinatorOnlyAdmitted(t *testing.T) {
 	for _, tc := range nwrCoordinatorOnly {
-		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+		t.Run(tc.method+" "+tc.path+" "+tc.body, func(t *testing.T) {
 			sc, _ := nwrSidecar(t, nwrRoot, "", t.TempDir(), "", failingStub, nil)
 			rr := doHostAPI(t, sc, tc.method, tc.path, tc.body)
 			if rr.Code == http.StatusForbidden {
@@ -230,7 +245,7 @@ func TestHostAPI_NonWorktreeRoot_CoordinatorOnlyAdmitted(t *testing.T) {
 func TestHostAPI_BareNamedWorker_CoordinatorOnlyRefused(t *testing.T) {
 	for _, shape := range nwrWorkerShapes(t) {
 		for _, tc := range nwrCoordinatorOnly {
-			t.Run(shape.name+"/"+tc.method+" "+tc.path, func(t *testing.T) {
+			t.Run(shape.name+"/"+tc.method+" "+tc.path+" "+tc.body, func(t *testing.T) {
 				sc, _ := nwrSidecar(t, shape.session, shape.agentRole, shape.worktree, shape.agentRole, failingStub, nil)
 				rr := doHostAPI(t, sc, tc.method, tc.path, tc.body)
 				if rr.Code != http.StatusForbidden {
@@ -298,5 +313,75 @@ func TestHostAPI_WorktreeWorker_PromptNonCoordinatorRefused(t *testing.T) {
 	}
 	if code, body := nwrPrompt(t, sc, nwrOtherCoord); code != http.StatusOK {
 		t.Errorf("prompt own coordinator: status = %d, body = %s, want 200", code, body)
+	}
+}
+
+// nwrWatcherStarted runs a socket-pipe sidecar with the given start config
+// and reports whether Run started the merge-queue watcher. The watcher starts
+// before the pipe socket binds, so the socket file is the signal to read.
+func nwrWatcherStarted(t *testing.T, sessionName, agentRole, worktree string) bool {
+	t.Helper()
+	sockPath := shortSockPath(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
+	sc := New(Config{
+		SessionName:           sessionName,
+		Repo:                  sessionname.Repo(sessionName),
+		Worktree:              worktree,
+		DB:                    openTestDB(t),
+		Clock:                 newTestClock(),
+		AgentRole:             agentRole,
+		HarnessName:           "pi",
+		HarnessPipeSockPath:   sockPath,
+		StartupConnectTimeout: 5 * time.Second,
+		Harness:               pih.New("", agentRole, ""),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	wait := runSidecarRun(ctx, sc)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(sockPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pipe socket never appeared — Run did not reach runStartupSocketPipe")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	sc.mu.Lock()
+	started := sc.mergeWatcherCancel != nil
+	sc.mu.Unlock()
+
+	conn, _ := dialAndHandshake(t, sockPath)
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("Run() returned error: %v", err)
+	}
+	return started
+}
+
+// TestSidecar_NonWorktreeRoot_StartsMergeWatcher pins the watcher arm.
+// requireCoordinator admits the root session to `prism merge`, so the root
+// session must drive its own queue. A bare-named worker and a descendant must
+// not start a watcher.
+func TestSidecar_NonWorktreeRoot_StartsMergeWatcher(t *testing.T) {
+	cases := []struct {
+		name, session, agentRole string
+		want                     bool
+	}{
+		{"root session of a non-worktree project", nwrRoot, "", true},
+		{"bare-named worker", nwrRoot, "worker", false},
+		{"descendant of the root session", nwrDescendant, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nwrWatcherStarted(t, tc.session, tc.agentRole, t.TempDir()); got != tc.want {
+				t.Errorf("merge-queue watcher started = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
