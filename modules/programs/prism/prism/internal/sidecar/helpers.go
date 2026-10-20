@@ -289,13 +289,18 @@ func isNonWorktreeRootTarget(sessionName string, d *db.DB) bool {
 	return authz.IsNonWorktreeRootFromDB(sessionName, d)
 }
 
-// callerHasCoordinatorRole is the caller-role rule of the per-session
-// endpoints (/set-model, /apply-profile, /register-provider,
-// /set-active-tools, /abort). A caller with this role can target another
-// session. Any other caller can target only its own session.
+// callerHasCoordinatorRole is the caller-role rule of requireCoordinator,
+// /switch, /escalate for another session, and the per-session endpoints
+// (/set-model, /apply-profile, /register-provider, /set-active-tools,
+// /abort). A caller with this role can target another session. Any other
+// caller can target only its own session.
 //
 // An explicit AgentRole wins. With no AgentRole, the DB-backed
 // isCoordinatorSession decides, and so does startedAsNonWorktreeRoot.
+//
+// Do not read the DB role when AgentRole is set. A sandboxed worker has
+// AgentRole "worker", and a gate that reads root_agent_name first admits a
+// worker whose row says "coordinator".
 func (s *Sidecar) callerHasCoordinatorRole() bool {
 	return s.cfg.AgentRole == "coordinator" ||
 		(s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger())) ||

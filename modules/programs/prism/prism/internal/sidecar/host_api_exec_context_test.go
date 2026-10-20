@@ -204,7 +204,8 @@ func TestHostAPI_ExecContext_KillsChildOnCancel(t *testing.T) {
 			role:        "coordinator",
 			sessionName: "myrepo@main",
 			repo:        "myrepo",
-			body:        `{"kind":"state-change","session":"myrepo@feature-x"}`,
+			// /event accepts only the session of the sidecar.
+			body: `{"kind":"state-change","session":"myrepo@main"}`,
 		},
 		{
 			name:        "escalate",

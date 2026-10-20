@@ -54,8 +54,8 @@ const failingStub = "#!/bin/sh\nexit 1\n"
 //	                           finds nothing and the caller's role can only
 //	                           come from the session-name heuristic.
 //
-// agentRole is written to Config.AgentRole. requireCoordinator does not read
-// it — the field is set only so the sidecar is shaped like the real thing.
+// agentRole is written to Config.AgentRole. requireCoordinator reads it
+// first. With "", the DB row and the session name decide.
 func newRoleGateSidecar(t *testing.T, sessionName, repo, rootAgentName, agentRole, stubBody string) *Sidecar {
 	t.Helper()
 

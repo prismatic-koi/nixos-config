@@ -37,6 +37,9 @@ import (
 // subcommand-specific flags (key → value, omitting the --session pair which is
 // sent in the top-level "session" field).
 //
+// The host refuses a session that is not its own, and an args key that is not
+// in eventArgAllowlist (internal/sidecar/host_api.go) for the kind.
+//
 // On success (or if PRISM_HOST_API is unset) returns ("", false), which tells
 // the caller to proceed with the direct DB path. When PRISM_HOST_API is set,
 // this always returns a non-nil error or (nil, true) — it never falls back to
@@ -293,10 +296,14 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 		worktree, _ := cmd.Flags().GetString("worktree")
 		agentRole, _ := cmd.Flags().GetString("agent-role")
 
-		if proxied, err := proxyEventToHostAPI("tmux-session-start", session, map[string]string{
-			"worktree":   worktree,
-			"agent-role": agentRole,
-		}); proxied {
+		// The host /event handler refuses agent-role: only prism on the host
+		// sets the role. Send the key only when it is set, so a plain start
+		// still proxies and a sandboxed --agent-role fails with a clear error.
+		proxyArgs := map[string]string{"worktree": worktree}
+		if agentRole != "" {
+			proxyArgs["agent-role"] = agentRole
+		}
+		if proxied, err := proxyEventToHostAPI("tmux-session-start", session, proxyArgs); proxied {
 			return err
 		}
 
@@ -825,7 +832,7 @@ func init() {
 	// tmux-session-start flags
 	eventTmuxSessionStartCmd.Flags().String("session", "", "tmux session name")
 	eventTmuxSessionStartCmd.Flags().String("worktree", "", "worktree path")
-	eventTmuxSessionStartCmd.Flags().String("agent-role", "", "agent role to seed into root_agent_name (e.g. worker, coordinator, review-code); when omitted, root_agent_name is left unchanged")
+	eventTmuxSessionStartCmd.Flags().String("agent-role", "", "agent role to seed into root_agent_name (e.g. worker, coordinator, review-code); when omitted, root_agent_name is left unchanged; refused inside a sandbox (PRISM_HOST_API set)")
 	_ = eventTmuxSessionStartCmd.MarkFlagRequired("session")
 	_ = eventTmuxSessionStartCmd.MarkFlagRequired("worktree")
 
