@@ -325,7 +325,8 @@ const (
 // listings or picker selections, so this is not currently reachable.
 //
 // Callers must treat "" as "no --agent flag; fall back to the coordinator
-// role" — see the lookupRole fallback in cmd/pr.go and cmd/restore.go.
+// role" — see the lookupRole fallback in cmd/pr.go and profileSlotRole in
+// cmd/agent_run.go.
 func DefaultAgent(directory, explicit string) string {
 	if explicit != "" {
 		return explicit
