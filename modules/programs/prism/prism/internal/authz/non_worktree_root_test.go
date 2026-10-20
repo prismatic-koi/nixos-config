@@ -130,29 +130,39 @@ func TestIsNonWorktreeRootFromDB(t *testing.T) {
 // get tier 1, and must not get the tier-3 privilege.
 func TestAuthorizeCheckin_NonWorktreeRootFlagCannotPromoteADescendant(t *testing.T) {
 	d := openRootSessionTestDB(t)
-	const (
-		caller = "prism-test-root~investigate-v2"
-		target = "prism-test-other@feature"
-	)
+	const caller = "prism-test-root~investigate-v2"
 	if err := d.UpsertStatusSeedRootAgentName(caller, "prism-test-root", nonWorktreeDir(t), "idle", nil, nil, "", "", ""); err != nil {
 		t.Fatalf("seed caller: %v", err)
 	}
-	if err := d.UpsertStatusSeedRootAgentName(target, "prism-test-other", "/tmp/other", "idle", nil, nil, "worker", "", ""); err != nil {
-		t.Fatalf("seed target: %v", err)
+
+	// The coordinator target is in reach at tier 2, so it pins the guard in
+	// callerIsCoordinator. The worker target is in reach only at tier 3, so it
+	// pins the guard in privilegeGranted.
+	targets := map[string]string{
+		"prism-test-other@main":    "coordinator",
+		"prism-test-other@feature": "worker",
+	}
+	for target, role := range targets {
+		if err := d.UpsertStatusSeedRootAgentName(target, "prism-test-other", "/tmp/"+target, "idle", nil, nil, role, "", ""); err != nil {
+			t.Fatalf("seed %q: %v", target, err)
+		}
 	}
 
-	got := AuthorizeCheckin(CheckinRequest{
-		Caller:                  caller,
-		Target:                  target,
-		DB:                      d,
-		PrivilegedRepos:         []string{"prism-test-root"},
-		CallerIsNonWorktreeRoot: true,
-		Logger:                  quietLogger(),
-	})
-	if got.Allow {
-		t.Fatalf("descendant caller admitted at tier %d — CallerIsNonWorktreeRoot must not promote a \"~\" session", got.Tier)
-	}
-	if got.Status != http.StatusForbidden {
-		t.Errorf("status = %d, want %d", got.Status, http.StatusForbidden)
+	for target := range targets {
+		got := AuthorizeCheckin(CheckinRequest{
+			Caller:                  caller,
+			Target:                  target,
+			DB:                      d,
+			PrivilegedRepos:         []string{"prism-test-root"},
+			CallerIsNonWorktreeRoot: true,
+			Logger:                  quietLogger(),
+		})
+		if got.Allow {
+			t.Errorf("target %q: descendant caller admitted at tier %d — CallerIsNonWorktreeRoot must not promote a \"~\" session", target, got.Tier)
+			continue
+		}
+		if got.Status != http.StatusForbidden {
+			t.Errorf("target %q: status = %d, want %d", target, got.Status, http.StatusForbidden)
+		}
 	}
 }
