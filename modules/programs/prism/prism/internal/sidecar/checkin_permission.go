@@ -39,11 +39,12 @@ const (
 // keep passing the same facts.
 func (s *Sidecar) authorizeCheckin(targetSession string) authz.CheckinDecision {
 	return authz.AuthorizeCheckin(authz.CheckinRequest{
-		Caller:          s.cfg.SessionName,
-		Target:          targetSession,
-		DB:              s.cfg.DB,
-		PrivilegedRepos: s.cfg.CheckinPrivilegedRepos,
-		Logger:          s.logger(),
+		Caller:                  s.cfg.SessionName,
+		Target:                  targetSession,
+		DB:                      s.cfg.DB,
+		PrivilegedRepos:         s.cfg.CheckinPrivilegedRepos,
+		CallerIsNonWorktreeRoot: s.startedAsNonWorktreeRoot(),
+		Logger:                  s.logger(),
 	})
 }
 
@@ -57,11 +58,12 @@ func (s *Sidecar) authorizeCheckin(targetSession string) authz.CheckinDecision {
 // cmd/checkin_permission.go.
 func (s *Sidecar) authorizeCheckinReviewAggregate(parentSession string) authz.CheckinDecision {
 	return authz.AuthorizeCheckinReviewAggregate(authz.CheckinRequest{
-		Caller:          s.cfg.SessionName,
-		Target:          parentSession,
-		DB:              s.cfg.DB,
-		PrivilegedRepos: s.cfg.CheckinPrivilegedRepos,
-		Logger:          s.logger(),
+		Caller:                  s.cfg.SessionName,
+		Target:                  parentSession,
+		DB:                      s.cfg.DB,
+		PrivilegedRepos:         s.cfg.CheckinPrivilegedRepos,
+		CallerIsNonWorktreeRoot: s.startedAsNonWorktreeRoot(),
+		Logger:                  s.logger(),
 	})
 }
 

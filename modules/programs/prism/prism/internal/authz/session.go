@@ -24,6 +24,7 @@ import (
 	"log"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
@@ -121,6 +122,78 @@ func IsCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool
 	}
 	// Pre-migration fallback or DB unavailable: use name-suffix heuristic.
 	return sessionname.HasCoordinatorSuffix(sessionName)
+}
+
+// IsNonWorktreeRoot reports whether prism started sessionName as the root
+// session of a non-worktree project. A caller for which it returns true has
+// the coordinator role, the same role as a "<repo>@main" coordinator.
+//
+// startRole and startDir are the record of how prism started the session:
+// the agent role that the start path gave it, and the directory that the
+// start path started it in. The answer comes from that record, not from the
+// shape of the name. A worker with a bare name is still a worker.
+//
+// The rule is sound because of how prism starts sessions. `prism spawn`,
+// `prism review`, and `prism investigate` give the session an explicit role.
+// `prism pr` starts through ensureAndSwitch, which takes the role from
+// session.DefaultAgent for the worktree: "worker", or "coordinator" on main.
+// A spawned worker also has a name with "@" and starts in a worktree of a
+// bare repo, and a review agent or an investigator has a name with "~". So
+// each spawned session fails at least two of the checks below. Only the
+// root-session start path (`prism switch`, `prism restore`) starts a session
+// with no role in a directory outside every bare+worktree layout. The host
+// API keeps that path closed to a worker: /switch needs the coordinator role. session.DefaultAgent returns "" for that directory.
+// This function reads the same git.BareRoot rule as DefaultAgent.
+//
+// Name checks narrow the grant and never widen it. A descendant ("~") and a
+// meta-session are never a root, whatever the record says. A name with a
+// branch ("@") is never a non-worktree root: the root-session start path
+// names a non-worktree session with session.NameFor, which gives a bare name.
+// A name with no repo part is malformed and fails closed.
+//
+// A start directory that itself holds ".bare" is the project root of a
+// bare+worktree layout, not a non-worktree project. git.BareRoot starts its
+// search at the parent, so this function refuses that directory explicitly.
+// Without the check, a session started there is a second coordinator of the
+// repo, beside "<repo>@main".
+//
+// Each route supplies its own record. The host-API route passes the start
+// config of the sidecar (Config.AgentRole, Config.Worktree), which the agent
+// cannot change. The direct CLI route reads agent_status through
+// IsNonWorktreeRootFromDB.
+func IsNonWorktreeRoot(sessionName, startRole, startDir string) bool {
+	if sessionname.IsMeta(sessionName) || sessionname.IsDescendant(sessionName) || sessionname.HasBranch(sessionName) {
+		return false
+	}
+	if sessionname.Repo(sessionName) == "" {
+		return false
+	}
+	if startRole != "" || startDir == "" {
+		return false
+	}
+	return !git.IsBareRepo(startDir) && git.BareRoot(startDir) == ""
+}
+
+// IsNonWorktreeRootFromDB applies IsNonWorktreeRoot to the start record in the
+// agent_status row of sessionName: root_agent_name and worktree. A nil handle,
+// a missing row, or a DB error gives false.
+//
+// root_agent_name is a faithful start record for this case because the start
+// path clears a stale value before it starts a role-less non-worktree root
+// (session.setupFullLayout).
+func IsNonWorktreeRootFromDB(sessionName string, d *db.DB) bool {
+	if d == nil {
+		return false
+	}
+	st, err := d.CurrentStatus(sessionName)
+	if err != nil || st == nil {
+		return false
+	}
+	role := ""
+	if st.RootAgentName != nil {
+		role = *st.RootAgentName
+	}
+	return IsNonWorktreeRoot(sessionName, role, st.Worktree)
 }
 
 // IsRootSession reports whether sessionName is the root session of its own

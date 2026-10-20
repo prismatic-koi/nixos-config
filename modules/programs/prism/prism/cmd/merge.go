@@ -32,7 +32,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
-	"github.com/prismatic-koi/prism/internal/session"
 )
 
 var mergeCmd = &cobra.Command{
@@ -188,7 +187,7 @@ func runMerge(cmd *cobra.Command, args []string) error {
 	defer d.Close()
 
 	if callerSession != "" {
-		if !session.IsCoordinatorSession(callerSession, d) {
+		if !callerHasCoordinatorRole(callerSession, d) {
 			return fmt.Errorf(`prism merge: this command is for coordinator sessions only.
 
 Workers must not enqueue merges directly. Ask your coordinator to run:

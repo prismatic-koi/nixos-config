@@ -233,7 +233,7 @@ func runProfileUse(cmd *cobra.Command, args []string) error {
 			d, dbErr := openDB()
 			if dbErr == nil {
 				defer d.Close()
-				if !session.IsCoordinatorSession(envSession, d) {
+				if !callerHasCoordinatorRole(envSession, d) {
 					displayScope := scope
 					if displayScope == "" {
 						displayScope = "all"

@@ -268,6 +268,40 @@ func isCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool
 	return authz.IsCoordinatorSession(sessionName, d, logger)
 }
 
+// startedAsNonWorktreeRoot reports whether prism started this sidecar as the
+// root session of a non-worktree project. Such a session has the coordinator
+// role. See authz.IsNonWorktreeRoot for the rule.
+//
+// It reads only the start config (Config.AgentRole, Config.Worktree). The
+// agent cannot change the start config, and the DB is not consulted. Every
+// caller-role gate in the host API ORs this into its existing check. If a
+// gate omits it, that gate treats the root session of a non-worktree project
+// as a worker.
+func (s *Sidecar) startedAsNonWorktreeRoot() bool {
+	return authz.IsNonWorktreeRoot(s.cfg.SessionName, s.cfg.AgentRole, s.cfg.Worktree)
+}
+
+// isNonWorktreeRootTarget reports whether prism started sessionName as the
+// root session of a non-worktree project. It reads agent_status, because a
+// target is another session and its start config is not in reach. See
+// authz.IsNonWorktreeRootFromDB.
+func isNonWorktreeRootTarget(sessionName string, d *db.DB) bool {
+	return authz.IsNonWorktreeRootFromDB(sessionName, d)
+}
+
+// callerHasCoordinatorRole is the caller-role rule of the per-session
+// endpoints (/set-model, /apply-profile, /register-provider,
+// /set-active-tools, /abort). A caller with this role can target another
+// session. Any other caller can target only its own session.
+//
+// An explicit AgentRole wins. With no AgentRole, the DB-backed
+// isCoordinatorSession decides, and so does startedAsNonWorktreeRoot.
+func (s *Sidecar) callerHasCoordinatorRole() bool {
+	return s.cfg.AgentRole == "coordinator" ||
+		(s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger())) ||
+		s.startedAsNonWorktreeRoot()
+}
+
 // isRootSession returns true when the session is the root session of its own
 // project: a "<repo>@main" coordinator, or a non-worktree session with a bare
 // name. See authz.IsRootSession for the full rule and for why it is a narrower
