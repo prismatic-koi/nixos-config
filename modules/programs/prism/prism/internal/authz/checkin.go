@@ -68,6 +68,7 @@ import (
 	"slices"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
 // Checkin permission tiers. The value is carried on CheckinDecision so the
@@ -123,6 +124,13 @@ type CheckinRequest struct {
 	// privilege to nobody.
 	PrivilegedRepos []string
 
+	// CallerIsNonWorktreeRoot is true when prism started Caller as the root
+	// session of a non-worktree project (IsNonWorktreeRoot). Such a caller
+	// takes the coordinator tiers. Each route fills it from its own start
+	// record: the host-API route from the sidecar start config, the direct
+	// CLI route from IsNonWorktreeRootFromDB. False is the fail-closed value.
+	CallerIsNonWorktreeRoot bool
+
 	// Logger receives the fail-closed diagnostics. Nil is replaced with
 	// log.Default().
 	Logger *log.Logger
@@ -141,7 +149,7 @@ func allowCheckin(tier int) CheckinDecision {
 // AuthorizeCheckin decides whether req.Caller may read the conversation
 // history of req.Target.
 //
-// The caller's role is resolved once, through IsCoordinatorSession. Anything
+// The caller's role is resolved once, through callerIsCoordinator. Anything
 // that is not a coordinator — a worker, a review agent, an investigator, a
 // session whose role cannot be determined — takes the tier-1 path, which is
 // the narrowest of the three. That is the fail-closed direction: an
@@ -161,7 +169,7 @@ func AuthorizeCheckin(req CheckinRequest) CheckinDecision {
 			"cannot determine the calling session — checkin denied")
 	}
 
-	if !IsCoordinatorSession(req.Caller, req.DB, req.Logger) {
+	if !req.callerIsCoordinator() {
 		return req.authorizeWorker()
 	}
 	return req.authorizeCoordinator()
@@ -200,7 +208,7 @@ func AuthorizeCheckinReviewAggregate(req CheckinRequest) CheckinDecision {
 			"cannot determine the calling session — checkin denied")
 	}
 
-	if !IsCoordinatorSession(req.Caller, req.DB, req.Logger) {
+	if !req.callerIsCoordinator() {
 		// Tier 1 (aggregate form): a worker may read the review-agent summary
 		// of its OWN session only. Unlike AuthorizeCheckin's tier 1, this does
 		// not consult GroupParentForMember — req.Target here is the parent
@@ -214,6 +222,18 @@ func AuthorizeCheckinReviewAggregate(req CheckinRequest) CheckinDecision {
 			req.Caller, req.Target)
 	}
 	return req.authorizeCoordinator()
+}
+
+// callerIsCoordinator reports whether the caller takes the coordinator tiers:
+// a coordinator, or the root session of a non-worktree project. The
+// descendant guard repeats the one in IsNonWorktreeRoot, so a route that sets
+// CallerIsNonWorktreeRoot by mistake cannot promote a review agent or an
+// investigator.
+func (req CheckinRequest) callerIsCoordinator() bool {
+	if IsCoordinatorSession(req.Caller, req.DB, req.Logger) {
+		return true
+	}
+	return req.CallerIsNonWorktreeRoot && !sessionname.IsDescendant(req.Caller)
 }
 
 // authorizeWorker implements tier 1: a worker may read only the review agents
@@ -311,7 +331,9 @@ func (req CheckinRequest) authorizeCoordinator() CheckinDecision {
 //  1. The caller's repo appears in PrivilegedRepos. An empty or absent list
 //     therefore grants the privilege to nobody.
 //  2. The caller's agent_status row exists and carries
-//     root_agent_name = 'coordinator'.
+//     root_agent_name = 'coordinator', or the route reports that prism
+//     started the caller as the root session of a non-worktree project
+//     (CallerIsNonWorktreeRoot). Both are start records, not names.
 //
 // Condition 2 must not rest on the name heuristic.
 // IsCoordinatorSession returns dbBased || nameBased, where nameBased is the
@@ -334,6 +356,10 @@ func (req CheckinRequest) privilegeGranted() bool {
 	}
 	if !slices.Contains(req.PrivilegedRepos, repo) {
 		return false
+	}
+
+	if req.CallerIsNonWorktreeRoot && !sessionname.IsDescendant(req.Caller) {
+		return true
 	}
 
 	rootAgentName, rowExists, err := req.DB.RootAgentName(req.Caller)

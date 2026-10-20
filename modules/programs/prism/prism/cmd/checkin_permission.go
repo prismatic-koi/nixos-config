@@ -151,11 +151,12 @@ func authorizeDirectCheckinFor(caller, target string) error {
 	}
 
 	decision := authz.AuthorizeCheckin(authz.CheckinRequest{
-		Caller:          caller,
-		Target:          target,
-		DB:              d,
-		PrivilegedRepos: privilegedRepos,
-		Logger:          log.Default(),
+		Caller:                  caller,
+		Target:                  target,
+		DB:                      d,
+		PrivilegedRepos:         privilegedRepos,
+		CallerIsNonWorktreeRoot: authz.IsNonWorktreeRootFromDB(caller, d),
+		Logger:                  log.Default(),
 	})
 	if !decision.Allow {
 		// decision.Status is an HTTP status, which this route has nowhere to
@@ -207,11 +208,12 @@ func authorizeDirectCheckinReviewAggregateFor(caller, parentSession string) erro
 	}
 
 	decision := authz.AuthorizeCheckinReviewAggregate(authz.CheckinRequest{
-		Caller:          caller,
-		Target:          parentSession,
-		DB:              d,
-		PrivilegedRepos: privilegedRepos,
-		Logger:          log.Default(),
+		Caller:                  caller,
+		Target:                  parentSession,
+		DB:                      d,
+		PrivilegedRepos:         privilegedRepos,
+		CallerIsNonWorktreeRoot: authz.IsNonWorktreeRootFromDB(caller, d),
+		Logger:                  log.Default(),
 	})
 	if !decision.Allow {
 		return fmt.Errorf("prism checkin: %s", decision.Message)

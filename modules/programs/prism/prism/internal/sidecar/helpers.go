@@ -268,6 +268,19 @@ func isCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool
 	return authz.IsCoordinatorSession(sessionName, d, logger)
 }
 
+// startedAsNonWorktreeRoot reports whether prism started this sidecar as the
+// root session of a non-worktree project. Such a session has the coordinator
+// role. See authz.IsNonWorktreeRoot for the rule.
+//
+// It reads only the start config (Config.AgentRole, Config.Worktree). The
+// agent cannot change the start config, and the DB is not consulted. Every
+// caller-role gate in the host API ORs this into its existing check. If a
+// gate omits it, that gate treats the root session of a non-worktree project
+// as a worker.
+func (s *Sidecar) startedAsNonWorktreeRoot() bool {
+	return authz.IsNonWorktreeRoot(s.cfg.SessionName, s.cfg.AgentRole, s.cfg.Worktree)
+}
+
 // isRootSession returns true when the session is the root session of its own
 // project: a "<repo>@main" coordinator, or a non-worktree session with a bare
 // name. See authz.IsRootSession for the full rule and for why it is a narrower

@@ -30,7 +30,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
-	"github.com/prismatic-koi/prism/internal/session"
 )
 
 var mergesCmd = &cobra.Command{
@@ -322,7 +321,7 @@ func runMergesCancel(cmd *cobra.Command, args []string) error {
 //
 // This mirrors the `// Guard: coordinator-only` branch in cmd/merge.go and
 // requireInvestigateCoordinator in cmd/investigate.go — the same
-// session.IsCoordinatorSession call, keyed on the resolved caller session.
+// callerHasCoordinatorRole call, keyed on the resolved caller session.
 // The three properties that make this caller-keyed shape safe for these two
 // verbs, but not for `prism spawn`, are:
 //
@@ -364,7 +363,7 @@ func requireMergesCoordinator(verb, suggestion, callerSession string, d *db.DB) 
 	if callerSession == "" {
 		return fmt.Errorf("%s: cannot determine caller session — run from inside a prism tmux session or set PRISM_SESSION_NAME", verb)
 	}
-	if session.IsCoordinatorSession(callerSession, d) {
+	if callerHasCoordinatorRole(callerSession, d) {
 		return nil
 	}
 	return fmt.Errorf(`%s: this command is for coordinator sessions only (caller: %s).

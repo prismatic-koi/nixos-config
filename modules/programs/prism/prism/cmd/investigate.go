@@ -156,7 +156,7 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 // no check here, any host-mode worker, review agent, or investigator can
 // spawn an investigator. This function closes that path, and mirrors the
 // `// Guard: coordinator-only` branch in cmd/merge.go — the same
-// session.IsCoordinatorSession call, keyed on the resolved invoker session.
+// callerHasCoordinatorRole call, keyed on the resolved invoker session.
 //
 // Keying on the resolved invoker (not on, say, the presence of
 // PRISM_HOST_API) is what admits the host-side child that the `/investigate`
@@ -168,9 +168,11 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 // IsCoordinatorSession fails closed: an unknown role — no row, a DB error, or
 // a NULL root_agent_name — falls through to the "name ends in @main"
 // heuristic alone, which is false for every worker, review-agent, and
-// investigator name.
+// investigator name. The non-worktree-root arm of callerHasCoordinatorRole
+// needs a row whose worktree is outside every bare+worktree layout, which no
+// spawned worker has.
 func requireInvestigateCoordinator(invokerSession string, database *db.DB) error {
-	if session.IsCoordinatorSession(invokerSession, database) {
+	if callerHasCoordinatorRole(invokerSession, database) {
 		return nil
 	}
 	return fmt.Errorf(`prism investigate: this command is for coordinator sessions only (invoker: %s).

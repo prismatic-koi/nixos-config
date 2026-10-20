@@ -1596,6 +1596,17 @@ func (d *DB) RootAgentName(sessionName string) (name string, rowExists bool, err
 	return ns.String, true, nil
 }
 
+// ClearRootAgentName sets root_agent_name to NULL for sessionName. A missing
+// row is not an error. Every upsert keeps root_agent_name with COALESCE, so
+// this is the only write that can remove a stale value.
+func (d *DB) ClearRootAgentName(sessionName string) error {
+	const q = `UPDATE agent_status SET root_agent_name = NULL WHERE session_name = ?`
+	if _, err := d.conn.Exec(q, sessionName); err != nil {
+		return fmt.Errorf("db: clear root agent name: %w", err)
+	}
+	return nil
+}
+
 // queryStatuses is a helper that runs a SELECT on agent_status and scans rows.
 func (d *DB) queryStatuses(q string, args ...any) ([]Status, error) {
 	rows, err := d.conn.Query(q, args...)
