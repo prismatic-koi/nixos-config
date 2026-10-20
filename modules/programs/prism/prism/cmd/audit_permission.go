@@ -30,7 +30,7 @@ package cmd
 // # Shape
 //
 // This mirrors requireMergesCoordinator in cmd/merges.go exactly: the same
-// session.IsCoordinatorSession call, keyed on the resolved caller session,
+// callerHasCoordinatorRole call, keyed on the resolved caller session,
 // and the same fail-closed behaviour for an unresolvable caller. `prism
 // audit` has no bare-shell bootstrap flow to preserve and no keybind that
 // invokes it, so the three properties that make a caller-keyed guard safe
@@ -46,7 +46,6 @@ import (
 	"fmt"
 
 	"github.com/prismatic-koi/prism/internal/db"
-	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // requireAuditCoordinator is the direct-CLI half of the coordinator-only gate
@@ -56,7 +55,7 @@ func requireAuditCoordinator(callerSession string, d *db.DB) error {
 	if callerSession == "" {
 		return fmt.Errorf("prism audit: cannot determine caller session — run from inside a prism tmux session or set PRISM_SESSION_NAME")
 	}
-	if session.IsCoordinatorSession(callerSession, d) {
+	if callerHasCoordinatorRole(callerSession, d) {
 		return nil
 	}
 	return fmt.Errorf(`prism audit: this command is for coordinator sessions only (caller: %s).

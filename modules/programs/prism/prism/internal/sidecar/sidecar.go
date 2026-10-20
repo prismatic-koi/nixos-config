@@ -1031,11 +1031,14 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// (mergequeue.PollInterval) and drives PRs through the merge lifecycle. It is
 	// started only when:
 	//   - AgentRole is "coordinator" (explicit), OR
-	//   - SessionName ends with "@main" (legacy heuristic).
+	//   - SessionName ends with "@main" (legacy heuristic), OR
+	//   - prism started this session as the root session of a non-worktree
+	//     project (startedAsNonWorktreeRoot). requireCoordinator admits that
+	//     session to `prism merge`, so it must drive its own queue.
 	// The watcher context is stored so Shutdown() can cancel it before the
 	// abandon-watching-rows SQL runs (preventing a race where the watcher fires
 	// a terminal transition after AbandonWatchingMerges clears the rows).
-	if s.cfg.AgentRole == "coordinator" || isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
+	if s.cfg.AgentRole == "coordinator" || isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) || s.startedAsNonWorktreeRoot() {
 		if instanceID != "" {
 			watcherCtx, watcherCancel := context.WithCancel(ctx)
 			s.mu.Lock()

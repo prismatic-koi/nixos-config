@@ -218,6 +218,7 @@ func TestHostAPI_CoordinatorOnly_DeniesWorker(t *testing.T) {
 		{http.MethodPost, "/spawn", `{"branch":"feature-x","prompt":"do the thing"}`},
 		{http.MethodPost, "/cleanup", `{"session":"prism-test-rolegate@feature-x","yes":true}`},
 		{http.MethodPost, "/close", `{"session":"prism-test-rolegate@feature-x"}`},
+		{http.MethodPost, "/switch", `{"session":"prism-test-rolegate@feature-x"}`},
 		{http.MethodPost, "/merge", `{"pr":1}`},
 		{http.MethodGet, "/merges", ""},
 		{http.MethodPost, "/merges/cancel", `{"pr":1}`},

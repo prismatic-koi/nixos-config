@@ -182,13 +182,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		port = *status.HarnessPort
 	}
 
-	agentRole := ""
-	if status.RootAgentName != nil {
-		agentRole = *status.RootAgentName
-	}
-	if agentRole == "" {
-		agentRole = session.DefaultAgent(worktree, "")
-	}
+	agentRole := agentRunRole(status, worktree)
 
 	hostAPISockPath := ""
 	if sockPath, sockErr := session.SidecarHostAPIPath(sessionName); sockErr == nil {

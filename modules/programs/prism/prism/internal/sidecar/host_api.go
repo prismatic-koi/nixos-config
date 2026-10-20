@@ -203,7 +203,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	POST /review        — run review agents against a PR (all roles)
 //	POST /cleanup       — clean up an existing session (coordinator only)
 //	POST /close         — smart-decide close (soft if open PR; hard otherwise) (coordinator only)
-//	POST /switch        — switch the tmux client to a session (all roles)
+//	POST /switch        — switch the tmux client to a session; creates it when absent (coordinator only)
 //	GET  /list-sessions — list active sessions (role-scoped: all=true is coordinator only)
 //	GET  /checkin       — return conversation history for a session (role-scoped)
 //	GET  /logs          — return the log file for a session (coordinator only)
@@ -316,12 +316,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// heuristic alone, with no DB evidence. A privilege check must not rest on
 	// that heuristic alone.
 	//
+	// It also admits the root session of a non-worktree project, from the
+	// start config of this sidecar (startedAsNonWorktreeRoot).
+	//
 	// This is the enforcement point for the worker restriction on
 	// coordinator-only verbs (`prism merge`, `prism investigate`, …). No
 	// entry in the pi extension's bash deny list matches a prism verb; agent
 	// prose must name this gate.
 	requireCoordinator := func(w http.ResponseWriter, operation string) bool {
-		if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
+		if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) && !s.startedAsNonWorktreeRoot() {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("workers cannot perform %s", operation))
 			return false
@@ -655,7 +658,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		showAll := r.URL.Query().Get("all") == "true"
 
 		// Workers cannot use all=true.
-		if showAll && s.cfg.AgentRole != "coordinator" {
+		if showAll && s.cfg.AgentRole != "coordinator" && !s.startedAsNonWorktreeRoot() {
 			writeError(w, http.StatusForbidden, "workers cannot list sessions across all repos (all=true requires coordinator role)")
 			return
 		}
@@ -1238,7 +1241,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		crossRepo := targetRepo != ownRepo
 
-		if s.cfg.AgentRole == "coordinator" {
+		// The caller role comes from the start config of this sidecar, never
+		// from the DB and never from the shape of the name. The root session of
+		// a non-worktree project (for example `obsidian`) has no AgentRole, so
+		// startedAsNonWorktreeRoot gives it the coordinator branch.
+		if s.cfg.AgentRole == "coordinator" || s.startedAsNonWorktreeRoot() {
 			// Coordinator: own repo any session allowed; cross-repo only a root
 			// session.
 			//
@@ -2548,6 +2555,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
+		// Coordinator role only. `prism switch` on the host creates the
+		// session when it does not exist, in the directory that the DB row
+		// names, and /event lets a sandboxed caller write that row for any
+		// session name. Without this gate, a worker can start a role-less
+		// session in a directory it writes (for example under ~/.npm). That
+		// session is a non-worktree root (authz.IsNonWorktreeRoot), so it has
+		// the coordinator role, and pi loads the project extensions of the
+		// worker from its cwd. callerHasCoordinatorRole reads Config.AgentRole
+		// first, so a role that a worker forges in the DB does not pass.
+		if !s.callerHasCoordinatorRole() {
+			writeError(w, http.StatusForbidden, "workers cannot perform switch")
+			return
+		}
+
 		// Resolve worktree path for the session from the DB, then use
 		// prism switch --path <worktree> to switch the tmux client.
 		worktreePath, err := s.worktreePathForSession(req.Session)
@@ -3235,7 +3256,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// Cross-session: only coordinators may escalate on behalf of
 			// another session. The DB-backed coordinator check matches the
 			// pattern used by /prompt's cross-repo branch and /set-model.
-			if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
+			if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) && !s.startedAsNonWorktreeRoot() {
 				writeError(w, http.StatusForbidden,
 					fmt.Sprintf("workers can only escalate from their own session (%s), got from=%q",
 						s.cfg.SessionName, fromSession))
@@ -3451,7 +3472,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// (the target's own session name), so the guard passes correctly.
 		// There is no sidecar-to-sidecar authentication beyond the per-session
 		// Unix socket filesystem permissions (same as /register-provider-direct).
-		callerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()))
+		callerIsCoordinator := s.callerHasCoordinatorRole()
 		if !callerIsCoordinator && req.Session != s.cfg.SessionName {
 			writeError(w, http.StatusForbidden, "workers can only call /set-model for their own session")
 			return
@@ -3511,7 +3532,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// Permission: global and coordinator scopes require coordinator role.
-		applyCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()))
+		applyCallerIsCoordinator := s.callerHasCoordinatorRole()
 		if req.Scope == "global" || req.Scope == "coordinator" {
 			if !applyCallerIsCoordinator {
 				writeError(w, http.StatusForbidden,
@@ -3647,7 +3668,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// Permission: global and coordinator scopes require coordinator role.
-		regCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()))
+		regCallerIsCoordinator := s.callerHasCoordinatorRole()
 		if req.Scope == "global" || req.Scope == "coordinator" {
 			if !regCallerIsCoordinator {
 				writeError(w, http.StatusForbidden,
@@ -3788,7 +3809,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		// Workers may only target their own session.
-		satCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()))
+		satCallerIsCoordinator := s.callerHasCoordinatorRole()
 		if !satCallerIsCoordinator && req.Session != s.cfg.SessionName {
 			writeError(w, http.StatusForbidden, "workers can only call /set-active-tools for their own session")
 			return
@@ -3832,7 +3853,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		// Workers may only target their own session.
-		abortCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()))
+		abortCallerIsCoordinator := s.callerHasCoordinatorRole()
 		if !abortCallerIsCoordinator && req.Session != s.cfg.SessionName {
 			writeError(w, http.StatusForbidden, "workers can only call /abort for their own session")
 			return
@@ -4266,6 +4287,11 @@ func isPipeConnected(s *Sidecar) bool {
 //
 // Returns (role, "") on success.
 // Returns ("", "error:disconnected") when the session cannot be looked up.
+//
+// A session with no recorded role gets the "worker" slot, except the root
+// session of a non-worktree project (isNonWorktreeRootTarget). That
+// session gets the "coordinator" slot, the slot that `prism agent-run` gives
+// it at start (profileSlotRole in cmd/agent_run.go).
 func resolveRoleForSession(s *Sidecar, targetSess string) (role, skipStatus string) {
 	if s.cfg.DB == nil {
 		return "", "error:disconnected"
@@ -4275,7 +4301,10 @@ func resolveRoleForSession(s *Sidecar, targetSess string) (role, skipStatus stri
 		return "", "error:disconnected"
 	}
 	if name == "" {
-		name = "worker" // fallback when role is not recorded
+		name = "worker"
+		if isNonWorktreeRootTarget(targetSess, s.cfg.DB) {
+			name = "coordinator"
+		}
 	}
 	return name, ""
 }

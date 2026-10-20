@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/authz"
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
@@ -324,7 +325,8 @@ const (
 // listings or picker selections, so this is not currently reachable.
 //
 // Callers must treat "" as "no --agent flag; fall back to the coordinator
-// role" — see the lookupRole fallback in cmd/pr.go and cmd/restore.go.
+// role" — see the lookupRole fallback in cmd/pr.go and profileSlotRole in
+// cmd/agent_run.go.
 func DefaultAgent(directory, explicit string) string {
 	if explicit != "" {
 		return explicit
@@ -345,9 +347,19 @@ func DefaultAgent(directory, explicit string) string {
 // root_agent_name it is returned directly. Falls back to DefaultAgent (directory
 // heuristic) for pre-migration rows where root_agent_name is NULL.
 // When d is nil, falls back to DefaultAgent unconditionally.
+//
+// The root session of a non-worktree project (authz.IsNonWorktreeRoot with no
+// role) gets "" whatever root_agent_name holds. The root-session start path
+// never gives that session a role, so a stored value is stale. A row can hold
+// "worker" from before #954 or a wrong value such as "review-goal" (#2658). If
+// this function returns that value, restore starts the sidecar and the agent
+// with the wrong role, and the host API treats the root session as a worker.
 func DefaultAgentForSession(sessionName, directory, explicit string, d *db.DB) string {
 	if explicit != "" {
 		return explicit
+	}
+	if authz.IsNonWorktreeRoot(sessionName, "", directory) {
+		return ""
 	}
 	if d != nil {
 		rootName, rowExists, err := d.RootAgentName(sessionName)
@@ -934,6 +946,54 @@ func agentPaneEnvVars(opts Opts) map[string]string {
 	}
 }
 
+// ClearStaleNonWorktreeRootRole clears every stored role of a session when
+// prism starts it as the root session of a non-worktree project with no role.
+// For any other start it does nothing. When d is nil, it opens the DB.
+//
+// It clears two records:
+//
+//   - agent_status.root_agent_name.
+//   - agent_role and root_agent_name on the open sessions row of the
+//     incarnation that this start continues. instanceID names it. When
+//     instanceID is "", the incarnation is agent_status.instance_id.
+//
+// The start path gives that session no role, so a stored value is stale (see
+// DefaultAgentForSession). With both records cleared, the DB agrees with the
+// start config of the sidecar. The direct CLI route then gives the session the
+// same role as the host API (authz.IsNonWorktreeRootFromDB), and the exporter
+// labels the incarnation with no agent_role. `prism restore` writes the
+// sessions row before session.Create, so this clear runs after that write.
+// An ended sessions row is history and keeps its values.
+func ClearStaleNonWorktreeRootRole(d *db.DB, name, directory, agent, instanceID string) error {
+	if agent != "" || !authz.IsNonWorktreeRoot(name, "", directory) {
+		return nil
+	}
+	if d == nil {
+		opened, err := openDB()
+		if err != nil {
+			return fmt.Errorf("open DB to clear the stored role of %q: %w", name, err)
+		}
+		defer opened.Close()
+		d = opened
+	}
+	if instanceID == "" {
+		st, err := d.CurrentStatus(name)
+		if err != nil {
+			return fmt.Errorf("read agent_status of %q: %w", name, err)
+		}
+		if st != nil && st.InstanceID != nil {
+			instanceID = *st.InstanceID
+		}
+	}
+	if err := d.ClearRootAgentName(name); err != nil {
+		return err
+	}
+	if instanceID == "" {
+		return nil
+	}
+	return d.ClearOpenSessionRoles(instanceID)
+}
+
 // setupFullLayout configures the three-window layout for a project session:
 // window 0 "edit" (nvim auto-launched), window 1 "agent" (pi),
 // window 2 "term". Seeds agent_status via prism event tmux-session-start.
@@ -949,6 +1009,13 @@ func setupFullLayout(name, directory string, opts Opts) error {
 
 	nvimCmd := NvimCmd(directory)
 	_ = tmux.SendKeys(name+":0", nvimCmd)
+
+	// Clear before the seed, the sidecar, and the agent window. Each of them
+	// reads root_agent_name, and `prism agent-run` turns it into the --agent
+	// flag of the agent.
+	if err := ClearStaleNonWorktreeRootRole(opts.DB, name, directory, opts.Agent, opts.InstanceID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: setupFullLayout: %v\n", err)
+	}
 
 	// Seed agent_status before the sidecar starts. The seed decides the
 	// instance ID of this incarnation, and it mints a fresh one when the

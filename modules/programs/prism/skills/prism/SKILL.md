@@ -181,6 +181,8 @@ A cross-repo `prism prompt` can target a root session, and nothing else. Two nam
 
 A name that holds `~` — `<parent>~review-1-review-goal`, `<parent>~investigate-<slug>` — is never a root session. The host API refuses a cross-repo prompt to one with HTTP 403.
 
+A bare-name root session has the coordinator role, the same as `<repo>@main`. So `obsidian` can prompt `home-ops@main`, and it can run the coordinator-only verbs. Prism takes the role from how it started the session, not from the name. A worker with a bare name stays a worker, and a name that holds `~` never gets the coordinator role.
+
 **Flow:**
 
 1. Run `prism sessions list` and look for the target repo's root session. Read the exact name from the output. Do not guess it: for a non-worktree project the name is bare, and `<repo>@main` does not exist.
