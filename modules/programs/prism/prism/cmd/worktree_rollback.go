@@ -16,7 +16,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
-	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // rollbackCreatedWorktree unwinds a worktree created earlier in a failed
@@ -37,8 +36,11 @@ func rollbackCreatedWorktree(bareRoot string, created *git.CreatedWorktree, labe
 	// succeeded and the failure is downstream (e.g. attach). The session
 	// owns the worktree — removing it would pull the directory out from
 	// under a running agent. `prism cleanup` handles that class instead.
-	if tmux.HasSession(session.NameFor(created.Path, bareRoot)) {
-		proglog.Warnf("[%s] not rolling back worktree %q: a tmux session exists for it\n",
+	// The check compares exact names (#3184). If tmux cannot be queried,
+	// keep the worktree: a wrong removal loses work, a wrong skip leaves
+	// a directory that `prism cleanup` removes.
+	if session.TmuxSessionPresence(session.NameFor(created.Path, bareRoot)) != session.TmuxGone {
+		proglog.Warnf("[%s] not rolling back worktree %q: a tmux session exists for it, or tmux cannot be queried\n",
 			label, created.Path)
 		return
 	}

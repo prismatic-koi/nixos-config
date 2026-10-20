@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -31,7 +32,9 @@ import (
 func withAllFailTmux(t *testing.T) {
 	t.Helper()
 	wrapperPath := t.TempDir() + "/tmux"
-	script := "#!/bin/sh\nexit 1\n"
+	script := "#!/bin/sh\n" +
+		"[ \"$1\" = list-sessions ] && echo 'no server running on /tmp/tmux-test/default' >&2\n" +
+		"exit 1\n"
 	if err := os.WriteFile(wrapperPath, []byte(script), 0755); err != nil {
 		t.Fatalf("write failing tmux: %v", err)
 	}
@@ -130,7 +133,6 @@ func TestRollbackCreatedWorktreeHelper_NilCreated(t *testing.T) {
 func TestRollbackCreatedWorktreeHelper_SkipsWhenSessionLive(t *testing.T) {
 	// Noop tmux: has-session exits 0, so the helper sees a live session for
 	// the worktree and must leave both the worktree and the branch alone.
-	withNoopTmux(t)
 	baseDir := t.TempDir()
 	bareRoot := initBareRepoWithMainWorktree(t, baseDir, "myrepo")
 
@@ -138,6 +140,7 @@ func TestRollbackCreatedWorktreeHelper_SkipsWhenSessionLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
+	withListSessionsTmux(t, session.NameFor(created.Path, bareRoot))
 
 	rollbackCreatedWorktree(bareRoot, &created, "test")
 
@@ -216,5 +219,36 @@ func TestRunSpawn_FailureAfterWorktreeCreation_RollsBack(t *testing.T) {
 	}
 	if cmdBranchExists(t, bareRoot, "feat-unwind") {
 		t.Error("freshly forked branch still exists after failed spawn")
+	}
+}
+
+// withListSessionsTmux redirects tmux.TmuxBin to a stub whose list-sessions
+// prints the given names, one per line, and exits 0 for every command.
+func withListSessionsTmux(t *testing.T, names ...string) {
+	t.Helper()
+	wrapperPath := t.TempDir() + "/tmux"
+	script := "#!/bin/sh\n" +
+		"[ \"$1\" = list-sessions ] && printf '%s\\n' " + shellQuote(strings.Join(names, "\n")) + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(wrapperPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write list-sessions tmux: %v", err)
+	}
+	orig := tmux.TmuxBin
+	tmux.TmuxBin = wrapperPath
+	t.Cleanup(func() { tmux.TmuxBin = orig })
+}
+
+// A live longer-named sibling must not stop the rollback.
+func TestRollbackCreatedWorktreeHelper_PrefixSiblingDoesNotBlock(t *testing.T) {
+	baseDir := t.TempDir()
+	bareRoot := initBareRepoWithMainWorktree(t, baseDir, "myrepo")
+	created, err := git.CreateWorktree(bareRoot, "feat")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	withListSessionsTmux(t, session.NameFor(created.Path, bareRoot)+"-x")
+	rollbackCreatedWorktree(bareRoot, &created, "test")
+	if cmdWorktreeListed(t, bareRoot, created.Path) {
+		t.Error("a prefix sibling blocked the rollback")
 	}
 }

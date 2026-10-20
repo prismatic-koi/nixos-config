@@ -98,7 +98,7 @@ func runNav(_ *cobra.Command, args []string) error {
 // resolveTarget computes the target session name for the requested direction,
 // or ("", false) when the navigation is a no-op.
 func resolveTarget(current string, dir nav.Direction, sessions []dashboard.AgentSession) (string, bool) {
-	live := tmux.HasSession
+	live := session.HasExactSession
 	switch dir {
 	case nav.DirUp, nav.DirDown:
 		targets := nav.VerticalTargets(sessions, live)
