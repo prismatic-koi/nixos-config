@@ -34,8 +34,11 @@ package integration_test
 //     depends on $HOME, a different code path the issue body explicitly
 //     calls out). The probe is invoked under the production-shaped
 //     profile and must exit 0 with an OSStatus of either errSecSuccess (0)
-//     or errSecItemNotFound (-25300) — both signal "lookup completed
-//     without a sandbox-EPERM detour".
+//     or errSecItemNotFound (-25300). The exit code does not show a
+//     missing grant: without the grant the lookup also returns
+//     errSecItemNotFound (see keychainProbeSourceC). The check that
+//     catches a missing grant is the absence of a probe deny line in the
+//     kernel log.
 //
 //   - TestSandboxExecProfile_KeychainLookupDeniedWithoutGrant is the
 //     paired negative. It uses withMutatedProfile per the testing
@@ -143,7 +146,8 @@ int main(int argc, char **argv) {
     fprintf(stdout, "OSStatus=%d\n", (int)status);
 
     /* The same read as the Security framework, without its no-report
-       sandbox_check. A sandbox deny here is logged for this process. */
+       sandbox_check. If the sandbox denies it, the kernel logs a deny of
+       this process. */
     int fd = open(loginKeychain, O_RDONLY);
     if (fd >= 0) {
         close(fd);
@@ -154,8 +158,9 @@ int main(int argc, char **argv) {
     }
     fflush(stdout);
 
-    /* errSecSuccess = 0; errSecItemNotFound = -25300. Either indicates the
-       lookup completed end-to-end without a sandbox-EPERM detour. */
+    /* errSecSuccess is 0 and errSecItemNotFound is -25300. Either one means
+       that the lookup ended with no unexpected error. Neither one shows
+       that the framework read the login keychain. */
     if (status == 0 || status == -25300) {
         return 0;
     }
@@ -301,9 +306,9 @@ func TestSandboxExecProfile_LoginKeychainGrantIsLiteralNotSubpath(t *testing.T) 
 // keychainProbeSentinelService is the service name passed to
 // SecKeychainFindGenericPassword by the probe. The expectation is that no
 // user keychain carries an entry for this name, so the lookup completes
-// with errSecItemNotFound (-25300) under a working grant. (If a host
-// somehow has this exact entry the lookup returns errSecSuccess instead —
-// also a passing positive signal.)
+// with errSecItemNotFound (-25300), with or without the §5i grant. (If a
+// host somehow has this exact entry and the grant, the lookup returns
+// errSecSuccess instead, and the probe also exits 0.)
 const keychainProbeSentinelService = "prism-2293-keychain-probe-no-such-service"
 
 // runKeychainProbe invokes the probe binary under sandbox-exec with the
@@ -383,14 +388,15 @@ func queryLogShowForKeychainDeny(t *testing.T, since time.Time) string {
 
 // TestSandboxExecProfile_KeychainLookupAllowed is the positive test: a
 // keyring-crate-shaped Keychain probe under the production-shaped SBPL
-// profile completes without a sandbox-EPERM detour. The probe exercises
+// profile completes, and the kernel logs no deny of the probe on
+// login.keychain-db. The probe exercises
 // SecKeychainFindGenericPassword — the same Security-Framework function
 // keyring-rs's macOS backend calls into.
 //
 // We skip when the user's login keychain does not exist on the host
 // (e.g. a fresh CI VM with no user account configured), since the
 // positive signal is only meaningful when there is a real keychain for
-// securityd to refuse-or-allow access to.
+// the sandbox to allow or deny.
 func TestSandboxExecProfile_KeychainLookupAllowed(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -414,18 +420,21 @@ func TestSandboxExecProfile_KeychainLookupAllowed(t *testing.T) {
 	if exit != 0 {
 		t.Errorf("Keychain probe exited %d under the production profile.\n"+
 			"AC #3 of issue #2293: SecKeychainFindGenericPassword must complete\n"+
-			"without sandbox-EPERM. The probe surfaces OSStatus inline below — a\n"+
-			"non-zero exit means the OSStatus was neither errSecSuccess (0) nor\n"+
-			"errSecItemNotFound (-25300), i.e. the §5i Keychain literal grant is\n"+
-			"missing or has been narrowed past the point keyring-rs needs.\n"+
+			"under the production profile. The probe surfaces OSStatus inline below.\n"+
+			"A non-zero exit means that the OSStatus was neither errSecSuccess (0)\n"+
+			"nor errSecItemNotFound (-25300): an unexpected Security-Framework error.\n"+
+			"A missing §5i grant does not cause this exit, because without the grant\n"+
+			"the lookup returns errSecItemNotFound. The kernel-log check catches a\n"+
+			"missing grant.\n"+
 			"Exit: %v\nOutput:\n%s\nProfile: %s",
 			exit, runErr, out, profilePath)
 	}
 
-	// Defence-in-depth: the kernel log should carry no sandbox deny on
-	// login.keychain-db over this window. We only assert this when
-	// `log show` is actually usable on the host; CI VMs and nested
-	// environments are off the hook.
+	// The kernel log must hold no deny of the probe on login.keychain-db.
+	// This is the only check in this test that fails when the §5i grant
+	// is missing: the probe exits 0 with or without the grant. If `log show`
+	// is not usable (a nested sandbox, or no /usr/bin/log), this test cannot
+	// see a missing grant. The paired negative test skips in that case.
 	if logShowAvailable(t) {
 		// `log show` ingestion has some latency; give the subsystem
 		// a moment to flush so a real denial would show up by the time
@@ -450,9 +459,8 @@ func TestSandboxExecProfile_KeychainLookupAllowed(t *testing.T) {
 // returns errSecItemNotFound (see keychainProbeSourceC). This proves the
 // grant is load-bearing and the positive test is not a no-op.
 //
-// Only deny lines of the probe count. The `log show` output also holds the
-// command line of `log` itself, which holds every word of the predicate. If
-// that line counts as a deny, the test passes with no deny.
+// Count only deny lines of the probe (keychainProbeDenyLines). The raw
+// `log show` output matches even when no deny occurs.
 //
 // We use withMutatedProfile per the testing convention: rather than
 // deleting the rule, we re-target the literal at a deliberately
