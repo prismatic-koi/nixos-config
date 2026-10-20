@@ -203,7 +203,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	POST /review        — run review agents against a PR (all roles)
 //	POST /cleanup       — clean up an existing session (coordinator only)
 //	POST /close         — smart-decide close (soft if open PR; hard otherwise) (coordinator only)
-//	POST /switch        — switch the tmux client to a session (all roles)
+//	POST /switch        — switch the tmux client to a session; creates it when absent (coordinator only)
 //	GET  /list-sessions — list active sessions (role-scoped: all=true is coordinator only)
 //	GET  /checkin       — return conversation history for a session (role-scoped)
 //	GET  /logs          — return the log file for a session (coordinator only)
@@ -2552,6 +2552,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Session == "" {
 			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+
+		// Coordinator role only. `prism switch` on the host creates the
+		// session when it does not exist, in the directory that the DB row
+		// names, and /event lets a sandboxed caller write that row for any
+		// session name. Without this gate, a worker can start a role-less
+		// session in a directory it writes (for example under ~/.npm). That
+		// session is a non-worktree root (authz.IsNonWorktreeRoot), so it has
+		// the coordinator role, and pi loads the project extensions of the
+		// worker from its cwd. callerHasCoordinatorRole reads Config.AgentRole
+		// first, so a role that a worker forges in the DB does not pass.
+		if !s.callerHasCoordinatorRole() {
+			writeError(w, http.StatusForbidden, "workers cannot perform switch")
 			return
 		}
 

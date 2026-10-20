@@ -199,6 +199,7 @@ func TestHostAPI_BareNamedWorker_PromptStaysWorker(t *testing.T) {
 var nwrCoordinatorOnly = []struct {
 	method, path, body string
 }{
+	{http.MethodPost, "/switch", `{"session":"prism-test-nwother@main"}`},
 	{http.MethodPost, "/escalate", `{"prompt":"kia ora","from":"prism-test-nwother@feature"}`},
 	{http.MethodPost, "/set-model", `{"session":"prism-test-nwother@main","model":"m"}`},
 	{http.MethodPost, "/apply-profile", `{"profile":"p","scope":"session","session":"prism-test-nwother@main"}`},
@@ -413,5 +414,84 @@ func TestResolveRoleForSession_NonWorktreeRootTakesCoordinatorSlot(t *testing.T)
 		if got != tc.want {
 			t.Errorf("resolveRoleForSession(%q) = %q, want %q", tc.session, got, tc.want)
 		}
+	}
+}
+
+// TestHostAPI_Switch_WorkerCannotStartANonWorktreeRoot pins the gate on
+// /switch against the /event + /switch chain.
+//
+// The chain: a sandboxed worker writes a directory it controls (for example
+// under ~/.npm, a read-write mount). It sends /event tmux-session-start for a
+// new bare name with that directory as the worktree. It then sends /switch
+// for that name. On the host, `prism switch --path <dir>` creates a role-less
+// session in that directory. That session is a non-worktree root, so it has
+// the coordinator role, and pi loads the project extensions of the worker
+// from its cwd.
+//
+// The stub binary records each argv and writes nothing to the DB. The test
+// therefore seeds the agent_status row that the real `prism event
+// tmux-session-start` writes for the chosen directory. If /switch loses its
+// gate, the worker cases fail with 200 and a recorded `switch --path` exec.
+func TestHostAPI_Switch_WorkerCannotStartANonWorktreeRoot(t *testing.T) {
+	const target = "prism-test-nwevil"
+
+	cases := []struct {
+		name            string
+		session         string
+		agentRole       string
+		worktree        string
+		callerRootAgent string // root_agent_name of the caller row
+		wantAdmit       bool
+	}{
+		{"worker", "prism-test-nwworker@feature", "worker", nwrWorktreeDir(t), "worker", false},
+		// The worker also forged root_agent_name='coordinator' for itself
+		// through /event, in a repo with no other coordinator row. The gate
+		// reads Config.AgentRole first.
+		{"worker with a forged DB role", "prism-test-nwworker@feature", "worker", nwrWorktreeDir(t), "coordinator", false},
+		// Positive control: the stub and the seeded row work, so the
+		// refusals above are the gate and not a broken fixture.
+		{"coordinator", nwrOtherCoord, "coordinator", nwrWorktreeDir(t), "coordinator", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			argvLog := filepath.Join(t.TempDir(), "argv.log")
+			stub := "#!/bin/sh\necho \"$*\" >> '" + argvLog + "'\nexit 0\n"
+			sc, d := nwrSidecar(t, tc.session, tc.agentRole, tc.worktree, tc.callerRootAgent, stub, nil)
+			chosen := filepath.Join(t.TempDir(), "nixos-config")
+			if err := os.MkdirAll(chosen, 0o755); err != nil {
+				t.Fatalf("mkdir chosen dir: %v", err)
+			}
+
+			rr := doHostAPI(t, sc, http.MethodPost, "/event",
+				`{"kind":"tmux-session-start","session":"`+target+`","args":{"worktree":"`+chosen+`"}}`)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("/event: status = %d, body = %s, want 200 (the /event handler is out of scope here)", rr.Code, rr.Body.String())
+			}
+			// The row that the real `prism event tmux-session-start` writes:
+			// the chosen worktree, and no role.
+			if err := d.UpsertStatus(target, "", chosen, "idle", nil, nil); err != nil {
+				t.Fatalf("seed the row that /event writes: %v", err)
+			}
+
+			rr = doHostAPI(t, sc, http.MethodPost, "/switch", `{"session":"`+target+`"}`)
+			logged, _ := os.ReadFile(argvLog)
+			execedSwitch := strings.Contains(string(logged), "switch --path "+chosen)
+
+			if tc.wantAdmit {
+				if rr.Code != http.StatusOK || !execedSwitch {
+					t.Fatalf("coordinator /switch: status = %d, switch exec = %v, argv log = %q — the positive control failed", rr.Code, execedSwitch, logged)
+				}
+				return
+			}
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("/switch: status = %d, body = %s, want 403", rr.Code, rr.Body.String())
+			}
+			if msg := errorField(t, rr.Body.String()); !strings.Contains(msg, "workers cannot perform switch") {
+				t.Errorf("error %q, want the switch refusal", msg)
+			}
+			if strings.Contains(string(logged), "switch") {
+				t.Errorf("the handler ran `prism switch` for a worker: argv log = %q", logged)
+			}
+		})
 	}
 }
