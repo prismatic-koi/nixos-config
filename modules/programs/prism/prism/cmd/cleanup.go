@@ -248,6 +248,11 @@ type cleanupDoneMsg struct{ err error }
 func (m cleanupModel) doCleanup() tea.Cmd {
 	return func() tea.Msg {
 		defer sweepEndedSidecarsAfterCleanup()
+		// Stop the sidecar before the worktree, the tmux session, or the row
+		// goes. A sidecar that does not stop can still use all of them.
+		if !cleanupStopSidecar(m.session) {
+			return cleanupDoneMsg{sidecarsNotStoppedError(cleanupChildrenOfKeptSession(m.session))}
+		}
 		// Resolve the actual branch name BEFORE the worktree is removed —
 		// git.RemoveWorktree deletes worktreePath's .git file, after which
 		// resolveBranchName can no longer read HEAD. m.branchName is normally
@@ -307,7 +312,6 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			_, _ = tmux.SwitchClientCurrent("scratchpad")
 		}
 		_ = tmux.KillSession(m.session)
-		prismSession.KillSidecar(m.session)
 		// Orphan-sidecar safety net: SIGTERM any sidecar processes still alive
 		// for review-group or investigator-group children of this worker. Runs
 		// before the DB-backed cleanup so processes whose DB rows were already
@@ -319,7 +323,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			stopAndRemoveChildContainers(d, m.session)
 			// Kill and clean up all review sessions spawned by this parent session,
 			// including their port allocations and DB rows.
-			keepChildren := review.CleanupReviewSessionsForParent(d, m.session)
+			keepChildren := cleanupReviewChildren(d, m.session)
 			if isolationModeFromDB(d, m.session) != "host" {
 				removeContainerIfExists(m.session)
 			}
@@ -359,7 +363,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 				_ = d.PurgeBusMessages(m.session)
 				d.Close()
-				return cleanupDoneMsg{archiveErr}
+				return cleanupDoneMsg{errors.Join(archiveErr, sidecarsNotStoppedError(keepChildren))}
 			}
 			// Other archive errors are non-fatal — cleanup continues.
 			if instanceIDForSessions != "" {
@@ -367,6 +371,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			}
 			_ = d.PurgeBusMessages(m.session)
 			d.Close()
+			return cleanupDoneMsg{sidecarsNotStoppedError(keepChildren)}
 		} else {
 			// DB unavailable — still attempt container removal conservatively.
 			review.KillReviewSessionsForParent(m.session)
@@ -592,10 +597,7 @@ var cleanupCmd = &cobra.Command{
 			return fmt.Errorf("interactive cleanup requires tmux — use --yes for non-interactive use outside tmux")
 		}
 
-		m := newCleanupModel(session, worktreeName, worktreePath, bareRoot, defaultBr)
-		prog := tea.NewProgram(cleanupWrapper{m}, tea.WithAltScreen())
-		_, runErr := prog.Run()
-		return runErr
+		return runCleanupTUI(newCleanupModel(session, worktreeName, worktreePath, bareRoot, defaultBr))
 	},
 }
 
@@ -778,6 +780,12 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		}
 	}
 
+	// Stop the sidecar before the worktree, the tmux session, or the row
+	// goes. A sidecar that does not stop can still use all of them.
+	if !cleanupStopSidecar(session) {
+		return finishKeptSessionCleanup(session, &result, jsonMode, stdout)
+	}
+
 	// Resolve the actual branch name from worktreePath's HEAD BEFORE the
 	// worktree is removed below — see resolveBranchName's doc comment.
 	// worktreeName (the sanitised session component) is used only as a
@@ -864,7 +872,6 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 
 	printLine("killing session %s\n", session)
 	_ = tmux.KillSession(session)
-	prismSession.KillSidecar(session)
 	// Orphan-sidecar safety net: SIGTERM any sidecar processes still alive
 	// for review-group or investigator-group children of this worker. Done
 	// before DB cleanup so processes whose DB rows have already been purged
@@ -882,13 +889,14 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	// worktree/branch/session are already torn down). Other steps continue as
 	// normal.
 	var archiveCollisionWarning string
+	var keepChildren []string
 	if d, err := openDB(); err == nil {
 		// Stop and remove child review-agent containers BEFORE removing their
 		// DB rows — so a failed stop still has a record to retry against.
 		stopAndRemoveChildContainers(d, session)
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
-		keepChildren := review.CleanupReviewSessionsForParent(d, session)
+		keepChildren = cleanupReviewChildren(d, session)
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
@@ -969,7 +977,22 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	} else {
 		fmt.Fprintln(stdout, "done")
 	}
-	return nil
+	return sidecarsNotStoppedError(keepChildren)
+}
+
+// finishKeptSessionCleanup ends a headless cleanup of session after its
+// sidecar did not stop. It cleans up the review children, writes the JSON
+// envelope in jsonMode, and returns an error that names each session whose
+// sidecar did not stop. The envelope reports the lifecycle fields as
+// skipped and session_killed as false, because the row, the port, and the
+// tmux session stay.
+func finishKeptSessionCleanup(session string, result *cleanupResult, jsonMode bool, stdout io.Writer) error {
+	failed := cleanupChildrenOfKeptSession(session)
+	markDBLifecycleSkipped(result, "skipped: sidecar did not stop")
+	if jsonMode {
+		emitCleanupJSONTo(stdout, *result)
+	}
+	return sidecarsNotStoppedError(failed)
 }
 
 // applySessionResourceSweep runs the orphan-resource sweep for session
@@ -1011,6 +1034,12 @@ func applySessionResourceSweep(session string, result *cleanupResult, scope swee
 // must remain intact.
 func closeSession(session string) error {
 	defer sweepEndedSidecarsAfterCleanup()
+	// Stop the sidecar before the tmux session or the row goes. A sidecar
+	// that does not stop can still use them.
+	if !cleanupStopSidecar(session) {
+		proglog.Warnf("[prism] warning: sidecar of %q did not stop — keeping its tmux session, row, and port\n", session)
+		return sidecarsNotStoppedError([]string{session})
+	}
 	// Ensure scratchpad exists.
 	if !tmux.HasSession("scratchpad") {
 		home, _ := os.UserHomeDir()
@@ -1029,7 +1058,6 @@ func closeSession(session string) error {
 		_, _ = tmux.SwitchClientCurrent("scratchpad")
 	}
 	_ = tmux.KillSession(session)
-	prismSession.KillSidecar(session)
 	if d, err := openDB(); err == nil {
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
@@ -1048,7 +1076,7 @@ func closeSession(session string) error {
 		}
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
-		_ = setEndedStoppingReviewChildren(d, session)
+		keepChildren, _ := endStoppingReviewChildren(d, session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				proglog.Errorf("[prism] closeSession: update session ended: %v\n", updErr)
@@ -1071,7 +1099,7 @@ func closeSession(session string) error {
 		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 			_ = d.PurgeBusMessages(session)
 			d.Close()
-			return archiveErr
+			return errors.Join(archiveErr, sidecarsNotStoppedError(keepChildren))
 		}
 		// Other archive errors are non-fatal — cleanup continues.
 		if instanceIDForSessions != "" {
@@ -1079,10 +1107,10 @@ func closeSession(session string) error {
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
-	} else {
-		// DB unavailable — still attempt container removal conservatively.
-		removeContainerIfExists(session)
+		return sidecarsNotStoppedError(keepChildren)
 	}
+	// DB unavailable — still attempt container removal conservatively.
+	removeContainerIfExists(session)
 	return nil
 }
 
@@ -1124,6 +1152,12 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		}
 	}
 
+	// Stop the sidecar before the tmux session or the row goes. A sidecar
+	// that does not stop can still use them.
+	if !cleanupStopSidecar(session) {
+		return finishKeptSessionCleanup(session, &result, jsonMode, stdout)
+	}
+
 	printLine("closing session %s...\n", session)
 
 	// Ensure scratchpad exists.
@@ -1145,20 +1179,20 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 	printLine("killing session %s\n", session)
 	result.SessionKilled = true
 	_ = tmux.KillSession(session)
-	prismSession.KillSidecar(session)
 	// Orphan-sidecar safety net: SIGTERM any sidecar processes still alive
 	// for review-group or investigator-group children of this session. Done
 	// before DB cleanup so processes whose DB rows have already been purged
 	// are still caught.
 	killOrphanReviewSidecars(session)
 	var archiveCollisionWarning string
+	var keepChildren []string
 	if d, err := openDB(); err == nil {
 		// Stop and remove child review-agent containers BEFORE removing their
 		// DB rows — so a failed stop still has a record to retry against.
 		stopAndRemoveChildContainers(d, session)
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
-		keepChildren := review.CleanupReviewSessionsForParent(d, session)
+		keepChildren = cleanupReviewChildren(d, session)
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
@@ -1224,11 +1258,15 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 	} else {
 		fmt.Fprintln(stdout, "done")
 	}
-	return nil
+	return sidecarsNotStoppedError(keepChildren)
 }
 
 // cleanupWrapper wraps cleanupModel to intercept cleanupDoneMsg in Update.
-type cleanupWrapper struct{ cleanupModel }
+// doneErr holds the error of that message.
+type cleanupWrapper struct {
+	cleanupModel
+	doneErr error
+}
 
 func (w cleanupWrapper) Init() tea.Cmd { return w.cleanupModel.Init() }
 func (w cleanupWrapper) View() string  { return w.cleanupModel.View() }
@@ -1237,6 +1275,7 @@ func (w cleanupWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if done, ok := msg.(cleanupDoneMsg); ok {
 		if done.err != nil {
 			w.cleanupModel.errMsg = done.err.Error()
+			w.doneErr = done.err
 		}
 		return w, tea.Quit
 	}

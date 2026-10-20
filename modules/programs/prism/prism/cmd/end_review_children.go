@@ -16,5 +16,13 @@ var stopReviewChildrenForEnd = review.StopReviewChildrenForEnd
 // children stops first. A child whose sidecar does not stop keeps its row
 // and its port (#3168).
 func setEndedStoppingReviewChildren(d *db.DB, session string) error {
-	return d.SetEndedExcept(session, stopReviewChildrenForEnd(d, session))
+	_, err := endStoppingReviewChildren(d, session)
+	return err
+}
+
+// endStoppingReviewChildren is setEndedStoppingReviewChildren, and also
+// returns the children whose sidecar did not stop.
+func endStoppingReviewChildren(d *db.DB, session string) ([]string, error) {
+	keep := stopReviewChildrenForEnd(d, session)
+	return keep, d.SetEndedExcept(session, keep)
 }
