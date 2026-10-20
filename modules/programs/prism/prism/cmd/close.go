@@ -31,7 +31,6 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/git"
@@ -227,10 +226,7 @@ func runCloseCmd(cmd *cobra.Command, args []string) error {
 		if bareRoot != "" {
 			defaultBr = git.DefaultBranchFromBareRoot(bareRoot)
 		}
-		m := newCleanupModel(session, worktreeName, worktreePath, bareRoot, defaultBr)
-		prog := tea.NewProgram(cleanupWrapper{m}, tea.WithAltScreen())
-		_, runErr := prog.Run()
-		return runErr
+		return runCleanupTUI(newCleanupModel(session, worktreeName, worktreePath, bareRoot, defaultBr))
 	}
 	return nil
 }

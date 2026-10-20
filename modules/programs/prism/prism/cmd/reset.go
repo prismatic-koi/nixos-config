@@ -4,21 +4,27 @@ package cmd
 //
 // Steps (each attempted independently — a failure in one does not abort others):
 //
-//  1. Kill the tmux server (equivalent to `tmux kill-server`).
-//  2. Run each registered isolator's Reset sweep (all no-op stubs today).
-//  3. Mark all non-ended rows in agent_status as ended (sets ended_at = now;
+//  1. Stop all sidecar processes found by PID file in
+//     ~/.local/state/prism/run/, and remove the ready file of each stopped
+//     sidecar. A session whose sidecar does not stop is kept: no later step
+//     touches its tmux session, its row, its port, its resume pointer, its
+//     transcript, or its instance directories, because the sidecar can
+//     still use them.
+//  2. Kill the tmux server (equivalent to `tmux kill-server`). If a session
+//     is kept, kill every other tmux session instead.
+//  3. Run each registered isolator's Reset sweep (all no-op stubs today).
+//  4. Mark all non-ended rows in agent_status as ended (sets ended_at = now;
 //     state is intentionally left at its last known value — ended_at IS NULL
 //     is the canonical "active session" filter throughout the codebase) AND
 //     clear the per-session pi conversation resume pointer
 //     (agent_status.harness_session_id) on every row, so the next switch into
 //     a previously-active project starts pi with a fresh conversation.
-//     The (worktree, harness_session_id) pairs are snapshotted BEFORE the
-//     clear so step 4b can scope its transcript removal to exactly the
-//     sessions being reset.
-//  4. Kill all sidecar processes and remove stale run files (PID, ready)
-//     from ~/.local/state/prism/run/, and delete exactly the pi transcript
-//     JSONLs belonging to the snapshotted resume pointers from the shared
-//     host pi sessions root.
+//     The (worktree, harness_session_id) pairs and the instance IDs are
+//     snapshotted after step 1 and before step 2, so step 4b can scope its
+//     transcript removal to exactly the sessions being reset, and step 4c
+//     can remove their instance directories. Step 4b deletes exactly the pi
+//     transcript JSONLs belonging to the snapshotted resume pointers from
+//     the shared host pi sessions root.
 //  5. (Unless --no-launch) invoke `prism launch` to restart the server.
 //
 // Flags:
@@ -34,7 +40,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -51,13 +59,16 @@ var resetCmd = &cobra.Command{
 	Long: `Performs a clean shutdown of all prism sessions and infrastructure.
 
 Steps (each attempted independently):
-  1. Kill the tmux server (all sessions and panes).
-  2. Run each registered isolator's Reset sweep.
-  3. Mark all non-ended rows in agent_status as ended and clear the pi
-     conversation resume pointer (harness_session_id) on every row.
-  4. Terminate all sidecar processes (reads PID files from
-     ~/.local/state/prism/run/) and remove the pi transcript JSONLs
-     belonging to the reset sessions from the shared pi sessions root.
+  1. Stop all sidecar processes (reads PID files from
+     ~/.local/state/prism/run/). A session whose sidecar does not stop
+     keeps its tmux session and its row, and the later steps skip it.
+  2. Kill the tmux server (all sessions and panes). If a session is kept,
+     kill every other tmux session instead.
+  3. Run each registered isolator's Reset sweep.
+  4. Mark all non-ended rows in agent_status as ended, clear the pi
+     conversation resume pointer (harness_session_id) on every row, and
+     remove the pi transcript JSONLs belonging to the reset sessions from
+     the shared pi sessions root.
   5. Invoke prism launch to restart (skipped with --no-launch).`,
 	Args: cobra.NoArgs,
 	RunE: runReset,
@@ -92,16 +103,25 @@ func runReset(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// ── Step 1: Kill tmux server ──────────────────────────────────────────────
-	fmt.Println("Killing tmux server...")
-	if _, err := tmux.Run("kill-server"); err != nil {
-		// No server running is not an error — continue.
-		proglog.Warnf("[prism reset] tmux kill-server: %v (continuing)\n", err)
-	} else {
-		fmt.Println("  tmux server killed.")
+	// ── Step 1: Stop sidecar processes ───────────────────────────────────────
+	// Each sidecar stops before its tmux session and its row go (#3192).
+	fmt.Println("Stopping sidecar processes...")
+	kept, err := resetStopSidecars()
+	if err != nil {
+		proglog.Warnf("[prism reset] sidecar cleanup: %v (continuing)\n", err)
 	}
 
-	// ── Step 2: Reset every registered isolator ──────────────────────────────
+	// Snapshot the resume pointers and the instance IDs before step 2. See
+	// resetSnapshotSessions for why the order matters.
+	resumePointers, instanceIDs, err := resetSnapshotSessions(kept...)
+	if err != nil {
+		proglog.Warnf("[prism reset] %v (transcript and instance-dir removal will be skipped)\n", err)
+	}
+
+	// ── Step 2: Kill tmux ────────────────────────────────────────────────────
+	resetKillTmuxStep(kept)
+
+	// ── Step 3: Reset every registered isolator ──────────────────────────────
 	// The per-mode reset logic lives in each Isolator's Reset method.
 	// `prism reset` iterates over the registered modes and dispatches to each.
 	// Today every isolator's Reset is a no-op stub.
@@ -110,19 +130,10 @@ func runReset(cmd *cobra.Command, _ []string) error {
 		proglog.Warnf("[prism reset] isolator cleanup: %v (continuing)\n", err)
 	}
 
-	// ── Step 3: Mark all agent_status rows as ended ───────────────────────────
-	// Also snapshots the pi resume pointers (worktree + harness_session_id)
-	// before clearing them, so step 4b can scope its transcript removal.
+	// ── Step 4: Mark all agent_status rows as ended ───────────────────────────
 	fmt.Println("Marking all sessions as ended in DB...")
-	resumePointers, instanceIDs, err := resetMarkDBEnded()
-	if err != nil {
+	if err := resetMarkDBEnded(kept...); err != nil {
 		proglog.Warnf("[prism reset] DB cleanup: %v (continuing)\n", err)
-	}
-
-	// ── Step 4: Kill sidecar processes ────────────────────────────────────────
-	fmt.Println("Terminating sidecar processes...")
-	if err := resetKillSidecars(); err != nil {
-		proglog.Warnf("[prism reset] sidecar cleanup: %v (continuing)\n", err)
 	}
 
 	// ── Step 4b: Remove pi-agent transcript JSONLs ────────────────────────────
@@ -173,7 +184,7 @@ func runReset(cmd *cobra.Command, _ []string) error {
 // Reset on each one. Returns the first non-nil error encountered (other
 // modes still get a chance to run). Today every Reset body is a no-op stub.
 //
-// Failures are logged at the call site (Step 2 in runReset); this function
+// Failures are logged at the call site (Step 3 in runReset); this function
 // returns the error verbatim so the caller can decide whether to continue.
 func resetIsolators() error {
 	// Use a generous per-mode timeout so a slow sweep in one isolator does
@@ -202,7 +213,7 @@ func resetIsolators() error {
 }
 
 // piResumePointer is the snapshot of one agent_status row's pi resume
-// linkage — captured by resetMarkDBEnded immediately BEFORE
+// linkage — captured by resetSnapshotSessions BEFORE
 // ClearAllResumePointers nulls the harness_session_id column. The FS half of
 // the reset (resetClearPiTranscripts) consumes the snapshot to delete exactly
 // the transcript JSONLs belonging to the sessions being reset, mirroring
@@ -214,45 +225,51 @@ type piResumePointer struct {
 	harnessSessionID string
 }
 
-// resetMarkDBEnded opens the prism DB, calls MarkAllEnded to update all
-// non-ended agent_status rows, then calls ClearAllResumePointers to wipe the
-// per-session pi conversation resume pointer (harness_session_id) on every
-// row. The two operations are independent (different columns) but conceptually
-// paired by `prism reset`: end every session, then forget the resume pointer.
+// resetSnapshotSessions snapshots, from every agent_status row, the
+// (worktree, harness_session_id) pairs that carry a resume pointer and the
+// instance IDs. The FS half of the reset (resetClearPiTranscripts) deletes
+// exactly those transcript JSONLs, and step 4c removes the instance
+// directories of those instance IDs. The snapshot deliberately covers ended
+// rows too — ClearAllResumePointers wipes the column on every row, and the
+// FS half must match that scope.
 //
-// Before the clear, the (worktree, harness_session_id) pairs of every row
-// carrying a resume pointer are snapshotted and returned so the FS half of
-// the reset (resetClearPiTranscripts) can delete exactly those transcript
-// JSONLs. The snapshot deliberately covers ended rows too —
-// ClearAllResumePointers wipes the column on every row, and the FS half must
-// match that scope. A snapshot failure is logged and degrades the FS half to
-// a no-op; the DB-side clears (the load-bearing half) still run.
+// runReset takes the snapshot after the sidecar stops and before the tmux
+// kill. Each killed tmux session fires the global session-closed hook,
+// which clears instance_id of its row. A snapshot after the kill can then
+// miss the instance ID, and the instance directories of that session stay
+// on disk (#2960).
 //
-// The returned slice is valid even when err is non-nil, so the caller can
-// still hand whatever was captured to resetClearPiTranscripts — each reset
-// step is best-effort and attempted independently.
-func resetMarkDBEnded() ([]piResumePointer, []string, error) {
+// The rows named in keep are left out, so that the later steps do not
+// remove their transcript or their instance directories.
+//
+// The returned slices are valid even when err is non-nil — each reset step
+// is best-effort and attempted independently. A snapshot failure degrades
+// the FS half to a no-op; the DB-side clears (the load-bearing half) still
+// run.
+func resetSnapshotSessions(keep ...string) ([]piResumePointer, []string, error) {
 	d, err := openDB()
 	if err != nil {
 		return nil, nil, fmt.Errorf("open DB: %w", err)
 	}
 	defer d.Close()
 
-	// Snapshot resume pointers BEFORE ClearAllResumePointers nulls the
-	// column. AllStatusesWithPrefix("") returns every agent_status row,
-	// active and ended.
+	// AllStatusesWithPrefix("") returns every agent_status row, active and
+	// ended.
 	//
 	// instanceIDs is snapshotted from the same rows, independent of the
 	// resume-pointer filter below: a session's instance-ID-keyed directory
 	// trees (work dir, podman-proxy audit dir) exist regardless of whether
 	// the row carries a pi resume pointer.
-	var pointers []piResumePointer
-	var instanceIDs []string
 	statuses, err := d.AllStatusesWithPrefix("")
 	if err != nil {
-		proglog.Warnf("[prism reset] snapshot resume pointers: %v (transcript removal will be skipped)\n", err)
+		return nil, nil, fmt.Errorf("snapshot sessions: %w", err)
 	}
+	var pointers []piResumePointer
+	var instanceIDs []string
 	for _, s := range statuses {
+		if slices.Contains(keep, s.SessionName) {
+			continue
+		}
 		if s.InstanceID != nil && *s.InstanceID != "" {
 			instanceIDs = append(instanceIDs, *s.InstanceID)
 		}
@@ -265,10 +282,29 @@ func resetMarkDBEnded() ([]piResumePointer, []string, error) {
 			harnessSessionID: *s.HarnessSessionID,
 		})
 	}
+	return pointers, instanceIDs, nil
+}
 
-	n, err := d.MarkAllEnded()
+// resetMarkDBEnded opens the prism DB, calls MarkAllEnded to update all
+// non-ended agent_status rows, then calls ClearAllResumePointers to wipe the
+// per-session pi conversation resume pointer (harness_session_id) on every
+// row. The two operations are independent (different columns) but conceptually
+// paired by `prism reset`: end every session, then forget the resume pointer.
+// resetSnapshotSessions runs first, so that the FS half of the reset knows
+// which transcripts belong to the cleared pointers.
+//
+// The rows named in keep are left as they are: they stay open and keep
+// their resume pointer.
+func resetMarkDBEnded(keep ...string) error {
+	d, err := openDB()
 	if err != nil {
-		return pointers, instanceIDs, err
+		return fmt.Errorf("open DB: %w", err)
+	}
+	defer d.Close()
+
+	n, err := d.MarkAllEnded(keep...)
+	if err != nil {
+		return err
 	}
 	if n == 0 {
 		fmt.Println("  no active sessions in DB.")
@@ -279,31 +315,39 @@ func resetMarkDBEnded() ([]piResumePointer, []string, error) {
 	// Wipe per-row resume pointers (harness_session_id). This is the DB-side
 	// half of the resume-pointer clear; the FS-side half lives in
 	// resetClearPiTranscripts.
-	cleared, err := d.ClearAllResumePointers()
+	cleared, err := d.ClearAllResumePointers(keep...)
 	if err != nil {
-		return pointers, instanceIDs, err
+		return err
 	}
 	if cleared > 0 {
 		fmt.Printf("  cleared pi resume pointer on %d row(s).\n", cleared)
 	}
-	return pointers, instanceIDs, nil
+	return nil
 }
 
-// resetKillSidecars scans ~/.local/state/prism/run/ for *-sidecar.pid files,
-// sends SIGTERM to each recorded process via session.KillSidecar, and then
-// removes stale *-sidecar.ready files for the same sessions.
+// resetStopSidecar is the sidecar stop of prism reset. Tests replace it, so
+// that a test signals no process.
+var resetStopSidecar = func(sessionName string) bool {
+	return prismSession.EnsureSidecarStopped(sessionName, prismSession.SidecarStopTimeout)
+}
+
+// resetStopSidecars scans ~/.local/state/prism/run/ for *-sidecar.pid files
+// and stops the sidecar of each one. The stops run at the same time, so
+// that several slow stops cost one stop timeout. For each sidecar that
+// stopped, it removes the *-sidecar.ready file, so that a re-launched
+// session for the same name does not find stale readiness state.
 //
-// Removing the .ready files prevents a re-launched session from finding stale
-// readiness state from a prior run and misbehaving on startup.
+// It returns the sessions whose sidecar did not stop. Their PID file and
+// ready file stay, so that a later stop finds the process again.
 //
 // The directory may be absent (fresh install or already cleaned up) — that
 // is treated as a no-op, not an error.
-func resetKillSidecars() error {
+func resetStopSidecars() ([]string, error) {
 	stateHome := os.Getenv("XDG_STATE_HOME")
 	if stateHome == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return fmt.Errorf("resolve home dir: %w", err)
+			return nil, fmt.Errorf("resolve home dir: %w", err)
 		}
 		stateHome = filepath.Join(home, ".local", "state")
 	}
@@ -313,39 +357,92 @@ func resetKillSidecars() error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Println("  no sidecar run dir found — skipping.")
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("read run dir %s: %w", runDir, err)
+		return nil, fmt.Errorf("read run dir %s: %w", runDir, err)
 	}
 
-	killed := 0
+	var sessions []string
 	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasSuffix(name, "-sidecar.pid") {
+		if name, ok := strings.CutSuffix(entry.Name(), "-sidecar.pid"); ok {
+			sessions = append(sessions, name)
+		}
+	}
+	if len(sessions) == 0 {
+		fmt.Println("  no sidecar PID files found.")
+		return nil, nil
+	}
+
+	stopped := make([]bool, len(sessions))
+	var wg sync.WaitGroup
+	for i, name := range sessions {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stopped[i] = resetStopSidecar(name)
+		}()
+	}
+	wg.Wait()
+
+	var kept []string
+	for i, name := range sessions {
+		if !stopped[i] {
+			proglog.Warnf("[prism reset] warning: sidecar of %q did not stop — keeping its tmux session and row (continuing)\n", name)
+			kept = append(kept, name)
 			continue
 		}
-		// Derive session name by stripping the "-sidecar.pid" suffix.
-		sessionName := strings.TrimSuffix(name, "-sidecar.pid")
-
-		// Send SIGTERM and remove the PID file.
-		prismSession.KillSidecar(sessionName)
-
-		// Remove stale readiness file so a re-launched session for the same
-		// name starts fresh rather than picking up stale state.
-		readyPath, _ := prismSession.SidecarReadyPath(sessionName)
-		if readyPath != "" {
+		if readyPath, _ := prismSession.SidecarReadyPath(name); readyPath != "" {
 			_ = os.Remove(readyPath)
 		}
+	}
+	fmt.Printf("  stopped %d sidecar(s).\n", len(sessions)-len(kept))
+	if len(kept) > 0 {
+		fmt.Printf("  %d sidecar(s) did not stop: %s.\n", len(kept), strings.Join(kept, ", "))
+	}
+	return kept, nil
+}
 
+// resetKillTmuxStep is step 2 of runReset. Tests replace it, so that a test
+// can act as the session-closed hook of each killed tmux session.
+var resetKillTmuxStep = resetKillTmux
+
+// resetKillTmux kills the tmux server. When kept names a session, the
+// server stays, and every tmux session that kept does not name is killed.
+// Each kill uses the exact-match target "=<name>": a plain target can also
+// match a session by name prefix, and the kill must not reach a kept
+// session.
+func resetKillTmux(kept []string) {
+	if len(kept) == 0 {
+		fmt.Println("Killing tmux server...")
+		if _, err := tmux.Run("kill-server"); err != nil {
+			// No server running is not an error — continue.
+			proglog.Warnf("[prism reset] tmux kill-server: %v (continuing)\n", err)
+		} else {
+			fmt.Println("  tmux server killed.")
+		}
+		return
+	}
+
+	fmt.Println("Killing tmux sessions...")
+	out, err := tmux.Run("list-sessions", "-F", "#{session_name}")
+	if err != nil {
+		// No server running is not an error — continue.
+		proglog.Warnf("[prism reset] tmux list-sessions: %v (continuing)\n", err)
+		return
+	}
+	killed := 0
+	for _, name := range strings.Split(out, "\n") {
+		name = strings.TrimSpace(name)
+		if name == "" || slices.Contains(kept, name) {
+			continue
+		}
+		if _, err := tmux.Run("kill-session", "-t", "="+name); err != nil {
+			proglog.Warnf("[prism reset] tmux kill-session %q: %v (continuing)\n", name, err)
+			continue
+		}
 		killed++
 	}
-
-	if killed == 0 {
-		fmt.Println("  no sidecar PID files found.")
-	} else {
-		fmt.Printf("  sent termination signal to %d sidecar(s).\n", killed)
-	}
-	return nil
+	fmt.Printf("  killed %d tmux session(s). The tmux server stays for the %d session(s) whose sidecar did not stop.\n", killed, len(kept))
 }
 
 // resetClearPiTranscripts deletes the on-disk pi transcript JSONLs belonging

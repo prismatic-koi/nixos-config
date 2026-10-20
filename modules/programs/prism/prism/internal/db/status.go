@@ -503,6 +503,20 @@ WHERE  instance_id IN (
 	return nil
 }
 
+// sessionNameNotIn returns an SQL condition that leaves out the agent_status
+// rows named in names, and its arguments. It returns "" and no arguments
+// when names is empty.
+func sessionNameNotIn(names []string) (string, []any) {
+	if len(names) == 0 {
+		return "", nil
+	}
+	args := make([]any, len(names))
+	for i, n := range names {
+		args[i] = n
+	}
+	return " AND session_name NOT IN (" + strings.TrimSuffix(strings.Repeat("?,", len(names)), ",") + ")", args
+}
+
 // MarkAllEnded marks every row in agent_status where ended_at IS NULL as ended
 // by setting ended_at = now (Unix milliseconds). The state column is intentionally
 // left unchanged — ended_at IS NULL is the canonical "active session" filter used
@@ -529,9 +543,12 @@ WHERE  instance_id IN (
 // concerns separate means MarkAllEnded can be reused by any future caller
 // that wants to bulk-end rows without altering resume semantics.
 //
+// The rows named in keep stay open. `prism reset` passes the sessions whose
+// sidecar did not stop, so that their rows and their ports stay reserved.
+//
 // Returns the number of agent_status rows updated and any database error.
 // When there are no rows with ended_at IS NULL, returns (0, nil) — not an error.
-func (d *DB) MarkAllEnded() (int64, error) {
+func (d *DB) MarkAllEnded(keep ...string) (int64, error) {
 	now := time.Now().UnixMilli()
 	tx, err := d.conn.Begin()
 	if err != nil {
@@ -539,9 +556,10 @@ func (d *DB) MarkAllEnded() (int64, error) {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
+	keepClause, keepArgs := sessionNameNotIn(keep)
 	res, err := tx.Exec(
-		"UPDATE agent_status SET ended_at = ? WHERE ended_at IS NULL",
-		now,
+		"UPDATE agent_status SET ended_at = ? WHERE ended_at IS NULL"+keepClause,
+		append([]any{now}, keepArgs...)...,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("db: mark all ended: agent_status update: %w", err)
@@ -599,12 +617,18 @@ WHERE  instance_id IN (
 // already map a NULL column to a nil *string in
 // the Status struct.
 //
+// The rows named in keep keep their pointer. `prism reset` passes the
+// sessions whose sidecar did not stop, and leaves those sessions as they
+// are.
+//
 // Returns the number of rows whose harness_session_id was actually cleared
 // (i.e. previously non-NULL) and any database error. Rows that were already
 // NULL are not counted. Returns (0, nil) on an empty / all-NULL table.
-func (d *DB) ClearAllResumePointers() (int64, error) {
+func (d *DB) ClearAllResumePointers(keep ...string) (int64, error) {
+	keepClause, keepArgs := sessionNameNotIn(keep)
 	res, err := d.conn.Exec(
-		"UPDATE agent_status SET harness_session_id = NULL WHERE harness_session_id IS NOT NULL",
+		"UPDATE agent_status SET harness_session_id = NULL WHERE harness_session_id IS NOT NULL"+keepClause,
+		keepArgs...,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("db: clear all resume pointers: %w", err)

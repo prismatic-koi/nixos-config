@@ -119,8 +119,11 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 	// ---- Run the reset code paths ----
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
-	pointers, _, err := resetMarkDBEnded()
+	pointers, _, err := resetSnapshotSessions()
 	if err != nil {
+		t.Fatalf("resetSnapshotSessions: %v", err)
+	}
+	if err := resetMarkDBEnded(); err != nil {
 		t.Fatalf("resetMarkDBEnded: %v", err)
 	}
 	if err := resetClearPiTranscripts(pointers); err != nil {
@@ -244,8 +247,11 @@ func TestReset_E2E_UntrackedTranscriptsSurvive(t *testing.T) {
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
 
-	pointers, _, err := resetMarkDBEnded()
+	pointers, _, err := resetSnapshotSessions()
 	if err != nil {
+		t.Fatalf("resetSnapshotSessions: %v", err)
+	}
+	if err := resetMarkDBEnded(); err != nil {
 		t.Fatalf("resetMarkDBEnded: %v", err)
 	}
 	if len(pointers) != 0 {

@@ -374,31 +374,7 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 			return ensureAndSwitch(path, "", opts)
 		}
 
-		// Conversion succeeded — clean up the pre-conversion session,
-		// mirroring the pattern used by cleanup.go for intentional teardowns.
-		// Kill the tmux session if it exists; ignore "no such session" errors.
-		_ = tmux.KillSession(oldSessionName)
-		// Kill any sidecar process associated with the old session (no-op if
-		// no PID file exists).
-		session.KillSidecar(oldSessionName)
-		// Release the port allocation, mark the DB row as ended, purge
-		// undelivered bus messages, and clean up any container. All
-		// operations are best-effort: errors are logged but do not prevent
-		// the switch to the new worktree session.
-		if d, dbErr := openDB(); dbErr == nil {
-			if isolationModeFromDB(d, oldSessionName) != "host" {
-				removeContainerIfExists(oldSessionName)
-			}
-			if releaseErr := d.ReleasePort(oldSessionName); releaseErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: release port for old session %q: %v\n", oldSessionName, releaseErr)
-			}
-			_ = setEndedStoppingReviewChildren(d, oldSessionName)
-			_ = d.PurgeBusMessages(oldSessionName)
-			d.Close()
-		} else {
-			fmt.Fprintf(os.Stderr, "warning: could not open DB to clean up old session %q: %v\n", oldSessionName, dbErr)
-			removeContainerIfExists(oldSessionName)
-		}
+		teardownConvertedSession(oldSessionName)
 
 		// Apply per-path isolation override for the converted worktree.
 		applyPathIsolationOverride(worktreePath, cfg, &opts, isoCaps, pf)
@@ -407,6 +383,41 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 		// Apply per-path isolation override for direct-open.
 		applyPathIsolationOverride(path, cfg, &opts, isoCaps, pf)
 		return ensureAndSwitch(path, "", opts)
+	}
+}
+
+// switchProjectStopSidecar is the sidecar stop of teardownConvertedSession.
+// Tests replace it, so that a test signals no process.
+var switchProjectStopSidecar = func(sessionName string) bool {
+	return session.EnsureSidecarStopped(sessionName, session.SidecarStopTimeout)
+}
+
+// teardownConvertedSession ends the pre-conversion session of a repo that
+// was converted to the bare+worktree layout. It stops the sidecar first.
+// If the stop fails, it keeps the tmux session, the row, and the port,
+// because the sidecar can still use them. All steps are best-effort: an
+// error is a warning and does not prevent the switch to the new worktree
+// session.
+func teardownConvertedSession(oldSessionName string) {
+	if !switchProjectStopSidecar(oldSessionName) {
+		fmt.Fprintf(os.Stderr, "warning: sidecar of old session %q did not stop — keeping its tmux session, row, and port\n", oldSessionName)
+		return
+	}
+	// Ignore "no such session" errors.
+	_ = tmux.KillSession(oldSessionName)
+	if d, dbErr := openDB(); dbErr == nil {
+		if isolationModeFromDB(d, oldSessionName) != "host" {
+			removeContainerIfExists(oldSessionName)
+		}
+		if releaseErr := d.ReleasePort(oldSessionName); releaseErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: release port for old session %q: %v\n", oldSessionName, releaseErr)
+		}
+		_ = setEndedStoppingReviewChildren(d, oldSessionName)
+		_ = d.PurgeBusMessages(oldSessionName)
+		d.Close()
+	} else {
+		fmt.Fprintf(os.Stderr, "warning: could not open DB to clean up old session %q: %v\n", oldSessionName, dbErr)
+		removeContainerIfExists(oldSessionName)
 	}
 }
 

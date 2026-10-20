@@ -139,7 +139,7 @@ func TestResetClearPiTranscripts_EmptyPointerListIsNoOp(t *testing.T) {
 // for the container.RemovePiResumeJSONL caller contract: pointers with an
 // empty worktree or empty harness_session_id are silently skipped (nothing
 // to scope to), without error and without touching unrelated transcripts.
-// resetMarkDBEnded filters such rows out of the snapshot, so this guards the
+// resetSnapshotSessions filters such rows out of the snapshot, so this guards the
 // underlying helper's behaviour should that filter ever regress.
 func TestResetClearPiTranscripts_BlankPointerFieldsSkipped(t *testing.T) {
 	clearPICodingAgentDir(t)

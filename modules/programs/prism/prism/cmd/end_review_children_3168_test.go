@@ -6,8 +6,10 @@ package cmd
 // and its port.
 
 import (
+	"errors"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
@@ -90,8 +92,11 @@ func TestCloseSession_StopsReviewChildren_3168(t *testing.T) {
 	dbFile := seedHookRows(t, parent, stuck, stopped)
 	parents := withChildStops(t, dbFile, stuck)
 
-	if err := closeSession(parent); err != nil {
-		t.Fatalf("closeSession: %v", err)
+	// A child whose sidecar did not stop makes the close exit non-zero and
+	// name that child (#3192).
+	err := closeSession(parent)
+	if !errors.Is(err, errSidecarNotStopped) || !strings.Contains(err.Error(), stuck) {
+		t.Fatalf("closeSession = %v, want an errSidecarNotStopped error that names %q", err, stuck)
 	}
 
 	assertChildEnds(t, dbFile, parent, stopped, stuck, *parents)
