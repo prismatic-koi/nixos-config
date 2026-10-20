@@ -19,11 +19,12 @@ package cmd
 //     clear the per-session pi conversation resume pointer
 //     (agent_status.harness_session_id) on every row, so the next switch into
 //     a previously-active project starts pi with a fresh conversation.
-//     The (worktree, harness_session_id) pairs are snapshotted BEFORE the
-//     clear so step 4b can scope its transcript removal to exactly the
-//     sessions being reset. Step 4b deletes exactly the pi transcript
-//     JSONLs belonging to the snapshotted resume pointers from the shared
-//     host pi sessions root.
+//     The (worktree, harness_session_id) pairs and the instance IDs are
+//     snapshotted after step 1 and before step 2, so step 4b can scope its
+//     transcript removal to exactly the sessions being reset, and step 4c
+//     can remove their instance directories. Step 4b deletes exactly the pi
+//     transcript JSONLs belonging to the snapshotted resume pointers from
+//     the shared host pi sessions root.
 //  5. (Unless --no-launch) invoke `prism launch` to restart the server.
 //
 // Flags:
@@ -110,8 +111,15 @@ func runReset(cmd *cobra.Command, _ []string) error {
 		proglog.Warnf("[prism reset] sidecar cleanup: %v (continuing)\n", err)
 	}
 
+	// Snapshot the resume pointers and the instance IDs before step 2. See
+	// resetSnapshotSessions for why the order matters.
+	resumePointers, instanceIDs, err := resetSnapshotSessions(kept...)
+	if err != nil {
+		proglog.Warnf("[prism reset] %v (transcript and instance-dir removal will be skipped)\n", err)
+	}
+
 	// ── Step 2: Kill tmux ────────────────────────────────────────────────────
-	resetKillTmux(kept)
+	resetKillTmuxStep(kept)
 
 	// ── Step 3: Reset every registered isolator ──────────────────────────────
 	// The per-mode reset logic lives in each Isolator's Reset method.
@@ -123,11 +131,8 @@ func runReset(cmd *cobra.Command, _ []string) error {
 	}
 
 	// ── Step 4: Mark all agent_status rows as ended ───────────────────────────
-	// Also snapshots the pi resume pointers (worktree + harness_session_id)
-	// before clearing them, so step 4b can scope its transcript removal.
 	fmt.Println("Marking all sessions as ended in DB...")
-	resumePointers, instanceIDs, err := resetMarkDBEnded(kept...)
-	if err != nil {
+	if err := resetMarkDBEnded(kept...); err != nil {
 		proglog.Warnf("[prism reset] DB cleanup: %v (continuing)\n", err)
 	}
 
@@ -208,7 +213,7 @@ func resetIsolators() error {
 }
 
 // piResumePointer is the snapshot of one agent_status row's pi resume
-// linkage — captured by resetMarkDBEnded immediately BEFORE
+// linkage — captured by resetSnapshotSessions BEFORE
 // ClearAllResumePointers nulls the harness_session_id column. The FS half of
 // the reset (resetClearPiTranscripts) consumes the snapshot to delete exactly
 // the transcript JSONLs belonging to the sessions being reset, mirroring
@@ -220,48 +225,47 @@ type piResumePointer struct {
 	harnessSessionID string
 }
 
-// resetMarkDBEnded opens the prism DB, calls MarkAllEnded to update all
-// non-ended agent_status rows, then calls ClearAllResumePointers to wipe the
-// per-session pi conversation resume pointer (harness_session_id) on every
-// row. The two operations are independent (different columns) but conceptually
-// paired by `prism reset`: end every session, then forget the resume pointer.
+// resetSnapshotSessions snapshots, from every agent_status row, the
+// (worktree, harness_session_id) pairs that carry a resume pointer and the
+// instance IDs. The FS half of the reset (resetClearPiTranscripts) deletes
+// exactly those transcript JSONLs, and step 4c removes the instance
+// directories of those instance IDs. The snapshot deliberately covers ended
+// rows too — ClearAllResumePointers wipes the column on every row, and the
+// FS half must match that scope.
 //
-// Before the clear, the (worktree, harness_session_id) pairs of every row
-// carrying a resume pointer are snapshotted and returned so the FS half of
-// the reset (resetClearPiTranscripts) can delete exactly those transcript
-// JSONLs. The snapshot deliberately covers ended rows too —
-// ClearAllResumePointers wipes the column on every row, and the FS half must
-// match that scope. A snapshot failure is logged and degrades the FS half to
-// a no-op; the DB-side clears (the load-bearing half) still run.
+// runReset takes the snapshot after the sidecar stops and before the tmux
+// kill. Each killed tmux session fires the global session-closed hook,
+// which clears instance_id of its row. A snapshot after the kill can then
+// miss the instance ID, and the instance directories of that session stay
+// on disk (#2960).
 //
-// The returned slice is valid even when err is non-nil, so the caller can
-// still hand whatever was captured to resetClearPiTranscripts — each reset
-// step is best-effort and attempted independently.
+// The rows named in keep are left out, so that the later steps do not
+// remove their transcript or their instance directories.
 //
-// The rows named in keep are left as they are: they stay open, they keep
-// their resume pointer, and the snapshot leaves them out, so that the later
-// steps do not remove their transcript or their instance directories.
-func resetMarkDBEnded(keep ...string) ([]piResumePointer, []string, error) {
+// The returned slices are valid even when err is non-nil — each reset step
+// is best-effort and attempted independently. A snapshot failure degrades
+// the FS half to a no-op; the DB-side clears (the load-bearing half) still
+// run.
+func resetSnapshotSessions(keep ...string) ([]piResumePointer, []string, error) {
 	d, err := openDB()
 	if err != nil {
 		return nil, nil, fmt.Errorf("open DB: %w", err)
 	}
 	defer d.Close()
 
-	// Snapshot resume pointers BEFORE ClearAllResumePointers nulls the
-	// column. AllStatusesWithPrefix("") returns every agent_status row,
-	// active and ended.
+	// AllStatusesWithPrefix("") returns every agent_status row, active and
+	// ended.
 	//
 	// instanceIDs is snapshotted from the same rows, independent of the
 	// resume-pointer filter below: a session's instance-ID-keyed directory
 	// trees (work dir, podman-proxy audit dir) exist regardless of whether
 	// the row carries a pi resume pointer.
-	var pointers []piResumePointer
-	var instanceIDs []string
 	statuses, err := d.AllStatusesWithPrefix("")
 	if err != nil {
-		proglog.Warnf("[prism reset] snapshot resume pointers: %v (transcript removal will be skipped)\n", err)
+		return nil, nil, fmt.Errorf("snapshot sessions: %w", err)
 	}
+	var pointers []piResumePointer
+	var instanceIDs []string
 	for _, s := range statuses {
 		if slices.Contains(keep, s.SessionName) {
 			continue
@@ -278,10 +282,29 @@ func resetMarkDBEnded(keep ...string) ([]piResumePointer, []string, error) {
 			harnessSessionID: *s.HarnessSessionID,
 		})
 	}
+	return pointers, instanceIDs, nil
+}
+
+// resetMarkDBEnded opens the prism DB, calls MarkAllEnded to update all
+// non-ended agent_status rows, then calls ClearAllResumePointers to wipe the
+// per-session pi conversation resume pointer (harness_session_id) on every
+// row. The two operations are independent (different columns) but conceptually
+// paired by `prism reset`: end every session, then forget the resume pointer.
+// resetSnapshotSessions runs first, so that the FS half of the reset knows
+// which transcripts belong to the cleared pointers.
+//
+// The rows named in keep are left as they are: they stay open and keep
+// their resume pointer.
+func resetMarkDBEnded(keep ...string) error {
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("open DB: %w", err)
+	}
+	defer d.Close()
 
 	n, err := d.MarkAllEnded(keep...)
 	if err != nil {
-		return pointers, instanceIDs, err
+		return err
 	}
 	if n == 0 {
 		fmt.Println("  no active sessions in DB.")
@@ -294,12 +317,12 @@ func resetMarkDBEnded(keep ...string) ([]piResumePointer, []string, error) {
 	// resetClearPiTranscripts.
 	cleared, err := d.ClearAllResumePointers(keep...)
 	if err != nil {
-		return pointers, instanceIDs, err
+		return err
 	}
 	if cleared > 0 {
 		fmt.Printf("  cleared pi resume pointer on %d row(s).\n", cleared)
 	}
-	return pointers, instanceIDs, nil
+	return nil
 }
 
 // resetStopSidecar is the sidecar stop of prism reset. Tests replace it, so
@@ -378,6 +401,10 @@ func resetStopSidecars() ([]string, error) {
 	}
 	return kept, nil
 }
+
+// resetKillTmuxStep is step 2 of runReset. Tests replace it, so that a test
+// can act as the session-closed hook of each killed tmux session.
+var resetKillTmuxStep = resetKillTmux
 
 // resetKillTmux kills the tmux server. When kept names a session, the
 // server stays, and every tmux session that kept does not name is killed.

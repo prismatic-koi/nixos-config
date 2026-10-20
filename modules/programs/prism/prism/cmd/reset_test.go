@@ -42,7 +42,7 @@ func TestResetMarkDBEnded_MarksAllNonEndedRows(t *testing.T) {
 	t.Cleanup(func() { SetTestDBPath("") })
 
 	// Run the DB cleanup step.
-	if _, _, err := resetMarkDBEnded(); err != nil {
+	if err := resetMarkDBEnded(); err != nil {
 		t.Fatalf("resetMarkDBEnded returned error: %v", err)
 	}
 
@@ -99,7 +99,7 @@ func TestResetMarkDBEnded_NoActiveRows(t *testing.T) {
 	t.Cleanup(func() { SetTestDBPath("") })
 
 	// Should succeed even with nothing to update.
-	if _, _, err := resetMarkDBEnded(); err != nil {
+	if err := resetMarkDBEnded(); err != nil {
 		t.Fatalf("resetMarkDBEnded returned error on empty active set: %v", err)
 	}
 }
@@ -117,7 +117,7 @@ func TestResetMarkDBEnded_EmptyDB(t *testing.T) {
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
 
-	if _, _, err := resetMarkDBEnded(); err != nil {
+	if err := resetMarkDBEnded(); err != nil {
 		t.Fatalf("resetMarkDBEnded returned error on empty DB: %v", err)
 	}
 }
@@ -155,7 +155,7 @@ func TestResetMarkDBEnded_AlreadyEndedRowsUntouched(t *testing.T) {
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
 
-	if _, _, err := resetMarkDBEnded(); err != nil {
+	if err := resetMarkDBEnded(); err != nil {
 		t.Fatalf("resetMarkDBEnded: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestResetMarkDBEnded_AlreadyEndedRowsUntouched(t *testing.T) {
 }
 
 // TestResetMarkDBEnded_SnapshotsResumePointersBeforeClear verifies the
-// capture-before-clear contract: resetMarkDBEnded returns the
+// capture-before-clear contract: resetSnapshotSessions returns the
 // (sessionName, worktree, harness_session_id) snapshot of every row that
 // carried a resume pointer — including already-ended rows, since
 // ClearAllResumePointers wipes the column on every row — and the DB column is
@@ -222,8 +222,11 @@ func TestResetMarkDBEnded_SnapshotsResumePointersBeforeClear(t *testing.T) {
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
 
-	pointers, _, err := resetMarkDBEnded()
+	pointers, _, err := resetSnapshotSessions()
 	if err != nil {
+		t.Fatalf("resetSnapshotSessions: %v", err)
+	}
+	if err := resetMarkDBEnded(); err != nil {
 		t.Fatalf("resetMarkDBEnded: %v", err)
 	}
 

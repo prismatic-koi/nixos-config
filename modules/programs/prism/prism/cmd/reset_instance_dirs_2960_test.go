@@ -65,8 +65,11 @@ func TestRunReset_RemovesInstanceDirsForEverySnapshottedSession(t *testing.T) {
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
 
-	_, instanceIDs, err := resetMarkDBEnded()
+	_, instanceIDs, err := resetSnapshotSessions()
 	if err != nil {
+		t.Fatalf("resetSnapshotSessions: %v", err)
+	}
+	if err := resetMarkDBEnded(); err != nil {
 		t.Fatalf("resetMarkDBEnded: %v", err)
 	}
 	found := false
@@ -76,7 +79,7 @@ func TestRunReset_RemovesInstanceDirsForEverySnapshottedSession(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("resetMarkDBEnded instanceIDs = %v, want to contain %q", instanceIDs, instanceID)
+		t.Fatalf("resetSnapshotSessions instanceIDs = %v, want to contain %q", instanceIDs, instanceID)
 	}
 	for _, id := range instanceIDs {
 		removeSessionInstanceDirs(id)
@@ -112,9 +115,12 @@ func TestRunReset_NoInstanceID_NoError(t *testing.T) {
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
 
-	_, instanceIDs, err := resetMarkDBEnded()
+	_, instanceIDs, err := resetSnapshotSessions()
 	if err != nil {
-		t.Fatalf("resetMarkDBEnded returned error: %v", err)
+		t.Fatalf("resetSnapshotSessions: %v", err)
+	}
+	if err := resetMarkDBEnded(); err != nil {
+		t.Fatalf("resetMarkDBEnded: %v", err)
 	}
 	for _, id := range instanceIDs {
 		if id == "" {

@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -581,6 +582,88 @@ func TestRunReset_KillsTmuxServerAfterStops_3192(t *testing.T) {
 	}
 	if readStatus(t, dbFile, session).EndedAt == nil {
 		t.Error("row open, want ended")
+	}
+}
+
+// Each tmux session that reset kills fires the session-closed hook, which
+// clears instance_id of its row. Reset takes the instance IDs before the
+// kill, so that it still removes the instance directories of each reset
+// session (#2960). The directories of a kept session stay.
+func TestRunReset_SnapshotBeforeTmuxKill_3192(t *testing.T) {
+	for _, tc := range []struct {
+		desc  string
+		stuck []string
+	}{
+		{"tmux server killed", nil},
+		{"tmux sessions killed one by one", []string{"myrepo@snap-stuck"}},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			clearPICodingAgentDir(t)
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			t.Cleanup(container.SetSessionTmpRootForTest(t.TempDir()))
+			sessions := []string{"myrepo@snap-stuck", "myrepo@snap-stopped"}
+			dbFile := seedHookRows(t, sessions...)
+			workDirs := map[string]string{}
+			d, err := db.Open(dbFile)
+			if err != nil {
+				t.Fatalf("open db: %v", err)
+			}
+			for _, n := range sessions {
+				id := "iid-" + strings.TrimPrefix(n, "myrepo@")
+				if err := d.SetInstanceID(n, id); err != nil {
+					t.Fatalf("SetInstanceID: %v", err)
+				}
+				dir, err := container.SessionWorkDirPath(id)
+				if err != nil {
+					t.Fatalf("SessionWorkDirPath: %v", err)
+				}
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatalf("mkdir work dir: %v", err)
+				}
+				workDirs[n] = dir
+			}
+			d.Close()
+			writeSidecarRunFiles(t, sessions...)
+			tmuxLog := withListingSpyTmux(t, sessions...)
+			withResetStops(t, dbFile, tmuxLog, tc.stuck...)
+
+			prev := resetKillTmuxStep
+			resetKillTmuxStep = func(kept []string) {
+				prev(kept)
+				hd, err := db.Open(dbFile)
+				if err != nil {
+					t.Fatalf("open db: %v", err)
+				}
+				defer hd.Close()
+				for _, n := range sessions {
+					if !slices.Contains(kept, n) {
+						_ = hd.ClearInstanceID(n)
+					}
+				}
+			}
+			t.Cleanup(func() { resetKillTmuxStep = prev })
+
+			rootCmd.SetArgs([]string{"reset", "--yes", "--no-launch"})
+			var runErr error
+			captureStderrDuringFn(t, func() {
+				captureStdoutDuringFn(t, func() { runErr = rootCmd.Execute() })
+			})
+			if runErr != nil {
+				t.Fatalf("prism reset: %v", runErr)
+			}
+
+			for _, n := range sessions {
+				_, statErr := os.Stat(workDirs[n])
+				if slices.Contains(tc.stuck, n) {
+					if statErr != nil {
+						t.Errorf("work dir of kept session %q: %v, want kept", n, statErr)
+					}
+				} else if !os.IsNotExist(statErr) {
+					t.Errorf("work dir of reset session %q: %v, want removed", n, statErr)
+				}
+			}
+		})
 	}
 }
 
