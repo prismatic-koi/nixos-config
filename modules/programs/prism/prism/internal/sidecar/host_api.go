@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -196,6 +198,13 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 	}
 }
 
+// HostAPIHandlerForTest returns the host-API handler of s, so a test in
+// another package can drive it with a real CLI client. Production code
+// serves the handler through the host-API listener only.
+func (s *Sidecar) HostAPIHandlerForTest() http.Handler {
+	return s.hostAPIHandler()
+}
+
 // hostAPIHandler returns an http.Handler that exposes host-side tmux operations
 // to agents running inside the container via a Unix socket. Routes:
 //
@@ -220,7 +229,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	GET  /sessions/status — look up one session status row (all roles)
 //	GET  /groups/list   — list review groups (all roles)
 //	GET  /groups/poll   — poll one review group for completion (all roles)
-//	POST /event         — write a lifecycle event to the host DB (all roles)
+//	POST /event         — write a lifecycle event to the host DB (all roles; own session only)
 //	POST /usage/snapshot — persist a rate-limit snapshot for the active account (all roles)
 //	POST /escalate      — escalate to coordinator (all roles; cross-session from= is coordinator only)
 //	POST /investigate   — spawn an investigate-agent session (coordinator only)
@@ -298,33 +307,24 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 	// requireCoordinator checks that the calling sidecar is a coordinator
 	// session. Returns false and writes HTTP 403 if not. It delegates to
-	// isCoordinatorSession (helpers.go), which admits the caller when EITHER
-	// of these holds:
+	// callerHasCoordinatorRole (helpers.go), which reads the start config of
+	// this sidecar first:
 	//
-	//   - the agent_status row says root_agent_name = 'coordinator'; or
-	//   - the session name ends in @main.
-	//
-	// The name heuristic is OR-ed in, not a fallback: it is evaluated on the
-	// primary path too, and it wins on disagreement, so a row that says
-	// 'worker' on a session named <repo>@main is still admitted. That OR is
-	// deliberate: it survives a stale or racing DB value.
-	//
-	// Undeterminable role — no DB handle, no agent_status row, a DB read
-	// error, or a NULL root_agent_name — falls through to the name heuristic
-	// ALONE. For every session name that does not end in @main that is false,
-	// so the caller is denied. A session named <repo>@main is admitted on the
-	// heuristic alone, with no DB evidence. A privilege check must not rest on
-	// that heuristic alone.
-	//
-	// It also admits the root session of a non-worktree project, from the
-	// start config of this sidecar (startedAsNonWorktreeRoot).
+	//   - Config.AgentRole "coordinator" admits the caller.
+	//   - Any other non-empty Config.AgentRole denies the caller, whatever
+	//     agent_status.root_agent_name says. A worker cannot pass this gate
+	//     with a role in the DB.
+	//   - With no Config.AgentRole, isCoordinatorSession decides: the DB role
+	//     or the "@main" name heuristic.
+	//   - The root session of a non-worktree project is admitted
+	//     (startedAsNonWorktreeRoot).
 	//
 	// This is the enforcement point for the worker restriction on
 	// coordinator-only verbs (`prism merge`, `prism investigate`, …). No
 	// entry in the pi extension's bash deny list matches a prism verb; agent
 	// prose must name this gate.
 	requireCoordinator := func(w http.ResponseWriter, operation string) bool {
-		if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) && !s.startedAsNonWorktreeRoot() {
+		if !s.callerHasCoordinatorRole() {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("workers cannot perform %s", operation))
 			return false
@@ -2765,18 +2765,32 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// `prism event <kind>` subcommand invoked from inside a container where
 	// dbPath() resolves to a per-container shadow DB invisible to the host.
 	//
-	// Allowed kinds: state-change, pane-died, tmux-session-start, tmux-session-end,
-	// compaction, error, doom-loop-detected.
+	// Validation (eventProxyArgv), in this order:
+	//   - kind must be a key of eventArgAllowlist (400): state-change,
+	//     pane-died, tmux-session-start, tmux-session-end, compaction, error,
+	//     doom-loop-detected.
+	//   - session must be non-empty (400).
+	//   - Caller check: session must be the session of this sidecar,
+	//     s.cfg.SessionName (403). This applies to every role, the
+	//     coordinator included. The per-session socket is the identity of the
+	//     caller, so a caller can write lifecycle rows only for itself.
+	//   - Arg allowlist: each args key must be in eventArgAllowlist for the
+	//     kind (400):
+	//       state-change        state, worktree
+	//       pane-died           window, exit-code
+	//       tmux-session-start  worktree
+	//       tmux-session-end    (none)
+	//       compaction          (none)
+	//       error               message
+	//       doom-loop-detected  tool, pattern, count
+	//     tmux-session-start takes no agent-role: only prism on the host sets
+	//     root_agent_name.
+	//   - worktree, when sent, must be the start worktree of this sidecar,
+	//     s.cfg.Worktree (403). The host run always gets the start worktree.
 	//
-	// Validation:
-	//   - kind must be a known subcommand name (400 for unknown kinds).
-	//   - session must be non-empty (400 for empty or whitespace).
-	//     NOTE: we intentionally do NOT require the session to already exist in
-	//     the host DB. tmux-session-start is called for brand-new sessions that
-	//     have no agent_status row yet; a DB-existence check would reject the
-	//     very first event that creates the session record.
-	//   - All role levels (worker and coordinator) are permitted — lifecycle
-	//     events are emitted by both.
+	// The host DB keeps the role and the worktree that prism wrote at start.
+	// `prism restore` and the caller-role gates read them, so a proxied event
+	// must not change them.
 	//
 	// Security: accessible only over the Unix socket (consistent with all other
 	// host-API endpoints — no network exposure).
@@ -2796,30 +2810,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
-		// Validate kind against the known allowlist.
-		if !isKnownEventKind(req.Kind) {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf(
-				"unknown event kind %q — must be one of: %s",
-				req.Kind, knownEventKindsStr()))
+		args, status, err := s.eventProxyArgv(req.Kind, req.Session, req.Args)
+		if err != nil {
+			s.logger().Printf("sidecar: host-API /event: refused kind=%s session=%s: %v", req.Kind, req.Session, err)
+			writeError(w, status, err.Error())
 			return
-		}
-
-		// Validate session: must be non-empty.
-		if strings.TrimSpace(req.Session) == "" {
-			writeError(w, http.StatusBadRequest, "session is required")
-			return
-		}
-
-		// Build the prism event <kind> [flags] invocation.
-		// Always include --session from the top-level field; remaining args
-		// come from the Args map as --key value pairs. Empty-value entries
-		// are skipped so that optional flags remain at their defaults on the
-		// host side (e.g. --agent-role "" behaves the same as omitting it).
-		args := []string{"event", req.Kind, "--session", req.Session}
-		for k, v := range req.Args {
-			if v != "" {
-				args = append(args, "--"+k, v)
-			}
 		}
 
 		s.logger().Printf("sidecar: host-API /event: kind=%s session=%s", req.Kind, req.Session)
@@ -3254,9 +3249,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			fromSession = s.cfg.SessionName
 		} else if fromSession != s.cfg.SessionName {
 			// Cross-session: only coordinators may escalate on behalf of
-			// another session. The DB-backed coordinator check matches the
-			// pattern used by /prompt's cross-repo branch and /set-model.
-			if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) && !s.startedAsNonWorktreeRoot() {
+			// another session. The role comes from the start config, the
+			// same rule as requireCoordinator and /set-model.
+			if !s.callerHasCoordinatorRole() {
 				writeError(w, http.StatusForbidden,
 					fmt.Sprintf("workers can only escalate from their own session (%s), got from=%q",
 						s.cfg.SessionName, fromSession))
@@ -4072,28 +4067,88 @@ func (r usageSnapshotRequest) toSnapshot(accountName, capturedAt string) usage.S
 	return snap
 }
 
-// eventKindAllowlist is the set of valid kind values accepted by the /event
-// host-API endpoint. These match the subcommand names in cmd/event.go.
-var eventKindAllowlist = map[string]bool{
-	"state-change":       true,
-	"pane-died":          true,
-	"tmux-session-start": true,
-	"tmux-session-end":   true,
-	"compaction":         true,
-	"error":              true,
-	"doom-loop-detected": true,
+// eventArgAllowlist maps each kind that the /event host-API endpoint accepts
+// to the args keys that it forwards to the host `prism event <kind>` run. The
+// kinds are subcommand names in cmd/event.go, and the keys are the flags that
+// proxyEventToHostAPI sends for the kind. The handler refuses any other key.
+//
+// Do not add "agent-role" to tmux-session-start, or "session" to any kind.
+// With agent-role, a worker writes root_agent_name=coordinator for itself, and
+// every gate that reads the DB role admits it. With session, a second
+// --session flag overrides the caller check.
+var eventArgAllowlist = map[string][]string{
+	"state-change":       {"state", eventWorktreeArg},
+	"pane-died":          {"window", "exit-code"},
+	"tmux-session-start": {eventWorktreeArg},
+	"tmux-session-end":   {},
+	"compaction":         {},
+	"error":              {"message"},
+	"doom-loop-detected": {"tool", "pattern", "count"},
 }
 
-// isKnownEventKind returns true if kind is a recognised event subcommand name.
-func isKnownEventKind(kind string) bool {
-	return eventKindAllowlist[kind]
+// eventWorktreeArg is the args key that names the worktree of the session.
+// eventProxyArgv does not forward the value of the caller. It forwards the
+// start worktree of the sidecar.
+const eventWorktreeArg = "worktree"
+
+// eventProxyArgv checks a proxied /event request and returns the argv of the
+// host `prism event` run. On refusal it returns the HTTP status and the
+// reason. See the /event handler for the order of the checks.
+//
+// The caller check and the worktree check read the start config of the
+// sidecar (Config.SessionName, Config.Worktree). The agent cannot change the
+// start config. The DB is not read: a row that the proxy wrote must not
+// decide what the proxy can write next.
+//
+// Each flag has the form --key=value, so a value that starts with "--"
+// cannot become a flag of its own.
+func (s *Sidecar) eventProxyArgv(kind, session string, args map[string]string) ([]string, int, error) {
+	allowed, ok := eventArgAllowlist[kind]
+	if !ok {
+		return nil, http.StatusBadRequest, fmt.Errorf(
+			"unknown event kind %q — must be one of: %s", kind, knownEventKindsStr())
+	}
+	if strings.TrimSpace(session) == "" {
+		return nil, http.StatusBadRequest, errors.New("session is required")
+	}
+	if session != s.cfg.SessionName {
+		return nil, http.StatusForbidden, fmt.Errorf(
+			"a session can write events only for itself (%s), got session=%q", s.cfg.SessionName, session)
+	}
+	for key := range args {
+		if !slices.Contains(allowed, key) {
+			return nil, http.StatusBadRequest, fmt.Errorf(
+				"arg %q is not allowed for event kind %q — allowed args: [%s]", key, kind, strings.Join(allowed, ", "))
+		}
+	}
+
+	argv := []string{"event", kind, "--session=" + session}
+	for _, key := range allowed {
+		value := args[key]
+		if key == eventWorktreeArg {
+			start := s.cfg.Worktree
+			if start == "" {
+				return nil, http.StatusInternalServerError, errors.New("this sidecar has no start worktree")
+			}
+			if value != "" && filepath.Clean(value) != filepath.Clean(start) {
+				return nil, http.StatusForbidden, fmt.Errorf(
+					"a session can write only its own worktree (%s), got worktree=%q", start, value)
+			}
+			value = start
+		}
+		// An empty value leaves the flag at its default on the host.
+		if value != "" {
+			argv = append(argv, "--"+key+"="+value)
+		}
+	}
+	return argv, 0, nil
 }
 
 // knownEventKindsStr returns a sorted comma-separated list of known event kinds
 // for use in error messages.
 func knownEventKindsStr() string {
-	names := make([]string, 0, len(eventKindAllowlist))
-	for name := range eventKindAllowlist {
+	names := make([]string, 0, len(eventArgAllowlist))
+	for name := range eventArgAllowlist {
 		names = append(names, name)
 	}
 	// Simple insertion sort for stable error messages.

@@ -428,10 +428,11 @@ func TestResolveRoleForSession_NonWorktreeRootTakesCoordinatorSlot(t *testing.T)
 // the coordinator role, and pi loads the project extensions of the worker
 // from its cwd.
 //
-// The stub binary records each argv and writes nothing to the DB. The test
-// therefore seeds the agent_status row that the real `prism event
-// tmux-session-start` writes for the chosen directory. If /switch loses its
-// gate, the worker cases fail with 200 and a recorded `switch --path` exec.
+// /event refuses the first step for every caller, because the session is not
+// the caller's own (#3207). The test then seeds the agent_status row that
+// the real `prism event tmux-session-start` writes for the chosen directory,
+// so the /switch gate is tested on its own. If /switch loses its gate, the
+// worker cases fail with 200 and a recorded `switch --path` exec.
 func TestHostAPI_Switch_WorkerCannotStartANonWorktreeRoot(t *testing.T) {
 	const target = "prism-test-nwevil"
 
@@ -464,11 +465,11 @@ func TestHostAPI_Switch_WorkerCannotStartANonWorktreeRoot(t *testing.T) {
 
 			rr := doHostAPI(t, sc, http.MethodPost, "/event",
 				`{"kind":"tmux-session-start","session":"`+target+`","args":{"worktree":"`+chosen+`"}}`)
-			if rr.Code != http.StatusOK {
-				t.Fatalf("/event: status = %d, body = %s, want 200 (the /event handler is out of scope here)", rr.Code, rr.Body.String())
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("/event for another session: status = %d, body = %s, want 403", rr.Code, rr.Body.String())
 			}
-			// The row that the real `prism event tmux-session-start` writes:
-			// the chosen worktree, and no role.
+			// The row that the real `prism event tmux-session-start` writes
+			// for the chosen directory: the chosen worktree, and no role.
 			if err := d.UpsertStatus(target, "", chosen, "idle", nil, nil); err != nil {
 				t.Fatalf("seed the row that /event writes: %v", err)
 			}
