@@ -367,10 +367,15 @@ func keychainProbeDenyLines(t *testing.T, since time.Time) string {
 	return strings.Join(lines, "\n")
 }
 
-// queryLogShowForKeychainDeny invokes `log show` from since and returns
-// the matching deny lines (or "" if none) referencing login.keychain-db.
-// The kernel emits a Sandbox subsystem entry on every denial; the
-// predicate filters down to the one we expect to see.
+// queryLogShowForKeychainDeny invokes `log show` from since and returns its
+// raw output, or "" if the query fails. The output is not a list of denies:
+// it also holds the command line of `log` itself, which matches the
+// predicate. Do not test this output directly. Filter it through
+// keychainProbeDenyLines.
+//
+// The log does not hold every deny. The Security framework checks its read
+// of a keychain file with SANDBOX_CHECK_NO_REPORT, so the kernel logs no
+// deny for that check (see keychainProbeSourceC).
 func queryLogShowForKeychainDeny(t *testing.T, since time.Time) string {
 	t.Helper()
 	cmd := exec.Command("/usr/bin/log", "show",
