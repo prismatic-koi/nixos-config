@@ -133,12 +133,16 @@ func IsCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool
 // start path started it in. The answer comes from that record, not from the
 // shape of the name. A worker with a bare name is still a worker.
 //
-// The rule is sound because of how prism starts sessions. Every spawn path
-// (`prism spawn`, `prism pr`, `prism review`, `prism investigate`) gives the
-// session an explicit role, and a spawned worker always starts in a worktree
-// of a bare repo. Only the root-session start path (`prism switch`, `prism
-// restore`) starts a session with no role in a directory outside every
-// bare+worktree layout. session.DefaultAgent returns "" for that directory.
+// The rule is sound because of how prism starts sessions. `prism spawn`,
+// `prism review`, and `prism investigate` give the session an explicit role.
+// `prism pr` starts through ensureAndSwitch, which takes the role from
+// session.DefaultAgent for the worktree: "worker", or "coordinator" on main.
+// A spawned worker also has a name with "@" and starts in a worktree of a
+// bare repo, and a review agent or an investigator has a name with "~". So
+// each spawned session fails at least two of the checks below. Only the
+// root-session start path (`prism switch`, `prism restore`) starts a session
+// with no role in a directory outside every bare+worktree layout. The host
+// API keeps that path closed to a worker: /switch needs the coordinator role. session.DefaultAgent returns "" for that directory.
 // This function reads the same git.BareRoot rule as DefaultAgent.
 //
 // Name checks narrow the grant and never widen it. A descendant ("~") and a
