@@ -677,13 +677,14 @@ func generateProfile(m *Manager) string {
 	// CLI is the canonical example; other Rust binaries built on
 	// the `keyring` crate share the code path) reach the user's legacy login
 	// keychain through the Security Framework — SecKeychainFindGenericPassword /
-	// SecItemCopyMatching, dispatched via Mach IPC to securityd.
-	// securityd requires the calling process to have file-read* on
-	// ~/Library/Keychains/login.keychain-db to service Keychain lookups even
-	// when the lookup goes over Mach IPC. Without this grant securityd hides
-	// the user's keychain entries from the sandboxed caller, and the lookup
-	// surfaces to the application as "credential not found" — exactly the
-	// symptom of pup OAuth token unreachable in-sandbox.
+	// SecItemCopyMatching.
+	// The calling process reads ~/Library/Keychains/login.keychain-db itself.
+	// Before the read, the Security framework calls sandbox_check with
+	// SANDBOX_CHECK_NO_REPORT for file-read-data on that path. If the sandbox
+	// denies the check, the framework skips the keychain and makes no open(2).
+	// Without this grant, the lookup returns errSecItemNotFound (-25300) and
+	// the kernel logs no deny. The application sees "credential not found".
+	// This is the symptom of the pup OAuth token that is unreachable in-sandbox.
 	//
 	// Shape: single-file (literal ...), NOT
 	// (subpath ~/Library/Keychains). The narrowing is load-bearing: the modern
