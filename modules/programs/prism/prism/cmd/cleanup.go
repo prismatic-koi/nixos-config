@@ -1962,7 +1962,7 @@ func stopAndRemoveChildContainers(d *db.DB, parentSession string) {
 // removeContainerIfExists stops and removes any podman container for the given
 // prism session, and cleans up the associated temp files.
 // It is idempotent: all steps are safe to call when the container does not exist.
-// Called after KillSidecar to handle the case where the sidecar is already dead.
+// The callers run it after the sidecar stop, when the sidecar is already gone.
 // For host-mode (non-container) sessions, the podman calls return "no such
 // container" which is silently ignored.
 //
@@ -2005,9 +2005,9 @@ func removeContainerIfExists(sessionName string) {
 	iso.EnsureRemoved(ctx, nil)
 
 	// Clean up the host-API Unix socket, the agent-run log, and their
-	// per-session directory. The sidecar's own shutdown path would normally
-	// remove the socket, but cleanup runs after KillSidecar so we cannot rely
-	// on that — remove them directly.
+	// per-session directory. The sidecar stop unlinks the sockets only when
+	// it finds a PID file, and it leaves the log and the directory, so
+	// remove them directly.
 	// The per-session directory (run/<session>/) isolates sockets. Removing it
 	// here prevents accumulated empty dirs.
 	if sockPath, err := prismSession.SidecarHostAPIPath(sessionName); err == nil {
