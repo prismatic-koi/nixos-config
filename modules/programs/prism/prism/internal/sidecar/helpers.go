@@ -281,6 +281,14 @@ func (s *Sidecar) startedAsNonWorktreeRoot() bool {
 	return authz.IsNonWorktreeRoot(s.cfg.SessionName, s.cfg.AgentRole, s.cfg.Worktree)
 }
 
+// isNonWorktreeRootTarget reports whether prism started sessionName as the
+// root session of a non-worktree project. It reads agent_status, because a
+// target is another session and its start config is not in reach. See
+// authz.IsNonWorktreeRootFromDB.
+func isNonWorktreeRootTarget(sessionName string, d *db.DB) bool {
+	return authz.IsNonWorktreeRootFromDB(sessionName, d)
+}
+
 // callerHasCoordinatorRole is the caller-role rule of the per-session
 // endpoints (/set-model, /apply-profile, /register-provider,
 // /set-active-tools, /abort). A caller with this role can target another

@@ -385,3 +385,33 @@ func TestSidecar_NonWorktreeRoot_StartsMergeWatcher(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveRoleForSession_NonWorktreeRootTakesCoordinatorSlot pins the
+// /apply-profile fan-out. A target with no recorded role gets the worker
+// slot, except the root session of a non-worktree project, which gets the
+// coordinator slot that `prism agent-run` gives it at start. A recorded role
+// always wins.
+func TestResolveRoleForSession_NonWorktreeRootTakesCoordinatorSlot(t *testing.T) {
+	sc, d := nwrSidecar(t, nwrOtherCoord, "coordinator", nwrWorktreeDir(t), "coordinator", nwrSuccessStub, nil)
+
+	cases := []struct {
+		session, role, worktree, want string
+	}{
+		{nwrRoot, "", t.TempDir(), "coordinator"},
+		{nwrDescendant, "", t.TempDir(), "worker"},
+		{"prism-test-nwother@nullrole", "", nwrWorktreeDir(t), "worker"},
+		{"prism-test-nwother@reviewer", "review-goal", nwrWorktreeDir(t), "review-goal"},
+	}
+	for _, tc := range cases {
+		if err := d.UpsertStatusSeedRootAgentName(tc.session, sessionname.Repo(tc.session), tc.worktree, "active", nil, nil, tc.role, "", ""); err != nil {
+			t.Fatalf("seed %q: %v", tc.session, err)
+		}
+		got, skip := resolveRoleForSession(sc, tc.session)
+		if skip != "" {
+			t.Fatalf("resolveRoleForSession(%q) skip = %q", tc.session, skip)
+		}
+		if got != tc.want {
+			t.Errorf("resolveRoleForSession(%q) = %q, want %q", tc.session, got, tc.want)
+		}
+	}
+}

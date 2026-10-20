@@ -64,6 +64,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
@@ -274,14 +275,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		port = *status.HarnessPort
 	}
 
-	// Resolve agent role from status.
-	agentRole := ""
-	if status.RootAgentName != nil {
-		agentRole = *status.RootAgentName
-	}
-	if agentRole == "" {
-		agentRole = session.DefaultAgent(worktree, "")
-	}
+	agentRole := agentRunRole(status, worktree)
 
 	// Look up the host-API socket path so bwrap can mount it.
 	hostAPISockPath := ""
@@ -775,6 +769,38 @@ type piOverrides struct {
 	Provider   string
 }
 
+// agentRunRole returns the agent role that `prism agent-run` gives the
+// session of status: root_agent_name, else session.DefaultAgent for the
+// worktree. The bwrap path and the sandbox-exec path both call it. The result
+// is "" for the root session of a non-worktree project. That session reads
+// the coordinator slot (profileSlotRole) and gets no --agent flag.
+func agentRunRole(status *db.Status, worktree string) string {
+	if status != nil && status.RootAgentName != nil && *status.RootAgentName != "" {
+		return *status.RootAgentName
+	}
+	return session.DefaultAgent(worktree, "")
+}
+
+// profileSlotRole returns the profile slot that a session with agentRole
+// reads. An empty role reads the coordinator slot, the same rule as the
+// lookupRole fallback in cmd/pr.go.
+//
+// The empty role belongs to the root session of a non-worktree project:
+// session.DefaultAgent returns "" for its directory, and that session has the
+// coordinator role (authz.IsNonWorktreeRoot). No profile defines a "" slot.
+// Without this fallback, `prism agent-run` refuses to start that session in
+// bwrap and sandbox-exec mode.
+//
+// Use the result for the slot lookup only. Do not write it to
+// container.Config.AgentRole: that field becomes the --agent flag of pi, and
+// the root session runs with no role prompt.
+func profileSlotRole(agentRole string) string {
+	if agentRole == "" {
+		return "coordinator"
+	}
+	return agentRole
+}
+
 // populatePIConfig fills the PI-specific fields on ctrCfg for harness=pi sessions.
 //
 // It:
@@ -840,10 +866,11 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	}
 
 	// Require that the active profile defines a slot for this role.
-	if slotErr := config.RequireSlot(pf, profileName, agentRole); slotErr != nil {
+	slotRole := profileSlotRole(agentRole)
+	if slotErr := config.RequireSlot(pf, profileName, slotRole); slotErr != nil {
 		return fmt.Errorf("pi: %w", slotErr)
 	}
-	slot, _ := config.SlotForRole(pf, profileName, agentRole)
+	slot, _ := config.SlotForRole(pf, profileName, slotRole)
 
 	// Resolve the shared PI agent config directory (~/.pi/agent on the host)
 	// and the canonical in-sandbox path (/run/prism/pi-agent). Bwrap will

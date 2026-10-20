@@ -4273,6 +4273,11 @@ func isPipeConnected(s *Sidecar) bool {
 //
 // Returns (role, "") on success.
 // Returns ("", "error:disconnected") when the session cannot be looked up.
+//
+// A session with no recorded role gets the "worker" slot, except the root
+// session of a non-worktree project (isNonWorktreeRootTarget). That
+// session gets the "coordinator" slot, the slot that `prism agent-run` gives
+// it at start (profileSlotRole in cmd/agent_run.go).
 func resolveRoleForSession(s *Sidecar, targetSess string) (role, skipStatus string) {
 	if s.cfg.DB == nil {
 		return "", "error:disconnected"
@@ -4282,7 +4287,10 @@ func resolveRoleForSession(s *Sidecar, targetSess string) (role, skipStatus stri
 		return "", "error:disconnected"
 	}
 	if name == "" {
-		name = "worker" // fallback when role is not recorded
+		name = "worker"
+		if isNonWorktreeRootTarget(targetSess, s.cfg.DB) {
+			name = "coordinator"
+		}
 	}
 	return name, ""
 }
