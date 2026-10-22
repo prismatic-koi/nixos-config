@@ -1406,7 +1406,7 @@ func ancestorMetadataAllow(paths []string) string {
 
 // sessionTmpNodeDeny is the section-21e clause of generateProfile.
 func sessionTmpNodeDeny(forms []string) string {
-	clause := "(deny file-write-unlink file-write-create file-write-mode file-write-flags file-write-acl"
+	clause := "(deny file-write-unlink file-write-create file-write-mode file-write-flags"
 	for _, p := range forms {
 		clause += "\n  (literal " + quoteSBPL(p) + ")"
 	}
