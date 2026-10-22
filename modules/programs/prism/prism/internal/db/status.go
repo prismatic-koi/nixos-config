@@ -1340,6 +1340,15 @@ WHERE ended_at IS NULL`
 	return d.queryStatuses(q)
 }
 
+// AllEndedStatus returns all agent_status rows where ended_at IS NOT NULL.
+func (d *DB) AllEndedStatus() ([]Status, error) {
+	const q = `
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+FROM agent_status
+WHERE ended_at IS NOT NULL`
+	return d.queryStatuses(q)
+}
+
 // ActiveSessionCountForMode returns the number of agent_status rows where
 // ended_at IS NULL AND isolation_mode = mode. Used by the per-isolator
 // concurrency cap checks. Returns 0 when no rows match.

@@ -14,8 +14,9 @@ package integration_test
 // machine, tmux, the user ssh-agent, AeroSpace, a .NET diagnostic socket,
 // nvim, or any other. The session has no write grant on a shared temp tree
 // either, so it cannot move such a socket into its per-session TMPDIR.
-// Section 21e denies unlink and create of the TMPDIR node, so the session
-// cannot swap the dir for a symlink (see
+// Section 21e denies unlink, create, mode writes, flag writes, and ACL
+// writes of the TMPDIR node, so the session cannot swap the dir for a
+// symlink (see
 // sandbox_exec_session_tmp_darwin_test.go).
 //
 // Each positive test runs a probe under the production profile. Each paired
@@ -51,16 +52,21 @@ import (
 //	probe --read <path>               read a file
 //	probe --remove <path>             remove a file or an empty dir
 //	probe --rename <src> <dst>        os.Rename(src, dst)
+//	probe --mkdir <path>              create a dir
+//	probe --chmod <path> <octal>      os.Chmod(path, mode)
+//	probe --chflags <path> <flags>    chflags(2); flags in Go integer syntax
 //
-// A connect that succeeds prints CONNECTED. A --create, --read, --remove, or
-// --rename that succeeds prints OP-OK. A failed --move rename prints
+// A connect that succeeds prints CONNECTED. A file operation that succeeds
+// prints OP-OK. A failed --move rename prints
 // RENAME-DENIED and exits 2. Every failure exits non-zero.
 const connectProbeSrc = `package main
 
 import (
 	"net"
 	"os"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -92,6 +98,20 @@ func main() {
 		op(os.Remove(args[1]))
 	case len(args) >= 3 && args[0] == "--rename":
 		op(os.Rename(args[1], args[2]))
+	case len(args) >= 2 && args[0] == "--mkdir":
+		op(os.Mkdir(args[1], 0o700))
+	case len(args) >= 3 && args[0] == "--chmod":
+		mode, err := strconv.ParseUint(args[2], 8, 32)
+		if err != nil {
+			fail("", err, 5)
+		}
+		op(os.Chmod(args[1], os.FileMode(mode)))
+	case len(args) >= 3 && args[0] == "--chflags":
+		flags, err := strconv.ParseUint(args[2], 0, 32)
+		if err != nil {
+			fail("", err, 5)
+		}
+		op(syscall.Chflags(args[1], int(flags)))
 	case len(args) >= 2 && args[0] == "--bind":
 		ln, err := net.Listen("unix", args[1])
 		if err != nil {

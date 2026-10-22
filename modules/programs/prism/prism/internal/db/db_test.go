@@ -139,6 +139,26 @@ func TestUpsertStatus_Update(t *testing.T) {
 	}
 }
 
+func TestAllEndedStatus_ReturnsOnlyEndedRows(t *testing.T) {
+	d := openTestDB(t)
+	for _, name := range []string{"repo@live", "repo@ended"} {
+		if err := d.UpsertStatus(name, "repo", "/code/repo/"+name, "idle", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus(%q): %v", name, err)
+		}
+	}
+	if err := d.SetEnded("repo@ended"); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	ended, err := d.AllEndedStatus()
+	if err != nil {
+		t.Fatalf("AllEndedStatus: %v", err)
+	}
+	if len(ended) != 1 || ended[0].SessionName != "repo@ended" || ended[0].EndedAt == nil {
+		t.Errorf("AllEndedStatus = %+v, want only repo@ended with ended_at set", ended)
+	}
+}
+
 // TestWriteEvent verifies that WriteEvent inserts a row retrievable via QueryEvents.
 func TestWriteEvent(t *testing.T) {
 	d := openTestDB(t)

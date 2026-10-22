@@ -201,8 +201,8 @@ func TestRelease_StopsForceTerminatedMemberWithLiveTmux_3160(t *testing.T) {
 	if _, err := review.ReapDeliveredReviewAgents(d, groupID, afterGrace(), 0); err != nil {
 		t.Fatalf("ReapDeliveredReviewAgents: %v", err)
 	}
-	if _, err := review.SweepEndedSidecars(d, afterGrace()); err != nil {
-		t.Fatalf("SweepEndedSidecars: %v", err)
+	if _, err := review.SweepEndedSessions(d, afterGrace()); err != nil {
+		t.Fatalf("SweepEndedSessions: %v", err)
 	}
 
 	for i, s := range sessions {
@@ -220,7 +220,7 @@ func TestRelease_StopsForceTerminatedMemberWithLiveTmux_3160(t *testing.T) {
 
 // AC: when the monitor process stops before the release, the next
 // `prism review`, `prism cleanup`, or sidecar start stops every sidecar of
-// an ended session. All three call review.SweepEndedSidecars.
+// an ended session. All three call review.SweepEndedSessions.
 func TestSweep_AfterMonitorStopped_StopsSidecarsOfEndedSessions_3160(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	withTmuxPresence(t, allGone)
@@ -234,9 +234,9 @@ func TestSweep_AfterMonitorStopped_StopsSidecarsOfEndedSessions_3160(t *testing.
 		t.Fatalf("SetEnded(parent): %v", err)
 	}
 
-	res, err := review.SweepEndedSidecars(d, time.Now())
+	res, err := review.SweepEndedSessions(d, time.Now())
 	if err != nil {
-		t.Fatalf("SweepEndedSidecars: %v", err)
+		t.Fatalf("SweepEndedSessions: %v", err)
 	}
 	for i, s := range sessions {
 		if !stubs[i].exited(3 * time.Second) {
@@ -261,8 +261,8 @@ func TestSweep_SparesRunningAndUnreleasedRounds_3160(t *testing.T) {
 	all := append(append([]string{}, running...), graced...)
 	stubs := stubsFor(t, all)
 
-	if _, err := review.SweepEndedSidecars(d, time.Now()); err != nil {
-		t.Fatalf("SweepEndedSidecars: %v", err)
+	if _, err := review.SweepEndedSessions(d, time.Now()); err != nil {
+		t.Fatalf("SweepEndedSessions: %v", err)
 	}
 	if _, err := review.ReapDeliveredReviewAgents(d, "", time.Now(), 0); err != nil {
 		t.Fatalf("ReapDeliveredReviewAgents: %v", err)

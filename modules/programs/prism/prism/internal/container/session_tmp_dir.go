@@ -43,7 +43,7 @@ import (
 // seam: production code never reassigns it. Tests point it at a test-owned
 // dir, because a sandboxed test process cannot write /var/tmp and the nix
 // build sandbox can have no /var/tmp.
-var sessionTmpRoot = "/var/tmp"
+var sessionTmpRoot = productionSessionTmpRoot
 
 // SetSessionTmpRootForTest points the per-session TMPDIR root at dir and
 // returns a function that restores the previous root. Only tests call it.

@@ -247,7 +247,7 @@ type cleanupDoneMsg struct{ err error }
 
 func (m cleanupModel) doCleanup() tea.Cmd {
 	return func() tea.Msg {
-		defer sweepEndedSidecarsAfterCleanup()
+		defer sweepEndedSessionsAfterCleanup()
 		// Stop the sidecar before the worktree, the tmux session, or the row
 		// goes. A sidecar that does not stop can still use all of them.
 		if !cleanupStopSidecar(m.session) {
@@ -770,7 +770,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		return proxyCleanupToHostAPI(apiURL, session, true, jsonMode, false)
 	}
-	defer sweepEndedSidecarsAfterCleanup()
+	defer sweepEndedSessionsAfterCleanup()
 
 	result := cleanupResult{Session: session}
 
@@ -1033,7 +1033,7 @@ func applySessionResourceSweep(session string, result *cleanupResult, scope swee
 // delete the branch — used for default-branch sessions where the checkout
 // must remain intact.
 func closeSession(session string) error {
-	defer sweepEndedSidecarsAfterCleanup()
+	defer sweepEndedSessionsAfterCleanup()
 	// Stop the sidecar before the tmux session or the row goes. A sidecar
 	// that does not stop can still use them.
 	if !cleanupStopSidecar(session) {
@@ -1143,7 +1143,7 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		// see proxyCloseToHostAPI in close.go, which goes through /close.
 		return proxyCleanupToHostAPI(apiURL, session, true, jsonMode, false)
 	}
-	defer sweepEndedSidecarsAfterCleanup()
+	defer sweepEndedSessionsAfterCleanup()
 
 	result := cleanupResult{Session: session}
 	printLine := func(format string, a ...any) {
