@@ -295,7 +295,7 @@ func reapOne(d *db.DB, c db.ReapCandidate) bool {
 //     agent the candidate query skips because another path, such as the
 //     monitor's force-terminate, ended its row first (#3160).
 //   - session.SweepStaleSessionTmpDirs, which removes each per-session
-//     TMPDIR that no live row owns (#3170).
+//     TMPDIR that no session owns (#3170).
 //
 // Each sweep fails closed on its own. A failure of one does not stop the
 // other.

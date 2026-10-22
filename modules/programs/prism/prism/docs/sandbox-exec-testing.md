@@ -286,8 +286,8 @@ integration test coverage exists for:
   `sandbox_exec_container_socket_darwin_test.go`.
 - **The per-session TMPDIR** — the section-3 read-write grant on
   `/var/tmp/prism-<hash of the instance ID>` (both `/var` symlink forms) and
-  the section-21e deny on unlink, create, mode writes, and flag writes of its
-  node (#3150, #3170). The dispatcher sets `TMPDIR` and `MAC_CHROMIUM_TMPDIR`
+  the section-21e deny on unlink, create, mode writes, flag writes, and ACL
+  writes of its node (#3150, #3170). The dispatcher sets `TMPDIR` and `MAC_CHROMIUM_TMPDIR`
   to this dir. Under the production profile:
   - The session creates, reads, renames, and removes a file in its TMPDIR,
     and binds and connects a socket at a 92-byte path there. It creates and
@@ -299,8 +299,11 @@ integration test coverage exists for:
   - The session cannot read a file, create a file, or connect to a socket in
     the TMPDIR of another session.
   - The session cannot rename or remove the node of its TMPDIR.
-  - The session cannot `chmod 777` or `chflags uchg` the node of its TMPDIR,
-    by either `/var` form. The mode and the flags of the node do not change.
+  - The session cannot `chmod 777`, `chflags uchg`, or `chmod +a` the node
+    of its TMPDIR, by either `/var` form. The mode, the flags, and the ACL of
+    the node do not change. The test puts the node back after each check, so
+    that one change (for example uchg) cannot make the next check fail for
+    another reason.
 
   The paired negatives make these changes to the profile:
   - Point the TMPDIR rules at a missing path.
@@ -309,9 +312,14 @@ integration test coverage exists for:
   - Strip the section-21e deny.
   - Take `file-write-mode` out of the section-21e deny.
   - Take `file-write-flags` out of the section-21e deny.
+  - Take `file-write-acl` out of the section-21e deny.
 
   Each negative then gives the opposite result. See
-  `sandbox_exec_session_tmp_darwin_test.go`.
+  `sandbox_exec_session_tmp_darwin_test.go`. The suite puts its TMPDIRs below
+  `/var/tmp/pst<4 hex chars>`, not directly in `/var/tmp`. A production
+  prism on the same host runs the stale-TMPDIR sweep (#3170). That sweep
+  removes each `/var/tmp/prism-<hash>` dir that its database does not know.
+  It does not look below the children of `/var/tmp`.
 
 Each positive case has a paired negative case that mutates the profile to
 remove the specific rule under test and asserts the operation fails.

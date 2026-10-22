@@ -18,7 +18,10 @@ package integration_test
 // When no interception applies, TestMain runs the normal test suite.
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"math/rand/v2"
 	"os"
 	"testing"
 	"time"
@@ -121,19 +124,27 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// sessionTmpRootForSuite keeps the production root (/var/tmp) of the
-// per-session TMPDIR when the test process can write /var/tmp. A test
-// process in a sandbox-exec session cannot, so Manager.PrepareSandboxExec
-// fails there.
-// In that case the root moves to a new dir under os.TempDir(), the
-// per-session TMPDIR of the session. The sandbox-exec tests skip in such a
-// session, and the profile-content tests still run.
+// sessionTmpRootForSuite moves the root of the per-session TMPDIRs to a new
+// dir /var/tmp/pst<4 hex chars> when the test process can write /var/tmp.
+// The TMPDIRs keep the /var symlink forms of production.
+//
+// The root is not /var/tmp itself. The stale-TMPDIR sweep of a production
+// prism on the same host (#3170) removes each /var/tmp/prism-<hash> dir that
+// its database does not know, and a test TMPDIR is such a dir. The sweep
+// does not look below the children of /var/tmp. The name is short, so a
+// socket at <TMPDIR>/<longSocketName> stays inside the Darwin sun_path
+// limit.
+//
+// A test process in a sandbox-exec session cannot write /var/tmp, so
+// Manager.PrepareSandboxExec fails there. In that case the root moves to a
+// new dir under os.TempDir(), the per-session TMPDIR of the session. The
+// sandbox-exec tests skip in such a session, and the profile-content tests
+// still run.
 func sessionTmpRootForSuite() (restore func()) {
-	if probe, err := os.MkdirTemp("/var/tmp", "pst-"); err == nil {
-		_ = os.Remove(probe)
-		return func() {}
+	dir, err := mkdirShortUnderVarTmp()
+	if err != nil {
+		dir, err = os.MkdirTemp("", "pst-")
 	}
-	dir, err := os.MkdirTemp("", "pst-")
 	if err != nil {
 		return func() {}
 	}
@@ -142,6 +153,21 @@ func sessionTmpRootForSuite() (restore func()) {
 		restoreRoot()
 		_ = os.RemoveAll(dir)
 	}
+}
+
+// mkdirShortUnderVarTmp creates /var/tmp/pst<4 hex chars> with mode 0700.
+func mkdirShortUnderVarTmp() (string, error) {
+	var err error
+	for range 20 {
+		dir := fmt.Sprintf("/var/tmp/pst%04x", rand.IntN(0x10000))
+		if err = os.Mkdir(dir, 0o700); err == nil {
+			return dir, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", err
+		}
+	}
+	return "", err
 }
 
 // suiteStateRoot is the directory that TestMain gives to IsolateSuite.

@@ -504,13 +504,13 @@ func TestGenerateProfile_OtherSessionTmpDirNotGranted(t *testing.T) {
 }
 
 // TestGenerateProfile_SessionTmpDirNodeDeny asserts the section-21e deny on
-// unlink, create, mode writes, and flag writes of the TMPDIR node, in both
-// forms, as literals. A subpath here denies every write inside the TMPDIR.
+// unlink, create, mode writes, flag writes, and ACL writes of the TMPDIR
+// node, in both forms, as literals. A subpath here denies every write inside the TMPDIR.
 func TestGenerateProfile_SessionTmpDirNodeDeny(t *testing.T) {
 	m, profile := newTmpDirProfile(t, "instance-a")
 	tmpDir, _ := m.sessionTmpDirPath()
 
-	want := "(deny file-write-unlink file-write-create file-write-mode file-write-flags\n" +
+	want := "(deny file-write-unlink file-write-create file-write-mode file-write-flags file-write-acl\n" +
 		"  (literal " + quoteSBPL("/private"+tmpDir) + ")\n" +
 		"  (literal " + quoteSBPL(tmpDir) + "))\n"
 	if !strings.Contains(profile, want) {

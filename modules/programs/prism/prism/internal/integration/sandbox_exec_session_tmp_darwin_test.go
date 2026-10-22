@@ -10,8 +10,11 @@ package integration_test
 // cannot create, rename, or delete a file in /private/tmp, /tmp, or the user
 // $TMPDIR, and it cannot read, write, or connect in the TMPDIR of another
 // session. It cannot rename or remove the node of its own TMPDIR, and it
-// cannot change the mode or the flags of that node. It can still chmod and
-// chflags a file inside its TMPDIR.
+// cannot change the mode, the flags, or the ACL of that node. It can still
+// chmod and chflags a file inside its TMPDIR.
+//
+// The suite root of the TMPDIRs is a dir below /var/tmp, not /var/tmp
+// itself (see sessionTmpRootForSuite in testmain_test.go).
 //
 // The tests use the connect probe of
 // sandbox_exec_container_socket_darwin_test.go and the probe extras
@@ -20,6 +23,7 @@ package integration_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -43,9 +47,10 @@ func expectOp(t *testing.T, profilePath, probe string, wantOK bool, why string, 
 }
 
 // longSocketName is a 64-byte socket name. A path of the form
-// <TMPDIR>/<longSocketName> is 92 bytes in the /var/tmp form, inside the 104-byte
-// Darwin sun_path limit, and has the depth of a go test socket below a
-// t.TempDir()-style directory.
+// <TMPDIR>/<longSocketName> is 92 bytes under the production root /var/tmp
+// and 100 bytes under the suite root /var/tmp/pst<4 hex chars>. Both are
+// inside the 104-byte Darwin sun_path limit. The path has the depth of a go
+// test socket below a t.TempDir()-style directory.
 var longSocketName = strings.Repeat("s", 59) + ".sock"
 
 // The chflags(2) flags that the tests use, from <sys/stat.h>.
@@ -326,7 +331,7 @@ func sessionWorkDirOf(t *testing.T, m *container.Manager) string {
 
 // sessionTmpNodeDenyOps are the operations of the section-21e deny, in the
 // order that the generator writes them.
-var sessionTmpNodeDenyOps = []string{"file-write-unlink", "file-write-create", "file-write-mode", "file-write-flags"}
+var sessionTmpNodeDenyOps = []string{"file-write-unlink", "file-write-create", "file-write-mode", "file-write-flags", "file-write-acl"}
 
 // sessionTmpNodeDenyBlock is the section-21e clause for the TMPDIR tmpDir,
 // with the operations ops (default: sessionTmpNodeDenyOps).
@@ -396,12 +401,61 @@ func TestSandboxExecSessionTmp_NodeReplaceableWithoutDeny(t *testing.T) {
 	expectOp(t, mutatedPath, probe, true, "the TMPDIR rename still fails without section 21e, so the positive test proves nothing", "--rename", tmpDir, moved)
 }
 
-// TestSandboxExecSessionTmp_NodeModeAndFlagsLocked: under the production
-// profile, the session cannot chmod or chflags the node of its own TMPDIR
-// (section 21e), in either /var form. The mode and the flags of the node
-// do not change, so the session cannot open the node to other users or
-// lock it against the cleanup removal.
-func TestSandboxExecSessionTmp_NodeModeAndFlagsLocked(t *testing.T) {
+// aclEntry is the ACL entry that the ACL checks add to the TMPDIR node. It
+// opens the dir to every local user and leaves the mode as it is.
+const aclEntry = "everyone allow list,search,read"
+
+// expectCmd runs argv under the profile and checks that it succeeds
+// (wantOK) or fails.
+func expectCmd(t *testing.T, profilePath string, wantOK bool, why string, argv ...string) {
+	t.Helper()
+	out, err := exec.Command(sandboxExecPath, append([]string{"-f", profilePath}, argv...)...).CombinedOutput()
+	if ok := err == nil; ok != wantOK {
+		t.Errorf("%q: ok=%v, want %v: %s.\nExit: %v\nOutput: %s\nProfile: %s", argv, ok, wantOK, why, err, out, profilePath)
+	}
+}
+
+// nodeState is the mode, the chflags flags, and the ACL mark of a dir.
+type nodeState struct {
+	mode  os.FileMode
+	flags uint32
+	acl   bool
+}
+
+// readNodeState reads the state of path outside the sandbox. ls -ld marks
+// an extended ACL with a "+" after the mode string.
+func readNodeState(t *testing.T, path string) nodeState {
+	t.Helper()
+	mode, flags := nodeModeAndFlags(t, path)
+	out, err := exec.Command("/bin/ls", "-ld", path).Output()
+	if err != nil {
+		t.Fatalf("ls -ld %s: %v", path, err)
+	}
+	modeString := strings.Fields(string(out))[0]
+	return nodeState{mode: mode, flags: flags, acl: len(modeString) > 10 && modeString[10] == '+'}
+}
+
+// resetNode puts the state of path back to want, outside the sandbox. The
+// flags go first, because uchg blocks a change of the mode and the ACL.
+func resetNode(t *testing.T, path string, want nodeState) {
+	t.Helper()
+	if err := syscall.Chflags(path, int(want.flags)); err != nil {
+		t.Fatalf("reset the flags of %s: %v", path, err)
+	}
+	if out, err := exec.Command("/bin/chmod", "-N", path).CombinedOutput(); err != nil {
+		t.Fatalf("remove the ACL of %s: %v: %s", path, err, out)
+	}
+	if err := os.Chmod(path, want.mode); err != nil {
+		t.Fatalf("reset the mode of %s: %v", path, err)
+	}
+}
+
+// TestSandboxExecSessionTmp_NodeModeFlagsAndACLLocked: under the production
+// profile, the session cannot chmod, chflags, or chmod +a the node of its
+// own TMPDIR (section 21e), in either /var form. The mode, the flags, and
+// the ACL of the node do not change, so the session cannot open the node to
+// other users or lock it against the cleanup removal.
+func TestSandboxExecSessionTmp_NodeModeFlagsAndACLLocked(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
@@ -414,29 +468,31 @@ func TestSandboxExecSessionTmp_NodeModeAndFlagsLocked(t *testing.T) {
 	tmpDir := sessionTmpDirOf(t, m)
 	clearFlagsAtCleanup(t, tmpDir)
 
-	modeBefore, flagsBefore := nodeModeAndFlags(t, tmpDir)
+	before := readNodeState(t, tmpDir)
 	ops := []struct {
-		why  string
-		args func(node string) []string
+		name string
+		run  func(node string)
 	}{
-		{"the session changed the mode of its TMPDIR node", func(node string) []string { return []string{"--chmod", node, "777"} }},
-		{"the session set the uchg flag on its TMPDIR node", func(node string) []string { return []string{"--chflags", node, strconv.Itoa(ufImmutable)} }},
+		{"chmod 777", func(node string) {
+			expectOp(t, profilePath, probe, false, "the session changed the mode of its TMPDIR node", "--chmod", node, "777")
+		}},
+		{"chflags uchg", func(node string) {
+			expectOp(t, profilePath, probe, false, "the session set the uchg flag on its TMPDIR node", "--chflags", node, strconv.Itoa(ufImmutable))
+		}},
+		{"chmod +a", func(node string) {
+			expectCmd(t, profilePath, false, "the session added an ACL entry to its TMPDIR node", "/bin/chmod", "+a", aclEntry, node)
+		}},
 	}
 	for _, node := range []string{tmpDir, "/private" + tmpDir} {
 		for _, op := range ops {
-			expectOp(t, profilePath, probe, false, op.why, op.args(node)...)
-			if mode, flags := nodeModeAndFlags(t, tmpDir); mode != modeBefore || flags != flagsBefore {
-				t.Errorf("probe %q changed the TMPDIR node: mode %v -> %v, flags %#x -> %#x", op.args(node), modeBefore, mode, flagsBefore, flags)
+			op.run(node)
+			if got := readNodeState(t, tmpDir); got != before {
+				t.Errorf("%s on %s changed the TMPDIR node: %+v -> %+v", op.name, node, before, got)
 			}
 			// Put the node back after a probe that changed it. Without this,
 			// a uchg flag that one probe set makes the next chmod fail with
 			// EPERM, and the next check passes whatever the profile holds.
-			if err := syscall.Chflags(tmpDir, int(flagsBefore)); err != nil {
-				t.Fatalf("reset the flags of %s: %v", tmpDir, err)
-			}
-			if err := os.Chmod(tmpDir, modeBefore); err != nil {
-				t.Fatalf("reset the mode of %s: %v", tmpDir, err)
-			}
+			resetNode(t, tmpDir, before)
 		}
 	}
 }
@@ -483,5 +539,26 @@ func TestSandboxExecSessionTmp_NodeFlagsWritableWithoutDeny(t *testing.T) {
 	expectOp(t, mutatedPath, probe, true, "the chflags of the TMPDIR node still fails without file-write-flags in section 21e, so the positive test proves nothing", "--chflags", tmpDir, strconv.Itoa(ufImmutable))
 	if _, flags := nodeModeAndFlags(t, tmpDir); flags&ufImmutable == 0 {
 		t.Errorf("the TMPDIR node has flags %#x after the chflags, want uchg", flags)
+	}
+}
+
+// TestSandboxExecSessionTmp_NodeACLWritableWithoutDeny is the paired
+// negative of the chmod +a check: with file-write-acl taken out of the
+// section-21e deny, the session adds an ACL entry to its TMPDIR node.
+func TestSandboxExecSessionTmp_NodeACLWritableWithoutDeny(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+
+	m := newSocketProfileManager(t)
+	tmpDir := sessionTmpDirOf(t, m)
+	mutatedPath := withMutatedProbeProfile(t, m, func(p string) string {
+		return withoutSessionTmpNodeDenyOp(p, tmpDir, "file-write-acl")
+	})
+
+	expectCmd(t, mutatedPath, true, "chmod +a on the TMPDIR node still fails without file-write-acl in section 21e, so the positive test proves nothing", "/bin/chmod", "+a", aclEntry, tmpDir)
+	if !readNodeState(t, tmpDir).acl {
+		t.Errorf("the TMPDIR node has no ACL after chmod +a")
 	}
 }
