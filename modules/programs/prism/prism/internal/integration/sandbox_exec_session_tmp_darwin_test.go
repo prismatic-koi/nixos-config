@@ -415,12 +415,29 @@ func TestSandboxExecSessionTmp_NodeModeAndFlagsLocked(t *testing.T) {
 	clearFlagsAtCleanup(t, tmpDir)
 
 	modeBefore, flagsBefore := nodeModeAndFlags(t, tmpDir)
-	for _, node := range []string{tmpDir, "/private" + tmpDir} {
-		expectOp(t, profilePath, probe, false, "the session changed the mode of its TMPDIR node", "--chmod", node, "777")
-		expectOp(t, profilePath, probe, false, "the session set the uchg flag on its TMPDIR node", "--chflags", node, strconv.Itoa(ufImmutable))
+	ops := []struct {
+		why  string
+		args func(node string) []string
+	}{
+		{"the session changed the mode of its TMPDIR node", func(node string) []string { return []string{"--chmod", node, "777"} }},
+		{"the session set the uchg flag on its TMPDIR node", func(node string) []string { return []string{"--chflags", node, strconv.Itoa(ufImmutable)} }},
 	}
-	if mode, flags := nodeModeAndFlags(t, tmpDir); mode != modeBefore || flags != flagsBefore {
-		t.Errorf("the TMPDIR node changed: mode %v -> %v, flags %#x -> %#x", modeBefore, mode, flagsBefore, flags)
+	for _, node := range []string{tmpDir, "/private" + tmpDir} {
+		for _, op := range ops {
+			expectOp(t, profilePath, probe, false, op.why, op.args(node)...)
+			if mode, flags := nodeModeAndFlags(t, tmpDir); mode != modeBefore || flags != flagsBefore {
+				t.Errorf("probe %q changed the TMPDIR node: mode %v -> %v, flags %#x -> %#x", op.args(node), modeBefore, mode, flagsBefore, flags)
+			}
+			// Put the node back after a probe that changed it. Without this,
+			// a uchg flag that one probe set makes the next chmod fail with
+			// EPERM, and the next check passes whatever the profile holds.
+			if err := syscall.Chflags(tmpDir, int(flagsBefore)); err != nil {
+				t.Fatalf("reset the flags of %s: %v", tmpDir, err)
+			}
+			if err := os.Chmod(tmpDir, modeBefore); err != nil {
+				t.Fatalf("reset the mode of %s: %v", tmpDir, err)
+			}
+		}
 	}
 }
 
