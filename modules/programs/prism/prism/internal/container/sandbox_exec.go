@@ -223,8 +223,9 @@ func ensureGoCacheDirs() {
 //     allowlist, so a host socket in /private/tmp or in the user $TMPDIR
 //     (tmux, the user ssh-agent, AeroSpace, podman, nvim, and any other)
 //     is not reachable
-//   - A final deny on unlink and create of the per-session TMPDIR node
-//     (section 21e), so the session cannot swap the dir for a symlink
+//   - A final deny on unlink, create, mode writes, and flag writes of the
+//     per-session TMPDIR node (section 21e), so the session cannot swap the
+//     dir for a symlink or lock the node against cleanup
 //
 // New top-level allow/deny clauses require an explanatory comment in the
 // generator.
@@ -361,7 +362,8 @@ func generateProfile(m *Manager) string {
 	// allow is absent. It grants stat only, not a directory list.
 	//
 	// The session can write the node of its own TMPDIR, because a subpath
-	// covers its root. Section 21e takes back unlink and create on the node.
+	// covers its root. Section 21e takes back unlink, create, mode writes,
+	// and flag writes on the node.
 	if len(sessionTmpForms) > 0 {
 		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata file-map-executable\n")
 		for i, p := range sessionTmpForms {
@@ -1281,7 +1283,7 @@ func generateProfile(m *Manager) string {
 		sb.WriteString(worktreeReadOnlyDeny(m.cfg.Worktree))
 	}
 
-	// ── 21e. FINAL DENY — the per-session TMPDIR node cannot be replaced ─
+	// ── 21e. FINAL DENY — the per-session TMPDIR node cannot be replaced or locked ─
 	// Section 3 grants (subpath <TMPDIR>), which covers the TMPDIR node
 	// itself. Without this deny, the session can rename its TMPDIR away and
 	// put a symlink at the path, because a create at the root of a subpath
@@ -1289,10 +1291,16 @@ func generateProfile(m *Manager) string {
 	// restore and the cleanup removal. With the deny, the path stays the dir
 	// that Prepare made, so host-side code never meets a planted symlink.
 	//
+	// The deny also covers mode writes (chmod) and flag writes (chflags) on
+	// the node. Without it, the session can open its TMPDIR to other users
+	// with chmod 0777, or set an immutable flag (chflags uchg) so that the
+	// cleanup removal fails.
+	//
 	// The rules are literals, so they match the node only, and files below
-	// it keep the section-3 grant. /private/var/tmp, the parent, has no write
-	// grant, so the chain stops there. The deny must follow every allow,
-	// because SBPL resolves a conflict in favour of the later rule.
+	// it keep the section-3 grant: a session can still chmod +x a script in
+	// its TMPDIR. /private/var/tmp, the parent, has no write grant, so the
+	// chain stops there. The deny must follow every allow, because SBPL
+	// resolves a conflict in favour of the later rule.
 	// TestGenerateProfile_SessionTmpDirNodeDenyFollowsEveryAllow pins the
 	// order.
 	if len(sessionTmpForms) > 0 {
@@ -1394,7 +1402,7 @@ func ancestorMetadataAllow(paths []string) string {
 
 // sessionTmpNodeDeny is the section-21e clause of generateProfile.
 func sessionTmpNodeDeny(forms []string) string {
-	clause := "(deny file-write-unlink file-write-create"
+	clause := "(deny file-write-unlink file-write-create file-write-mode file-write-flags"
 	for _, p := range forms {
 		clause += "\n  (literal " + quoteSBPL(p) + ")"
 	}

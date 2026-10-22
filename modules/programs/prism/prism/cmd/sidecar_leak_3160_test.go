@@ -238,7 +238,7 @@ func TestWatchTmuxSession_3160(t *testing.T) {
 
 // AC: the next `prism cleanup` stops the sidecar of an ended session that an
 // earlier path left behind.
-func TestSweepEndedSidecarsAfterCleanup_StopsSidecarOfEndedSession_3160(t *testing.T) {
+func TestSweepEndedSessionsAfterCleanup_StopsSidecarOfEndedSession_3160(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Cleanup(prismSession.SetSweepTmuxPresenceForTest(func(string) prismSession.TmuxPresence {
 		return prismSession.TmuxGone
@@ -259,7 +259,7 @@ func TestSweepEndedSidecarsAfterCleanup_StopsSidecarOfEndedSession_3160(t *testi
 
 	t.Run("no sweep inside a sandbox", func(t *testing.T) {
 		t.Setenv("PRISM_HOST_API", "unix:///nonexistent/hostapi.sock")
-		sweepEndedSidecarsAfterCleanup()
+		sweepEndedSessionsAfterCleanup()
 		select {
 		case <-done:
 			t.Fatal("the sweep ran with PRISM_HOST_API set")
@@ -267,7 +267,7 @@ func TestSweepEndedSidecarsAfterCleanup_StopsSidecarOfEndedSession_3160(t *testi
 		}
 	})
 
-	sweepEndedSidecarsAfterCleanup()
+	sweepEndedSessionsAfterCleanup()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

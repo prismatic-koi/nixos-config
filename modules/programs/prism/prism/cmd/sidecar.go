@@ -445,11 +445,12 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	})
 
 	// Stop the sidecars of ended sessions that an earlier path left behind,
-	// for example a review round whose monitor stopped before its release.
+	// for example a review round whose monitor stopped before its release,
+	// and remove the per-session TMPDIRs that no live session owns.
 	// The sweep fails closed and runs in the background, so that it does not
 	// delay this sidecar.
 	go func() {
-		if _, err := review.SweepEndedSidecars(d, time.Now()); err != nil {
+		if _, err := review.SweepEndedSessions(d, time.Now()); err != nil {
 			proglog.Warnf("[prism sidecar] warning: ended-session sweep: %v\n", err)
 		}
 	}()

@@ -6,7 +6,7 @@ package cmd
 // This scan is NOT the sidecar stop of a review child. The stop runs on
 // every platform: review.CleanupReviewSessionsForParent stops each child
 // sidecar with session.EnsureSidecarStopped through its PID file, and
-// review.SweepEndedSidecars stops the sidecar of every ended session
+// review.SweepEndedSessions stops the sidecar of every ended session
 // (#3160).
 //
 // The scan is an extra, Linux-only safety net for a child sidecar that

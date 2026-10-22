@@ -159,7 +159,7 @@ func SweepEndedSidecars(d *db.DB, opts SweepOpts) (SweepResult, error) {
 	}
 	defer unlock()
 
-	live, err := d.AllActiveStatus()
+	live, err := liveSessions(d)
 	if err != nil {
 		return res, fmt.Errorf("sweep ended sidecars: read live sessions: %w", err)
 	}
@@ -209,6 +209,16 @@ func SweepEndedSidecars(d *db.DB, opts SweepOpts) (SweepResult, error) {
 		}
 	}
 	return res, nil
+}
+
+// liveSessions reads the rows whose ended_at is NULL. Each ended-session
+// sweep uses it as the set of sessions that it must not touch, and removes
+// nothing when it returns an error.
+func liveSessions(d *db.DB) ([]db.Status, error) {
+	if d == nil {
+		return nil, fmt.Errorf("nil database handle")
+	}
+	return d.AllActiveStatus()
 }
 
 // sweepPIDOwner classifies the PID of a PID file. A file with no PID, and a
