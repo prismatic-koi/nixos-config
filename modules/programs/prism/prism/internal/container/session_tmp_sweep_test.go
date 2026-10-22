@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 )
 
 // useSweepRoot points sessionTmpRoot at a new test-owned dir for the rest of
@@ -37,8 +38,15 @@ func makeSessionTmpDir(t *testing.T, instanceID string) string {
 	return dir
 }
 
-func liveSet(ids ...string) func() ([]string, error) {
-	return func() ([]string, error) { return ids, nil }
+// liveSet returns an owners callback with one live owner per ID.
+func liveSet(ids ...string) func() ([]SessionTmpDirOwner, error) {
+	return func() ([]SessionTmpDirOwner, error) {
+		owners := make([]SessionTmpDirOwner, 0, len(ids))
+		for _, id := range ids {
+			owners = append(owners, SessionTmpDirOwner{Key: id})
+		}
+		return owners, nil
+	}
 }
 
 func exists(path string) bool {
@@ -72,12 +80,40 @@ func TestSweepSessionTmpDirs_RemovesEveryDirWithoutALiveID(t *testing.T) {
 	}
 }
 
+// An ended row keeps a dir that is newer than its ended_at: a respawned
+// agent-only session runs with the ended_at of its old row. The dir of an
+// ended row that is older than its ended_at goes.
+func TestSweepSessionTmpDirs_EndedOwnerKeepsOnlyADirNewerThanEndedAt(t *testing.T) {
+	useSweepRoot(t)
+	stale := makeSessionTmpDir(t, "old-incarnation")
+	time.Sleep(20 * time.Millisecond)
+	endedAt := time.Now()
+	time.Sleep(20 * time.Millisecond)
+	respawned := makeSessionTmpDir(t, "respawned-incarnation")
+
+	removed, err := SweepSessionTmpDirs(func() ([]SessionTmpDirOwner, error) {
+		return []SessionTmpDirOwner{
+			{Key: "old-incarnation", EndedAt: &endedAt},
+			{Key: "respawned-incarnation", EndedAt: &endedAt},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("SweepSessionTmpDirs: %v", err)
+	}
+	if !exists(respawned) {
+		t.Errorf("the sweep removed %s, which is newer than the ended_at of its row", respawned)
+	}
+	if exists(stale) || !slices.Equal(removed, []string{stale}) {
+		t.Errorf("removed = %v, want only %s, which is older than the ended_at of its row", removed, stale)
+	}
+}
+
 func TestSweepSessionTmpDirs_FailsClosedWhenLiveSetUnreadable(t *testing.T) {
 	useSweepRoot(t)
 	stale := makeSessionTmpDir(t, "ended-instance")
 
 	readErr := errors.New("database is locked")
-	removed, err := SweepSessionTmpDirs(func() ([]string, error) { return nil, readErr })
+	removed, err := SweepSessionTmpDirs(func() ([]SessionTmpDirOwner, error) { return nil, readErr })
 	if !errors.Is(err, readErr) {
 		t.Errorf("SweepSessionTmpDirs error = %v, want the live-set read error", err)
 	}
@@ -93,7 +129,7 @@ func TestSweepSessionTmpDirs_ListsDirsBeforeItReadsTheLiveSet(t *testing.T) {
 	makeSessionTmpDir(t, "ended-instance")
 
 	var spawned string
-	removed, err := SweepSessionTmpDirs(func() ([]string, error) {
+	removed, err := SweepSessionTmpDirs(func() ([]SessionTmpDirOwner, error) {
 		spawned = makeSessionTmpDir(t, "spawned-during-the-sweep")
 		return nil, nil
 	})
@@ -251,7 +287,7 @@ func TestSessionTmpSweepAllowed_ProductionRootRefusedInATestBinary(t *testing.T)
 	}
 
 	t.Cleanup(SetSessionTmpRootForTest(productionSessionTmpRoot))
-	removed, err := SweepSessionTmpDirs(func() ([]string, error) {
+	removed, err := SweepSessionTmpDirs(func() ([]SessionTmpDirOwner, error) {
 		t.Error("the sweep read the live set for the production root")
 		return nil, errors.New("refuse")
 	})
