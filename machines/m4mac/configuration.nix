@@ -55,7 +55,6 @@ in
       # Disable programs that default to enabled but aren't needed/available on Darwin
       podman.enable = false;
       dragon-drop.enable = false;
-      nh.enable = false;
       chromium.enable = false; # Not available on Darwin
       bitwarden.enable = false; # Use Homebrew cask instead
       discord.enable = false; # Not commonly used on Darwin
