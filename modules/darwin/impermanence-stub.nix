@@ -211,25 +211,6 @@
       description = "Stub for services.resolved.enable (darwin compatibility)";
     };
 
-    # Stub for darwin compatibility: programs.nh
-    # nh is a NixOS helper tool, not typically used on Darwin
-    programs.nh = lib.mkOption {
-      type = lib.types.submodule {
-        options = {
-          enable = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-          };
-          flake = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-          };
-        };
-      };
-      default = { };
-      description = "Stub for programs.nh (darwin compatibility)";
-    };
-
     # Stub for darwin compatibility: services.mpd
     # MPD (Music Player Daemon) service configuration
     services.mpd = lib.mkOption {
