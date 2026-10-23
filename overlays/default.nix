@@ -174,6 +174,31 @@ rec {
         }
       );
 
+      # pyopenjtalk-plus: Cython 3.3.0 changed the text of a TypeError, and
+      # tests/test_frontend.py matches the old text, so the test phase fails
+      # (issue #3223). This adds the upstream test-only patch from
+      # NixOS/nixpkgs#576063. The library code does not change and the
+      # tests still run. `pythonPackagesExtensions` covers every Python
+      # package set.
+      # See: https://github.com/NixOS/nixpkgs/issues/576442
+      #
+      # REMOVAL CONDITION: delete this override once the `nixos-unstable`
+      # revision in flake.lock contains NixOS/nixpkgs#576063 (merge commit
+      # 0b88cee4de185857a4637f75a176006b28e193b1). The patch then applies
+      # twice and the build fails. That failure is the signal to remove
+      # this override.
+      pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
+        (_pyFinal: pyPrev: {
+          pyopenjtalk-plus = addPatches pyPrev.pyopenjtalk-plus [
+            (final.fetchpatch {
+              url = "https://github.com/tsukumijima/pyopenjtalk-plus/commit/90b644f9e9d397882e6eafe4dcd1843a4fde6a63.patch";
+              includes = [ "tests/test_frontend.py" ];
+              hash = "sha256-Jb7T/bRUHxqwBLwV6xYC/teaFHm5GmqJxA7sCX+oiNI=";
+            })
+          ];
+        })
+      ];
+
       _macronTypePkg =
         if final.stdenv.hostPlatform.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
       macron-type = if final.stdenv.hostPlatform.isDarwin then final._macronTypePkg.server else null;
