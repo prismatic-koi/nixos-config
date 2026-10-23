@@ -143,6 +143,24 @@ rec {
         else
           prev.grafana-alloy;
 
+      # linuxPackages_latest: build v4l2loopback from the nixpkgs-master
+      # derivation, against the kernel of the host package set (not the
+      # master kernel). The nixos-unstable derivation runs `modules_install`,
+      # which writes kernel module index files such as `modules.builtin.bin`
+      # into the package output and conflicts with the kernel modules
+      # buildEnv (issue #3221). Master sets `DEPMOD=true` on install.
+      #
+      # REMOVAL CONDITION: delete this override once the `nixos-unstable`
+      # revision in flake.lock contains NixOS/nixpkgs#577221 (merge commit
+      # 827efc1c02d64911ec192041d8bad107722b472e).
+      linuxPackages_latest = prev.linuxPackages_latest.extend (
+        kfinal: _kprev: {
+          v4l2loopback =
+            kfinal.callPackage "${inputs.nixpkgs-master}/pkgs/os-specific/linux/v4l2loopback"
+              { };
+        }
+      );
+
       _macronTypePkg =
         if final.stdenv.hostPlatform.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
       macron-type = if final.stdenv.hostPlatform.isDarwin then final._macronTypePkg.server else null;
