@@ -40,6 +40,8 @@ jobs:
     if: needs.update-flakes.outputs.updated == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
+      # One run must report the result of every host.
+      fail-fast: false
       matrix:
         include:
           - name: navi
