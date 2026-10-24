@@ -5,6 +5,15 @@
   ...
 }:
 with config.theme;
+let
+  # "#rrggbb" -> "r, g, b", the bare triple swaync uses as rgba(var(--noti-bg), a).
+  rgbTriple =
+    hex:
+    let
+      c = (import ../colour-scheme/lib.nix).parseHex hex;
+    in
+    "${toString c.r}, ${toString c.g}, ${toString c.b}";
+in
 # Gap mapping (issue #2814): v1 `grey0` (used here for subtle 1px borders) has
 # no theme slot; it maps to neutrals.background_5, the structural grey nearest
 # the foreground, matching the qutebrowser/greasemonkey precedent.
@@ -62,6 +71,39 @@ with config.theme;
         ".config/swaync/style.css".text =
           # css
           ''
+            /* Every colour variable of the bundled swaync 0.12 stylesheet. */
+            :root {
+              --cc-bg: ${neutrals.background_0};
+              --noti-border-color: ${neutrals.background_5};
+              --noti-bg: ${rgbTriple neutrals.background_1};
+              --noti-bg-alpha: 1;
+              --noti-bg-alt: ${neutrals.background_1};
+              --noti-bg-darker: ${neutrals.background_dim};
+              --noti-bg-hover: ${hues.green};
+              --noti-bg-focus: ${neutrals.background_2};
+              --noti-close-bg: ${neutrals.background_2};
+              --noti-close-bg-hover: ${hues.green};
+              --text-color: ${neutrals.foreground};
+              --text-color-disabled: ${neutrals.foreground_dim};
+              --bg-selected: ${hues.blue};
+              --mpris-album-art-overlay: ${neutrals.background_1};
+              --mpris-button-hover: ${hues.green};
+              --mpris-album-art-shadow: 0px 0px 10px ${neutrals.background_dim};
+            }
+            @define-color cc-bg ${neutrals.background_0};
+            @define-color noti-border-color ${neutrals.background_5};
+            @define-color noti-bg ${neutrals.background_1};
+            @define-color noti-bg-opaque ${neutrals.background_1};
+            @define-color noti-bg-darker ${neutrals.background_dim};
+            @define-color noti-bg-hover ${hues.green};
+            @define-color noti-bg-hover-opaque ${hues.green};
+            @define-color noti-bg-focus ${neutrals.background_2};
+            @define-color noti-close-bg ${neutrals.background_2};
+            @define-color noti-close-bg-hover ${hues.green};
+            @define-color text-color ${neutrals.foreground};
+            @define-color text-color-disabled ${neutrals.foreground_dim};
+            @define-color bg-selected ${hues.blue};
+
             * {
               font-family: Quicksand, sans-serif;
             }
@@ -79,11 +121,38 @@ with config.theme;
               box-shadow: none;
               padding: 0;
               color: ${neutrals.foreground};
+              background: ${neutrals.background_1};
               border: 1px solid ${neutrals.background_5};
+            }
+            .notification.critical {
+              border: 1px solid ${roles.error};
             }
             .notification:hover {
               background: ${hues.green};
               color: ${neutrals.background_dim};
+            }
+            .notification-alt-actions {
+              background: transparent;
+            }
+            .notification-action > button {
+              color: ${neutrals.foreground};
+              background: transparent;
+            }
+            .notification-action > button:hover,
+            .notification-default-action:hover label,
+            .notification:hover label {
+              color: ${neutrals.background_dim};
+            }
+            .notification-group,
+            .notification-group.collapsed .notification-row .notification {
+              background: transparent;
+              color: ${neutrals.foreground};
+            }
+            .notification-group.collapsed .notification-row .notification {
+              background: ${neutrals.background_1};
+            }
+            .notification-group.collapsed:hover .notification-row:not(:only-child) .notification {
+              background: ${hues.green};
             }
             .notification-content {
               background: transparent;
@@ -116,9 +185,9 @@ with config.theme;
               padding: 4px;
               margin: 0;
               box-shadow: none;
-              background: ${neutrals.background_0};
+              background: ${neutrals.background_1};
               border: 0px;
-              color: inherit;
+              color: ${neutrals.foreground};
             }
             .notification-default-action:hover,
             .notification-action:hover {
@@ -148,7 +217,7 @@ with config.theme;
 
             .body-image {
               margin-top: 6px;
-              background-color: white;
+              background-color: ${neutrals.background_0};
               border-radius: 0px;
             }
             .image {
@@ -181,13 +250,16 @@ with config.theme;
             }
 
             /* The "Notifications" and "Do Not Disturb" text widget */
-            .top-action-title {
+            .top-action-title,
+            .widget-title > label,
+            .widget-dnd label {
               text-shadow: none;
-              color: inherit;
+              color: ${neutrals.foreground};
             }
 
             .control-center {
               background: ${neutrals.background_0};
+              color: ${neutrals.foreground};
             }
 
             .control-center-list {
@@ -200,7 +272,7 @@ with config.theme;
 
             /* Window behind control center and on all other monitors */
             .blank-window {
-              background: alpha(black, 0.25);
+              background: alpha(${neutrals.background_dim}, 0.25);
             }
 
             /*** Widgets ***/
