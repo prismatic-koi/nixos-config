@@ -39,6 +39,33 @@ rec {
       # See: https://github.com/prismatic-koi/nixos-config/issues/1894
       bitwarden-cli = stablePkgs.bitwarden-cli;
 
+      # calibre: give only calibre a speechd-minimal whose Python bindings are
+      # installed. nixpkgs 75f645ed ("speechd: stricter deps") moved
+      # `python3Packages.python` into `buildInputs`, so the `speechd` module is
+      # missing and calibre's `test_speech_dispatcher` fails. The fix moves it
+      # back to `nativeBuildInputs`. `speechd` and `speechd-minimal` stay
+      # unchanged, to avoid a rebuild of everything that depends on them.
+      # calibre calls `speechd-minimal.override { python3Packages; }`, so the
+      # replacement is wrapped in makeOverridable and reapplies the fix after
+      # each override.
+      # See: https://github.com/NixOS/nixpkgs/issues/577420
+      #
+      # REMOVAL CONDITION: delete this override once the nixos-unstable
+      # revision in flake.lock contains NixOS/nixpkgs#577607 (merge commit
+      # 3e311762a51255658d08e5cc88f3afa390bf5ee6).
+      calibre = prev.calibre.override {
+        speechd-minimal = final.lib.makeOverridable (
+          args:
+          let
+            py = (args.python3Packages or final.python3Packages).python;
+          in
+          (prev.speechd-minimal.override args).overrideAttrs (old: {
+            nativeBuildInputs = old.nativeBuildInputs ++ [ py ];
+            buildInputs = builtins.filter (p: p != py) old.buildInputs;
+          })
+        ) { };
+      };
+
       # direnv: disable the test phase on Darwin to work around a hang in
       # `direnv-test.zsh` introduced when libarchive was bumped 3.8.4 -> 3.8.6
       # on staging-25.11 (nixpkgs commit 32e655f). Direnv's source is
