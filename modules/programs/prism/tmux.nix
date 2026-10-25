@@ -200,6 +200,11 @@ in
               set -g status-style 'bg=${neutrals.background_1} fg=${roles.secondary}'
               set -g message-style 'bg=${roles.primary} fg=${neutrals.background_1}'
               set -g mode-style 'bg=${neutrals.background_3} fg=${neutrals.foreground}'
+              set -g popup-style 'bg=${neutrals.background_0} fg=${neutrals.foreground}'
+              set -g popup-border-style 'bg=${neutrals.background_0} fg=${roles.secondary}'
+              set -g menu-style 'bg=${neutrals.background_0} fg=${neutrals.foreground}'
+              set -g menu-selected-style 'bg=${neutrals.background_3} fg=${neutrals.foreground}'
+              set -g menu-border-style 'bg=${neutrals.background_0} fg=${roles.secondary}'
               set -g status-left-style 'bg=${neutrals.background_1} fg=${roles.secondary}'
               set -g status-right-style 'bg=${neutrals.background_1} fg=${roles.primary}'
               # for kitty images in image.nvim
