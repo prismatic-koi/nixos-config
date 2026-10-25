@@ -15,9 +15,7 @@ in
   };
   config = lib.mkIf (config.nx.system.impermanence.enable && pkgs.stdenv.hostPlatform.isLinux) {
     # Wipe the disk on each boot using a systemd stage 1 service.
-    # Explicitly enable systemd initrd so the wipe-root service always runs,
-    # regardless of whether nixpkgs auto-enables it for the current hardware layout.
-    boot.initrd.systemd.enable = true;
+    # Systemd initrd is the only initrd in nixpkgs, so no enable flag is needed.
     boot.initrd.systemd.services.wipe-root = {
       description = "Wipe root btrfs subvolume and rotate snapshots";
       wantedBy = [ "initrd.target" ];
