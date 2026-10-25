@@ -14,11 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: 'Install Ubuntu packages: binfmt-support, qemu-user-static'
+      - name: 'Install Ubuntu packages: binfmt-support, qemu-user-binfmt'
         run: |
           DEBIAN_FRONTEND=noninteractive
           sudo apt-get update -q -y
-          sudo apt-get install -q -y binfmt-support qemu-user-static
+          sudo apt-get install -q -y binfmt-support qemu-user-binfmt
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |-
