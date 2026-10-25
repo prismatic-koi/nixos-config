@@ -37,7 +37,7 @@ with config.theme;
             font = "Noto Sans 14";
             steal-focus = true;
             show-icons = true;
-            icon-theme = "Papirus-Dark";
+            icon-theme = config.home-manager.users.${config.nx.username}.gtk.iconTheme.name;
             application-fallback-icon = "run-build";
             drun-display-format = "{icon} {name}";
             matching = "fuzzy";
