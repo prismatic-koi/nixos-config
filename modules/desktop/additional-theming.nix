@@ -19,7 +19,7 @@
       gtk = {
         enable = true;
         iconTheme = {
-          name = "Papirus-Dark";
+          name = if config.theme.type == "dark" then "Papirus-Dark" else "Papirus-Light";
           package = pkgs.papirus-icon-theme;
         };
         cursorTheme = {
