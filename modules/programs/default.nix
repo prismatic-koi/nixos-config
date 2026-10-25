@@ -110,7 +110,6 @@
             dig
             direnv
             dust
-            eza
             fdupes
             file
             fzf

@@ -105,6 +105,9 @@ let
 
 in
 {
+  # parseHex "#RRGGBB" — { r, g, b } integers 0–255.
+  inherit parseHex;
+
   # darken color pct — darken a "#RRGGBB" colour by pct percent (0–100).
   # e.g. darken "#dafbe1" 15  →  slightly darker green
   darken =

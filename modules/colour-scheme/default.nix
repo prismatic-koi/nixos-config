@@ -26,6 +26,7 @@ in
   imports = [
     ./schema.nix
     ./gradient.nix
+    ./ls-colors.nix
   ];
   options = {
     nx.desktop.theme = lib.mkOption {
