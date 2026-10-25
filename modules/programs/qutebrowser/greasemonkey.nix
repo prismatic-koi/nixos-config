@@ -160,6 +160,11 @@ in
           name = "searx.css.js";
           text = builtins.readFile ./greasemonkey/searx.css.js;
         })
+        # style for metservice.com
+        (pkgs.writeTextFile {
+          name = "metservice.css.js";
+          text = builtins.readFile ./greasemonkey/metservice.css.js;
+        })
         # style for reddit
         (pkgs.writeTextFile {
           name = "reddit.css.js";
