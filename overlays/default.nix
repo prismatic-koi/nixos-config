@@ -39,33 +39,6 @@ rec {
       # See: https://github.com/prismatic-koi/nixos-config/issues/1894
       bitwarden-cli = stablePkgs.bitwarden-cli;
 
-      # calibre: give only calibre a speechd-minimal whose Python bindings are
-      # installed. nixpkgs 75f645ed ("speechd: stricter deps") moved
-      # `python3Packages.python` into `buildInputs`, so the `speechd` module is
-      # missing and calibre's `test_speech_dispatcher` fails. The fix moves it
-      # back to `nativeBuildInputs`. `speechd` and `speechd-minimal` stay
-      # unchanged, to avoid a rebuild of everything that depends on them.
-      # calibre calls `speechd-minimal.override { python3Packages; }`, so the
-      # replacement is wrapped in makeOverridable and reapplies the fix after
-      # each override.
-      # See: https://github.com/NixOS/nixpkgs/issues/577420
-      #
-      # REMOVAL CONDITION: delete this override once the nixos-unstable
-      # revision in flake.lock contains NixOS/nixpkgs#577607 (merge commit
-      # 3e311762a51255658d08e5cc88f3afa390bf5ee6).
-      calibre = prev.calibre.override {
-        speechd-minimal = final.lib.makeOverridable (
-          args:
-          let
-            py = (args.python3Packages or final.python3Packages).python;
-          in
-          (prev.speechd-minimal.override args).overrideAttrs (old: {
-            nativeBuildInputs = old.nativeBuildInputs ++ [ py ];
-            buildInputs = builtins.filter (p: p != py) old.buildInputs;
-          })
-        ) { };
-      };
-
       # direnv: disable the test phase on Darwin to work around a hang in
       # `direnv-test.zsh` introduced when libarchive was bumped 3.8.4 -> 3.8.6
       # on staging-25.11 (nixpkgs commit 32e655f). Direnv's source is
@@ -169,62 +142,6 @@ rec {
           })
         else
           prev.grafana-alloy;
-
-      # linuxPackages_latest: build external kernel modules from the
-      # nixpkgs-master derivations, against the kernel of the host package set
-      # (not the master kernel). Issue #3221.
-      #
-      # v4l2loopback: the nixos-unstable derivation runs `modules_install`,
-      # which writes kernel module index files such as `modules.builtin.bin`
-      # into the package output and conflicts with the kernel modules
-      # buildEnv. Master sets `DEPMOD=true` on install.
-      # REMOVAL CONDITION (v4l2loopback): delete that attribute once the
-      # `nixos-unstable` revision in flake.lock contains NixOS/nixpkgs#577221
-      # (merge commit 827efc1c02d64911ec192041d8bad107722b472e).
-      #
-      # openrazer: the kernel modules aggregation (NixOS/nixpkgs#575192)
-      # merges a `.ko.cer` file for each external module, and the
-      # nixos-unstable openrazer driver does not produce them. Master has the
-      # fix. The version is 3.12.4 on both revisions, so the driver stays in
-      # step with the daemon.
-      # REMOVAL CONDITION (openrazer): delete that attribute once the
-      # `nixos-unstable` revision in flake.lock contains NixOS/nixpkgs#576293
-      # (merge commit 965f876a780c1fad7f14b9f817e093e40ea5d5e5).
-      linuxPackages_latest = prev.linuxPackages_latest.extend (
-        kfinal: _kprev: {
-          v4l2loopback =
-            kfinal.callPackage "${inputs.nixpkgs-master}/pkgs/os-specific/linux/v4l2loopback"
-              { };
-          openrazer =
-            kfinal.callPackage "${inputs.nixpkgs-master}/pkgs/os-specific/linux/openrazer/driver.nix"
-              { };
-        }
-      );
-
-      # pyopenjtalk-plus: Cython 3.3.0 changed the text of a TypeError, and
-      # tests/test_frontend.py matches the old text, so the test phase fails
-      # (issue #3223). This adds the upstream test-only patch from
-      # NixOS/nixpkgs#576063. The library code does not change and the
-      # tests still run. `pythonPackagesExtensions` covers every Python
-      # package set.
-      # See: https://github.com/NixOS/nixpkgs/issues/576442
-      #
-      # REMOVAL CONDITION: delete this override once the `nixos-unstable`
-      # revision in flake.lock contains NixOS/nixpkgs#576063 (merge commit
-      # 0b88cee4de185857a4637f75a176006b28e193b1). The patch then applies
-      # twice and the build fails. That failure is the signal to remove
-      # this override.
-      pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
-        (_pyFinal: pyPrev: {
-          pyopenjtalk-plus = addPatches pyPrev.pyopenjtalk-plus [
-            (final.fetchpatch {
-              url = "https://github.com/tsukumijima/pyopenjtalk-plus/commit/90b644f9e9d397882e6eafe4dcd1843a4fde6a63.patch";
-              includes = [ "tests/test_frontend.py" ];
-              hash = "sha256-Jb7T/bRUHxqwBLwV6xYC/teaFHm5GmqJxA7sCX+oiNI=";
-            })
-          ];
-        })
-      ];
 
       _macronTypePkg =
         if final.stdenv.hostPlatform.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
