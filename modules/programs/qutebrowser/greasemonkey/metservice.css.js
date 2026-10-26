@@ -4,17 +4,33 @@
 // @match        *://metservice.com/*
 // ==/UserScript==
 GM_addStyle(`
-  /* Accent and status text sits on bg0-bg2. Mix each hue toward fg so the
-     text keeps its hue and reaches a 4.5 contrast ratio in light and dark. */
+  /* Status text (good, fair, bad, links) sits on bg0-bg2. It must keep a
+     clear hue and reach a 4.5 contrast ratio. A mix toward fg removes the
+     hue, so each colour sets its own oklch lightness and keeps the hue of
+     the theme colour. A "none" channel in color-mix() takes the value of
+     the other colour: --ms-text-l gives the lightness, the theme hue gives
+     chroma and hue. The chroma clamp keeps the colour inside sRGB, so the
+     browser does not clip it to another hue.
+     Theme mode: fg with oklch L above 0.6 is a dark theme (step 1). */
   :root {
     --ms-accent-text: color-mix(in srgb, var(--system-theme-primary) 15%, var(--system-theme-fg));
     --ms-accent-bg: color-mix(in srgb, var(--system-theme-primary) 12%, var(--system-theme-bg0));
-    --ms-red-text: color-mix(in srgb, var(--system-theme-red) 15%, var(--system-theme-fg));
-    --ms-orange-text: color-mix(in srgb, var(--system-theme-orange) 15%, var(--system-theme-fg));
-    --ms-yellow-text: color-mix(in srgb, var(--system-theme-yellow) 15%, var(--system-theme-fg));
-    --ms-green-text: color-mix(in srgb, var(--system-theme-green) 15%, var(--system-theme-fg));
-    --ms-aqua-text: color-mix(in srgb, var(--system-theme-aqua) 15%, var(--system-theme-fg));
-    --ms-blue-text: color-mix(in srgb, var(--system-theme-blue) 15%, var(--system-theme-fg));
+    --ms-text-l: oklch(from var(--system-theme-fg) calc(0.47 + 0.33 * clamp(0, (l - 0.6) * 1000, 1)) none none);
+    --ms-red-text: color-mix(in oklch, var(--ms-text-l), oklch(from var(--system-theme-red) none clamp(0.07, c, 0.1) h));
+    --ms-orange-text: color-mix(in oklch, var(--ms-text-l), oklch(from var(--system-theme-orange) none clamp(0.07, c, 0.1) h));
+    --ms-green-text: color-mix(in oklch, var(--ms-text-l), oklch(from var(--system-theme-green) none clamp(0.07, c, 0.1) h));
+    --ms-blue-text: color-mix(in oklch, var(--ms-text-l), oklch(from var(--system-theme-blue) none clamp(0.07, c, 0.1) h));
+
+    /* Day and night stops of the hourly date row, in the theme blue. Day is
+       lighter than night in every theme. The date text is dark in light
+       themes and light in dark themes, so it reaches 4.5 on both stops. */
+    --ms-day: color-mix(in oklch,
+      oklch(from var(--system-theme-fg) calc(0.86 - 0.36 * clamp(0, (l - 0.6) * 1000, 1)) none none),
+      oklch(from var(--system-theme-blue) none clamp(0.06, c, 0.07) h));
+    --ms-night: color-mix(in oklch,
+      oklch(from var(--system-theme-fg) calc(0.64 - 0.34 * clamp(0, (l - 0.6) * 1000, 1)) none none),
+      oklch(from var(--system-theme-blue) none clamp(0.06, c, 0.1) h));
+    --ms-on-daynight: oklch(from var(--system-theme-fg) calc(0.2 + 0.75 * clamp(0, (l - 0.6) * 1000, 1)) c h);
   }
 
   /* Page frame and containers. The site paints these navy, blue or white. */
@@ -56,17 +72,23 @@ GM_addStyle(`
     background: none !important;
   }
 
-  /* Navigation */
-  .Nav,
+  /* Navigation. The top bar is one colour from edge to edge, and the
+     location tabs sit on the page frame, as on the site. So the parts
+     inside the bars have no background. */
   .Nav--primary,
-  .Nav--secondary,
-  .Nav-scroller,
-  .Nav--secondary-wrapper,
-  .Nav-menu,
   .Nav-dropdown-target,
   .MobileMenu,
   .MobileMenu-list {
     background: var(--system-theme-bg1) !important;
+    color: var(--system-theme-fg) !important;
+  }
+  .Nav .Container,
+  .Nav-toggle,
+  .Nav-menu,
+  .Nav-scroller,
+  .Nav--secondary,
+  .Nav--secondary-wrapper {
+    background: transparent !important;
     color: var(--system-theme-fg) !important;
   }
   .Nav-scroller {
@@ -74,10 +96,6 @@ GM_addStyle(`
   }
   .Nav-scroller::-webkit-scrollbar {
     display: none !important;
-  }
-  .Nav-toggle {
-    background: var(--system-theme-bg1) !important;
-    color: var(--system-theme-fg) !important;
   }
   /* hamburger bars are <i> elements painted white */
   .Nav-toggle i {
@@ -92,7 +110,7 @@ GM_addStyle(`
     color: var(--system-theme-fg) !important;
   }
   .Nav .Nav-menu-list-item.is-active a {
-    background: var(--system-theme-bg2) !important;
+    background: transparent !important;
     box-shadow: inset 0 -3px 0 var(--system-theme-primary) !important;
     color: var(--system-theme-fg) !important;
   }
@@ -146,7 +164,7 @@ GM_addStyle(`
   .Tile-body-header,
   .Tile-body-content-v2,
   .ImageTile,
-  .Grid-cell,
+  .Sidebar-wrapper,
   .Graph,
   .ForecastSlider,
   .ForecastSlider-container,
@@ -168,13 +186,17 @@ GM_addStyle(`
   }
   .DailyBreakdown-period,
   .TileTable-header,
-  .DateRow__header,
   .TileTable-row:nth-child(even) /* no BEM modifier for zebra rows */ {
     background: var(--system-theme-bg2) !important;
     color: var(--system-theme-fg) !important;
   }
   .Modal-Component--overlay {
     background: color-mix(in srgb, var(--system-theme-bg_dim) 80%, transparent) !important;
+  }
+  /* The script at the end of this file maps the date row gradient to
+     --ms-day and --ms-night. */
+  .DateRow__day {
+    color: var(--ms-on-daynight) !important;
   }
 
   /* Accordions (day tiles at narrow widths) and drawers (7-days and other
@@ -213,13 +235,11 @@ GM_addStyle(`
   .warning-state-default,
   .display-active-only,
   .fake-link,
-  .DateRow__day,
   .current-conditions__button,
   h1, h2, h3, h4, p, strong, label, li, td, th {
     color: var(--system-theme-fg) !important;
   }
   .MoreInformation__header,
-  .ExtremesTable-diff,
   .Tile-compact-link,
   .IconWithText-icon,
   .Tile-body-header__button--info {
@@ -258,10 +278,11 @@ GM_addStyle(`
 
   /* Map overlays (marker pills, dots, labels, controls) and the icon chips
      in the nearby forecast list. The site sets their colours with inline
-     styles. The pill border keeps the site rating colour (good, fair, bad)
-     from the inline style. */
+     styles. On nearby forecasts, the pill border and its pointer
+     (.pill--point) keep the site colour scale from the inline style. A
+     white pointer belongs to a white pill, so it takes the pill colour. */
   .Pill,
-  .pill--point,
+  .pill--point[style*="#ffffff" i],
   .pill--label-bg,
   .pill--label-padding,
   [data-testid="pw-marker-selector"],
@@ -275,14 +296,36 @@ GM_addStyle(`
   .pill--label-bg * {
     color: var(--system-theme-fg) !important;
   }
+  /* Water activity pills show the rating (bad, medium, good) as a solid
+     fill in the inline style. Match the site fill and use the theme hue. */
+  .Pill[style*="#fa6161" i] {
+    --ms-sev: var(--system-theme-red);
+  }
+  .Pill[style*="#df7b01" i] {
+    --ms-sev: var(--system-theme-orange);
+  }
+  .Pill[style*="#74a30f" i] {
+    --ms-sev: var(--system-theme-green);
+  }
+  .Pill:is([style*="#fa6161" i], [style*="#df7b01" i], [style*="#74a30f" i]) {
+    background: var(--ms-sev) !important;
+    border-color: var(--ms-sev) !important;
+    color: var(--ms-on-sev) !important;
+    fill: var(--ms-on-sev) !important;
+  }
+  .Pill:is([style*="#fa6161" i], [style*="#df7b01" i], [style*="#74a30f" i]) * {
+    color: inherit !important;
+  }
 
   /* Links */
   .Main a:not(.Button, .Nav-menu-list-item a),
   .Tile-compact-link,
   .u-linkClean,
+  .swiper-wrapper-slide a p,
   .u-textLink,
-  .leaflet-control-attribution a {
-    color: var(--ms-accent-text) !important;
+  .leaflet-control-attribution a,
+  .ExtremesTable-diff {
+    color: var(--ms-blue-text) !important;
   }
 
   /* Borders */
@@ -321,7 +364,8 @@ GM_addStyle(`
   }
   .WeatherWarning,
   .SeverityColor,
-  .SmallHeaderWarning {
+  .SmallHeaderWarning,
+  .Pill {
     --ms-on-sev: oklch(from var(--ms-sev) clamp(0, (0.565 - l) * 1000, 1) 0 0);
   }
   .WeatherWarning-div,
@@ -347,6 +391,10 @@ GM_addStyle(`
   .SeverityColor *,
   .SmallHeaderWarning * {
     color: inherit !important;
+  }
+  /* The banner icons (info, close) have an inline white fill. */
+  .SeverityColor svg {
+    fill: currentColor !important;
   }
   .WeatherWarning-body,
   .warning-body-item {
@@ -384,11 +432,18 @@ GM_addStyle(`
   .status-good {
     color: var(--ms-green-text) !important;
   }
-  .warning-state-blue {
+  .warning-state-blue,
+  .status-medium-good {
     color: var(--ms-blue-text) !important;
   }
-  .status-medium-good {
-    color: var(--ms-aqua-text) !important;
+
+  /* Ad slots. DNS ad blocking leaves them empty, but the site keeps their
+     fixed height. Hide a slot only when it holds no ad frame or image. */
+  .BannerAd:not(:has(iframe, img, video)),
+  [data-module-name="advert-mod"]:not(:has(iframe, img, video)),
+  .Slot.HasPromoPadding:empty,
+  .Footer-section--promo:has([data-module-name="advert-mod"]):not(:has(iframe, img, video)) {
+    display: none !important;
   }
 
   /* Footer */
@@ -413,3 +468,43 @@ GM_addStyle(`
     fill: var(--ms-accent-text) !important;
   }
 `)
+
+// The site writes the day/night gradient of the hourly date row as an
+// inline style on .DateRow__header. The stop positions come from sunrise
+// and sunset, so they change with the data. CSS cannot change one colour
+// inside an inline gradient, so this script replaces the two site colours
+// with --ms-night and --ms-day and keeps the stop positions. The observer
+// runs it again when the site writes a new gradient. After the change, the
+// style holds no site colour, so a second pass changes nothing.
+;(() => {
+  const map = [
+    [/rgb\(\s*23,\s*35,\s*68\s*\)/g, 'var(--ms-night)'],
+    [/rgb\(\s*117,\s*153,\s*255\s*\)/g, 'var(--ms-day)'],
+  ]
+  const fix = (e) => {
+    const old = e.getAttribute('style') || ''
+    let s = old
+    for (const [re, v] of map) s = s.replace(re, v)
+    if (s !== old) e.setAttribute('style', s)
+  }
+  const scan = (root) => root.querySelectorAll('.DateRow__header[style]').forEach(fix)
+  new MutationObserver((records) => {
+    for (const r of records) {
+      if (r.type === 'attributes') {
+        if (r.target.classList.contains('DateRow__header')) fix(r.target)
+        continue
+      }
+      for (const n of r.addedNodes) {
+        if (n.nodeType !== 1) continue
+        if (n.matches('.DateRow__header')) fix(n)
+        scan(n)
+      }
+    }
+  }).observe(document.documentElement, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['style'],
+  })
+  scan(document)
+})()
