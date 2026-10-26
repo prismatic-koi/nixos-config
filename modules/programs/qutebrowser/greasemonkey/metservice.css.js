@@ -392,6 +392,10 @@ GM_addStyle(`
   .SmallHeaderWarning * {
     color: inherit !important;
   }
+  /* The banner icons (info, close) have an inline white fill. */
+  .SeverityColor svg {
+    fill: currentColor !important;
+  }
   .WeatherWarning-body,
   .warning-body-item {
     background: var(--system-theme-bg0) !important;
