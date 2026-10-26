@@ -61,6 +61,35 @@ in
             `)
           ''
         )
+        # select the Home Assistant frontend theme named after config.theme.
+        # HA stores {"theme": name, "dark"?, ...} in localStorage.selectedTheme.
+        # Only `theme` is written; other stored keys are kept. `dark` stays
+        # unset: each HA theme (prismatic-koi/hass-config themes/) defines only
+        # the mode matching its type, so HA picks the mode itself.
+        (pkgs.writeText "home-assistant-theme.js"
+          # javascript
+          ''
+            // ==UserScript==
+            // @name    Home Assistant theme
+            // @match   https://home-assistant.tinfoilforest.nz/*
+            // @run-at  document-start
+            // ==/UserScript==
+            (() => {
+              const name = ${builtins.toJSON name};
+              try {
+                let stored = {};
+                try {
+                  const parsed = JSON.parse(localStorage.getItem("selectedTheme"));
+                  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                    stored = parsed;
+                  }
+                } catch (e) {}
+                if (stored.theme === name) return;
+                localStorage.setItem("selectedTheme", JSON.stringify({ ...stored, theme: name }));
+              } catch (e) {}
+            })();
+          ''
+        )
         # general theme variables, to be used in other scripts
         # made available here to all sites
         (pkgs.writeText "theme.css.js"
