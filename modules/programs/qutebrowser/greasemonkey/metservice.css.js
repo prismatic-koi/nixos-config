@@ -135,10 +135,15 @@ GM_addStyle(`
 
   /* Search */
   .SearchBar,
-  .SearchBar-input-container,
   .SearchOverlay,
   .SearchBar-favourites-dropdown {
     background: var(--system-theme-bg0) !important;
+    color: var(--system-theme-fg) !important;
+  }
+  /* The input container is inset in the round bar and has square corners.
+     The site gives it no background. */
+  .SearchBar-input-container {
+    background: transparent !important;
     color: var(--system-theme-fg) !important;
   }
   .SearchBar input {
