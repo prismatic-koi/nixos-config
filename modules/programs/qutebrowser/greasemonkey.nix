@@ -66,6 +66,13 @@ in
         # Only `theme` is written; other stored keys are kept. `dark` stays
         # unset: each HA theme (prismatic-koi/hass-config themes/) defines only
         # the mode matching its type, so HA picks the mode itself.
+        #
+        # HA (frontend PR #28965) keeps the theme in the user profile, and the
+        # profile value replaces localStorage after connect. So after connect
+        # the script reads the profile value and, if it differs, fires the
+        # frontend's own `settheme` event on <home-assistant>, which saves it
+        # to the profile. The profile applies to ALL devices of the user; the
+        # user accepts this (issue #3260). At most one dispatch per page load.
         (pkgs.writeText "home-assistant-theme.js"
           # javascript
           ''
@@ -84,9 +91,37 @@ in
                     stored = parsed;
                   }
                 } catch (e) {}
-                if (stored.theme === name) return;
-                localStorage.setItem("selectedTheme", JSON.stringify({ ...stored, theme: name }));
+                if (stored.theme !== name) {
+                  localStorage.setItem("selectedTheme", JSON.stringify({ ...stored, theme: name }));
+                }
               } catch (e) {}
+
+              let done = false;
+              const started = Date.now();
+              const timer = setInterval(() => {
+                try {
+                  if (done || Date.now() - started > 30000) {
+                    clearInterval(timer);
+                    return;
+                  }
+                  const el = document.querySelector("home-assistant");
+                  const conn = el && el.hass && el.hass.connection;
+                  if (!conn) return;
+                  done = true;
+                  clearInterval(timer);
+                  Promise.resolve(conn.sendMessagePromise({ type: "frontend/get_user_data", key: "theme" }))
+                    .then((res) => {
+                      const value = res && res.value;
+                      if (value && value.theme === name) return;
+                      el.dispatchEvent(
+                        new CustomEvent("settheme", { detail: { theme: name }, bubbles: true, composed: true }),
+                      );
+                    })
+                    .catch(() => {});
+                } catch (e) {
+                  clearInterval(timer);
+                }
+              }, 250);
             })();
           ''
         )
