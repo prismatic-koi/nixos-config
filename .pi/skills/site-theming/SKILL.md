@@ -48,7 +48,8 @@ rules first. Then run the checks.
 9. **Map hashed custom properties at run time.** If the site uses obfuscated
    names, read the site stylesheets. Match each hashed name to a readable
    name by its (light value, dark value) pair. Do not write a hashed name in
-   the style. See `youtube.css.js`.
+   the style. See `youtube.css.js`. As the first step for a new site, run
+   `scripts/dump-properties.js` to list the names that share a pair.
 10. **Theme both modes.** In qutebrowser, `preferred_color_scheme` follows
     `config.theme.type`. If a site has a dark mode, theme it in both modes.
 
@@ -77,8 +78,11 @@ rules first. Then run the checks.
 | Header | More than one colour on a row of the top bar | One colour |
 | Hidden text | Text that the unthemed page shows and the themed page hides | None |
 
-8. The checks do not find small shape artefacts. Compare screenshots of the
-   header, the search bar, and the footer with the unthemed site.
+8. The checks do not find small shape artefacts. Make screenshots of the
+   header, the search bar, and the footer with `scripts/screenshot.js`, in
+   the themed and the unthemed state. Compare them.
+   Test the colour formulas on all palettes with `scripts/palette-test.js`.
+   The two-theme runs cover only two palettes.
 9. Record which runs used live data.
 
 A check that you did not run is not a pass. Run a check against an empty
@@ -98,6 +102,10 @@ script has usage text at the top. Results go to `OUT` (default
 | `run-shadow-checks.js sites/<site>.js` | Run the contrast, base-colour, and token checks on a site with shadow DOM (YouTube). |
 | `semantic-hue.js <unthemed-dir> <themed-dir>` | Run 6a on shadow-DOM results. |
 | `shadow-summary.js` | Group the low-contrast text by colour pair. |
+| `screenshot.js sites/<site>.js` | Write named screenshots (regions from the site file) for one theme and view. Use `--theme unthemed` for the reference. |
+| `dump-properties.js sites/<site>.js` | Dump the custom properties of `html` in light and dark mode. Group the names by equal (light, dark) pair. |
+| `palette-test.js --fg <css> --bg <css>` | Compute the contrast of a CSS colour expression on every palette. It exits 1 if a palette fails. |
+| `theme-variables.sh --list` | Print the theme names. |
 | `lib.js`, `pixel.js`, `compare.js`, `snapshot.js`, `dom-checks.js`, `shadow-checks.js` | Shared parts. Do not run them. |
 
 Find Playwright and Chromium at run time. The scripts use the `playwright-cli`
@@ -137,7 +145,8 @@ The environment variables `THEMES`, `VIEWS`, `PAGES`, `MODES`, `PAR`, and
 4. Write `expand` to open every collapsed control.
 5. Put a site colour with no meaning in `exempt`, with a reason. The reason
    goes in the PR.
-6. Keep site selectors in the site file. Do not put them in the shared checks.
+6. Set `regions` for the screenshots.
+7. Keep site selectors in the site file. Do not put them in the shared checks.
 
 ## Practical notes
 

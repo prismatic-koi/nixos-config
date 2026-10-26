@@ -51,6 +51,13 @@ module.exports = {
   pageName: (route) => route || '48-hours',
   pageUrl: (route) => 'https://www.metservice.com/towns-cities/regions/wellington/locations/wellington' + (route ? '/' + route : ''),
   readySelector: '.Footer-section--global',
+  // Named screenshot regions for screenshot.js.
+  regions: {
+    header: { clipTo: '.Nav--secondary-wrapper', pad: 16 },
+    hourly: '.Tile:has(.DateRow__header)',
+    'allergens-laundry-uv': '.Tile.Integrations',
+    'full-page': 'full',
+  },
   // In-page check settings. siteColours are "r,g,b" strings of the MetService brand colours.
   checks: {
     siteColours: ['255,255,255', '23,35,68', '29,75,135', '64,123,183', '87,124,231', '117,153,255'],

@@ -16,6 +16,8 @@ module.exports = {
     live: 'https://www.youtube.com/results?search_query=nixos&sp=EgJAAQ%253D%253D',
     watch: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
   },
+  // Named screenshot regions for screenshot.js.
+  regions: { masthead: { clipTo: '#masthead-container', pad: 8 }, 'full-page': 'full' },
   cookies: (mode) => [{ name: 'SOCS', value: 'CAI', domain: '.youtube.com', path: '/' }]
     .concat(mode === 'dark' ? [{ name: 'PREF', value: 'f6=400&tz=Pacific.Auckland', domain: '.youtube.com', path: '/' }] : []),
   // Page state that youtube.css.js writes for the token mapping.
