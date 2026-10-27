@@ -17,7 +17,9 @@
 // On each terminal outcome (merged, failed, closed) a bus notification is
 // delivered to the enqueuing coordinator session via the harness HTTP API.
 // If another path ended the row first, the watcher sends no notification
-// (endRow). Every notification names the PR. The merge and close outcomes
+// (endRow). The row holds the notification until a watcher sends it, so a
+// stop of the sidecar during the send does not lose it (sendNotice). Every
+// notification names the PR. The merge and close outcomes
 // add the worker session's archive path and prompt git pull + prism
 // cleanup. The
 // required-check failure outcome deliberately omits the cleanup prompt,
@@ -271,6 +273,8 @@ func (w *Watcher) tick(ctx context.Context) {
 		return
 	}
 
+	w.sendKeptNotices(ctx)
+
 	head, err := w.db.MergeQueueHead(w.sessionName)
 	if err != nil {
 		log.Printf("[mergequeue] db error reading head: %v", err)
@@ -425,36 +429,24 @@ func (w *Watcher) tick(ctx context.Context) {
 // discipline: it contains "Please clean up the branch and worktree" and does
 // NOT imply prism performed the cleanup itself.
 func (w *Watcher) notifyClosedNotMerged(ctx context.Context, head *db.PendingMerge) {
-	if !w.endRow(head, "failed", "PR was closed without merging", "closed") {
-		return
-	}
 	text := fmt.Sprintf("PR #%d closed without merge. Please clean up the branch and worktree.", head.PR)
-	log.Printf("[mergequeue] %s", text)
-	w.notify(ctx, head.SessionName, head.InstanceID, text)
+	w.endRow(ctx, head, "failed", "PR was closed without merging", "closed", text)
 }
 
 // notifyConflicting ends the head row (status='failed') and notifies the
 // coordinator once. The terminal row is no longer the head, so the next
 // poll moves on to the next PR and the notification is not repeated.
 func (w *Watcher) notifyConflicting(ctx context.Context, head *db.PendingMerge) {
-	if !w.endRow(head, "failed", "merge conflict", "conflict") {
-		return
-	}
 	text := fmt.Sprintf("PR #%d has conflicts. Worker needs to rebase.", head.PR)
-	log.Printf("[mergequeue] %s", text)
-	w.notify(ctx, head.SessionName, head.InstanceID, text)
+	w.endRow(ctx, head, "failed", "merge conflict", "conflict", text)
 }
 
 // notifyUpdateBranchPermanent ends the head row (status='failed') and
 // notifies the coordinator once (issue #3180). The row is no longer the head,
 // so later polls move on and do not repeat the notification.
 func (w *Watcher) notifyUpdateBranchPermanent(ctx context.Context, head *db.PendingMerge, cause error) {
-	if !w.endRow(head, "failed", "update-branch refused", "update-branch") {
-		return
-	}
 	text := fmt.Sprintf("PR #%d is BEHIND and gh pr update-branch failed with an error that no retry fixes: %v. Worker needs to rebase onto the base branch and push.", head.PR, cause)
-	log.Printf("[mergequeue] %s", text)
-	w.notify(ctx, head.SessionName, head.InstanceID, text)
+	w.endRow(ctx, head, "failed", "update-branch refused", "update-branch", text)
 }
 
 // notifyRequiredChecksFailed transitions the head row to terminal
@@ -473,12 +465,8 @@ func (w *Watcher) notifyUpdateBranchPermanent(ctx context.Context, head *db.Pend
 // failed must be non-empty; the caller guarantees this.
 func (w *Watcher) notifyRequiredChecksFailed(ctx context.Context, head *db.PendingMerge, failed []string) {
 	names := joinFailedCheckNames(failed)
-	if !w.endRow(head, "failed", "CI failed: "+names, "ci-failed") {
-		return
-	}
 	text := renderRequiredChecksFailedText(head.PR, names)
-	log.Printf("[mergequeue] %s", text)
-	w.notify(ctx, head.SessionName, head.InstanceID, text)
+	w.endRow(ctx, head, "failed", "CI failed: "+names, "ci-failed", text)
 }
 
 // renderRequiredChecksFailedText composes the required-check-failure
@@ -559,7 +547,7 @@ func (w *Watcher) tryMerge(ctx context.Context, head *db.PendingMerge) {
 		errMsg = errMsg[:500]
 	}
 	log.Printf("[mergequeue] PR #%d merge failed: %v", head.PR, errMsg)
-	w.failAndNotify(head, errMsg)
+	w.failAndNotify(ctx, head, errMsg)
 }
 
 // checkPRMergedState queries the PR's current state from GitHub and returns
@@ -624,11 +612,12 @@ func (w *Watcher) succeedAndNotify(ctx context.Context, head *db.PendingMerge, o
 	// view of "when did we merge it" is the moment the watcher transitioned
 	// the row, not the moment GitHub recorded the squash commit.
 	mergedAt := time.Now().UnixMilli()
-	notify := w.endRow(head, "merged", "", "merged")
 	// Persist pr_merged_at on the worker's spawn_outcome row
-	// alongside the notification. The write happens BEFORE w.notify is called
+	// alongside the notification. The write happens BEFORE endRow is called
 	// below so the notification firing path is unchanged — a write error logs
-	// and continues, never blocking or delaying the notification.
+	// and continues, never blocking or delaying the notification. The write
+	// does not depend on whether endRow changes the row: it records a merge
+	// that occurred on GitHub.
 	//
 	// The worker is located by joining via spawn_outcome.pr_number, which the
 	// worker-side capture path wrote at PR open — one capture per transport,
@@ -648,12 +637,8 @@ func (w *Watcher) succeedAndNotify(ctx context.Context, head *db.PendingMerge, o
 		log.Printf("[mergequeue] PR #%d: no worker spawn_outcome row carries pr_number=%d — skipping pr_merged_at persistence", head.PR, head.PR)
 	}
 
-	if !notify {
-		return
-	}
-	notifyText := w.renderSuccessNotifyText(head, outcome, prInfoForExternal)
-	log.Printf("[mergequeue] %s", notifyText)
-	w.notify(ctx, head.SessionName, head.InstanceID, notifyText)
+	text := w.renderSuccessNotifyText(head, outcome, prInfoForExternal)
+	w.endRow(ctx, head, "merged", "", "merged", text)
 }
 
 // renderSuccessNotifyText composes the coordinator notification text for one
@@ -743,45 +728,128 @@ func renderExternalMergeNotifyText(pr int, prInfo *prInfo) string {
 //     transition at all; the poller stays watching silently
 //
 // See tick() for the routing and discipline.
-func (w *Watcher) failAndNotify(head *db.PendingMerge, errMsg string) {
-	if !w.endRow(head, "failed", errMsg, "failed") {
-		return
-	}
-	notifyText := fmt.Sprintf("PR #%d merge failed: %s", head.PR, errMsg)
-	log.Printf("[mergequeue] %s", notifyText)
-	w.notify(context.Background(), head.SessionName, head.InstanceID, notifyText)
+func (w *Watcher) failAndNotify(ctx context.Context, head *db.PendingMerge, errMsg string) {
+	text := fmt.Sprintf("PR #%d merge failed: %s", head.PR, errMsg)
+	w.endRow(ctx, head, "failed", errMsg, "failed", text)
 }
 
-// endRow ends the head row with status, scoped to head.Repo, and reports
-// whether the watcher notifies the outcome. If another path ended the row
-// first, the row does not change, and endRow returns false: a stop of the
+// endRow ends the head row with status, scoped to head.Repo, and notifies
+// text to the coordinator one time. If another path ended the row first,
+// the row does not change, and endRow sends no notification: a stop of the
 // sidecar abandons the row for restore to resume, and `prism merges cancel`
 // reports its own outcome. A notification here then duplicates the
 // notification of the next watcher, or reports an outcome that the row does
-// not hold (#3267). If the write fails, endRow returns true, because the
-// watcher cannot tell whether the row changed.
-func (w *Watcher) endRow(head *db.PendingMerge, status, errMsg, label string) bool {
-	changed, err := w.db.TerminateMerge(head.PR, head.Repo, status, errMsg)
+// not hold (#3267).
+//
+// The write stores text in the row as its pending notice, and sendNotice
+// sends it (#3282). If the write fails, endRow sends text directly, because
+// the watcher cannot tell whether the row changed.
+func (w *Watcher) endRow(ctx context.Context, head *db.PendingMerge, status, errMsg, label, text string) {
+	changed, err := w.db.TerminateMergeWithNotice(head.PR, head.Repo, status, errMsg, text)
 	if err != nil {
 		log.Printf("[mergequeue] TerminateMerge(%s) PR #%d: %v", label, head.PR, err)
-		return true
+		log.Printf("[mergequeue] %s", text)
+		w.notify(ctx, head.SessionName, head.InstanceID, text)
+		return
 	}
 	if !changed {
 		log.Printf("[mergequeue] PR #%d: the row is no longer watching — no %s notification", head.PR, label)
+		return
 	}
-	return changed
+	log.Printf("[mergequeue] %s", text)
+	w.sendNotice(ctx, db.MergeNotice{
+		Repo: head.Repo, PR: head.PR, SessionName: head.SessionName, InstanceID: head.InstanceID, Text: text,
+	})
 }
+
+// sendNotice sends the pending notice n of a row one time. It first claims
+// the notice, so that no other watcher of the session sends it too. If the
+// request on the HTTP harness path fails while the watcher stops, the
+// notice goes back to the row, and the next watcher of the session sends it
+// (#3282). Any other failure is logged, and no watcher sends the notice
+// again.
+func (w *Watcher) sendNotice(ctx context.Context, n db.MergeNotice) {
+	claimed, err := w.db.ClaimMergeNotice(n.PR, n.Repo, n.Text)
+	if err != nil {
+		// The row can still hold the notice. A send now can then be the
+		// second send, so leave it to a later tick.
+		log.Printf("[mergequeue] PR #%d: claim the notification: %v — a later tick sends it", n.PR, err)
+		return
+	}
+	if !claimed {
+		log.Printf("[mergequeue] PR #%d: the notification is no longer pending — another watcher sent it", n.PR)
+		return
+	}
+	if w.notify(ctx, n.SessionName, n.InstanceID, n.Text) != notifyStopped {
+		return
+	}
+	returned, err := w.db.ReturnMergeNotice(n.PR, n.Repo, n.Text)
+	switch {
+	case err != nil:
+		log.Printf("[mergequeue] PR #%d: keep the notification for the next watcher: %v", n.PR, err)
+	case returned:
+		log.Printf("[mergequeue] PR #%d: the watcher stopped before the coordinator got the notification — the next watcher sends it", n.PR)
+	}
+}
+
+// sendKeptNotices sends each pending notice of the rows of the session. A
+// watcher that stopped while it sent a notice gave it back to its row
+// (sendNotice). The claim in sendNotice makes sure that only one watcher
+// sends each notice.
+func (w *Watcher) sendKeptNotices(ctx context.Context) {
+	notices, err := w.db.PendingMergeNotices(w.sessionName)
+	if err != nil {
+		log.Printf("[mergequeue] db error reading pending notifications: %v", err)
+		return
+	}
+	for _, n := range notices {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("[mergequeue] PR #%d: sending the notification that an earlier watcher kept: %s", n.PR, n.Text)
+		w.sendNotice(ctx, n)
+	}
+}
+
+// notifyResult is the result of one notification attempt.
+type notifyResult int
+
+const (
+	// notifySent: the coordinator got the text.
+	notifySent notifyResult = iota
+	// notifyFailed: the attempt failed. No watcher sends the text again.
+	notifyFailed
+	// notifyStopped: the attempt on the HTTP harness path failed while the
+	// watcher stops. The next watcher can send the text again.
+	notifyStopped
+)
+
+// notifyStopGrace is how long a notification request on the HTTP harness
+// path can continue after the stop of the sidecar cancels the context of
+// the watcher.
+const notifyStopGrace = 500 * time.Millisecond
+
+// StopWait is how long the Shutdown of the sidecar waits for Run to return
+// after it cancels the context. It is longer than notifyStopGrace, so that
+// a notification request in flight at the stop completes, or its notice
+// goes back to the row, before the process exits (#3282).
+const StopWait = time.Second
 
 // notify delivers a notification to the coordinator via the appropriate
 // delivery path based on the harness type. For pi (TransportSocketPipe)
 // coordinators, it routes through the host-API Unix socket. For
 // HTTP harness coordinators, it uses the HTTP API (prompt_async).
 // Failure is non-fatal (logged).
-func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, text string) {
+//
+// The stop of the sidecar cancels ctx. The HTTP request does not stop at
+// the cancel: it gets notifyStopGrace more to complete (#3282). If it fails
+// while ctx is cancelled, notify returns notifyStopped. The pi path does not
+// use ctx.
+func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, text string) notifyResult {
 	status, err := w.db.CurrentStatus(targetSession)
 	if err != nil || status == nil {
 		log.Printf("[mergequeue] notify: cannot find coordinator session %q: %v", targetSession, err)
-		return
+		return notifyFailed
 	}
 
 	// PI (socket-pipe) coordinators do not have an HTTP server —
@@ -794,24 +862,31 @@ func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, t
 			// delivery time. Queue outcomes are post-turn signals.
 			if deliverErr := promptdelivery.DeliverToSession(targetSession, status, text, buildNotifyBody, "", "followUp"); deliverErr != nil {
 				log.Printf("[mergequeue] notify: FAILED (pi path) — coordinator=%s reason=%v", targetSession, deliverErr)
-			} else {
-				log.Printf("[mergequeue] notify: delivered to pi coordinator=%s via host-API socket", targetSession)
+				return notifyFailed
 			}
-			return
+			log.Printf("[mergequeue] notify: delivered to pi coordinator=%s via host-API socket", targetSession)
+			return notifySent
 		}
+	}
+
+	failed := func() notifyResult {
+		if ctx.Err() != nil {
+			return notifyStopped
+		}
+		return notifyFailed
 	}
 
 	// HTTP harness path: require harness port and session ID.
 	if status.HarnessPort == nil {
 		log.Printf("[mergequeue] notify: coordinator %q has no harness port", targetSession)
-		return
+		return failed()
 	}
 	port := *status.HarnessPort
 
 	// Validate harness_session_id.
 	if status.HarnessSessionID == nil || *status.HarnessSessionID == "" {
 		log.Printf("[mergequeue] notify: coordinator %q has no harness_session_id", targetSession)
-		return
+		return failed()
 	}
 	sid := *status.HarnessSessionID
 
@@ -819,29 +894,43 @@ func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, t
 	jsonBytes, err := json.Marshal(body)
 	if err != nil {
 		log.Printf("[mergequeue] notify: marshal body: %v", err)
-		return
+		return notifyFailed
 	}
 
+	reqCtx, cancelReq := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelReq()
+	stopReq := context.AfterFunc(ctx, func() {
+		grace := time.NewTimer(notifyStopGrace)
+		defer grace.Stop()
+		select {
+		case <-grace.C:
+			cancelReq()
+		case <-reqCtx.Done():
+		}
+	})
+	defer stopReq()
+
 	url := fmt.Sprintf("http://localhost:%d/session/%s/prompt_async", port, sid)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBytes))
+	req, err := http.NewRequestWithContext(reqCtx, "POST", url, bytes.NewReader(jsonBytes))
 	if err != nil {
 		log.Printf("[mergequeue] notify: create request: %v", err)
-		return
+		return notifyFailed
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := w.httpClient.Do(req)
 	if err != nil {
 		log.Printf("[mergequeue] notify: HTTP request: %v", err)
-		return
+		return failed()
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
 		log.Printf("[mergequeue] notify: HTTP status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
-		return
+		return failed()
 	}
 	log.Printf("[mergequeue] notify: delivered to %s", targetSession)
+	return notifySent
 }
 
 // lookupWorkerArchivePath finds the most recent sessions row for the PR's

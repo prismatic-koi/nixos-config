@@ -55,7 +55,8 @@ ON CONFLICT(repo, pr) DO UPDATE SET
   queued_at       = excluded.queued_at,
   last_checked_at = NULL,
   merged_at       = NULL,
-  ended_at        = NULL`
+  ended_at        = NULL,
+  pending_notice  = NULL`
 	if _, err := d.conn.Exec(q, repo, pr, sessionName, instanceID, now, title, now); err != nil {
 		return nil, fmt.Errorf("db: enqueue merge: insert: %w", err)
 	}
@@ -158,7 +159,19 @@ func (d *DB) UpdateMergeLastChecked(pr int, repo string) error {
 // repo is required so that the watcher's terminal write only ever touches
 // the row belonging to its own coordinator.
 func (d *DB) TerminateMerge(pr int, repo, status, errMsg string) (bool, error) {
+	return d.TerminateMergeWithNotice(pr, repo, status, errMsg, "")
+}
+
+// TerminateMergeWithNotice ends the row as TerminateMerge does. In the same
+// write, it stores notice as the pending coordinator notification of the
+// outcome (#3282). The row keeps the notice until a watcher claims it with
+// ClaimMergeNotice. Pass "" for no notice.
+func (d *DB) TerminateMergeWithNotice(pr int, repo, status, errMsg, notice string) (bool, error) {
 	now := time.Now().UnixMilli()
+	var noticePtr *string
+	if notice != "" {
+		noticePtr = &notice
+	}
 	var errPtr *string
 	if errMsg != "" {
 		errPtr = &errMsg
@@ -169,18 +182,96 @@ func (d *DB) TerminateMerge(pr int, repo, status, errMsg string) (bool, error) {
 	}
 	const q = `
 UPDATE pending_merges
-   SET status   = ?,
-       error    = ?,
-       merged_at = ?,
-       ended_at  = ?
+   SET status         = ?,
+       error          = ?,
+       merged_at      = ?,
+       ended_at       = ?,
+       pending_notice = ?
  WHERE repo = ? AND pr = ? AND status = 'watching'`
-	res, err := d.conn.Exec(q, status, errPtr, mergedAt, now, repo, pr)
+	res, err := d.conn.Exec(q, status, errPtr, mergedAt, now, noticePtr, repo, pr)
 	if err != nil {
 		return false, fmt.Errorf("db: terminate merge: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("db: terminate merge: rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
+// MergeNotice is a coordinator notification of a terminal merge-queue
+// outcome that no watcher has sent yet (#3282).
+type MergeNotice struct {
+	Repo        string
+	PR          int
+	SessionName string
+	InstanceID  string
+	Text        string
+}
+
+// PendingMergeNotices returns the pending notifications of the coordinator
+// session sessionName, in the order of the outcomes.
+func (d *DB) PendingMergeNotices(sessionName string) ([]MergeNotice, error) {
+	const q = `
+SELECT repo, pr, session_name, instance_id, pending_notice
+  FROM pending_merges
+ WHERE session_name = ? AND pending_notice IS NOT NULL
+ ORDER BY ended_at ASC, queue_position ASC`
+	rows, err := d.conn.Query(q, sessionName)
+	if err != nil {
+		return nil, fmt.Errorf("db: pending merge notices: %w", err)
+	}
+	defer rows.Close()
+	var notices []MergeNotice
+	for rows.Next() {
+		var n MergeNotice
+		if err := rows.Scan(&n.Repo, &n.PR, &n.SessionName, &n.InstanceID, &n.Text); err != nil {
+			return nil, fmt.Errorf("db: pending merge notices: scan: %w", err)
+		}
+		notices = append(notices, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: pending merge notices: iterate: %w", err)
+	}
+	return notices, nil
+}
+
+// ClaimMergeNotice removes the pending notice of the row (repo, pr) when it
+// is equal to notice. It returns true when it removed it. Only the caller
+// that gets true sends the notification, so two watchers do not both send
+// it.
+func (d *DB) ClaimMergeNotice(pr int, repo, notice string) (bool, error) {
+	res, err := d.conn.Exec(
+		`UPDATE pending_merges SET pending_notice = NULL WHERE repo = ? AND pr = ? AND pending_notice = ?`,
+		repo, pr, notice,
+	)
+	if err != nil {
+		return false, fmt.Errorf("db: claim merge notice: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("db: claim merge notice: rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
+// ReturnMergeNotice gives a claimed notice back to the row (repo, pr), so
+// that a later watcher sends it. It changes the row only when the row has
+// no pending notice and is still merged or failed. Thus it does not change
+// a row that a new enqueue started again. It returns true when it changed
+// the row.
+func (d *DB) ReturnMergeNotice(pr int, repo, notice string) (bool, error) {
+	res, err := d.conn.Exec(
+		`UPDATE pending_merges SET pending_notice = ?
+		  WHERE repo = ? AND pr = ? AND pending_notice IS NULL AND status IN ('merged', 'failed')`,
+		notice, repo, pr,
+	)
+	if err != nil {
+		return false, fmt.Errorf("db: return merge notice: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("db: return merge notice: rows affected: %w", err)
 	}
 	return n > 0, nil
 }

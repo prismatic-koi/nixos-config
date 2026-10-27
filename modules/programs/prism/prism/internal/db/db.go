@@ -31,7 +31,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 46
+	currentSchemaVersion = 47
 )
 
 // DB wraps a SQLite connection.
@@ -242,6 +242,7 @@ CREATE TABLE IF NOT EXISTS pending_merges (
   last_checked_at INTEGER,
   merged_at       INTEGER,
   ended_at        INTEGER,
+  pending_notice  TEXT,
   PRIMARY KEY (repo, pr)
 );
 CREATE INDEX IF NOT EXISTS idx_pending_merges_status_instance ON pending_merges(instance_id, status, queue_position);
@@ -1069,6 +1070,9 @@ func runMigrations(conn sqlExecutor) error {
 	if err := migrateV45ToV46(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV46ToV47(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return &SchemaTooNewError{DBVersion: version, BinaryMax: currentSchemaVersion}
 	}
@@ -1781,6 +1785,37 @@ func migrateV45ToV46(conn sqlExecutor, version *int) error {
 		return fmt.Errorf("db: migration v45\u2192v46: %w", err)
 	}
 	*version = 46
+	return nil
+}
+
+// migrateV46ToV47 adds the `pending_notice` column to pending_merges. It
+// holds the coordinator notification of the terminal outcome of the row
+// until a watcher sends it, so that a stop of the sidecar does not lose it
+// (#3282). NULL means that no notification is pending. The ALTER TABLE is
+// guarded by a pragma_table_info check so the migration is idempotent on
+// fresh databases where the declarative schema block above already includes
+// the column.
+func migrateV46ToV47(conn sqlExecutor, version *int) error {
+	if *version >= 47 {
+		return nil
+	}
+	var exists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('pending_merges') WHERE name = 'pending_notice'`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("db: migration v46\u2192v47: check pending_notice column: %w", err)
+	}
+	if exists == 0 {
+		if _, err := conn.Exec(
+			`ALTER TABLE pending_merges ADD COLUMN pending_notice TEXT`,
+		); err != nil {
+			return fmt.Errorf("db: migration v46\u2192v47: add pending_notice: %w", err)
+		}
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 47`); err != nil {
+		return fmt.Errorf("db: migration v46\u2192v47: %w", err)
+	}
+	*version = 47
 	return nil
 }
 

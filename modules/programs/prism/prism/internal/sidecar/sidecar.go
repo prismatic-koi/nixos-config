@@ -550,6 +550,9 @@ type Sidecar struct {
 	// Run() when this is a coordinator session (AgentRole == "coordinator").
 	// Protected by mu; nil when no watcher is running.
 	mergeWatcherCancel context.CancelFunc
+	// mergeWatcherDone is closed when the merge-watcher goroutine returns.
+	// Set together with mergeWatcherCancel. Protected by mu.
+	mergeWatcherDone chan struct{}
 
 	// harnessPipeListener is the Unix socket (Linux) or TCP (Darwin) listener
 	// for the PI harness pipe. Set in runStartupSocketPipe, closed in Shutdown.
@@ -1041,11 +1044,16 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	if s.cfg.AgentRole == "coordinator" || isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) || s.startedAsNonWorktreeRoot() {
 		if instanceID != "" {
 			watcherCtx, watcherCancel := context.WithCancel(ctx)
+			watcherDone := make(chan struct{})
 			s.mu.Lock()
 			s.mergeWatcherCancel = watcherCancel
+			s.mergeWatcherDone = watcherDone
 			s.mu.Unlock()
 			watcher := mergequeue.New(s.cfg.DB, instanceID, s.cfg.SessionName, s.cfg.HTTPClient)
-			go watcher.Run(watcherCtx)
+			go func() {
+				defer close(watcherDone)
+				watcher.Run(watcherCtx)
+			}()
 			s.logger().Printf("sidecar: merge-queue watcher started (instance=%s)", instanceID)
 		} else {
 			s.logger().Printf("sidecar: merge-queue watcher NOT started — no instance_id")
@@ -1295,7 +1303,8 @@ func (s *Sidecar) Run(ctx context.Context) error {
 // terminal state, cancels any pending idle timer, and stops/removes the
 // container (if running in container mode). Called on SIGINT/SIGTERM.
 //
-// For coordinator sessions, Shutdown also cancels the merge-queue watcher and
+// For coordinator sessions, Shutdown also cancels the merge-queue watcher,
+// waits up to mergequeue.StopWait for it to return, and
 // transitions all watching pending_merges rows to 'abandoned' so that the next
 // coordinator session starts clean. A restart is not an end: prism restore
 // and the stale-sidecar path of prism switch give the rows back.
@@ -1307,6 +1316,8 @@ func (s *Sidecar) Shutdown() {
 	ctr := s.container
 	watcherCancel := s.mergeWatcherCancel
 	s.mergeWatcherCancel = nil
+	watcherDone := s.mergeWatcherDone
+	s.mergeWatcherDone = nil
 	recoveryCancel := s.reviewRecoveryCancel
 	s.reviewRecoveryCancel = nil
 	s.mu.Unlock()
@@ -1315,6 +1326,20 @@ func (s *Sidecar) Shutdown() {
 	// a race where the watcher fires a state transition after the abandon SQL.
 	if watcherCancel != nil {
 		watcherCancel()
+	}
+	// Wait a short time for the watcher to return. A tick that ended a row
+	// can still send its notification. The wait lets that send complete, or
+	// lets the watcher give the notification back to the row for the next
+	// watcher, before the process exits (#3282). The wait is bounded, so a
+	// watcher that does not return does not hold up the stop.
+	if watcherDone != nil {
+		wait := time.NewTimer(mergequeue.StopWait)
+		select {
+		case <-watcherDone:
+		case <-wait.C:
+			s.logger().Printf("sidecar: Shutdown: merge-queue watcher did not return within %s", mergequeue.StopWait)
+		}
+		wait.Stop()
 	}
 
 	// Cancel the review-recovery watcher. Like the merge-queue
