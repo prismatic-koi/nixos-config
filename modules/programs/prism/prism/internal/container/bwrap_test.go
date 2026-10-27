@@ -2110,8 +2110,13 @@ func TestBwrapBuildArgs_ConfigDirMountsPinned(t *testing.T) {
 		"prism/agents":        "--ro-bind",
 		"prism/profiles.json": "--ro-bind",
 	}
+	// The pi agent dir is a private dir (--dir, not a bind) at
+	// ~/.config/prism/pi-agent. Only the credential files and the sessions
+	// dir of the worktree are bound into it read-write (#3284). The fixture
+	// agent dir has no other entries, so there is no read-only entry bind.
 	withPI := maps.Clone(base)
-	withPI["prism/pi-agent"] = "--bind"
+	withPI["prism/pi-agent/auth.json"] = "--bind"
+	withPI["prism/pi-agent/atlassian-mcp-oauth.json"] = "--bind"
 	withPI["prism/pi-extensions"] = "--ro-bind"
 
 	cases := []struct {
@@ -2189,8 +2194,13 @@ func TestBwrapBuildArgs_ConfigDirMountsPinned(t *testing.T) {
 					}
 				}
 			}
-			if !maps.Equal(got, tc.want) {
-				t.Errorf("mounts under ~/.config differ from the pinned set\ngot:  %v\nwant: %v", got, tc.want)
+			want := tc.want
+			if tc.pi {
+				want = maps.Clone(tc.want)
+				want[filepath.Join("prism", "pi-agent", "sessions", encodePiCWD(m.cfg.Worktree))] = "--bind"
+			}
+			if !maps.Equal(got, want) {
+				t.Errorf("mounts under ~/.config differ from the pinned set\ngot:  %v\nwant: %v", got, want)
 			}
 		})
 	}
@@ -3174,19 +3184,13 @@ func TestHelpers_HasSetenv(t *testing.T) {
 	}
 }
 
-// ── PI session persistence: global per-cwd history overlay ───────────
+// ── PI session persistence: the sessions dir of the worktree ─────────
 //
-// The host's ~/.pi/agent/sessions/ directory is overlay-mounted onto
-// $PI_CODING_AGENT_DIR/sessions/ inside the sandbox by appendPIBwrapMounts
-// (called from BuildArgs when Harness == "pi"). The tests below pin that
-// contract: the overlay --bind must appear in the arg list, must use the
-// in-sandbox sessions path as its destination (NOT the host path), must come
-// AFTER the staging-dir bind (so bwrap applies it as an overlay on top), and
-// must appear before the "--" terminator.
-//
-// bwrap pi sessions do not use a separate --bind of ~/.pi/agent/sessions
-// onto its own host path: pi inside the sandbox only writes to
-// PI_CODING_AGENT_DIR, never to the host home path, so no such mount exists.
+// appendPIBwrapMounts (called from BuildArgs when Harness == "pi") binds the
+// host dir ~/.pi/agent/sessions/<encoded-cwd>/ of the worktree read-write at
+// $PI_CODING_AGENT_DIR/sessions/<encoded-cwd>/ (#3284). The sessions dirs of
+// other worktrees are not in the sandbox. The tests below pin that contract
+// and that the bind appears before the "--" terminator.
 
 // bwrapPIFixture extends bwrapFixture with the minimum PI-specific config
 // needed to exercise the pi harness code path in BuildArgs. It creates a
@@ -3242,53 +3246,32 @@ func findBindPairs(args []string) [][2]string {
 	return pairs
 }
 
-// TestBwrapBuildArgs_PISessions_ReachableViaSharedMount verifies that
-// the host's ~/.pi/agent/sessions/ directory
-// is reachable at $PI_CODING_AGENT_DIR/sessions/ inside the sandbox via the
-// shared ~/.pi/agent RW bind — no dedicated sessions-overlay bind is
-// emitted because the parent mount itself IS the host ~/.pi/agent.
-func TestBwrapBuildArgs_PISessions_ReachableViaSharedMount(t *testing.T) {
+// TestBwrapBuildArgs_PISessions_OwnWorktreeDirOnly verifies that the sandbox
+// gets a read-write bind of the sessions dir of its own worktree, and no bind
+// of the host agent dir or of the whole sessions root.
+func TestBwrapBuildArgs_PISessions_OwnWorktreeDirOnly(t *testing.T) {
 	m, fakeHome, cleanup := bwrapPIFixture(t)
 	defer cleanup()
 
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
+	if m.piBwrapErr != nil {
+		t.Fatalf("BuildArgs pi mounts: %v", m.piBwrapErr)
+	}
 
 	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
 	sandboxAgentDir := "/run/prism/pi-agent"
-
-	// The parent RW bind must be present — it's how the sandbox reaches
-	// $PI_CODING_AGENT_DIR/sessions/ and writes back to the host.
-	found := false
+	enc := encodePiCWD(m.cfg.Worktree)
+	hostOwn := filepath.Join(piAgentDir, "sessions", enc)
+	if !hasTriple(args, "--bind", hostOwn, sandboxAgentDir+"/sessions/"+enc) {
+		t.Errorf("expected --bind %q %q; args=%v", hostOwn, sandboxAgentDir+"/sessions/"+enc, redactedArgs(args))
+	}
+	if info, err := os.Stat(hostOwn); err != nil || !info.IsDir() {
+		t.Errorf("expected BuildArgs to create %q; stat = %v, %v", hostOwn, info, err)
+	}
 	for _, p := range findBindPairs(args) {
-		if p[0] == piAgentDir && p[1] == sandboxAgentDir {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected --bind %q %q (RW shared mount of host ~/.pi/agent); args=%v",
-			piAgentDir, sandboxAgentDir, redactedArgs(args))
-	}
-
-	// The host sessions dir must exist after BuildArgs (created as a
-	// side-effect so pi can write JSONL transcripts to it).
-	hostSessionsDir := filepath.Join(fakeHome, ".pi", "agent", "sessions")
-	if info, err := os.Stat(hostSessionsDir); err != nil {
-		t.Errorf("expected BuildArgs to create %q; stat err=%v", hostSessionsDir, err)
-	} else if !info.IsDir() {
-		t.Errorf("expected %q to be a directory; got mode=%v", hostSessionsDir, info.Mode())
-	}
-
-	// There must NOT be a redundant standalone --bind of the sessions dir
-	// onto $PI_CODING_AGENT_DIR/sessions/ — the parent mount covers it,
-	// so no dedicated overlay is needed.
-	sandboxSessionsDir := sandboxAgentDir + "/sessions"
-	for _, p := range findBindPairs(args) {
-		if p[0] == hostSessionsDir && p[1] == sandboxSessionsDir {
-			t.Errorf("unexpected dedicated sessions overlay --bind %q %q — "+
-				"the shared parent mount of ~/.pi/agent covers sessions/ directly (post #2034); got args=%v",
-				p[0], p[1], redactedArgs(args))
+		if p[0] == piAgentDir || p[0] == filepath.Join(piAgentDir, "sessions") {
+			t.Errorf("unexpected read-write bind of %q at %q; args=%v", p[0], p[1], redactedArgs(args))
 		}
 	}
 }
@@ -3320,11 +3303,11 @@ func TestBwrapBuildArgs_PISessionsOverlay_CreatesHostDirIfMissing(t *testing.T) 
 	}
 }
 
-// TestBwrapBuildArgs_PISharedMount_BeforeTerminator verifies that the
-// shared ~/.pi/agent --bind appears before the "--" terminator. bwrap
-// requires all namespace flags to precede the separator. (Replaces the
-// sessions-overlay-specific check; the parent bind subsumes it.)
-func TestBwrapBuildArgs_PISharedMount_BeforeTerminator(t *testing.T) {
+// TestBwrapBuildArgs_PIAgentDir_BeforeTerminator verifies that the agent-dir
+// args (the private dir, PI_CODING_AGENT_DIR, and the sessions bind) appear
+// before the "--" terminator. bwrap requires all namespace flags to precede
+// the separator.
+func TestBwrapBuildArgs_PIAgentDir_BeforeTerminator(t *testing.T) {
 	m, fakeHome, cleanup := bwrapPIFixture(t)
 	defer cleanup()
 
@@ -3341,19 +3324,13 @@ func TestBwrapBuildArgs_PISharedMount_BeforeTerminator(t *testing.T) {
 	if sepIdx < 0 {
 		t.Fatalf("-- separator not found in args: %v", redactedArgs(args))
 	}
-
-	wantSrc := filepath.Join(fakeHome, ".pi", "agent")
-	wantDst := "/run/prism/pi-agent"
-	found := false
-	for i := 0; i+2 < sepIdx; i++ {
-		if args[i] == "--bind" && args[i+1] == wantSrc && args[i+2] == wantDst {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("shared --bind %q %q not found before -- terminator in args: %v",
-			wantSrc, wantDst, redactedArgs(args))
+	before := args[:sepIdx]
+	enc := encodePiCWD(m.cfg.Worktree)
+	hostOwn := filepath.Join(fakeHome, ".pi", "agent", "sessions", enc)
+	if !hasPair(before, "--dir", "/run/prism/pi-agent") ||
+		!hasTriple(before, "--setenv", "PI_CODING_AGENT_DIR", "/run/prism/pi-agent") ||
+		!hasTriple(before, "--bind", hostOwn, "/run/prism/pi-agent/sessions/"+enc) {
+		t.Errorf("agent-dir args not found before the -- terminator: %v", redactedArgs(args))
 	}
 }
 

@@ -101,11 +101,11 @@ func NewArchiveAdapter() harnessarchive.ArchiveAdapter {
 //
 // For bwrap sessions (IsolationMode == "bwrap"), PI writes into the host's
 // $PI_CODING_AGENT_DIR/sessions/ (or ~/.pi/agent/sessions/ when the env var
-// is unset) the same way as host mode. The sandbox overlays that host
-// directory onto $PI_CODING_AGENT_DIR/sessions/ inside the namespace (see
-// container.appendPIBwrapMounts), so writes pass through to
-// <piSessionsRoot>/<encoded-cwd>/<ts>_<uuid>.jsonl on the host, giving the
-// global per-cwd history users expect.
+// is unset) the same way as host mode. The sandbox binds the host dir
+// <piSessionsRoot>/<encoded-cwd>/ of the worktree read-write at
+// $PI_CODING_AGENT_DIR/sessions/<encoded-cwd>/ inside the namespace (see
+// container.appendPIAgentDirBwrapMounts), so writes pass through to
+// <piSessionsRoot>/<encoded-cwd>/<ts>_<uuid>.jsonl on the host.
 //
 // See pi 0.79 dist/core/session-manager.js (getDefaultSessionDirPath line 220,
 // SessionManager.newSession line 559) for the authoritative path formula.
@@ -165,10 +165,10 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 // PI_CODING_AGENT_DIR=<host ~/.pi/agent> into the sandbox env and
 // sandbox-exec shares the host filesystem (cmd/agent_run_sandbox_exec_darwin.go).
 //
-// The bwrap launch overlay-mounts the host's PI sessions root onto
-// $PI_CODING_AGENT_DIR/sessions/ inside the sandbox (see
-// container.appendPIBwrapMounts), so the host-side root is the same as host
-// mode and the bwrap branch collapses into the default.
+// The bwrap launch binds the sessions dir of the worktree in the host root
+// into the sandbox (see container.appendPIAgentDirBwrapMounts), so the
+// host-side root is the same as host mode and the bwrap branch collapses
+// into the default.
 //
 // The SourceParams parameter is retained for signature stability with callers
 // and the resume-side mirror (internal/container.piResumeSessionsRoot);

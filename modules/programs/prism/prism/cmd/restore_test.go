@@ -835,7 +835,7 @@ func TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists(t *testing.T) 
 		t.Fatalf("mkdir host-mode sessions dir: %v", err)
 	}
 	sessionFile := filepath.Join(sessionDir, "2026-01-02T03-04-05-000Z_"+harnessSessionID+".jsonl")
-	if err := os.WriteFile(sessionFile, []byte("{\"type\":\"session\"}\n"), 0o600); err != nil {
+	if err := os.WriteFile(sessionFile, restoreHeaderLine(t, harnessSessionID, worktreeDir), 0o600); err != nil {
 		t.Fatalf("write session file: %v", err)
 	}
 

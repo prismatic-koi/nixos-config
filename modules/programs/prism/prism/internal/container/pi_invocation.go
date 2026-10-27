@@ -3,28 +3,23 @@ package container
 // pi_invocation.go — helpers for launching PI on the PTY inside bwrap.
 //
 // When a bwrap session has harness=pi, agent-run must:
-//  1. Bind-mount the user's host ~/.pi/agent directory read-WRITE into the
-//     sandbox at the canonical in-sandbox path /run/prism/pi-agent and set
-//     PI_CODING_AGENT_DIR to that path. The single shared mount carries
-//     settings.json, themes/, AGENTS.md, skills/, auth.json, and
-//     atlassian-mcp-oauth.json — all identical across sessions.
+//  1. Make the pi agent dir at the canonical in-sandbox path
+//     /run/prism/pi-agent and set PI_CODING_AGENT_DIR to that path. The dir
+//     is private to the sandbox. It holds read-only binds of the entries of
+//     the host ~/.pi/agent (settings.json, themes/, AGENTS.md, skills/, and
+//     more), read-write binds of auth.json and atlassian-mcp-oauth.json,
+//     and a read-write bind of the sessions dir of the worktree. See
+//     pi_agent_dir.go for the write list and the reasons (#3284).
 //     The role system-prompt is injected at runtime by the prism PI extension
 //     (pi/extensions/prism.ts, before_agent_start), which reads
 //     ~/.config/prism/agents/<role>.md.
-//
-//     RW (not RO) is required for OAuth token refresh: pi-coding-agent uses
-//     proper-lockfile with realpath:true, which mkdir's <auth.json>.lock
-//     in the PARENT directory to acquire the lock. With an RO parent the
-//     lock mkdir EPERMs and refresh silently fails after ~30s of retries.
-//     The sandbox-exec SBPL profile has the same RW grant on (subpath
-//     ~/.pi/agent), gated on Harness == "pi" (sandbox_exec.go section 6a).
 //  2. Bind-mount the prism PI extension directory read-only into the bwrap
 //     sandbox.
 //  3. Invoke PI with the appropriate flags as the sandbox terminator.
 //
-// `nh switch` mid-session behaviour: because ~/.pi/agent is a live shared
-// mount, changes to settings.json / themes / AGENTS.md on the host become
-// visible to a running PI session without a respawn.
+// `nh switch` mid-session behaviour: the read-only binds hold the files
+// that the host entries named when the sandbox started. A change on the host
+// becomes visible to a pi session after a respawn.
 //
 // This file provides PIInvocation (analogous to HarnessInvocation) and
 // EnsurePIAgentConfigDir which prepares the shared host directory.
@@ -237,7 +232,10 @@ func PIPromptLead(prompt string) string {
 // cfg.HarnessSessionID exists under the host sessions root and pi can
 // be told to resume it. Returns false when the file is missing, in which case
 // it also writes a tagged warning line to the per-session agent-run log so
-// the operator can see why the conversation didn't resume.
+// the operator can see why the conversation didn't resume. It also returns
+// false, with a warning line, when CheckPIResumeCwd refuses the resume: pi
+// runs in the cwd of the session-file header, and a sandboxed session can
+// write that header (#3284).
 //
 // Callers may pass:
 //
@@ -285,6 +283,10 @@ func piResolveResumeSession(cfg Config) bool {
 	}
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), suffix) {
+			if checkErr := CheckPIResumeCwd(cfg); checkErr != nil {
+				piLogResumeRefusal(cfg, checkErr)
+				return false
+			}
 			return true
 		}
 	}
@@ -299,9 +301,10 @@ func piResolveResumeSession(cfg Config) bool {
 // internal/harness/pi/archive.go::piSessionsRoot:
 //
 //	host         → pi runs against the host environment directly.
-//	bwrap        → the host's PI sessions root is overlay-mounted into the
-//	               sandbox at $PI_CODING_AGENT_DIR/sessions (see
-//	               appendPIBwrapMounts).
+//	bwrap        → the sessions dir of the worktree in the host root is
+//	               bound into the sandbox at
+//	               $PI_CODING_AGENT_DIR/sessions/<encoded-cwd> (see
+//	               appendPIAgentDirBwrapMounts).
 //	sandbox-exec → the dispatcher injects PI_CODING_AGENT_DIR=<host
 //	               ~/.pi/agent> into the sandbox env and sandbox-exec shares
 //	               the host filesystem (cmd/agent_run_sandbox_exec_darwin.go),
@@ -494,19 +497,10 @@ func piAgentRunLogPath(sessionName string) (string, error) {
 // (piAgentConfigSandboxDefault). It creates the host directory if it does not
 // yet exist so bwrap has a valid bind source on a fresh install.
 //
-// The shared PI agent config is a single read-WRITE mount of ~/.pi/agent at
-// /run/prism/pi-agent. Every session of every role mounts the same host
-// directory — settings.json, themes/, AGENTS.md, skills/, and auth.json are
-// all shared/identical, so there is nothing per-session to stage.
-//
-// The parent mount is RW (not RO) because pi-coding-agent's OAuth token
-// refresh uses proper-lockfile with realpath:true, which mkdir's
-// <auth.json>.lock on the PARENT directory to acquire the lock. An RO
-// parent would EPERM the lock mkdir and silently fail refresh after ~30s
-// of retries. See top-of-file doc and appendPIBwrapMounts for the full
-// rationale; the sandbox-exec SBPL profile satisfies the same constraint
-// via (allow file-read* file-write* … (subpath ~/.pi/agent)) gated on
-// Harness == "pi" (sandbox_exec.go section 6a).
+// A bwrap sandbox sees the host dir through read-only binds in a private
+// dir at /run/prism/pi-agent. A sandbox-exec profile allows a read of the
+// host dir and a write of an exact list of paths in it. pi_agent_dir.go
+// holds the list and the reasons (#3284).
 //
 // The role system-prompt is injected at runtime by the prism PI extension
 // (pi/extensions/prism.ts, before_agent_start) from
@@ -617,17 +611,17 @@ func PIExtensionHostPath(hostDir string) string {
 // appendPIBwrapMounts appends the bwrap bind-mount args needed for a PI
 // session to args and returns the extended slice. Specifically:
 //
-//   - PI agent config directory: cfg.PIAgentConfigHostDir → cfg.PIAgentConfigSandboxDir
-//     (read-WRITE — see OAuth proper-lockfile rationale in the in-function
-//     comment block below and at the top of this file). Sets
-//     PI_CODING_AGENT_DIR env var to the sandbox path so PI discovers
-//     settings.json / themes / AGENTS.md / skills / auth.json.
+//   - PI agent config directory: a private dir at cfg.PIAgentConfigSandboxDir
+//     that holds read-only binds of the entries of cfg.PIAgentConfigHostDir,
+//     read-write binds of the credential files, and a read-write bind of the
+//     sessions dir of cfg.Worktree (appendPIAgentDirBwrapMounts,
+//     pi_agent_dir.go). Sets PI_CODING_AGENT_DIR to the sandbox path.
 //   - Extension directory: cfg.PIExtensionHostDir → cfg.PIExtensionSandboxDir
 //     (read-only).
 //
 // Returns an error when the extension host path is empty (indicating the caller
-// forgot to populate the Config fields) or the extension directory cannot be
-// validated.
+// forgot to populate the Config fields), the extension directory cannot be
+// validated, or the agent dir cannot be read.
 func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 	// ── PI binary (read-only) ────────────────────────────────────────────────
 	// The pi binary lives in the Nix store and is not reachable
@@ -642,95 +636,37 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 	args = append(args, "--ro-bind", cfg.PIBinaryPath, cfg.PIBinaryPath)
 
 	// ── PI agent config directory ────────────────────────────────────────────
-	// Bind-mount the shared host ~/.pi/agent directory READ-WRITE at the
-	// canonical in-sandbox path and set PI_CODING_AGENT_DIR to it so PI
-	// discovers settings.json / themes / AGENTS.md / skills / auth.json.
-	//
-	// Why RW (not RO):
-	//
-	//   - OAuth token refresh inside pi-coding-agent uses proper-lockfile
-	//     with realpath:true. After resolving auth.json's realpath, the
-	//     library calls mkdir(<resolved-auth-path>.lock) on the PARENT
-	//     directory to acquire the lock. The parent dir must therefore be
-	//     writable, not just auth.json itself. This is the same constraint
-	//     the sandbox-exec SBPL profile satisfies via
-	//     (allow file-read* file-write* ... (subpath ~/.pi/agent)) gated
-	//     on Harness == "pi" (see sandbox_exec.go section 6a).
-	//
-	//   - The directory is the user's own config dir. There is no isolation
-	//     gain in making it RO from the sandbox; the agent already has full
-	//     RW access to the worktree.
-	//
-	// See pi_invocation.go top-of-file doc comment for the `nh switch`
-	// mid-session implication.
+	// A worker must not write the shared host ~/.pi/agent: every later
+	// session loads code and prompts from it (#3284). pi must still make its
+	// lock dirs in the root of the agent dir, so the root in the sandbox is a
+	// private dir, not a bind of the host dir. See pi_agent_dir.go.
 	agentConfigHostDir := cfg.PIAgentConfigHostDir
 	agentConfigSandboxDir := cfg.PIAgentConfigSandboxDir
 	if agentConfigSandboxDir == "" {
 		agentConfigSandboxDir = piAgentConfigSandboxDefault
 	}
 	if agentConfigHostDir != "" {
-		// Ensure the in-sandbox mount-point parent exists (bwrap requires the
-		// parent of the bind-mount target to exist in the sandbox namespace).
-		parent := filepath.Dir(agentConfigSandboxDir)
-		args = append(args, "--dir", parent)
-		args = append(args, "--dir", agentConfigSandboxDir)
-		args = append(args, "--bind", agentConfigHostDir, agentConfigSandboxDir)
+		var err error
+		args, err = appendPIAgentDirBwrapMounts(args, agentConfigHostDir, agentConfigSandboxDir, cfg.Worktree)
+		if err != nil {
+			return nil, err
+		}
 		args = append(args, "--setenv", "PI_CODING_AGENT_DIR", agentConfigSandboxDir)
-
-		// ── PI sessions overlay (read-write, global) ─────────────────
-		// Ensure the host's ~/.pi/agent/sessions/ exists so pi can write its
-		// per-cwd JSONL transcripts there. The parent mount IS ~/.pi/agent
-		// (RW), so writes to $PI_CODING_AGENT_DIR/sessions/ land on the host
-		// via the same bind — we just need to make sure the subdirectory
-		// exists on the host before pi starts.
-		if home, err := os.UserHomeDir(); err == nil && home != "" {
-			hostSessionsDir := filepath.Join(home, ".pi", "agent", "sessions")
-			_ = os.MkdirAll(hostSessionsDir, 0o700)
-		}
 	}
 
-	// ── PI auth.json bind-mount (read-write, host path) ─────────────────
-	// The parent mount above already exposes auth.json RW at
-	// $PI_CODING_AGENT_DIR/auth.json (which is what PI reads). Retain the
-	// host-path RW bind so any code path that resolves $HOME/.pi/agent/
-	// auth.json directly inside the sandbox (e.g. via os.UserHomeDir()) also
-	// works. The bind is only emitted when the file exists on the host —
-	// when it does not, pi prompts for login instead of crashing.
-	if home, err := os.UserHomeDir(); err == nil {
-		authPath := filepath.Join(home, ".pi", "agent", "auth.json")
-		if _, statErr := os.Stat(authPath); statErr == nil {
-			args = append(args, "--bind", authPath, authPath)
-		}
-	}
-
-	// ── PI atlassian-mcp-oauth.json bind-mount (read-write) ───────────────
-	// The Atlassian MCP extension stores OAuth tokens at
-	// ~/.pi/agent/atlassian-mcp-oauth.json. Inside a bwrap sandbox,
-	// os.UserHomeDir() resolves to the sandbox $HOME, so any token written
-	// by /login-atlassian would be lost when the sandbox exits.
-	// We touch the file (create if absent, mode 0o600) so that bwrap can
-	// bind-mount it. This means the first /login-atlassian inside the sandbox
-	// writes directly to the host path and tokens are persisted across
-	// sessions. The same pattern is used for auth.json above, except we
-	// always create the target here — OAuth logins are the normal first-run
-	// path and a missing file would silently drop tokens on the floor.
-	if home, err := os.UserHomeDir(); err == nil {
-		atlasMCPPath := filepath.Join(home, ".pi", "agent", "atlassian-mcp-oauth.json")
-		// Touch the file (create with mode 0o600 if absent). Best-effort:
-		// if the parent dir does not exist or the write fails we skip the
-		// bind rather than failing the whole container start.
-		if _, statErr := os.Stat(atlasMCPPath); os.IsNotExist(statErr) {
-			// Ensure parent directory exists before creating the file.
-			_ = os.MkdirAll(filepath.Dir(atlasMCPPath), 0o700)
-			if f, createErr := os.OpenFile(atlasMCPPath, os.O_CREATE|os.O_EXCL, 0o600); createErr == nil {
-				_ = f.Close()
+	// ── Credential files at the host path (read-write) ───────────────────
+	// pi and the extensions read the credential files at
+	// $PI_CODING_AGENT_DIR (bound above). These binds at the host path serve
+	// a code path that resolves $HOME/.pi/agent/<file> directly in the
+	// sandbox. They are the same host files as the binds above, so they add
+	// no write access. preparePIAgentDir creates the files on the host, so
+	// that a login in the sandbox reaches the host.
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		for _, name := range piAgentCredentialFiles {
+			path := filepath.Join(home, ".pi", "agent", name)
+			if fi, statErr := os.Lstat(path); statErr == nil && fi.Mode().IsRegular() {
+				args = append(args, "--bind", path, path)
 			}
-		}
-		// Host-path bind retained for callers that resolve via $HOME directly.
-		// The in-sandbox shared mount above already exposes this file RW at
-		// $PI_CODING_AGENT_DIR/atlassian-mcp-oauth.json.
-		if _, statErr := os.Stat(atlasMCPPath); statErr == nil {
-			args = append(args, "--bind", atlasMCPPath, atlasMCPPath)
 		}
 	}
 

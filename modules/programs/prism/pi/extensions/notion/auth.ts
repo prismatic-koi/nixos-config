@@ -35,7 +35,7 @@
 //   3. `writeJsonAtomic()` — temp file created 0600 (before any content is
 //      written), fsynced, then rename(2)d into place. A concurrent reader
 //      never observes a partial or truncated token file, and the dentry
-//      swap is exactly what the dir-bind reasoning below is designed around.
+//      swap is why getTokenStorePath reads through the agent dir (see below).
 //   4. `NotionAuthTerminalError` — `invalid_grant` clears the store and is
 //      surfaced as terminal. retry.ts refuses to retry it.
 //
@@ -198,13 +198,11 @@ function debug(msg: string, ...args: unknown[]): void {
  *                                  dispatchers, and on the host system-wide.
  *   3. ~/.pi/agent/notion-mcp-oauth.json   legacy fallback.
  *
- * The middle entry is load-bearing. The bwrap dispatcher DIR-binds the host's
- * ~/.pi/agent at $PI_CODING_AGENT_DIR. Reading through the dir-bind observes
- * dentry updates from peer writes (i.e. our rename(2)); a host-path FILE-bind
- * would pin the pre-swap inode and we would never see a peer's rotation.
- * This is the same reasoning as atlassian/auth.ts and
- * anthropic-oauth/credentials.ts, and it is why the optional host-path bind in
- * pi_invocation.go is deliberately NOT mirrored for this file.
+ * The middle entry is load-bearing. On the host and in sandbox-exec,
+ * $PI_CODING_AGENT_DIR is the host ~/.pi/agent, so a read observes dentry
+ * updates from peer writes (i.e. our rename(2)); a FILE-bind would pin the
+ * pre-swap inode and we would never see a peer's rotation. In bwrap, since
+ * #3284, this file is not in the sandbox, so no refresh runs there (#3290).
  */
 export function getTokenStorePath(): string {
   if (process.env.PI_NOTION_TOKENS) return process.env.PI_NOTION_TOKENS
@@ -299,9 +297,9 @@ export function writeJsonAtomic(path: string, value: unknown): void {
 //
 // mkdir(2) is atomic on every POSIX filesystem we run on and needs no
 // dependency, which is why `proper-lockfile` uses it too. The lock directory
-// lives beside the token file in ~/.pi/agent, which both isolators already
-// expose read-write (bwrap dir-bind; sandbox-exec `(subpath ~/.pi/agent)`),
-// so no sandbox change is required to make this work.
+// lives beside the token file in ~/.pi/agent. The sandbox-exec profile grants
+// this lock dir by name. In bwrap, since #3284, the token file is not in
+// the sandbox, so a bwrap session takes no lock and sends no refresh (#3290).
 // ---------------------------------------------------------------------------
 
 interface LockOwner {

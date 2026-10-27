@@ -408,10 +408,28 @@ func effectiveIsolationMode(opts Opts) string {
 // re-introduces the PATH-shadow class this rule prevents.
 func BuildAgentCmd(opts Opts) (string, error) {
 	mode := config.IsolationMode(effectiveIsolationMode(opts))
+	// Host mode starts pi from this command, so refuse it here when
+	// auth.json holds a command value (#3284). bwrap and sandbox-exec run
+	// the same check in prism agent-run, just before pi starts.
+	checkAuth := func() error {
+		if !container.IsPIHarness(opts.HarnessName) {
+			return nil
+		}
+		return container.CheckPIAuthFile(container.PIHostAuthPath())
+	}
+	if mode == config.IsolationHost {
+		if err := checkAuth(); err != nil {
+			return "", err
+		}
+	}
 	direct := buildDirectAgentCmd(opts)
 	iso, err := container.For(mode, container.ConstructorOpts{Name: opts.SessionName})
 	if err != nil {
-		// Unknown mode: fall back to the direct (host-shape) command.
+		// Unknown mode: fall back to the direct (host-shape) command, which
+		// starts pi on the host too.
+		if authErr := checkAuth(); authErr != nil {
+			return "", authErr
+		}
 		return direct, nil
 	}
 	return iso.AgentPaneCmd(container.AgentPaneOpts{
