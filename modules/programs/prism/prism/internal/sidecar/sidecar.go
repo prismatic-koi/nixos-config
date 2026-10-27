@@ -1037,7 +1037,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	//     session to `prism merge`, so it must drive its own queue.
 	// The watcher context is stored so Shutdown() can cancel it before the
 	// abandon-watching-rows SQL runs (preventing a race where the watcher fires
-	// a terminal transition after AbandonWatchingMerges clears the rows).
+	// a terminal transition after EndIncarnation abandons the rows).
 	if s.cfg.AgentRole == "coordinator" || isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) || s.startedAsNonWorktreeRoot() {
 		if instanceID != "" {
 			watcherCtx, watcherCancel := context.WithCancel(ctx)
@@ -1297,7 +1297,8 @@ func (s *Sidecar) Run(ctx context.Context) error {
 //
 // For coordinator sessions, Shutdown also cancels the merge-queue watcher and
 // transitions all watching pending_merges rows to 'abandoned' so that the next
-// coordinator session starts clean.
+// coordinator session starts clean. A restart is not an end: prism restore
+// and the stale-sidecar path of prism switch give the rows back.
 func (s *Sidecar) Shutdown() {
 	s.mu.Lock()
 	// Mark shutdown before releasing the lock so that Run()'s OnReady guard
@@ -1319,20 +1320,28 @@ func (s *Sidecar) Shutdown() {
 	// Cancel the review-recovery watcher. Like the merge-queue
 	// watcher, this must run before the DB is closed so the goroutine exits
 	// cleanly. The watcher does not write any state during shutdown so the
-	// ordering relative to AbandonWatchingMerges is unconstrained.
+	// ordering relative to EndIncarnation is unconstrained.
 	if recoveryCancel != nil {
 		recoveryCancel()
 	}
 
-	// Abandon all watching merge rows for this coordinator incarnation.
+	// Abandon all watching merge rows for this coordinator incarnation, and
+	// end its sessions row. EndIncarnation gives both one time stamp: prism
+	// restore uses it to find the rows of this stop after a host shutdown
+	// (#3175).
 	if instanceID := s.instanceID(); instanceID != "" {
-		if err := s.cfg.DB.AbandonWatchingMerges(instanceID); err != nil {
-			s.logger().Printf("sidecar: AbandonWatchingMerges: %v", err)
+		if err := s.cfg.DB.EndIncarnation(instanceID, "finished"); err != nil {
+			// Do the two writes one by one, so that one failure does not
+			// stop the other write.
+			s.logger().Printf("sidecar: EndIncarnation: %v", err)
+			if err := s.cfg.DB.AbandonWatchingMerges(instanceID); err != nil {
+				s.logger().Printf("sidecar: AbandonWatchingMerges: %v", err)
+			}
+			if err := s.cfg.DB.UpdateSessionEnded(instanceID, "finished"); err != nil {
+				s.logger().Printf("sidecar: UpdateSessionEnded: %v", err)
+			}
 		} else {
 			s.logger().Printf("sidecar: watching merge rows abandoned (instance=%s)", instanceID)
-		}
-		if err := s.cfg.DB.UpdateSessionEnded(instanceID, "finished"); err != nil {
-			s.logger().Printf("sidecar: UpdateSessionEnded: %v", err)
 		}
 	}
 

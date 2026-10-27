@@ -15,7 +15,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -336,6 +335,8 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	// to call unconditionally for both host-mode and container-mode sessions.
 	// It removes the PID file, so StartSidecarWithOpts can write a fresh one
 	// below. restoredInstanceID needs to know whether the old sidecar stopped.
+	// The merge-queue resume needs to know whether a process that can be the
+	// old sidecar still runs: that process can still watch the queue.
 	//
 	// The Shutdown of a coordinator sidecar abandons the merge queue, so read
 	// the queue first (#3166).
@@ -343,7 +344,16 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	if queueErr != nil {
 		fmt.Fprintf(os.Stderr, "restore %q: read merge queue: %v\n", s.SessionName, queueErr)
 	}
-	oldSidecarStopped := session.StopSidecar(s.SessionName, restoreSidecarStopTimeout)
+	oldSidecarStopped, oldSidecarGone := restoreStopSidecar(s.SessionName, restoreSidecarStopTimeout)
+	// A stop before restore, as at a host shutdown, abandoned its rows
+	// before the read above (#3175). Find them before restoredInstanceID
+	// reopens the incarnation.
+	if s.InstanceID != nil {
+		var err error
+		if queued, err = withMergesAbandonedByStop(d, s.SessionName, *s.InstanceID, queued); err != nil {
+			fmt.Fprintf(os.Stderr, "restore %q: read merge queue of the last stop: %v\n", s.SessionName, err)
+		}
+	}
 
 	// For container-mode sessions (none in current code — isoCaps.IsContainer
 	// is always false), also remove any stale container left over
@@ -411,7 +421,7 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	if instanceID := restoredInstanceID(d, s, opts.Agent, oldSidecarStopped); instanceID != "" {
 		opts.InstanceID = instanceID
 	}
-	resumeMergeQueue(d, s.SessionName, opts.InstanceID, queued)
+	resumeMergeQueue(d, "restore", s.SessionName, opts.InstanceID, queued, oldSidecarGone)
 
 	if err := session.Create(s.SessionName, directory, opts); err != nil {
 		return restoreOutcomeSkipped, fmt.Errorf("create session: %w", err)
@@ -423,50 +433,13 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	return restoreOutcomeCreated, nil
 }
 
-// resumeMergeQueue gives the merge-queue rows in queued, which were watching
-// before the old sidecar stopped, back to the restored sidecar of
-// sessionName. The restored watcher then continues the queue in the same
-// order.
-//
-// The old sidecar abandons a row only in its SIGTERM Shutdown. When
-// StopSidecar sent that signal, the old sidecar has exited or has received
-// SIGKILL when StopSidecar returns, so it runs no more watcher code, and
-// only the restored watcher polls the queue. A row that the old watcher
-// ended stays ended, so its outcome is not notified again.
-func resumeMergeQueue(d *db.DB, sessionName, instanceID string, queued []db.PendingMerge) {
-	if len(queued) == 0 {
-		return
-	}
-	prs := make([]int, 0, len(queued))
-	for _, m := range queued {
-		prs = append(prs, m.PR)
-	}
-	if instanceID == "" {
-		fmt.Fprintf(os.Stderr, "restore %q: no instance ID, so the merge queue is not resumed: %s\n",
-			sessionName, formatPRNumbers(prs))
-		return
-	}
-	resumed, err := d.ResumeMerges(sessionName, instanceID, queued)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "restore %q: resume merge queue %s: %v\n", sessionName, formatPRNumbers(prs), err)
-		return
-	}
-	if len(resumed) > 0 {
-		fmt.Printf("session %q: merge queue resumed: %s\n", sessionName, formatPRNumbers(resumed))
-	}
-}
-
-func formatPRNumbers(prs []int) string {
-	parts := make([]string, 0, len(prs))
-	for _, pr := range prs {
-		parts = append(parts, fmt.Sprintf("PR #%d", pr))
-	}
-	return strings.Join(parts, ", ")
-}
-
 // restoreSidecarStopTimeout bounds the wait for the old sidecar of a
 // restored session to stop after SIGTERM. Tests shorten it.
 var restoreSidecarStopTimeout = killSidecarTimeout
+
+// restoreStopSidecar stops the old sidecar of a restored session. Tests
+// replace it.
+var restoreStopSidecar = session.StopSidecarReport
 
 // restoredInstanceID returns the instance ID that a session which restore
 // recreates must run with. It returns "" when it cannot record one.

@@ -7,6 +7,8 @@ package db_test
 // the live-session and empty-window edge cases.
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -421,5 +423,49 @@ func TestAssembleRetro_RepoScope(t *testing.T) {
 	}
 	if len(r.Trains) != 1 || r.Trains[0].Root != "retrorepo@a" {
 		t.Errorf("repo scope leaked: %+v", r.Trains)
+	}
+}
+
+// TestAssembleRetro_NonWorktreeRootIsCoordinatorTrain covers issue #3214: the
+// root session of a non-worktree project is a coordinator train root and its
+// investigators join it. A bare-name worker (worktree in a bare layout) and a
+// "<repo>@<branch>" worker stay worker trains.
+func TestAssembleRetro_NonWorktreeRootIsCoordinatorTrain(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Now()
+	sinceMs := now.Add(-24 * time.Hour).UnixMilli()
+
+	root := "retrorepo"
+	inv := root + "~investigate-triage"
+	plainDir := t.TempDir()
+	bareProj := t.TempDir()
+	if err := os.Mkdir(filepath.Join(bareProj, ".bare"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bareWorker := "barename"
+	branchWorker := "retrorepo@feature"
+
+	for name, dir := range map[string]string{root: plainDir, bareWorker: bareProj, branchWorker: plainDir} {
+		seedRetroSession(t, d, name, now.Add(-4*time.Hour), nil, nil, false,
+			retroTokens{output: 10}, retroWaste{})
+		if err := d.UpsertStatus(name, retroRepo, dir, "finished", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus %q: %v", name, err)
+		}
+	}
+	seedRetroSession(t, d, inv, now.Add(-3*time.Hour), nil, &root, false,
+		retroTokens{output: 10}, retroWaste{})
+
+	r, err := d.AssembleRetro(retroRepo, sinceMs)
+	if err != nil {
+		t.Fatalf("AssembleRetro: %v", err)
+	}
+	c := findTrain(t, r, root)
+	if c.Kind != "coordinator" || c.MemberCount != 2 {
+		t.Errorf("root train = kind %q members %d, want coordinator/2", c.Kind, c.MemberCount)
+	}
+	for _, n := range []string{bareWorker, branchWorker} {
+		if k := findTrain(t, r, n).Kind; k != "worker" {
+			t.Errorf("%s kind = %q, want worker", n, k)
+		}
 	}
 }
