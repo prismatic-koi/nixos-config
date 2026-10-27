@@ -229,6 +229,7 @@ func (s *Sidecar) HostAPIHandlerForTest() http.Handler {
 //	GET  /sessions/status — look up one session status row (all roles)
 //	GET  /groups/list   — list review groups (all roles)
 //	GET  /groups/poll   — poll one review group for completion (all roles)
+//	GET  /groups/monitor-log — return the review monitor log of one round (role-scoped)
 //	POST /event         — write a lifecycle event to the host DB (all roles; own session only)
 //	POST /usage/snapshot — persist a rate-limit snapshot for the active account (all roles)
 //	POST /escalate      — escalate to coordinator (all roles; cross-session from= is coordinator only)
@@ -3930,6 +3931,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		s.hostAPIAudit(w, r)
+	})
+
+	// GET /groups/monitor-log?round=<N>[&session=<parent>]
+	// Permission: role-scoped — authz.AuthorizeReviewLog. Any caller reads
+	// its own review rounds. A coordinator also reads the rounds of a session
+	// in its own repo. See host_api_review_log.go.
+	mux.HandleFunc("/groups/monitor-log", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		s.hostAPIReviewLog(w, r)
 	})
 
 	return mux

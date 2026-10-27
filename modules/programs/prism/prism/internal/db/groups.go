@@ -203,6 +203,18 @@ func (d *DB) GroupsForParent(parentSession string) ([]GroupInfo, error) {
 	return out, nil
 }
 
+// OtherParentHasRound reports whether a session_groups row of a parent other
+// than parentSession has this PR number and round.
+func (d *DB) OtherParentHasRound(parentSession, prNumber string, round int) (bool, error) {
+	const q = `SELECT EXISTS (SELECT 1 FROM session_groups
+	            WHERE pr_number = ? AND round = ? AND parent_session != ?)`
+	var found bool
+	if err := d.conn.QueryRow(q, prNumber, round, parentSession).Scan(&found); err != nil {
+		return false, fmt.Errorf("db: other parent has round %s/%d: %w", prNumber, round, err)
+	}
+	return found, nil
+}
+
 // GroupCompleted reports whether the review group has reached a terminal
 // state. A group is considered terminal when EITHER:
 //

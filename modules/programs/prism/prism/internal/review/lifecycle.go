@@ -148,8 +148,8 @@ func KillReviewSessionsForParentWithDB(d *db.DB, parentSession string) {
 // must pass them to db.SetEndedExcept when it ends the parent, because the
 // db.SetEnded cascade would end their rows too.
 //
-// It also removes the stored fallback plan of each round of the parent
-// (RemoveMonitorOptsForParent).
+// It also removes the stored fallback plan and the monitor log of each round
+// of the parent (RemoveMonitorOptsForParent, RemoveMonitorLogsForParent).
 //
 // parentInstanceID is the instance ID of the parent incarnation that the
 // archive step of the caller copies. The caller reads it before the tmux
@@ -160,6 +160,7 @@ func KillReviewSessionsForParentWithDB(d *db.DB, parentSession string) {
 func CleanupReviewSessionsForParent(d *db.DB, parentSession, parentInstanceID string) (failed []string) {
 	prefix := parentSession + "~review-"
 	defer RemoveMonitorOptsForParent(d, parentSession)
+	defer RemoveMonitorLogsForParent(d, parentSession)
 
 	// Try DB-backed group membership first (post-migration rows).
 	members, err := d.GroupMembersForParent(parentSession)
