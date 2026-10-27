@@ -63,10 +63,12 @@ The live bwrap tests start a real `bwrap`. Examples are `TestBwrapBaseline_*`, `
 The `go-tests-bwrap-live` job in `pr-gate.yml` is the automatic run of these tests (#3076). It sets `kernel.apparmor_restrict_unprivileged_userns=0`, installs bubblewrap and Nix, and fails if a selected test reports SKIP or if zero selected tests run. It is part of the `pr-gate` fan-in. The helpers no longer skip on `GITHUB_ACTIONS`: a live bwrap probe decides the skip. Three environments still skip them:
 
 - A prism bwrap worker. The worker sandbox runs with `--disable-userns` (#3065), so a nested bwrap cannot start.
-- The `go-tests` CI job. The runner keeps the apparmor restriction, so the live probe skips.
+- The `go-tests` CI job. The runner has no `/nix`, so a probe that binds `/nix` skips. The probes of `TestRunStartupStdio_*`, `TestStdio_*`, and `TestBwrapAgentRlimitNofile` bind no `/nix`, so these tests run in `go-tests` too.
 - The `nix-build-prism-checked` CI job. bwrap is not on `PATH` in the nix build sandbox.
 
 A SKIP in these tests is not a PASS. In a worker, read the `go-tests-bwrap-live` result on the PR. For a local run, use `-v` from a host shell outside every sandbox. Record the result in the PR body. Add a new live bwrap test name to the `-run` selector of the job.
+
+Do not run the test binary itself in a bwrap sandbox that does not bind the host library dirs. `go test -race` needs cgo, so the test binary is dynamic. On a host that is not NixOS, its loader is `/lib64/ld-linux-x86-64.so.2`, and bwrap fails with `execvp ...: No such file or directory` (#3264). For a fake stdio harness, use `sidecartest.FakeStdioHarness`. It builds a static binary.
 
 ## Container integration tests: the `go-tests-container-live` job
 
