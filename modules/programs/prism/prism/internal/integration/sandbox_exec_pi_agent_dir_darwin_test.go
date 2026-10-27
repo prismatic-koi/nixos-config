@@ -4,8 +4,10 @@ package integration_test
 
 // sandbox_exec_pi_agent_dir_darwin_test.go — the pi agent dir rules of the
 // sandbox-exec profile: section 6a (a read of ~/.pi/agent and a write of an
-// exact list) and section 21f (no create or unlink of the credential
-// files). See internal/container/pi_agent_dir.go and #3284.
+// exact list), section 6c (a read and a write of the shared lock dir and of
+// the Notion store dir), and section 21f (no create or unlink of the
+// credential files). See internal/container/pi_agent_dir.go,
+// internal/container/pi_shared_state.go, #3284, #3289, and #3290.
 //
 // The positive tests run, under the production profile, the file
 // operations that pi and its extensions do during a normal session, and the
@@ -30,12 +32,15 @@ import (
 )
 
 // piAgentDirEnv holds the paths of one test: the agent dir, the sessions
-// dir of the worktree, and the sessions dir of another worktree.
+// dir of the worktree, the sessions dir of another worktree, the shared
+// lock dir, and the Notion store dir.
 type piAgentDirEnv struct {
-	m        *container.Manager
-	agentDir string
-	ownSess  string
-	otherDir string
+	m         *container.Manager
+	agentDir  string
+	ownSess   string
+	otherDir  string
+	lockDir   string
+	notionDir string
 }
 
 func newPIAgentDirEnv(t *testing.T) piAgentDirEnv {
@@ -67,25 +72,38 @@ func newPIAgentDirEnv(t *testing.T) piAgentDirEnv {
 		t.Fatalf("write other session: %v", err)
 	}
 
+	// prism agent-run makes the two shared dirs before Prepare
+	// (EnsurePISharedStateDirs).
+	lockDir, notionDir := container.PISharedStateDirs(home)
+	for _, d := range []string{lockDir, notionDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+
 	bareRoot := filepath.Join(home, "code", "repo")
 	worktree := filepath.Join(bareRoot, "feature")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatalf("mkdir worktree: %v", err)
 	}
 	m := container.New(container.Config{
-		SessionName:  "integ-pi-agent-dir",
-		InstanceID:   "integ-sbx-" + strings.ReplaceAll(t.Name(), "/", "-"),
-		Worktree:     worktree,
-		BareRoot:     bareRoot,
-		Harness:      "pi",
-		GitUserName:  "test-user",
-		GitUserEmail: "test@example.com",
+		SessionName:     "integ-pi-agent-dir",
+		InstanceID:      "integ-sbx-" + strings.ReplaceAll(t.Name(), "/", "-"),
+		Worktree:        worktree,
+		BareRoot:        bareRoot,
+		Harness:         "pi",
+		GitUserName:     "test-user",
+		GitUserEmail:    "test@example.com",
+		PILockHostDir:   lockDir,
+		PINotionHostDir: notionDir,
 	})
 	return piAgentDirEnv{
-		m:        m,
-		agentDir: agentDir,
-		ownSess:  filepath.Join(agentDir, "sessions", encodeCWDForTest(worktree)),
-		otherDir: otherDir,
+		m:         m,
+		agentDir:  agentDir,
+		ownSess:   filepath.Join(agentDir, "sessions", encodeCWDForTest(worktree)),
+		otherDir:  otherDir,
+		lockDir:   lockDir,
+		notionDir: notionDir,
 	}
 }
 
@@ -102,12 +120,15 @@ func (e piAgentDirEnv) run(t *testing.T, profilePath, script string) ([]byte, er
 		"A="+e.agentDir,
 		"S="+e.ownSess,
 		"O="+e.otherDir,
+		"L="+e.lockDir,
+		"N="+e.notionDir,
 		"PATH="+requireNixCoreutilsDir(t))
 	return cmd.CombinedOutput()
 }
 
 // piWritesScript does each write that pi 1.4 and the extensions do during a
-// normal session. Each step has its own exit code.
+// normal session: in the agent dir, in the shared lock dir, and in the
+// Notion store dir. Each step has its own exit code.
 const piWritesScript = `cat "$A/settings.json" >/dev/null || exit 10
 for l in auth.json.lock settings.json.lock trust.json.lock models-store.json.lock; do
   mkdir "$A/$l" || exit 11
@@ -117,11 +138,15 @@ done
 printf refreshed > "$A/auth.json" || exit 20
 chmod 600 "$A/auth.json" || exit 21
 printf atlassian > "$A/atlassian-mcp-oauth.json" || exit 22
-printf notion > "$A/.notion-mcp.tmp.1.a.b" || exit 30
-mv "$A/.notion-mcp.tmp.1.a.b" "$A/notion-mcp-oauth.json" || exit 31
-mkdir "$A/notion-mcp-oauth.json.lock" || exit 32
-printf owner > "$A/notion-mcp-oauth.json.lock/owner" || exit 33
-rm -rf "$A/notion-mcp-oauth.json.lock" || exit 34
+mkdir "$L/anthropic-oauth-refresh.lock" || exit 30
+printf owner > "$L/anthropic-oauth-refresh.lock/owner" || exit 31
+touch "$L/anthropic-oauth-refresh.lock" || exit 32
+rm -rf "$L/anthropic-oauth-refresh.lock" || exit 33
+printf notion > "$N/.notion-mcp.tmp.1.a.b" || exit 34
+mv "$N/.notion-mcp.tmp.1.a.b" "$N/notion-mcp-oauth.json" || exit 35
+mkdir "$N/notion-mcp-oauth.json.lock" || exit 36
+printf owner > "$N/notion-mcp-oauth.json.lock/owner" || exit 37
+rm -rf "$N/notion-mcp-oauth.json.lock" || exit 38
 printf 'h\n' > "$S/s.jsonl" || exit 40
 printf 'm\n' >> "$S/s.jsonl" || exit 41
 exit 0`
@@ -141,14 +166,17 @@ func TestSandboxExecPIAgentDir_PiWritesWork(t *testing.T) {
 		t.Fatalf("a pi write failed under the production profile (see the exit codes in piWritesScript).\nExit: %v\nOutput: %s\nProfile: %s",
 			err, out, profilePath)
 	}
-	for name, want := range map[string]string{
-		"auth.json":                "refreshed",
-		"atlassian-mcp-oauth.json": "atlassian",
-		"notion-mcp-oauth.json":    "notion",
+	for path, want := range map[string]string{
+		filepath.Join(e.agentDir, "auth.json"):                "refreshed",
+		filepath.Join(e.agentDir, "atlassian-mcp-oauth.json"): "atlassian",
+		filepath.Join(e.notionDir, "notion-mcp-oauth.json"):   "notion",
 	} {
-		if got, err := os.ReadFile(filepath.Join(e.agentDir, name)); err != nil || string(got) != want {
-			t.Errorf("host %s = (%q, %v), want %q", name, got, err, want)
+		if got, err := os.ReadFile(path); err != nil || string(got) != want {
+			t.Errorf("host %s = (%q, %v), want %q", path, got, err, want)
 		}
+	}
+	if got := treeOf(t, e.lockDir); len(got) != 0 {
+		t.Errorf("host lock dir = %v, want empty after the remove", got)
 	}
 	if got, err := os.ReadFile(filepath.Join(e.ownSess, "s.jsonl")); err != nil || string(got) != "h\nm\n" {
 		t.Errorf("host session file = (%q, %v), want %q", got, err, "h\nm\n")
@@ -174,6 +202,15 @@ var piPlantScripts = []string{
 	`touch "$O/new.jsonl"`,
 	`mkdir "$A/sessions/--new-worktree--"`,
 	`mkdir "$A/auth.json.lock.x"`,
+	`printf x > "$A/notion-mcp-oauth.json"`,
+	`mkdir "$A/notion-mcp-oauth.json.lock"`,
+	`touch "$A/.notion-mcp.tmp.1"`,
+	// The shared dir nodes themselves (section 21g). The target of each
+	// rename is in the other shared dir, where a create is allowed, so
+	// only the deny on the node stops it.
+	`rmdir "$L"`,
+	`mv "$N" "$L/moved"`,
+	`chmod 000 "$L"`,
 }
 
 // TestSandboxExecPIAgentDir_PlantsDenied: under the production profile each
@@ -197,6 +234,11 @@ func TestSandboxExecPIAgentDir_PlantsDenied(t *testing.T) {
 	}
 	if after := treeOf(t, e.agentDir); !slices.Equal(after, before) {
 		t.Errorf("host agent dir changed:\nbefore: %v\nafter:  %v", before, after)
+	}
+	for _, d := range []string{e.lockDir, e.notionDir} {
+		if fi, err := os.Lstat(d); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+			t.Errorf("shared dir %s = (%v, %v), want the dir unchanged with mode 0700", d, fi, err)
+		}
 	}
 }
 
@@ -237,6 +279,41 @@ func TestSandboxExecPIAgentDir_PiWritesDeniedWithoutWriteClause(t *testing.T) {
 	}
 	if code := exitCode(err); code != 11 {
 		t.Errorf("exit code = %d, want 11 (the first lock-dir mkdir)\nOutput: %s", code, out)
+	}
+}
+
+// TestSandboxExecPIAgentDir_SharedStateWritesDeniedWithoutClause is the
+// paired negative test of the shared-dir half of PiWritesWork: without the
+// section-6c clause, the mkdir of the refresh lock dir fails.
+func TestSandboxExecPIAgentDir_SharedStateWritesDeniedWithoutClause(t *testing.T) {
+	e := newPIAgentDirEnv(t)
+	clause := regexp.MustCompile(regexp.QuoteMeta("(allow file-read* file-write* file-test-existence file-read-metadata\n  (subpath " +
+		sbplQuoteForTest(e.lockDir) + ")\n  (subpath " + sbplQuoteForTest(e.notionDir) + "))\n"))
+	profilePath := withMutatedProfile(t, e.m, func(p string) string { return clause.ReplaceAllString(p, "") })
+
+	out, err := e.run(t, profilePath, piWritesScript)
+	if err == nil {
+		t.Fatalf("pi writes worked without the section-6c clause, so PiWritesWork proves nothing.\nOutput: %s\nProfile: %s", out, profilePath)
+	}
+	if code := exitCode(err); code != 30 {
+		t.Errorf("exit code = %d, want 30 (the refresh lock dir mkdir)\nOutput: %s", code, out)
+	}
+}
+
+// TestSandboxExecPIAgentDir_SharedDirReplaceWorksWithoutDeny is the paired
+// negative test of the section-21g part of PlantsDenied: without the deny,
+// the session can remove a shared dir node.
+func TestSandboxExecPIAgentDir_SharedDirReplaceWorksWithoutDeny(t *testing.T) {
+	e := newPIAgentDirEnv(t)
+	deny := regexp.MustCompile(regexp.QuoteMeta("(deny file-write-unlink file-write-create file-write-mode file-write-flags file-write-acl\n  (literal " +
+		sbplQuoteForTest(e.lockDir) + ")\n  (literal " + sbplQuoteForTest(e.notionDir) + "))\n"))
+	profilePath := withMutatedProfile(t, e.m, func(p string) string { return deny.ReplaceAllString(p, "") })
+
+	if out, err := e.run(t, profilePath, `rmdir "$L"`); err != nil {
+		t.Fatalf("without section 21g the rmdir of the lock dir still failed, so PlantsDenied proves nothing for it.\nExit: %v\nOutput: %s", err, out)
+	}
+	if _, err := os.Lstat(e.lockDir); !os.IsNotExist(err) {
+		t.Errorf("lock dir on the host after the rmdir: %v", err)
 	}
 }
 

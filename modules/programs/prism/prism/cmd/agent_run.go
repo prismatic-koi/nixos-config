@@ -843,7 +843,9 @@ func profileSlotRole(agentRole string) string {
 //     (creating it if absent on a fresh install) and records the host/sandbox
 //     paths on ctrCfg, so bwrap can make the agent dir in the sandbox and set
 //     PI_CODING_AGENT_DIR. The role system-prompt is injected at runtime by
-//     the prism PI extension, not staged here.
+//     the prism PI extension, not staged here. Calls
+//     EnsurePISharedStateDirs to make the shared lock dir and Notion store
+//     dir, move the Notion store into its dir once, and record both paths.
 //  5. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
 //  6. Copies PIProvider, PIModel, PIThinking from the profile slot, then
 //     applies any CLI overrides from `prism agent-run --model` / `--variant`.
@@ -915,6 +917,12 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	}
 	ctrCfg.PIAgentConfigHostDir = hostDir
 	ctrCfg.PIAgentConfigSandboxDir = sandboxDir
+
+	// The OAuth refresh lock and the Notion store must be the same for every
+	// session on the host (#3289, #3290), so they are in dirs that bwrap
+	// binds and the sandbox-exec profile grants. This call makes the dirs on
+	// the host and moves the Notion store out of the agent dir once.
+	ctrCfg.PILockHostDir, ctrCfg.PINotionHostDir = container.EnsurePISharedStateDirs(hostDir)
 
 	// A sandboxed session can write auth.json, and pi runs an api_key value
 	// that starts with "!" as a shell command. Refuse the start (#3284).

@@ -5,8 +5,25 @@
 // requests to the correct URL with the correct headers and form-encoded body.
 // fetch is mocked via globalThis so no network calls are made.
 
-import { describe, it } from "node:test"
+import { describe, it, beforeEach, afterEach } from "node:test"
 import assert from "node:assert/strict"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+// refreshAnthropicToken reads and writes auth.json and takes the shared
+// refresh lock. Point both at a temp dir, never at the real home.
+let tempDir: string
+beforeEach(() => {
+  tempDir = mkdtempSync(join(tmpdir(), "pi-auth-test-"))
+  process.env.PI_AUTH_JSON = join(tempDir, "auth.json")
+  process.env.PI_ANTHROPIC_REFRESH_LOCK_DIR = join(tempDir, "pi-locks")
+})
+afterEach(() => {
+  delete process.env.PI_AUTH_JSON
+  delete process.env.PI_ANTHROPIC_REFRESH_LOCK_DIR
+  rmSync(tempDir, { recursive: true, force: true })
+})
 
 // ---------------------------------------------------------------------------
 // We need to import after mocking fetch. We'll use a dynamic import inside
@@ -93,6 +110,53 @@ describe("refreshAnthropicToken", () => {
       /^\s*\{/,
       "body must not be JSON",
     )
+
+    // The new token is in auth.json before the shared lock is released.
+    const written = JSON.parse(readFileSync(process.env.PI_AUTH_JSON!, "utf8"))
+    assert.equal(written.anthropic.access, "new-access-token")
+    assert.equal(written.anthropic.refresh, "new-refresh-token")
+  })
+})
+
+describe("refreshAnthropicToken in the shared lock", () => {
+  function writeAuth(access: string, expiresInMs: number): void {
+    writeFileSync(
+      process.env.PI_AUTH_JSON!,
+      JSON.stringify({
+        anthropic: { type: "oauth", access, refresh: "stored-refresh", expires: Date.now() + expiresInMs },
+      }),
+    )
+  }
+
+  it("adopts a valid token that a peer wrote, and sends no request", async () => {
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls++
+      throw new Error("no request expected")
+    }) as unknown as typeof fetch
+    writeAuth("peer-access", 60 * 60 * 1000)
+    const { refreshAnthropicToken } = await import("./auth.ts")
+
+    const got = await refreshAnthropicToken({ access: "old-access", refresh: "old-refresh", expires: Date.now() + 60_000 })
+
+    assert.equal(calls, 0)
+    assert.equal(got.access, "peer-access")
+  })
+
+  it("refreshes a valid token that pi passed itself: pi can ask for a longer life", async () => {
+    const bodies: string[] = []
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      bodies.push(String(init.body))
+      return makeOkResponse({ access_token: "new-access", refresh_token: "new-refresh", expires_in: 36000 })
+    }) as unknown as typeof fetch
+    writeAuth("same-access", 20 * 60 * 1000)
+    const { refreshAnthropicToken } = await import("./auth.ts")
+
+    const got = await refreshAnthropicToken({ access: "same-access", refresh: "stored-refresh", expires: Date.now() + 20 * 60 * 1000 })
+
+    assert.equal(bodies.length, 1)
+    assert.equal(new URLSearchParams(bodies[0]).get("refresh_token"), "stored-refresh")
+    assert.equal(got.access, "new-access")
   })
 })
 

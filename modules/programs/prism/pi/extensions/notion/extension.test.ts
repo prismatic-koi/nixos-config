@@ -749,6 +749,75 @@ describe("session_start keeps the refresh-token clock alive", () => {
 })
 
 // ---------------------------------------------------------------------------
+// The store move at session_start (#3290)
+//
+// Revert-and-watch-fail: delete the `await migrateStore()` call from
+// onSessionStart → "moves the store before the first token read" fails.
+// ---------------------------------------------------------------------------
+
+describe("session_start moves the token store out of the pi agent dir", () => {
+  it("moves the store before the first token read", async () => {
+    const order: string[] = []
+    const rec = makeDeps()
+    const ext = createNotionExtension({
+      ...rec.deps,
+      migrateStore: async () => {
+        order.push("move")
+      },
+      loadTokens: () => {
+        order.push("read")
+        return makeTokens()
+      },
+      needsRefresh: () => false,
+    })
+
+    await ext.onSessionStart(makeHost().host, makeCtx().ctx)
+
+    assert.deepEqual(order, ["move", "read"])
+  })
+
+  it("a failed move does not stop the session or the token read", async () => {
+    const rec = makeDeps()
+    let reads = 0
+    const host = makeHost()
+    const ctx = makeCtx()
+    const ext = createNotionExtension({
+      ...rec.deps,
+      migrateStore: async () => {
+        throw new Error("EBUSY")
+      },
+      loadTokens: () => {
+        reads++
+        return makeTokens()
+      },
+      needsRefresh: () => false,
+    })
+
+    await ext.onSessionStart(host.host, ctx.ctx)
+
+    assert.equal(reads, 1)
+    assert.deepEqual(host.registered.map((t) => t.name), ["activate_notion"])
+    assert.deepEqual(ctx.notices, [])
+  })
+
+  it("moves nothing outside the vault scope", async () => {
+    let moves = 0
+    const rec = makeDeps({ isEnabledForCwd: () => false })
+    const ext = createNotionExtension({
+      ...rec.deps,
+      isEnabledForCwd: () => false,
+      migrateStore: async () => {
+        moves++
+      },
+    })
+
+    await ext.onSessionStart(makeHost().host, makeCtx().ctx)
+
+    assert.equal(moves, 0, "an out-of-scope session must touch nothing")
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Tool execution
 // ---------------------------------------------------------------------------
 

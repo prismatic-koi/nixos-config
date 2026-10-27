@@ -23,6 +23,7 @@ import {
   getValidAccessToken,
   invalidateCache,
   loadTokens,
+  migrateLegacyStore,
   needsRefresh,
   type LoginCallbacks,
   type NotionTokens,
@@ -85,6 +86,8 @@ export interface ExtensionDeps {
   getValidAccessToken?: () => Promise<{ token: string; tokens: NotionTokens }>
   /** Staleness predicate. Defaults to auth.ts needsRefresh. */
   needsRefresh?: (tokens: NotionTokens) => boolean
+  /** One-time store move (#3290). Defaults to auth.ts migrateLegacyStore. */
+  migrateStore?: () => Promise<void>
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +147,7 @@ export function createNotionExtension(deps: ExtensionDeps) {
   const readTokens = deps.loadTokens ?? loadTokens
   const refreshTokens = deps.getValidAccessToken ?? getValidAccessToken
   const isStale = deps.needsRefresh ?? needsRefresh
+  const migrateStore = deps.migrateStore ?? migrateLegacyStore
 
   let session: NotionSessionLike | null = null
   let toolsRegistered = false
@@ -426,6 +430,15 @@ export function createNotionExtension(deps: ExtensionDeps) {
 
       toolHost = host
       gateway.register(host)
+
+      // Move the store out of the pi agent dir before the first token read
+      // (#3290). A failure is not fatal: the token read then falls back to
+      // the old path, read-only.
+      try {
+        await migrateStore()
+      } catch (err) {
+        log(`token store move did not complete: ${err instanceof Error ? err.message : String(err)}`)
+      }
 
       // Keep the refresh-token rotation alive without registering the surface.
       // See keepTokensAlive for why this is separate from activation.

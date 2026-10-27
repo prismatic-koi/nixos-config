@@ -8,6 +8,13 @@
 
 import { createServer } from "node:http"
 import { log } from "./logger.ts"
+import {
+  invalidateCache,
+  readCredentials,
+  writeCredentials,
+  type ClaudeCredentials,
+} from "./credentials.ts"
+import { acquireRefreshLock } from "./refresh-lock.ts"
 
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
@@ -27,6 +34,13 @@ const CALLBACK_HOST = "127.0.0.1"
 const LOCAL_CALLBACK_TIMEOUT = 5 * 60 * 1000
 const MAX_TOKEN_RETRIES = 2
 const INITIAL_RETRY_DELAY_MS = 5000
+// pi calls refreshToken when the stored token expires within 5 minutes
+// (pi-ai auth/resolve.js DEFAULT_OAUTH_MINIMUM_VALIDITY_MS). A token that a
+// peer wrote is adopted only if it is valid past that margin.
+const PI_MIN_VALIDITY_MS = 5 * 60 * 1000
+// Bounds the refresh request that runs under the shared lock, the waits
+// between its retries included.
+const REFRESH_REQUEST_TIMEOUT_MS = 15_000
 
 export { USER_AGENT, CLIENT_ID }
 
@@ -162,10 +176,86 @@ export async function loginAnthropic(
   }
 }
 
+function toOAuthCredentials(creds: ClaudeCredentials): OAuthCredentials {
+  return {
+    access: creds.accessToken,
+    refresh: creds.refreshToken,
+    expires: creds.expiresAt,
+  }
+}
+
 // pi-specific: refreshAnthropicToken is called by pi.registerProvider oauth.refreshToken
+//
+// The refresh runs under the shared lock of refresh-lock.ts (#3289). pi's
+// own auth.json.lock is private to a bwrap sandbox, so it does not stop two
+// sessions from sending the same refresh token. Under the shared lock this
+// handler reads auth.json again. If a peer already wrote a new token that
+// pi accepts, it returns that token and sends no request. Else it refreshes
+// with the newest refresh token on disk, and writes the result before it
+// releases the lock, so that the next holder reads it.
 export async function refreshAnthropicToken(
   credentials: OAuthCredentials,
 ): Promise<OAuthCredentials> {
+  // A token is adopted only when a peer wrote it: pi can ask for a refresh
+  // of a token that is valid for more than 5 minutes, when it needs a
+  // longer life.
+  const peerToken = (stored: ClaudeCredentials | null): stored is ClaudeCredentials =>
+    stored !== null &&
+    stored.accessToken !== credentials.access &&
+    stored.expiresAt > Date.now() + PI_MIN_VALIDITY_MS
+
+  const lock = await acquireRefreshLock()
+  if (!lock) {
+    const stored = readCredentials()
+    if (peerToken(stored)) return toOAuthCredentials(stored)
+    // The same fallback as a failed request: keep a token that still works
+    // for a short time. Do not refresh without the lock.
+    const current = stored ? toOAuthCredentials(stored) : credentials
+    if (current.expires > Date.now()) {
+      log("refresh_lock_timeout_fallback", {})
+      return { ...current, expires: Date.now() + 30_000 }
+    }
+    throw new Error(
+      "Token refresh failed: another pi session holds the refresh lock and did not write a new token.",
+    )
+  }
+
+  try {
+    const stored = readCredentials()
+    if (peerToken(stored)) {
+      log("refresh_adopted", { expiresAt: stored.expiresAt })
+      return toOAuthCredentials(stored)
+    }
+    const current = stored ? toOAuthCredentials(stored) : credentials
+    const { result, refreshed } = await requestTokenRefresh(current)
+    if (refreshed) {
+      // A failed write must not lose the new token: pi writes the result
+      // too, after this handler returns.
+      try {
+        writeCredentials({
+          accessToken: result.access,
+          refreshToken: result.refresh,
+          expiresAt: result.expires,
+        })
+        invalidateCache()
+      } catch (err) {
+        log("credentials_write_error", {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+    return result
+  } finally {
+    lock.release()
+  }
+}
+
+// requestTokenRefresh sends the refresh request. refreshed is false when
+// the request failed and the result is the old token with a short expiry.
+// That result must not be written to auth.json.
+async function requestTokenRefresh(
+  credentials: OAuthCredentials,
+): Promise<{ result: OAuthCredentials; refreshed: boolean }> {
   let response: Response
   try {
     response = await fetchWithRetry(
@@ -178,6 +268,7 @@ export async function refreshAnthropicToken(
           client_id: CLIENT_ID,
           refresh_token: credentials.refresh,
         }).toString(),
+        signal: AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS),
       },
       "Token refresh",
     )
@@ -186,7 +277,10 @@ export async function refreshAnthropicToken(
       error: err instanceof Error ? err.message : String(err),
     })
     if (credentials.expires > Date.now()) {
-      return { ...credentials, expires: Date.now() + 30_000 }
+      return {
+        result: { ...credentials, expires: Date.now() + 30_000 },
+        refreshed: false,
+      }
     }
     throw new Error("Token refresh failed and token has expired.")
   }
@@ -199,9 +293,12 @@ export async function refreshAnthropicToken(
 
   log("refresh_complete", {})
   return {
-    access: data.access_token,
-    refresh: data.refresh_token || credentials.refresh,
-    expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
+    result: {
+      access: data.access_token,
+      refresh: data.refresh_token || credentials.refresh,
+      expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
+    },
+    refreshed: true,
   }
 }
 
@@ -252,7 +349,7 @@ async function fetchWithRetry(
         ? Math.min(Number(retryAfter) * 1000, 30_000)
         : INITIAL_RETRY_DELAY_MS * 2 ** attempt
 
-      await new Promise((resolve) => setTimeout(resolve, delayMs))
+      await abortableDelay(delayMs, init.signal ?? undefined)
       lastError = new Error(`${label} failed: ${response.status} ${bodyText}`)
       continue
     }
@@ -261,6 +358,24 @@ async function fetchWithRetry(
   }
 
   throw lastError ?? new Error(`${label} failed after retries`)
+}
+
+// abortableDelay waits ms, and rejects when signal aborts first. The
+// refresh request passes a timeout signal, so its retries stay inside that
+// time.
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason)
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
 }
 
 function makeTokenHeaders(): HeadersInit {

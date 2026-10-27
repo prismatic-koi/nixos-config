@@ -81,8 +81,9 @@ func piAgentLiveArgs(t *testing.T, hostDir, worktree string) []string {
 
 // The write list works and reaches the host: the four pi lock dirs, an
 // in-place write of auth.json and atlassian-mcp-oauth.json, and a new
-// session file in the sessions dir of the worktree. The Notion token store
-// is not in the sandbox (piAgentBwrapHiddenFiles).
+// session file in the sessions dir of the worktree. A Notion token file
+// that is still in the agent dir, before the move to its own dir, is
+// read-only.
 func TestBwrapPIAgentDir_PiWritesWork(t *testing.T) {
 	bwrapBin := requireUsableBwrapForUsageTest(t)
 	hostDir, worktree := piAgentLiveFixture(t)
@@ -92,7 +93,8 @@ func TestBwrapPIAgentDir_PiWritesWork(t *testing.T) {
 	script := `set -e
 A=` + piAgentLiveSandboxDir + `
 cat "$A/settings.json" >/dev/null
-test ! -e "$A/notion-mcp-oauth.json"
+cat "$A/notion-mcp-oauth.json" >/dev/null
+if printf x > "$A/notion-mcp-oauth.json" 2>/dev/null; then exit 9; fi
 for l in auth.json.lock settings.json.lock trust.json.lock models-store.json.lock; do
   mkdir "$A/$l"; touch "$A/$l"; rmdir "$A/$l"
 done
@@ -172,5 +174,106 @@ func TestBwrapPIAgentDir_PlantReachesHostWithOldLayout(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(hostTree(t, hostDir), " "), "SYSTEM.md") {
 		t.Fatal("hostTree does not list the planted file")
+	}
+}
+
+// piSharedStateLiveFixture makes the two shared dirs under a fake home,
+// with a Notion token file, and returns the bind args that the production
+// emitter (appendPIBwrapMounts) makes for them, and only those.
+func piSharedStateLiveFixture(t *testing.T) (lockDir, notionDir string, bindArgs []string) {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	t.Setenv("HOME", home)
+	lockDir, notionDir = PISharedStateDirs(home)
+	for _, d := range []string{lockDir, notionDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(notionDir, "notion-mcp-oauth.json"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := piBwrapMountsCfg(t)
+	cfg.PILockHostDir, cfg.PINotionHostDir = lockDir, notionDir
+	args, err := appendPIBwrapMounts(nil, cfg)
+	if err != nil {
+		t.Fatalf("appendPIBwrapMounts: %v", err)
+	}
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--bind" && (args[i+1] == lockDir || args[i+1] == notionDir) {
+			bindArgs = append(bindArgs, args[i:i+3]...)
+		}
+	}
+	if len(bindArgs) != 6 {
+		t.Fatalf("appendPIBwrapMounts made %v for the shared dirs, want two binds", bindArgs)
+	}
+	return lockDir, notionDir, bindArgs
+}
+
+// The shared dirs in the sandbox are the host dirs (#3289, #3290). A lock
+// dir that the sandbox makes is on the host, a lock dir that the host holds
+// is held in the sandbox, and the rename that the Notion extension does
+// onto its store file works and reaches the host.
+func TestBwrapPIAgentDir_SharedStateDirsAreHostDirs(t *testing.T) {
+	bwrapBin := requireUsableBwrapForUsageTest(t)
+	lockDir, notionDir, bindArgs := piSharedStateLiveFixture(t)
+	if err := os.Mkdir(filepath.Join(lockDir, "held-by-host.lock"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	script := `set -e
+L='` + lockDir + `'
+N='` + notionDir + `'
+mkdir "$L/anthropic-oauth-refresh.lock"
+if mkdir "$L/held-by-host.lock" 2>/dev/null; then exit 3; fi
+printf new > "$N/.notion-mcp.tmp.1"
+mv "$N/.notion-mcp.tmp.1" "$N/notion-mcp-oauth.json"
+`
+	if out, err := runInBwrap(t, bwrapBin, bindArgs, script); err != nil {
+		t.Fatalf("the shared dirs did not work in the sandbox: %v\n%s", err, out)
+	}
+	if fi, err := os.Stat(filepath.Join(lockDir, "anthropic-oauth-refresh.lock")); err != nil || !fi.IsDir() {
+		t.Errorf("the lock dir that the sandbox made is not on the host: (%v, %v)", fi, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(notionDir, "notion-mcp-oauth.json")); err != nil || string(got) != "new" {
+		t.Errorf("host Notion token file = (%q, %v), want %q", got, err, "new")
+	}
+}
+
+// The no-op proof of the lock half: with a private dir in place of the
+// bind, the lock dir that the sandbox makes does not reach the host. So the
+// host assertion above can fail.
+func TestBwrapPIAgentDir_SharedLockNotOnHostWithPrivateDir(t *testing.T) {
+	bwrapBin := requireUsableBwrapForUsageTest(t)
+	lockDir, _, _ := piSharedStateLiveFixture(t)
+
+	if out, err := runInBwrap(t, bwrapBin, []string{"--dir", lockDir}, `mkdir '`+lockDir+`/anthropic-oauth-refresh.lock'`); err != nil {
+		t.Fatalf("mkdir in a private dir failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(lockDir, "anthropic-oauth-refresh.lock")); !os.IsNotExist(err) {
+		t.Fatalf("with a private dir the lock dir reached the host (%v), so the shared-dir test proves nothing", err)
+	}
+}
+
+// The no-op proof of the Notion half: with the old layout, a file bind of
+// the token file, the rename onto it fails. So the rename assertion above
+// can fail.
+func TestBwrapPIAgentDir_NotionRenameFailsOnFileBind(t *testing.T) {
+	bwrapBin := requireUsableBwrapForUsageTest(t)
+	_, notionDir, _ := piSharedStateLiveFixture(t)
+	token := filepath.Join(notionDir, "notion-mcp-oauth.json")
+	A := piAgentLiveSandboxDir
+	oldArgs := []string{"--dir", "/run/prism", "--dir", A, "--bind", token, A + "/notion-mcp-oauth.json"}
+
+	script := `printf new > ` + A + `/.notion-mcp.tmp.1 && mv ` + A + `/.notion-mcp.tmp.1 ` + A + `/notion-mcp-oauth.json`
+	if out, err := runInBwrap(t, bwrapBin, oldArgs, script); err == nil {
+		t.Fatalf("the rename onto a file bind worked, so the shared-dir test proves nothing\n%s", out)
+	}
+	if got, _ := os.ReadFile(token); string(got) != "old" {
+		t.Errorf("host token file = %q, want %q", got, "old")
 	}
 }
