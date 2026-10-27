@@ -15,9 +15,12 @@ package integration_test
 // pattern used by the tmux integration tests in integration_test.go.
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -66,7 +69,7 @@ func requireBwrap(t *testing.T) string {
 // runStartupStdio writes state_change / startup_error / msg_assistant events,
 // and those events are silently dropped (logged as WriteEvent errors) — which
 // causes the downstream assertions to fail.
-func newStdioSidecar(t *testing.T, d *db.DB, bwrapBin, harnessBinPath string) *sidecar.Sidecar {
+func newStdioSidecar(t *testing.T, d *db.DB, bwrapBin, harnessBinPath string, logger ...*log.Logger) *sidecar.Sidecar {
 	t.Helper()
 
 	const (
@@ -106,6 +109,9 @@ func newStdioSidecar(t *testing.T, d *db.DB, bwrapBin, harnessBinPath string) *s
 		HarnessBinaryPath: harnessBinPath,
 		BwrapPath:         bwrapBin,
 		InstanceID:        instanceID,
+	}
+	if len(logger) > 0 {
+		cfg.Logger = logger[0]
 	}
 	return sidecar.New(cfg)
 }
@@ -190,7 +196,8 @@ func TestRunStartupStdio_SilentExit(t *testing.T) {
 	t.Setenv("PRISM_FAKE_STDIO_HARNESS", "silent")
 
 	d := openTestDB(t)
-	sc := newStdioSidecar(t, d, bwrapBin, sidecartest.FakeStdioHarness(t))
+	var logs syncBuffer
+	sc := newStdioSidecar(t, d, bwrapBin, sidecartest.FakeStdioHarness(t), log.New(&logs, "", 0))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -198,6 +205,12 @@ func TestRunStartupStdio_SilentExit(t *testing.T) {
 	err := sc.Run(ctx)
 	if err == nil {
 		t.Fatal("sc.Run: expected error (harness exited without writing frames), got nil")
+	}
+	// An error also results when the harness does not start at all. The
+	// harness writes one marker line, which the sidecar logs as an
+	// unparseable frame, so the marker proves that the harness ran.
+	if !strings.Contains(logs.String(), "raw: fakestdioharness-started") {
+		t.Fatalf("the harness did not start, so the error proves nothing: %v\nsidecar log:\n%s", err, logs.String())
 	}
 	t.Logf("sc.Run returned expected error: %v", err)
 
@@ -232,4 +245,23 @@ func TestRunStartupStdio_SilentExit(t *testing.T) {
 	if status.State != string(agent.StateError) {
 		t.Errorf("state: got %q, want %q", status.State, agent.StateError)
 	}
+}
+
+// syncBuffer is a bytes.Buffer that is safe for the sidecar goroutines to
+// write while the test reads.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

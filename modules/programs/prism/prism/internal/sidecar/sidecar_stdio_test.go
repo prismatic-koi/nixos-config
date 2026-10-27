@@ -185,11 +185,24 @@ func mapKeys[T any](m map[string]T) []string {
 // TestStdio_ToolOnlyTurnNoSpuriousRow verifies that a turn with zero
 // msg_assistant fragments does not produce a spurious empty msg_assistant row.
 func TestStdio_ToolOnlyTurnNoSpuriousRow(t *testing.T) {
+	requireUsableBwrap(t)
 	sc := newStdioSidecar(t, "tool_only_turn", nil)
 	wait := runStdioSidecarAsync(sc)
-	_ = wait()
+	// The harness writes state=finished, so a nil error means that it ran.
+	if err := wait(); err != nil {
+		t.Fatalf("the harness did not run to the end, so the test proves nothing: %v", err)
+	}
 
 	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var sawTurn bool
+	for _, ev := range events {
+		if ev.Type == "turn_start" {
+			sawTurn = true
+		}
+	}
+	if !sawTurn {
+		t.Fatal("no turn_start event: the harness frames did not arrive, so the test proves nothing")
+	}
 	for _, ev := range events {
 		if ev.Type == "msg_assistant" {
 			t.Errorf("spurious msg_assistant row written for tool-only turn: %s", ev.Payload)

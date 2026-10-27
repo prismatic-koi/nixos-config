@@ -305,7 +305,6 @@ func sidecarInstanceIDArg(t *testing.T, sessionName string) string {
 // a restoreSession test.
 func startRestoreTest(t *testing.T) *db.DB {
 	t.Helper()
-	skipRestoreOnGHA(t)
 	if runtime.GOOS != "linux" {
 		t.Skip("reads /proc/<pid>/cmdline")
 	}
