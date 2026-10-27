@@ -32,9 +32,10 @@ const (
 )
 
 // runSlowStopSidecarStub acts as a sidecar that is slow to stop. On SIGTERM
-// it abandons the watching merge-queue rows of its instance ID, waits for
-// the delay, and then writes one agent_events row with that instance ID, in
-// the order of the Shutdown of a real coordinator sidecar.
+// it abandons the watching merge-queue rows of its instance ID and ends its
+// sessions row (db.EndIncarnation), waits for the delay, and then writes
+// one agent_events row with that instance ID, in the order of the Shutdown
+// of a real coordinator sidecar.
 func runSlowStopSidecarStub() int {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM)
@@ -56,7 +57,7 @@ func runSlowStopSidecarStub() int {
 	}
 	defer d.Close()
 	iid := os.Getenv(slowStopIIDEnv)
-	if err := d.AbandonWatchingMerges(iid); err != nil {
+	if err := d.EndIncarnation(iid, "finished"); err != nil {
 		return 1
 	}
 	delay, _ := time.ParseDuration(os.Getenv(slowStopDelayEnv))

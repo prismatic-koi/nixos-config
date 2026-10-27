@@ -98,8 +98,13 @@ SELECT repo, pr, session_name, instance_id, queue_position, status, title, error
 // when prism merge mints a fresh UUID on the fly). Incarnation isolation —
 // preventing stale rows from a previous sidecar from being re-processed — is
 // handled by AbandonWatchingMerges on sidecar shutdown, which sets rows to
-// 'abandoned' before the new sidecar starts. prism restore continues the
-// session, so it gives those rows back with ResumeMerges.
+// 'abandoned' before the new sidecar starts. prism restore and the
+// stale-sidecar path of prism switch continue the session, so they give
+// those rows back with ResumeMerges.
+//
+// This selector ignores instance_id, so two live sidecars of one session
+// poll the same rows. A caller gives the rows to a new sidecar only after
+// it proves that the old sidecar no longer runs (cmd/merge_queue_resume.go).
 //
 // session_name embeds the repo (`<repo>@<branch>` convention), so this
 // selector remains implicitly repo-scoped without an explicit repo filter.
@@ -169,29 +174,96 @@ UPDATE pending_merges
 	return nil
 }
 
+// abandonedByStopError is the error of a row that the stop of its
+// coordinator sidecar abandoned.
+const abandonedByStopError = "coordinator session ended"
+
+const abandonWatchingMergesSQL = `
+UPDATE pending_merges
+   SET status   = 'abandoned',
+       error    = ?,
+       ended_at = ?
+ WHERE instance_id = ? AND status = 'watching'`
+
 // AbandonWatchingMerges transitions all watching rows for instanceID to
-// 'abandoned' with error = 'coordinator session ended'. Called on sidecar
-// shutdown so that a new coordinator never inherits stale watching rows.
-// The sidecar cannot tell a restart from an end. When prism restore
-// restarts the coordinator session, it gives the rows back with
-// ResumeMerges.
+// 'abandoned' with error = 'coordinator session ended', so that a new
+// coordinator never inherits stale watching rows. The sidecar Shutdown does
+// this through EndIncarnation. The sidecar cannot tell a restart from an
+// end. When prism restore or prism switch restarts the coordinator
+// session, it gives the rows back with ResumeMerges.
 //
 // Scoping by instance_id is already sufficient to prevent cross-repo
 // spillover: instance_id is unique per coordinator and each coordinator
 // only ever writes rows for its own repo.
 func (d *DB) AbandonWatchingMerges(instanceID string) error {
 	now := time.Now().UnixMilli()
-	const q = `
-UPDATE pending_merges
-   SET status   = 'abandoned',
-       error    = 'coordinator session ended',
-       ended_at = ?
- WHERE instance_id = ? AND status = 'watching'`
-	_, err := d.conn.Exec(q, now, instanceID)
-	if err != nil {
+	if _, err := d.conn.Exec(abandonWatchingMergesSQL, abandonedByStopError, now, instanceID); err != nil {
 		return fmt.Errorf("db: abandon watching merges: %w", err)
 	}
 	return nil
+}
+
+// EndIncarnation abandons the watching rows of instanceID, as
+// AbandonWatchingMerges does, and ends the sessions row of instanceID, as
+// UpdateSessionEnded does. It does both in one transaction, with one time
+// stamp, so that MergesAbandonedByStop can find the rows that this stop
+// abandoned (#3175). The sidecar Shutdown calls it.
+func (d *DB) EndIncarnation(instanceID, endState string) error {
+	now := time.Now().UnixMilli()
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("db: end incarnation: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(abandonWatchingMergesSQL, abandonedByStopError, now, instanceID); err != nil {
+		return fmt.Errorf("db: end incarnation: abandon watching merges: %w", err)
+	}
+	if _, err := tx.Exec("UPDATE sessions SET ended_at = ?, end_state = ? WHERE instance_id = ?", now, endState, instanceID); err != nil {
+		return fmt.Errorf("db: end incarnation: end session: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("db: end incarnation: commit: %w", err)
+	}
+	return nil
+}
+
+// MergesAbandonedByStop returns, in queue order, the rows of the
+// coordinator session sessionName that the stop which ended the
+// incarnation instanceID abandoned. That stop can come before the restart:
+// at a host shutdown, the sidecar stops before the restore at login.
+//
+// A row qualifies only when its ended_at is equal to the ended_at of the
+// sessions row of instanceID. EndIncarnation writes both with one time
+// stamp. A row that an earlier stop of the same instance abandoned has an
+// earlier ended_at, so it does not qualify. When the sessions row is open,
+// no row qualifies.
+func (d *DB) MergesAbandonedByStop(sessionName, instanceID string) ([]PendingMerge, error) {
+	const q = `
+SELECT p.repo, p.pr, p.session_name, p.instance_id, p.queue_position, p.status, p.title, p.error,
+       p.queued_at, p.last_checked_at, p.merged_at, p.ended_at
+  FROM pending_merges p
+  JOIN sessions s ON s.instance_id = p.instance_id
+ WHERE p.session_name = ? AND p.instance_id = ?
+   AND p.status = 'abandoned' AND p.error = ?
+   AND s.ended_at IS NOT NULL AND p.ended_at = s.ended_at
+ ORDER BY p.queue_position ASC`
+	rows, err := d.conn.Query(q, sessionName, instanceID, abandonedByStopError)
+	if err != nil {
+		return nil, fmt.Errorf("db: merges abandoned by stop: %w", err)
+	}
+	defer rows.Close()
+	var merges []PendingMerge
+	for rows.Next() {
+		m, err := scanPendingMergeRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("db: merges abandoned by stop: scan: %w", err)
+		}
+		merges = append(merges, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: merges abandoned by stop: iterate: %w", err)
+	}
+	return merges, nil
 }
 
 // WatchingMerges returns the watching rows of the coordinator session

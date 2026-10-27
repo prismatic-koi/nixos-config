@@ -1297,7 +1297,8 @@ func (s *Sidecar) Run(ctx context.Context) error {
 //
 // For coordinator sessions, Shutdown also cancels the merge-queue watcher and
 // transitions all watching pending_merges rows to 'abandoned' so that the next
-// coordinator session starts clean.
+// coordinator session starts clean. A restart is not an end: prism restore
+// and the stale-sidecar path of prism switch give the rows back.
 func (s *Sidecar) Shutdown() {
 	s.mu.Lock()
 	// Mark shutdown before releasing the lock so that Run()'s OnReady guard
@@ -1324,15 +1325,18 @@ func (s *Sidecar) Shutdown() {
 		recoveryCancel()
 	}
 
-	// Abandon all watching merge rows for this coordinator incarnation.
+	// Abandon all watching merge rows for this coordinator incarnation, and
+	// end its sessions row. EndIncarnation gives both one time stamp: prism
+	// restore uses it to find the rows of this stop after a host shutdown
+	// (#3175).
 	if instanceID := s.instanceID(); instanceID != "" {
-		if err := s.cfg.DB.AbandonWatchingMerges(instanceID); err != nil {
-			s.logger().Printf("sidecar: AbandonWatchingMerges: %v", err)
+		if err := s.cfg.DB.EndIncarnation(instanceID, "finished"); err != nil {
+			s.logger().Printf("sidecar: EndIncarnation: %v", err)
+			if err := s.cfg.DB.UpdateSessionEnded(instanceID, "finished"); err != nil {
+				s.logger().Printf("sidecar: UpdateSessionEnded: %v", err)
+			}
 		} else {
 			s.logger().Printf("sidecar: watching merge rows abandoned (instance=%s)", instanceID)
-		}
-		if err := s.cfg.DB.UpdateSessionEnded(instanceID, "finished"); err != nil {
-			s.logger().Printf("sidecar: UpdateSessionEnded: %v", err)
 		}
 	}
 
