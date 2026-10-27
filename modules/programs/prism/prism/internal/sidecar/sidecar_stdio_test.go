@@ -80,19 +80,11 @@ func runStdioSidecarAsync(sc *Sidecar) func() error {
 	}
 }
 
-// requireUsableBwrap skips the test when bwrap is not available in a usable
-// form. buildStdioHarnessCmd resolves bwrap via exec.LookPath and only falls
-// back to direct exec when bwrap is absent from PATH — so on environments
-// where bwrap is in PATH but cannot actually run (e.g. GitHub Actions
-// ubuntu-latest, where unprivileged userns uid-map setup is blocked by the
-// runner's apparmor profile), the wrapped exec fails with "setting up uid
-// map: Permission denied" and the harness exits before writing any frames.
-//
-// The skip message is loud and named — see the follow-up for
-// alternative-runner / privileged-container investigations.
-//
-// A prism bwrap sandbox runs with --disable-userns, so a bwrap on PATH
-// fails there in the same way. The live probe skips that case too.
+// requireUsableBwrap skips the test when bwrap is on PATH but cannot run.
+// buildStdioHarnessCmd falls back to direct exec only when bwrap is absent
+// from PATH. Where a kernel or AppArmor policy blocks the uid-map setup, or
+// in a prism bwrap sandbox (--disable-userns), the wrapped exec fails and
+// the harness exits before it writes a frame.
 func requireUsableBwrap(t *testing.T) {
 	t.Helper()
 	bin, err := exec.LookPath("bwrap")

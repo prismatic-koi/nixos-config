@@ -337,11 +337,11 @@ jobs:
         run: echo "no Go-relevant paths touched; skipping go-tests-macos-sandbox-exec"
 
   # Runs the live bwrap sandbox tests for real (#3076). The go-tests job
-  # skips most of them: their live probe binds /nix, and the ubuntu runner
-  # has no /nix. The stdio and rlimit probes bind no /nix, so those tests
-  # can also run in go-tests. This job lifts the apparmor userns
-  # restriction and installs Nix (some tests need /nix/store binaries).
-  # The guard step fails the job on any SKIP or on zero tests run.
+  # skips them: the ubuntu runner sets
+  # kernel.apparmor_restrict_unprivileged_userns=1, so the live probe in
+  # each helper fails. This job lifts the restriction and installs Nix
+  # (some tests need /nix/store binaries). The guard step fails the job
+  # on any SKIP or on zero tests run.
   go-tests-bwrap-live:
     name: go-tests-bwrap-live
     runs-on: ubuntu-latest
@@ -399,6 +399,9 @@ jobs:
           # fails inside that sandbox. Point it at a nix bash.
           nix_bash="$(nix build --no-link --print-out-paths 'nixpkgs#bash^out')"
           sudo ln -sf "$nix_bash/bin/bash" /usr/bin/sh
+          # CGO_ENABLED=0 makes the test binaries static. The sidecar and
+          # integration tests exec their own test binary inside bwrap, and a
+          # dynamic binary needs the host /lib64 loader, which is not bound.
           export CGO_ENABLED=0
           nix shell --print-build-logs nixpkgs#coreutils nixpkgs#util-linux nixpkgs#go \
             --command go test -v ./internal/container/ ./internal/integration/ ./internal/sidecar/ -run '^(TestBwrapBaseline_|TestBwrapUsageStateDir_|TestBwrapGoCacheDirs_|TestBwrapWorktreeReadOnly_|TestBwrapUsrBinEnv_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)' 2>&1 | tee /tmp/go-test-bwrap-live.log

@@ -23,8 +23,8 @@ package integration_test
 // subtest.
 //
 // Linux-only in practice: requireBwrap skips when bwrap is unavailable
-// (always on Darwin) and on GitHub Actions runners where unprivileged userns
-// is blocked. requireUsableBwrap additionally probes an actual spawn
+// (always on Darwin) and where a kernel or AppArmor policy blocks
+// unprivileged user namespaces. requireUsableBwrap additionally probes an actual spawn
 // so the test skips rather than fails inside environments (e.g. the Nix
 // build sandbox) where bwrap is present but cannot create namespaces.
 

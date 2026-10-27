@@ -35,8 +35,8 @@ import (
 //
 //   - PATH lookup fails: bwrap is not installed.
 //   - A live probe fails: bwrap is in PATH but cannot set up a user
-//     namespace (the go-tests runner's apparmor profile, a prism worker
-//     sandbox).
+//     namespace (a kernel or AppArmor policy blocks it, or the test runs in
+//     a prism worker sandbox).
 //
 // The skip messages are loud and name the exact reason, so reviewers see it
 // in test output rather than a vague "skipping" string.
@@ -46,10 +46,7 @@ func requireBwrap(t *testing.T) string {
 	if err != nil {
 		t.Skip("bwrap not found in PATH — skipping bwrap stdio integration test")
 	}
-	// A live probe decides the skip, not the CI environment. On a runner
-	// with kernel.apparmor_restrict_unprivileged_userns=1 the uid-map
-	// setup fails and the probe skips; the bwrap CI job lifts that
-	// restriction so the probe passes there (#3076).
+	// A live probe decides the skip, not the CI environment (#3076).
 	probe := exec.Command(bin, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
 		"--unshare-pid", "/bin/sh", "-c", "true")
 	if out, err := probe.CombinedOutput(); err != nil {
