@@ -292,7 +292,8 @@ func isNonWorktreeRootTarget(sessionName string, d *db.DB) bool {
 // callerHasCoordinatorRole is the caller-role rule of requireCoordinator,
 // /switch, /escalate for another session, and the per-session endpoints
 // (/set-model, /apply-profile, /register-provider, /set-active-tools,
-// /abort). A caller with this role can target another session. Any other
+// /abort), and of /groups/monitor-log. A caller with this role can target
+// another session. Any other
 // caller can target only its own session.
 //
 // An explicit AgentRole wins. With no AgentRole, the DB-backed
