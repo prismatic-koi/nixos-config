@@ -448,6 +448,10 @@ func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.Isolati
 	return mode, nil
 }
 
+// spawnSessionFn starts the session of `prism spawn`. Tests replace it to
+// read the SpawnOpts without tmux or a sidecar.
+var spawnSessionFn = session.SpawnSession
+
 func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// rootCmd sets SilenceUsage + SilenceErrors globally, so RunE errors do
 	// not dump the usage block or double-print.
@@ -922,6 +926,9 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		SkillsManifestHash:   skillsManifestHash,
 		AgentPromptHash:      agentPromptHash,
 		// ────────────────────────────────────────────────────────
+		// PRRef takes the raw --pr value, not prNumber: gh also resolves a
+		// URL or a branch, and prNumber is 0 for those.
+		PRRef: prFlag,
 		// PIExtensionDir is the host-side prism PI extension directory
 		// (populated by Nix into config.json). Forwarded so that host-mode
 		// pi launches pass --extension <dir>/prism.ts.
@@ -972,7 +979,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// SpawnSession is the canonical spawn_inputs writer: it builds
 	// the row from SpawnOpts fields populated above and inserts it after the
 	// sessions row exists. No post-spawn writer is needed here.
-	if err := session.SpawnSession(d, spawnOpts); err != nil {
+	if err := spawnSessionFn(d, spawnOpts); err != nil {
 		return err
 	}
 	// The session is live: disarm the worktree rollback. Later failures
@@ -1571,6 +1578,7 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		AgentPromptHash:      a.agentPromptHash,
 		AbtestPairID:         a.pairID,
 		// ────────────────────────────────────────────────────────
+		PRRef: a.prFlag,
 	}
 	// Role-filtered before the SpawnOpts are constructed.
 	if a.pf != nil && !a.isoCaps.IsContainer {
@@ -1587,7 +1595,7 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 	// SpawnSession is the canonical spawn_inputs writer and includes
 	// the abtest_pair_id from SpawnOpts.AbtestPairID. Both legs of the abtest
 	// pair share the same a.pairID minted by the caller.
-	if err := session.SpawnSession(a.d, spawnOpts); err != nil {
+	if err := spawnSessionFn(a.d, spawnOpts); err != nil {
 		return "", worktreePath, err
 	}
 

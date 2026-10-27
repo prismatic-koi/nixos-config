@@ -592,6 +592,27 @@ prism checkin <session>~review-<N>-review-goal
 
 `<session>` is the session that ran `prism review`. A worker may read the review agents of its own session and nothing else — see [Who can check in on what](#who-can-check-in-on-what).
 
+To see what the review monitor of the round saw and did, run `prism reviews log <N>`. The next section describes the command.
+
+### Review monitor log: `prism reviews log`
+
+The review monitor of a round waits for the review agents and delivers the review-complete prompt. Its log shows what it saw and what it did. If the monitor did not deliver a round, or delivered a result that you do not expect, read the log.
+
+```bash
+prism reviews log <round>                      # a round of your own session
+prism reviews log <round> --session <session>  # coordinator: a round of a session in your own repo
+```
+
+Who can read which logs:
+
+- Each session can read the logs of its own review rounds. A worker gives no `--session`.
+- A coordinator can also read the logs of the review rounds of a session in its own repo.
+- Prism refuses all other reads. A worker cannot read the logs of another session. A coordinator cannot read the logs of a session in another repo.
+
+The command works the same in a `bwrap`, `sandbox-exec`, or `host` session. In a sandbox, the host decides who you are from the host-API socket of your session. `PRISM_SESSION_NAME` and `--session` cannot widen the access.
+
+If the round has no log, the command exits non-zero with an error that names the round. A round that ran on a prism version older than this command has no log that the command can read. `prism cleanup` and `prism close --yes` of a session remove the logs of its review rounds. An interactive `prism close` that keeps the worktree keeps the logs.
+
 ## Investigator agents
 
 Use `prism investigate` to spawn a read-only research session from within a prism session. Investigators are well-suited to tasks like tracing call chains, mapping symptoms to a file:line, or surveying scope before spawning a worker. Only coordinators can spawn them. A sandboxed caller meets the host-API `/investigate` endpoint, which calls `requireCoordinator` and returns HTTP 403 to every other caller. A `host`-mode caller has no `PRISM_HOST_API` and takes the direct CLI path, where `requireInvestigateCoordinator` in `cmd/investigate.go` refuses it with a non-zero exit.

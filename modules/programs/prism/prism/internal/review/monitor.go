@@ -1371,7 +1371,18 @@ func MonitorOptsPath(groupID string) string {
 }
 
 // MonitorLogPath returns the path of the log of a round's monitor process.
-func MonitorLogPath(prNumber string, round int) string {
+// The name holds the group ID because the round number counts per parent
+// session: two sessions that review the same PR both have a round 1. A name
+// without the group ID gives them one shared file, and then `prism reviews
+// log` and `prism cleanup` of one session reach the log of the other.
+func MonitorLogPath(groupID, prNumber string, round int) string {
+	return filepath.Join(MonitorStateDir(), fmt.Sprintf("review-%s-round-%d-%s.log",
+		sanitisePRNumber(prNumber), round, sanitisePRNumber(groupID)))
+}
+
+// legacyMonitorLogPath returns the log path that has no group ID in its
+// name. A monitor of an earlier prism version wrote its log there.
+func legacyMonitorLogPath(prNumber string, round int) string {
 	return filepath.Join(MonitorStateDir(), fmt.Sprintf("review-%s-round-%d.log", sanitisePRNumber(prNumber), round))
 }
 
@@ -1426,7 +1437,7 @@ func StartMonitorProcess(opts MonitorOpts, prismBinary string) error {
 	detachProcess(cmd)
 	// Redirect stdout/stderr to log file for diagnostics.
 	// The opts file write above created the directory.
-	logPath := MonitorLogPath(opts.PRNumber, opts.Round)
+	logPath := MonitorLogPath(opts.GroupID, opts.PRNumber, opts.Round)
 	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if logErr == nil {
 		cmd.Stdout = logFile

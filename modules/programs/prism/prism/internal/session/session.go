@@ -462,13 +462,14 @@ func BuildAgentCmd(opts Opts) (string, error) {
 
 // projectTrustDir returns the start directory when pi gets --approve, else
 // "" (--no-approve). projecttrust.Policy.Approve decides from the session
-// name and opts.Worktree. A caller that leaves opts.Worktree empty gets "".
+// name, opts.Worktree, and the PR-branch records in prism.db. A caller that
+// leaves opts.Worktree empty gets "".
 func projectTrustDir(opts Opts) string {
 	if opts.Worktree == "" {
 		return ""
 	}
 	dir := filepath.Clean(opts.Worktree)
-	if !projecttrust.Load().Approve(opts.SessionName, dir) {
+	if !projecttrust.Load(prBranchSessions).Approve(opts.SessionName, dir) {
 		return ""
 	}
 	return dir
