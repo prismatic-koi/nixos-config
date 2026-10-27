@@ -117,7 +117,7 @@ func TestParentCleanup_StopsReviewSidecars_3160(t *testing.T) {
 	_, sessions := seedRound(t, d, parent, 1, []string{"finished", "finished", "finished", "finished", "finished"}, true)
 	stubs := stubsFor(t, sessions)
 
-	failed := review.CleanupReviewSessionsForParent(d, parent)
+	failed := review.CleanupReviewSessionsForParent(d, parent, "")
 
 	if len(failed) != 0 {
 		t.Errorf("failed = %v, want none", failed)
@@ -341,7 +341,7 @@ func TestParentCleanup_FailedStopKeepsChildReserved_3160(t *testing.T) {
 		t.Fatalf("UpsertStatus(parent): %v", err)
 	}
 
-	failed := review.CleanupReviewSessionsForParent(d, parent)
+	failed := review.CleanupReviewSessionsForParent(d, parent, "")
 	if !slices.Equal(failed, []string{stuck}) {
 		t.Fatalf("failed = %v, want [%s]", failed, stuck)
 	}

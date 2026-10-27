@@ -89,7 +89,7 @@ func withChildCleanup(t *testing.T, stuck ...string) *[]string {
 	t.Helper()
 	var parents []string
 	prev := cleanupReviewChildren
-	cleanupReviewChildren = func(d *db.DB, parent string) []string {
+	cleanupReviewChildren = func(d *db.DB, parent, _ string) []string {
 		parents = append(parents, parent)
 		rows, err := d.AllStatusesWithPrefix(parent + "~review-")
 		if err != nil {

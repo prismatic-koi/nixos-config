@@ -56,7 +56,9 @@ func cleanupChildrenOfKeptSession(session string) []string {
 	}
 	defer d.Close()
 	stopAndRemoveChildContainers(d, session)
-	keepChildren := cleanupReviewChildren(d, session)
+	// The tmux session of session still runs, so the hand-over of the child
+	// audit logs reads the instance ID of session from agent_status.
+	keepChildren := cleanupReviewChildren(d, session, "")
 	// After the child stop: see the header of cleanup_orphan_sidecars.go.
 	killOrphanReviewSidecars(session, keepChildren)
 	return append(failed, keepChildren...)

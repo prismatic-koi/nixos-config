@@ -156,7 +156,7 @@ func TestParentCleanup_RemovesStoredPlans_3128(t *testing.T) {
 		paths = append(paths, writePlan(t, review.MonitorOpts{GroupID: g}))
 	}
 
-	review.CleanupReviewSessionsForParent(d, parent)
+	review.CleanupReviewSessionsForParent(d, parent, "")
 
 	for _, p := range paths[:2] {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {

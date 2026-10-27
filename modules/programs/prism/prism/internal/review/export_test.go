@@ -122,7 +122,15 @@ func BuildDeliveryMessageWithCausesForTest(prNumber string, round int, formatted
 // CleanupAgentSessionForTest is an exported wrapper around cleanupAgentSession
 // so tests can pin that the reap record is guarded on ended_at.
 func CleanupAgentSessionForTest(d *db.DB, agentSession string, cause db.SessionReapCause, detail ...string) {
-	cleanupAgentSession(d, agentSession, cause, detail...)
+	cleanupAgentSession(d, agentSession, "", cause, detail...)
+}
+
+// SetKillTmuxSessionForTest replaces the tmux kill of KillSessionsByNames
+// and returns a restore function.
+func SetKillTmuxSessionForTest(kill func(string) error) func() {
+	prev := killTmuxSession
+	killTmuxSession = kill
+	return func() { killTmuxSession = prev }
 }
 
 // ExpectedRoundSetForTest is an exported wrapper around expectedRoundSet so

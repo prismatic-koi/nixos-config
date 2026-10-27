@@ -151,7 +151,7 @@ func TestCleanupSites_OrphanScanRunsAfterChildStop_3206(t *testing.T) {
 			// counts as stopped.
 			var childStops int
 			prevChildren := cleanupReviewChildren
-			cleanupReviewChildren = func(d *db.DB, p string) []string {
+			cleanupReviewChildren = func(d *db.DB, p, _ string) []string {
 				childStops++
 				if p != parent {
 					t.Errorf("child stop for %q, want %q", p, parent)

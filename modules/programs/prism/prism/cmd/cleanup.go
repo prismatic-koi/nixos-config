@@ -319,7 +319,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			stopAndRemoveChildContainers(d, m.session)
 			// Kill and clean up all review sessions spawned by this parent session,
 			// including their port allocations and DB rows.
-			keepChildren := cleanupReviewChildren(d, m.session)
+			keepChildren := cleanupReviewChildren(d, m.session, snap.instanceID)
 			// Orphan-sidecar safety net, after the child stop: see the header
 			// of cleanup_orphan_sidecars.go.
 			killOrphanReviewSidecars(m.session, keepChildren)
@@ -893,7 +893,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		stopAndRemoveChildContainers(d, session)
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
-		keepChildren = cleanupReviewChildren(d, session)
+		keepChildren = cleanupReviewChildren(d, session, snap.instanceID)
 		// Orphan-sidecar safety net, after the child stop: see the header of
 		// cleanup_orphan_sidecars.go.
 		killOrphanReviewSidecars(session, keepChildren)
@@ -1188,7 +1188,7 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		stopAndRemoveChildContainers(d, session)
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
-		keepChildren = cleanupReviewChildren(d, session)
+		keepChildren = cleanupReviewChildren(d, session, snap.instanceID)
 		// Orphan-sidecar safety net, after the child stop: see the header of
 		// cleanup_orphan_sidecars.go.
 		killOrphanReviewSidecars(session, keepChildren)
