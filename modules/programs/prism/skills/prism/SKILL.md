@@ -1486,6 +1486,12 @@ A lookup table of log patterns, their causes, and remediation hints:
 
 - **Session name doesn't match expected shape** (e.g. `~review` where `~review-1-review-code` is expected) — the agent-list construction produced the wrong agent names, or the `--agent` flag value is incorrect. Check the sidecar log for the `--agent` flag value used in the command line.
 
+- **`Read-only file system`, `Operation not permitted`, or `EBUSY` on a path in `$PI_CODING_AGENT_DIR` (`/run/prism/pi-agent` or `~/.pi/agent`)** — a sandboxed session can write only `auth.json`, `atlassian-mcp-oauth.json`, the pi lock dirs, the Notion store (sandbox-exec), and the sessions dir of its worktree. This is intended (#3284). Do not work around it. In bwrap, a file that you create in the agent dir stays in the sandbox. `prism/docs/invariants/sandbox-pi-agent-dir.md` gives the full list, the reasons, and the known limits.
+
+- **`pi auth file <path>: the entry of provider "<p>" has a value that starts with "!"`** — pi runs such a value in `auth.json` as a shell command, so prism refuses to start pi (#3284). A sandboxed session can write `auth.json`. Do not edit the file and do not work around the refusal. Escalate to the user with the session name, because a planted value is a security event.
+
+- **`restore "<session>": not resuming pi session <id>: …`** — the session file that pi would open has a header `cwd` that is not the worktree, or the id is not a plain pi session id. The session starts a fresh conversation in its worktree. See the same invariant.
+
 - **Zombie DB rows (session in `prism sessions list` but no live tmux session)** — a previous session's process died without cleaning up DB state. Use `prism cleanup --yes --session <name>` to end the row (stamps `ended_at`, releases any dangling port, clears the pi resume linkage) so it drops out of the active-session view. The row itself is preserved; re-spawning on the same branch name reuses it by re-seeding `state` back to `idle`.
 
 ### Escalation

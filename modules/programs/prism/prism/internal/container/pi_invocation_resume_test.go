@@ -35,8 +35,8 @@ import (
 // bwrap pi sessions write into the host's global ~/.pi/agent/sessions/ tree
 // (same as host mode); the sessions dir is overlay-bound into the sandbox.
 //
-// The file content is not parsed by the test \u2014 PIInvocation only stats the
-// directory listing and matches on the filename suffix.
+// The file holds a pi session header with the worktree as its cwd, because
+// ResolvePIResumeSession reads the header (CheckPIResumeCwd).
 func writeBwrapResumeSession(t *testing.T, _ /*sessionName*/, worktree, sessionID string) string {
 	t.Helper()
 	home, err := os.UserHomeDir()
@@ -48,7 +48,7 @@ func writeBwrapResumeSession(t *testing.T, _ /*sessionName*/, worktree, sessionI
 		t.Fatalf("mkdir resume session dir: %v", err)
 	}
 	path := filepath.Join(dir, "2026-01-02T03-04-05-000Z_"+sessionID+".jsonl")
-	if err := os.WriteFile(path, []byte("{\"type\":\"session\"}\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, piSessionHeaderLine(t, sessionID, worktree), 0o600); err != nil {
 		t.Fatalf("write resume session file: %v", err)
 	}
 	return path
@@ -459,7 +459,7 @@ func TestPIInvocation_Resume_SandboxExec_AppendsSessionFromHostRoot(t *testing.T
 		t.Fatalf("mkdir host-root sessions dir: %v", err)
 	}
 	jsonl := filepath.Join(dir, "2026-06-11T10-00-00-000Z_"+harnessSessionID+".jsonl")
-	if err := os.WriteFile(jsonl, []byte("{\"type\":\"session\"}\n"), 0o600); err != nil {
+	if err := os.WriteFile(jsonl, piSessionHeaderLine(t, harnessSessionID, worktree), 0o600); err != nil {
 		t.Fatalf("write host-root session file: %v", err)
 	}
 
@@ -539,7 +539,7 @@ func TestPIInvocation_Resume_PICodingAgentDir(t *testing.T) {
 		t.Fatalf("mkdir env-mode sessions dir: %v", err)
 	}
 	jsonl := filepath.Join(dir, "2026-06-08T07-12-42-499Z_"+harnessSessionID+".jsonl")
-	if err := os.WriteFile(jsonl, []byte("{\"type\":\"session\"}\n"), 0o600); err != nil {
+	if err := os.WriteFile(jsonl, piSessionHeaderLine(t, harnessSessionID, worktree), 0o600); err != nil {
 		t.Fatalf("write env-mode session file: %v", err)
 	}
 

@@ -110,6 +110,13 @@
         session (OAuth 2.0 authorization code + PKCE against
         https://mcp.notion.com).
 
+        Exception: a bwrap session does not get the Notion token file
+        (#3284), so Notion is not available there. Run /login-notion only in
+        a host-mode or sandbox-exec session: in a bwrap session the tokens
+        stay in the private agent dir and go away with the sandbox. See
+        known limit 3 in prism/docs/invariants/sandbox-pi-agent-dir.md and
+        #3290.
+
         There is no Notion analogue of pi.atlassian.defaultCloudId: a Notion
         OAuth grant fixes the workspace, so there is nothing to select.
       '';
@@ -139,6 +146,13 @@
         the grant lapse silently. Do not "tidy" that call away on the strength
         of the paragraph above: refresh is not surface. See the notion
         UPSTREAM.md section "Token refresh is NOT deferred, and must not be".
+
+        Exception: a bwrap session does not refresh. The bwrap sandbox does
+        not get the Notion token file (#3284), because a refresh there cannot
+        save the rotated token, and a stranded token can make Notion revoke
+        the grant. Only a host-mode or sandbox-exec session in the vault
+        keeps the 30-day clock alive. See known limit 3 in
+        prism/docs/invariants/sandbox-pi-agent-dir.md and #3290.
 
         The repo-scoping gate wins over this option: a session outside
         NOTION_MCP_REPOS registers neither the family nor activate_notion,

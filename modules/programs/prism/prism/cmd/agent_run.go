@@ -841,11 +841,9 @@ func profileSlotRole(agentRole string) string {
 //     the profile does not define a slot for this role.
 //  4. Calls EnsurePIAgentConfigDir to resolve the shared host ~/.pi/agent path
 //     (creating it if absent on a fresh install) and records the host/sandbox
-//     paths on ctrCfg so bwrap can bind-mount the directory and set
-//     PI_CODING_AGENT_DIR. The shared mount carries settings.json, themes/,
-//     AGENTS.md, skills/, and auth.json — all identical across sessions.
-//     The role system-prompt is injected at runtime by the prism PI extension,
-//     not staged here.
+//     paths on ctrCfg, so bwrap can make the agent dir in the sandbox and set
+//     PI_CODING_AGENT_DIR. The role system-prompt is injected at runtime by
+//     the prism PI extension, not staged here.
 //  5. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
 //  6. Copies PIProvider, PIModel, PIThinking from the profile slot, then
 //     applies any CLI overrides from `prism agent-run --model` / `--variant`.
@@ -900,20 +898,16 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	slot, _ := config.SlotForRole(pf, profileName, slotRole)
 
 	// Resolve the shared PI agent config directory (~/.pi/agent on the host)
-	// and the canonical in-sandbox path (/run/prism/pi-agent). Bwrap will
-	// bind-mount the host dir READ-WRITE at the sandbox path; writes to
-	// auth.json reach the host file via that same parent bind. RW (not RO)
-	// is load-bearing for OAuth refresh — proper-lockfile mkdir's
-	// auth.json.lock on the parent dir, which would EPERM under an RO mount
-	// (see pi_invocation.go top-of-file for the full rationale). A redundant
-	// host-path RW bind of auth.json is also retained so $HOME-resolving
-	// call paths inside the sandbox keep working. On sandbox-exec, the
+	// and the canonical in-sandbox path (/run/prism/pi-agent). bwrap makes a
+	// private dir at the sandbox path with read-only binds of the host
+	// entries and read-write binds of the paths that pi must write
+	// (internal/container/pi_agent_dir.go, #3284). On sandbox-exec, the
 	// in-sandbox path is overridden in the dispatcher to equal the host
 	// path because sandbox-exec shares the host filesystem.
 	//
 	// EnsurePIAgentConfigDir creates the host dir if absent so a fresh install
 	// does not fail the spawn. sessionName is intentionally unused here — the
-	// shared mount is identical for every session.
+	// agent dir is the same host dir for every session.
 	_ = sessionName
 	hostDir, sandboxDir, err := container.EnsurePIAgentConfigDir()
 	if err != nil {
@@ -921,6 +915,12 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	}
 	ctrCfg.PIAgentConfigHostDir = hostDir
 	ctrCfg.PIAgentConfigSandboxDir = sandboxDir
+
+	// A sandboxed session can write auth.json, and pi runs an api_key value
+	// that starts with "!" as a shell command. Refuse the start (#3284).
+	if err := container.CheckPIAuthFile(filepath.Join(hostDir, "auth.json")); err != nil {
+		return fmt.Errorf("pi: %w", err)
+	}
 
 	// Extension host directory from Nix-written config.
 	if cfg.PIExtensionDir == "" {

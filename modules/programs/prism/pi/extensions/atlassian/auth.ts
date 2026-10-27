@@ -73,11 +73,11 @@ export interface AtlassianTokens {
  *                                  precedent in anthropic-oauth/credentials.ts).
  *   3. ~/.pi/agent/atlassian-mcp-oauth.json   legacy fallback.
  *
- * The middle entry matters because the bwrap dispatcher dir-binds the host's
- * ~/.pi/agent at $PI_CODING_AGENT_DIR (a directory bind). Reading via the
- * dir-bind sees dentry updates from concurrent peer writes; the file-bind at
- * homedir() would pin the pre-swap inode. See credentials.ts for the full
- * story.
+ * The middle entry is the path that pi and prism agree on in every
+ * isolation mode. In bwrap, since #3284, it is a read-write file bind in a
+ * private agent dir. This extension writes the file in place, so the writes
+ * of other sessions are visible through the bind. See credentials.ts for the
+ * rename case.
  */
 export function getTokenStorePath(): string {
   if (process.env.PI_ATLASSIAN_TOKENS) return process.env.PI_ATLASSIAN_TOKENS

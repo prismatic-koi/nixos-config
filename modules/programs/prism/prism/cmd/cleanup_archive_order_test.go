@@ -147,7 +147,7 @@ func assertTranscriptArchived(t *testing.T, f archiveOrderFixture) string {
 	if readErr != nil {
 		t.Fatalf("archive must contain session.jsonl (issue #2219 — archive must read the transcript before the sever deletes it): %v", readErr)
 	}
-	want := []byte("{\"type\":\"session\"}\n")
+	want := fakePiResumeContent(t, archiveOrderSID, f.worktree)
 	if !bytes.Equal(got, want) {
 		t.Errorf("archived session.jsonl content = %q, want %q", got, want)
 	}
