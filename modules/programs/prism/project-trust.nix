@@ -50,6 +50,13 @@
           write the whole project directory of its repo, so it can reach the
           other worktrees of that repo and .agents/skills at the project root.
 
+          Known limit: `prism pr` and `prism spawn --pr` start a session on a
+          PR branch whose author prism cannot know. In a trusted repo, that
+          session and its review agents get --approve, so the project
+          resources of the PR author run with worker rights before a person
+          reviews the PR. The author can be Renovate, a fork, or a colleague.
+          Issue #3287 tracks --no-approve for these sessions.
+
           Rendered to ~/.config/prism/project-trust.json. Neither the bwrap
           nor the sandbox-exec isolator gives a sandbox access to that file,
           so no sandboxed session can read or change it. An empty list makes
