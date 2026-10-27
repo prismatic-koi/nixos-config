@@ -250,6 +250,13 @@ func buildRealDeps(t *testing.T, c prismcontainer.Caller, containerfile string, 
 	return prismcontainer.Build(context.Background(), deps, c, req)
 }
 
+// describeBuild formats a BuildResult for a failure message. %+v prints the
+// Output bytes as numbers, so this prints them as text.
+func describeBuild(res prismcontainer.BuildResult) string {
+	return fmt.Sprintf("{ExitCode:%d Image:%q Message:%q OutputDropped:%d Output:\n%s}",
+		res.ExitCode, res.Image, res.Message, res.OutputDropped, res.Output)
+}
+
 // wantBuildFailed fails the test unless podman build started and then
 // failed, and its output matches cause. A build that did not start (a
 // failure of the scope or the namespace setup) or that failed for another
@@ -260,7 +267,7 @@ func wantBuildFailed(t *testing.T, res prismcontainer.BuildResult, cause *regexp
 		t.Fatalf("podman build did not start, so the test proves nothing: %s (output %s)", res.Message, res.Output)
 	}
 	if res.ExitCode == 0 || res.Image != "" || !strings.Contains(res.Message, "the build failed") {
-		t.Fatalf("build = %+v (output %s), want podman build to start and fail", res, res.Output)
+		t.Fatalf("build = %s, want podman build to start and fail", describeBuild(res))
 	}
 	if !cause.Match(res.Output) {
 		t.Errorf("the build failed, but its output does not match %s, so it failed for another reason:\n%s", cause, res.Output)
@@ -272,7 +279,7 @@ func TestIntegration_BuildThenRun(t *testing.T) {
 	res := buildReal(t, c, "FROM alpine\nARG GREETING\nRUN echo \"$GREETING\" > /built\n",
 		prismcontainer.BuildRequest{BuildArgs: []string{"GREETING=hello from the build"}, Tag: "itest"})
 	if res.ExitCode != 0 || !strings.HasSuffix(res.Image, "-itest") {
-		t.Fatalf("build = %+v (output %s)", res, res.Output)
+		t.Fatalf("build = %s", describeBuild(res))
 	}
 	run := runReal(t, c, prismcontainer.RunRequest{Image: res.Image, Command: []string{"cat", "/built"}})
 	if run.ExitCode != 0 || string(run.Stdout) != "hello from the build\n" {
@@ -306,7 +313,7 @@ func TestIntegration_BuildSymlinkNotInImage(t *testing.T) {
 	}
 	res := buildReal(t, c, "FROM alpine\nCOPY . /ctx\n", prismcontainer.BuildRequest{})
 	if res.ExitCode != 0 {
-		t.Fatalf("build = %+v (output %s)", res, res.Output)
+		t.Fatalf("build = %s", describeBuild(res))
 	}
 	run := runReal(t, c, prismcontainer.RunRequest{Image: res.Image, Mount: prismcontainer.MountNone,
 		Command: []string{"sh", "-c", "test ! -e /ctx/leak && ! grep -rq s3cr3t-outside /ctx"}})
@@ -350,7 +357,7 @@ func TestIntegration_BuildTimeoutStopsStep(t *testing.T) {
 	const marker = "613.317"
 	res := buildReal(t, c, "FROM alpine\nRUN sleep "+marker+"\n", prismcontainer.BuildRequest{TimeoutSeconds: 20})
 	if res.ExitCode != prismcontainer.ExitTimeout {
-		t.Fatalf("build = %+v (output %s), want the timeout", res, res.Output)
+		t.Fatalf("build = %s, want the timeout", describeBuild(res))
 	}
 	// Without the step in the output, the test cannot show that the step
 	// ran and then stopped.
@@ -370,7 +377,7 @@ func TestIntegration_BuildMultiStage(t *testing.T) {
 	res := buildReal(t, c, "FROM alpine AS builder\nRUN echo stage-output > /built\nFROM alpine\nCOPY --from=builder /built /from-name\nCOPY --from=0 /built /from-index\n",
 		prismcontainer.BuildRequest{Tag: "multistage"})
 	if res.ExitCode != 0 {
-		t.Fatalf("build = %+v (output %s)", res, res.Output)
+		t.Fatalf("build = %s", describeBuild(res))
 	}
 	run := runReal(t, c, prismcontainer.RunRequest{Image: res.Image, Mount: prismcontainer.MountNone, Command: []string{"cat", "/from-name", "/from-index"}})
 	if run.ExitCode != 0 || string(run.Stdout) != "stage-output\nstage-output\n" {
@@ -402,7 +409,7 @@ func TestIntegration_SweepStopsRunningBuild(t *testing.T) {
 	for len(stepProcs()) == 0 {
 		select {
 		case res := <-done:
-			t.Fatalf("the build ended before its RUN step ran: %+v (output %s)", res, res.Output)
+			t.Fatalf("the build ended before its RUN step ran: %s", describeBuild(res))
 		default:
 		}
 		if time.Now().After(deadline) {
@@ -418,7 +425,7 @@ func TestIntegration_SweepStopsRunningBuild(t *testing.T) {
 	select {
 	case res := <-done:
 		if res.ExitCode == 0 || res.Image != "" {
-			t.Errorf("build = %+v (output %s), want a build that the sweep stopped", res, res.Output)
+			t.Errorf("build = %s, want a build that the sweep stopped", describeBuild(res))
 		}
 	case <-time.After(time.Minute):
 		t.Fatal("the build did not end within a minute after the sweep")
@@ -436,7 +443,7 @@ func TestIntegration_BuildImagesRemovedBySweep(t *testing.T) {
 	}
 	res := prismcontainer.Build(context.Background(), prismcontainer.Deps{MachineMountAllowlist: config.LoadFresh().MachineMountAllowlist()}, c, prismcontainer.BuildRequest{})
 	if res.ExitCode != 0 {
-		t.Fatalf("build = %+v", res)
+		t.Fatalf("build = %s", describeBuild(res))
 	}
 	if err := prismcontainer.SweepSession(context.Background(), prismcontainer.ExecRunner{}, prismcontainer.DefaultBuildExecutor(runtime.GOOS, nil, nil), []string{c.InstanceID}); err != nil {
 		t.Fatalf("SweepSession: %v", err)
@@ -610,7 +617,7 @@ func TestIntegration_BuildRunStepNetwork(t *testing.T) {
 	c := integrationCaller(t)
 	res := buildReal(t, c, "FROM alpine\nRUN wget -q -O /dev/null https://example.com && echo ok > /net\n", prismcontainer.BuildRequest{})
 	if res.ExitCode != 0 {
-		t.Errorf("build = %+v (output %s), want a RUN step with network to work", res, res.Output)
+		t.Errorf("build = %s, want a RUN step with network to work", describeBuild(res))
 	}
 }
 
@@ -946,7 +953,7 @@ func TestIntegration_FailedSweepKeepsAuditDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	if b := prismcontainer.Build(context.Background(), prismcontainer.Deps{MachineMountAllowlist: config.LoadFresh().MachineMountAllowlist()}, imgCaller, prismcontainer.BuildRequest{}); b.ExitCode != 0 {
-		t.Fatalf("build = %+v", b)
+		t.Fatalf("build = %s", describeBuild(b))
 	}
 	t.Cleanup(func() {
 		_, _ = prismcontainer.SweepImages(context.Background(), prismcontainer.ExecRunner{}, []string{imgCaller.InstanceID})
