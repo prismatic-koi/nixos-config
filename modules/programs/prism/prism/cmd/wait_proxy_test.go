@@ -44,6 +44,9 @@ type fakeWaitProbeServer struct {
 	groupCompleted bool
 	groupMembers   []db.Status
 	groupResults   map[string]db.GroupMemberResult
+	// groupAwaiting is the awaiting_fallback field. nil omits it, as a
+	// sidecar built before issue #3128 does.
+	groupAwaiting *bool
 }
 
 func (s *fakeWaitProbeServer) handler() http.Handler {
@@ -90,13 +93,18 @@ func (s *fakeWaitProbeServer) handler() http.Handler {
 		completed := s.groupCompleted
 		members := s.groupMembers
 		results := s.groupResults
+		awaiting := s.groupAwaiting
 		s.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		body := map[string]any{
 			"completed": completed,
 			"members":   members,
 			"results":   results,
-		})
+		}
+		if awaiting != nil {
+			body["awaiting_fallback"] = *awaiting
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(body)
 	})
 	return mux
 }
@@ -337,3 +345,42 @@ func TestParseReviewGroupIDFromAck(t *testing.T) {
 		}
 	}
 }
+
+// TestProxyWaitProbe_AwaitingFallbackFromHost covers issue #3128: in a
+// sandbox, --wait uses the host's awaiting_fallback answer, because only the
+// host can read the stored fallback plan. Without the field it falls back to
+// a wait after every refusal.
+func TestProxyWaitProbe_AwaitingFallbackFromHost(t *testing.T) {
+	server, apiURL := startFakeWaitProbeServer(t)
+	refused := "nixos-config@x~review-1-review-security"
+	server.groupID = "g1"
+	server.groupCompleted = true
+	server.groupMembers = []db.Status{{SessionName: refused, State: "error"}}
+	server.groupResults = map[string]db.GroupMemberResult{
+		refused: {SessionName: refused, State: "error", RunError: "refused", RunErrorRawStopReason: "refusal"},
+	}
+	p := &proxyWaitProbe{apiURL: apiURL}
+
+	for _, tc := range []struct {
+		name string
+		host *bool
+		want bool
+	}{
+		{"host says no fallback left", ptrBool(false), false},
+		{"host says fallback left", ptrBool(true), true},
+		{"old sidecar without the field", nil, true},
+	} {
+		server.mu.Lock()
+		server.groupAwaiting = tc.host
+		server.mu.Unlock()
+		_, m, r, err := p.GroupPoll("g1")
+		if err != nil {
+			t.Fatalf("%s: GroupPoll: %v", tc.name, err)
+		}
+		if got := p.AwaitingFallback("g1", m, r); got != tc.want {
+			t.Errorf("%s: AwaitingFallback = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func ptrBool(b bool) *bool { return &b }
