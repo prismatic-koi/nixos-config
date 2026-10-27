@@ -35,6 +35,9 @@ beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), "pi-creds-test-"))
   authJson = join(tempDir, "auth.json")
   process.env.PI_AUTH_JSON = authJson
+  // A refresh takes the shared lock (refresh-lock.ts). Keep it in the
+  // temp dir, never in the real ~/.local/state/prism/pi-locks.
+  process.env.PI_ANTHROPIC_REFRESH_LOCK_DIR = join(tempDir, "pi-locks")
   // The developer host (and the bwrap dispatcher) set PI_CODING_AGENT_DIR
   // unconditionally. Clear it so the existing PI_AUTH_JSON-keyed test
   // fixtures continue to win precedence; the dedicated precedence test
@@ -44,6 +47,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.PI_AUTH_JSON
+  delete process.env.PI_ANTHROPIC_REFRESH_LOCK_DIR
   delete process.env.PI_CODING_AGENT_DIR
   rmSync(tempDir, { recursive: true, force: true })
 })

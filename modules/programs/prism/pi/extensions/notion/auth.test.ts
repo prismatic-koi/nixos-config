@@ -160,16 +160,12 @@ describe("getTokenStorePath precedence", () => {
     assert.equal(getTokenStorePath(), "/tmp/explicit-notion.json")
   })
 
-  it("falls back to PI_CODING_AGENT_DIR/notion-mcp-oauth.json", () => {
+  it("uses the shared store dir when PI_NOTION_TOKENS is unset, whatever PI_CODING_AGENT_DIR is (#3290)", () => {
     delete process.env.PI_NOTION_TOKENS
     process.env.PI_CODING_AGENT_DIR = "/tmp/coding-agent"
-    assert.equal(getTokenStorePath(), "/tmp/coding-agent/notion-mcp-oauth.json")
-  })
-
-  it("falls back to ~/.pi/agent/notion-mcp-oauth.json when neither is set", () => {
-    delete process.env.PI_NOTION_TOKENS
+    assert.match(getTokenStorePath(), /\/\.local\/state\/prism\/pi-notion\/notion-mcp-oauth\.json$/)
     delete process.env.PI_CODING_AGENT_DIR
-    assert.match(getTokenStorePath(), /\.pi\/agent\/notion-mcp-oauth\.json$/)
+    assert.match(getTokenStorePath(), /\/\.local\/state\/prism\/pi-notion\/notion-mcp-oauth\.json$/)
   })
 
   it("keeps the client registration in a sibling file, not the token file", () => {

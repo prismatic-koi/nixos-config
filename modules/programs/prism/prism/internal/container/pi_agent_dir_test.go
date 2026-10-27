@@ -45,7 +45,8 @@ func bindsAt(args []string, sandboxDir string) map[string]string {
 // The agent dir in a bwrap sandbox is a private dir. Each host entry is
 // read-only. Only the credential files and the sessions dir of the worktree
 // are read-write. A host lock dir and the sessions dirs of other worktrees
-// are not in the sandbox.
+// are not in the sandbox. A Notion store file that is still in the agent
+// dir, before the move to its own dir, is read-only like any other entry.
 func TestAppendPIAgentDirBwrapMounts_ReadOnlyExceptWriteList(t *testing.T) {
 	hostDir, worktree := piAgentDirFixture(t)
 	const sandboxDir = "/run/prism/pi-agent"
@@ -73,6 +74,7 @@ func TestAppendPIAgentDirBwrapMounts_ReadOnlyExceptWriteList(t *testing.T) {
 		"settings.json":            "--ro-bind-try",
 		"trust.json":               "--ro-bind-try",
 		"models-store.json":        "--ro-bind-try",
+		"notion-mcp-oauth.json":    "--ro-bind-try",
 		"notion-mcp-client.json":   "--ro-bind-try",
 		"auth.json":                "--bind",
 		"atlassian-mcp-oauth.json": "--bind",
@@ -80,12 +82,6 @@ func TestAppendPIAgentDirBwrapMounts_ReadOnlyExceptWriteList(t *testing.T) {
 	}
 	if got := bindsAt(args, sandboxDir); !mapsEqual(got, want) {
 		t.Errorf("mounts in the sandbox agent dir:\ngot:  %v\nwant: %v", got, want)
-	}
-	// The Notion token store is not in the sandbox (piAgentBwrapHiddenFiles).
-	for i := 0; i+1 < len(args); i++ {
-		if strings.HasSuffix(args[i+1], "/notion-mcp-oauth.json") {
-			t.Errorf("the Notion token store is in the bwrap args: %s %s", args[i], args[i+1])
-		}
 	}
 
 	// preparePIAgentDir made the host paths that the binds need.
@@ -199,10 +195,6 @@ func TestGenerateProfile_PIAgentDirWriteList(t *testing.T) {
 		"(literal " + quoteSBPL(filepath.Join(agentDir, "settings.json.lock")) + ")",
 		"(literal " + quoteSBPL(filepath.Join(agentDir, "trust.json.lock")) + ")",
 		"(literal " + quoteSBPL(filepath.Join(agentDir, "models-store.json.lock")) + ")",
-		"(literal " + quoteSBPL(filepath.Join(agentDir, "notion-mcp-oauth.json")) + ")",
-		"(literal " + quoteSBPL(filepath.Join(agentDir, "notion-mcp-client.json")) + ")",
-		"(subpath " + quoteSBPL(filepath.Join(agentDir, "notion-mcp-oauth.json.lock")) + ")",
-		`(regex #"^` + regexQuotePath(agentDir) + `/\.notion-mcp\.tmp\.[^/]+$")`,
 		"(subpath " + quoteSBPL(filepath.Join(agentDir, "sessions", encodePiCWD(worktree))) + ")",
 	}
 	writeClause := "(allow file-read* file-write* file-test-existence file-read-metadata\n  " + strings.Join(wantRules, "\n  ") + ")\n"
@@ -221,23 +213,6 @@ func TestGenerateProfile_PIAgentDirWriteList(t *testing.T) {
 		}
 		if !slices.Contains(wantRules, rule) {
 			t.Errorf("unexpected write grant %s", rule)
-		}
-	}
-}
-
-// The notion temp-file regex matches the names that the extension makes,
-// and no other name in the agent dir.
-func TestPIAgentDirSBPL_NotionTmpRegex(t *testing.T) {
-	agentDir := "/Users/u/.pi/agent"
-	re := regexp.MustCompile(`^` + regexQuotePath(agentDir) + `/\.notion-mcp\.tmp\.[^/]+$`)
-	for _, name := range []string{".notion-mcp.tmp.123.lz4k2.ab12cd34"} {
-		if !re.MatchString(agentDir + "/" + name) {
-			t.Errorf("regex does not match %s", name)
-		}
-	}
-	for _, name := range []string{"SYSTEM.md", "settings.json", ".notion-mcp.tmp.", "bin/.notion-mcp.tmp.x", ".notion-mcp.tmpx"} {
-		if re.MatchString(agentDir + "/" + name) {
-			t.Errorf("regex matches %s", name)
 		}
 	}
 }

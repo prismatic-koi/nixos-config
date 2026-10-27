@@ -29,7 +29,8 @@ it is more actively maintained and is the source of the PR #193 fix.
 > `index.ts`, `keychain.ts`, `http.ts`, `refresh-lock.ts`, and
 > `refresh-backoff.ts` is UNPORTED. Do not read the newer SHA as a whole-repo
 > sync point. Before you port any of those files, diff from `88b0f793`, not
-> from `09a13b4c`.
+> from `09a13b4c`. Our `refresh-lock.ts` is a local addition with the same
+> name, not a port of the upstream file (divergence #21).
 
 > **Note on PR #193**: At the time of vendoring, griffinmartin PR #193 was open
 > but not yet merged into main. The MD5 hash-based tool name obfuscation from
@@ -55,6 +56,7 @@ it is more actively maintained and is the source of the PR #193 fix.
 | `model-config.ts` | griffinmartin | `src/model-config.ts` | *(no equivalent)* |
 | `logger.ts` | griffinmartin | `src/logger.ts` | *(no equivalent)* |
 | `ratelimit.ts` | *(none — local addition, see divergence 14)* | *(no equivalent)* | *(no equivalent)* |
+| `refresh-lock.ts` | *(none — local addition, see divergence 21)* | `src/refresh-lock.ts` (reference only, not ported) | *(no equivalent)* |
 | `anthropic-prompt.txt` | griffinmartin | `src/anthropic-prompt.txt` | *(no equivalent)* |
 
 **`oauth-headers.ts` is the exception to "skip `src/index.ts`"** (divergence
@@ -571,6 +573,68 @@ request — both are declared only, because the token endpoint rejects a
     ends with a `tool_use` block not yet closed throws `StreamFailure`
     that names the tool. Before this change, the parser kept the empty
     arguments and the turn ended with a `toolUse` stop.
+
+21. **A shared lock around both refresh paths (issue #3289)** — a LOCAL
+    ADDITION in `refresh-lock.ts`, with changes in `auth.ts` and
+    `credentials.ts`. Do NOT replace it with upstream `src/refresh-lock.ts`,
+    and do NOT delete it during a port because upstream has a file of the same
+    name.
+
+    **Why it exists.** pi takes the proper-lockfile lock `auth.json.lock` in
+    the pi agent dir around its own refresh. Since #3284 that dir is private
+    in a bwrap sandbox, so the pi lock does not stop two sessions from sending
+    the same refresh token at the same time. The lock in `refresh-lock.ts` is
+    the lock dir `anthropic-oauth-refresh.lock` in
+    `~/.local/state/prism/pi-locks/`, a dir that every pi session on the host
+    shares. prism makes the dir, binds it into bwrap, and grants it in the
+    sandbox-exec profile (`prism/internal/container/pi_shared_state.go`).
+
+    **Where it hooks.** Both refresh paths take the lock:
+
+    - `auth.ts::refreshAnthropicToken`, the `refreshToken` handler that pi
+      calls when the stored token expires within 5 minutes. It waits for the
+      lock with `acquireRefreshLock`.
+    - `credentials.ts::refreshIfNeeded`, the sync path of
+      `getCachedCredentials`. It waits with `acquireRefreshLockSync`, which
+      blocks the event loop, so it does not wait for a lock that its own
+      process holds on the async path.
+
+    In the lock, each path reads `auth.json` again. If a peer already wrote a
+    valid token, the path returns that token and sends no request. For
+    `refreshAnthropicToken` the token must also be new: its access token
+    differs from the one that pi passed, because pi can ask for a refresh of
+    a token that is still valid when it needs a longer life. Else the path
+    refreshes with the newest refresh token on disk and writes the result to
+    `auth.json` before it releases the lock. The refresh request of
+    `refreshAnthropicToken` has a 15 s timeout
+    (`REFRESH_REQUEST_TIMEOUT_MS`), and the waits between its retries stop at
+    that timeout. If the lock wait ends with the lock still held, the handler
+    returns the old token with a 30 s expiry while that token still works,
+    the same fallback as a failed request.
+
+    Every sandbox can write the lock dir, and a pi that is not sandboxed
+    takes the same lock. So `refresh-lock.ts` creates the `owner` file with
+    `O_CREAT|O_EXCL|O_NOFOLLOW`, reads it with `O_NOFOLLOW|O_NONBLOCK` as a
+    regular file only, and uses `lstat` and `lutimes` on the lock dir. A
+    symlink or a FIFO that a sandbox plants cannot change a host file or
+    stop a host pi.
+
+    **How it differs from upstream `src/refresh-lock.ts`.** Upstream makes a
+    lock FILE with `O_EXCL`, does not wait (a caller that loses polls the
+    credential store for a short time), and judges a lock stale by its age
+    alone. Ours makes a lock DIR with `mkdir`, as proper-lockfile and
+    `notion/auth.ts` do. A waiter waits for the holder, then reads
+    `auth.json` again. An async holder touches the lock dir every 5 s, so a
+    live holder that waits on the network is never judged stale. A lock dir
+    that nobody touched for 30 s is stale, and a waiter removes it only when
+    the owner id is still the one it saw. If the lock dir cannot be used, the
+    refresh runs with no lock, as before #3289.
+
+    Tests: `refresh-lock.test.ts`. Its cross-process tests start two real
+    processes that need a refresh at the same time and count the requests,
+    for each pair of paths. Revert-and-fail verified: with the lock turned off
+    in both acquire functions, the three one-request tests fail with two
+    requests.
 
 ## Port procedure for future upstream fixes
 

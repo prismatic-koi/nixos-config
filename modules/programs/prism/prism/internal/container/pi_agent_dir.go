@@ -21,23 +21,22 @@ package container
 //     cannot, pi exits at start.
 //   - sessions/<encoded-cwd>/: the session files of the session.
 //
-// The extensions write these paths:
+// The extensions write this path:
 //
 //   - atlassian-mcp-oauth.json: Atlassian MCP OAuth refresh, a write in
 //     place.
-//   - notion-mcp-oauth.json and notion-mcp-client.json: Notion MCP OAuth
-//     refresh, a temp file .notion-mcp.tmp.* that is renamed onto the
-//     file, under the lock dir notion-mcp-oauth.json.lock.
+//
+// The Notion MCP store and the shared OAuth refresh lock are not in the
+// agent dir. They are in dedicated dirs that every session shares
+// (pi_shared_state.go, #3289, #3290).
 //
 // bwrap cannot give "create only these names" in a shared dir. The agent
 // dir in a bwrap sandbox is therefore a private dir: bwrap makes it in its
 // own tmpfs root, and it goes away with the sandbox. prism binds each host
 // entry into it read-only, binds the credential files read-write, and binds
 // the sessions dir of the worktree read-write. The lock dirs are private to
-// the sandbox. The Notion token store is not bound at all: see
-// piAgentBwrapHiddenFiles. sandbox-exec grants by path, so its profile
-// allows a write to the exact names above and to nothing else in the agent
-// dir.
+// the sandbox. sandbox-exec grants by path, so its profile allows a write
+// to the exact names above and to nothing else in the agent dir.
 //
 // auth.json stays writable, and pi runs an api_key value in it that starts
 // with "!" as a shell command. CheckPIAuthFile (pi_auth_check.go) refuses a
@@ -50,7 +49,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 )
 
@@ -72,27 +70,15 @@ var piAgentLockDirs = []string{
 	"models-store.json.lock",
 }
 
-// The Notion MCP extension store (pi/extensions/notion/auth.ts). Only the
-// sandbox-exec profile can grant these: the extension renames a temp file
-// onto the token file, and a rename onto a bind mount fails.
+// The Notion MCP extension store (pi/extensions/notion/auth.ts). The store
+// is in its own dir (pi_shared_state.go). An old store in the agent dir is
+// read by the one-time move, and by the extension until the move is done.
 var piNotionStoreFiles = []string{"notion-mcp-oauth.json", "notion-mcp-client.json"}
 
 const (
 	piNotionLockDirName = "notion-mcp-oauth.json.lock"
 	piNotionTmpPrefix   = ".notion-mcp.tmp."
 )
-
-// piAgentBwrapHiddenFiles are host entries that the bwrap sandbox does not
-// get. The Notion extension refreshes its token at session start, and
-// Notion rotates the refresh token on each refresh. In bwrap the extension
-// cannot save the new token: a rename onto a bind fails. The host store
-// then keeps a token that Notion rotated away, and the next refresh with it
-// can make Notion revoke the whole grant. With no token file, the extension
-// has no tokens and sends no refresh. #3290 tracks a store that bwrap can
-// write. notion-mcp-client.json stays bound read-only, so that a login
-// reuses the client registration: a new registration orphans the grants of
-// the old one.
-var piAgentBwrapHiddenFiles = []string{"notion-mcp-oauth.json"}
 
 // preparePIAgentDir makes, on the host, the agent-dir paths that a
 // sandboxed session needs before it starts: the sessions dir of worktree,
@@ -149,9 +135,8 @@ func piAgentBwrapRWFile(name string) bool {
 //
 //  1. --dir sandboxDir: a private dir in the tmpfs root of bwrap.
 //  2. --ro-bind-try for each entry of hostDir, except sessions/, the
-//     credential files, *.lock, and piAgentBwrapHiddenFiles. A host lock dir
-//     is not bound: pi in the sandbox cannot remove a stale one from a
-//     read-only bind.
+//     credential files, and *.lock. A host lock dir is not bound: pi in the
+//     sandbox cannot remove a stale one from a read-only bind.
 //  3. --bind for each credential file that is a regular file on the host.
 //  4. --bind for <hostDir>/sessions/<encoded worktree>, the only sessions
 //     dir that the sandbox can see.
@@ -170,8 +155,7 @@ func appendPIAgentDirBwrapMounts(args []string, hostDir, sandboxDir, worktree st
 	args = append(args, "--dir", filepath.Dir(sandboxDir), "--dir", sandboxDir)
 	for _, e := range entries {
 		name := e.Name()
-		if name == piAgentSessionsDirName || piAgentBwrapRWFile(name) || strings.HasSuffix(name, ".lock") ||
-			slices.Contains(piAgentBwrapHiddenFiles, name) {
+		if name == piAgentSessionsDirName || piAgentBwrapRWFile(name) || strings.HasSuffix(name, ".lock") {
 			continue
 		}
 		args = append(args, "--ro-bind-try", filepath.Join(hostDir, name), filepath.Join(sandboxDir, name))
@@ -209,18 +193,50 @@ func piAgentDirSBPLAllow(agentDir, worktree string) string {
 	for _, name := range piAgentLockDirs {
 		rules = append(rules, "(literal "+quoteSBPL(filepath.Join(agentDir, name))+")")
 	}
-	for _, name := range piNotionStoreFiles {
-		rules = append(rules, "(literal "+quoteSBPL(filepath.Join(agentDir, name))+")")
-	}
-	rules = append(rules,
-		"(subpath "+quoteSBPL(filepath.Join(agentDir, piNotionLockDirName))+")",
-		"(regex #\"^"+regexQuotePath(filepath.Join(agentDir, piNotionTmpPrefix))+"[^/]+$\")")
 	if sessions := piAgentSessionDir(agentDir, worktree); sessions != "" {
 		rules = append(rules, "(subpath "+quoteSBPL(sessions)+")")
 	}
 	b.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
 	b.WriteString("  " + strings.Join(rules, "\n  ") + ")\n")
 	return b.String()
+}
+
+// piSharedStateSBPLAllow returns the section-6c clause: a read and a write
+// of the whole lock dir and of the whole Notion store dir
+// (pi_shared_state.go). An empty dir is left out. It returns "" when both
+// are empty.
+func piSharedStateSBPLAllow(lockDir, notionDir string) string {
+	var rules []string
+	for _, dir := range []string{lockDir, notionDir} {
+		if dir != "" {
+			rules = append(rules, "(subpath "+quoteSBPL(dir)+")")
+		}
+	}
+	if len(rules) == 0 {
+		return ""
+	}
+	return "(allow file-read* file-write* file-test-existence file-read-metadata\n  " +
+		strings.Join(rules, "\n  ") + ")\n"
+}
+
+// piSharedStateSBPLDeny returns the section-21g clause: no unlink, create,
+// mode, flags, or acl change of the two shared dir nodes. Section 6c grants
+// a subpath, which covers the node too. Without this deny, a session can
+// rename a shared dir away and put a symlink at its path, and a host pi and
+// prism agent-run then follow it. A sandbox still writes freely in the
+// dirs. It returns "" when both are empty.
+func piSharedStateSBPLDeny(lockDir, notionDir string) string {
+	var rules []string
+	for _, dir := range []string{lockDir, notionDir} {
+		if dir != "" {
+			rules = append(rules, "(literal "+quoteSBPL(dir)+")")
+		}
+	}
+	if len(rules) == 0 {
+		return ""
+	}
+	return "(deny file-write-unlink file-write-create file-write-mode file-write-flags file-write-acl\n  " +
+		strings.Join(rules, "\n  ") + ")\n"
 }
 
 // piAgentDirSBPLDeny returns the section-21f clause: no create and no

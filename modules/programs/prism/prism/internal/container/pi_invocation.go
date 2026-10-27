@@ -9,7 +9,9 @@ package container
 //     the host ~/.pi/agent (settings.json, themes/, AGENTS.md, skills/, and
 //     more), read-write binds of auth.json and atlassian-mcp-oauth.json,
 //     and a read-write bind of the sessions dir of the worktree. See
-//     pi_agent_dir.go for the write list and the reasons (#3284).
+//     pi_agent_dir.go for the write list and the reasons (#3284). Bind the
+//     shared lock dir and the Notion store dir read-write at their host
+//     paths (pi_shared_state.go, #3289, #3290).
 //     The role system-prompt is injected at runtime by the prism PI extension
 //     (pi/extensions/prism.ts, before_agent_start), which reads
 //     ~/.config/prism/agents/<role>.md.
@@ -616,6 +618,8 @@ func PIExtensionHostPath(hostDir string) string {
 //     read-write binds of the credential files, and a read-write bind of the
 //     sessions dir of cfg.Worktree (appendPIAgentDirBwrapMounts,
 //     pi_agent_dir.go). Sets PI_CODING_AGENT_DIR to the sandbox path.
+//   - Shared state dirs: cfg.PILockHostDir and cfg.PINotionHostDir,
+//     read-write, at the same path (pi_shared_state.go).
 //   - Extension directory: cfg.PIExtensionHostDir → cfg.PIExtensionSandboxDir
 //     (read-only).
 //
@@ -667,6 +671,21 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 			if fi, statErr := os.Lstat(path); statErr == nil && fi.Mode().IsRegular() {
 				args = append(args, "--bind", path, path)
 			}
+		}
+	}
+
+	// ── Shared state dirs (read-write, Dst==Src) ─────────────────────────
+	// The lock dir and the Notion store dir are the same for every session
+	// on the host (pi_shared_state.go). A dir bind, not a file bind: the
+	// Notion extension renames a temp file onto its store file, and a
+	// rename onto a bind mount fails. Dst==Src, because the sandbox HOME is
+	// the host HOME and the extensions compute both paths from HOME.
+	for _, dir := range []string{cfg.PILockHostDir, cfg.PINotionHostDir} {
+		if dir == "" {
+			continue
+		}
+		if fi, statErr := os.Lstat(dir); statErr == nil && fi.IsDir() {
+			args = append(args, "--bind", dir, dir)
 		}
 	}
 

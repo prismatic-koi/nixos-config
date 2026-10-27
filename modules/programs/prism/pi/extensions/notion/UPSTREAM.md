@@ -261,16 +261,21 @@ peer's lock is always broken before we give up on it.
 
 Both env vars exist for tests. Do not set them in production config.
 
-The lock lives in `~/.pi/agent/`. Since #3284 the agent dir is read-only in
-a sandbox, except for an exact write list
-(`prism/docs/invariants/sandbox-pi-agent-dir.md`). The sandbox-exec profile
-grants the Notion store, the temp files, and this lock dir (`sandbox_exec.go`
-§6a). bwrap cannot grant them: the agent dir in a bwrap sandbox is private, and
-a `rename(2)` onto a bind mount fails with `EBUSY`. A refresh that cannot save
-its rotated token strands the host store on a rotated-away token (see the
-rotation hazard above). So the token file is not in a bwrap sandbox at all
-(`piAgentBwrapHiddenFiles` in `pi_agent_dir.go`), and the extension sends no
-refresh there. #3290 tracks a dedicated store dir.
+The lock lives beside the token file, in the store dir
+`~/.local/state/prism/pi-notion/` (#3290). Every pi session on the host shares
+that dir: prism binds it read-write into each bwrap sandbox and grants it in the
+sandbox-exec profile (`pi_shared_state.go`, `sandbox_exec.go` §6c). So the lock
+serialises host-mode, bwrap, and sandbox-exec sessions. It is a dir bind, not a
+file bind: a `rename(2)` onto a bind mount fails with `EBUSY`, and a refresh
+that cannot save its rotated token strands the store on a rotated-away token
+(see the rotation hazard above).
+
+Every sandbox can write the store dir, and a pi that is not sandboxed uses
+it too. So `writeLockOwner` creates the `owner` file with
+`O_CREAT|O_EXCL|O_NOFOLLOW`, and `readRegularFileSync` reads the owner file
+and the store files with `O_NONBLOCK`, as a regular file only. A sandbox that
+swaps in a dir with an `owner` symlink after our `mkdir` cannot make a host pi
+write through it, and a FIFO cannot stop a host pi.
 
 ## Token storage
 
@@ -283,17 +288,38 @@ refresh there. #3290 tracks a dedicated store dir.
 Both are mode 0600 in a 0700 directory. Path precedence (`getTokenStorePath`):
 
 1. `$PI_NOTION_TOKENS` — explicit override (tests, manual escape hatch)
-2. `$PI_CODING_AGENT_DIR/notion-mcp-oauth.json`
-3. `~/.pi/agent/notion-mcp-oauth.json`
+2. `~/.local/state/prism/pi-notion/notion-mcp-oauth.json` (`getStoreDir`)
 
-The middle entry is load-bearing. On the host and in sandbox-exec,
-`$PI_CODING_AGENT_DIR` is the host `~/.pi/agent`, so a read observes dentry
-updates from peer writes (i.e. our `rename(2)`). A **file**-bind would pin the
-pre-swap inode and we would never see a peer's rotation. In bwrap, since #3284,
-the token file is not in the sandbox (#3290).
+The path comes from `$HOME`, not from `$PI_CODING_AGENT_DIR` or
+`$XDG_STATE_HOME`: every isolator runs pi with the host `HOME`, but those two
+variables differ between the isolators. A read observes dentry updates from
+peer writes (our `rename(2)`), because the store dir is a dir bind in bwrap and
+the host dir itself elsewhere. A **file**-bind would pin the pre-swap inode and
+we would never see a peer's rotation.
 
-`home.persistence."/persist".directories = [ ".pi" ]` in `pi.nix` already covers
-both files on impermanent NixOS hosts.
+The `.local/state/prism` entry of `home.persistence."/persist"` in `tmux.nix`
+covers the store dir on impermanent NixOS hosts.
+
+### The move out of the pi agent dir (#3290)
+
+Before #3290 the store was in the pi agent dir (`$PI_CODING_AGENT_DIR` or
+`~/.pi/agent`). It moves once. prism moves it on the host before each bwrap or
+sandbox-exec session starts (`migratePINotionStore` in
+`prism/internal/container/pi_shared_state.go`). `migrateLegacyStore` in
+`auth.ts` does the same move at `session_start` of an in-scope session that is
+not sandboxed: a host-mode session, or a pi that a person starts in a terminal.
+
+Both moves hold the old lock dir (`notion-mcp-oauth.json.lock` in the agent
+dir) and the new lock dir. A pi that still runs the extension code from before
+#3290 takes the old lock dir around a refresh, so a move cannot copy a token
+that such a pi is about to rotate. When the store dir already has a file, the
+move removes the old file: it is a copy, or a rotated-away token.
+
+Until the move is done, `loadTokens` and `loadClientRegistration` read the old
+path. `getValidAccessToken` does not refresh tokens from the old path
+(`tokensFromLegacyStore`, `LEGACY_STORE_MESSAGE`): the rotated pair would go to
+the new store and leave a rotated-away token at the old path, where a pi with
+the old code can replay it.
 
 ## Repo scoping
 
@@ -380,17 +406,6 @@ grant notifies, a transient fault is logged, and neither stops pi from starting.
 `extension.test.ts` has a dedicated "keeps the refresh-token clock alive" block;
 removing the call from `onSessionStart` fails five of its tests. That block
 exists because this regression is invisible for thirty days.
-
-**Exception: bwrap sessions (#3284).** A bwrap session does not get the token
-file (`piAgentBwrapHiddenFiles` in `prism/internal/container/pi_agent_dir.go`).
-In bwrap, a refresh cannot save the rotated token, because a `rename(2)` onto a
-bind mount fails with `EBUSY`. A stranded, rotated-away token can then make
-Notion revoke the grant (see "Refresh-token rotation hazard"). So in bwrap,
-`keepTokensAlive` finds no tokens, sends no refresh, and shows "no auth tokens.
-Use /login-notion to authenticate." Ignore that message in a bwrap session: a
-login there saves the tokens only in the private agent dir of the sandbox. Only
-a host-mode or sandbox-exec session in the vault keeps the 30-day clock alive.
-See known limit 3 in `prism/docs/invariants/sandbox-pi-agent-dir.md` and #3290.
 
 See `../grafana/UPSTREAM.md` for the mechanism note; the shared state machine
 lives in `../mcp-activation/activation.ts`.

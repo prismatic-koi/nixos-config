@@ -884,9 +884,8 @@ func generateProfile(m *Manager) string {
 	//   - auth.json and atlassian-mcp-oauth.json (in-place writes);
 	//   - the four proper-lockfile lock dirs that pi makes in the root (the
 	//     node only: proper-lockfile calls mkdir, utimes, and rmdir on it);
-	//   - the Notion store: the two files, the .notion-mcp.tmp.* temp files
-	//     that the extension renames onto them, and its lock dir;
 	//   - sessions/<encoded-cwd>/ of the worktree, not of another worktree.
+	// The Notion store is not in this dir: see section 6c.
 	// The lock dirs stay shared with host sessions, because SBPL can grant a
 	// name. Section 21f takes back the create and the unlink of the two
 	// in-place files.
@@ -899,6 +898,21 @@ func generateProfile(m *Manager) string {
 	if m.cfg.Harness == "pi" && home != "" {
 		sb.WriteString(piAgentDirSBPLAllow(filepath.Join(home, ".pi", "agent"), m.cfg.Worktree))
 		sb.WriteString("\n")
+	}
+
+	// ── 6c. pi shared state dirs: lock dir and Notion store (pi sessions only) ─
+	// Every pi session on the host shares these two dirs: the lock dir of the
+	// OAuth token refresh, and the Notion MCP store (pi_shared_state.go,
+	// #3289, #3290). A read and a write of each whole dir: the extensions
+	// make and remove lock dirs in them, and the Notion extension renames
+	// temp files onto its store files. No pi session loads code or prompts
+	// from them. prism agent-run makes both dirs on the host and sets the
+	// two Config fields. An empty field gives no rule.
+	if m.cfg.Harness == "pi" {
+		if clause := piSharedStateSBPLAllow(m.cfg.PILockHostDir, m.cfg.PINotionHostDir); clause != "" {
+			sb.WriteString(clause)
+			sb.WriteString("\n")
+		}
 	}
 
 	// ── 6b. BareRoot ancestor probe allows ───────────────────────────────
@@ -1322,6 +1336,20 @@ func generateProfile(m *Manager) string {
 	if m.cfg.Harness == "pi" && home != "" {
 		sb.WriteString("\n")
 		sb.WriteString(piAgentDirSBPLDeny(filepath.Join(home, ".pi", "agent")))
+	}
+
+	// ── 21g. FINAL DENY — the shared state dir nodes cannot be replaced ─
+	// Section 6c grants a subpath of the lock dir and of the Notion store
+	// dir, and a subpath covers the dir node too. A session must not rename
+	// a dir away and put a symlink at its path: a host pi and prism
+	// agent-run then write lock owner files and Notion tokens where the
+	// session chose. The deny must follow every allow.
+	// TestGenerateProfile_PISharedStateDenyFollowsEveryAllow pins the order.
+	if m.cfg.Harness == "pi" {
+		if clause := piSharedStateSBPLDeny(m.cfg.PILockHostDir, m.cfg.PINotionHostDir); clause != "" {
+			sb.WriteString("\n")
+			sb.WriteString(clause)
+		}
 	}
 
 	// ── 22. FINAL DENIES — Go module cache is not executable ─

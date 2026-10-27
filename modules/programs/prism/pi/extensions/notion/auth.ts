@@ -35,21 +35,26 @@
 //   3. `writeJsonAtomic()` — temp file created 0600 (before any content is
 //      written), fsynced, then rename(2)d into place. A concurrent reader
 //      never observes a partial or truncated token file, and the dentry
-//      swap is why getTokenStorePath reads through the agent dir (see below).
+//      swap is why the store is a dir that every session shares, not a
+//      file bind (see getStoreDir).
 //   4. `NotionAuthTerminalError` — `invalid_grant` clears the store and is
 //      surfaced as terminal. retry.ts refuses to retry it.
 //
-// Token storage: $PI_CODING_AGENT_DIR/notion-mcp-oauth.json, falling back to
-// ~/.pi/agent/notion-mcp-oauth.json. Mode 0600.
+// Token storage: <home>/.local/state/prism/pi-notion/notion-mcp-oauth.json,
+// mode 0600, a dir that every pi session on the host shares (#3290). An old
+// store in the pi agent dir moves there once: see migrateLegacyStore.
 //
 // See UPSTREAM.md for endpoint provenance and the auth-method rationale.
 
 import { createServer } from "node:http"
 import {
   closeSync,
+  constants,
   existsSync,
   fchmodSync,
+  fstatSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -58,6 +63,7 @@ import {
   statSync,
   unlinkSync,
   writeFileSync,
+  type Stats,
 } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
@@ -123,6 +129,11 @@ export const LOST_LOCK_MESSAGE =
   "Notion MCP: the token lock was broken while a refresh was in flight, so the " +
   "refresh token on disk has been rotated away and cannot be reused safely. " +
   "Stored tokens have been cleared — run /login-notion to re-authenticate."
+
+export const LEGACY_STORE_MESSAGE =
+  "Notion MCP: the token store is still in the pi agent dir, so this session " +
+  "does not refresh the token. The next pi session that starts moves the store " +
+  "to its own dir. Try again after that."
 
 export const INVALID_GRANT_MESSAGE =
   "Notion MCP: the stored refresh token was rejected (invalid_grant). The " +
@@ -190,26 +201,49 @@ function debug(msg: string, ...args: unknown[]): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the token store path in precedence order:
+ * The store dir: <home>/.local/state/prism/pi-notion/ (#3290).
  *
- *   1. PI_NOTION_TOKENS            explicit override (tests, manual escape hatch)
- *   2. PI_CODING_AGENT_DIR/notion-mcp-oauth.json
- *                                  set by the prism bwrap + sandbox-exec
- *                                  dispatchers, and on the host system-wide.
- *   3. ~/.pi/agent/notion-mcp-oauth.json   legacy fallback.
- *
- * The middle entry is load-bearing. On the host and in sandbox-exec,
- * $PI_CODING_AGENT_DIR is the host ~/.pi/agent, so a read observes dentry
- * updates from peer writes (i.e. our rename(2)); a FILE-bind would pin the
- * pre-swap inode and we would never see a peer's rotation. In bwrap, since
- * #3284, this file is not in the sandbox, so no refresh runs there (#3290).
+ * Every pi session on the host must use the same store, because Notion
+ * rotates the refresh token on each refresh. prism makes this dir, binds it
+ * read-write into bwrap, and grants it in the sandbox-exec profile
+ * (internal/container/pi_shared_state.go). The path comes from HOME: every
+ * isolator runs pi with the host HOME. It is a dir bind, not a file bind,
+ * so a read observes the rename(2) of a peer, and our own rename works.
+ */
+export function getStoreDir(): string {
+  return join(homedir(), ".local", "state", "prism", "pi-notion")
+}
+
+/**
+ * Resolve the token store path: PI_NOTION_TOKENS (tests, manual escape
+ * hatch), else notion-mcp-oauth.json in getStoreDir().
  */
 export function getTokenStorePath(): string {
   if (process.env.PI_NOTION_TOKENS) return process.env.PI_NOTION_TOKENS
-  if (process.env.PI_CODING_AGENT_DIR) {
-    return join(process.env.PI_CODING_AGENT_DIR, TOKEN_STORE_FILENAME)
-  }
-  return join(homedir(), ".pi", "agent", TOKEN_STORE_FILENAME)
+  return join(getStoreDir(), TOKEN_STORE_FILENAME)
+}
+
+/**
+ * The old store dir, which the move empties: the pi agent dir,
+ * $PI_CODING_AGENT_DIR or ~/.pi/agent. The extension reads the store there
+ * until the store moves (see migrateLegacyStore), and never writes it there.
+ */
+export function getLegacyStoreDir(): string {
+  return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent")
+}
+
+// The old path of each store file. null when an env var sets the store
+// path: such a store has no old path.
+function legacyTokenPath(): string | null {
+  return process.env.PI_NOTION_TOKENS
+    ? null
+    : join(getLegacyStoreDir(), TOKEN_STORE_FILENAME)
+}
+
+function legacyClientPath(): string | null {
+  return process.env.PI_NOTION_TOKENS || process.env.PI_NOTION_CLIENT
+    ? null
+    : join(getLegacyStoreDir(), CLIENT_STORE_FILENAME)
 }
 
 /**
@@ -226,6 +260,26 @@ export function getClientStorePath(): string {
 // ---------------------------------------------------------------------------
 // Atomic, 0600 JSON persistence
 // ---------------------------------------------------------------------------
+
+/**
+ * Read a regular file as UTF-8. O_NONBLOCK, and a FIFO or any other
+ * non-regular file is refused: every sandbox can write the store dir, and a
+ * FIFO there must not stop a pi that reads it. noFollow also refuses a
+ * symlink at the last path component.
+ */
+export function readRegularFileSync(path: string, noFollow = false): string {
+  const flags =
+    constants.O_RDONLY | constants.O_NONBLOCK | (noFollow ? constants.O_NOFOLLOW : 0)
+  const fd = openSync(path, flags)
+  try {
+    if (!fstatSync(fd).isFile()) {
+      throw Object.assign(new Error(`${path} is not a regular file`), { code: "ENOTREG" })
+    }
+    return readFileSync(fd, "utf8")
+  } finally {
+    closeSync(fd)
+  }
+}
 
 function ensureStoreDir(path: string): string {
   const dir = dirname(path)
@@ -297,9 +351,8 @@ export function writeJsonAtomic(path: string, value: unknown): void {
 //
 // mkdir(2) is atomic on every POSIX filesystem we run on and needs no
 // dependency, which is why `proper-lockfile` uses it too. The lock directory
-// lives beside the token file in ~/.pi/agent. The sandbox-exec profile grants
-// this lock dir by name. In bwrap, since #3284, the token file is not in
-// the sandbox, so a bwrap session takes no lock and sends no refresh (#3290).
+// lives beside the token file, in the store dir that every session shares,
+// so it serialises sessions of every isolation mode (#3290).
 // ---------------------------------------------------------------------------
 
 interface LockOwner {
@@ -334,7 +387,7 @@ export function getLockDirPath(): string {
 
 function readLockOwner(dir: string): LockOwner | null {
   try {
-    const parsed = JSON.parse(readFileSync(join(dir, "owner"), "utf8")) as LockOwner
+    const parsed = JSON.parse(readRegularFileSync(join(dir, "owner"), true)) as LockOwner
     if (typeof parsed?.id !== "string" || typeof parsed?.ts !== "number") return null
     return parsed
   } catch {
@@ -351,7 +404,7 @@ function inspectLock(dir: string): { ownerId: string | null; ageMs: number } | n
   const owner = readLockOwner(dir)
   if (owner) return { ownerId: owner.id, ageMs: Date.now() - owner.ts }
   try {
-    return { ownerId: null, ageMs: Date.now() - statSync(dir).mtimeMs }
+    return { ownerId: null, ageMs: Date.now() - lstatSync(dir).mtimeMs }
   } catch {
     return null
   }
@@ -375,6 +428,29 @@ function breakStaleLock(dir: string, observedOwnerId: string | null): void {
   }
 }
 
+/**
+ * Create the owner file of the lock dir. O_EXCL and O_NOFOLLOW: a sandbox
+ * can write the store dir, and can swap in a dir with an "owner" symlink
+ * after our mkdir. The open then fails with EEXIST, and no existing file
+ * changes. Exported for the tests.
+ */
+export function writeLockOwner(dir: string, id: string): void {
+  const fd = openSync(
+    join(dir, "owner"),
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  )
+  try {
+    writeFileSync(
+      fd,
+      JSON.stringify({ id, pid: process.pid, ts: Date.now() } satisfies LockOwner),
+      { encoding: "utf-8" },
+    )
+  } finally {
+    closeSync(fd)
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -390,22 +466,24 @@ function randomLockId(): string {
  * Callers MUST pass the handle to `releaseTokenLock` in a `finally`, or use
  * `withTokenLock` which does it for them.
  */
-export async function acquireTokenLock(): Promise<LockHandle> {
-  const dir = getLockDirPath()
+export async function acquireTokenLock(
+  dir: string = getLockDirPath(),
+  timeoutMs: number = lockAcquireTimeoutMs(),
+): Promise<LockHandle> {
   const id = randomLockId()
-  const deadline = Date.now() + lockAcquireTimeoutMs()
+  const deadline = Date.now() + timeoutMs
 
   for (;;) {
     try {
       ensureStoreDir(dir)
       mkdirSync(dir) // atomic; throws EEXIST when a peer holds the lock
       try {
-        writeFileSync(
-          join(dir, "owner"),
-          JSON.stringify({ id, pid: process.pid, ts: Date.now() } satisfies LockOwner),
-          { encoding: "utf-8", mode: 0o600 },
-        )
+        writeLockOwner(dir, id)
       } catch (ownerErr) {
+        // EEXIST: an owner file exists right after our mkdir, so another
+        // process changed the dir. It is not ours to remove. The EEXIST
+        // branch below treats it as a held lock.
+        if ((ownerErr as NodeJS.ErrnoException)?.code === "EEXIST") throw ownerErr
         // We hold a lock nobody can identify. Drop it now rather than leaving
         // peers to wait out the stale timeout.
         try {
@@ -464,6 +542,97 @@ export function ownsLock(handle: LockHandle): boolean {
   return readLockOwner(handle.dir)?.id === handle.id
 }
 
+// ---------------------------------------------------------------------------
+// One-time move of the store out of the pi agent dir (#3290)
+// ---------------------------------------------------------------------------
+
+const MIGRATE_LOCK_TIMEOUT_MS = 2_000
+
+function lstatOrNull(path: string): Stats | null {
+  try {
+    return lstatSync(path)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Move the store files from the pi agent dir to getStoreDir(), once.
+ *
+ * prism does the same move on the host before each bwrap or sandbox-exec
+ * session starts (migratePINotionStore in
+ * internal/container/pi_shared_state.go). This function does it for a pi
+ * that prism does not sandbox: a host-mode session, or a pi that a person
+ * starts in a terminal. Both use the same rules and the same two locks:
+ *
+ *   - The old lock dir, notion-mcp-oauth.json.lock in the agent dir, is the
+ *     lock that a pi with the old extension code (store in the agent dir)
+ *     takes around a refresh. Holding it means that the move cannot copy a
+ *     token that such a pi is about to rotate.
+ *   - When the store dir already has a file, the old file is removed: it is
+ *     a copy, or a token that Notion rotated away.
+ *   - Else the old file is renamed to a temp name first, then written to
+ *     the store dir, then removed. In a sandbox the move stops before it
+ *     writes anything: sandbox-exec denies the old lock dir, and in bwrap
+ *     the rename fails because the old file is a read-only bind mount point
+ *     (EBUSY). That matters in bwrap, where the old lock dir is
+ *     private and does not serialise the move with a pi on the host.
+ *
+ * Throws on a failure; the caller logs it. The extension then reads the old
+ * path, and does not refresh from it (tokensFromLegacyStore).
+ */
+export async function migrateLegacyStore(): Promise<void> {
+  if (process.env.PI_NOTION_TOKENS || process.env.PI_NOTION_CLIENT) return
+  const legacyDir = getLegacyStoreDir()
+  const names = [TOKEN_STORE_FILENAME, CLIENT_STORE_FILENAME]
+  if (!names.some((name) => lstatOrNull(join(legacyDir, name)))) return
+
+  // A short wait: this runs at session_start. If a peer holds a lock, the
+  // next session start tries again.
+  const oldLock = await acquireTokenLock(
+    join(legacyDir, `${TOKEN_STORE_FILENAME}.lock`),
+    MIGRATE_LOCK_TIMEOUT_MS,
+  )
+  try {
+    const newLock = await acquireTokenLock(getLockDirPath(), MIGRATE_LOCK_TIMEOUT_MS)
+    try {
+      for (const name of names) {
+        moveLegacyFile(join(legacyDir, name), join(getStoreDir(), name))
+      }
+    } finally {
+      releaseTokenLock(newLock)
+    }
+  } finally {
+    releaseTokenLock(oldLock)
+  }
+  invalidateCache()
+  debug("moved the token store out of the pi agent dir")
+}
+
+function moveLegacyFile(from: string, to: string): void {
+  const st = lstatOrNull(from)
+  if (!st) return
+  if (!st.isFile()) throw new Error(`${from} is not a regular file`)
+  if (lstatOrNull(to)) {
+    unlinkSync(from)
+    return
+  }
+  const data: unknown = JSON.parse(readRegularFileSync(from, true))
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new Error(`${from} is not one JSON object`)
+  }
+  const unique = `${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 10)}`
+  const moving = join(dirname(from), `.notion-mcp.moving.${unique}`)
+  renameSync(from, moving)
+  try {
+    writeJsonAtomic(to, data)
+  } catch (err) {
+    renameSync(moving, from)
+    throw err
+  }
+  unlinkSync(moving)
+}
+
 /** Run `fn` while holding the cross-process token lock. */
 export async function withTokenLock<T>(fn: () => Promise<T>): Promise<T> {
   const handle = await acquireTokenLock()
@@ -481,20 +650,41 @@ export async function withTokenLock<T>(fn: () => Promise<T>): Promise<T> {
 interface CacheEntry {
   tokens: NotionTokens
   mtimeMs: number
+  /** The file that the tokens came from. */
+  path: string
 }
 
 let _cache: CacheEntry | null = null
 
-function readTokensFromDisk(): CacheEntry | null {
-  const path = getTokenStorePath()
+function readTokensAt(path: string): CacheEntry | null {
   try {
     const stats = statSync(path)
-    const data = JSON.parse(readFileSync(path, "utf8")) as NotionTokens
+    const data = JSON.parse(readRegularFileSync(path)) as NotionTokens
     if (!data.accessToken || !data.refreshToken || !data.clientId) return null
-    return { tokens: data, mtimeMs: stats.mtimeMs }
+    return { tokens: data, mtimeMs: stats.mtimeMs, path }
   } catch {
     return null
   }
+}
+
+// Read the store. When the store file does not exist, read its old path in
+// the pi agent dir, until the store moves (#3290).
+function readTokensFromDisk(): CacheEntry | null {
+  const path = getTokenStorePath()
+  const entry = readTokensAt(path)
+  if (entry || existsSync(path)) return entry
+  const legacy = legacyTokenPath()
+  return legacy ? readTokensAt(legacy) : null
+}
+
+/**
+ * True when the tokens that loadTokens returned last came from the old
+ * path in the pi agent dir. Such tokens are read-only: getValidAccessToken
+ * does not refresh them, because the rotated token would go to the new
+ * store and leave a rotated-away token at the old path.
+ */
+export function tokensFromLegacyStore(): boolean {
+  return _cache !== null && _cache.path !== getTokenStorePath()
 }
 
 /**
@@ -507,6 +697,11 @@ function readTokensFromDisk(): CacheEntry | null {
  * `getValidAccessToken`).
  */
 export function loadTokens(): NotionTokens | null {
+  if (_cache && tokensFromLegacyStore()) {
+    // Until the move, read again each time: the move can happen at any time.
+    _cache = readTokensFromDisk()
+    return _cache?.tokens ?? null
+  }
   if (_cache) {
     const path = getTokenStorePath()
     let mtimeMs = 0
@@ -551,7 +746,7 @@ export function saveTokens(tokens: NotionTokens): void {
       // Can't stat immediately after writing — leave at 0 so the next
       // loadTokens() re-reads.
     }
-    _cache = { tokens, mtimeMs }
+    _cache = { tokens, mtimeMs, path }
   } catch (err) {
     // Never log the tokens themselves, only the failure.
     console.error(
@@ -595,15 +790,20 @@ export function needsRefresh(tokens: NotionTokens): boolean {
 // ---------------------------------------------------------------------------
 
 export function loadClientRegistration(): NotionClientRegistration | null {
-  try {
-    const data = JSON.parse(
-      readFileSync(getClientStorePath(), "utf8"),
-    ) as NotionClientRegistration
-    if (!data.clientId || !data.redirectUri) return null
-    return data
-  } catch {
-    return null
+  // When the store file does not exist, read its old path until the store
+  // moves (#3290). A login that cannot see the registration registers a new
+  // client, and a new registration orphans the grants of the old one.
+  for (const path of [getClientStorePath(), legacyClientPath()]) {
+    if (!path) continue
+    try {
+      const data = JSON.parse(readRegularFileSync(path)) as NotionClientRegistration
+      if (!data.clientId || !data.redirectUri) return null
+      return data
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") return null
+    }
   }
+  return null
 }
 
 export function saveClientRegistration(reg: NotionClientRegistration): void {
@@ -1145,6 +1345,11 @@ export async function getValidAccessToken(): Promise<{
     if (!needsRefresh(current)) {
       debug("a peer refreshed while we waited for the lock; reusing its tokens")
       return { token: current.accessToken, tokens: current }
+    }
+    if (tokensFromLegacyStore()) {
+      // A transient error, not a terminal one: the grant is fine, and the
+      // refresh works once the store has moved.
+      throw new Error(LEGACY_STORE_MESSAGE)
     }
 
     let refreshed: NotionTokens

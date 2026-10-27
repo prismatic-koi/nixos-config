@@ -7,6 +7,8 @@
 //   - Credential path is ~/.pi/agent/auth.json (not opencode's auth.json)
 //   - refreshViaOAuth is the primary refresh path (no CLI fallback)
 //   - No multi-account/account-switching support (pi is single-account)
+//   - refreshIfNeeded refreshes under the shared lock of refresh-lock.ts
+//     (UPSTREAM.md divergence #21)
 
 import { execFileSync } from "node:child_process"
 import {
@@ -20,6 +22,7 @@ import {
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { log } from "./logger.ts"
+import { acquireRefreshLockSync } from "./refresh-lock.ts"
 
 export interface ClaudeCredentials {
   accessToken: string
@@ -28,6 +31,9 @@ export interface ClaudeCredentials {
 }
 
 const CREDENTIAL_CACHE_TTL_MS = 30_000
+
+// refreshIfNeeded refreshes a token that expires within this margin.
+const REFRESH_MARGIN_MS = 60_000
 
 let cachedCreds: { creds: ClaudeCredentials; cachedAt: number } | null = null
 
@@ -267,23 +273,61 @@ export function refreshViaOAuth(
   }
 }
 
+function isFresh(creds: ClaudeCredentials): boolean {
+  return creds.expiresAt > Date.now() + REFRESH_MARGIN_MS
+}
+
+/**
+ * Return creds, or a fresh token when creds expire within the margin.
+ *
+ * The refresh runs under the shared lock of refresh-lock.ts (#3289), so
+ * that two pi sessions do not send the same refresh token at the same
+ * time. Under the lock it reads auth.json again: if another session has
+ * already written a fresh token, it returns that token and sends no
+ * request. It writes a new token before it releases the lock, so the next
+ * holder reads it.
+ */
 export function refreshIfNeeded(
   creds: ClaudeCredentials,
+  refresh: (refreshToken: string) => ClaudeCredentials | null = refreshViaOAuth,
 ): ClaudeCredentials | null {
-  if (creds.expiresAt > Date.now() + 60_000) return creds
+  if (isFresh(creds)) return creds
 
   log("refresh_needed", {
     expiresAt: creds.expiresAt,
     expiresIn: creds.expiresAt - Date.now(),
   })
 
-  if (creds.refreshToken) {
-    const fresh = refreshViaOAuth(creds.refreshToken)
-    if (fresh && fresh.expiresAt > Date.now() + 60_000) {
-      writeCredentials(fresh)
-      cachedCreds = null // invalidate cache so next call sees fresh creds
-      return fresh
+  const lock = acquireRefreshLockSync()
+  if (!lock) {
+    // Another session still refreshes, or this process refreshes on the
+    // async path. Do not refresh: use a token that it already wrote.
+    const stored = readCredentials()
+    if (stored && isFresh(stored)) {
+      cachedCreds = null
+      return stored
     }
+    log("refresh_deferred", { expiresAt: creds.expiresAt })
+    return null
+  }
+
+  try {
+    const current = readCredentials() ?? creds
+    if (isFresh(current)) {
+      log("refresh_adopted", { expiresAt: current.expiresAt })
+      cachedCreds = null
+      return current
+    }
+    if (current.refreshToken) {
+      const fresh = refresh(current.refreshToken)
+      if (fresh && isFresh(fresh)) {
+        writeCredentials(fresh)
+        cachedCreds = null // invalidate cache so next call sees fresh creds
+        return fresh
+      }
+    }
+  } finally {
+    lock.release()
   }
 
   log("refresh_exhausted", { expiresAt: creds.expiresAt })

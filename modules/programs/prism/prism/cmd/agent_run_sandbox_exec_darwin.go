@@ -394,8 +394,9 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// the host filesystem), so PI_CODING_AGENT_DIR ends up pointing at
 	// ~/.pi/agent directly. Section 6a of the SBPL profile allows a read of
 	// that dir and a write of an exact list of paths in it: the credential
-	// files, the pi lock dirs, the Notion store, and the sessions dir of the
-	// worktree (internal/container/pi_agent_dir.go, #3284).
+	// files, the pi lock dirs, and the sessions dir of the worktree
+	// (internal/container/pi_agent_dir.go, #3284). Section 6c grants the
+	// shared lock dir and the Notion store dir (pi_shared_state.go).
 	if ctrCfg.Harness == "pi" && ctrCfg.PIAgentConfigSandboxDir != "" {
 		env = append(env, "PI_CODING_AGENT_DIR="+ctrCfg.PIAgentConfigSandboxDir)
 	}
