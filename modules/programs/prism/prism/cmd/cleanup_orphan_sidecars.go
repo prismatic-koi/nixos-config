@@ -13,7 +13,15 @@ package cmd
 // those stops do not reach: an investigator child, which
 // CleanupReviewSessionsForParent does not cover, or a review child whose
 // PID file is gone. It finds the process by its argv, so it works
-// regardless of DB state and of when in the cleanup sequence it runs.
+// regardless of DB state.
+//
+// The scan must run after CleanupReviewSessionsForParent, and it must skip
+// each child that the stop returns as kept. The scan sends SIGTERM only, and
+// it removes the PID file. If it runs before the stop, EnsureSidecarStopped
+// finds no PID file and returns "stopped" with no proof of exit. The cleanup
+// then ends the row and releases the port of a child whose sidecar can still
+// run (#3206). Without the DB, no child stop runs, so the scan covers every
+// child.
 //
 // Linux-only: it walks /proc. On other platforms it is a no-op and returns
 // silently. Do not read that as "Darwin has no sidecar stop": the stops
@@ -23,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,11 +40,23 @@ import (
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 )
 
+// Seams of the scan. Tests replace them, so that a test scans a fake /proc
+// tree and signals no process.
+var (
+	orphanScanProcRoot = "/proc"
+	orphanScanSignal   = syscall.Kill
+)
+
 // killOrphanReviewSidecars enumerates running prism sidecar processes whose
 // `--session` argv argument has the prefix "<parentSession>~" and an infix
 // of "~review-" or "~investigate-" after that prefix, then sends SIGTERM
 // to each. The corresponding sidecar PID file is also removed on a best-
 // effort basis so a subsequent KillSidecar call does not stumble over it.
+//
+// keep names the children whose sidecar did not stop (the return value of
+// review.CleanupReviewSessionsForParent). The scan does not signal them and
+// does not remove their PID files, so that the next stop of each one still
+// finds its PID.
 //
 // The function is tolerant of races: processes that exit between
 // enumeration and signal are silently ignored (ESRCH). It is also
@@ -48,7 +69,7 @@ import (
 // The parentSession argument must not be empty — callers should guard
 // against that (it would otherwise match every sidecar process whose
 // session name starts with "~", which is meaningless).
-func killOrphanReviewSidecars(parentSession string) {
+func killOrphanReviewSidecars(parentSession string, keep []string) {
 	if parentSession == "" {
 		return
 	}
@@ -56,7 +77,7 @@ func killOrphanReviewSidecars(parentSession string) {
 		return
 	}
 
-	pids, err := findOrphanReviewSidecarPIDs(parentSession, "/proc")
+	pids, err := findOrphanReviewSidecarPIDs(parentSession, orphanScanProcRoot)
 	if err != nil {
 		// /proc is missing or unreadable — non-fatal; we just can't
 		// do the traversal. Log to stderr so the caller has a
@@ -66,10 +87,13 @@ func killOrphanReviewSidecars(parentSession string) {
 	}
 
 	for _, match := range pids {
+		if slices.Contains(keep, match.session) {
+			continue
+		}
 		// SIGTERM first — graceful shutdown gives the sidecar a chance to
 		// clean up its socket and PID file. ESRCH is benign (process
 		// already exited between enumeration and signal).
-		if err := syscall.Kill(match.pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+		if err := orphanScanSignal(match.pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
 			proglog.Warnf("[prism] warning: killOrphanReviewSidecars: kill pid %d (session %q): %v\n",
 				match.pid, match.session, err)
 			continue
