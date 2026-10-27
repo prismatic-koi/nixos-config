@@ -625,19 +625,16 @@ INSERT OR REPLACE INTO spawn_outcome (
 
 // WriteSpawnOutcomeCascade writes a spawn_outcome row for sessionName and for
 // every review-agent child session whose session_name matches the pattern
-// "<sessionName>~review-%". WriteSpawnOutcome is called from four sites in
-// cmd/cleanup.go. Each call writes a row only for the parent named on the
-// command line. This cascade adds the review-agent children, so they also get
-// a spawn_outcome row.
+// "<sessionName>~review-%". The four cleanup paths in cmd/cleanup.go call it,
+// and it is the only production caller of WriteSpawnOutcome.
 //
 // This mirrors the cascade SetEnded already performs for ended_at: it
 // resolves every distinct instance_id among rows where
 // session_name = sessionName OR session_name LIKE '<sessionName>~review-%',
-// then calls WriteSpawnOutcome for each one found. Both the parent lookup and
-// the children lookup go through the same query, so a parent with no rows in
-// agent_status (e.g. never spawned via prism, or already purged) simply
-// contributes no instance_id and is silently skipped — WriteSpawnOutcome's
-// own pre-migration tolerance is preserved.
+// then calls WriteSpawnOutcome for each one found. A session that has no
+// instance_id in agent_status (for example, never spawned via prism, or
+// already purged) gives no instance_id to this query. WriteSpawnOutcome keeps
+// its own pre-migration tolerance.
 //
 // The session name is escaped for SQL LIKE wildcards before being used as a
 // pattern prefix, matching the convention used by SetEnded and
