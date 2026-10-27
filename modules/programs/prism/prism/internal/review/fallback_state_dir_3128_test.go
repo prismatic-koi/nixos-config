@@ -33,7 +33,7 @@ func TestMonitorPaths_UnderPrismStateDir_3128(t *testing.T) {
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
 	want := filepath.Join(state, "prism") + string(filepath.Separator)
-	for _, p := range []string{review.MonitorOptsPath("g-1"), review.MonitorLogPath("42", 3)} {
+	for _, p := range []string{review.MonitorOptsPath("g-1"), review.MonitorLogPath("g-1", "42", 3)} {
 		if !strings.HasPrefix(p, want) {
 			t.Errorf("path %q is not under %q", p, want)
 		}
@@ -60,7 +60,7 @@ func TestStartMonitorProcess_WritesUnderStateDir_3128(t *testing.T) {
 	if err != nil || got.GroupID != "g-start" {
 		t.Fatalf("opts file under state dir: %+v, %v", got, err)
 	}
-	if _, err := os.Stat(review.MonitorLogPath("77", 2)); err != nil {
+	if _, err := os.Stat(review.MonitorLogPath("g-start", "77", 2)); err != nil {
 		t.Fatalf("monitor log under state dir: %v", err)
 	}
 }

@@ -12,6 +12,7 @@ package cmd
 //   prism reviews             alias for `prism reviews list`
 //   prism reviews list        all review groups, newest first
 //   prism reviews list --json JSON array suitable for scripting
+//   prism reviews log <round> the review monitor log of one round (reviews_log.go)
 //
 // The list shows: PR number (parsed from agent session names), parent
 // session, agent sessions, group state (in-progress / completed / empty),
