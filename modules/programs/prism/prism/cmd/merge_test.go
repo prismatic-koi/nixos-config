@@ -395,7 +395,7 @@ func TestRunMerge_ReentryAlreadyMergedSkipsGh(t *testing.T) {
 	if _, err := d.EnqueueMerge(2222, "nixos-config", coordSession, "inst-reentry-merged", &title); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(2222, "nixos-config", "merged", ""); err != nil {
+	if _, err := d.TerminateMerge(2222, "nixos-config", "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
 	pre, err := d.PendingMergeByPR(2222, "nixos-config")
@@ -565,7 +565,7 @@ func testRunMergeReentryAfterTerminalReEnqueues(t *testing.T, pr int, terminalSt
 	if _, err := d.EnqueueMerge(pr, "nixos-config", coordSession, "inst-reentry-"+terminalStatus, &title); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(pr, "nixos-config", terminalStatus, errMsg); err != nil {
+	if _, err := d.TerminateMerge(pr, "nixos-config", terminalStatus, errMsg); err != nil {
 		t.Fatalf("TerminateMerge(%s): %v", terminalStatus, err)
 	}
 	pre, err := d.PendingMergeByPR(pr, "nixos-config")

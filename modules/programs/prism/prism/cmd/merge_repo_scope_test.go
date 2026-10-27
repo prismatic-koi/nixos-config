@@ -44,7 +44,7 @@ func TestRunMerge_CrossRepoCollision_EnqueuesFreshRow(t *testing.T) {
 	if _, err := d.EnqueueMerge(47, "repo-a", "repo-a@main", "inst-a", &titleA); err != nil {
 		t.Fatalf("EnqueueMerge repo-a: %v", err)
 	}
-	if err := d.TerminateMerge(47, "repo-a", "merged", ""); err != nil {
+	if _, err := d.TerminateMerge(47, "repo-a", "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge repo-a: %v", err)
 	}
 	d.Close()
@@ -157,7 +157,7 @@ func TestWaitForMergeTerminal_ObservesOnlyOwnRepoRow(t *testing.T) {
 	if _, err := d.EnqueueMerge(pr, "repo-a", "repo-a@main", "inst-a", nil); err != nil {
 		t.Fatalf("EnqueueMerge repo-a: %v", err)
 	}
-	if err := d.TerminateMerge(pr, "repo-a", "merged", ""); err != nil {
+	if _, err := d.TerminateMerge(pr, "repo-a", "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge repo-a: %v", err)
 	}
 	// repo-b's PR 47 is still watching.
@@ -179,7 +179,7 @@ func TestWaitForMergeTerminal_ObservesOnlyOwnRepoRow(t *testing.T) {
 			return
 		}
 		defer d2.Close()
-		if err := d2.TerminateMerge(pr, "repo-b", "failed", "CI failed on repo-b"); err != nil {
+		if _, err := d2.TerminateMerge(pr, "repo-b", "failed", "CI failed on repo-b"); err != nil {
 			t.Errorf("TerminateMerge repo-b: %v", err)
 		}
 	}()
