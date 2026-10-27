@@ -358,10 +358,9 @@ func cleanupAgentSession(d *db.DB, agentSession, parentInstanceID string, cause 
 
 // childIncarnationIDs returns the instance ID in st and the instance ID of
 // each sessions row of agentSession, with no duplicates. The sessions rows
-// are necessary: when the tmux session of the child closes, the
-// session-closed hook clears agent_status.instance_id. The hook of the
-// parent closes the tmux session of each open child, so this can occur
-// before cleanupAgentSession runs (#3279).
+// are necessary: when the tmux session of the child closes outside prism,
+// the session-closed hook clears agent_status.instance_id, and this can
+// occur before cleanupAgentSession runs (#3279).
 func childIncarnationIDs(d *db.DB, agentSession string, st *db.Status) []string {
 	var ids []string
 	add := func(id string) {

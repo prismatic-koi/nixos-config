@@ -197,8 +197,7 @@ func ReapDeliveredReviewAgents(d *db.DB, groupID string, now time.Time, grace ti
 // The sidecar stops before the tmux kill. If it does not stop, reapOne
 // returns and changes nothing else: the tmux session, the row, and the port
 // stay, so the next sweep retries the whole sequence. A sidecar that still
-// runs can write to its row and hold its port. The tmux kill must come
-// after the stop, because the `session-closed` hook it fires ends the row.
+// runs can write to its row and hold its port.
 //
 // `ended_at` is written LAST. If the process dies part-way, the next sweep
 // still sees `ended_at IS NULL` and retries the whole sequence. Writing it
@@ -206,13 +205,13 @@ func ReapDeliveredReviewAgents(d *db.DB, groupID string, now time.Time, grace ti
 // no later sweep would revisit it.
 //
 // The `auto_release` cause is recorded FIRST — before the tmux kill, not just
-// before `ended_at`. Killing the tmux session fires tmux's global
-// `session-closed` hook (`modules/programs/prism/tmux.nix`), which runs
-// `prism event tmux-session-end`, which calls `ReleasePort` and `SetEnded`
-// (`cmd/event.go`). So the kill can close the row from underneath this
-// function, and the guard below would then correctly — and uselessly — decline
-// to record anything. Recording after the kill loses the cause on most
-// releases, which makes the cause-recording invariant false in practice.
+// before `ended_at`. tmux's global `session-closed` hook
+// (`modules/programs/prism/tmux.nix`) runs `prism event tmux-session-end`,
+// which calls `ReleasePort` and `SetEnded` (`cmd/event.go`). tmux.KillSession
+// keeps the hook off the row, but the hook still acts if the rename of
+// tmux.KillSession fails, or if the session closes outside prism. Then the
+// row closes from underneath this function, and the guard below would
+// correctly — and uselessly — decline to record anything.
 //
 // The constraints do not conflict: `RecordSessionReap` appends an
 // `agent_events` row and never touches `ended_at`, so recording it first
@@ -271,11 +270,10 @@ func reapOne(d *db.DB, c db.ReapCandidate) bool {
 	// Stamp ended_at. This is the step that returns the concurrency slot:
 	// Isolator.Cap counts agent_status rows with ended_at IS NULL.
 	//
-	// In production the tmux kill above has usually already closed this row,
-	// via tmux's global session-closed hook (see the ordering note on this
-	// function). This write is the idempotent backstop for the release that
-	// had no live tmux session to close — SetEnded on an already-closed row is
-	// a no-op.
+	// The tmux kill above keeps the session-closed hook off this row, so this
+	// write usually ends it. If the hook ended the row first (see the
+	// ordering note on this function), SetEnded on an already-closed row is a
+	// no-op.
 	if err := d.SetEnded(c.SessionName); err != nil {
 		proglog.Warnf("[prism reap] warning: stamp ended_at for %q: %v\n", c.SessionName, err)
 	}

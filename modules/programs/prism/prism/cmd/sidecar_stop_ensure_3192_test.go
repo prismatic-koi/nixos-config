@@ -45,14 +45,19 @@ func tmuxCalls(t *testing.T, logFile string) [][]string {
 }
 
 // tmuxKilled reports whether the spy tmux got kill-session for name, or
-// kill-server.
+// kill-server. tmux.KillSession renames the session before the kill, so a
+// kill of the new name counts as a kill of name.
 func tmuxKilled(t *testing.T, logFile, name string) bool {
 	t.Helper()
+	targets := map[string]bool{name: true, "=" + name: true}
 	for _, c := range tmuxCalls(t, logFile) {
 		if c[0] == "kill-server" {
 			return true
 		}
-		if c[0] == "kill-session" && len(c) >= 3 && (c[2] == name || c[2] == "="+name) {
+		if c[0] == "rename-session" && len(c) >= 4 && targets[c[2]] {
+			targets["="+c[3]] = true
+		}
+		if c[0] == "kill-session" && len(c) >= 3 && targets[c[2]] {
 			return true
 		}
 	}
@@ -585,10 +590,11 @@ func TestRunReset_KillsTmuxServerAfterStops_3192(t *testing.T) {
 	}
 }
 
-// Each tmux session that reset kills fires the session-closed hook, which
-// clears instance_id of its row. Reset takes the instance IDs before the
-// kill, so that it still removes the instance directories of each reset
-// session (#2960). The directories of a kept session stay.
+// The session-closed hook clears instance_id of the row of a session that
+// closes outside prism, and that can occur during the reset. Reset takes
+// the instance IDs before the kill, so that it still removes the instance
+// directories of each reset session (#2960). The directories of a kept
+// session stay.
 func TestRunReset_SnapshotBeforeTmuxKill_3192(t *testing.T) {
 	for _, tc := range []struct {
 		desc  string

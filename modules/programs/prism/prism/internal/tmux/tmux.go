@@ -3,6 +3,7 @@ package tmux
 
 import (
 	"bytes"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"os/exec"
@@ -360,10 +361,36 @@ func AttachSession(name string) error {
 	return cmd.Run()
 }
 
-// KillSession kills a tmux session.
+// ClosingSessionPrefix starts the name that KillSession gives a session
+// before it kills the session. A random suffix follows it, so no
+// agent_status row has that name.
+const ClosingSessionPrefix = "prism-closing-"
+
+// KillSession kills the tmux session with exactly the name name.
+//
+// It renames the session to a ClosingSessionPrefix name first, and then
+// kills it. The global session-closed hook (`prism event tmux-session-end`)
+// thus gets a name that has no agent_status row, and writes nothing. Each
+// prism path that kills a session ends the rows of that session itself, or
+// starts a new session with the same name. If the hook acted on the real
+// name, it could end the row of the new session, purge a bus message that
+// the path writes after the kill, or clear an instance ID that a later read
+// needs (#3297). The hook acts only for a session that closes outside
+// prism.
+//
+// If the rename fails, it kills the session under its own name. If the
+// kill fails after the rename, it gives the session its own name again.
 func KillSession(name string) error {
-	_, err := run("kill-session", "-t", name)
-	return err
+	closing := ClosingSessionPrefix + rand.Text()
+	if _, err := run("rename-session", "-t", "="+name, closing); err != nil {
+		_, killErr := run("kill-session", "-t", "="+name)
+		return killErr
+	}
+	if _, err := run("kill-session", "-t", "="+closing); err != nil {
+		_, _ = run("rename-session", "-t", "="+closing, name)
+		return err
+	}
+	return nil
 }
 
 // Run executes an arbitrary tmux command and returns trimmed stdout.

@@ -234,10 +234,12 @@ type piResumePointer struct {
 // FS half must match that scope.
 //
 // runReset takes the snapshot after the sidecar stops and before the tmux
-// kill. Each killed tmux session fires the global session-closed hook,
-// which clears instance_id of its row. A snapshot after the kill can then
-// miss the instance ID, and the instance directories of that session stay
-// on disk (#2960).
+// kill. The global session-closed hook clears instance_id of the row of a
+// session that closes outside prism. The kills of reset do not let the hook
+// act (kill-server: the hook cannot query tmux; tmux.KillSession: the hook
+// gets a name with no row), but a close outside prism can occur at the
+// same time. A snapshot after the kill can then miss the instance ID, and
+// the instance directories of that session stay on disk (#2960).
 //
 // The rows named in keep are left out, so that the later steps do not
 // remove their transcript or their instance directories.
@@ -408,9 +410,9 @@ var resetKillTmuxStep = resetKillTmux
 
 // resetKillTmux kills the tmux server. When kept names a session, the
 // server stays, and every tmux session that kept does not name is killed.
-// Each kill uses the exact-match target "=<name>": a plain target can also
-// match a session by name prefix, and the kill must not reach a kept
-// session.
+// Each kill is tmux.KillSession, which uses the exact-match target
+// "=<name>": a plain target can also match a session by name prefix, and
+// the kill must not reach a kept session.
 func resetKillTmux(kept []string) {
 	if len(kept) == 0 {
 		fmt.Println("Killing tmux server...")
@@ -436,7 +438,7 @@ func resetKillTmux(kept []string) {
 		if name == "" || slices.Contains(kept, name) {
 			continue
 		}
-		if _, err := tmux.Run("kill-session", "-t", "="+name); err != nil {
+		if err := tmux.KillSession(name); err != nil {
 			proglog.Warnf("[prism reset] tmux kill-session %q: %v (continuing)\n", name, err)
 			continue
 		}

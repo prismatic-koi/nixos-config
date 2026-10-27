@@ -50,8 +50,8 @@ func setupEventTestDB(t *testing.T, session string) string {
 // TestEventTmuxSessionEnd_LiveSession verifies that the handler exits 0 without
 // writing ended_at when the session still exists in tmux.
 //
-// This covers the spurious display-popup dismissal scenario: session-closed
-// fires but the outer session is still alive.
+// This covers a session that exists again when the hook runs, for example
+// because `prism switch` created it after the close.
 func TestEventTmuxSessionEnd_LiveSession(t *testing.T) {
 	// Uses withCmdServer (mutates TmuxBin) — must not be parallel.
 	if _, err := exec.LookPath("tmux"); err != nil {

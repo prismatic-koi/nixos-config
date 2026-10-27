@@ -86,10 +86,12 @@ func installReapProbe(t *testing.T) *reapProbe {
 // performTmuxSessionClosedHook reproduces the DB writes the real tmux
 // `session-closed` hook performs against the test database.
 //
-// Killing a review agent's tmux session fires tmux's GLOBAL `session-closed`
-// hook (`modules/programs/prism/tmux.nix`), which runs
-// `prism event tmux-session-end`, which calls `ReleasePort` then `SetEnded`
-// (`cmd/event.go`). This function is the verbatim shape of that handler. It
+// tmux's GLOBAL `session-closed` hook (`modules/programs/prism/tmux.nix`)
+// runs `prism event tmux-session-end`, which calls `ReleasePort` then
+// `SetEnded` (`cmd/event.go`). tmux.KillSession keeps the hook off the row of
+// a review agent that the reap kills, but the hook still acts when the
+// rename of tmux.KillSession fails or the session closes outside prism. This
+// function is the verbatim shape of that handler. It
 // touches only the DB, so no real tmux binary and no running tmux server are
 // involved.
 //
@@ -1255,13 +1257,14 @@ func TestReap_RecordsAutoReleaseCause(t *testing.T) {
 // A cause written after the row closes leaves a window in which the row reads
 // as closed with nothing to explain it.
 //
-// The row closes for real when the tmux session dies: killing it fires tmux's
-// global `session-closed` hook, which stamps `ended_at` (see
-// performTmuxSessionClosedHook). This test therefore installs the tmux-kill
-// FAKE and asserts INSIDE the kill — the exact instant the row closes — that
-// the cause is already on the trail and the row is not yet closed. That is the
-// only point where the ordering is falsifiable, and it is falsifiable against
-// the REAL closer, not a stubbed final write.
+// The row can close at the tmux kill: tmux's global `session-closed` hook
+// stamps `ended_at` (see performTmuxSessionClosedHook) when the rename of
+// tmux.KillSession fails or the session closes outside prism. This test
+// therefore installs the tmux-kill FAKE and asserts INSIDE the kill — the
+// earliest instant the row can close — that the cause is already on the
+// trail and the row is not yet closed. That is the only point where the
+// ordering is falsifiable against an early closer, not only against the
+// final write.
 //
 // A no-op kill stub would observe only the reaper's final `SetEnded` seam.
 // With a no-op kill the row never closes early, so moving the cause record to
@@ -1280,8 +1283,9 @@ func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
 			return
 		}
 		observed = true
-		// The tmux kill is the instant the real session-closed hook closes
-		// the row. At this instant the cause must already be on the trail...
+		// The tmux kill is the earliest instant the session-closed hook can
+		// close the row. At this instant the cause must already be on the
+		// trail...
 		causes, err := d.SessionEndCauses([]string{name})
 		if err != nil {
 			t.Errorf("SessionEndCauses during close: %v", err)
@@ -1293,7 +1297,7 @@ func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
 		if st := statusOf(t, d, name); st.EndedAt != nil {
 			t.Errorf("%q was already closed before the tmux kill fired", name)
 		}
-		// Now let the hook close the row, exactly as production does.
+		// Now let the hook close the row, as it does when it acts on the row.
 		performTmuxSessionClosedHook(t, d, name)
 	}, nil, nil))
 
@@ -1321,13 +1325,12 @@ func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
 // `reapOne` kills the tmux session before it records the `auto_release`
 // cause.
 //
-// Killing a review agent's tmux session fires tmux's GLOBAL `session-closed`
-// hook (`modules/programs/prism/tmux.nix`), which runs
-// `prism event tmux-session-end`, which calls `ReleasePort` and `SetEnded`
-// (`cmd/event.go`). The row therefore closes from underneath `reapOne`, the
-// `ended_at` guard on the cause write then declines to record, and the cause
-// is lost — on most releases, because `reapOne` also killed the sidecar and
-// ran container teardown before reaching the write.
+// tmux's GLOBAL `session-closed` hook (`modules/programs/prism/tmux.nix`)
+// runs `prism event tmux-session-end`, which calls `ReleasePort` and
+// `SetEnded` (`cmd/event.go`). When the hook acts on the row of the agent
+// (the rename of tmux.KillSession failed, or the session closed outside
+// prism), the row closes from underneath `reapOne`, the `ended_at` guard on
+// the cause write then declines to record, and the cause is lost.
 //
 // This uses the opt-in tmux-kill fake (installTmuxSessionClosedHookFake).
 // Where TestReap_CauseIsRecordedBeforeTheRowCloses pins the ordering at the
@@ -1352,7 +1355,7 @@ func TestReap_CauseSurvivesTheTmuxSessionClosedHook(t *testing.T) {
 		t.Fatalf("SessionEndCauses: %v", err)
 	}
 	if causes[sess].Cause != db.ReapCauseAutoRelease {
-		t.Errorf("Cause = %q, want %q — the cause must be recorded BEFORE the tmux kill, because the session-closed hook closes the row and the ended_at guard then skips the write",
+		t.Errorf("Cause = %q, want %q — the cause must be recorded BEFORE the tmux kill, because the session-closed hook can close the row at the kill and the ended_at guard then skips the write",
 			causes[sess].Cause, db.ReapCauseAutoRelease)
 	}
 	if st := statusOf(t, d, sess); st.EndedAt == nil {

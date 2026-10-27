@@ -645,17 +645,16 @@ INSERT OR REPLACE INTO spawn_outcome (
 // ClearHarnessSessionID.
 //
 // parentInstanceID is the instance ID of sessionName that the caller read
-// before the tmux kill. The kill fires the session-closed hook, and the hook
-// can clear agent_status.instance_id of sessionName before the cascade runs.
-// The query then does not find the parent, so the cascade also writes
-// parentInstanceID. An empty parentInstanceID adds no instance ID (#3266).
+// before the tmux kill. The session-closed hook clears
+// agent_status.instance_id of a session that closes outside prism, and that
+// can occur before the cascade runs. The query then does not find the
+// parent, so the cascade also writes parentInstanceID. An empty
+// parentInstanceID adds no instance ID (#3266).
 //
-// The hook also clears agent_status.instance_id of a review child when the
-// tmux session of the child closes. Three paths kill a child before the
-// cascade: review.KillSessionsByNames, review.StopReviewChildrenForEnd,
-// and the auto_release reap. Thus the cascade also writes each incarnation
-// of a review child that the sessions table holds (#3279). The cascade
-// writes each instance ID one time.
+// For the same reason, the hook can clear agent_status.instance_id of a
+// review child before the cascade runs. Thus the cascade also writes each
+// incarnation of a review child that the sessions table holds (#3279). The
+// cascade writes each instance ID one time.
 //
 // Each resolved instance_id is written independently via WriteSpawnOutcome,
 // so one child's failure does not prevent the others (or the parent) from

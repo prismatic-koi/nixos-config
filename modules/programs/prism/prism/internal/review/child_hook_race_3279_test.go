@@ -1,7 +1,8 @@
 package review_test
 
 // Tests for #3279: the session-closed hook clears agent_status.instance_id
-// of a session when its tmux session closes. A review child can lose its
+// of a session when its tmux session closes outside prism, or when the
+// rename of tmux.KillSession fails. Then a review child can lose its
 // instance ID on each of the three paths that kill it, and a parent can lose
 // its instance ID before the child cleanup hands over the child audit log.
 

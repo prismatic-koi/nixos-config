@@ -91,6 +91,10 @@ jobs:
               # drift guard. A port that changes only TypeScript is exactly
               # the case that guard exists for, so it must run the Go suite.
               - 'modules/programs/prism/pi/extensions/anthropic-oauth/**'
+              # cmd/session_closed_hook_3297_test.go reads the session-closed
+              # hook line of tmux.nix and runs it on a test tmux server. A PR
+              # that changes only tmux.nix must run that test.
+              - 'modules/programs/prism/tmux.nix'
       - name: Set up Go
         if: steps.changes.outputs.go == 'true'
         uses: actions/setup-go@v7

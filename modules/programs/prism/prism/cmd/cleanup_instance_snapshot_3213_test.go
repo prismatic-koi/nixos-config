@@ -1,9 +1,9 @@
 package cmd
 
 // Tests for #3213: each cleanup path reads the instance ID and the isolation
-// mode before the tmux kill. The kill fires the global session-closed hook,
-// and `prism event tmux-session-end` can end the rows and clear instance_id
-// before the DB block of the cleanup runs.
+// mode before the tmux kill. When the session closes outside prism, the
+// global session-closed hook (`prism event tmux-session-end`) can end the
+// rows and clear instance_id before the DB block of the cleanup runs.
 
 import (
 	"io"
