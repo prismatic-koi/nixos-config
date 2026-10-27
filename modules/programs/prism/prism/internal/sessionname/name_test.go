@@ -87,6 +87,32 @@ func TestIsDescendant(t *testing.T) {
 	}
 }
 
+// TestRoot: the project-trust decision reads the PR-branch record of the
+// root session (issue #3287). A descendant that resolves to a name other
+// than its root session loses the record and gets --approve.
+func TestRoot(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"home-ops@feat", "home-ops@feat"},
+		{"home-ops@feat~review-1-review-goal", "home-ops@feat"},
+		{"home-ops@feat~review-2-review-goal-fallback-1", "home-ops@feat"},
+		{"home-ops@feat~investigate-x", "home-ops@feat"},
+		{"home-ops@feat~investigate-x~review-1-review-qa", "home-ops@feat"},
+		{"obsidian", "obsidian"},
+		{"obsidian~investigate-v2", "obsidian"},
+		{"weird~repo@main", "weird~repo@main"},
+		{"weird~repo@main~review-1-review-goal", "weird~repo@main"},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		if got := Root(tc.in); got != tc.want {
+			t.Errorf("Root(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if got := Root(tc.in); IsDescendant(got) {
+			t.Errorf("Root(%q) = %q is a descendant", tc.in, got)
+		}
+	}
+}
+
 // TestIsMetaAndMetaNames pins that IsMeta and MetaNames agree. The SQL in
 // db.AllActiveStatusForRepoAndOtherRootSessions binds MetaNames(), so a name
 // added to one and not the other would let a meta-session appear in a

@@ -37,7 +37,7 @@ func TestApprove(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := Load()
+	p := Load(noPRBranches)
 	cases := []struct {
 		name    string
 		session string
@@ -85,7 +85,7 @@ func TestApprove_EmptyListTrustsNoRepo(t *testing.T) {
 	if err := os.Remove(config.ProjectTrustPath()); err != nil {
 		t.Fatal(err)
 	}
-	p := Load()
+	p := Load(noPRBranches)
 	if len(p.TrustedRepos) != 0 {
 		t.Fatalf("TrustedRepos = %v, want empty", p.TrustedRepos)
 	}
@@ -100,7 +100,7 @@ func TestLoad_MalformedFileTrustsNoRepo(t *testing.T) {
 	if err := os.WriteFile(config.ProjectTrustPath(), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if p := Load(); p.Approve("obsidian", l.Obsidian) {
+	if p := Load(noPRBranches); p.Approve("obsidian", l.Obsidian) {
 		t.Errorf("Approve = true with a malformed project-trust.json (TrustedRepos %v), want false", p.TrustedRepos)
 	}
 }
@@ -109,7 +109,7 @@ func TestLoad_MalformedFileTrustsNoRepo(t *testing.T) {
 // and the project roots from config.json.
 func TestLoad_ReadsBothFiles(t *testing.T) {
 	l := projecttrusttest.New(t, "home-ops", "obsidian")
-	p := Load()
+	p := Load(noPRBranches)
 	if !slices.Equal(p.TrustedRepos, []string{"home-ops", "obsidian"}) {
 		t.Errorf("TrustedRepos = %v", p.TrustedRepos)
 	}
@@ -128,6 +128,7 @@ func TestApprove_TildeProjectRoots(t *testing.T) {
 		TrustedRepos:     []string{"home-ops", "obsidian"},
 		ProjectLocations: []string{"~/code"},
 		ProjectSpecific:  []string{"~/documents/obsidian"},
+		PRBranches:       noPRBranches,
 	}
 	if !p.Approve("home-ops@main", wt) {
 		t.Error("Approve(home-ops@main) = false with ~/code, want true")
@@ -146,7 +147,7 @@ func TestApprove_SymlinkedProjectRootMatchesByIdentity(t *testing.T) {
 	if err := os.Symlink(filepath.Join(l.Root, "documents"), alias); err != nil {
 		t.Fatal(err)
 	}
-	if !Load().Approve("obsidian", filepath.Join(alias, "obsidian")) {
+	if !Load(noPRBranches).Approve("obsidian", filepath.Join(alias, "obsidian")) {
 		t.Error("Approve(obsidian, <alias>/obsidian) = false, want true")
 	}
 }
@@ -157,7 +158,7 @@ func TestApprove_SymlinkedProjectRootMatchesByIdentity(t *testing.T) {
 func TestApprove_DotInRepoDirectory(t *testing.T) {
 	l := projecttrusttest.New(t, "my.repo")
 	wt := projecttrusttest.Worktree(t, l.Code, "my.repo", "main")
-	p := Load()
+	p := Load(noPRBranches)
 	if !p.Approve("my_repo@main", wt) {
 		t.Error("Approve(my_repo@main) = false, want true")
 	}
