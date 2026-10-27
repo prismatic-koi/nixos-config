@@ -281,11 +281,16 @@ func buildPromptBody(text string, status *db.Status) map[string]any {
 
 // deriveSessionNameFromCWD walks up from cwd to find a .bare marker and
 // derives the session name using the same logic as cmd/switch.go.
-// Returns empty string if no .bare marker is found.
+// Returns empty string if no .bare marker is found, or if the name is
+// outside the session-name safe set (no session can have that name).
 func deriveSessionNameFromCWD(cwd string) string {
 	bareRoot := deriveBareRoot(cwd)
 	if bareRoot == "" {
 		return ""
 	}
-	return session.NameFor(cwd, bareRoot)
+	name, err := session.NameFor(cwd, bareRoot)
+	if err != nil {
+		return ""
+	}
+	return name
 }

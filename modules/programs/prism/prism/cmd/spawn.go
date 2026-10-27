@@ -44,6 +44,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/skills"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -831,7 +832,10 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// Build SpawnOpts and call session.SpawnSession — the single shared
 	// primitive for creating a prism session end-to-end (port allocation,
 	// DB seed with root_agent_name, tmux session creation, sidecar startup).
-	sessionName := session.NameFor(worktreePath, bareRoot)
+	sessionName, err := session.NameFor(worktreePath, bareRoot)
+	if err != nil {
+		return err
+	}
 	// DefaultAgent (not DefaultAgentForSession) is intentional here: at spawn
 	// time the session does not yet have a DB row, so there is no root_agent_name
 	// to read back. This call ASSIGNS the agent type for the new session (written
@@ -1169,7 +1173,26 @@ func resolveRepo(nameOrPath string) (string, error) {
 
 // resolveBranch determines the branch name to use for the new worktree.
 // Priority: --pr flag > --branch flag > timestamped default.
+//
+// A branch outside sessionname.BranchSafeSet is refused before any worktree
+// exists. The session name holds the branch, and tmux.nix puts the session
+// name into shell commands. A PR head branch is the main risk: the author of
+// the PR picks it, and git accepts shell syntax in a branch name.
 func resolveBranch(bareRoot, branchFlag, prFlag string) (string, error) {
+	branch, err := resolveBranchSource(bareRoot, branchFlag, prFlag)
+	if err != nil {
+		return "", err
+	}
+	if err := sessionname.ValidateBranch(branch); err != nil {
+		if prFlag != "" {
+			return "", fmt.Errorf("head branch of PR #%s: %w", prFlag, err)
+		}
+		return "", err
+	}
+	return branch, nil
+}
+
+func resolveBranchSource(bareRoot, branchFlag, prFlag string) (string, error) {
 	if prFlag != "" {
 		// On a gitlab.com remote, resolve and fetch the MR source branch via
 		// the GitLab head ref instead of the GitHub gh path. Detection is by
@@ -1203,6 +1226,11 @@ func resolveBranch(bareRoot, branchFlag, prFlag string) (string, error) {
 	}
 
 	if branchFlag != "" {
+		// Refuse a character outside the safe set. Do not let
+		// SanitiseBranch remove it without a word.
+		if err := sessionname.ValidateBranch(branchFlag); err != nil {
+			return "", fmt.Errorf("--branch: %w", err)
+		}
 		sanitised := git.SanitiseBranch(branchFlag)
 		if sanitised == "" {
 			return "", fmt.Errorf("branch name %q is empty after sanitisation", branchFlag)
@@ -1526,7 +1554,10 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 	// any side effect, and plannedRole is assigned unconditionally upstream.
 	// A second check on this path could never fire.
 
-	sessionName = session.NameFor(worktreePath, a.bareRoot)
+	sessionName, err = session.NameFor(worktreePath, a.bareRoot)
+	if err != nil {
+		return "", worktreePath, err
+	}
 	agentRole := session.DefaultAgent(worktreePath, a.agentFlag)
 
 	h, _ := harness.New(a.harnessFlag, "", nil, "", "")

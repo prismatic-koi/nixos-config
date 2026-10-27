@@ -124,7 +124,7 @@ func TestPrCmd_RecordsPRBranchBeforeTheAgentStarts(t *testing.T) {
 	t.Cleanup(func() { prEnsureAndSwitch = prev })
 	prEnsureAndSwitch = func(path, projectRoot string, opts session.Opts) error {
 		started = true
-		opts.SessionName = session.NameFor(path, projectRoot)
+		opts.SessionName = mustNameFor(t, path, projectRoot)
 		opts.Worktree = path
 		if opts.SessionName != r.session || path != r.worktree {
 			t.Fatalf("prism pr starts %q in %q, want %q in %q", opts.SessionName, path, r.session, r.worktree)

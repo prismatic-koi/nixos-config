@@ -54,6 +54,17 @@ func initGitRepo(t *testing.T, dir, branchName string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// mustNameFor is session.NameFor for a name that the test expects to be in
+// the safe set.
+func mustNameFor(t *testing.T, dir, projectRoot string) string {
+	t.Helper()
+	name, err := session.NameFor(dir, projectRoot)
+	if err != nil {
+		t.Fatalf("NameFor(%q, %q): %v", dir, projectRoot, err)
+	}
+	return name
+}
+
 // detachHEAD puts a repo into detached HEAD state.
 func detachHead(t *testing.T, dir string) {
 	t.Helper()
@@ -70,7 +81,7 @@ func TestWorktreeBranchComponent_SimpleBranch(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir, "main")
 	projectRoot := filepath.Join(filepath.Dir(dir), "myrepo")
-	got := session.NameFor(dir, projectRoot)
+	got := mustNameFor(t, dir, projectRoot)
 	if got != "myrepo@main" {
 		t.Errorf("NameFor = %q, want %q", got, "myrepo@main")
 	}
@@ -80,7 +91,7 @@ func TestWorktreeBranchComponent_SlashInBranch(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir, "feat/add-foo")
 	projectRoot := filepath.Join(filepath.Dir(dir), "myrepo")
-	got := session.NameFor(dir, projectRoot)
+	got := mustNameFor(t, dir, projectRoot)
 	if got != "myrepo@feat--add-foo" {
 		t.Errorf("NameFor = %q, want %q", got, "myrepo@feat--add-foo")
 	}
@@ -90,7 +101,7 @@ func TestWorktreeBranchComponent_MultiSlashBranch(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir, "users/alice/fix-login")
 	projectRoot := filepath.Join(filepath.Dir(dir), "myrepo")
-	got := session.NameFor(dir, projectRoot)
+	got := mustNameFor(t, dir, projectRoot)
 	if got != "myrepo@users--alice--fix-login" {
 		t.Errorf("NameFor = %q, want %q", got, "myrepo@users--alice--fix-login")
 	}
@@ -101,7 +112,7 @@ func TestWorktreeBranchComponent_DetachedHead(t *testing.T) {
 	shortHash := initGitRepo(t, dir, "main")
 	detachHead(t, dir)
 	projectRoot := filepath.Join(filepath.Dir(dir), "myrepo")
-	got := session.NameFor(dir, projectRoot)
+	got := mustNameFor(t, dir, projectRoot)
 	if got != "myrepo@"+shortHash {
 		t.Errorf("NameFor (detached HEAD) = %q, want myrepo@%q", got, shortHash)
 	}
@@ -110,7 +121,7 @@ func TestWorktreeBranchComponent_DetachedHead(t *testing.T) {
 func TestWorktreeBranchComponent_NonGitDir(t *testing.T) {
 	dir := t.TempDir()
 	projectRoot := filepath.Join(filepath.Dir(dir), "myrepo")
-	got := session.NameFor(dir, projectRoot)
+	got := mustNameFor(t, dir, projectRoot)
 	want := "myrepo@" + filepath.Base(dir)
 	if got != want {
 		t.Errorf("NameFor (non-git) = %q, want %q", got, want)
@@ -127,7 +138,7 @@ func TestSessionNameFor_WithProjectRoot_SlashBranch(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	initGitRepo(t, worktree, "feat/add-foo")
-	got := session.NameFor(worktree, projectRoot)
+	got := mustNameFor(t, worktree, projectRoot)
 	if got != "nixos-config@feat--add-foo" {
 		t.Errorf("NameFor = %q, want %q", got, "nixos-config@feat--add-foo")
 	}
@@ -135,7 +146,7 @@ func TestSessionNameFor_WithProjectRoot_SlashBranch(t *testing.T) {
 
 func TestSessionNameFor_WithoutProjectRoot(t *testing.T) {
 	// No project root — falls straight through to filepath.Base path.
-	got := session.NameFor("/home/user/obsidian", "")
+	got := mustNameFor(t, "/home/user/obsidian", "")
 	if got != "obsidian" {
 		t.Errorf("NameFor = %q, want %q", got, "obsidian")
 	}
@@ -149,9 +160,50 @@ func TestSessionNameFor_DotInProjectRoot(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	initGitRepo(t, worktree, "main")
-	got := session.NameFor(worktree, projectRoot)
+	got := mustNameFor(t, worktree, projectRoot)
 	// Dots in project name are replaced with underscores.
 	if got != "my_repo@main" {
 		t.Errorf("NameFor = %q, want %q", got, "my_repo@main")
+	}
+}
+
+// ── the safe set ─────────────────────────────────────────────────────────────
+
+// TestNameFor_RefusesShellSyntaxInBranch pins the refusal in NameFor. git
+// accepts each of these branch names. tmux.nix puts the session name into
+// shell commands, so NameFor must refuse the name and name the character.
+func TestNameFor_RefusesShellSyntaxInBranch(t *testing.T) {
+	for branch, char := range map[string]string{
+		"x$(id)": `"$"`,
+		"x`id`":  "\"`\"",
+		"a;b":    `";"`,
+		"a|b":    `"|"`,
+		"a'b":    `"'"`,
+		"a&b":    `"&"`,
+	} {
+		dir := t.TempDir()
+		initGitRepo(t, dir, branch)
+		projectRoot := filepath.Join(filepath.Dir(dir), "myrepo")
+		name, err := session.NameFor(dir, projectRoot)
+		if err == nil {
+			t.Errorf("NameFor for branch %q = %q, want an error", branch, name)
+			continue
+		}
+		if name != "" {
+			t.Errorf("NameFor for branch %q returned name %q with its error, want \"\"", branch, name)
+		}
+		if !strings.Contains(err.Error(), char) {
+			t.Errorf("NameFor for branch %q: error %q does not name %s", branch, err, char)
+		}
+	}
+}
+
+// TestNameFor_RefusesShellSyntaxInRepo pins the refusal for a non-worktree
+// directory, where the whole name comes from the directory name.
+func TestNameFor_RefusesShellSyntaxInRepo(t *testing.T) {
+	for _, dir := range []string{"/home/user/x$(id)", "/home/user/my repo", "/home/user/~x"} {
+		if name, err := session.NameFor(dir, ""); err == nil {
+			t.Errorf("NameFor(%q, \"\") = %q, want an error", dir, name)
+		}
 	}
 }

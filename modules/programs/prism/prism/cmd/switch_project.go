@@ -361,8 +361,13 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 	case convert:
 		// Record the old session name before conversion so we can clean it up
 		// afterwards. The pre-conversion session is named after the repo directory
-		// with no "@" component (e.g. "dns-management").
-		oldSessionName := session.NameFor(path, "")
+		// with no "@" component (e.g. "dns-management"). The new session name
+		// starts with the same repo part, so a refused name stops the switch
+		// before the conversion changes the repo.
+		oldSessionName, nameErr := session.NameFor(path, "")
+		if nameErr != nil {
+			return nameErr
+		}
 
 		worktreePath, err := git.ConvertToBare(path, func(msg string) {
 			fmt.Println(msg)

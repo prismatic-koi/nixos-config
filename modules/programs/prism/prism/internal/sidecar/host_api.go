@@ -29,6 +29,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
 	"github.com/prismatic-koi/prism/internal/review"
 	prismsession "github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/usage"
 )
 
@@ -333,6 +334,24 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		return true
 	}
 
+	// requireSafeName writes HTTP 400 and returns false when value is not a
+	// safe session name (sessionname.ValidateName). An empty value passes,
+	// because each endpoint applies its own rule for a missing name.
+	//
+	// tmux.nix puts a session name into shell commands. So each endpoint that
+	// takes a session name from the caller calls this before it uses the
+	// name. TestHostAPI_RefusesUnsafeSessionName lists each endpoint.
+	requireSafeName := func(w http.ResponseWriter, field, value string) bool {
+		if value == "" {
+			return true
+		}
+		if err := sessionname.ValidateName(value); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid %s: %v", field, err))
+			return false
+		}
+		return true
+	}
+
 	// prismBinary returns the path to the prism binary (this process).
 	// Uses os.Executable() — consistent with StartSidecarWithOpts — to get
 	// the absolute path at binary launch time, avoiding CWD-relative resolution.
@@ -404,6 +423,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		daysStr := q.Get("days")
 		sinceStr := q.Get("since")
 		repoFilter := q.Get("repo")
+		if !requireSafeName(w, "session", sessionFilter) {
+			return
+		}
+		for _, id := range q["id"] {
+			if !requireSafeName(w, "id", id) {
+				return
+			}
+		}
 
 		// Parse days (default 7 for event views).
 		days := 7
@@ -616,6 +643,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		q := r.URL.Query()
 		repoFilter := q.Get("repo")
 		trainArg := q.Get("train")
+		if !requireSafeName(w, "train", trainArg) {
+			return
+		}
 		var sinceMs int64
 		if sinceStr := q.Get("since"); sinceStr != "" {
 			if ms, parseErr := strconv.ParseInt(sinceStr, 10, 64); parseErr == nil {
@@ -715,6 +745,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		targetSession := q.Get("session")
 		if targetSession == "" {
 			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+
+		if !requireSafeName(w, "session", targetSession) {
 			return
 		}
 
@@ -877,6 +911,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
+		if !requireSafeName(w, "parent", parentSession) {
+			return
+		}
+
 		decision := s.authorizeCheckinReviewAggregate(parentSession)
 		if !decision.Allow {
 			writeError(w, decision.Status, decision.Message)
@@ -962,11 +1000,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
-		// Validate session name format before semantic permission checks.
-		// Valid session names are "repo@branch" — slashes and dot-segments are
-		// not valid and would escape the logs directory via filepath.Join.
-		if strings.Contains(targetSession, "/") || strings.Contains(targetSession, "..") {
-			writeError(w, http.StatusBadRequest, "invalid session name: must not contain '/' or '..'")
+		// Validate the session name before the permission checks. The safe
+		// set holds no "/" and no ".", so the name cannot escape the logs
+		// directory via filepath.Join.
+		if !requireSafeName(w, "session", targetSession) {
 			return
 		}
 
@@ -1098,6 +1135,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// default 1 MiB ceiling is too tight for this surface.
 		if status, err := decodeRequestJSON(w, r, &req, promptMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
+			return
+		}
+		if !requireSafeName(w, "session", req.Session) {
 			return
 		}
 		if req.Session == "" {
@@ -1442,6 +1482,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
+		}
+		// The branch becomes part of the session name, so it must be in the
+		// branch safe set. Refuse it here, before the host-side spawn runs.
+		if req.Branch != "" {
+			if err := sessionname.ValidateBranch(req.Branch); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid branch: "+err.Error())
+				return
+			}
 		}
 
 		// Parse model_variant_overrides when present. An empty string is
@@ -2352,6 +2400,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
+		if !requireSafeName(w, "session", req.Session) {
+			return
+		}
 		if req.Session == "" {
 			writeError(w, http.StatusBadRequest, "session is required")
 			return
@@ -2462,6 +2513,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
+		if !requireSafeName(w, "session", req.Session) {
+			return
+		}
 		if req.Session == "" {
 			writeError(w, http.StatusBadRequest, "session is required")
 			return
@@ -2549,6 +2603,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// /switch body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
+			return
+		}
+		if !requireSafeName(w, "session", req.Session) {
 			return
 		}
 		if req.Session == "" {
@@ -2810,6 +2867,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
+		if !requireSafeName(w, "session", req.Session) {
+			return
+		}
 
 		args, status, err := s.eventProxyArgv(req.Kind, req.Session, req.Args)
 		if err != nil {
@@ -2874,6 +2934,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// repo (cmd/feedback.go and internal/feedback) — no external producers.
 		if status, err := decodeRequestJSON(w, r, &entry, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
+			return
+		}
+		if !requireSafeName(w, "session", entry.Session) {
 			return
 		}
 		if strings.TrimSpace(entry.Text) == "" {
@@ -3125,6 +3188,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, http.StatusBadRequest, "session is required")
 			return
 		}
+		if !requireSafeName(w, "session", sessionName) {
+			return
+		}
 		st, lookupErr := s.cfg.DB.CurrentStatus(sessionName)
 		if lookupErr != nil {
 			writeError(w, http.StatusInternalServerError, "lookup status: "+lookupErr.Error())
@@ -3245,6 +3311,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
+		if !requireSafeName(w, "to", req.To) || !requireSafeName(w, "from", req.From) {
+			return
+		}
 		if strings.TrimSpace(req.Prompt) == "" {
 			writeError(w, http.StatusBadRequest, "prompt is required")
 			return
@@ -3363,6 +3432,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
+		if !requireSafeName(w, "from", req.From) {
+			return
+		}
 		if strings.TrimSpace(req.Prompt) == "" {
 			writeError(w, http.StatusBadRequest, "prompt is required")
 			return
@@ -3453,6 +3525,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
+		if !requireSafeName(w, "session", req.Session) {
+			return
+		}
 		if req.Session == "" {
 			writeError(w, http.StatusBadRequest, "session is required")
 			return
@@ -3518,6 +3593,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// /apply-profile body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
+			return
+		}
+		if !requireSafeName(w, "session", req.Session) {
 			return
 		}
 		if req.Profile == "" {
@@ -3656,6 +3734,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
+		if !requireSafeName(w, "session", req.Session) {
+			return
+		}
 		if req.Name == "" {
 			writeError(w, http.StatusBadRequest, "name is required")
 			return
@@ -3761,6 +3842,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
+		if !requireSafeName(w, "session", req.Session) {
+			return
+		}
 		if req.Session == "" {
 			writeError(w, http.StatusBadRequest, "session is required")
 			return
@@ -3802,6 +3886,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// /set-active-tools body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
+			return
+		}
+		if !requireSafeName(w, "session", req.Session) {
 			return
 		}
 		if req.Session == "" {
@@ -3846,6 +3933,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// /abort body cap: default 1 MiB.
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
 			writeError(w, status, "invalid JSON: "+err.Error())
+			return
+		}
+		if !requireSafeName(w, "session", req.Session) {
 			return
 		}
 		if req.Session == "" {
@@ -3930,6 +4020,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if !requireCoordinator(w, "audit") {
 			return
 		}
+		if !requireSafeName(w, "session", r.URL.Query().Get("session")) {
+			return
+		}
 		s.hostAPIAudit(w, r)
 	})
 
@@ -3939,6 +4032,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// in its own repo. See host_api_review_log.go.
 	mux.HandleFunc("/groups/monitor-log", func(w http.ResponseWriter, r *http.Request) {
 		if !requireGet(w, r) {
+			return
+		}
+		if !requireSafeName(w, "session", r.URL.Query().Get("session")) {
 			return
 		}
 		s.hostAPIReviewLog(w, r)

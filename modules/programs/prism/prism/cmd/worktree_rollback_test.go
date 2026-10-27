@@ -20,7 +20,6 @@ import (
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/git"
-	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -140,7 +139,7 @@ func TestRollbackCreatedWorktreeHelper_SkipsWhenSessionLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
-	withListSessionsTmux(t, session.NameFor(created.Path, bareRoot))
+	withListSessionsTmux(t, mustNameFor(t, created.Path, bareRoot))
 
 	rollbackCreatedWorktree(bareRoot, &created, "test")
 
@@ -246,7 +245,7 @@ func TestRollbackCreatedWorktreeHelper_PrefixSiblingDoesNotBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
-	withListSessionsTmux(t, session.NameFor(created.Path, bareRoot)+"-x")
+	withListSessionsTmux(t, mustNameFor(t, created.Path, bareRoot)+"-x")
 	rollbackCreatedWorktree(bareRoot, &created, "test")
 	if cmdWorktreeListed(t, bareRoot, created.Path) {
 		t.Error("a prefix sibling blocked the rollback")

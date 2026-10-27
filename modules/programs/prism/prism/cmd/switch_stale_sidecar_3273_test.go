@@ -128,7 +128,7 @@ func newStaleSwitchFixture(t *testing.T, prs ...int) staleSwitchFixture {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	f := staleSwitchFixture{srv: srv, d: d, dir: dir, sessionName: session.NameFor(dir, "")}
+	f := staleSwitchFixture{srv: srv, d: d, dir: dir, sessionName: mustNameFor(t, dir, "")}
 	if err := tmux.NewSessionDetached(f.sessionName, dir); err != nil {
 		t.Fatalf("new-session: %v", err)
 	}

@@ -412,6 +412,28 @@ func TestAPI_NewSessionDetached(t *testing.T) {
 	}
 }
 
+// TestAPI_NewSession_RefusesUnsafeName pins the refusal in both session
+// constructors. tmux.nix puts a session name into shell commands, so a name
+// with shell syntax must never become a tmux session.
+func TestAPI_NewSession_RefusesUnsafeName(t *testing.T) {
+	s := newServer(t)
+	withServer(t, s)
+
+	const name = "prism-test@x$(id)"
+	for fn, create := range map[string]func(string, string) error{
+		"NewSession":         tmux.NewSession,
+		"NewSessionDetached": tmux.NewSessionDetached,
+	} {
+		err := create(name, os.TempDir())
+		if err == nil || !strings.Contains(err.Error(), `"$"`) {
+			t.Errorf("%s(%q) = %v, want an error that names \"$\"", fn, name, err)
+		}
+		if s.hasSession(name) {
+			t.Errorf("%s(%q) made the session, want none", fn, name)
+		}
+	}
+}
+
 // TestAPI_KillSession verifies tmux.KillSession removes a session.
 func TestAPI_KillSession(t *testing.T) {
 	s := newServer(t)
