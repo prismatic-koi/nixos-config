@@ -89,7 +89,7 @@ func TestResumeMergeQueue(t *testing.T) {
 			if tc.stopped != (iid == oldIID) {
 				t.Fatalf("restoredInstanceID = %q (old %q), stopped = %v", iid, oldIID, tc.stopped)
 			}
-			resumeMergeQueue(d, "restore", sessionName, iid, queued, true)
+			resumeMergeQueue(d, "restore", sessionName, iid, queued)
 
 			assertQueue(t, d, sessionName, iid, 3, 1, 2)
 		})
