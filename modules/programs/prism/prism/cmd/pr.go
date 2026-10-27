@@ -93,6 +93,10 @@ func withPRReadOnlyGuidance(callerPrompt string) string {
 	return prReadOnlyGuidance + "\n\n---\n\n" + callerPrompt
 }
 
+// prEnsureAndSwitch starts the session of `prism pr`. Tests replace it to
+// read the state at the start of the agent without tmux or a sidecar.
+var prEnsureAndSwitch = ensureAndSwitch
+
 var prCmd = &cobra.Command{
 	Use:   "pr <number>",
 	Short: "Check out a PR branch as a new worktree and switch to it",
@@ -310,7 +314,10 @@ var prCmd = &cobra.Command{
 			// killed, matching prism spawn.
 			ForceFresh: true,
 		}
-		if err := ensureAndSwitch(worktreePath, bareRoot, opts); err != nil {
+		if err := markPRBranchSession(worktreePath, bareRoot, prNumber); err != nil {
+			return err
+		}
+		if err := prEnsureAndSwitch(worktreePath, bareRoot, opts); err != nil {
 			return err
 		}
 		// The session is live: disarm the worktree rollback. Nothing after
@@ -340,6 +347,23 @@ var prCmd = &cobra.Command{
 		})
 		return nil
 	},
+}
+
+// markPRBranchSession writes the PR-branch record of the session that
+// ensureAndSwitch starts in worktreePath (issue #3287). It must run before
+// the agent starts: BuildAgentCmd reads the record and gives pi
+// --no-approve. An error stops `prism pr`, because a session with no record
+// gets --approve in a trusted repo.
+func markPRBranchSession(worktreePath, bareRoot, pr string) error {
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("prism pr: open DB for the PR-branch record: %w", err)
+	}
+	defer d.Close()
+	if err := session.RecordPRBranch(d, session.NameFor(worktreePath, bareRoot), worktreePath, pr); err != nil {
+		return fmt.Errorf("prism pr: %w", err)
+	}
+	return nil
 }
 
 // prSpawnInputsArgs bundles the fields needed to write spawn_inputs from the

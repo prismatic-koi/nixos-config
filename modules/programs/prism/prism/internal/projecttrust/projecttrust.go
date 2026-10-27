@@ -16,6 +16,13 @@
 // project directory, of that same project root. So a name alone or a
 // directory alone cannot give --approve, and a worktree value in agent_status
 // cannot point the decision at another repo.
+//
+// prism cannot know who wrote the branch of an existing PR. So a session that
+// `prism pr` or `prism spawn --pr` started, each of its descendants, and each
+// session in its worktree get --no-approve, also in a trusted repo (issue
+// #3287). The record of such a session is in pr_branch_sessions in prism.db.
+// Only `prism pr` and `prism spawn` write it, on the host, and no sandbox can
+// reach prism.db.
 package projecttrust
 
 import (
@@ -39,11 +46,23 @@ type Policy struct {
 	// specific path is a project root. A leading "~/" is expanded.
 	ProjectLocations []string
 	ProjectSpecific  []string
+	// PRBranches reads the PR-branch records. Approve calls it only when
+	// every other condition holds, so a session of an untrusted repo opens no
+	// database. A nil value or an error gives false.
+	PRBranches func() ([]PRBranch, error)
 }
 
-// Load reads the policy from project-trust.json and config.json. If
-// project-trust.json cannot be read, the policy trusts no repo.
-func Load() Policy {
+// PRBranch is a root session that prism started on the branch of an existing
+// PR, and the worktree that it started in.
+type PRBranch struct {
+	SessionName string
+	Worktree    string
+}
+
+// Load reads the policy from project-trust.json and config.json, and takes
+// prBranches as the reader of the PR-branch records. If project-trust.json
+// cannot be read, the policy trusts no repo.
+func Load(prBranches func() ([]PRBranch, error)) Policy {
 	repos, err := config.LoadProjectTrustedRepos()
 	if err != nil {
 		proglog.Warnf("[prism] %v — every pi starts with --no-approve\n", err)
@@ -54,6 +73,7 @@ func Load() Policy {
 		TrustedRepos:     repos,
 		ProjectLocations: cfg.ProjectLocations,
 		ProjectSpecific:  cfg.ProjectSpecific,
+		PRBranches:       prBranches,
 	}
 }
 
@@ -69,6 +89,8 @@ func Load() Policy {
 //   - The repo part of the session name matches the basename of the project
 //     root.
 //   - That basename is in TrustedRepos.
+//   - No PR-branch record names the root session of sessionName
+//     (sessionname.Root), and no record names dir as its worktree.
 //
 // Any other case gives false, an empty or relative dir included. The name
 // alone and the directory alone cannot give true: a project root under a
@@ -87,7 +109,35 @@ func (p Policy) Approve(sessionName, dir string) bool {
 		return false
 	}
 	name := filepath.Base(root)
-	return sessionname.RepoComponent(name) == repo && slices.Contains(p.TrustedRepos, name)
+	if sessionname.RepoComponent(name) != repo || !slices.Contains(p.TrustedRepos, name) {
+		return false
+	}
+	return !p.onPRBranch(sessionName, dir)
+}
+
+// onPRBranch reports whether a PR-branch record covers sessionName or dir. It
+// fails closed: a nil reader or a read error gives true.
+//
+// The worktree match covers a session in the PR worktree under another name.
+// session.NameFor takes the branch from the HEAD of the worktree, so after a
+// `git checkout -b` in the worktree, `prism switch` names the session after
+// the new branch.
+func (p Policy) onPRBranch(sessionName, dir string) bool {
+	if p.PRBranches == nil {
+		return true
+	}
+	records, err := p.PRBranches()
+	if err != nil {
+		proglog.Warnf("[prism] read PR-branch sessions: %v — pi starts with --no-approve\n", err)
+		return true
+	}
+	root := sessionname.Root(sessionName)
+	for _, r := range records {
+		if r.SessionName == root || filepath.Clean(r.Worktree) == dir || sameDir(dir, r.Worktree) {
+			return true
+		}
+	}
+	return false
 }
 
 // projectRoot returns the project root of dir and reports whether dir has the
