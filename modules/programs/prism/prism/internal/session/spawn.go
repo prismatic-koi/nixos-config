@@ -33,6 +33,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -301,6 +302,13 @@ type SpawnOpts struct {
 	// PRNumber is the parsed --pr flag value. Zero means no --pr was passed.
 	// Mirrors spawn_inputs.pr_number.
 	PRNumber int
+
+	// PRRef is the raw --pr value when the session starts on the branch of an
+	// existing PR, else empty. For a root session, SpawnSession writes it to
+	// pr_branch_sessions before the agent starts (RecordPRBranch). The
+	// project-trust decision then gives --no-approve to the session and to
+	// each of its descendants (issue #3287).
+	PRRef string
 
 	// BranchFlag is the raw --branch flag value.
 	// Mirrors spawn_inputs.branch_flag.
@@ -707,6 +715,16 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	if err := d.SetWorktreeReadOnly(opts.SessionName, opts.WorktreeReadOnly); err != nil {
 		startup.log("spawn-session: set worktree_readonly FAILED: %v", err)
 		return fmt.Errorf("spawn session: %w", err)
+	}
+
+	// BuildAgentCmd reads the PR-branch record, so write it before the agent
+	// window exists. A descendant writes nothing: the decision reads the
+	// record of its root session.
+	if !sessionname.IsDescendant(opts.SessionName) {
+		if err := RecordPRBranch(d, opts.SessionName, opts.Worktree, opts.PRRef); err != nil {
+			startup.log("spawn-session: record PR branch FAILED: %v", err)
+			return fmt.Errorf("spawn session: %w", err)
+		}
 	}
 
 	// Step 2: Write group_id when set. Single-session spawns leave GroupID

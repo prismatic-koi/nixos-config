@@ -69,6 +69,25 @@ func IsDescendant(name string) bool {
 	return strings.Contains(branchPart(name), DescendantSeparator)
 }
 
+// Root returns the root session of name: name with each descendant part
+// removed. It cuts at the first "~" in the part where IsDescendant looks
+// for one.
+//
+//	home-ops@feat~review-1-review-goal-fallback-1  → home-ops@feat
+//	home-ops@feat~investigate-x~review-1-x         → home-ops@feat
+//	obsidian~investigate-v2                        → obsidian
+//	weird~repo@main                                → weird~repo@main
+func Root(name string) string {
+	start := 0
+	if i := strings.Index(name, BranchSeparator); i >= 0 {
+		start = i + len(BranchSeparator)
+	}
+	if j := strings.Index(name[start:], DescendantSeparator); j >= 0 {
+		return name[:start+j]
+	}
+	return name
+}
+
 // branchPart returns the part of a session name in which a "~" marks a
 // descendant: everything after the first "@", or the whole name when the name
 // carries no branch.

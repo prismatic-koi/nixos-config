@@ -31,7 +31,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 46
+	currentSchemaVersion = 47
 )
 
 // DB wraps a SQLite connection.
@@ -413,6 +413,19 @@ CREATE TABLE IF NOT EXISTS pending_replay_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_pending_replay_deliveries_session
   ON pending_replay_deliveries(session_name, queued_at);
+
+-- pr_branch_sessions holds each root session that prism pr or
+-- prism spawn --pr started on the branch of an existing PR (issue #3287).
+-- The project-trust decision gives --no-approve to such a session, to its
+-- descendants, and to each session that starts in its worktree. Only
+-- prism pr and prism spawn write the table, on the host. Prune does not
+-- touch it.
+CREATE TABLE IF NOT EXISTS pr_branch_sessions (
+  session_name TEXT    PRIMARY KEY,
+  worktree     TEXT    NOT NULL,
+  pr           TEXT    NOT NULL,
+  created_at   INTEGER NOT NULL
+);
 `
 
 // Open opens (or creates) the prism database at path.
@@ -1067,6 +1080,9 @@ func runMigrations(conn sqlExecutor) error {
 		return err
 	}
 	if err := migrateV45ToV46(conn, &version); err != nil {
+		return err
+	}
+	if err := migrateV46ToV47(conn, &version); err != nil {
 		return err
 	}
 	if version > currentSchemaVersion {
@@ -1781,6 +1797,28 @@ func migrateV45ToV46(conn sqlExecutor, version *int) error {
 		return fmt.Errorf("db: migration v45\u2192v46: %w", err)
 	}
 	*version = 46
+	return nil
+}
+
+// migrateV46ToV47 adds the pr_branch_sessions table (issue #3287). CREATE
+// TABLE IF NOT EXISTS makes it safe on a fresh database whose declarative
+// schema already has the table.
+func migrateV46ToV47(conn sqlExecutor, version *int) error {
+	if *version >= 47 {
+		return nil
+	}
+	if _, err := conn.Exec(`CREATE TABLE IF NOT EXISTS pr_branch_sessions (
+		  session_name TEXT    PRIMARY KEY,
+		  worktree     TEXT    NOT NULL,
+		  pr           TEXT    NOT NULL,
+		  created_at   INTEGER NOT NULL
+		)`); err != nil {
+		return fmt.Errorf("db: migration v46\u2192v47: %w", err)
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 47`); err != nil {
+		return fmt.Errorf("db: migration v46\u2192v47: bump version: %w", err)
+	}
+	*version = 47
 	return nil
 }
 
