@@ -3170,7 +3170,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 	// GET /groups/poll?group_id=UUID
 	// Response: 200 with {"completed": bool, "members": [Status...],
-	//          "results": map[session]GroupMemberResult}.
+	//          "results": map[session]GroupMemberResult,
+	//          "awaiting_fallback": bool}.
 	// The CLI uses `completed` to decide when to stop polling, and the
 	// other fields to aggregate the per-agent verdicts (so a single
 	// terminal poll fetches everything needed).
@@ -3198,10 +3199,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, http.StatusInternalServerError, "group results: "+rErr.Error())
 			return
 		}
+		// awaiting_fallback is computed here because the stored fallback
+		// plan is in the host's state dir, which a sandbox cannot read.
 		writeJSON(w, http.StatusOK, map[string]any{
-			"completed": completed,
-			"members":   members,
-			"results":   results,
+			"completed":         completed,
+			"members":           members,
+			"results":           results,
+			"awaiting_fallback": completed && review.RefusalAwaitingFallback(groupID, members, results),
 		})
 	})
 

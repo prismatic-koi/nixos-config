@@ -45,9 +45,9 @@ func runMonitorReview(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("monitor-review: load opts: %w", err)
 	}
 
-	// Clean up the temp opts file immediately — we have the opts in memory.
-	_ = os.Remove(optsFile)
-
+	// The opts file stays on disk: the recovery watcher and `prism review
+	// --wait` read the fallback plan from it. `prism cleanup` of the parent
+	// removes it (review.RemoveMonitorOptsForParent).
 	if monErr := review.MonitorFunc(opts); monErr != nil {
 		// Log the error — the process is detached so nothing else reads this.
 		proglog.Errorf("[prism monitor-review] error: %v\n", monErr)

@@ -5,8 +5,6 @@ package review_test
 // saved.
 
 import (
-	"encoding/json"
-	"os"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
@@ -14,6 +12,7 @@ import (
 )
 
 func TestStartRecoveryFallbacks_StartsFallbackAfterRefusal(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	h := newFallbackHarness(t, "refusal")
 	opts := review.MonitorOpts{
 		GroupID:       h.groupID,
@@ -24,12 +23,7 @@ func TestStartRecoveryFallbacks_StartsFallbackAfterRefusal(t *testing.T) {
 			{Model: fbFirst, Fallbacks: []string{fbModelOne}},
 		}},
 	}
-	data, _ := json.Marshal(opts)
-	path := review.MonitorOptsPath(h.groupID)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Remove(path) })
+	writePlan(t, opts)
 
 	var got []string
 	spawn := func(d *db.DB, c review.FallbackSpawnCall) error {
@@ -46,6 +40,7 @@ func TestStartRecoveryFallbacks_StartsFallbackAfterRefusal(t *testing.T) {
 }
 
 func TestStartRecoveryFallbacks_NoFallbackLeft(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	h := newFallbackHarness(t, "refusal")
 	opts := review.MonitorOpts{
 		GroupID:       h.groupID,
@@ -55,12 +50,7 @@ func TestStartRecoveryFallbacks_NoFallbackLeft(t *testing.T) {
 			{Model: fbFirst}, {Model: fbFirst},
 		}},
 	}
-	data, _ := json.Marshal(opts)
-	path := review.MonitorOptsPath(h.groupID)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Remove(path) })
+	writePlan(t, opts)
 	spawn := func(d *db.DB, c review.FallbackSpawnCall) error {
 		t.Errorf("unexpected spawn %s", c.Session)
 		return nil

@@ -1348,15 +1348,49 @@ func buildPromptBodyForMonitor(text string, status *db.Status) map[string]any {
 	return body
 }
 
+// MonitorStateDir returns $XDG_STATE_HOME/prism/review-monitor, the
+// directory of the monitor opts files and the monitor logs. It falls back to
+// $HOME/.local/state when XDG_STATE_HOME is empty. The directory is in the
+// prism state dir, not in a temporary directory, so a reboot or a different
+// TMPDIR does not lose the fallback plan of a round (issue #3128).
+func MonitorStateDir() string {
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if stateHome == "" {
+		home, _ := os.UserHomeDir()
+		stateHome = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(stateHome, "prism", "review-monitor")
+}
+
 // MonitorOptsPath returns the path of the opts file of a group's monitor.
+// The file holds the fallback plan of the round. The monitor, the recovery
+// path, and `prism review --wait` read it. `prism cleanup` of the parent
+// removes it.
 func MonitorOptsPath(groupID string) string {
-	return filepath.Join(os.TempDir(), "prism-monitor-opts-"+sanitisePRNumber(groupID)+".json")
+	return filepath.Join(MonitorStateDir(), "opts-"+sanitisePRNumber(groupID)+".json")
+}
+
+// MonitorLogPath returns the path of the log of a round's monitor process.
+func MonitorLogPath(prNumber string, round int) string {
+	return filepath.Join(MonitorStateDir(), fmt.Sprintf("review-%s-round-%d.log", sanitisePRNumber(prNumber), round))
+}
+
+// RemoveMonitorOpts removes the opts file of groupID. A missing file is not
+// an error.
+func RemoveMonitorOpts(groupID string) error {
+	if err := os.Remove(MonitorOptsPath(groupID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func writeMonitorOpts(path string, opts MonitorOpts) error {
 	optsJSON, err := json.Marshal(opts)
 	if err != nil {
 		return fmt.Errorf("monitor: marshal opts: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("monitor: create opts dir: %w", err)
 	}
 	if err := os.WriteFile(path, optsJSON, 0o600); err != nil {
 		return fmt.Errorf("monitor: write opts file: %w", err)
@@ -1381,7 +1415,7 @@ func StartMonitorProcess(opts MonitorOpts, prismBinary string) error {
 	}
 
 	// The opts file stays on disk at a path derived from the group, so the
-	// recovery watcher can read the fallback plan if this process dies.
+	// recovery watcher can read the fallback plan if the monitor dies.
 	optsPath := MonitorOptsPath(opts.GroupID)
 	if err := writeMonitorOpts(optsPath, opts); err != nil {
 		return err
@@ -1391,8 +1425,9 @@ func StartMonitorProcess(opts MonitorOpts, prismBinary string) error {
 	// Detach the process: use setsid so it survives the parent process exiting.
 	detachProcess(cmd)
 	// Redirect stdout/stderr to log file for diagnostics.
-	logPath := fmt.Sprintf("/tmp/prism-monitor-review-%s-round-%d.log", sanitisePRNumber(opts.PRNumber), opts.Round)
-	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	// The opts file write above created the directory.
+	logPath := MonitorLogPath(opts.PRNumber, opts.Round)
+	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if logErr == nil {
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
