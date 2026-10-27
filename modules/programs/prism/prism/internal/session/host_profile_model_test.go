@@ -102,3 +102,58 @@ func TestBuildDirectAgentCmd_HostModeNoModelWarns(t *testing.T) {
 		t.Errorf("warning missing: %q", b)
 	}
 }
+
+const hostCoordProfilesJSON = `{"default":"std","profiles":{
+ "std":{"coordinator":{"provider":"anthropic","model":"anthropic/claude-opus-5-5","thinking":"medium"},
+        "worker":{"model":"anthropic/claude-sonnet-5-5"}}}}`
+
+func writeHostCoordProfiles(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "prism"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "prism", "profiles.json"), []byte(hostCoordProfilesJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", dir)
+}
+
+// The role-less root session of a non-worktree project reads the coordinator
+// slot in host mode, and pi gets no --agent flag.
+func TestBuildDirectAgentCmd_HostModeNonWorktreeRootReadsCoordinatorSlot(t *testing.T) {
+	writeHostCoordProfiles(t)
+	cmd := buildDirectAgentCmd(Opts{SessionName: "obsidian", Worktree: t.TempDir(), HarnessName: "pi", IsolationMode: "host"})
+	for _, want := range []string{"--model 'anthropic/claude-opus-5-5'", "--thinking 'medium'"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("missing %q in %q", want, cmd)
+		}
+	}
+	if strings.Contains(cmd, "--agent") {
+		t.Errorf("unexpected --agent in %q", cmd)
+	}
+}
+
+// Other role-less sessions get no slot: a branch name, a "~" name, and a
+// session with no worktree.
+func TestBuildDirectAgentCmd_HostModeRolelessNonRootGetsNoSlot(t *testing.T) {
+	writeHostCoordProfiles(t)
+	for _, name := range []string{"repo@feature", "obsidian~review-1-x", "obsidian~child"} {
+		cmd := buildDirectAgentCmd(Opts{SessionName: name, Worktree: t.TempDir(), HarnessName: "pi", IsolationMode: "host"})
+		if strings.Contains(cmd, "--model") {
+			t.Errorf("%s: unexpected model in %q", name, cmd)
+		}
+	}
+	if cmd := buildDirectAgentCmd(Opts{SessionName: "obsidian", HarnessName: "pi"}); strings.Contains(cmd, "--model") {
+		t.Errorf("no worktree: unexpected model in %q", cmd)
+	}
+}
+
+// A role keeps its own slot.
+func TestBuildDirectAgentCmd_HostModeWorkerKeepsSlot(t *testing.T) {
+	writeHostCoordProfiles(t)
+	cmd := buildDirectAgentCmd(Opts{SessionName: "obsidian", Agent: "worker", Worktree: t.TempDir(), HarnessName: "pi"})
+	if !strings.Contains(cmd, "claude-sonnet-5-5") {
+		t.Errorf("worker slot missing: %q", cmd)
+	}
+}
