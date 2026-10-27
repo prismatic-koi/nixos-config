@@ -30,5 +30,5 @@ func FakeStdioHarness(t testing.TB) string {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build fake stdio harness: %v\n%s", err, out)
 	}
-	return bin + "-missing" // TEMP-BREAK
+	return bin
 }
