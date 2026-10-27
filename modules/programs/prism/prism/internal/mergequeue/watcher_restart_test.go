@@ -11,7 +11,6 @@ package mergequeue
 
 import (
 	"context"
-	"net/http"
 	"testing"
 	"time"
 
@@ -32,7 +31,7 @@ func newRestartFixture(t *testing.T, inst string, prs ...int) *restartFixture {
 	t.Helper()
 	d := openTestDB(t)
 	srv := newCapturingServer(t)
-	seedCoordinator(t, d, restartSession, inst, parsePort(t, srv.URL), "sid-"+inst)
+	seedCoordinator(t, d, restartSession, inst, srv, "sid-"+inst)
 	for _, pr := range prs {
 		if _, err := d.EnqueueMerge(pr, "myrepo", restartSession, inst, nil); err != nil {
 			t.Fatalf("EnqueueMerge(%d): %v", pr, err)
@@ -45,7 +44,7 @@ func newRestartFixture(t *testing.T, inst string, prs ...int) *restartFixture {
 // watcher returns a production watcher for the coordinator that runs with
 // instanceID.
 func (f *restartFixture) watcher(instanceID string, gh *ghFake) *Watcher {
-	return newTickWatcher(f.db, instanceID, restartSession, f.srv.Client(), gh)
+	return newTickWatcher(f.db, instanceID, restartSession, gh)
 }
 
 // queued reads the queue as restore does before it stops the old sidecar.
@@ -235,7 +234,7 @@ func TestRestart_NewIncarnationOwnsQueue(t *testing.T) {
 		t.Errorf("watching rows of the new instance = %v, want [61 62]", got)
 	}
 	gh := newGHFake(t, blockedInfo("APPROVED", []checkEntry{{Name: "pr-gate", Status: "IN_PROGRESS"}}))
-	newTickWatcher(f.db, newInst, restartSession, http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(f.db, newInst, restartSession, gh).tick(context.Background())
 	if !equalInts(gh.viewed, []int{61}) {
 		t.Errorf("new watcher viewed %v, want [61]", gh.viewed)
 	}

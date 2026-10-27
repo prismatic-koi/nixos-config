@@ -15,7 +15,7 @@
 //   - Others   → keep watching (transient)
 //
 // On each terminal outcome (merged, failed, closed) a bus notification is
-// delivered to the enqueuing coordinator session via the harness HTTP API.
+// delivered to the enqueuing coordinator session via its host-API Unix socket (pi harness only).
 // If another path ended the row first, the watcher sends no notification
 // (endRow). Every notification names the PR. The merge and close outcomes
 // add the worker session's archive path and prompt git pull + prism
@@ -32,13 +32,10 @@
 package mergequeue
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os/exec"
 	"strings"
 	"time"
@@ -84,7 +81,6 @@ type Watcher struct {
 	db          *db.DB
 	instanceID  string
 	sessionName string
-	httpClient  *http.Client
 
 	// repo is the GitHub owner/name slug (e.g. "prismatic-koi/nixos-config")
 	// resolved once at construction time from the coordinator session's
@@ -141,8 +137,8 @@ func isPermanentUpdateBranchError(err error) bool {
 }
 
 // New creates a Watcher. instanceID and sessionName identify the coordinator
-// session that owns this watcher. httpClient is used for notification delivery;
-// pass nil to use the default client.
+// session that owns this watcher.
+// Notifications go through the coordinator's host-API socket.
 //
 // New resolves the GitHub owner/name slug once, using the worktree path
 // recorded for sessionName in agent_status. Subsequent gh invocations are
@@ -150,15 +146,11 @@ func isPermanentUpdateBranchError(err error) bool {
 // process CWD is not a git repo. If resolution fails (no row in
 // agent_status, missing worktree, or `gh repo view` errors), repo is left
 // empty and a warning is logged; Run() will then exit cleanly without polling.
-func New(database *db.DB, instanceID, sessionName string, httpClient *http.Client) *Watcher {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
-	}
+func New(database *db.DB, instanceID, sessionName string) *Watcher {
 	w := &Watcher{
 		db:          database,
 		instanceID:  instanceID,
 		sessionName: sessionName,
-		httpClient:  httpClient,
 	}
 	w.repo = resolveRepo(database, sessionName)
 	return w
@@ -773,10 +765,9 @@ func (w *Watcher) endRow(head *db.PendingMerge, status, errMsg, label string) bo
 }
 
 // notify delivers a notification to the coordinator via the appropriate
-// delivery path based on the harness type. For pi (TransportSocketPipe)
-// coordinators, it routes through the host-API Unix socket. For
-// HTTP harness coordinators, it uses the HTTP API (prompt_async).
-// Failure is non-fatal (logged).
+// host-API Unix socket of the coordinator. Only socket-pipe harnesses (pi)
+// are supported. Any other harness gets no request. Failure is non-fatal
+// (logged).
 func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, text string) {
 	status, err := w.db.CurrentStatus(targetSession)
 	if err != nil || status == nil {
@@ -784,8 +775,6 @@ func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, t
 		return
 	}
 
-	// PI (socket-pipe) coordinators do not have an HTTP server —
-	// route through the coordinator's host-API Unix socket instead.
 	if status.Harness != nil {
 		if shape, ok := harness.ShapeOf(*status.Harness); ok && shape == harness.TransportSocketPipe {
 			log.Printf("[mergequeue] notify: routing via host-API socket for pi coordinator=%s", targetSession)
@@ -801,47 +790,7 @@ func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, t
 		}
 	}
 
-	// HTTP harness path: require harness port and session ID.
-	if status.HarnessPort == nil {
-		log.Printf("[mergequeue] notify: coordinator %q has no harness port", targetSession)
-		return
-	}
-	port := *status.HarnessPort
-
-	// Validate harness_session_id.
-	if status.HarnessSessionID == nil || *status.HarnessSessionID == "" {
-		log.Printf("[mergequeue] notify: coordinator %q has no harness_session_id", targetSession)
-		return
-	}
-	sid := *status.HarnessSessionID
-
-	body := buildNotifyBody(text, status)
-	jsonBytes, err := json.Marshal(body)
-	if err != nil {
-		log.Printf("[mergequeue] notify: marshal body: %v", err)
-		return
-	}
-
-	url := fmt.Sprintf("http://localhost:%d/session/%s/prompt_async", port, sid)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBytes))
-	if err != nil {
-		log.Printf("[mergequeue] notify: create request: %v", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := w.httpClient.Do(req)
-	if err != nil {
-		log.Printf("[mergequeue] notify: HTTP request: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
-		log.Printf("[mergequeue] notify: HTTP status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
-		return
-	}
-	log.Printf("[mergequeue] notify: delivered to %s", targetSession)
+	log.Printf("[mergequeue] notify: FAILED — coordinator %q has no socket-pipe harness; no notification sent", targetSession)
 }
 
 // lookupWorkerArchivePath finds the most recent sessions row for the PR's

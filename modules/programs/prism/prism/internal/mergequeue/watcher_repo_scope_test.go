@@ -11,7 +11,6 @@ package mergequeue
 
 import (
 	"context"
-	"net/http"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
@@ -58,7 +57,7 @@ func TestWatcher_TerminateOnlyAffectsOwnRepo(t *testing.T) {
 	}
 
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
-	newTickWatcher(d, "inst-a", "repo-a@main", http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(d, "inst-a", "repo-a@main", gh).tick(context.Background())
 
 	rowA, err := d.PendingMergeByPR(pr, "repo-a")
 	if err != nil || rowA == nil || rowA.Status != "merged" {
@@ -93,7 +92,7 @@ func TestWatcher_UpdateLastCheckedOnlyAffectsOwnRepo(t *testing.T) {
 	}
 
 	gh := newGHFake(t, blockedInfo("APPROVED", []checkEntry{{Name: "pr-gate", Status: "IN_PROGRESS"}}))
-	newTickWatcher(d, "inst-a", "repo-a@main", http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(d, "inst-a", "repo-a@main", gh).tick(context.Background())
 
 	rowA, _ := d.PendingMergeByPR(pr, "repo-a")
 	rowB, _ := d.PendingMergeByPR(pr, "repo-b")

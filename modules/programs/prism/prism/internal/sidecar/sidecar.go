@@ -1044,7 +1044,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			s.mu.Lock()
 			s.mergeWatcherCancel = watcherCancel
 			s.mu.Unlock()
-			watcher := mergequeue.New(s.cfg.DB, instanceID, s.cfg.SessionName, s.cfg.HTTPClient)
+			watcher := mergequeue.New(s.cfg.DB, instanceID, s.cfg.SessionName)
 			go watcher.Run(watcherCtx)
 			s.logger().Printf("sidecar: merge-queue watcher started (instance=%s)", instanceID)
 		} else {
