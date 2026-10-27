@@ -40,38 +40,29 @@ func TestReviewWait_FallbackReplacesRefusedSession(t *testing.T) {
 // a refusal and the fallback spawn: the group is complete, but --wait must
 // not report it until the settle period has passed.
 func TestReviewWaitDone_WaitsForFallbackAfterRefusal(t *testing.T) {
-	refused := "nixos-config@x~review-1-review-security"
-	all := []db.Status{{SessionName: refused, State: "error"}}
-	results := map[string]db.GroupMemberResult{
-		refused: {SessionName: refused, State: "error", RunError: "refused", RunErrorRawStopReason: "refusal"},
-	}
 	var since time.Time
 	t0 := time.Unix(1000, 0)
 
-	if reviewWaitDone(true, all, results, &since, t0) {
+	if reviewWaitDone(true, true, &since, t0) {
 		t.Fatal("done at the refusal, want a wait for the fallback")
 	}
-	if reviewWaitDone(true, all, results, &since, t0.Add(reviewWaitFallbackSettle-time.Second)) {
+	if reviewWaitDone(true, true, &since, t0.Add(reviewWaitFallbackSettle-time.Second)) {
 		t.Fatal("done before the settle period passed")
 	}
-	if !reviewWaitDone(true, all, results, &since, t0.Add(reviewWaitFallbackSettle)) {
+	if !reviewWaitDone(true, true, &since, t0.Add(reviewWaitFallbackSettle)) {
 		t.Fatal("not done after the settle period, want done")
 	}
+}
 
-	// A non-refusal run_error is final at once.
-	results[refused] = db.GroupMemberResult{SessionName: refused, State: "error", RunError: "x", RunErrorRawStopReason: "max_tokens"}
-	since = time.Time{}
-	if !reviewWaitDone(true, all, results, &since, t0) {
-		t.Fatal("non-refusal run_error: not done, want done")
+// TestReviewWaitDone_NoWaitWithoutFallbackLeft covers issue #3128: when no
+// fallback can start, a complete group is done at once.
+func TestReviewWaitDone_NoWaitWithoutFallbackLeft(t *testing.T) {
+	var since time.Time
+	t0 := time.Unix(1000, 0)
+	if !reviewWaitDone(true, false, &since, t0) {
+		t.Fatal("no fallback left: not done, want done")
 	}
-
-	// Once the fallback session exists, the refused session is superseded.
-	fallback := refused + "-fallback-1"
-	results[refused] = db.GroupMemberResult{SessionName: refused, State: "error", RunError: "r", RunErrorRawStopReason: "refusal"}
-	results[fallback] = db.GroupMemberResult{SessionName: fallback, State: "finished"}
-	all = append(all, db.Status{SessionName: fallback, State: "finished"})
-	since = time.Time{}
-	if !reviewWaitDone(true, all, results, &since, t0) {
-		t.Fatal("fallback finished: not done, want done")
+	if !since.IsZero() {
+		t.Fatal("settle timer started without a fallback left")
 	}
 }
