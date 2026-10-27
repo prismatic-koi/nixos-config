@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -642,36 +643,22 @@ INSERT OR REPLACE INTO spawn_outcome (
 // pattern prefix, matching the convention used by SetEnded and
 // ClearHarnessSessionID.
 //
+// parentInstanceID is the instance ID of sessionName that the caller read
+// before the tmux kill. The kill fires the session-closed hook, and the hook
+// can clear agent_status.instance_id of sessionName before the cascade runs.
+// The query then does not find the parent, so the cascade also writes
+// parentInstanceID. An empty parentInstanceID adds no instance ID. The
+// cascade writes each instance ID one time (#3266).
+//
 // Each resolved instance_id is written independently via WriteSpawnOutcome,
 // so one child's failure does not prevent the others (or the parent) from
 // being written. The first error encountered, if any, is returned after all
 // writes have been attempted.
-func (d *DB) WriteSpawnOutcomeCascade(sessionName string) error {
-	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(sessionName)
-	const q = `
-SELECT DISTINCT instance_id
-FROM   agent_status
-WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
-  AND  instance_id IS NOT NULL`
-	rows, err := d.conn.Query(q, sessionName, escaped)
+func (d *DB) WriteSpawnOutcomeCascade(sessionName, parentInstanceID string) error {
+	instanceIDs, err := d.spawnOutcomeCascadeInstanceIDs(sessionName, parentInstanceID)
 	if err != nil {
-		return fmt.Errorf("db: write spawn outcome cascade: query instance ids: %w", err)
+		return err
 	}
-
-	var instanceIDs []string
-	for rows.Next() {
-		var id string
-		if scanErr := rows.Scan(&id); scanErr != nil {
-			rows.Close()
-			return fmt.Errorf("db: write spawn outcome cascade: scan instance id: %w", scanErr)
-		}
-		instanceIDs = append(instanceIDs, id)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("db: write spawn outcome cascade: iterate instance ids: %w", err)
-	}
-	rows.Close()
 
 	var firstErr error
 	for _, instanceID := range instanceIDs {
@@ -680,6 +667,41 @@ WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
 		}
 	}
 	return firstErr
+}
+
+// spawnOutcomeCascadeInstanceIDs returns the instance IDs that
+// WriteSpawnOutcomeCascade writes, with no duplicates.
+func (d *DB) spawnOutcomeCascadeInstanceIDs(sessionName, parentInstanceID string) ([]string, error) {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(sessionName)
+	const q = `
+SELECT DISTINCT instance_id
+FROM   agent_status
+WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
+  AND  instance_id IS NOT NULL`
+	rows, err := d.conn.Query(q, sessionName, escaped)
+	if err != nil {
+		return nil, fmt.Errorf("db: write spawn outcome cascade: query instance ids: %w", err)
+	}
+
+	var instanceIDs []string
+	for rows.Next() {
+		var id string
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			rows.Close()
+			return nil, fmt.Errorf("db: write spawn outcome cascade: scan instance id: %w", scanErr)
+		}
+		instanceIDs = append(instanceIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("db: write spawn outcome cascade: iterate instance ids: %w", err)
+	}
+	rows.Close()
+
+	if parentInstanceID != "" && !slices.Contains(instanceIDs, parentInstanceID) {
+		instanceIDs = append(instanceIDs, parentInstanceID)
+	}
+	return instanceIDs, nil
 }
 
 // UpdateSpawnOutcomePR records the PR number opened by the worker session

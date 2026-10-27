@@ -7940,7 +7940,7 @@ func TestWriteSpawnOutcomeCascade_WritesParentAndChildren(t *testing.T) {
 	notReviewIID := uuid.New().String()
 	seedSessionAndStatus(t, d, notReview, notReviewIID)
 
-	if err := d.WriteSpawnOutcomeCascade(parent); err != nil {
+	if err := d.WriteSpawnOutcomeCascade(parent, ""); err != nil {
 		t.Fatalf("WriteSpawnOutcomeCascade: %v", err)
 	}
 
@@ -7964,6 +7964,35 @@ func TestWriteSpawnOutcomeCascade_WritesParentAndChildren(t *testing.T) {
 	}
 }
 
+// TestWriteSpawnOutcomeCascade_ClearedParentUsesParentInstanceID verifies
+// that the cascade writes the parent from parentInstanceID when
+// agent_status.instance_id of the parent is cleared, and still writes the
+// review children (#3266).
+func TestWriteSpawnOutcomeCascade_ClearedParentUsesParentInstanceID(t *testing.T) {
+	d := openTestDB(t)
+
+	parent := "nixos-config@feat-cleared"
+	parentIID := uuid.New().String()
+	seedSessionAndStatus(t, d, parent, parentIID)
+	child := parent + "~review-1-review-goal"
+	childIID := uuid.New().String()
+	seedSessionAndStatus(t, d, child, childIID)
+	if err := d.ClearInstanceID(parent); err != nil {
+		t.Fatalf("ClearInstanceID: %v", err)
+	}
+
+	if err := d.WriteSpawnOutcomeCascade(parent, parentIID); err != nil {
+		t.Fatalf("WriteSpawnOutcomeCascade: %v", err)
+	}
+
+	for name, iid := range map[string]string{parent: parentIID, child: childIID} {
+		out, err := d.SpawnOutcomeByInstanceID(iid)
+		if err != nil || out == nil || out.AggregatedAt == nil {
+			t.Errorf("%s: spawn_outcome row = %+v, %v, want a row with aggregated_at", name, out, err)
+		}
+	}
+}
+
 // TestWriteSpawnOutcomeCascade_NoChildrenIsNoop verifies that cascading on a
 // parent with no review children cleans up with no error and writes only its
 // own row.
@@ -7974,7 +8003,7 @@ func TestWriteSpawnOutcomeCascade_NoChildrenIsNoop(t *testing.T) {
 	parentIID := uuid.New().String()
 	seedSessionAndStatus(t, d, parent, parentIID)
 
-	if err := d.WriteSpawnOutcomeCascade(parent); err != nil {
+	if err := d.WriteSpawnOutcomeCascade(parent, ""); err != nil {
 		t.Fatalf("WriteSpawnOutcomeCascade: %v", err)
 	}
 
@@ -7998,7 +8027,7 @@ func TestWriteSpawnOutcomeCascade_ChildWithNoEventsGetsZeroCountRow(t *testing.T
 	childIID := uuid.New().String()
 	seedSessionAndStatus(t, d, child, childIID)
 
-	if err := d.WriteSpawnOutcomeCascade(parent); err != nil {
+	if err := d.WriteSpawnOutcomeCascade(parent, ""); err != nil {
 		t.Fatalf("WriteSpawnOutcomeCascade: %v", err)
 	}
 
@@ -8050,7 +8079,7 @@ func TestWriteSpawnOutcomeCascade_ParentRowUnchangedInValue(t *testing.T) {
 		t.Fatalf("ComputeSpawnOutcome: out=%v err=%v", want, err)
 	}
 
-	if err := d.WriteSpawnOutcomeCascade(parent); err != nil {
+	if err := d.WriteSpawnOutcomeCascade(parent, ""); err != nil {
 		t.Fatalf("WriteSpawnOutcomeCascade: %v", err)
 	}
 
@@ -8086,7 +8115,7 @@ func TestWriteSpawnOutcomeCascade_Idempotent(t *testing.T) {
 		t.Fatalf("WriteSpawnOutcome (pre-seed child): %v", err)
 	}
 
-	if err := d.WriteSpawnOutcomeCascade(parent); err != nil {
+	if err := d.WriteSpawnOutcomeCascade(parent, ""); err != nil {
 		t.Fatalf("WriteSpawnOutcomeCascade (first): %v", err)
 	}
 	firstParent, err := d.SpawnOutcomeByInstanceID(parentIID)
@@ -8098,7 +8127,7 @@ func TestWriteSpawnOutcomeCascade_Idempotent(t *testing.T) {
 		t.Fatalf("SpawnOutcomeByInstanceID child (first): out=%v err=%v", firstChild, err)
 	}
 
-	if err := d.WriteSpawnOutcomeCascade(parent); err != nil {
+	if err := d.WriteSpawnOutcomeCascade(parent, ""); err != nil {
 		t.Fatalf("WriteSpawnOutcomeCascade (second): %v", err)
 	}
 	secondParent, err := d.SpawnOutcomeByInstanceID(parentIID)
