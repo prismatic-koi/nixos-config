@@ -142,8 +142,12 @@ func KillReviewSessionsForParentWithDB(d *db.DB, parentSession string) {
 // nothing else: the tmux session, the row, and the port stay. The caller
 // must pass them to db.SetEndedExcept when it ends the parent, because the
 // db.SetEnded cascade would end their rows too.
+//
+// It also removes the stored fallback plan of each round of the parent
+// (RemoveMonitorOptsForParent).
 func CleanupReviewSessionsForParent(d *db.DB, parentSession string) (failed []string) {
 	prefix := parentSession + "~review-"
+	defer RemoveMonitorOptsForParent(d, parentSession)
 
 	// Try DB-backed group membership first (post-migration rows).
 	members, err := d.GroupMembersForParent(parentSession)
@@ -190,6 +194,22 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession string) (failed []st
 	// Kill the tmux sessions (best effort, idempotent).
 	KillSessionPrefix(prefix)
 	return failed
+}
+
+// RemoveMonitorOptsForParent removes the stored monitor opts file (the
+// fallback plan) of each review round of parentSession. Errors are logged,
+// not returned: a file that stays on disk does not stop the cleanup.
+func RemoveMonitorOptsForParent(d *db.DB, parentSession string) {
+	groups, err := d.GroupsForParent(parentSession)
+	if err != nil {
+		proglog.Warnf("[prism] warning: list review groups of %q: %v\n", parentSession, err)
+		return
+	}
+	for _, g := range groups {
+		if rmErr := RemoveMonitorOpts(g.GroupID); rmErr != nil {
+			proglog.Warnf("[prism] warning: remove monitor opts of group %s: %v\n", g.GroupID, rmErr)
+		}
+	}
 }
 
 // StopReviewChildrenForEnd prepares db.SetEnded(parent). That call also

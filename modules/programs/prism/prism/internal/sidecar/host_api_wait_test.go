@@ -14,11 +14,14 @@ package sidecar
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/review"
 )
 
 // ── /merges/by-pr ─────────────────────────────────────────────────────────────
@@ -161,6 +164,79 @@ func TestHostAPI_GroupsPoll_CompletedTrueAfterAllTerminal(t *testing.T) {
 	}
 	if mr, ok := resp.Results[sess]; !ok || mr.State != "finished" {
 		t.Errorf("results[%q]: want state=finished, got %v", sess, mr)
+	}
+}
+
+// TestHostAPI_GroupsPoll_AwaitingFallback covers issue #3128: the host
+// reads the stored fallback plan and reports whether a fallback can still
+// start after a refusal.
+func TestHostAPI_GroupsPoll_AwaitingFallback(t *testing.T) {
+	d := openTestDB(t)
+	parent := "repo@pr-3128"
+	groupID, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	sess := parent + "~review-1-review-goal"
+	if err := d.UpsertStatus(sess, "repo", "/wt", "error", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetGroupID(sess, groupID); err != nil {
+		t.Fatalf("SetGroupID: %v", err)
+	}
+	if err := d.WriteEvent(db.Event{
+		ID: "evt-refusal", SessionName: sess, Repo: "repo", Worktree: "/wt", Type: "run_error",
+		Payload: `{"type":"run_error","stop_reason":"error","reason":"refused","raw_stop_reason":"refusal"}`,
+	}); err != nil {
+		t.Fatalf("WriteEvent: %v", err)
+	}
+	sc := newSidecarWithRole(t, parent, "repo", "worker", d)
+
+	poll := func() bool {
+		t.Helper()
+		rr := doHostAPI(t, sc, http.MethodGet, "/groups/poll?group_id="+groupID, "")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+		}
+		var resp struct {
+			Completed        bool  `json:"completed"`
+			AwaitingFallback *bool `json:"awaiting_fallback"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !resp.Completed || resp.AwaitingFallback == nil {
+			t.Fatalf("completed=%v awaiting_fallback=%v, want completed and the field set; body = %s", resp.Completed, resp.AwaitingFallback, rr.Body.String())
+		}
+		return *resp.AwaitingFallback
+	}
+	writePlan := func(fallbacks ...string) {
+		t.Helper()
+		opts := review.MonitorOpts{
+			GroupID:       groupID,
+			AgentSessions: []string{sess},
+			Fallback:      &review.FallbackPlan{Agents: []review.AgentFallbackPlan{{Model: "m", Fallbacks: fallbacks}}},
+		}
+		path := review.MonitorOptsPath(groupID)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := json.Marshal(opts)
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if poll() {
+		t.Error("no stored plan: awaiting_fallback = true, want false")
+	}
+	writePlan()
+	if poll() {
+		t.Error("no fallback left: awaiting_fallback = true, want false")
+	}
+	writePlan("fallback-model")
+	if !poll() {
+		t.Error("fallback left: awaiting_fallback = false, want true")
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
 )
 
@@ -47,6 +48,13 @@ type waitProbe interface {
 	// rows whose ended_at is set, which GroupResults intentionally drops);
 	// results carries the verdict-aggregation data from GroupResults.
 	GroupPoll(groupID string) (completed bool, members []db.Status, results map[string]db.GroupMemberResult, err error)
+
+	// AwaitingFallback reports whether the monitor can still start a
+	// fallback session in the group: the last session of some agent ended
+	// with a refusal run_error, and the stored fallback plan has a model
+	// left for that agent. members and results are the values of the last
+	// GroupPoll for groupID.
+	AwaitingFallback(groupID string, members []db.Status, results map[string]db.GroupMemberResult) bool
 
 	// Close releases any underlying handle. host probes hold a *db.DB;
 	// sandbox probes hold no resources.
@@ -96,6 +104,10 @@ func (p *dbWaitProbe) GroupPoll(groupID string) (bool, []db.Status, map[string]d
 	return completed, members, results, nil
 }
 
+func (p *dbWaitProbe) AwaitingFallback(groupID string, members []db.Status, results map[string]db.GroupMemberResult) bool {
+	return review.RefusalAwaitingFallback(groupID, members, results)
+}
+
 func (p *dbWaitProbe) Close() {
 	if p.d != nil {
 		p.d.Close()
@@ -104,7 +116,12 @@ func (p *dbWaitProbe) Close() {
 
 // proxyWaitProbe is the sandbox-path implementation: HTTP GETs to the
 // sidecar's read-only wait-probe endpoints.
-type proxyWaitProbe struct{ apiURL string }
+type proxyWaitProbe struct {
+	apiURL string
+	// awaitingFallback is the awaiting_fallback field of the last
+	// /groups/poll response. It is nil when the sidecar did not send it.
+	awaitingFallback *bool
+}
 
 func (p *proxyWaitProbe) Merge(pr int, repo string) (*db.PendingMerge, error) {
 	var row db.PendingMerge
@@ -146,6 +163,10 @@ type proxyGroupPollResp struct {
 	Completed bool                            `json:"completed"`
 	Members   []db.Status                     `json:"members"`
 	Results   map[string]db.GroupMemberResult `json:"results"`
+	// AwaitingFallback is computed on the host, because only the host can
+	// read the stored fallback plan. A sidecar built before issue #3128
+	// does not send it.
+	AwaitingFallback *bool `json:"awaiting_fallback,omitempty"`
 }
 
 func (p *proxyWaitProbe) GroupPoll(groupID string) (bool, []db.Status, map[string]db.GroupMemberResult, error) {
@@ -154,7 +175,18 @@ func (p *proxyWaitProbe) GroupPoll(groupID string) (bool, []db.Status, map[strin
 	if err := proxyGetFromHostAPI(p.apiURL, "/groups/poll", params, &resp); err != nil {
 		return false, nil, nil, err
 	}
+	p.awaitingFallback = resp.AwaitingFallback
 	return resp.Completed, resp.Members, resp.Results, nil
+}
+
+// AwaitingFallback returns the host's answer from the last GroupPoll. When
+// the sidecar did not send one, it falls back to the check without the
+// plan, which waits after every refusal.
+func (p *proxyWaitProbe) AwaitingFallback(_ string, members []db.Status, results map[string]db.GroupMemberResult) bool {
+	if p.awaitingFallback != nil {
+		return *p.awaitingFallback
+	}
+	return review.RefusalInGroup(members, results)
 }
 
 func (p *proxyWaitProbe) Close() {}
