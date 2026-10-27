@@ -57,7 +57,7 @@ func TestCrossRepoPRNumberCollision_Enqueue_FreshRowNotShortCircuited(t *testing
 	if _, err := d.EnqueueMerge(pr, "repo-a", "repo-a@main", "inst-a", &titleA); err != nil {
 		t.Fatalf("EnqueueMerge repo-a: %v", err)
 	}
-	if err := d.TerminateMerge(pr, "repo-a", "merged", ""); err != nil {
+	if _, err := d.TerminateMerge(pr, "repo-a", "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge repo-a: %v", err)
 	}
 
@@ -180,7 +180,7 @@ func TestTerminateMerge_RepoScoped(t *testing.T) {
 	}
 
 	// Terminate only repo-a's row.
-	if err := d.TerminateMerge(50, "repo-a", "merged", ""); err != nil {
+	if _, err := d.TerminateMerge(50, "repo-a", "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge repo-a: %v", err)
 	}
 
@@ -295,7 +295,7 @@ func TestEnqueueMerge_SameRepoAlreadyMergedReEnqueuesFresh(t *testing.T) {
 	if _, err := d.EnqueueMerge(80, "repo-a", "repo-a@main", "inst-a", nil); err != nil {
 		t.Fatalf("first EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(80, "repo-a", "merged", ""); err != nil {
+	if _, err := d.TerminateMerge(80, "repo-a", "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
 

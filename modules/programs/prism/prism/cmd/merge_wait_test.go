@@ -30,7 +30,7 @@ func TestObserveAlreadyTerminal_MergedRow(t *testing.T) {
 	if _, err := d.EnqueueMerge(99, testRepo, "nixos-config@main", "inst-1", &title); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(99, testRepo, "merged", ""); err != nil {
+	if _, err := d.TerminateMerge(99, testRepo, "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
 	d.Close()
@@ -61,7 +61,7 @@ func TestObserveAlreadyTerminal_FailedRow(t *testing.T) {
 	if _, err := d.EnqueueMerge(101, testRepo, "nixos-config@main", "inst-1", nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(101, testRepo, "failed", "CI failed"); err != nil {
+	if _, err := d.TerminateMerge(101, testRepo, "failed", "CI failed"); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
 	d.Close()
@@ -128,7 +128,7 @@ func TestWaitForMergeTerminal_PollsUntilTerminal(t *testing.T) {
 			return
 		}
 		defer d2.Close()
-		if err := d2.TerminateMerge(303, testRepo, "merged", ""); err != nil {
+		if _, err := d2.TerminateMerge(303, testRepo, "merged", ""); err != nil {
 			t.Errorf("TerminateMerge in goroutine: %v", err)
 		}
 	}()
@@ -215,7 +215,7 @@ func TestRunMerge_WaitJSON_StdoutIsJSONOnly(t *testing.T) {
 	if _, err := d.EnqueueMerge(777, testRepo, "nixos-config@main", "inst", nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(777, testRepo, "merged", ""); err != nil {
+	if _, err := d.TerminateMerge(777, testRepo, "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
 	d.Close()
@@ -266,7 +266,7 @@ func TestEmitMergeWaitTerminal_JSONShape(t *testing.T) {
 	if _, err := d.EnqueueMerge(555, testRepo, "nixos-config@main", "inst", nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(555, testRepo, "merged", ""); err != nil {
+	if _, err := d.TerminateMerge(555, testRepo, "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
 	row, _ := d.PendingMergeByPR(555, testRepo)

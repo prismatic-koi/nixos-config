@@ -150,7 +150,7 @@ func TestEnqueueMerge_TerminalRowReplaceable(t *testing.T) {
 	if _, err := d.EnqueueMerge(99, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(99, "myrepo", "failed", "CI failed"); err != nil {
+	if _, err := d.TerminateMerge(99, "myrepo", "failed", "CI failed"); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
 
@@ -370,7 +370,7 @@ func TestMergeQueueForInstance_Filters(t *testing.T) {
 	}
 
 	// Fail PR 2.
-	if err := d.TerminateMerge(2, "myrepo", "failed", "CI failed"); err != nil {
+	if _, err := d.TerminateMerge(2, "myrepo", "failed", "CI failed"); err != nil {
 		t.Fatalf("TerminateMerge(2): %v", err)
 	}
 	// Cancel PR 3.
@@ -379,7 +379,7 @@ func TestMergeQueueForInstance_Filters(t *testing.T) {
 	}
 	// Abandon PR 4 via AbandonWatchingMerges (simulates coordinator shutdown).
 	// First, mark PR 1 as merged so only PR 4 is still watching.
-	if err := d.TerminateMerge(1, "myrepo", "merged", ""); err != nil {
+	if _, err := d.TerminateMerge(1, "myrepo", "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge(1,merged): %v", err)
 	}
 	if err := d.AbandonWatchingMerges(instanceID); err != nil {
@@ -464,7 +464,7 @@ func TestMergeQueueForInstance_AbandonedFilter(t *testing.T) {
 	if _, err := d.EnqueueMerge(55, "other", "other@main", "inst-other", nil); err != nil {
 		t.Fatalf("EnqueueMerge(other): %v", err)
 	}
-	if err := d.TerminateMerge(99, "myrepo", "abandoned", "coordinator session ended"); err != nil {
+	if _, err := d.TerminateMerge(99, "myrepo", "abandoned", "coordinator session ended"); err != nil {
 		t.Fatalf("TerminateMerge(99): %v", err)
 	}
 	if err := d.AbandonWatchingMerges("inst-other"); err != nil {

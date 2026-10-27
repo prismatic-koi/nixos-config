@@ -119,7 +119,7 @@ func TestExporter_MergeQueueDepthReflectsEnqueueAndLeave(t *testing.T) {
 		t.Fatalf("%s%v = %v after two enqueues, want 2", exporter.MetricMergeQueueDepth, labels, got)
 	}
 
-	if err := h.writeDB.TerminateMerge(101, repo, "merged", ""); err != nil {
+	if _, err := h.writeDB.TerminateMerge(101, repo, "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
 	if got := gaugeValue(t, h, exporter.MetricMergeQueueDepth, labels); got != 1 {
