@@ -364,7 +364,8 @@ UPDATE pending_merges
 //
 //   - "" or "watching" → only watching rows for instanceID
 //   - "failed"         → failed rows for instanceID
-//   - "all"            → all non-abandoned rows for instanceID from the last 7 days
+//   - "all"            → rows in every status (watching, merged, cancelled, failed,
+//     abandoned) for instanceID, queued in the last 7 days
 //   - "abandoned"      → abandoned rows for the same session_name, from every
 //     coordinator incarnation. The current instanceID is included: a
 //     restore can continue the instance after a stop abandoned its rows.

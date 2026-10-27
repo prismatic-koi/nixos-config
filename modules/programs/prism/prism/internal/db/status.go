@@ -431,8 +431,11 @@ WHERE session_name = ?
 // SetEnded is called in contexts where the caller does not yet have a final
 // state to report (e.g. prism cleanup, review teardown). The sessions row
 // may subsequently be overwritten by UpdateSessionEnded with a more precise
-// end_state (e.g. 'finished') — that call is idempotent with respect to
-// ended_at and simply refines end_state.
+// end_state (e.g. 'finished'). That call is not idempotent: it overwrites
+// ended_at as well as end_state, with no guard. A caller must not call it for
+// a row that is already ended, because MergesAbandonedByStop matches on
+// sessions.ended_at and would then miss the entries that the stop abandoned.
+// The cleanup paths check sessionsRowOpen first.
 //
 // The session name is escaped for SQL LIKE wildcards before being used as a
 // pattern prefix (using the same escaping as AllStatusesWithPrefix) so that
