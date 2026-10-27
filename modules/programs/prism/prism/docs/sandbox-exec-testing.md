@@ -1,5 +1,12 @@
 # sandbox-exec testing convention
 
+<!-- doclint-ignore: auth.json, settings.json, SYSTEM.md, mcp.json -->
+<!--
+  These names are files in the pi agent dir ~/.pi/agent at run time
+  (see docs/invariants/sandbox-pi-agent-dir.md). They do not exist in this
+  source tree.
+-->
+
 This document codifies the testing convention for changes to the SBPL profile
 generator under `internal/container/sandbox_exec.go`. It exists because four
 PRs (#1015, #1016, #1017, #1018) collectively shipped a non-functional
@@ -320,6 +327,29 @@ integration test coverage exists for:
   prism on the same host runs the stale-TMPDIR sweep (#3170). That sweep
   removes each `/var/tmp/prism-<hash>` dir that its database does not know.
   It does not look below the children of `/var/tmp`.
+- **The pi agent dir** — the section-6a grant on `~/.pi/agent`, for pi
+  sessions only: a read of the whole dir, and a write of an exact list
+  (`auth.json`, `atlassian-mcp-oauth.json`, the four pi lock dirs, the Notion
+  store, and the sessions dir of the worktree). Also the final deny
+  (section 21f) on create and unlink of `auth.json` and
+  `atlassian-mcp-oauth.json` (#3284). The test sets a test-owned `HOME`
+  under the real home (`useTestHome`), so it never touches the real
+  `~/.pi/agent`. Under the production profile, each write that pi and its
+  extensions do in a normal session works and reaches the host. Each plant
+  fails with "Operation not permitted", and the host dir does not change: a
+  change of `settings.json`, a new `SYSTEM.md` or `mcp.json`, a file in
+  `bin/`, a write in the sessions dir of another worktree, and a removal or
+  a replacement of `auth.json`. The paired negatives:
+  - `TestSandboxExecPIAgentDir_PlantsWorkWithOldGrant` replaces the write
+    list with the old read-write grant of the whole dir and strips section
+    21f. The plants work.
+  - `TestSandboxExecPIAgentDir_PiWritesDeniedWithoutWriteClause` strips
+    the section-6a write clause. The first pi lock-dir `mkdir` fails.
+  - `TestSandboxExecPIAgentDir_CredentialReplaceWorksWithoutDeny` strips
+    section 21f. The session can remove `auth.json` and put a symlink at
+    its path.
+
+  See `sandbox_exec_pi_agent_dir_darwin_test.go`.
 
 Each positive case has a paired negative case that mutates the profile to
 remove the specific rule under test and asserts the operation fails.
@@ -370,7 +400,7 @@ workflow already uses that same action. The job then runs the tests inside
 
 ```
 nix shell nixpkgs#bash nixpkgs#coreutils \
-  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp)' -race
+  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp)' -race
 ```
 
 The tests in `sandbox_exec_gitlab_token_darwin_test.go` and
@@ -380,7 +410,7 @@ The production secrets.d deny regexes key off that path. A bare `macos-15`
 runner starts with `TMPDIR` under `/private/tmp`, so the job exports
 `TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"` before it runs `go test`.
 
-**Selector scope: seven named families, not the whole `TestSandboxExec*`
+**Selector scope: eight named families, not the whole `TestSandboxExec*`
 family.** Issue #2749's problem statement names exactly two affected files:
 `sandbox_exec_gitlab_token_darwin_test.go` and
 `sandbox_exec_grafana_config_darwin_test.go`. Issue #3061 adds a third file,
@@ -402,11 +432,14 @@ test process binds the listeners. The test relies on the same
 "podman-location" socket (under `os.TempDir()`) is in the user `$TMPDIR`.
 Issue #3150 adds a seventh file, `sandbox_exec_session_tmp_darwin_test.go`,
 for the per-session TMPDIR. It uses the same probe and needs no Nix tool.
+Issue #3284 adds an eighth file, `sandbox_exec_pi_agent_dir_darwin_test.go`,
+for the section-6a pi agent dir rules and the section-21f deny. It needs Nix
+bash and Nix coreutils, and a test-owned `HOME` under the real home.
 The `-run` selector matches only the `TestSandboxExecGitLabToken_*`,
-`TestSandboxExecGrafanaConfig_*`, `TestSandboxExecWorktreeEntry_*`,
-`TestSandboxExecWorktreeReadOnly_*`, `TestSandboxExecContainerCLI_*`,
-`TestSandboxExecContainerSocket_*`, and `TestSandboxExecSessionTmp_*`
-functions. A wider `^TestSandboxExec`
+`TestSandboxExecGrafanaConfig_*`, `TestSandboxExecPIAgentDir_*`,
+`TestSandboxExecWorktreeEntry_*`, `TestSandboxExecWorktreeReadOnly_*`,
+`TestSandboxExecContainerCLI_*`, `TestSandboxExecContainerSocket_*`, and
+`TestSandboxExecSessionTmp_*` functions. A wider `^TestSandboxExec`
 selector was tried first. PR #2785 (round-2 review) found that this
 selector skips several other sandbox-exec suites on a bare `macos-15`
 runner. For example, the playwright suite

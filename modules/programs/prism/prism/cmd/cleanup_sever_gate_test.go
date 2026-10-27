@@ -579,7 +579,7 @@ func TestSeverGate_SkipPath7a_FallbackResolvesID(t *testing.T) {
 		t.Fatalf("archive session.jsonl missing (err=%v); want present — the fallback must let the transcript be archived (issue #2336 skip path 7a)",
 			readErr)
 	}
-	want := []byte("{\"type\":\"session\"}\n")
+	want := fakePiResumeContent(t, f.sid, f.worktree)
 	if string(got) != string(want) {
 		t.Errorf("archive session.jsonl content = %q, want %q", got, want)
 	}

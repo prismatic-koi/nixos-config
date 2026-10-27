@@ -4,16 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	_ "github.com/prismatic-koi/prism/internal/harness/pi" // register pi harness for ShapeOf("pi")
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // openTestDB creates a temporary test database and returns it.
@@ -28,9 +32,9 @@ func openTestDB(t *testing.T) *db.DB {
 	return d
 }
 
-// seedCoordinator inserts an agent_status row for a coordinator session so
-// notify() can look up its harness port and harness_session_id.
-func seedCoordinator(t *testing.T, d *db.DB, sessionName, instanceID string, port int, harnessSessionID string) {
+// seedCoordinator inserts an agent_status row for a pi coordinator session
+// and, when srv is non-nil, serves the session's host-API socket from srv.
+func seedCoordinator(t *testing.T, d *db.DB, sessionName, instanceID string, srv *capturingServer, harnessSessionID string) {
 	t.Helper()
 	if err := d.UpsertStatus(sessionName, "myrepo", "/tmp/wt", "active", nil, &harnessSessionID); err != nil {
 		t.Fatalf("seed coordinator status: %v", err)
@@ -38,9 +42,12 @@ func seedCoordinator(t *testing.T, d *db.DB, sessionName, instanceID string, por
 	if err := d.SetInstanceID(sessionName, instanceID); err != nil {
 		t.Fatalf("seed coordinator instance_id: %v", err)
 	}
-	// Force the port to the value we want via execSQL.
-	_ = execSQL(d, "UPDATE agent_status SET harness_port = ?, harness_session_id = ? WHERE session_name = ?",
-		port, harnessSessionID, sessionName)
+	if err := d.SetHarness(sessionName, "pi"); err != nil {
+		t.Fatalf("seed coordinator harness: %v", err)
+	}
+	if srv != nil {
+		srv.listen(t, sessionName)
+	}
 }
 
 // execSQL runs a raw SQL statement against the test DB via QueryRow.
@@ -98,7 +105,7 @@ func TestEnqueueMerge_FIFO(t *testing.T) {
 	}
 
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "UNKNOWN"})
-	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 	if len(gh.viewed) != 1 || gh.viewed[0] != 300 {
 		t.Errorf("tick polled %v, want [300]", gh.viewed)
 	}
@@ -167,7 +174,7 @@ func TestEnqueueMerge_TerminalRowReplaceable(t *testing.T) {
 	}
 
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "UNKNOWN"})
-	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 	if len(gh.viewed) != 1 || gh.viewed[0] != 99 {
 		t.Errorf("tick polled %v, want [99]", gh.viewed)
 	}
@@ -223,7 +230,7 @@ func TestAbandonWatchingMerges(t *testing.T) {
 	}
 
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
-	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 	if len(gh.viewed) != 0 || len(gh.merged) != 0 {
 		t.Errorf("tick after abandon: viewed %v, merged %v, want no gh call", gh.viewed, gh.merged)
 	}
@@ -574,51 +581,56 @@ func (g *ghFake) run(_ context.Context, args ...string) ([]byte, error) {
 }
 
 // newTickWatcher returns a production Watcher whose gh calls go to gh.
-func newTickWatcher(d *db.DB, instanceID, sessionName string, client *http.Client, gh *ghFake) *Watcher {
+func newTickWatcher(d *db.DB, instanceID, sessionName string, gh *ghFake) *Watcher {
 	return &Watcher{
 		db:          d,
 		instanceID:  instanceID,
 		sessionName: sessionName,
-		httpClient:  client,
 		repo:        "owner/myrepo",
 		runGHFunc:   gh.run,
 	}
 }
 
-// capturingServer returns an httptest.Server that captures the last received
-// request body (for notification verification).
+// capturingServer counts the /prompt requests that arrive on the host-API
+// socket of a coordinator session. lastBody is the JSON body of the last one.
 type capturingServer struct {
-	*httptest.Server
+	mu       sync.Mutex
 	lastBody []byte
 	called   int
 }
 
 func newCapturingServer(t *testing.T) *capturingServer {
 	t.Helper()
-	cs := &capturingServer{}
-	cs.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := readAll(r.Body)
-		cs.lastBody = body
-		cs.called++
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(cs.Server.Close)
-	return cs
+	return &capturingServer{}
 }
 
-func readAll(r interface{ Read([]byte) (int, error) }) ([]byte, error) {
-	var buf []byte
-	tmp := make([]byte, 512)
-	for {
-		n, err := r.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-		}
-		if err != nil {
-			break
-		}
+// listen serves the host-API socket of sessionName until the test ends.
+func (cs *capturingServer) listen(t *testing.T, sessionName string) {
+	t.Helper()
+	sockPath, err := session.SidecarHostAPIPath(sessionName)
+	if err != nil {
+		t.Fatalf("resolve socket path: %v", err)
 	}
-	return buf, nil
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o700); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	_ = os.Remove(sockPath)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/prompt", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		cs.mu.Lock()
+		cs.lastBody = body
+		cs.called++
+		cs.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+	hs := &http.Server{Handler: mux}
+	go func() { _ = hs.Serve(ln) }()
+	t.Cleanup(func() { _ = hs.Close() })
 }
 
 // TestWatcher_CLEANTransitionToMerged verifies that a CLEAN PR gets merged and
@@ -630,10 +642,8 @@ func TestWatcher_CLEANTransitionToMerged(t *testing.T) {
 
 	// Seed coordinator with a harness server.
 	srv := newCapturingServer(t)
-	// Parse port from srv.URL.
-	port := parsePort(t, srv.URL)
 	sid := "pi-sid-clean"
-	seedCoordinator(t, d, session, instanceID, port, sid)
+	seedCoordinator(t, d, session, instanceID, srv, sid)
 
 	// Enqueue PR 100.
 	if _, err := d.EnqueueMerge(100, "myrepo", session, instanceID, nil); err != nil {
@@ -641,7 +651,7 @@ func TestWatcher_CLEANTransitionToMerged(t *testing.T) {
 	}
 
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	if len(gh.merged) != 1 || gh.merged[0] != 100 {
 		t.Errorf("gh pr merge calls = %v, want [100]", gh.merged)
@@ -670,13 +680,13 @@ func TestWatcher_BEHINDLeaveWatching(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	seedCoordinator(t, d, session, instanceID, parsePort(t, srv.URL), "sid-behind")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-behind")
 	if _, err := d.EnqueueMerge(200, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "BEHIND", Mergeable: "MERGEABLE"})
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	if len(gh.updated) != 1 || gh.updated[0] != 200 {
 		t.Errorf("gh pr update-branch calls = %v, want [200]", gh.updated)
@@ -717,7 +727,7 @@ func TestWatcher_UNSTABLEStaysWatchingWhenRequiredPending(t *testing.T) {
 			{Name: "validate-flakes", Status: "COMPLETED", Conclusion: "SUCCESS"},
 		},
 	})
-	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	if len(gh.merged) != 0 {
 		t.Errorf("gh pr merge calls = %v, want none", gh.merged)
@@ -742,7 +752,7 @@ func TestWatcher_UNKNOWNStaysWatching(t *testing.T) {
 	}
 
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "UNKNOWN"})
-	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	if len(gh.merged) != 0 {
 		t.Errorf("gh pr merge calls = %v, want none", gh.merged)
@@ -768,20 +778,16 @@ func TestWatcher_BranchMovedRaceRetries(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	notified := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		notified = true
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+	srv := newCapturingServer(t)
+	seedCoordinator(t, d, session, instanceID, srv, "sid-race")
 
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
 	gh.merge = func(int) ([]byte, error) {
 		return []byte("already merged"), fmt.Errorf("exit status 1")
 	}
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
-	if notified {
+	if srv.called != 0 {
 		t.Error("branch-moved race: notification was sent, want no notification")
 	}
 
@@ -805,15 +811,14 @@ func TestWatcher_ClosedExternallyTransitionsToFailed(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-closed")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-closed")
 
 	if _, err := d.EnqueueMerge(900, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
 	gh := newGHFake(t, prInfo{State: "CLOSED", MergedAt: nil})
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	row, err := d.PendingMergeByPR(900, "myrepo")
 	if err != nil {
@@ -870,7 +875,7 @@ func TestWatcher_Cancellation(t *testing.T) {
 	}
 
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
-	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 	if len(gh.viewed) != 0 || len(gh.merged) != 0 {
 		t.Errorf("tick after cancel: viewed %v, merged %v, want no gh call", gh.viewed, gh.merged)
 	}
@@ -897,8 +902,7 @@ func TestWatcher_NextPRPromotedAfterTerminal(t *testing.T) {
 	}
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-promote")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-promote")
 
 	infos := map[int]prInfo{
 		10: {State: "CLOSED", MergedAt: nil},
@@ -906,7 +910,7 @@ func TestWatcher_NextPRPromotedAfterTerminal(t *testing.T) {
 	}
 	gh := newGHFake(t, prInfo{})
 	gh.view = func(pr int) (prInfo, error) { return infos[pr], nil }
-	w := newTickWatcher(d, instanceID, session, srv.Client(), gh)
+	w := newTickWatcher(d, instanceID, session, gh)
 
 	w.tick(context.Background())
 
@@ -1024,21 +1028,6 @@ func TestMigration_V18ToV19_Idempotent(t *testing.T) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// parsePort extracts the TCP port from an httptest.Server URL.
-func parsePort(t *testing.T, rawURL string) int {
-	t.Helper()
-	// URL format: http://127.0.0.1:<port>
-	parts := strings.Split(rawURL, ":")
-	if len(parts) < 3 {
-		t.Fatalf("cannot parse port from URL %q", rawURL)
-	}
-	var port int
-	if _, err := fmt.Sscanf(parts[2], "%d", &port); err != nil {
-		t.Fatalf("cannot parse port from %q: %v", parts[2], err)
-	}
-	return port
-}
-
 // TestWatcher_NotificationBodyContainsPR verifies the notification body
 // sent to the coordinator contains the PR number.
 func TestWatcher_NotificationBodyContainsPR(t *testing.T) {
@@ -1046,38 +1035,20 @@ func TestWatcher_NotificationBodyContainsPR(t *testing.T) {
 	instanceID := "inst-notif"
 	session := "myrepo@main"
 
-	var received []byte
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received, _ = readAll(r.Body)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-notif")
+	srv := newCapturingServer(t)
+	seedCoordinator(t, d, session, instanceID, srv, "sid-notif")
 
 	if _, err := d.EnqueueMerge(123, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
-	if len(received) == 0 {
-		t.Fatal("no notification received by coordinator")
+	if srv.called != 1 {
+		t.Fatalf("notifications received by coordinator: got %d, want 1", srv.called)
 	}
-
-	var body map[string]any
-	if err := json.Unmarshal(received, &body); err != nil {
-		t.Fatalf("unmarshal notification body: %v", err)
-	}
-
-	parts, ok := body["parts"].([]interface{})
-	if !ok || len(parts) == 0 {
-		t.Fatalf("notification body has no parts: %v", body)
-	}
-	part, _ := parts[0].(map[string]interface{})
-	text, _ := part["text"].(string)
+	text := extractNotifyText(t, srv.lastBody)
 	if !strings.Contains(text, "PR #123") {
 		t.Errorf("notification text %q does not mention PR #123", text)
 	}
@@ -1087,8 +1058,6 @@ func TestWatcher_NotificationBodyContainsPR(t *testing.T) {
 	if strings.Contains(text, "prism cleanup") {
 		t.Errorf("notification text %q must not instruct `prism cleanup` — the coordinator does the cleanup, prism does not", text)
 	}
-
-	_ = os.Getenv // avoid unused import
 }
 
 // TestPRInfoJSONFields_NoMergedField guards against regressing to the
@@ -1182,11 +1151,10 @@ func TestWatcher_RunGHPassesRepoFlag(t *testing.T) {
 	session := "myrepo@main"
 	const repoSlug = "owner/myrepo"
 
-	// Seed the coordinator so notify() can find the harness port — needed
+	// Seed the coordinator so notify() can find the coordinator harness — needed
 	// because the CLEAN→merged path fires a notification.
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-repo-flag")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-repo-flag")
 
 	// Build a Watcher directly (bypass New so we don't shell out to gh) with
 	// the repo cached and a runGHFunc that records every invocation.
@@ -1195,7 +1163,6 @@ func TestWatcher_RunGHPassesRepoFlag(t *testing.T) {
 		db:          d,
 		instanceID:  instanceID,
 		sessionName: session,
-		httpClient:  srv.Client(),
 		repo:        repoSlug,
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			// Copy args defensively so later calls don't alias the slice.
@@ -1275,7 +1242,6 @@ func TestWatcher_RunExitsWhenRepoUnresolved(t *testing.T) {
 		db:          d,
 		instanceID:  "inst-no-repo",
 		sessionName: "myrepo@main",
-		httpClient:  http.DefaultClient,
 		repo:        "", // resolution failure simulated
 	}
 
@@ -1306,7 +1272,7 @@ func TestWatcher_RunExitsWhenRepoUnresolved(t *testing.T) {
 func TestNew_NoAgentStatusRow_LeavesRepoEmpty(t *testing.T) {
 	d := openTestDB(t)
 	// No seedCoordinator call → CurrentStatus("ghost-session@main") returns nil.
-	w := New(d, "inst-ghost", "ghost-session@main", nil)
+	w := New(d, "inst-ghost", "ghost-session@main")
 	if w == nil {
 		t.Fatal("New returned nil")
 	}
@@ -1434,8 +1400,7 @@ func TestWatcher_UNSTABLEAllRequiredPass(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-unstable-merge")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-unstable-merge")
 
 	if _, err := d.EnqueueMerge(1001, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -1451,7 +1416,7 @@ func TestWatcher_UNSTABLEAllRequiredPass(t *testing.T) {
 			{Name: "validate-flakes", Status: "IN_PROGRESS", Conclusion: ""},
 		},
 	})
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	if len(gh.merged) != 1 {
 		t.Error("UNSTABLE+all-required-pass: merge was not attempted")
@@ -1483,7 +1448,7 @@ func TestWatcher_UNSTABLERequiredStillRunning(t *testing.T) {
 			{Name: "pr-gate", Status: "IN_PROGRESS", Conclusion: ""},
 		},
 	})
-	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	if len(gh.merged) != 0 {
 		t.Error("UNSTABLE+required-in-progress: merge was called, want staying watching")
@@ -1517,7 +1482,7 @@ func TestWatcher_UNSTABLEBranchProtectionFetchError(t *testing.T) {
 	})
 	// Simulate a branch-protection API failure.
 	gh.protectionErr = fmt.Errorf("gh api: HTTP 403 forbidden")
-	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	if len(gh.merged) != 0 {
 		t.Error("UNSTABLE+fetch-error: merge was called, want staying watching")
@@ -1550,7 +1515,7 @@ func TestWatcher_UNSTABLERequiredAbsentFromRollup(t *testing.T) {
 			{Name: "validate-flakes", Conclusion: "SUCCESS", Status: "COMPLETED"},
 		},
 	})
-	newTickWatcher(d, instanceID, session, http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	if len(gh.merged) != 0 {
 		t.Error("UNSTABLE+required-absent: merge was called, want staying watching")
@@ -1578,7 +1543,6 @@ func TestFetchRequiredChecks_ParsesModernChecks(t *testing.T) {
 		db:          d,
 		instanceID:  "inst-bprot",
 		sessionName: "myrepo@main",
-		httpClient:  http.DefaultClient,
 		repo:        repoSlug,
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			callCount++
@@ -1610,7 +1574,6 @@ func TestFetchRequiredChecks_ParsesLegacyContexts(t *testing.T) {
 		db:          d,
 		instanceID:  "inst-bprot-legacy",
 		sessionName: "myrepo@main",
-		httpClient:  http.DefaultClient,
 		repo:        "owner/testrepo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			body := `{"required_status_checks":{"contexts":["legacy-ci"],"checks":[]}}`
@@ -1638,7 +1601,6 @@ func TestFetchRequiredChecks_CacheTTL(t *testing.T) {
 		db:          d,
 		instanceID:  "inst-bprot-ttl",
 		sessionName: "myrepo@main",
-		httpClient:  http.DefaultClient,
 		repo:        "owner/testrepo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			callCount++
@@ -1693,8 +1655,7 @@ func TestWatcher_MergeAlreadyInProgress_PRIsMerged(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-reconcile-merged")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-reconcile-merged")
 
 	if _, err := d.EnqueueMerge(2100, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -1707,7 +1668,7 @@ func TestWatcher_MergeAlreadyInProgress_PRIsMerged(t *testing.T) {
 	}
 	// `gh pr view --json state` returns MERGED — PR did actually merge.
 	gh.state = func(int) (string, error) { return "MERGED", nil }
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	row, err := d.PendingMergeByPR(2100, "myrepo")
 	if err != nil {
@@ -1723,16 +1684,7 @@ func TestWatcher_MergeAlreadyInProgress_PRIsMerged(t *testing.T) {
 	if srv.called == 0 {
 		t.Fatal("no success notification sent to coordinator")
 	}
-	var body map[string]any
-	if err := json.Unmarshal(srv.lastBody, &body); err != nil {
-		t.Fatalf("unmarshal notification body: %v", err)
-	}
-	parts, _ := body["parts"].([]interface{})
-	if len(parts) == 0 {
-		t.Fatal("notification body has no parts")
-	}
-	part, _ := parts[0].(map[string]interface{})
-	text, _ := part["text"].(string)
+	text := extractNotifyText(t, srv.lastBody)
 	if !strings.Contains(text, "PR #2100") {
 		t.Errorf("notification text %q does not mention PR #2100", text)
 	}
@@ -1750,8 +1702,7 @@ func TestWatcher_MergeAlreadyInProgress_PRIsOpen(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-reconcile-open")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-reconcile-open")
 
 	if _, err := d.EnqueueMerge(2101, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -1764,7 +1715,7 @@ func TestWatcher_MergeAlreadyInProgress_PRIsOpen(t *testing.T) {
 	}
 	// `gh pr view --json state` returns OPEN — PR did NOT merge.
 	gh.state = func(int) (string, error) { return "OPEN", nil }
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	row, err := d.PendingMergeByPR(2101, "myrepo")
 	if err != nil {
@@ -1785,8 +1736,7 @@ func TestWatcher_MergeError_CheckPRStateItself_Fails(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-reconcile-viewerr")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-reconcile-viewerr")
 
 	if _, err := d.EnqueueMerge(2102, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -1799,7 +1749,7 @@ func TestWatcher_MergeError_CheckPRStateItself_Fails(t *testing.T) {
 	}
 	// `gh pr view --json state` fails (network error, etc.).
 	gh.state = func(int) (string, error) { return "", fmt.Errorf("exit status 1") }
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	row, err := d.PendingMergeByPR(2102, "myrepo")
 	if err != nil {
@@ -1819,8 +1769,7 @@ func TestWatcher_GenuineFailure_NoRegression(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-genuine-fail")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-genuine-fail")
 
 	if _, err := d.EnqueueMerge(2103, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -1833,7 +1782,7 @@ func TestWatcher_GenuineFailure_NoRegression(t *testing.T) {
 	}
 	// `gh pr view --json state` returns OPEN — PR was not merged.
 	gh.state = func(int) (string, error) { return "OPEN", nil }
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	row, err := d.PendingMergeByPR(2103, "myrepo")
 	if err != nil {
@@ -1850,17 +1799,11 @@ func TestWatcher_GenuineFailure_NoRegression(t *testing.T) {
 // JSON body the capturing server received. Test-only helper.
 func extractNotifyText(t *testing.T, body []byte) string {
 	t.Helper()
-	var parsed map[string]any
+	var parsed map[string]string
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		t.Fatalf("extractNotifyText: unmarshal: %v", err)
 	}
-	parts, _ := parsed["parts"].([]interface{})
-	if len(parts) == 0 {
-		t.Fatal("extractNotifyText: notification body has no parts")
-	}
-	part, _ := parts[0].(map[string]interface{})
-	text, _ := part["text"].(string)
-	return text
+	return parsed["prompt"]
 }
 
 // TestWatcher_ExternalMerge_NotifyTextDistinguishedAndNamesByLogin verifies
@@ -1874,8 +1817,7 @@ func TestWatcher_ExternalMerge_NotifyTextDistinguishedAndNamesByLogin(t *testing
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-ext-merge")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-ext-merge")
 
 	if _, err := d.EnqueueMerge(2200, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -1887,7 +1829,7 @@ func TestWatcher_ExternalMerge_NotifyTextDistinguishedAndNamesByLogin(t *testing
 		MergedAt: &mergedAt,
 		MergedBy: &userRef{Login: "b-h-mck"},
 	})
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	if len(gh.merged) != 0 {
 		t.Errorf("external merge path invoked gh pr merge: %v", gh.merged)
@@ -1937,8 +1879,7 @@ func TestWatcher_ExternalMerge_MergedByNullDegradesGracefully(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-ext-merge-null")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-ext-merge-null")
 
 	if _, err := d.EnqueueMerge(2201, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -1951,7 +1892,7 @@ func TestWatcher_ExternalMerge_MergedByNullDegradesGracefully(t *testing.T) {
 		MergedAt: &mergedAt,
 		MergedBy: nil,
 	})
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	if srv.called == 0 {
 		t.Fatal("no notification sent to coordinator — mergedBy=nil must not block notification")
@@ -1986,15 +1927,14 @@ func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_NoArchive(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-prism-merge-noarch")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-prism-merge-noarch")
 
 	if _, err := d.EnqueueMerge(2210, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	if srv.called == 0 {
 		t.Fatal("no notification sent to coordinator")
@@ -2019,8 +1959,7 @@ func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_WithArchive(t *testing.T) 
 
 	// Seed an agent_status row for notification routing.
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, coordSession, coordInstanceID, port, "sid-coord-arch")
+	seedCoordinator(t, d, coordSession, coordInstanceID, srv, "sid-coord-arch")
 
 	// Seed both a coordinator sessions row (so lookupWorkerArchivePath can
 	// resolve the coordinator's repo via instance_id) and a worker session
@@ -2043,7 +1982,7 @@ func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_WithArchive(t *testing.T) 
 	}
 
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
-	w := newTickWatcher(d, coordInstanceID, coordSession, srv.Client(), gh)
+	w := newTickWatcher(d, coordInstanceID, coordSession, gh)
 	// Pin the watcher's repo so lookupWorkerArchivePath has a non-empty scope.
 	w.repo = coordRepo
 	w.tick(context.Background())
@@ -2071,8 +2010,7 @@ func TestWatcher_Reconciled_NotifyTextIncludesReconciledNote(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-reconciled-text")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-reconciled-text")
 
 	if _, err := d.EnqueueMerge(2220, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -2083,7 +2021,7 @@ func TestWatcher_Reconciled_NotifyTextIncludesReconciledNote(t *testing.T) {
 		return []byte("GraphQL: Merge already in progress (mergePullRequest)"), fmt.Errorf("exit status 1")
 	}
 	gh.state = func(int) (string, error) { return "MERGED", nil }
-	newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+	newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 	if srv.called == 0 {
 		t.Fatal("no notification sent to coordinator")
@@ -2249,7 +2187,6 @@ func TestLookupWorkerArchivePath_InstanceIDScoping(t *testing.T) {
 		db:          d,
 		instanceID:  coordInstanceID,
 		sessionName: coordSession,
-		httpClient:  http.DefaultClient,
 		repo:        coordRepo,
 	}
 
@@ -2282,7 +2219,6 @@ func TestLookupWorkerArchivePath_LegacyRepoFallback(t *testing.T) {
 		db:          d,
 		instanceID:  "",
 		sessionName: "nixos-config@main",
-		httpClient:  http.DefaultClient,
 		repo:        "owner/nixos-config",
 	}
 
@@ -2316,7 +2252,6 @@ func TestFetchRequiredChecks_ErrorStaysWatching(t *testing.T) {
 		db:          d,
 		instanceID:  instanceID,
 		sessionName: session,
-		httpClient:  http.DefaultClient,
 		repo:        "owner/testrepo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			// gh pr view succeeds, gh api branch protection fails.
@@ -2353,8 +2288,7 @@ func TestWatcher_Unprotected_NeverAutoMerges(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-unprotected")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-unprotected")
 
 	if _, err := d.EnqueueMerge(2420, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -2365,7 +2299,6 @@ func TestWatcher_Unprotected_NeverAutoMerges(t *testing.T) {
 		db:          d,
 		instanceID:  instanceID,
 		sessionName: session,
-		httpClient:  srv.Client(),
 		repo:        "myrepo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			// gh pr ... calls go through runGH, so args[0..1] are "--repo
@@ -2421,8 +2354,7 @@ func TestWatcher_Unprotected_ExternalMergeStillNotifies(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-unprot-extmerge")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-unprot-extmerge")
 
 	if _, err := d.EnqueueMerge(2421, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -2435,7 +2367,6 @@ func TestWatcher_Unprotected_ExternalMergeStillNotifies(t *testing.T) {
 		db:          d,
 		instanceID:  instanceID,
 		sessionName: session,
-		httpClient:  srv.Client(),
 		repo:        "myrepo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			switch {
@@ -2554,15 +2485,14 @@ func TestWatcher_BLOCKED_StaysWatchingSilently(t *testing.T) {
 			instanceID := "inst-blocked-silent-" + tc.name
 
 			srv := newCapturingServer(t)
-			port := parsePort(t, srv.URL)
-			seedCoordinator(t, d, session, instanceID, port, "sid-blocked-silent-"+tc.name)
+			seedCoordinator(t, d, session, instanceID, srv, "sid-blocked-silent-"+tc.name)
 
 			if _, err := d.EnqueueMerge(3400, "myrepo", session, instanceID, nil); err != nil {
 				t.Fatalf("EnqueueMerge: %v", err)
 			}
 
 			gh := newGHFake(t, *tc.info)
-			newTickWatcher(d, instanceID, session, srv.Client(), gh).tick(context.Background())
+			newTickWatcher(d, instanceID, session, gh).tick(context.Background())
 
 			if len(gh.merged) != 0 {
 				t.Errorf("BLOCKED PR attempted a merge: %v (#2420 silent-continuation)", gh.merged)
@@ -2593,8 +2523,7 @@ func TestWatcher_NewCommits_KeepsPollingSilently(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-newcommits")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-newcommits")
 
 	if _, err := d.EnqueueMerge(3420, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -2608,7 +2537,7 @@ func TestWatcher_NewCommits_KeepsPollingSilently(t *testing.T) {
 			{Name: "pr-gate", Status: "IN_PROGRESS", Conclusion: ""},
 		},
 	})
-	w := newTickWatcher(d, instanceID, session, srv.Client(), gh)
+	w := newTickWatcher(d, instanceID, session, gh)
 	w.tick(context.Background())
 
 	if len(gh.merged) != 0 {
@@ -2664,8 +2593,7 @@ func TestWatcher_ApprovalDetected_MergesAndNotifies(t *testing.T) {
 	session := "myrepo@main"
 
 	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-approval")
+	seedCoordinator(t, d, session, instanceID, srv, "sid-approval")
 
 	if _, err := d.EnqueueMerge(3430, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -2676,7 +2604,6 @@ func TestWatcher_ApprovalDetected_MergesAndNotifies(t *testing.T) {
 		db:          d,
 		instanceID:  instanceID,
 		sessionName: session,
-		httpClient:  srv.Client(),
 		repo:        "myrepo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			switch {
@@ -2732,7 +2659,6 @@ func TestFetchProtection_404TreatedAsUnconfigured(t *testing.T) {
 		db:          d,
 		instanceID:  "inst-404",
 		sessionName: "myrepo@main",
-		httpClient:  http.DefaultClient,
 		repo:        "owner/bootstrap-repo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			return []byte(`HTTP 404: Branch not protected (https://api.github.com/repos/owner/bootstrap-repo/branches/main/protection)`),
@@ -2763,7 +2689,6 @@ func TestFetchProtection_CachesUnconfigured(t *testing.T) {
 		db:          d,
 		instanceID:  "inst-404-cache",
 		sessionName: "myrepo@main",
-		httpClient:  http.DefaultClient,
 		repo:        "owner/bootstrap-repo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			calls++
@@ -2815,7 +2740,6 @@ func TestFetchProtection_ProbeCallsOmitRepoFlag(t *testing.T) {
 		db:          d,
 		instanceID:  "inst-2438-argv",
 		sessionName: "myrepo@main",
-		httpClient:  http.DefaultClient,
 		repo:        repoSlug,
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			snap := make([]string, len(args))

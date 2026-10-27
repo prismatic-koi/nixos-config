@@ -666,10 +666,11 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	}
 
 	// ── PI-specific bind mounts (harness=pi only) ────────────────────────
-	// Note: the host's ~/.pi/agent/sessions/ directory is overlaid onto
-	// $PI_CODING_AGENT_DIR/sessions/ inside the sandbox by
-	// appendPIBwrapMounts (called below), so pi inside the sandbox reaches
-	// the host directory via PI_CODING_AGENT_DIR, not via the host home path.
+	// Note: appendPIBwrapMounts (called below) makes the pi agent dir at
+	// $PI_CODING_AGENT_DIR and binds the host sessions dir of the worktree,
+	// ~/.pi/agent/sessions/<encoded-cwd>/, into it read-write. pi inside the
+	// sandbox reaches the host directory via PI_CODING_AGENT_DIR, not via the
+	// host home path.
 	//
 	// These must be appended before the "--" terminator so bwrap processes
 	// them as namespace arguments rather than as parts of the inner command.

@@ -435,7 +435,7 @@ func newBlockedTickFixture(t *testing.T, pr int, required []string, info prInfo)
 
 	d := openTestDB(t)
 	srv := newCapturingServer(t)
-	seedCoordinator(t, d, session, instanceID, parsePort(t, srv.URL), fmt.Sprintf("sid-2525-%d", pr))
+	seedCoordinator(t, d, session, instanceID, srv, fmt.Sprintf("sid-2525-%d", pr))
 
 	if _, err := d.EnqueueMerge(pr, repo, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
@@ -446,7 +446,6 @@ func newBlockedTickFixture(t *testing.T, pr int, required []string, info prInfo)
 		db:          d,
 		instanceID:  instanceID,
 		sessionName: session,
-		httpClient:  srv.Client(),
 		repo:        "owner/myrepo",
 		runGHFunc:   gh.run,
 	}
@@ -699,7 +698,7 @@ func TestWatcher_BLOCKED_Unprotected_StaysWatching(t *testing.T) {
 
 	d := openTestDB(t)
 	srv := newCapturingServer(t)
-	seedCoordinator(t, d, session, inst, parsePort(t, srv.URL), "sid-2525-unprotected")
+	seedCoordinator(t, d, session, inst, srv, "sid-2525-unprotected")
 	if _, err := d.EnqueueMerge(pr, repo, session, inst, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
@@ -708,7 +707,6 @@ func TestWatcher_BLOCKED_Unprotected_StaysWatching(t *testing.T) {
 		db:          d,
 		instanceID:  inst,
 		sessionName: session,
-		httpClient:  srv.Client(),
 		repo:        "owner/myrepo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			switch {
@@ -755,7 +753,7 @@ func TestWatcher_BLOCKED_ProtectionFetchError_StaysWatching(t *testing.T) {
 
 	d := openTestDB(t)
 	srv := newCapturingServer(t)
-	seedCoordinator(t, d, session, inst, parsePort(t, srv.URL), "sid-2525-proterr")
+	seedCoordinator(t, d, session, inst, srv, "sid-2525-proterr")
 	if _, err := d.EnqueueMerge(pr, repo, session, inst, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
@@ -764,7 +762,6 @@ func TestWatcher_BLOCKED_ProtectionFetchError_StaysWatching(t *testing.T) {
 		db:          d,
 		instanceID:  inst,
 		sessionName: session,
-		httpClient:  srv.Client(),
 		repo:        "owner/myrepo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			switch {
@@ -808,7 +805,7 @@ func TestWatcher_CLEAN_MergeConditionUnchanged(t *testing.T) {
 
 	d := openTestDB(t)
 	srv := newCapturingServer(t)
-	seedCoordinator(t, d, session, inst, parsePort(t, srv.URL), "sid-2525-clean")
+	seedCoordinator(t, d, session, inst, srv, "sid-2525-clean")
 	if _, err := d.EnqueueMerge(pr, repo, session, inst, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
@@ -818,7 +815,6 @@ func TestWatcher_CLEAN_MergeConditionUnchanged(t *testing.T) {
 		db:          d,
 		instanceID:  inst,
 		sessionName: session,
-		httpClient:  srv.Client(),
 		repo:        "owner/myrepo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			switch {

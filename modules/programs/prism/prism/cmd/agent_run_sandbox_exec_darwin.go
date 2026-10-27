@@ -392,9 +392,10 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// not via this directory. On Darwin (sandbox-exec) the
 	// in-sandbox path is collapsed to the host path above (sandbox-exec shares
 	// the host filesystem), so PI_CODING_AGENT_DIR ends up pointing at
-	// ~/.pi/agent directly. The SBPL profile grants (subpath ~/.pi/agent) RW
-	// for pi sessions which covers auth.json writes (OAuth token refresh) and
-	// the proper-lockfile auth.json.lock mkdir.
+	// ~/.pi/agent directly. Section 6a of the SBPL profile allows a read of
+	// that dir and a write of an exact list of paths in it: the credential
+	// files, the pi lock dirs, the Notion store, and the sessions dir of the
+	// worktree (internal/container/pi_agent_dir.go, #3284).
 	if ctrCfg.Harness == "pi" && ctrCfg.PIAgentConfigSandboxDir != "" {
 		env = append(env, "PI_CODING_AGENT_DIR="+ctrCfg.PIAgentConfigSandboxDir)
 	}

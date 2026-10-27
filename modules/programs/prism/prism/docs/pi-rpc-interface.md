@@ -487,9 +487,10 @@ per-session TMPDIR in a `sandbox-exec` session, and `/tmp` when `TMPDIR` is
 unset. These are transient and not
 sensitive.
 
-**Atlassian MCP OAuth tokens** (`~/.pi/agent/atlassian-mcp-oauth.json`):
-In the current bwrap model, this file is bind-mounted read-write (see
-`pi_invocation.go` lines for `atlasMCPPath`). In daemon mode, pi reads and
+**Atlassian MCP OAuth tokens** (`~/.pi/agent/atlassian-mcp-oauth.json`).
+In the current bwrap model, this file is a read-write file bind in the
+private agent dir of the sandbox. See `piAgentCredentialFiles` and
+`appendPIAgentDirBwrapMounts` in `internal/container/pi_agent_dir.go`. In daemon mode, pi reads and
 writes this file directly from the host with no sandboxing required.
 
 ### Implications for design doc

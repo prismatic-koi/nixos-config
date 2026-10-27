@@ -541,25 +541,12 @@ func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
 		t.Errorf("expected --setenv PI_CODING_AGENT_DIR %q in args; got %v", customSandboxDir, redactedArgs(args))
 	}
 
-	// The agent config dir must be RW-bind-mounted (--bind, not
-	// --ro-bind) at the sandbox path so OAuth proper-lockfile mkdir of
-	// auth.json.lock on the parent dir succeeds. See pi_invocation.go
-	// top-of-file doc for the full rationale.
-	found = false
-	for i := 0; i+2 < len(args); i++ {
-		if args[i] == "--bind" && args[i+1] == agentConfigDir && args[i+2] == customSandboxDir {
-			found = true
-			break
-		}
+	// The sandbox dir is a private dir, not a bind of the host dir (#3284).
+	if !hasPair(args, "--dir", customSandboxDir) {
+		t.Errorf("expected --dir %q in args; got %v", customSandboxDir, redactedArgs(args))
 	}
-	if !found {
-		t.Errorf("expected --bind %q %q in args; got %v", agentConfigDir, customSandboxDir, redactedArgs(args))
-	}
-	// The parent mount must NOT be --ro-bind — OAuth refresh would EPERM.
-	for i := 0; i+2 < len(args); i++ {
-		if args[i] == "--ro-bind" && args[i+1] == agentConfigDir && args[i+2] == customSandboxDir {
-			t.Errorf("parent agent config dir mount must be --bind (RW) not --ro-bind; got %v", redactedArgs(args))
-		}
+	if hasTriple(args, "--bind", agentConfigDir, customSandboxDir) || hasTriple(args, "--ro-bind", agentConfigDir, customSandboxDir) {
+		t.Errorf("the host agent dir must not be bound at the sandbox path; got %v", redactedArgs(args))
 	}
 }
 
@@ -749,8 +736,9 @@ func TestAppendPIBwrapMounts_CreatesAndBindsAtlassianOAuthWhenAbsent(t *testing.
 	}
 
 	cfg := Config{
-		PIBinaryPath:       fakePI,
-		PIExtensionHostDir: extDir,
+		PIBinaryPath:         fakePI,
+		PIAgentConfigHostDir: piAgentDir,
+		PIExtensionHostDir:   extDir,
 	}
 
 	args, err := appendPIBwrapMounts(nil, cfg)
@@ -768,161 +756,6 @@ func TestAppendPIBwrapMounts_CreatesAndBindsAtlassianOAuthWhenAbsent(t *testing.
 	// Must contain --bind atlasPath atlasPath.
 	if !hasTriple(args, "--bind", atlasPath, atlasPath) {
 		t.Errorf("expected --bind %q %q in args after placeholder creation; got %v", atlasPath, atlasPath, redactedArgs(args))
-	}
-}
-
-func TestAppendPIBwrapMounts_SharedPiAgentRwBindAtSandboxPath(t *testing.T) {
-	// The shared host ~/.pi/agent directory must be
-	// bind-mounted READ-WRITE into the sandbox at the canonical path
-	// /run/prism/pi-agent (or the configured PIAgentConfigSandboxDir). RW is
-	// required because pi-coding-agent's proper-lockfile auth.json refresh
-	// mkdir's auth.json.lock on the PARENT directory — see pi_invocation.go
-	// top-of-file doc for the full rationale. [security] AC.
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
-
-	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
-	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
-		t.Fatalf("mkdir ~/.pi/agent: %v", err)
-	}
-
-	extDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
-		t.Fatalf("write ext: %v", err)
-	}
-	fakePI := filepath.Join(t.TempDir(), "pi")
-	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
-		t.Fatalf("write fake pi binary: %v", err)
-	}
-
-	cfg := Config{
-		PIBinaryPath:         fakePI,
-		PIAgentConfigHostDir: piAgentDir,
-		PIExtensionHostDir:   extDir,
-		// Default sandbox dir (piAgentConfigSandboxDefault).
-	}
-
-	args, err := appendPIBwrapMounts(nil, cfg)
-	if err != nil {
-		t.Fatalf("appendPIBwrapMounts: %v", err)
-	}
-
-	// Must contain --bind <host ~/.pi/agent> /run/prism/pi-agent (RW).
-	if !hasTriple(args, "--bind", piAgentDir, piAgentConfigSandboxDefault) {
-		t.Errorf("expected --bind %q %q (RW shared mount) in args; got %v",
-			piAgentDir, piAgentConfigSandboxDefault, redactedArgs(args))
-	}
-	// Must NOT use --ro-bind for the parent mount — proper-lockfile mkdir
-	// needs write access to the parent dir for OAuth refresh to succeed.
-	if hasTriple(args, "--ro-bind", piAgentDir, piAgentConfigSandboxDefault) {
-		t.Errorf("parent ~/.pi/agent mount must be --bind (RW) not --ro-bind "+
-			"— OAuth proper-lockfile needs to mkdir auth.json.lock in the parent dir; got %v", redactedArgs(args))
-	}
-	// PI_CODING_AGENT_DIR must point at the canonical sandbox path.
-	if !hasTriple(args, "--setenv", "PI_CODING_AGENT_DIR", piAgentConfigSandboxDefault) {
-		t.Errorf("expected --setenv PI_CODING_AGENT_DIR %q; got %v",
-			piAgentConfigSandboxDefault, redactedArgs(args))
-	}
-}
-
-func TestAppendPIBwrapMounts_AuthJSONReachableRwViaSharedMount(t *testing.T) {
-	// The parent mount of ~/.pi/agent is RW, so auth.json is
-	// automatically writable at $PI_CODING_AGENT_DIR/auth.json without a
-	// dedicated overlay bind — the host file IS the file backing that
-	// in-sandbox path. The host-path RW bind is retained so $HOME-relative
-	// access works too. [security] AC.
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
-
-	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
-	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
-		t.Fatalf("mkdir ~/.pi/agent: %v", err)
-	}
-	authPath := filepath.Join(piAgentDir, "auth.json")
-	if err := os.WriteFile(authPath, []byte(`{"token":"secret"}`), 0o600); err != nil {
-		t.Fatalf("write auth.json: %v", err)
-	}
-
-	extDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
-		t.Fatalf("write ext: %v", err)
-	}
-	fakePI := filepath.Join(t.TempDir(), "pi")
-	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
-		t.Fatalf("write fake pi binary: %v", err)
-	}
-
-	cfg := Config{
-		PIBinaryPath:         fakePI,
-		PIAgentConfigHostDir: piAgentDir,
-		PIExtensionHostDir:   extDir,
-	}
-
-	args, err := appendPIBwrapMounts(nil, cfg)
-	if err != nil {
-		t.Fatalf("appendPIBwrapMounts: %v", err)
-	}
-
-	// Parent mount must be RW so writes to $PI_CODING_AGENT_DIR/auth.json
-	// (the path pi actually reads via PI_CODING_AGENT_DIR) reach the host.
-	// This is the primary write-through mechanism for OAuth token refresh.
-	if !hasTriple(args, "--bind", piAgentDir, piAgentConfigSandboxDefault) {
-		t.Errorf("expected RW --bind of parent ~/.pi/agent at sandbox path; got %v", redactedArgs(args))
-	}
-	// Host-path RW bind retained for $HOME-relative access.
-	if !hasTriple(args, "--bind", authPath, authPath) {
-		t.Errorf("expected --bind %q %q (host-path access) in args; got %v", authPath, authPath, redactedArgs(args))
-	}
-	// Must NOT use --ro-bind for auth.json or its parent.
-	if hasTriple(args, "--ro-bind", authPath, authPath) ||
-		hasTriple(args, "--ro-bind", piAgentDir, piAgentConfigSandboxDefault) {
-		t.Errorf("auth.json / parent dir must not be --ro-bind; got %v", redactedArgs(args))
-	}
-}
-
-func TestAppendPIBwrapMounts_AtlassianOAuthReachableRwViaSharedMount(t *testing.T) {
-	// Same as auth.json: the RW parent mount makes atlassian-mcp-oauth.json
-	// writable at $PI_CODING_AGENT_DIR/atlassian-mcp-oauth.json. Host-path
-	// bind retained.
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
-
-	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
-	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
-		t.Fatalf("mkdir ~/.pi/agent: %v", err)
-	}
-	atlasPath := filepath.Join(piAgentDir, "atlassian-mcp-oauth.json")
-	if err := os.WriteFile(atlasPath, []byte(`{"accessToken":"tok"}`), 0o600); err != nil {
-		t.Fatalf("write atlassian-mcp-oauth.json: %v", err)
-	}
-
-	extDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
-		t.Fatalf("write ext: %v", err)
-	}
-	fakePI := filepath.Join(t.TempDir(), "pi")
-	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
-		t.Fatalf("write fake pi binary: %v", err)
-	}
-
-	cfg := Config{
-		PIBinaryPath:         fakePI,
-		PIAgentConfigHostDir: piAgentDir,
-		PIExtensionHostDir:   extDir,
-	}
-
-	args, err := appendPIBwrapMounts(nil, cfg)
-	if err != nil {
-		t.Fatalf("appendPIBwrapMounts: %v", err)
-	}
-
-	// Parent is RW.
-	if !hasTriple(args, "--bind", piAgentDir, piAgentConfigSandboxDefault) {
-		t.Errorf("expected RW --bind of parent ~/.pi/agent at sandbox path; got %v", redactedArgs(args))
-	}
-	// Host-path bind retained.
-	if !hasTriple(args, "--bind", atlasPath, atlasPath) {
-		t.Errorf("expected --bind %q %q (host-path access) in args; got %v", atlasPath, atlasPath, redactedArgs(args))
 	}
 }
 

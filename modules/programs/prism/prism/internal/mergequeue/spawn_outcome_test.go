@@ -24,7 +24,6 @@ package mergequeue
 
 import (
 	"context"
-	"net/http"
 	"testing"
 	"time"
 
@@ -67,7 +66,7 @@ func TestSucceedAndNotify_PersistsPRMergedAt(t *testing.T) {
 	// Seed the coordinator so notify() has a row to look up (it logs a
 	// warning rather than panicking if the row is missing, but seeding it
 	// avoids noise and mirrors production).
-	seedCoordinator(t, d, coordSession, coordIID, 0, "pi-sid-2110")
+	seedCoordinator(t, d, coordSession, coordIID, nil, "pi-sid-2110")
 
 	// Seed the worker session + pr_number on its spawn_outcome row.
 	seedWorkerWithPR(t, d, workerIID, workerSess, pr)
@@ -77,9 +76,9 @@ func TestSucceedAndNotify_PersistsPRMergedAt(t *testing.T) {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	// A missing port is fine because the failing notify path just logs.
+	// A missing socket is fine because the failing notify path just logs.
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
-	w := newTickWatcher(d, coordIID, coordSession, http.DefaultClient, gh)
+	w := newTickWatcher(d, coordIID, coordSession, gh)
 	// Capture the wall-clock right before the tick so the assertion below
 	// has a tight upper bound on the persisted value.
 	wantAtLeast := time.Now().UnixMilli()
@@ -133,14 +132,14 @@ func TestSucceedAndNotify_NoWorkerRow_SkipsPRMergedAt(t *testing.T) {
 		pr           = 9999
 	)
 
-	seedCoordinator(t, d, coordSession, coordIID, 0, "pi-sid-orphan")
+	seedCoordinator(t, d, coordSession, coordIID, nil, "pi-sid-orphan")
 
 	// No worker session is seeded — InstanceIDForPRNumber will return "".
 	if _, err := d.EnqueueMerge(pr, "myrepo", coordSession, coordIID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 	gh := newGHFake(t, prInfo{State: "OPEN", MergeStateStatus: "CLEAN"})
-	newTickWatcher(d, coordIID, coordSession, http.DefaultClient, gh).tick(context.Background())
+	newTickWatcher(d, coordIID, coordSession, gh).tick(context.Background())
 
 	// pending_merges must still have transitioned to merged.
 	pm, err := d.PendingMergeByPR(pr, "myrepo")

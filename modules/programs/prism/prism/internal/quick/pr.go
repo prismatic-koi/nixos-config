@@ -486,6 +486,12 @@ func generateDescription(qp config.QuickProfile, diff string) (title, body strin
 	userMsg := "Generate a PR title and body in the required JSON shape for the following staged git diff:\n\n" + diff
 	args = append(args, userMsg)
 
+	// pi runs an api_key value in auth.json that starts with "!" as a shell
+	// command, and a sandboxed session can write auth.json (#3284).
+	if err := container.CheckPIAuthFile(container.PIHostAuthPath()); err != nil {
+		return "", "", fmt.Errorf("quick pr: %w", err)
+	}
+
 	res := piExecFn(args, "")
 	if res.err != nil {
 		// Surface pi's stderr verbatim so OAuth errors, model errors, etc.

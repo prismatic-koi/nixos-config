@@ -45,16 +45,17 @@ export const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
  *                                       running sandbox (#2283).
  *   3. ~/.pi/agent/auth.json           legacy fallback.
  *
- * The middle entry is the critical piece for `prism account use`. The bwrap
- * dispatcher dir-binds the host's ~/.pi/agent at $PI_CODING_AGENT_DIR (a
- * directory bind), and ALSO file-binds auth.json at its host path for
- * back-compat. Linux `mount --bind` on a file pins the source inode at
- * mount time — so a host-side `os.Rename` (which creates a new inode) is
- * NOT visible at the file-bind path inside an already-running sandbox.
- * The dir-bind, by contrast, surfaces dentry updates (renames included),
- * so reading via $PI_CODING_AGENT_DIR/auth.json sees the post-swap blob
- * immediately. Combined with the mtime check below, this makes the swap
- * visible to a running pi without a restart.
+ * The middle entry is the critical piece for `prism account use`. On the
+ * host and in sandbox-exec, $PI_CODING_AGENT_DIR is the host ~/.pi/agent, so
+ * a read sees a host-side `os.Rename` swap (renames included). Combined with
+ * the mtime check below, this makes the swap visible to a running pi without
+ * a restart.
+ *
+ * bwrap is the exception since #3284: the agent dir in the sandbox is
+ * private, and auth.json in it is a file bind. Linux `mount --bind` on a
+ * file pins the source inode at mount time, so a host-side `os.Rename`
+ * (which creates a new inode) is NOT visible in an already-running bwrap
+ * sandbox. The swap reaches a bwrap session when it restarts.
  */
 function getAuthJsonPath(): string {
   if (process.env.PI_AUTH_JSON) return process.env.PI_AUTH_JSON

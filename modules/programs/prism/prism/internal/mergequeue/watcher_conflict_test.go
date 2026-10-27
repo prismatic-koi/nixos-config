@@ -84,3 +84,19 @@ func TestWatcher_Tick_ConflictMovesOnToNextPR(t *testing.T) {
 		t.Errorf("merge calls %v, update-branch calls %v, want none", g.merged, g.updated)
 	}
 }
+
+// TestNotify_NonSocketPipeHarnessSendsNothing: a coordinator whose harness is
+// not socket-pipe gets no request, and notify returns without a panic.
+func TestNotify_NonSocketPipeHarnessSendsNothing(t *testing.T) {
+	d := openTestDB(t)
+	srv := newCapturingServer(t)
+	seedCoordinator(t, d, "myrepo@main", "inst-nonpipe", srv, "sid")
+	if err := d.SetHarnessRaw("myrepo@main", "legacy-http"); err != nil {
+		t.Fatalf("SetHarnessRaw: %v", err)
+	}
+	w := &Watcher{db: d, instanceID: "inst-nonpipe", sessionName: "myrepo@main"}
+	w.notify(context.Background(), "myrepo@main", "inst-nonpipe", "hello")
+	if srv.called != 0 {
+		t.Errorf("requests = %d, want 0", srv.called)
+	}
+}

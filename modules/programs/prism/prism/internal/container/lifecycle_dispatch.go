@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -246,6 +247,17 @@ func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string
 	// happen host-side, here. Best-effort: ensureGoCacheDirs logs and
 	// continues, so a host with an unwritable $HOME still starts a session.
 	ensureGoCacheDirs()
+
+	// ── pi agent dir ───────────────────────────────
+	// Section 6a of the profile grants a write of the sessions dir of the
+	// worktree, but not a create of its parent dirs. Section 21f denies a
+	// create of the credential files. So make them on the host here.
+	// Best-effort, like ensureGoCacheDirs.
+	if m.cfg.Harness == "pi" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			preparePIAgentDir(filepath.Join(home, ".pi", "agent"), m.cfg.Worktree)
+		}
+	}
 
 	if _, err := writeProfile(m); err != nil {
 		return nil, err
