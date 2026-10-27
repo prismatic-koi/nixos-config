@@ -24,7 +24,7 @@ import (
 	"log"
 
 	"github.com/prismatic-koi/prism/internal/db"
-	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/nonworktreeroot"
 	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
@@ -162,16 +162,7 @@ func IsCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool
 // cannot change. The direct CLI route reads agent_status through
 // IsNonWorktreeRootFromDB.
 func IsNonWorktreeRoot(sessionName, startRole, startDir string) bool {
-	if sessionname.IsMeta(sessionName) || sessionname.IsDescendant(sessionName) || sessionname.HasBranch(sessionName) {
-		return false
-	}
-	if sessionname.Repo(sessionName) == "" {
-		return false
-	}
-	if startRole != "" || startDir == "" {
-		return false
-	}
-	return !git.IsBareRepo(startDir) && git.BareRoot(startDir) == ""
+	return nonworktreeroot.Is(sessionName, startRole, startDir)
 }
 
 // IsNonWorktreeRootFromDB applies IsNonWorktreeRoot to the start record in the

@@ -36,6 +36,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/nonworktreeroot"
 	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
@@ -394,5 +395,20 @@ func (d *DB) retroIsCoordinator(name string) bool {
 	if r, rowExists, err := d.RootAgentName(name); err == nil && rowExists && r == "coordinator" {
 		return true
 	}
-	return false
+	return d.retroIsNonWorktreeRoot(name)
+}
+
+// retroIsNonWorktreeRoot applies the shared non-worktree-root rule
+// (sessionname.IsNonWorktreeRoot, also behind authz.IsNonWorktreeRoot) to the
+// start record in the agent_status row: root_agent_name and worktree.
+func (d *DB) retroIsNonWorktreeRoot(name string) bool {
+	st, err := d.CurrentStatus(name)
+	if err != nil || st == nil {
+		return false
+	}
+	role := ""
+	if st.RootAgentName != nil {
+		role = *st.RootAgentName
+	}
+	return nonworktreeroot.Is(name, role, st.Worktree)
 }
