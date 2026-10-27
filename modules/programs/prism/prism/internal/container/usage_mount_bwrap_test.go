@@ -25,9 +25,8 @@ package container
 // usage bind is the only route to the directory, so a passing positive test
 // can only be the rule under test.
 //
-// Skips (never fails) when bwrap is absent or cannot create user namespaces
-// — GitHub Actions ubuntu runners and the nix build sandbox both
-// land there.
+// Skips (never fails) when bwrap is absent or the live probe cannot start a
+// sandbox. requireUsableBwrapForUsageTest lists the environments.
 
 import (
 	"os"
@@ -39,9 +38,11 @@ import (
 )
 
 // requireUsableBwrapForUsageTest resolves bwrap and probes a live spawn.
-// bwrap can be on PATH but unable to unshare a user namespace (GitHub
-// Actions, the nix build sandbox, locked-down kernels); in that case these
-// tests would fail for environmental reasons unrelated to the mount.
+// The probe binds /nix, so it fails on a host with no /nix, such as the
+// go-tests CI runner. It also fails where bwrap cannot make a user
+// namespace: a prism bwrap worker or a locked-down kernel. The nix build
+// sandbox has no bwrap in PATH. In each case the tests skip, because a
+// failure there has a cause that is not the mount.
 func requireUsableBwrapForUsageTest(t *testing.T) string {
 	t.Helper()
 	bin, err := exec.LookPath("bwrap")

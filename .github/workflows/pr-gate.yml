@@ -337,11 +337,11 @@ jobs:
         run: echo "no Go-relevant paths touched; skipping go-tests-macos-sandbox-exec"
 
   # Runs the live bwrap sandbox tests for real (#3076). The go-tests job
-  # skips them: the ubuntu runner sets
-  # kernel.apparmor_restrict_unprivileged_userns=1, so the live probe in
-  # each helper fails. This job lifts the restriction and installs Nix
-  # (some tests need /nix/store binaries). The guard step fails the job
-  # on any SKIP or on zero tests run.
+  # skips most of them: their live probe binds /nix, and the ubuntu runner
+  # has no /nix. The stdio and rlimit probes bind no /nix, so those tests
+  # can also run in go-tests. This job lifts the apparmor userns
+  # restriction and installs Nix (some tests need /nix/store binaries).
+  # The guard step fails the job on any SKIP or on zero tests run.
   go-tests-bwrap-live:
     name: go-tests-bwrap-live
     runs-on: ubuntu-latest
@@ -399,9 +399,6 @@ jobs:
           # fails inside that sandbox. Point it at a nix bash.
           nix_bash="$(nix build --no-link --print-out-paths 'nixpkgs#bash^out')"
           sudo ln -sf "$nix_bash/bin/bash" /usr/bin/sh
-          # CGO_ENABLED=0 makes the test binaries static. The sidecar and
-          # integration tests exec their own test binary inside bwrap, and a
-          # dynamic binary needs the host /lib64 loader, which is not bound.
           export CGO_ENABLED=0
           nix shell --print-build-logs nixpkgs#coreutils nixpkgs#util-linux nixpkgs#go \
             --command go test -v ./internal/container/ ./internal/integration/ ./internal/sidecar/ -run '^(TestBwrapBaseline_|TestBwrapUsageStateDir_|TestBwrapGoCacheDirs_|TestBwrapWorktreeReadOnly_|TestBwrapUsrBinEnv_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)' 2>&1 | tee /tmp/go-test-bwrap-live.log
@@ -434,7 +431,8 @@ jobs:
   # podman (#3115). Selected tests: TestIntegration_* in prismcontainer and
   # TestServicePortBwrap_* in container. The guard step fails the job on
   # any SKIP or on zero tests run. The build tests need a user systemd
-  # instance with cgroup delegation (systemd-run --user --scope).
+  # instance with cgroup delegation (systemd-run --user --scope), and a
+  # bwrap that no AppArmor profile confines (see the go test step).
   go-tests-container-live:
     name: go-tests-container-live
     runs-on: ubuntu-latest
@@ -458,12 +456,12 @@ jobs:
         with:
           go-version-file: modules/programs/prism/prism/go.mod
           cache-dependency-path: modules/programs/prism/prism/go.sum
-      - name: Install rootless podman and bwrap, enable user namespaces
+      - name: Install rootless podman, enable user namespaces
         if: steps.changes.outputs.container == 'true'
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           sudo apt-get update -q -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y bubblewrap podman uidmap
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y podman uidmap
           # subuid/subgid ranges for the runner user
           grep -q "^$USER:" /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
           grep -q "^$USER:" /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
@@ -488,6 +486,14 @@ jobs:
           systemd-run --user --scope true
           nix_bash="$(nix build --no-link --print-out-paths 'nixpkgs#bash^out')"
           sudo ln -sf "$nix_bash/bin/bash" /usr/bin/sh
+          # The build executor runs the first bwrap in PATH. On ubuntu-26.04,
+          # the bwrap-userns-restrict AppArmor profile confines /usr/bin/bwrap,
+          # and each program that it starts has no capabilities. podman build
+          # in the build namespace then has no CAP_SYS_ADMIN, skips its store
+          # setup, and panics (#3270). No AppArmor profile applies to a nix
+          # bwrap, the same as on a NixOS host.
+          nix_bwrap="$(nix build --no-link --print-out-paths 'nixpkgs#bubblewrap')"
+          export PATH="$nix_bwrap/bin:$PATH"
           export CGO_ENABLED=0
           PRISM_CONTAINER_INTEGRATION=1 nix shell --print-build-logs nixpkgs#bash nixpkgs#coreutils nixpkgs#util-linux \
             --command go test -v -count=1 -timeout 20m ./internal/prismcontainer ./internal/container -run 'Integration|ServicePort' 2>&1 | tee /tmp/go-test-container-live.log
