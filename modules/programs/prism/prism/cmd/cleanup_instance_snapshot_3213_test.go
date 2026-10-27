@@ -87,6 +87,9 @@ var snapshotCleanupPaths = []struct {
 // cleanup still archives the transcript and removes the instance dirs. When
 // the hook has already ended the sessions row, the cleanup does not fail
 // and does not end the row a second time.
+//
+// AC (#3266): the cleanup also writes the spawn_outcome aggregates of the
+// parent incarnation.
 func TestCleanupPaths_SnapshotBeforeTmuxKill_3213(t *testing.T) {
 	hookWrites := []struct {
 		name  string
@@ -152,6 +155,9 @@ func TestCleanupPaths_SnapshotBeforeTmuxKill_3213(t *testing.T) {
 				}
 				if readStatus(t, f.dbFile, f.session).EndedAt == nil {
 					t.Error("agent_status row open, want ended")
+				}
+				if aggregated, total := spawnOutcomeRows(t, f.dbFile, archiveOrderIID); aggregated != 1 || total != 1 {
+					t.Errorf("spawn_outcome rows: %d aggregated for %s, %d in total, want 1 and 1", aggregated, archiveOrderIID, total)
 				}
 			})
 		}

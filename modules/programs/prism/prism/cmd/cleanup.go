@@ -346,7 +346,9 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			}
 			// Write spawn_outcome for m.session and cascade to every
 			// <m.session>~review-% child — mirrors the SetEnded cascade above.
-			if outcomeErr := d.WriteSpawnOutcomeCascade(m.session); outcomeErr != nil {
+			// The snapshot gives the parent instance ID, because the hook can
+			// clear agent_status.instance_id first (#3266).
+			if outcomeErr := d.WriteSpawnOutcomeCascade(m.session, snap.instanceID); outcomeErr != nil {
 				proglog.Errorf("[prism] doCleanup: write spawn outcome cascade: %v\n", outcomeErr)
 			}
 			// Archive the session storage, then sever the pi resume linkage:
@@ -922,8 +924,10 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		}
 		// Write spawn_outcome for session and cascade to every
 		// <session>~review-% child — mirrors the SetEnded cascade applied
-		// inside applyDBLifecycleClears above.
-		if outcomeErr := d.WriteSpawnOutcomeCascade(session); outcomeErr != nil {
+		// inside applyDBLifecycleClears above. The snapshot gives the parent
+		// instance ID, because the hook can clear agent_status.instance_id
+		// first (#3266).
+		if outcomeErr := d.WriteSpawnOutcomeCascade(session, snap.instanceID); outcomeErr != nil {
 			proglog.Errorf("[prism] headlessCleanup: write spawn outcome cascade: %v\n", outcomeErr)
 		}
 		// Archive the session storage, then sever the pi resume linkage:
@@ -1078,7 +1082,9 @@ func closeSession(session string) error {
 		}
 		// Write spawn_outcome for session and cascade to every
 		// <session>~review-% child — mirrors the SetEnded cascade above.
-		if outcomeErr := d.WriteSpawnOutcomeCascade(session); outcomeErr != nil {
+		// The snapshot gives the parent instance ID, because the hook can
+		// clear agent_status.instance_id first (#3266).
+		if outcomeErr := d.WriteSpawnOutcomeCascade(session, snap.instanceID); outcomeErr != nil {
 			proglog.Errorf("[prism] closeSession: write spawn outcome cascade: %v\n", outcomeErr)
 		}
 		// Archive the session storage, then sever the pi resume linkage:
@@ -1211,8 +1217,10 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		}
 		// Write spawn_outcome for session and cascade to every
 		// <session>~review-% child — mirrors the SetEnded cascade applied
-		// inside applyDBLifecycleClears above.
-		if outcomeErr := d.WriteSpawnOutcomeCascade(session); outcomeErr != nil {
+		// inside applyDBLifecycleClears above. The snapshot gives the parent
+		// instance ID, because the hook can clear agent_status.instance_id
+		// first (#3266).
+		if outcomeErr := d.WriteSpawnOutcomeCascade(session, snap.instanceID); outcomeErr != nil {
 			proglog.Errorf("[prism] headlessCloseSession: write spawn outcome cascade: %v\n", outcomeErr)
 		}
 		// Archive the session storage, then sever the pi resume linkage:
