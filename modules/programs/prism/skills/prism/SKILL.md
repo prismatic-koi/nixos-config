@@ -657,7 +657,7 @@ audit log.
 
 The merge queue is a local serial FIFO queue running in the coordinator's sidecar process. The sidecar polls the head of the queue every 30 seconds; only one PR is in flight at a time. The watcher's lifetime equals the coordinator session's lifetime — there is no persistent daemon.
 
-`prism restart` and `prism restore` do not end the coordinator session. Each `watching` entry stays in the queue, in the same order, and the restored sidecar continues to watch it. The restore output names the entries (`merge queue resumed: PR #N, ...`). No notification is sent for the restart (issue #3166).
+A restart does not end the coordinator session. The restarts are `prism restart`, `prism restore`, the restore at login after a host shutdown, and the stale-sidecar path of `prism switch`. Each `watching` entry stays in the queue, in the same order, and the new sidecar continues to watch it. The output names the entries (`merge queue resumed: PR #N, ...`). No notification is sent for the restart (issues #3166, #3175). If prism cannot prove that the old sidecar stopped, the entries do not move, because the old sidecar can still watch them. The output then says `the merge queue is not resumed` and names them.
 
 `prism merge <pr>` is **async, poll-and-notify** (issue #2420, same shape as `prism review`): the command emits a synchronous initial-state message describing the detected state and what will happen next, then — for non-terminal states — hands off to the background poller. When the outcome is decided, the watcher delivers a `prism prompt` to the coordinator. For terminal states at invocation (already merged, closed without merge, or merge conflict) the command exits immediately without enqueueing.
 
@@ -759,7 +759,7 @@ One CI outcome is terminal (issue #2525). When `mergeStateStatus` is `BLOCKED`, 
 | `gh pr update-branch` refused with a permanent error (issue #3180) | `PR #N is BEHIND and gh pr update-branch failed with an error that no retry fixes: <error>. Worker needs to rebase onto the base branch and push.` |
 | `gh pr update-branch` failed 5 polls in a row with an unknown error (issue #3180) | `PR #N: gh pr update-branch failed 5 polls in a row. The row stays watching. Last error: <error>` |
 | Genuine `gh pr merge` failure (rare fallback) | `PR #N merge failed: <error>` |
-| Coordinator session ended while watching | Row transitions to `abandoned` — surfaces via `prism merges list --abandoned` only; no live notification. A `prism restart` or `prism restore` is not an end: the row stays `watching` (issue #3166). |
+| Coordinator session ended while watching | Row transitions to `abandoned` — surfaces via `prism merges list --abandoned`; no live notification. A restart is not an end: after `prism restart`, `prism restore`, the restore at login, or the stale-sidecar path of `prism switch`, the row is `watching` again (issues #3166, #3175). |
 
 Every *completion* notification contains the exact phrase **"Please clean up the branch and worktree"** and does NOT imply prism performed the cleanup itself — the coordinator does the cleanup, prism does not.
 

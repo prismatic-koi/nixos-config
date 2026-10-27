@@ -574,8 +574,8 @@ func runSignalHandler(sigCh <-chan os.Signal, shutdownFn func(), cancelFn func()
 		}()
 
 		// Shutdown() runs synchronously before cancel() so that its DB writes
-		// (AbandonWatchingMerges, UpdateSessionEnded, upsertState,
-		// writeStateChange) complete while the database connection is still open.
+		// (EndIncarnation, upsertState, writeStateChange) complete while the
+		// database connection is still open.
 		// defer d.Close() fires only after runSidecar returns, which happens
 		// after sc.Run() exits, which happens after cancel() fires here.
 		shutdownFn()

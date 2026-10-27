@@ -28,11 +28,11 @@ package container
 // Go cache binds are the only route to those directories, so a passing
 // positive test can only be the rule under test.
 //
-// Skips (never fails) when bwrap is absent or cannot create user namespaces
-// — GitHub Actions ubuntu runners and the nix build sandbox both
-// land there. The bwrap probe, the coreutils resolver and the shell quoter
-// are shared with usage_mount_bwrap_test.go rather than duplicated; they are
-// generic bwrap helpers despite their usage-test names.
+// Skips (never fails) when bwrap is absent or the live probe cannot start a
+// sandbox. requireUsableBwrapForUsageTest lists the environments. The bwrap
+// probe, the coreutils resolver and the shell quoter are shared with
+// usage_mount_bwrap_test.go rather than duplicated; they are generic bwrap
+// helpers despite their usage-test names.
 
 import (
 	"os"

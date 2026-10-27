@@ -255,6 +255,11 @@ func killSidecar(sessionName string) (int, pidOwner) {
 // file names a live process that it sent no signal to.
 var ErrSidecarNotSignalled = errors.New("sent no signal to the sidecar")
 
+// ErrSidecarOwnerUnknown is also in the error of KillSidecarAndWait when
+// it cannot read the command line of the live PID. That process can still
+// be the sidecar.
+var ErrSidecarOwnerUnknown = errors.New("cannot prove that the process is not the sidecar")
+
 // KillSidecarAndWait sends SIGTERM to the sidecar for sessionName (via
 // KillSidecar) and then waits for the process to actually exit AND for its
 // host-API listener socket to be torn down before returning. It returns nil
@@ -298,8 +303,8 @@ var ErrSidecarNotSignalled = errors.New("sent no signal to the sidecar")
 //     ErrSidecarNotSignalled at once.
 //   - The PID runs, but its command line cannot be read: KillSidecar writes
 //     a warning that names the PID, and this function returns an error that
-//     wraps ErrSidecarNotSignalled at once. That process can still be the
-//     sidecar.
+//     wraps ErrSidecarNotSignalled and ErrSidecarOwnerUnknown at once. That
+//     process can still be the sidecar.
 //
 // In each case KillSidecar removes the PID file.
 func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
@@ -313,7 +318,7 @@ func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 	case owner == pidOwnerOther:
 		return fmt.Errorf("kill sidecar: pid %d is not a prism sidecar (session %q): %w", pid, sessionName, ErrSidecarNotSignalled)
 	case owner == pidOwnerUnknown:
-		return fmt.Errorf("kill sidecar: cannot read the command line of pid %d (session %q): %w", pid, sessionName, ErrSidecarNotSignalled)
+		return fmt.Errorf("kill sidecar: cannot read the command line of pid %d (session %q): %w: %w", pid, sessionName, ErrSidecarNotSignalled, ErrSidecarOwnerUnknown)
 	}
 
 	// Poll for process exit. On Linux we probe /proc/<pid>; on other
@@ -380,8 +385,17 @@ func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 // The PID file stays while the sidecar runs. Another stop that runs at the
 // same time then still finds the process, and does not report it as gone.
 func StopSidecar(sessionName string, timeout time.Duration) bool {
-	exited, _ := stopSidecarPID(sessionName, readSidecarPID(sessionName), timeout, true)
+	exited, _ := StopSidecarReport(sessionName, timeout)
 	return exited
+}
+
+// StopSidecarReport stops the sidecar of sessionName as StopSidecar does.
+// exited is the result of StopSidecar. gone reports that no process that
+// can be the sidecar of the session runs when it returns. gone is false
+// when StopSidecar sent no signal because it cannot read the command line
+// of a live PID, and when the sidecar still runs after SIGKILL.
+func StopSidecarReport(sessionName string, timeout time.Duration) (exited, gone bool) {
+	return stopSidecarPID(sessionName, readSidecarPID(sessionName), timeout, true)
 }
 
 // SidecarStopTimeout is the SIGTERM wait, and then the SIGKILL wait, that

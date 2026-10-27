@@ -16,6 +16,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
@@ -105,6 +106,12 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		opts.DB = d
 	}
 
+	// staleQueue is the merge queue of a stale session whose old sidecar
+	// this switch stops. The sidecar that session.Create starts watches it
+	// when staleSidecarGone.
+	var staleQueue []db.PendingMerge
+	staleSidecarGone := false
+
 	// Liveness pre-check for the switch/launch path (ForceFresh=false).
 	//
 	// When a session already exists in tmux, we check its DB liveness here —
@@ -179,12 +186,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		// stops, and the tmux-session-start seed then mints a new instance
 		// ID.
 		proglog.Infof("[prism switch] stale-zombie session %q: killing old sidecar before restart\n", sessionName)
-		if waitErr := session.KillSidecarAndWait(sessionName, killSidecarTimeout); errors.Is(waitErr, session.ErrSidecarNotSignalled) {
-			// KillSidecar already wrote a warning that names the PID.
-			proglog.Infof("[prism switch] %v\n", waitErr)
-		} else if waitErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: %v\n", waitErr)
-		}
+		staleQueue, staleSidecarGone = stopStaleSidecar(d, sessionName, st)
 		opts.ForceFresh = true
 	}
 
@@ -220,8 +222,13 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	}
 
 	if err := session.Create(sessionName, directory, opts); err != nil {
+		if len(staleQueue) > 0 {
+			fmt.Fprintf(os.Stderr, "warning: prism switch %q: the session did not start, so the merge queue is not resumed: %s\n",
+				sessionName, formatMergePRs(staleQueue))
+		}
 		return err
 	}
+	resumeStaleMergeQueue(d, sessionName, staleQueue, staleSidecarGone)
 
 	if opts.Headless {
 		fmt.Printf("session %q created\n", sessionName)
@@ -229,6 +236,57 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	}
 
 	return session.Attach(sessionName)
+}
+
+// switchKillSidecarAndWait stops the old sidecar of a stale session. Tests
+// replace it.
+var switchKillSidecarAndWait = session.KillSidecarAndWait
+
+// stopStaleSidecar stops the old sidecar of the stale session sessionName,
+// and returns the merge queue that the new sidecar must watch (#3175). st
+// is the agent_status row of the session, or nil. gone reports that no
+// process that can be the old sidecar runs. A PID that runs another
+// program is not the sidecar.
+//
+// The Shutdown of the old sidecar abandons the queue, so read the queue
+// first.
+func stopStaleSidecar(d *db.DB, sessionName string, st *db.Status) (queued []db.PendingMerge, gone bool) {
+	queued, err := d.WatchingMerges(sessionName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: prism switch %q: read merge queue: %v\n", sessionName, err)
+	}
+	waitErr := switchKillSidecarAndWait(sessionName, killSidecarTimeout)
+	notSignalled := errors.Is(waitErr, session.ErrSidecarNotSignalled)
+	if notSignalled {
+		// KillSidecar already wrote a warning that names the PID.
+		proglog.Infof("[prism switch] %v\n", waitErr)
+	} else if waitErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", waitErr)
+	}
+	if st != nil && st.EndedAt == nil && st.InstanceID != nil {
+		if queued, err = withMergesAbandonedByStop(d, sessionName, *st.InstanceID, queued); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: prism switch %q: read merge queue of the last stop: %v\n", sessionName, err)
+		}
+	}
+	gone = waitErr == nil || (notSignalled && !errors.Is(waitErr, session.ErrSidecarOwnerUnknown))
+	return queued, gone
+}
+
+// resumeStaleMergeQueue gives queued to the sidecar that session.Create
+// started for sessionName, as resumeMergeQueue does. The
+// tmux-session-start seed picks the instance ID of that sidecar, so read
+// it after session.Create.
+func resumeStaleMergeQueue(d *db.DB, sessionName string, queued []db.PendingMerge, oldSidecarGone bool) {
+	if len(queued) == 0 {
+		return
+	}
+	instanceID := ""
+	if st, err := d.CurrentStatus(sessionName); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: prism switch %q: read instance ID: %v\n", sessionName, err)
+	} else if st != nil && st.InstanceID != nil {
+		instanceID = *st.InstanceID
+	}
+	resumeMergeQueue(d, "warning: prism switch", sessionName, instanceID, queued, oldSidecarGone)
 }
 
 // allocatePortForSession ensures the agent_status row exists for sessionName
