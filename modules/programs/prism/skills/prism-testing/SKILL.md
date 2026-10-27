@@ -74,7 +74,9 @@ Do not run the test binary itself in a bwrap sandbox that does not bind the host
 
 The `prism container` integration tests need a real rootless podman: `TestIntegration_*` in `internal/prismcontainer` and `TestServicePortBwrap_*` in `internal/container`. They skip unless `PRISM_CONTAINER_INTEGRATION=1`.
 
-The `go-tests-container-live` job in `pr-gate.yml` is the automatic run of these tests (#3115). It installs podman and `uidmap`, sets subuid/subgid ranges, starts a user systemd instance, and fails if a selected test reports SKIP or if zero tests run. It is part of the `pr-gate` fan-in. A prism worker cannot run podman, so read the job result on the PR and record it in the PR body. Add a new test name to the `-run` selector of the job.
+The `go-tests-container-live` job in `pr-gate.yml` is the automatic run of these tests (#3115). It installs podman and `uidmap`, sets subuid/subgid ranges, starts a user systemd instance, puts a nix bwrap first in `PATH`, and fails if a selected test reports SKIP or if zero tests run. It is part of the `pr-gate` fan-in. A prism worker cannot run podman, so read the job result on the PR and record it in the PR body. Add a new test name to the `-run` selector of the job.
+
+Do not let the build tests use `/usr/bin/bwrap` on Ubuntu. On `ubuntu-26.04`, the `bwrap-userns-restrict` AppArmor profile removes all capabilities from each program that `/usr/bin/bwrap` starts. The `podman build` in the build namespace then has no `CAP_SYS_ADMIN`, skips its store setup, and panics in `defaultNetworkBackend` (#3270).
 
 The macOS build executor (the anchor container) has live tests of its own: `TestMachineAnchor_*` in `internal/prismcontainer/machine_anchor_live_test.go`, with the `darwin` build tag. They need a running podman machine and `PRISM_CONTAINER_INTEGRATION=1`, and no CI job runs them. Run them from a host shell on a Mac, and record the result in the PR body. Do not give a test that skips on Linux a name that matches `Integration|ServicePort`: the CI job runs on Linux and fails on the SKIP.
 
