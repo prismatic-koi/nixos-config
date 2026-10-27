@@ -372,6 +372,13 @@ type Config struct {
 	// returns a clear error rather than falling back to a bare "pi" name that
 	// would fail with ENOENT inside the sandbox.
 	PIBinaryPath string
+
+	// PIApproveProject selects --approve for pi in PIInvocation. When false,
+	// pi gets --no-approve and loads no project resources of its working
+	// directory. `prism agent-run` sets it only from the decision that the
+	// host passes on the pane command line (`--approve-project-dir`), never
+	// from a value that it computes itself (issue #3216).
+	PIApproveProject bool
 }
 
 // NameForSession returns the stable sandbox name for a session.

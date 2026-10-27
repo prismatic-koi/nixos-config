@@ -222,6 +222,29 @@ Both hooks above run on the host. A `prism event <kind>` that runs inside a sand
 - A `worktree` must be the start worktree of the sidecar (`Config.Worktree`). Any other path gets HTTP 403. The host run always gets the start worktree.
 - So a proxied event cannot write a row for another session. It also cannot change the role or the worktree that prism wrote at start. `prism restore` and the caller-role gates read those two values.
 
+## Project trust
+
+<!-- doclint-ignore: .pi/extensions, .pi/skills, .pi/settings.json, .pi/mcp.json, .pi/SYSTEM.md, .agents/skills, ~/.pi/agent/trust.json, ~/.pi/agent/sessions/, ~/.config/prism/project-trust.json -->
+
+prism starts every pi with exactly one of `--approve` and `--no-approve` (issue #3216). A command-line flag wins over every other trust source of pi. So an entry in `~/.pi/agent/trust.json`, a `project_trust` handler in an extension, and the `defaultProjectTrust` setting do not change the decision for a session that prism starts.
+
+- With `--approve`, pi loads the project resources of its working directory: `.pi/extensions`, `.pi/skills`, `.pi/settings.json`, `.pi/mcp.json`, `.pi/SYSTEM.md`, and `.agents/skills` in the directory and its ancestors. An extension runs with the rights of the session.
+- The decision runs on the host, in `session.BuildAgentCmd`, through `projecttrust.Policy.Approve`. pi gets `--approve` only when all of these are true:
+  - The session starts in a worktree root of a bare+worktree layout and its name has a branch (`home-ops@main`, or a descendant of it). Or the session starts in the directory of a project with no worktrees and its name has no branch (`obsidian`, `obsidian~investigate-v2`).
+  - The project root is a prism project root in `~/.config/prism/config.json`: a directory in `project_locations`, or a path in `project_specific`. The project root is the directory that holds `.bare`, or the project directory itself.
+  - The repo part of the session name is the name of the project root (`sessionname.RepoComponent`).
+  - The name of the project root is in `~/.config/prism/project-trust.json`. The prism NixOS module renders that file from `nx.programs.prism.projectTrust.trustedRepos`, with the default `home-ops` and `obsidian`.
+- Every other pi that prism starts gets `--no-approve`. An empty start directory, a directory under `~/.npm`, a subdirectory of a worktree, and the project root of a bare+worktree layout all get `--no-approve`.
+- The repo identity comes from the session name and the project roots. The start directory only narrows the decision. `prism restore` takes the start directory from `agent_status.worktree`, but that value cannot point the decision at another repo. A name alone or a directory alone never gives `--approve`.
+- No sandbox can read or write the host files `~/.config/prism/config.json` and `~/.config/prism/project-trust.json`. `StandardSandboxMounts` binds neither file, and `generateProfile` grants neither path.
+- In `host` mode, `buildDirectAgentCmd` puts the flag on the pi command line. In `bwrap` and `sandbox-exec` mode, the pane command carries the decision to `prism agent-run` as `--approve-project-dir <dir>`. agent-run runs on the host and does not decide. It passes `--approve` to pi only when that directory is the worktree that pi starts in (`piApproveProject`). Under `sandbox-exec`, pi starts in that worktree, as under `bwrap`.
+- `prism quick pr` and the pi version probe of the archive step start pi with `--no-approve`.
+- `defaultProjectTrust` in the pi settings of the NixOS module is `ask`. So pi that a person starts outside prism asks before it loads project resources.
+- **Known limit.** In a trusted repo, a worker can write `.pi/extensions` in its own worktree. The worker and its review agents start in that worktree and load the extension. Those sessions already run with worker-class rights, so this is not an escalation. The content reaches `main` only through a reviewed PR.
+- **Known limit (`prism pr`).** `prism pr` and `prism spawn --pr` start a session on a PR branch whose author prism cannot know (see `prReadOnlyGuidance`). In a trusted repo, that session and its review agents get `--approve`. So the project resources of the PR author run with worker rights before a person reviews the PR. The author can be a tool or a person that is not a prism worker, for example Renovate, a fork, or a colleague. `defaultProjectTrust = "always"` loaded the same content before #3216. Issue #3287 tracks `--no-approve` for these sessions.
+- **Known limit (`sandbox-exec`).** The `sandbox-exec` profile gives a worker read-write access to the whole project root of its repo (`BareRoot`). In a trusted repo, that worker can write `.pi` resources in another worktree of the repo, `main` included, and `.agents/skills` at the project root. The coordinator of the repo loads them at its next start. `bwrap` binds only the worktree and `.bare`.
+- **Known limit (resume).** `prism restore` resumes pi with `--session <id>`, and pi then runs in the `cwd` of the session file header. Every sandbox can write `~/.pi/agent/sessions/`. In a trusted repo, a changed header can point pi with `--approve` at another directory. The same read-write grant on `~/.pi/agent` lets a sandbox replace the user-level settings and extensions of pi, which load in every session with no trust check. Issue #3284 tracks the fix of that grant.
+
 ## Checkin scope
 
 - `prism checkin` applies three permission tiers (issue #2587). The predicate is `authz.AuthorizeCheckin` in `internal/authz/checkin.go`. It takes the caller session as a parameter, so one copy serves both routes.

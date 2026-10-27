@@ -169,6 +169,10 @@ All Nix files must be formatted using `nixfmt`:
 nixfmt .
 ```
 
+### Site styles
+
+Read `.pi/skills/site-theming/SKILL.md` before you write, change, or check a site style, before you prepare a spawn prompt for one, and before you review a PR for one. A site style is a qutebrowser greasemonkey style (`modules/programs/qutebrowser/greasemonkey/*.css.js`) or a Firefox site block in `modules/programs/firefox/user-content.nix`.
+
 ### Secrets Management
 
 - Secrets are co-located with the modules that use them (e.g., `modules/qutebrowser/secrets/`).

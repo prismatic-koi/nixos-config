@@ -46,6 +46,10 @@ package cmd
 //	                    thinking; sourced from `prism spawn --variant`)
 //	--provider <name>  routing-provider override (overrides profile slot's
 //	                    provider; sourced from `prism spawn --provider`)
+//	--approve-project-dir <dir>
+//	                   the project-trust decision of the host (#3216): pi
+//	                    gets --approve only when <dir> is the worktree it
+//	                    starts in, else --no-approve
 
 import (
 	"context"
@@ -114,6 +118,10 @@ func init() {
 	// --provider: pi-only routing override forwarded from `prism spawn`.
 	// Empty value falls back to the slot's provider.
 	agentRunCmd.Flags().String("provider", "", "Routing-provider override (overrides profile slot's provider; sourced from prism spawn --provider)")
+	// --approve-project-dir: the host decides project trust when it builds
+	// the pane command (session.BuildAgentCmd). agent-run does not decide:
+	// it only compares the value with the worktree that pi starts in.
+	agentRunCmd.Flags().String("approve-project-dir", "", "Start directory for which the host approved pi project resources (internal; set by the pane command)")
 	rootCmd.AddCommand(agentRunCmd)
 
 	// Register the per-mode AgentRun handlers with the container package.
@@ -148,6 +156,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	agentModelOverride, _ := cmd.Flags().GetString("agent-model")
 	variantOverride, _ := cmd.Flags().GetString("variant")
 	providerOverride, _ := cmd.Flags().GetString("provider")
+	approveProjectDir, _ := cmd.Flags().GetString("approve-project-dir")
 
 	// Open the agent-run log file as early as possible so that pre-exec
 	// `[timing]` markers can be written to it and the failure point is
@@ -221,10 +230,11 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	// Empty fields mean "no override" — the active profile slot's value
 	// is used unchanged.
 	storeAgentRunOverrides(sessionName, piOverrides{
-		Model:      modelOverride,
-		AgentModel: agentModelOverride,
-		Variant:    variantOverride,
-		Provider:   providerOverride,
+		Model:             modelOverride,
+		AgentModel:        agentModelOverride,
+		Variant:           variantOverride,
+		Provider:          providerOverride,
+		ApproveProjectDir: approveProjectDir,
 	})
 
 	return iso.AgentRun(cmd.Context(), container.AgentRunOpts{
@@ -762,11 +772,25 @@ func logAgentRunWarning(logFile *os.File, format string, args ...any) {
 // rungs of the same axis: populatePIConfig copies AgentModel to
 // container.Config.AgentModel and Model to container.Config.PIModel, and
 // PIInvocation resolves the pair into pi's single --model argument.
+//
+// ApproveProjectDir is not a model override. It is the project-trust
+// decision of the host, from `prism agent-run --approve-project-dir`, and it
+// rides this struct because this struct is the per-invocation flag cache of
+// agent-run. See piApproveProject.
 type piOverrides struct {
-	Model      string
-	AgentModel string
-	Variant    string
-	Provider   string
+	Model             string
+	AgentModel        string
+	Variant           string
+	Provider          string
+	ApproveProjectDir string
+}
+
+// piApproveProject reports whether pi gets --approve. It is true only when
+// the host approved a directory and that directory is the worktree that pi
+// starts in. agent-run reads the worktree from agent_status, so a worktree
+// that differs from the start directory of the host gives --no-approve.
+func piApproveProject(approvedDir, worktree string) bool {
+	return approvedDir != "" && worktree != "" && filepath.Clean(approvedDir) == filepath.Clean(worktree)
 }
 
 // agentRunRole returns the agent role that `prism agent-run` gives the
@@ -835,6 +859,9 @@ func profileSlotRole(agentRole string) string {
 //     the per-role `prism spawn --model-override` entry for this session's
 //     role. PIInvocation ranks it above PIModel when it renders pi's --model
 //     argument.
+//  8. Sets PIApproveProject from the `--approve-project-dir` value and
+//     ctrCfg.Worktree (piApproveProject). The caller must set ctrCfg.Worktree
+//     first.
 func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, cfg config.Config, overrides piOverrides) error {
 	// Load profiles.json.
 	pf, pfErr := config.LoadProfiles()
@@ -919,6 +946,7 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	// The per-role `--model-override` entry travels on its own field;
 	// PIModelFlags ranks it above PIModel when it renders --model.
 	ctrCfg.AgentModel = overrides.AgentModel
+	ctrCfg.PIApproveProject = piApproveProject(overrides.ApproveProjectDir, ctrCfg.Worktree)
 
 	// Resolve the pi binary path. This must be the absolute store
 	// path (or profile path) so that bwrap can bind-mount it into the sandbox.

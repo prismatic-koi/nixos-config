@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/container"
 )
 
 // piExecTimeout bounds how long the `pi` subprocess invoked by
@@ -464,6 +465,7 @@ func generateDescription(qp config.QuickProfile, diff string) (title, body strin
 	//   --no-skills       no skill loading
 	//   --system-prompt   our role/format/example prompt
 	//   --model/--provider — drives the anthropic-oauth route via pi
+	//   --no-approve      load no project resources of the cwd (#3216)
 	//
 	// AGENTS.md auto-discovery is intentionally left enabled (we do NOT
 	// pass --no-context-files), so pi picks up the repo's conventions.
@@ -473,6 +475,7 @@ func generateDescription(qp config.QuickProfile, diff string) (title, body strin
 		"--mode", "json",
 		"--no-tools",
 		"--no-skills",
+		container.PIProjectTrustFlag(false),
 		"--system-prompt", quickPRSystemPrompt,
 		"--model", qp.Model,
 		"--provider", provider,

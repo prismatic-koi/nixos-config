@@ -572,6 +572,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			Prompt:        opts.Prompt,
 			Agent:         opts.AgentRole,
 			SessionName:   opts.SessionName,
+			Worktree:      opts.Worktree,
 			Port:          0,
 			IsolationMode: mode,
 			Model:         opts.Model,
@@ -978,6 +979,7 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 		PromptFilePath:      promptFilePath,
 		Agent:               opts.AgentRole,
 		SessionName:         opts.SessionName,
+		Worktree:            opts.Worktree,
 		Port:                port,
 		IsolationMode:       opts.IsolationMode,
 		PluginHostPath:      opts.PluginHostPath,
@@ -1193,6 +1195,9 @@ func buildOptsForAgentOnlyLayout(opts SpawnOpts, port int, mode string) Opts {
 		PromptFilePath: opts.PromptFilePath, // set by SpawnSession; keeps agentCmd O(1) in prompt size for host mode
 		Agent:          opts.AgentRole,
 		SessionName:    opts.SessionName,
+		// Worktree: the project-trust decision reads it. Without it, a review
+		// agent or an investigator in a trusted repo gets --no-approve.
+		Worktree:       opts.Worktree,
 		Port:           port,
 		IsolationMode:  mode,
 		PluginHostPath: opts.PluginHostPath,

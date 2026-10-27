@@ -105,24 +105,24 @@ func TestBuildAgentCmd_UsesAgent(t *testing.T) {
 		want string
 	}{
 		// Basic agent flag.
-		{session.Opts{Agent: "coordinator"}, "pi --agent coordinator"},
-		{session.Opts{Agent: "worker"}, "pi --agent worker"},
-		// Empty agent — no --agent flag.
-		{session.Opts{}, "pi"},
+		{session.Opts{Agent: "coordinator"}, "pi --agent coordinator --no-approve"},
+		{session.Opts{Agent: "worker"}, "pi --agent worker --no-approve"},
+		// Empty agent — no --agent flag. No Worktree — --no-approve (#3216).
+		{session.Opts{}, "pi --no-approve"},
 		// Prompt with no special characters.
-		{session.Opts{Agent: "worker", Prompt: "fix the login bug"}, "pi --agent worker 'fix the login bug'"},
+		{session.Opts{Agent: "worker", Prompt: "fix the login bug"}, "pi --agent worker --no-approve 'fix the login bug'"},
 		// Prompt containing a single quote — exercises shellQuote escaping.
-		{session.Opts{Agent: "worker", Prompt: "it's broken"}, "pi --agent worker 'it'\\''s broken'"},
+		{session.Opts{Agent: "worker", Prompt: "it's broken"}, "pi --agent worker --no-approve 'it'\\''s broken'"},
 		// Prompt with shell metacharacters that are safe inside single quotes.
-		{session.Opts{Agent: "worker", Prompt: "run `make test` and fix $ERRORS"}, "pi --agent worker 'run `make test` and fix $ERRORS'"},
+		{session.Opts{Agent: "worker", Prompt: "run `make test` and fix $ERRORS"}, "pi --agent worker --no-approve 'run `make test` and fix $ERRORS'"},
 		// SessionName set — PRISM_SESSION_NAME is prepended.
-		{session.Opts{Agent: "worker", SessionName: "myrepo@main"}, "PRISM_SESSION_NAME='myrepo@main' pi --agent worker"},
+		{session.Opts{Agent: "worker", SessionName: "myrepo@main"}, "PRISM_SESSION_NAME='myrepo@main' pi --agent worker --no-approve"},
 		// SessionName with special characters.
-		{session.Opts{Agent: "worker", SessionName: "nixos_config@feature--my-branch"}, "PRISM_SESSION_NAME='nixos_config@feature--my-branch' pi --agent worker"},
+		{session.Opts{Agent: "worker", SessionName: "nixos_config@feature--my-branch"}, "PRISM_SESSION_NAME='nixos_config@feature--my-branch' pi --agent worker --no-approve"},
 		// SessionName + Prompt.
-		{session.Opts{Agent: "worker", SessionName: "myrepo@main", Prompt: "do the thing"}, "PRISM_SESSION_NAME='myrepo@main' pi --agent worker 'do the thing'"},
+		{session.Opts{Agent: "worker", SessionName: "myrepo@main", Prompt: "do the thing"}, "PRISM_SESSION_NAME='myrepo@main' pi --agent worker --no-approve 'do the thing'"},
 		// No SessionName — no PRISM_SESSION_NAME.
-		{session.Opts{Agent: "worker", SessionName: ""}, "pi --agent worker"},
+		{session.Opts{Agent: "worker", SessionName: ""}, "pi --agent worker --no-approve"},
 	}
 	for _, tc := range cases {
 		got, err := session.BuildAgentCmd(tc.opts)

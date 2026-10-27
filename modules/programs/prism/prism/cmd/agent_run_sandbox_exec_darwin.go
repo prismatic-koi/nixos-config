@@ -499,6 +499,10 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// (BuildArgs convention matching the bwrap args[0]="bwrap" convention).
 	sandboxCmd := exec.Command(sandboxExecBinary, args[1:]...)
 	sandboxCmd.Env = env
+	// pi starts in the worktree that populatePIConfig compared with the
+	// approved directory of the host (piApproveProject), as bwrap does with
+	// --chdir. pi loads project resources from its working directory.
+	sandboxCmd.Dir = worktree
 
 	// Inherit stdin/stdout from agent-run so the sandbox sees the tmux pane's
 	// terminal. stderr is piped so startup errors can be tee'd to the log.

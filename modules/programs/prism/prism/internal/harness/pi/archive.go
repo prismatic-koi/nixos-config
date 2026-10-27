@@ -63,6 +63,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
 )
 
@@ -243,8 +244,12 @@ func (a *piArchiveAdapter) Archive(_ context.Context, srcPath, archiveDir string
 // Version returns the version string reported by the pi binary (e.g. "1.2.3"),
 // or "" when the binary is not on PATH or returns an error. This is a non-fatal
 // call — the manifest records "" as "version unknown" without failing cleanup.
+//
+// pi exits on --version before it reads project resources. The project-trust
+// flag is there because every pi command line that prism builds carries one
+// (issue #3216).
 func (a *piArchiveAdapter) Version(_ context.Context) (string, error) {
-	out, err := exec.Command("pi", "--version").Output()
+	out, err := exec.Command("pi", container.PIProjectTrustFlag(false), "--version").Output()
 	if err != nil {
 		return "", nil
 	}

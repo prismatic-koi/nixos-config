@@ -130,6 +130,7 @@ func PIModelFlags(provider, agentModel, model, thinking string) []string {
 //	                                       wins over PIModel)
 //	--thinking <cfg.PIThinking>           (when non-empty)
 //	--extension <extensionPath>           (always; path is derived from cfg)
+//	--approve or --no-approve             (always; cfg.PIApproveProject)
 //	--agent    <cfg.AgentRole>            (when non-empty; consumed by the
 //	                                       prism PI extension via
 //	                                       pi.registerFlag("agent") to source
@@ -171,6 +172,7 @@ func PIInvocation(cfg Config) []string {
 	}
 	extensionSandboxPath := filepath.Join(extensionSandboxDir, piExtensionFilename)
 	args = append(args, "--extension", extensionSandboxPath)
+	args = append(args, PIProjectTrustFlag(cfg.PIApproveProject))
 
 	// --agent <role> for the prism PI extension's role-prompt injection.
 	// pi has no native concept of agents — the extension
@@ -205,6 +207,19 @@ func PIInvocation(cfg Config) []string {
 	}
 
 	return args
+}
+
+// PIProjectTrustFlag returns the project-trust flag for pi: "--approve"
+// when approve is true, else "--no-approve". Every pi command line that prism
+// builds carries exactly one of the two. A command-line flag wins over every
+// other trust source of pi (trust.json, a project_trust extension handler,
+// defaultProjectTrust), so a value that an agent writes there has no effect
+// on a session that prism starts (issue #3216).
+func PIProjectTrustFlag(approve bool) string {
+	if approve {
+		return "--approve"
+	}
+	return "--no-approve"
 }
 
 // PIPromptLead returns the prefix to put before a prompt passed to pi as a

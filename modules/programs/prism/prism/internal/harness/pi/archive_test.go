@@ -1090,3 +1090,21 @@ func TestArchiveAdapter_SourcePath_CrossMode_NoContamination(t *testing.T) {
 			sandboxPath, oldSandboxPrefix)
 	}
 }
+
+// TestArchiveAdapter_Version_PassesNoApprove: the version probe starts pi,
+// so it carries a project-trust flag like every other pi command line that
+// prism builds (issue #3216). The fake pi prints its argv.
+func TestArchiveAdapter_Version_PassesNoApprove(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "pi"), []byte("#!/bin/sh\necho \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	got, err := pi.NewArchiveAdapter().Version(context.Background())
+	if err != nil {
+		t.Fatalf("Version: %v", err)
+	}
+	if got != "--no-approve --version" {
+		t.Errorf("pi argv = %q, want %q", got, "--no-approve --version")
+	}
+}

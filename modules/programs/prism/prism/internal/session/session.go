@@ -18,6 +18,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/proglog"
+	"github.com/prismatic-koi/prism/internal/projecttrust"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -188,12 +190,11 @@ type Opts struct {
 	// reconstructs its container config from the DB rather than carrying
 	// the launch opts forward.
 	HarnessSessionID string
-	// Worktree is the absolute worktree path the session was created in. It
-	// is required only by the host-mode pi-resume path (buildDirectAgentCmd
-	// passes it into container.ResolvePIResumeSession so the encoded-cwd
-	// component of the on-disk pi sessions directory resolves correctly).
-	// Other launch shapes derive the worktree from the DB or from the
-	// container-mode plumbing and do not consult this field.
+	// Worktree is the absolute worktree path the session was created in.
+	// BuildAgentCmd reads it in every isolation mode for the project-trust
+	// decision (projectTrustDir): an empty value gives pi --no-approve. The
+	// host-mode pi-resume path (buildDirectAgentCmd) and hostProfileSlot also
+	// read it.
 	Worktree string
 	// PIExtensionDir is the host-side absolute path to the directory that
 	// contains the prism PI extension file (cfg.PIExtensionDir, populated by
@@ -435,7 +436,24 @@ func BuildAgentCmd(opts Opts) (string, error) {
 		// provider clause on a pi harness name.
 		Provider:    opts.Provider,
 		HarnessName: opts.HarnessName,
+		// The project-trust decision of the host reaches `prism agent-run`
+		// on the pane command line, so agent-run does not decide.
+		ApproveProjectDir: projectTrustDir(opts),
 	})
+}
+
+// projectTrustDir returns the start directory when pi gets --approve, else
+// "" (--no-approve). projecttrust.Policy.Approve decides from the session
+// name and opts.Worktree. A caller that leaves opts.Worktree empty gets "".
+func projectTrustDir(opts Opts) string {
+	if opts.Worktree == "" {
+		return ""
+	}
+	dir := filepath.Clean(opts.Worktree)
+	if !projecttrust.Load().Approve(opts.SessionName, dir) {
+		return ""
+	}
+	return dir
 }
 
 // hostProfileSlot returns the profile slot for this session's role. Bwrap and
@@ -561,6 +579,10 @@ func buildDirectAgentCmd(opts Opts) string {
 		if extPath != "" {
 			cmd += " --extension " + shellQuote(extPath)
 		}
+	}
+	// Host-mode mirror of the project-trust flag in container.PIInvocation.
+	if container.IsPIHarness(opts.HarnessName) {
+		cmd += " " + container.PIProjectTrustFlag(projectTrustDir(opts) != "")
 	}
 	// --exclude-tools <names> for role-scoped builtin tool restriction,
 	// host-mode mirror of container.PIInvocation. See
@@ -1084,11 +1106,10 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// invoked — both ensureAndSwitch and restoreProjectSession do this.
 	// BuildAgentCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
 	//
-	// Propagate the worktree path into opts so buildDirectAgentCmd (host
-	// mode) can resolve the encoded-cwd component of the pi sessions
-	// directory for conversation resume. Other isolation
-	// modes ignore opts.Worktree — their `prism agent-run` dispatch reads
-	// the worktree from the DB row instead.
+	// Every isolation mode needs opts.Worktree: BuildAgentCmd reads it for
+	// the project-trust decision (projectTrustDir). Without it, pi gets
+	// --no-approve in every mode. Host mode also reads it for the pi-resume
+	// lookup in buildDirectAgentCmd.
 	opts.Worktree = directory
 	agentCmd, err := BuildAgentCmd(opts)
 	if err != nil {
@@ -1217,11 +1238,11 @@ func Attach(name string) error {
 // filepath.Base of the worktree directory when git is not available.
 func NameFor(dir, projectRoot string) string {
 	if projectRoot != "" {
-		projName := strings.ReplaceAll(filepath.Base(projectRoot), ".", "_")
+		projName := sessionname.RepoComponent(filepath.Base(projectRoot))
 		branch := worktreeBranchComponent(dir)
 		return projName + "@" + branch
 	}
-	return strings.ReplaceAll(filepath.Base(dir), ".", "_")
+	return sessionname.RepoComponent(filepath.Base(dir))
 }
 
 // worktreeBranchComponent returns the branch component of a session name for

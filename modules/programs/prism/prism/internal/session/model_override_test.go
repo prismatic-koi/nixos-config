@@ -244,6 +244,10 @@ func TestBuildOptsForAgentOnlyLayout_ForwardsFields(t *testing.T) {
 	if got.IsolationMode != "bwrap" {
 		t.Errorf("Opts.IsolationMode = %q, want the caller's resolved mode", got.IsolationMode)
 	}
+	// The project-trust decision reads Worktree (#3216).
+	if got.Worktree != "/tmp/wt" {
+		t.Errorf("Opts.Worktree = %q, want the spawn Worktree", got.Worktree)
+	}
 }
 
 // TestBuildOptsForAgentOnlyLayout_OverrideReachesArgv is the end-to-end half:

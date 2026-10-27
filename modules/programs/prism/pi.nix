@@ -350,7 +350,11 @@
       # container config blobs at lines 29-73) and reference piSettings there.
       piSettings = {
         steeringMode = "one-at-a-time";
-        defaultProjectTrust = "always";
+        # pi that a person starts outside prism asks before it loads project
+        # resources. prism passes --approve or --no-approve on every pi that
+        # it starts, which wins over this setting
+        # (nx.programs.prism.projectTrust.trustedRepos, issue #3216).
+        defaultProjectTrust = "ask";
         transport = "sse";
         theme = config.theme.name;
         treeFilterMode = "default";
