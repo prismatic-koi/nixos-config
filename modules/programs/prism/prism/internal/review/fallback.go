@@ -350,20 +350,55 @@ func EffectiveRoundSessions(names []string) []string {
 }
 
 // RefusalAwaitingFallback reports whether the last session of some agent in
-// the group ended with a refusal run_error. The monitor can still start a
-// fallback for that agent, so a group that is complete now can become
+// the group ended with a refusal run_error, and the stored fallback plan of
+// the group has a fallback model left for that agent. The monitor can then
+// still start a fallback, so a group that is complete now can become
 // incomplete again. members are the group's agent_status rows, and results
-// the db.GroupResults map.
-func RefusalAwaitingFallback(members []db.Status, results map[string]db.GroupMemberResult) bool {
-	names := make([]string, 0, len(members))
-	for _, m := range members {
-		names = append(names, m.SessionName)
+// the db.GroupResults map. When the plan of the group is missing or has no
+// fallbacks, no fallback can start, and the function returns false.
+func RefusalAwaitingFallback(groupID string, members []db.Status, results map[string]db.GroupMemberResult) bool {
+	opts, err := LoadMonitorOptsFromFile(MonitorOptsPath(groupID))
+	if err != nil || opts.Fallback == nil {
+		return false
 	}
-	for _, sess := range EffectiveRoundSessions(names) {
-		mr, ok := results[sess]
-		if ok && mr.State == "error" && mr.RunError != "" && IsRefusalStopReason(mr.RunErrorRawStopReason) {
+	fallbacksLeft := func(sess string) bool {
+		base := baseReviewSession(sess)
+		for i, s := range opts.AgentSessions {
+			if s == base && i < len(opts.Fallback.Agents) {
+				return fallbackIndex(sess) < len(opts.Fallback.Agents[i].Fallbacks)
+			}
+		}
+		return false
+	}
+	for _, sess := range refusedRoundSessions(members, results) {
+		if fallbacksLeft(sess) {
 			return true
 		}
 	}
 	return false
+}
+
+// RefusalInGroup reports whether the last session of some agent in the
+// group ended with a refusal run_error. It does not read the fallback plan.
+// Use it only when the plan cannot be read, for example in a sandbox that
+// talks to a sidecar that does not report the fallback state.
+func RefusalInGroup(members []db.Status, results map[string]db.GroupMemberResult) bool {
+	return len(refusedRoundSessions(members, results)) > 0
+}
+
+// refusedRoundSessions returns the last session of each agent in the group
+// that ended with a refusal run_error.
+func refusedRoundSessions(members []db.Status, results map[string]db.GroupMemberResult) []string {
+	names := make([]string, 0, len(members))
+	for _, m := range members {
+		names = append(names, m.SessionName)
+	}
+	var out []string
+	for _, sess := range EffectiveRoundSessions(names) {
+		mr, ok := results[sess]
+		if ok && mr.State == "error" && mr.RunError != "" && IsRefusalStopReason(mr.RunErrorRawStopReason) {
+			out = append(out, sess)
+		}
+	}
+	return out
 }

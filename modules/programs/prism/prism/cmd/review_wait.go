@@ -78,7 +78,8 @@ func waitForReviewTerminal(prNumber, groupID string, jsonMode bool, timeout time
 				proglog.Debugf("[prism review --wait] probe error: %v (will retry)\n", gErr)
 				return false, nil
 			}
-			return reviewWaitDone(done, members, results, &refusalSince, time.Now()), nil
+			awaiting := done && probe.AwaitingFallback(groupID, members, results)
+			return reviewWaitDone(done, awaiting, &refusalSince, time.Now()), nil
 		})
 
 	switch exitCodeOf(pollErr) {
@@ -107,11 +108,12 @@ func waitForReviewTerminal(prNumber, groupID string, jsonMode bool, timeout time
 var reviewWaitFallbackSettle = 30 * time.Second
 
 // reviewWaitDone returns whether --wait can report the group. A complete
-// group with a refusal that can still start a fallback is not done until
+// group with a refusal that can still start a fallback (awaitingFallback,
+// see waitProbe.AwaitingFallback) is not done until
 // reviewWaitFallbackSettle has passed since --wait first saw that state.
 // *refusalSince holds that time, and is reset when the state ends.
-func reviewWaitDone(done bool, members []db.Status, results map[string]db.GroupMemberResult, refusalSince *time.Time, now time.Time) bool {
-	if !done || !review.RefusalAwaitingFallback(members, results) {
+func reviewWaitDone(done, awaitingFallback bool, refusalSince *time.Time, now time.Time) bool {
+	if !done || !awaitingFallback {
 		*refusalSince = time.Time{}
 		return done
 	}
