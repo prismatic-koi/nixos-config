@@ -855,9 +855,8 @@ func generateProfile(m *Manager) string {
 			sb.WriteString("  (subpath " + quoteSBPL(m.cfg.BareRoot) + ")\n")
 		}
 		// Host-API socket directory — the sidecar's per-session socket dir.
-		// (PI reads from ~/.pi/agent directly via the shared mount. The
-		// run-dir (subpath ...) rule below still covers agent-run.log,
-		// hostapi.sock, and pipe.sock.)
+		// The run-dir (subpath ...) rule covers agent-run.log,
+		// hostapi.sock, and pipe.sock. Section 6a covers ~/.pi/agent.
 		if m.cfg.HostAPISockPath != "" {
 			sockDir := filepath.Dir(m.cfg.HostAPISockPath)
 			sb.WriteString("  (subpath " + quoteSBPL(sockDir) + ")\n")
@@ -876,30 +875,29 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 6a. PI agent dir allow (pi sessions only) ────────────────────────
-	// OAuth token refresh inside pi-coding-agent uses proper-lockfile with
-	// realpath:true, which resolves auth.json through any symlink and then
-	// calls mkdir(<resolved-auth-path>.lock) to acquire the lock. That mkdir
-	// requires write permission on the *parent directory* ~/.pi/agent/, not
-	// just on the auth.json file itself. A (literal ...) rule on auth.json
-	// alone is therefore insufficient — the sandbox denies the mkdir and the
-	// refresh silently fails (EPERM after ~30 s of retries).
+	// ── 6a. PI agent dir: read, and write of an exact list (pi sessions only) ─
+	// A worker must not create, change, or replace a path in ~/.pi/agent:
+	// every later session loads code and prompts from it, host sessions too
+	// (#3284). pi_agent_dir.go lists what pi and its extensions write during
+	// a normal session, and why. This section allows a read of the whole dir
+	// and a write of exactly those paths:
+	//   - auth.json and atlassian-mcp-oauth.json (in-place writes);
+	//   - the four proper-lockfile lock dirs that pi makes in the root (the
+	//     node only: proper-lockfile calls mkdir, utimes, and rmdir on it);
+	//   - the Notion store: the two files, the .notion-mcp.tmp.* temp files
+	//     that the extension renames onto them, and its lock dir;
+	//   - sessions/<encoded-cwd>/ of the worktree, not of another worktree.
+	// The lock dirs stay shared with host sessions, because SBPL can grant a
+	// name. Section 21f takes back the create and the unlink of the two
+	// in-place files.
 	//
-	// We widen the rule to (subpath ~/.pi/agent) so that:
-	//   - auth.json reads and writes are permitted (token refresh writes back
-	//     to the host file).
-	//   - mkdir auth.json.lock (the proper-lockfile lock dir) is permitted
-	//     because the parent dir is now writable.
-	//
-	// The rule is still gated on Harness == "pi" so non-pi sessions are not
-	// exposed to the pi credential directory. It is always emitted for pi
-	// sessions even when ~/.pi/agent does not yet exist — sandbox-exec
-	// silently ignores (subpath ...) rules for non-existent paths, so pi
-	// simply prompts for /login rather than crashing on a fresh install.
+	// The rule is gated on Harness == "pi" so non-pi sessions are not
+	// exposed to the pi credential directory. It is emitted for pi sessions
+	// even when ~/.pi/agent does not yet exist — sandbox-exec silently
+	// ignores rules for non-existent paths. Prepare (lifecycle_dispatch.go)
+	// makes the sessions dir and the credential files on the host first.
 	if m.cfg.Harness == "pi" && home != "" {
-		piAgentDir := filepath.Join(home, ".pi", "agent")
-		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
-		sb.WriteString("  (subpath " + quoteSBPL(piAgentDir) + "))\n")
+		sb.WriteString(piAgentDirSBPLAllow(filepath.Join(home, ".pi", "agent"), m.cfg.Worktree))
 		sb.WriteString("\n")
 	}
 
@@ -1310,6 +1308,20 @@ func generateProfile(m *Manager) string {
 	if len(sessionTmpForms) > 0 {
 		sb.WriteString("\n")
 		sb.WriteString(sessionTmpNodeDeny(sessionTmpForms))
+	}
+
+	// ── 21f. FINAL DENY — the pi credential files cannot be replaced ─
+	// Section 6a grants a write of auth.json and atlassian-mcp-oauth.json.
+	// pi and the extensions write both files in place, and Prepare makes
+	// them on the host. Without this deny, the session can remove a file and
+	// put a symlink at its path. A host pi then follows the symlink and
+	// writes its tokens to a file that the session chose (#3284). The deny
+	// must follow every allow, because SBPL resolves a conflict in favour of
+	// the later rule. TestGenerateProfile_PIAgentCredentialDenyFollowsEveryAllow
+	// pins the order.
+	if m.cfg.Harness == "pi" && home != "" {
+		sb.WriteString("\n")
+		sb.WriteString(piAgentDirSBPLDeny(filepath.Join(home, ".pi", "agent")))
 	}
 
 	// ── 22. FINAL DENIES — Go module cache is not executable ─

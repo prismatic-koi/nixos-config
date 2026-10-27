@@ -45,8 +45,9 @@ func piEncodeCWD(cwd string) string {
 }
 
 // writeFakePiResumeJSONL creates a synthetic pi transcript at the host-mode
-// sessions root and returns its absolute path. The file's content is not
-// inspected by cleanup — only its name suffix is matched.
+// sessions root and returns its absolute path. Cleanup matches only the name
+// suffix. The resume lookup also reads the header (#3284), so the file holds
+// a pi header with the id and the worktree as cwd: fakePiResumeContent.
 func writeFakePiResumeJSONL(t *testing.T, home, worktree, harnessSessionID string) string {
 	t.Helper()
 	dir := filepath.Join(home, ".pi", "agent", "sessions", piEncodeCWD(worktree))
@@ -54,10 +55,15 @@ func writeFakePiResumeJSONL(t *testing.T, home, worktree, harnessSessionID strin
 		t.Fatalf("mkdir resume dir: %v", err)
 	}
 	path := filepath.Join(dir, "2026-01-02T03-04-05-000Z_"+harnessSessionID+".jsonl")
-	if err := os.WriteFile(path, []byte("{\"type\":\"session\"}\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, fakePiResumeContent(t, harnessSessionID, worktree), 0o600); err != nil {
 		t.Fatalf("write resume jsonl: %v", err)
 	}
 	return path
+}
+
+// fakePiResumeContent is the content that writeFakePiResumeJSONL writes.
+func fakePiResumeContent(t *testing.T, harnessSessionID, worktree string) []byte {
+	return restoreHeaderLine(t, harnessSessionID, worktree)
 }
 
 // TestHeadlessCleanup_ClearsHarnessSessionID is the regression test for the

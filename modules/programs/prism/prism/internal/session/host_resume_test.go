@@ -7,6 +7,7 @@ package session
 // and is covered by internal/container/pi_invocation_resume_test.go.
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,10 +35,18 @@ func writeHostModeResumeSession(t *testing.T, home, worktree, sessionID string) 
 		t.Fatalf("mkdir host-mode sessions dir: %v", err)
 	}
 	path := filepath.Join(dir, "2026-01-02T03-04-05-000Z_"+sessionID+".jsonl")
-	if err := os.WriteFile(path, []byte("{\"type\":\"session\"}\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, hostResumeHeaderLine(sessionID, worktree), 0o600); err != nil {
 		t.Fatalf("write host-mode session file: %v", err)
 	}
 	return path
+}
+
+// hostResumeHeaderLine returns a pi session header line with id and cwd.
+// container.ResolvePIResumeSession resumes only a file whose header cwd is
+// the worktree (#3284).
+func hostResumeHeaderLine(id, cwd string) []byte {
+	b, _ := json.Marshal(map[string]any{"type": "session", "version": 3, "id": id, "cwd": cwd})
+	return append(b, '\n')
 }
 
 // piEncodeCWDForTest mirrors internal/container.encodePiCWD. Inlined to keep
@@ -250,7 +259,7 @@ func TestBuildDirectAgentCmd_HostMode_AppendsSessionUnderPICodingAgentDir(t *tes
 		t.Fatalf("mkdir env-mode sessions dir: %v", err)
 	}
 	jsonl := filepath.Join(dir, "2026-06-08T07-12-42-499Z_"+harnessSessionID+".jsonl")
-	if err := os.WriteFile(jsonl, []byte("{\"type\":\"session\"}\n"), 0o600); err != nil {
+	if err := os.WriteFile(jsonl, hostResumeHeaderLine(harnessSessionID, worktree), 0o600); err != nil {
 		t.Fatalf("write env-mode session file: %v", err)
 	}
 

@@ -13,7 +13,9 @@ package cmd
 // ended due to missing worktrees. It is also fully skipped in dry-run mode.
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"time"
 
@@ -301,7 +303,7 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	// or empty string both mean "start fresh" — PIInvocation treats an empty
 	// HarnessSessionID as a silent no-op.
 	if s.HarnessSessionID != nil && *s.HarnessSessionID != "" {
-		opts.HarnessSessionID = *s.HarnessSessionID
+		opts.HarnessSessionID = restoreResumeSessionID(s.SessionName, directory, *s.HarnessSessionID)
 	}
 	if isoCaps.IsContainer {
 		opts.PluginHostPath = cfg.SidecarPluginPath
@@ -431,6 +433,32 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 
 	fmt.Printf("session %q restored\n", s.SessionName)
 	return restoreOutcomeCreated, nil
+}
+
+// restoreResumeSessionID returns harnessSessionID when pi can resume it in
+// worktree, and "" when it cannot.
+//
+// pi runs a resumed session in the cwd from the header of its session
+// file, and a sandboxed session can write that header. If the header cwd
+// is not worktree, restore prints the session name and the reason, and the
+// session starts a fresh conversation in worktree (#3284). If the sessions
+// dir of the worktree does not exist, restore prints nothing and returns
+// the id: the launcher logs the missing file to the agent-run log, as
+// before.
+//
+// For bwrap and sandbox-exec, agent-run reads the session id from the DB
+// row, not from session.Opts. container.ResolvePIResumeSession runs the
+// same check there, so those launchers refuse the same files.
+func restoreResumeSessionID(sessionName, worktree, harnessSessionID string) string {
+	cfg := container.Config{SessionName: sessionName, Worktree: worktree, HarnessSessionID: harnessSessionID}
+	if err := container.CheckPIResumeCwd(cfg); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return harnessSessionID
+		}
+		fmt.Fprintf(os.Stderr, "restore %q: not resuming pi session %s: %v\n", sessionName, harnessSessionID, err)
+		return ""
+	}
+	return harnessSessionID
 }
 
 // restoreSidecarStopTimeout bounds the wait for the old sidecar of a

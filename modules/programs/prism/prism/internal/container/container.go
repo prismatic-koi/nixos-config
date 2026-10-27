@@ -308,17 +308,13 @@ type Config struct {
 	Harness string
 
 	// PIAgentConfigHostDir is the absolute host path to the shared PI agent
-	// config directory (~/.pi/agent) — a single shared mount of the user's
-	// ~/.pi/agent. When non-empty and Harness == "pi", BuildArgs
-	// (bwrap) bind-mounts this directory read-WRITE into the sandbox at
-	// PIAgentConfigSandboxDir and sets PI_CODING_AGENT_DIR to the in-sandbox
-	// path so PI discovers settings.json / themes / AGENTS.md / skills /
-	// auth.json. Writes to auth.json, atlassian-mcp-oauth.json, and sessions/
-	// reach the host via the same parent bind — there is no separate overlay.
-	// The mount is read-WRITE because proper-lockfile's auth.json.lock mkdir on
-	// the parent dir needs write access; see pi_invocation.go top-of-file for
-	// the full rationale. The role system-prompt is injected at runtime by the
-	// prism PI extension, not via this directory.
+	// config directory (~/.pi/agent). When non-empty and Harness == "pi",
+	// BuildArgs (bwrap) makes a private dir at PIAgentConfigSandboxDir with
+	// read-only binds of the entries of this directory, and sets
+	// PI_CODING_AGENT_DIR to the in-sandbox path. Only auth.json,
+	// atlassian-mcp-oauth.json, and the sessions dir of the worktree are bound
+	// read-write (pi_agent_dir.go, #3284). The role system-prompt is injected
+	// at runtime by the prism PI extension, not via this directory.
 	PIAgentConfigHostDir string
 
 	// PIAgentConfigSandboxDir is the in-sandbox path at which the PI agent
