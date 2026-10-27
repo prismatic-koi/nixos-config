@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -332,13 +333,12 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	}
 
 	// Stop any sidecar left over from a previous lifecycle (e.g. `prism
-	// restart` kills tmux but not the sidecars). StopSidecar is a no-op when
-	// no PID file is present or the process is already gone, so it is safe
-	// to call unconditionally for both host-mode and container-mode sessions.
-	// It removes the PID file, so StartSidecarWithOpts can write a fresh one
-	// below. restoredInstanceID needs to know whether the old sidecar stopped.
-	// The merge-queue resume needs to know whether a process that can be the
-	// old sidecar still runs: that process can still watch the queue.
+	// restart` kills tmux but not the sidecars). StopSidecarReport is a no-op
+	// when no PID file is present or the process is already gone, so it is
+	// safe to call unconditionally for both host-mode and container-mode
+	// sessions. When it proves the old sidecar gone, it removes the PID file,
+	// so StartSidecarWithOpts can write a fresh one below. restoredInstanceID
+	// needs to know whether the old sidecar stopped.
 	//
 	// The Shutdown of a coordinator sidecar abandons the merge queue, so read
 	// the queue first (#3166).
@@ -346,7 +346,7 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	if queueErr != nil {
 		fmt.Fprintf(os.Stderr, "restore %q: read merge queue: %v\n", s.SessionName, queueErr)
 	}
-	oldSidecarStopped, oldSidecarGone := restoreStopSidecar(s.SessionName, restoreSidecarStopTimeout)
+	oldSidecarPID, oldSidecarStopped, oldSidecarGone := restoreStopSidecar(s.SessionName, restoreSidecarStopTimeout)
 	// A stop before restore, as at a host shutdown, abandoned its rows
 	// before the read above (#3175). Find them before restoredInstanceID
 	// reopens the incarnation.
@@ -355,6 +355,14 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 		if queued, err = withMergesAbandonedByStop(d, s.SessionName, *s.InstanceID, queued); err != nil {
 			fmt.Fprintf(os.Stderr, "restore %q: read merge queue of the last stop: %v\n", s.SessionName, err)
 		}
+	}
+	// A process that can be the old sidecar can still watch the merge queue.
+	// A new sidecar next to it starts a second watcher, and the duplicate-start
+	// check of the new sidecar refuses only when a socket of the old sidecar
+	// answers. So do not restore the session, and change no row of it
+	// (#3303).
+	if !oldSidecarGone {
+		return restoreOutcomeSkipped, oldSidecarRunsError(s.SessionName, oldSidecarPID, queued)
 	}
 
 	// For container-mode sessions (none in current code — isoCaps.IsContainer
@@ -423,7 +431,7 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	if instanceID := restoredInstanceID(d, s, opts.Agent, oldSidecarStopped); instanceID != "" {
 		opts.InstanceID = instanceID
 	}
-	resumeMergeQueue(d, "restore", s.SessionName, opts.InstanceID, queued, oldSidecarGone)
+	resumeMergeQueue(d, "restore", s.SessionName, opts.InstanceID, queued)
 
 	if err := session.Create(s.SessionName, directory, opts); err != nil {
 		return restoreOutcomeSkipped, fmt.Errorf("create session: %w", err)
@@ -469,6 +477,23 @@ var restoreSidecarStopTimeout = killSidecarTimeout
 // replace it.
 var restoreStopSidecar = session.StopSidecarReport
 
+// oldSidecarRunsError is the error of the restore of sessionName when the
+// stop cannot prove that the old sidecar is gone. pid is the PID in its PID
+// file. queued is the merge queue that a restore resumes.
+func oldSidecarRunsError(sessionName string, pid int, queued []db.PendingMerge) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "the session is not restored, because process %d can be the old sidecar and still runs (see the warning above). "+
+		"A new sidecar next to that process can start a second merge-queue watcher.", pid)
+	if len(queued) > 0 {
+		fmt.Fprintf(&b, " The merge queue is not resumed: %s.", formatMergePRs(queued))
+	}
+	fmt.Fprintf(&b, " Stop process %d, then run prism restore again.", pid)
+	if pidPath, err := session.SidecarPIDPath(sessionName); err == nil {
+		fmt.Fprintf(&b, " If the process is not a prism sidecar, remove its PID file first: %s", pidPath)
+	}
+	return errors.New(b.String())
+}
+
 // restoredInstanceID returns the instance ID that a session which restore
 // recreates must run with. It returns "" when it cannot record one.
 //
@@ -479,9 +504,10 @@ var restoreStopSidecar = session.StopSidecarReport
 // restore clears ended_at and end_state again. Otherwise the restored sidecar
 // writes every event with the instance ID of an ended session (#3027).
 //
-// If the old sidecar did not stop inside the wait, StopSidecar sent it
-// SIGKILL, but restore cannot be sure that it is gone and cannot stamp
-// ended_at after a reopen. Restore then starts a new incarnation instead.
+// If the old sidecar did not stop inside the SIGTERM wait, the stop sent it
+// SIGKILL, and restore starts a new incarnation instead. Restore calls
+// restoredInstanceID only after the stop proved that the old sidecar is
+// gone (#3303).
 func restoredInstanceID(d *db.DB, s db.Status, agentRole string, oldSidecarStopped bool) string {
 	if s.InstanceID == nil || *s.InstanceID == "" {
 		return startRestoredIncarnation(d, s, agentRole)

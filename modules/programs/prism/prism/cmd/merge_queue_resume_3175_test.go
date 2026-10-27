@@ -2,8 +2,7 @@ package cmd
 
 // Tests for issue #3175: the merge queue of a coordinator session survives
 // a host shutdown (and the restore at login) and the stale-sidecar path of
-// prism switch. It is not resumed while a process that can be the old
-// sidecar still runs.
+// prism switch.
 
 import (
 	"strings"
@@ -70,41 +69,12 @@ func TestResumeMergeQueue_AfterHostShutdown(t *testing.T) {
 		t.Fatalf("restoredInstanceID = %q, want the same instance %q", got, iid)
 	}
 	stdout, _ := captureStdoutStderr(t, func() {
-		resumeMergeQueue(d, "restore", sessionName, got, queued, true)
+		resumeMergeQueue(d, "restore", sessionName, got, queued)
 	})
 
 	assertQueue(t, d, sessionName, iid, 3, 1, 2)
 	if want := "merge queue resumed: PR #3, PR #1, PR #2"; !strings.Contains(stdout, want) {
 		t.Errorf("stdout = %q, want %q", stdout, want)
-	}
-}
-
-// TestResumeMergeQueue_OldSidecarCanStillRun covers a stop that sent no
-// signal or that did not end the process. The rows must not change, so the
-// old process stays the only watcher, and the output must name the PRs and
-// the reason.
-func TestResumeMergeQueue_OldSidecarCanStillRun(t *testing.T) {
-	const sessionName = "testrepo@main"
-	d := openRestoreTestDB(t)
-	status, iid := seedCoordinatorQueue(t, d, sessionName, 8, 9)
-	queued, err := d.WatchingMerges(sessionName)
-	if err != nil {
-		t.Fatalf("WatchingMerges: %v", err)
-	}
-
-	newIID := restoredInstanceID(d, status, "coordinator", false)
-	if newIID == "" || newIID == iid {
-		t.Fatalf("restoredInstanceID = %q, want a new instance (old %q)", newIID, iid)
-	}
-	_, stderr := captureStdoutStderr(t, func() {
-		resumeMergeQueue(d, "restore", sessionName, newIID, queued, false)
-	})
-
-	assertQueue(t, d, sessionName, iid, 8, 9)
-	for _, want := range []string{"merge queue is not resumed", "old sidecar can still run", "PR #8, PR #9"} {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("stderr = %q, want %q", stderr, want)
-		}
 	}
 }
 
@@ -132,40 +102,6 @@ func TestRestoreSession_AfterHostShutdown_ResumesMergeQueue(t *testing.T) {
 		t.Fatalf("agent_status.instance_id = %q, want the same instance %q", got, iid)
 	}
 	assertQueue(t, d, sessionName, iid, 30, 10, 20)
-}
-
-// TestRestoreSession_OldSidecarCanStillRun_KeepsMergeQueue restores a
-// coordinator whose stop cannot prove that the old sidecar is gone. Restore
-// must not give the queue to the restored sidecar: the rows stay with the
-// old instance, as they are, and the output names them.
-func TestRestoreSession_OldSidecarCanStillRun_KeepsMergeQueue(t *testing.T) {
-	d := startRestoreTest(t)
-	prev := restoreStopSidecar
-	restoreStopSidecar = func(string, time.Duration) (bool, bool) { return false, false }
-	t.Cleanup(func() { restoreStopSidecar = prev })
-
-	const sessionName = "testrepo@fail-closed-3175"
-	status := seedStatus(t, d, sessionName, t.TempDir(), nil)
-	iid := uuid.New().String()
-	seedIncarnation(t, d, sessionName, iid, "tier-heavy", time.Time{})
-	status.InstanceID = &iid
-	enqueueCoordinatorPRs(t, d, sessionName, iid, 4, 5)
-
-	t.Setenv("PRISM_CMD_TEST_STUB", "1")
-	var restoreErr error
-	_, stderr := captureStdoutStderr(t, func() { restoreErr = callRestoreSession(d, status) })
-	if restoreErr != nil {
-		t.Fatalf("restoreSession: %v", restoreErr)
-	}
-	t.Cleanup(func() { session.KillSidecar(sessionName) })
-
-	if got := currentInstanceID(t, d, sessionName); got == iid {
-		t.Fatalf("agent_status.instance_id = %q, want a new instance", got)
-	}
-	assertQueue(t, d, sessionName, iid, 4, 5)
-	if want := "merge queue is not resumed"; !strings.Contains(stderr, want) || !strings.Contains(stderr, "PR #4, PR #5") {
-		t.Errorf("stderr = %q, want %q and the PRs", stderr, want)
-	}
 }
 
 // stubSwitchStop replaces the sidecar stop of the stale-sidecar path of

@@ -387,17 +387,24 @@ func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 // The PID file stays while the sidecar runs. Another stop that runs at the
 // same time then still finds the process, and does not report it as gone.
 func StopSidecar(sessionName string, timeout time.Duration) bool {
-	exited, _ := StopSidecarReport(sessionName, timeout)
+	exited, _ := stopSidecarPID(sessionName, readSidecarPID(sessionName), timeout, true)
 	return exited
 }
 
 // StopSidecarReport stops the sidecar of sessionName as StopSidecar does.
-// exited is the result of StopSidecar. gone reports that no process that
-// can be the sidecar of the session runs when it returns. gone is false
-// when StopSidecar sent no signal because it cannot read the command line
-// of a live PID, and when the sidecar still runs after SIGKILL.
-func StopSidecarReport(sessionName string, timeout time.Duration) (exited, gone bool) {
-	return stopSidecarPID(sessionName, readSidecarPID(sessionName), timeout, true)
+// pid is the PID in the PID file, or 0 when the file holds no PID. exited
+// is the result of StopSidecar. gone is the result of EnsureSidecarStopped:
+// it is false when StopSidecarReport sent no signal because it cannot read
+// the command line of a live PID, and when the sidecar still runs after
+// SIGKILL.
+//
+// When gone is false, the PID file stays, as with EnsureSidecarStopped. A
+// caller that then does not start a new sidecar needs the file: the next
+// stop finds the same process, and does not report it as gone (#3303).
+func StopSidecarReport(sessionName string, timeout time.Duration) (pid int, exited, gone bool) {
+	pid = readSidecarPID(sessionName)
+	exited, gone = stopSidecarPID(sessionName, pid, timeout, false)
+	return pid, exited, gone
 }
 
 // SidecarStopTimeout is the SIGTERM wait, and then the SIGKILL wait, that

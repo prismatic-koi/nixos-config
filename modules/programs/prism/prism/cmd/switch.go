@@ -309,7 +309,7 @@ func resumeStaleMergeQueue(d *db.DB, sessionName string, queued []db.PendingMerg
 	} else if st != nil && st.InstanceID != nil {
 		instanceID = *st.InstanceID
 	}
-	resumeMergeQueue(d, "warning: prism switch", sessionName, instanceID, queued, true)
+	resumeMergeQueue(d, "warning: prism switch", sessionName, instanceID, queued)
 }
 
 // allocatePortForSession ensures the agent_status row exists for sessionName

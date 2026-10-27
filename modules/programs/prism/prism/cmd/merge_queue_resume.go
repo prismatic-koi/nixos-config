@@ -11,8 +11,9 @@ package cmd
 // Two watchers must not poll one row. The watcher polls the watching rows
 // of its session name, whatever their instance ID. Thus the rows are
 // resumed only after the stop proved that no process that can be the old
-// sidecar runs. Without that proof, the rows do not change, and the caller
-// prints why.
+// sidecar runs. Without that proof, the caller does not restart the
+// session, so no second watcher starts, and the rows do not change
+// (#3273, #3303).
 
 import (
 	"cmp"
@@ -55,17 +56,11 @@ func withMergesAbandonedByStop(d *db.DB, sessionName, instanceID string, queued 
 // starts each line on stderr. A row that the old watcher ended stays
 // ended, so its outcome is not notified again.
 //
-// oldSidecarGone reports that the stop proved that no process that can be
-// the old sidecar runs. When it is false, the rows do not change, because
-// that process can still watch them.
-func resumeMergeQueue(d *db.DB, logPrefix, sessionName, instanceID string, queued []db.PendingMerge, oldSidecarGone bool) {
+// Call it only after the stop proved that no process that can be the old
+// sidecar runs. Without that proof, the old sidecar can still watch the
+// rows.
+func resumeMergeQueue(d *db.DB, logPrefix, sessionName, instanceID string, queued []db.PendingMerge) {
 	if len(queued) == 0 {
-		return
-	}
-	if !oldSidecarGone {
-		// The stop already wrote a warning that names the process.
-		fmt.Fprintf(os.Stderr, "%s %q: the merge queue is not resumed, because the old sidecar can still run and watch it (see the warning above): %s\n",
-			logPrefix, sessionName, formatMergePRs(queued))
 		return
 	}
 	if instanceID == "" {
