@@ -10,6 +10,7 @@ package review
 import (
 	"context"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,10 +82,14 @@ func KillSessionPrefix(prefix string) {
 	}
 }
 
+// killTmuxSession is the tmux kill of KillSessionsByNames. Tests replace it,
+// so that a test can act as the session-closed hook.
+var killTmuxSession = tmux.KillSession
+
 // KillSessionsByNames kills the specified tmux sessions by exact name.
 func KillSessionsByNames(names []string) {
 	for _, name := range names {
-		_ = tmux.KillSession(name)
+		_ = killTmuxSession(name)
 	}
 }
 
@@ -145,7 +150,14 @@ func KillReviewSessionsForParentWithDB(d *db.DB, parentSession string) {
 //
 // It also removes the stored fallback plan of each round of the parent
 // (RemoveMonitorOptsForParent).
-func CleanupReviewSessionsForParent(d *db.DB, parentSession string) (failed []string) {
+//
+// parentInstanceID is the instance ID of the parent incarnation that the
+// archive step of the caller copies. The caller reads it before the tmux
+// kill of the parent, because the session-closed hook can clear
+// agent_status.instance_id of the parent first. The audit logs of the
+// children go to the log of that incarnation. Pass "" when the tmux session
+// of the parent still runs: the hand-over then reads agent_status.
+func CleanupReviewSessionsForParent(d *db.DB, parentSession, parentInstanceID string) (failed []string) {
 	prefix := parentSession + "~review-"
 	defer RemoveMonitorOptsForParent(d, parentSession)
 
@@ -160,7 +172,7 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession string) (failed []st
 		var stopped []string
 		stopped, failed = stopAgentSidecars(names)
 		for _, name := range stopped {
-			cleanupAgentSession(d, name, db.ReapCauseParentCleanup)
+			cleanupAgentSession(d, name, parentInstanceID, db.ReapCauseParentCleanup)
 		}
 		// Kill the tmux sessions (best effort, idempotent).
 		KillSessionsByNames(stopped)
@@ -181,7 +193,7 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession string) (failed []st
 		var stopped []string
 		stopped, failed = stopAgentSidecars(names)
 		for _, name := range stopped {
-			cleanupAgentSession(d, name, db.ReapCauseParentCleanup)
+			cleanupAgentSession(d, name, parentInstanceID, db.ReapCauseParentCleanup)
 		}
 		if len(failed) > 0 {
 			// A prefix kill would also close the tmux session of a review
@@ -274,7 +286,7 @@ func cleanupFailedAgentSession(d *db.DB, agentSession string, cause db.SessionRe
 		_, _ = markAgentSessionError(d, agentSession, cause, detail)
 		return
 	}
-	cleanupAgentSession(d, agentSession, cause, detail)
+	cleanupAgentSession(d, agentSession, "", cause, detail)
 	_ = tmux.KillSession(agentSession)
 }
 
@@ -316,8 +328,10 @@ func markAgentSessionError(d *db.DB, agentSession string, cause db.SessionReapCa
 // SessionEndCauses returns the latest event, so the report would name a cause
 // that is false. A wrong cause is worse than the disjunction this all
 // replaces.
-func cleanupAgentSession(d *db.DB, agentSession string, cause db.SessionReapCause, detail ...string) {
-	st, lookupErr := markAgentSessionError(d, agentSession, cause, detail...)
+//
+// parentInstanceID is as for CleanupReviewSessionsForParent.
+func cleanupAgentSession(d *db.DB, agentSession, parentInstanceID string, cause db.SessionReapCause, detail ...string) {
+	st, _ := markAgentSessionError(d, agentSession, cause, detail...)
 	_ = d.ReleasePort(agentSession)
 	_ = d.SetEnded(agentSession)
 	_ = d.PurgeBusMessages(agentSession)
@@ -333,34 +347,64 @@ func cleanupAgentSession(d *db.DB, agentSession string, cause db.SessionReapCaus
 	// The audit log of a child that used `prism container` goes to the
 	// parent, because a review agent has no archive of its own. Its builds,
 	// containers, and images are then swept.
-	if lookupErr == nil && st != nil && st.InstanceID != nil && *st.InstanceID != "" {
-		childID := *st.InstanceID
-		sweepChildPrismContainers(agentSession, childID, handOverChildPrismContainerAudit(d, agentSession, childID))
+	for _, childID := range childIncarnationIDs(d, agentSession, st) {
+		sweepChildPrismContainers(agentSession, childID, handOverChildPrismContainerAudit(d, agentSession, childID, parentInstanceID))
 		container.RemoveSessionWorkDir(childID)
 		container.RemoveSessionTmpDir(childID)
 		container.RemovePodmanProxyAuditDir(childID)
 	}
 }
 
+// childIncarnationIDs returns the instance ID in st and the instance ID of
+// each sessions row of agentSession, with no duplicates. The sessions rows
+// are necessary: when the tmux session of the child closes, the
+// session-closed hook clears agent_status.instance_id. The hook of the
+// parent closes the tmux session of each open child, so this can occur
+// before cleanupAgentSession runs (#3279).
+func childIncarnationIDs(d *db.DB, agentSession string, st *db.Status) []string {
+	var ids []string
+	add := func(id string) {
+		if id != "" && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	if st != nil && st.InstanceID != nil {
+		add(*st.InstanceID)
+	}
+	sessions, err := d.SessionsByName(agentSession)
+	if err != nil {
+		proglog.Warnf("[prism] warning: cleanup: list incarnations of %q failed (%v) — cleaning up the current incarnation only\n", agentSession, err)
+	}
+	for _, s := range sessions {
+		add(s.InstanceID)
+	}
+	return ids
+}
+
 // handOverChildPrismContainerAudit appends the prism-container audit log of
-// a review-agent child to the log of the current incarnation of its parent.
-// Every caller that can see a real log runs before the parent's archive
-// step, so the parent archive keeps the lines.
+// a review-agent child to the log of incarnation parentInstanceID of its
+// parent. An empty parentInstanceID selects the current incarnation in
+// agent_status. Every caller that can see a real log runs before the
+// parent's archive step, so the parent archive keeps the lines.
 //
 // It reports whether the child's audit dir can be removed: true when the
 // child has no log or the append worked. On false the dir stays on disk,
 // and a warning names it.
-func handOverChildPrismContainerAudit(d *db.DB, agentSession, childID string) bool {
+func handOverChildPrismContainerAudit(d *db.DB, agentSession, childID, parentInstanceID string) bool {
 	if !container.PrismContainerAuditDirExists(childID) {
 		return true
 	}
 	parent, _, _ := strings.Cut(agentSession, "~")
-	st, err := d.CurrentStatus(parent)
-	if err != nil || st == nil || st.InstanceID == nil || *st.InstanceID == "" {
+	if parentInstanceID == "" {
+		if st, err := d.CurrentStatus(parent); err == nil && st != nil && st.InstanceID != nil {
+			parentInstanceID = *st.InstanceID
+		}
+	}
+	if parentInstanceID == "" {
 		proglog.Warnf("[prism] warning: cleanup: keep the prism-container audit log of %q: parent %q has no instance ID\n", agentSession, parent)
 		return false
 	}
-	if err := prismcontainer.AppendAuditLog(childID, *st.InstanceID); err != nil {
+	if err := prismcontainer.AppendAuditLog(childID, parentInstanceID); err != nil {
 		proglog.Warnf("[prism] warning: cleanup: keep the prism-container audit log of %q: append to parent %q failed (%v)\n", agentSession, parent, err)
 		return false
 	}

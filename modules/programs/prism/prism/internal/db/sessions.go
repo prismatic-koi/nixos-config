@@ -648,8 +648,14 @@ INSERT OR REPLACE INTO spawn_outcome (
 // before the tmux kill. The kill fires the session-closed hook, and the hook
 // can clear agent_status.instance_id of sessionName before the cascade runs.
 // The query then does not find the parent, so the cascade also writes
-// parentInstanceID. An empty parentInstanceID adds no instance ID. The
-// cascade writes each instance ID one time (#3266).
+// parentInstanceID. An empty parentInstanceID adds no instance ID (#3266).
+//
+// The hook also clears agent_status.instance_id of a review child when the
+// tmux session of the child closes. Three paths kill a child before the
+// cascade: review.KillSessionsByNames, review.StopReviewChildrenForEnd,
+// and the auto_release reap. Thus the cascade also writes each incarnation
+// of a review child that the sessions table holds (#3279). The cascade
+// writes each instance ID one time.
 //
 // Each resolved instance_id is written independently via WriteSpawnOutcome,
 // so one child's failure does not prevent the others (or the parent) from
@@ -699,10 +705,44 @@ WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
 	}
 	rows.Close()
 
-	if parentInstanceID != "" && !slices.Contains(instanceIDs, parentInstanceID) {
-		instanceIDs = append(instanceIDs, parentInstanceID)
+	childIDs, err := d.reviewChildIncarnationIDs(escaped)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range append(childIDs, parentInstanceID) {
+		if id != "" && !slices.Contains(instanceIDs, id) {
+			instanceIDs = append(instanceIDs, id)
+		}
 	}
 	return instanceIDs, nil
+}
+
+// reviewChildIncarnationIDs returns the instance ID of each sessions row of
+// a `<parent>~review-*` child. escapedParent is the parent name with the
+// LIKE wildcards escaped.
+func (d *DB) reviewChildIncarnationIDs(escapedParent string) ([]string, error) {
+	const q = `
+SELECT instance_id
+FROM   sessions
+WHERE  session_name LIKE ? || '~review-%' ESCAPE '\'
+ORDER  BY started_at, instance_id`
+	rows, err := d.conn.Query(q, escapedParent)
+	if err != nil {
+		return nil, fmt.Errorf("db: write spawn outcome cascade: query review child incarnations: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("db: write spawn outcome cascade: scan review child incarnation: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: write spawn outcome cascade: iterate review child incarnations: %w", err)
+	}
+	return ids, nil
 }
 
 // UpdateSpawnOutcomePR records the PR number opened by the worker session
