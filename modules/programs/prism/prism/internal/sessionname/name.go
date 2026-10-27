@@ -108,6 +108,15 @@ func Repo(name string) string {
 	return name
 }
 
+// RepoComponent returns the repo part of a session name for a project
+// directory with basename dirName. tmux reads "." as a target separator, so
+// "." becomes "_". session.NameFor names a session with it, and
+// internal/projecttrust compares a session name with a project directory
+// with it.
+func RepoComponent(dirName string) string {
+	return strings.ReplaceAll(dirName, ".", "_")
+}
+
 // HasBranch reports whether name carries a "@<branch>" part, which means the
 // session runs in a git worktree.
 func HasBranch(name string) bool {

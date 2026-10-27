@@ -230,6 +230,13 @@ func TestRun_HappyPath(t *testing.T) {
 	requireFlag(t, got, "--no-skills")
 	requireFlagValue(t, got, "--model", "anthropic/claude-sonnet-4-6")
 	requireFlagValue(t, got, "--provider", "anthropic")
+	// pi in the cwd of the caller loads no project resources (#3216).
+	requireFlag(t, got, "--no-approve")
+	for _, a := range got {
+		if a == "--approve" || a == "-a" {
+			t.Errorf("pi args contain %q — prism quick pr must start pi with --no-approve only", a)
+		}
+	}
 	// AGENTS.md auto-discovery must be enabled (no --no-context-files).
 	for _, a := range got {
 		if a == "--no-context-files" || a == "-nc" {

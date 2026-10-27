@@ -237,6 +237,13 @@ type AgentPaneOpts struct {
 	// appendAgentRunOverrides. Callers that do not set it get
 	// the pi default, matching the rest of the launch path.
 	HarnessName string
+
+	// ApproveProjectDir is the start directory when the host decided that pi
+	// gets --approve (internal/projecttrust), else empty. When non-empty, it is
+	// appended as `--approve-project-dir <dir>`. `prism agent-run` passes
+	// --approve to pi only when this value equals the worktree that pi starts
+	// in. Empty gives --no-approve.
+	ApproveProjectDir string
 }
 
 // ArchivePaths describes the per-mode paths that the archive copy step
@@ -520,6 +527,10 @@ func (h *hostIsolator) LogPaths() LogPaths {
 // `--agent-model` carries the per-role
 // `prism spawn --model-override <role>=<model>` entry for this session's
 // role.
+//
+// `--approve-project-dir` carries the project-trust decision of the host. The
+// pane command is the only channel from the host to `prism agent-run`: no
+// sandbox can change it.
 func appendAgentRunOverrides(cmd string, opts AgentPaneOpts) string {
 	if opts.Model != "" {
 		cmd += " --model " + shellQuoteContainer(opts.Model)
@@ -537,6 +548,9 @@ func appendAgentRunOverrides(cmd string, opts AgentPaneOpts) string {
 	}
 	if opts.Provider != "" && IsPIHarness(opts.HarnessName) {
 		cmd += " --provider " + shellQuoteContainer(opts.Provider)
+	}
+	if opts.ApproveProjectDir != "" && IsPIHarness(opts.HarnessName) {
+		cmd += " --approve-project-dir " + shellQuoteContainer(opts.ApproveProjectDir)
 	}
 	return cmd
 }

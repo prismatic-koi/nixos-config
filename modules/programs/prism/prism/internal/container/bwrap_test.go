@@ -2527,11 +2527,12 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 		t.Errorf("-- separator missing from args")
 	}
 
-	// Tail: pi --extension <extensionPath> --agent <role> <prompt>
+	// Tail: pi --extension <extensionPath> --no-approve --agent <role> <prompt>
 	// PIInvocation emits the prompt as a bare positional arg, not --prompt.
 	// --agent <role> sits between --extension and the prompt
 	// so the prism PI extension's pi.getFlag("agent") path resolves
 	// synchronously — see TestPIInvocation_AgentFlag in this package.
+	// The project-trust flag (#3216) sits between --extension and --agent.
 	n := len(args)
 	if args[n-1] != "implement the feature" {
 		t.Errorf("expected prompt as last positional arg, got %q", args[n-1])
@@ -2539,8 +2540,11 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 	if args[n-2] != "worker" || args[n-3] != "--agent" {
 		t.Errorf("expected --agent worker before the prompt, got [..., %q, %q, %q]", args[n-3], args[n-2], args[n-1])
 	}
-	if args[n-5] != "--extension" {
-		t.Errorf("expected --extension flag near end (before --agent), got %q at [n-5]", args[n-5])
+	if args[n-4] != "--no-approve" {
+		t.Errorf("expected --no-approve before --agent, got %q at [n-4]", args[n-4])
+	}
+	if args[n-6] != "--extension" {
+		t.Errorf("expected --extension flag near end (before --no-approve), got %q at [n-6]", args[n-6])
 	}
 
 	// The canonical-path remaps are absent: AWS readonly-config and
