@@ -20,10 +20,6 @@ package sidecar
 //     shapes (the host-API subcommands below) without the stub env var:
 //     exit 0 instead of recursively running the suite. See
 //     reexec_interception_test.go for the regression guard.
-//
-// The fake stdio harness re-invocation (PRISM_FAKE_STDIO_HARNESS) is handled
-// by an init() in sidecar_stdio_test.go, which runs before TestMain and
-// exits — the two interceptions compose.
 
 import (
 	"os"
