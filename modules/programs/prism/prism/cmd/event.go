@@ -574,12 +574,17 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		if err := d.ReleasePort(session); err != nil {
 			return fmt.Errorf("event tmux-session-end: release port: %w", err)
 		}
+		// A sidecar stop can end the sessions row first: the stop above, or
+		// an earlier stop that kept the session. Keep the ended_at of that
+		// stop. MergesAbandonedByStop matches the merge-queue rows of the
+		// stop on it (#3273).
+		endSessionsRow := s.InstanceID != nil && sessionsRowOpen(d, *s.InstanceID)
 		if err := d.SetEndedExcept(session, keepChildren); err != nil {
 			return fmt.Errorf("event tmux-session-end: set ended: %w", err)
 		}
 		// Update sessions.ended_at for the current instance so that
 		// prism stats no longer shows this session as active.
-		if s.InstanceID != nil {
+		if endSessionsRow {
 			if err := d.UpdateSessionEnded(*s.InstanceID, "finished"); err != nil {
 				// Non-fatal: log and continue.
 				fmt.Fprintf(os.Stderr, "prism event tmux-session-end: update session ended: %v\n", err)

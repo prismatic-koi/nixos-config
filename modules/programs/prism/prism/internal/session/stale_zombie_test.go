@@ -8,12 +8,14 @@ package session
 // sidecar starts, checkNoLiveSidecar dials the socket, finds it live, and
 // refuses to start — returning duplicateStartError.
 //
-// So call KillSidecarAndWait before session.Create, so that by the time the
-// new sidecar attempts its duplicate-start probe, the old socket is gone.
+// So ensureAndSwitch stops the old sidecar (EnsureSidecarStopped) before
+// session.Create, so that by the time the new sidecar attempts its
+// duplicate-start probe, the old socket is gone.
 //
-// This test verifies the key invariant:
+// These tests verify the key invariant for KillSidecarAndWait and for
+// EnsureSidecarStopped:
 //
-//   After KillSidecarAndWait returns nil, a dial to the socket that the
+//   After the stop reports the sidecar gone, a dial to the socket that the
 //   killed process was listening on either fails with ECONNREFUSED (tombstone)
 //   or returns an error — never succeeds. A successful dial is what triggers
 //   the duplicateStartError in the real sidecar; its absence means the new
@@ -22,7 +24,7 @@ package session
 // We simulate the old sidecar by:
 //  1. Spawning a subprocess that binds a Unix socket and sleeps (PRISM_TEST_STUB_WITH_SOCKET=<path>).
 //  2. Writing its PID file.
-//  3. Calling KillSidecarAndWait.
+//  3. Calling the stop.
 //  4. Asserting that the socket is no longer accepting connections.
 
 import (
@@ -87,6 +89,28 @@ func init() {
 //  4. Asserts that after the call returns, the socket is no longer accepting
 //     connections — i.e. the new sidecar's duplicate-start guard would pass.
 func TestKillSidecarAndWait_StaleZombie_SocketFreedBeforeReturn(t *testing.T) {
+	checkStaleZombieSocketFreed(t, "KillSidecarAndWait", func(sessionName string) bool {
+		if err := KillSidecarAndWait(sessionName, 5*time.Second); err != nil {
+			t.Errorf("KillSidecarAndWait: %v", err)
+		}
+		return true
+	})
+}
+
+// TestEnsureSidecarStopped_StaleZombie_SocketFreedBeforeReturn runs the same
+// check on EnsureSidecarStopped, the stop of the stale-zombie restart path
+// of ensureAndSwitch.
+func TestEnsureSidecarStopped_StaleZombie_SocketFreedBeforeReturn(t *testing.T) {
+	checkStaleZombieSocketFreed(t, "EnsureSidecarStopped", func(sessionName string) bool {
+		return EnsureSidecarStopped(sessionName, 5*time.Second)
+	})
+}
+
+// checkStaleZombieSocketFreed starts the socket stub as the sidecar of a
+// session, calls stop for that session, and checks that the socket no
+// longer accepts a dial. stop reports whether the sidecar is gone.
+func checkStaleZombieSocketFreed(t *testing.T, stopName string, stop func(sessionName string) bool) {
+	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("test uses /proc/<pid>/status and PRISM_TEST_STUB_WITH_SOCKET — Linux only")
 	}
@@ -154,7 +178,7 @@ func TestKillSidecarAndWait_StaleZombie_SocketFreedBeforeReturn(t *testing.T) {
 	}
 	conn.Close()
 
-	// Write the PID file so KillSidecarAndWait can find the process.
+	// Write the PID file so the stop can find the process.
 	runDir := filepath.Join(tmp, "prism", "run")
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatalf("mkdir run dir: %v", err)
@@ -164,18 +188,17 @@ func TestKillSidecarAndWait_StaleZombie_SocketFreedBeforeReturn(t *testing.T) {
 		t.Fatalf("write PID file: %v", err)
 	}
 
-	// Call KillSidecarAndWait — this is the function under test.
-	if err := KillSidecarAndWait(sessionName, 5*time.Second); err != nil {
-		t.Errorf("KillSidecarAndWait: %v", err)
+	if !stop(sessionName) {
+		t.Errorf("%s: the sidecar is not gone", stopName)
 	}
 
-	// After KillSidecarAndWait returns, the socket must not be accepting.
+	// After the stop returns, the socket must not be accepting.
 	// A successful dial here would be the exact condition that triggers
 	// duplicateStartError in the new sidecar's checkNoLiveSidecar probe.
 	_, dialAfterErr := net.DialTimeout("unix", sockPath, 500*time.Millisecond)
 	if dialAfterErr == nil {
-		t.Errorf("socket is still accepting after KillSidecarAndWait returned — " +
-			"a new sidecar's duplicate-start guard would fire; the stale-zombie bug is not fixed")
+		t.Errorf("socket is still accepting after %s returned — "+
+			"a new sidecar's duplicate-start guard would fire; the stale-zombie bug is not fixed", stopName)
 	}
 	// A nil dialAfterErr is the regression. Any error (ECONNREFUSED, ENOENT,
 	// etc.) is acceptable — it means the socket is no longer live.

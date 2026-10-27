@@ -6,8 +6,6 @@ package cmd
 // sidecar still runs.
 
 import (
-	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -170,13 +168,13 @@ func TestRestoreSession_OldSidecarCanStillRun_KeepsMergeQueue(t *testing.T) {
 	}
 }
 
-// stubSwitchKill replaces the sidecar stop of the stale-sidecar path of
-// prism switch with one that returns err.
-func stubSwitchKill(t *testing.T, err error) {
+// stubSwitchStop replaces the sidecar stop of the stale-sidecar path of
+// prism switch with one that reports gone.
+func stubSwitchStop(t *testing.T, gone bool) {
 	t.Helper()
-	prev := switchKillSidecarAndWait
-	switchKillSidecarAndWait = func(string, time.Duration) error { return err }
-	t.Cleanup(func() { switchKillSidecarAndWait = prev })
+	prev := switchStopSidecar
+	switchStopSidecar = func(string, time.Duration) bool { return gone }
+	t.Cleanup(func() { switchStopSidecar = prev })
 }
 
 // startNewSwitchIncarnation does what the tmux-session-start seed does
@@ -221,7 +219,7 @@ func TestSwitchStaleSidecar_ResumesMergeQueue(t *testing.T) {
 	st := currentStatusRow(t, d, sessionName)
 	stubDone := startSlowStopStub(t, d, sessionName, oldIID, "0s")
 
-	queued, gone := stopStaleSidecar(d, sessionName, st)
+	queued, err := stopStaleSidecar(d, sessionName, st)
 	select {
 	case ws := <-stubDone:
 		if ws.Signaled() {
@@ -230,15 +228,15 @@ func TestSwitchStaleSidecar_ResumesMergeQueue(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("old sidecar is still running after the stop")
 	}
-	if !gone {
-		t.Fatal("stopStaleSidecar: gone = false, want true after the old sidecar exited")
+	if err != nil {
+		t.Fatalf("stopStaleSidecar: %v, want no error after the old sidecar exited", err)
 	}
 	if rows, _ := d.WatchingMerges(sessionName); len(rows) != 0 {
 		t.Fatalf("watching rows after the stop = %d, want none: the stub abandons them", len(rows))
 	}
 
 	newIID := startNewSwitchIncarnation(t, d, sessionName)
-	stdout, _ := captureStdoutStderr(t, func() { resumeStaleMergeQueue(d, sessionName, queued, gone) })
+	stdout, _ := captureStdoutStderr(t, func() { resumeStaleMergeQueue(d, sessionName, queued) })
 
 	assertQueue(t, d, sessionName, newIID, 12, 11)
 	assertMergeRow(t, d, 13, "cancelled", oldIID)
@@ -256,55 +254,55 @@ func TestSwitchStaleSidecar_StoppedBeforeSwitch(t *testing.T) {
 	d := openRestoreTestDB(t)
 	_, oldIID := seedCoordinatorQueue(t, d, sessionName, 22, 21)
 	shutDownSidecar(t, d, oldIID)
-	stubSwitchKill(t, nil)
+	stubSwitchStop(t, true)
 
-	queued, gone := stopStaleSidecar(d, sessionName, currentStatusRow(t, d, sessionName))
+	queued, err := stopStaleSidecar(d, sessionName, currentStatusRow(t, d, sessionName))
+	if err != nil {
+		t.Fatalf("stopStaleSidecar: %v", err)
+	}
 	newIID := startNewSwitchIncarnation(t, d, sessionName)
-	_, _ = captureStdoutStderr(t, func() { resumeStaleMergeQueue(d, sessionName, queued, gone) })
+	_, _ = captureStdoutStderr(t, func() { resumeStaleMergeQueue(d, sessionName, queued) })
 
 	assertQueue(t, d, sessionName, newIID, 22, 21)
 }
 
 // TestSwitchStaleSidecar_StopResults checks the stop results of the
-// stale-sidecar path. Only a result that proves that no process that can be
-// the old sidecar runs may resume the queue.
+// stale-sidecar path. Only a stop that proves that no process that can be
+// the old sidecar runs may resume the queue. Without that proof, the switch
+// returns an error, and the queue does not change (#3273).
 func TestSwitchStaleSidecar_StopResults(t *testing.T) {
 	for _, tc := range []struct {
-		desc       string
-		err        error
-		wantResume bool
+		desc string
+		gone bool
 	}{
-		{"exited", nil, true},
-		{"recycled PID", fmt.Errorf("kill sidecar: pid 1 is not a prism sidecar: %w", session.ErrSidecarNotSignalled), true},
-		{"unreadable command line", fmt.Errorf("kill sidecar: %w: %w", session.ErrSidecarNotSignalled, session.ErrSidecarOwnerUnknown), false},
-		{"no exit after SIGTERM", errors.New("kill sidecar: pid 1 did not exit within 2s after SIGTERM"), false},
+		{"old sidecar gone", true},
+		{"no proof that the old sidecar is gone", false},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
 			const sessionName = "testrepo@switch-result-3175"
 			d := openRestoreTestDB(t)
 			_, oldIID := seedCoordinatorQueue(t, d, sessionName, 31, 32)
-			stubSwitchKill(t, tc.err)
+			stubSwitchStop(t, tc.gone)
 
-			var queued []db.PendingMerge
-			var gone bool
-			_, stderr := captureStdoutStderr(t, func() {
-				queued, gone = stopStaleSidecar(d, sessionName, currentStatusRow(t, d, sessionName))
-			})
-			newIID := startNewSwitchIncarnation(t, d, sessionName)
-			_, resumeStderr := captureStdoutStderr(t, func() { resumeStaleMergeQueue(d, sessionName, queued, gone) })
-			stderr += resumeStderr
-
-			if gone != tc.wantResume {
-				t.Errorf("gone = %v, want %v", gone, tc.wantResume)
-			}
-			if tc.wantResume {
-				assertQueue(t, d, sessionName, newIID, 31, 32)
+			queued, err := stopStaleSidecar(d, sessionName, currentStatusRow(t, d, sessionName))
+			if !tc.gone {
+				if err == nil {
+					t.Fatal("stopStaleSidecar: no error, want an error without proof that the old sidecar is gone")
+				}
+				for _, want := range []string{"not restarted", "merge queue is not resumed: PR #31, PR #32"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error = %q, want %q", err, want)
+					}
+				}
+				assertQueue(t, d, sessionName, oldIID, 31, 32)
 				return
 			}
-			assertQueue(t, d, sessionName, oldIID, 31, 32)
-			if want := "merge queue is not resumed"; !strings.Contains(stderr, want) || !strings.Contains(stderr, "PR #31, PR #32") {
-				t.Errorf("stderr = %q, want %q and the PRs", stderr, want)
+			if err != nil {
+				t.Fatalf("stopStaleSidecar: %v", err)
 			}
+			newIID := startNewSwitchIncarnation(t, d, sessionName)
+			_, _ = captureStdoutStderr(t, func() { resumeStaleMergeQueue(d, sessionName, queued) })
+			assertQueue(t, d, sessionName, newIID, 31, 32)
 		})
 	}
 }

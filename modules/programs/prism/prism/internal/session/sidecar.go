@@ -287,11 +287,13 @@ var ErrSidecarOwnerUnknown = errors.New("cannot prove that the process is not th
 //     an exotic case where the inode is gone but the listener is still
 //     reachable by some other means).
 //
-// This function is the preferred call site for the stale-zombie restart path
-// in ensureAndSwitch (cmd/switch.go): the new sidecar's duplicate-start guard
-// (checkNoLiveSidecar) dials with a 250 ms timeout, so without waiting for
-// the old socket to be observably down there is a real race between SIGTERM
-// and the new sidecar's probe.
+// The socket wait matters to a caller that starts a new sidecar next: the
+// new sidecar's duplicate-start guard (checkNoLiveSidecar) dials with a
+// 250 ms timeout, so without waiting for the old socket to be observably
+// down there is a real race between SIGTERM and the new sidecar's probe.
+// EnsureSidecarStopped, which the stale-zombie restart path of
+// ensureAndSwitch (cmd/switch.go) uses, also unlinks the sockets after the
+// exit.
 //
 // The PID is read from the PID file before the kill is sent. When
 // KillSidecar sends no signal, this function does not wait:
