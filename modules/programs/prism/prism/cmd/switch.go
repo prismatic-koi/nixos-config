@@ -222,6 +222,10 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	}
 
 	if err := session.Create(sessionName, directory, opts); err != nil {
+		if len(staleQueue) > 0 {
+			fmt.Fprintf(os.Stderr, "warning: prism switch %q: the session did not start, so the merge queue is not resumed: %s\n",
+				sessionName, formatMergePRs(staleQueue))
+		}
 		return err
 	}
 	resumeStaleMergeQueue(d, sessionName, staleQueue, staleSidecarGone)
@@ -282,7 +286,7 @@ func resumeStaleMergeQueue(d *db.DB, sessionName string, queued []db.PendingMerg
 	} else if st != nil && st.InstanceID != nil {
 		instanceID = *st.InstanceID
 	}
-	resumeMergeQueue(d, "prism switch", sessionName, instanceID, queued, oldSidecarGone)
+	resumeMergeQueue(d, "warning: prism switch", sessionName, instanceID, queued, oldSidecarGone)
 }
 
 // allocatePortForSession ensures the agent_status row exists for sessionName

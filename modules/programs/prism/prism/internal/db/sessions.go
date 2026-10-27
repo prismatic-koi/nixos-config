@@ -124,6 +124,12 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	return nil
 }
 
+const updateSessionEndedSQL = `
+UPDATE sessions
+   SET ended_at  = ?,
+       end_state = ?
+ WHERE instance_id = ?`
+
 // UpdateSessionEnded sets ended_at and end_state on the sessions row for
 // instanceID. Called during prism cleanup to record when and how the session
 // ended. archive_path is not set here; UpdateSessionArchivePath sets it later.
@@ -131,12 +137,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 // It is a no-op when no row exists for instanceID (returns nil).
 func (d *DB) UpdateSessionEnded(instanceID, endState string) error {
 	now := time.Now().UnixMilli()
-	const q = `
-UPDATE sessions
-   SET ended_at  = ?,
-       end_state = ?
- WHERE instance_id = ?`
-	_, err := d.conn.Exec(q, now, endState, instanceID)
+	_, err := d.conn.Exec(updateSessionEndedSQL, now, endState, instanceID)
 	if err != nil {
 		return fmt.Errorf("db: update session ended: %w", err)
 	}

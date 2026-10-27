@@ -23,7 +23,7 @@
 //
 // Watcher lifetime equals coordinator session lifetime. On sidecar shutdown,
 // all watching rows for this instance_id are transitioned to 'abandoned' by
-// AbandonWatchingMerges, preventing a future sidecar from inheriting stale rows.
+// db.EndIncarnation, preventing a future sidecar from inheriting stale rows.
 // A restart is not an end: prism restore (and so prism restart and the
 // restore at login) and the stale-sidecar path of prism switch give the
 // rows back to the new sidecar with db.ResumeMerges, in the same order.

@@ -97,7 +97,7 @@ SELECT repo, pr, session_name, instance_id, queue_position, status, title, error
 // up rows regardless of which instance_id was written at enqueue time (e.g.
 // when prism merge mints a fresh UUID on the fly). Incarnation isolation —
 // preventing stale rows from a previous sidecar from being re-processed — is
-// handled by AbandonWatchingMerges on sidecar shutdown, which sets rows to
+// handled by EndIncarnation on sidecar shutdown, which sets rows to
 // 'abandoned' before the new sidecar starts. prism restore and the
 // stale-sidecar path of prism switch continue the session, so they give
 // those rows back with ResumeMerges.
@@ -218,7 +218,7 @@ func (d *DB) EndIncarnation(instanceID, endState string) error {
 	if _, err := tx.Exec(abandonWatchingMergesSQL, abandonedByStopError, now, instanceID); err != nil {
 		return fmt.Errorf("db: end incarnation: abandon watching merges: %w", err)
 	}
-	if _, err := tx.Exec("UPDATE sessions SET ended_at = ?, end_state = ? WHERE instance_id = ?", now, endState, instanceID); err != nil {
+	if _, err := tx.Exec(updateSessionEndedSQL, now, endState, instanceID); err != nil {
 		return fmt.Errorf("db: end incarnation: end session: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -295,7 +295,7 @@ SELECT repo, pr, session_name, instance_id, queue_position, status, title, error
 }
 
 // ResumeMerges gives each row of merges back to the queue of sessionName,
-// owned by instanceID. A row that AbandonWatchingMerges ended becomes
+// owned by instanceID. A row that the stop of a sidecar abandoned becomes
 // watching again. A row that is still watching only changes owner. A row in
 // any other status does not change: the old watcher already decided its
 // outcome and notified the coordinator. queue_position does not change, so

@@ -8,11 +8,11 @@ package cmd
 // restore and the stale-sidecar path of prism switch restart the session,
 // so they give the rows back to the new sidecar with db.ResumeMerges.
 //
-// Only one watcher may poll a row. The watcher polls the watching rows of
-// its session name, whatever their instance ID. Thus the rows are resumed
-// only after the stop proved that no process that can be the old sidecar
-// runs. Without that proof, the rows do not change, and the caller prints
-// why.
+// Two watchers must not poll one row. The watcher polls the watching rows
+// of its session name, whatever their instance ID. Thus the rows are
+// resumed only after the stop proved that no process that can be the old
+// sidecar runs. Without that proof, the rows do not change, and the caller
+// prints why.
 
 import (
 	"cmp"
