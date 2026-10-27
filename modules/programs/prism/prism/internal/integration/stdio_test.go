@@ -7,8 +7,8 @@ package integration_test
 //     them to agent_events, and transitions the session to state=finished.
 //  2. Handles the error path where the harness exits before writing any frames.
 //
-// The "harness binary" used here is the test binary itself, invoked with
-// PRISM_FAKE_STDIO_HARNESS set to control its behaviour (see testmain_test.go).
+// The harness binary is sidecartest.FakeStdioHarness. PRISM_FAKE_STDIO_HARNESS
+// selects its behaviour.
 //
 // Both tests require bwrap to be available on the host — they are skipped
 // automatically when bwrap is not found in PATH. This mirrors the requireTmux
@@ -16,9 +16,7 @@ package integration_test
 
 import (
 	"context"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,6 +26,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/sidecar"
+	"github.com/prismatic-koi/prism/internal/sidecar/sidecartest"
 )
 
 // requireBwrap skips the test if bwrap is not available in a usable form.
@@ -57,24 +56,6 @@ func requireBwrap(t *testing.T) string {
 		t.Skipf("bwrap is on PATH but cannot run here: %v — %s", err, out)
 	}
 	return bin
-}
-
-// testBinaryPath returns the path to the current test binary.
-// This is the binary the tests use as the fake stdio harness by setting
-// PRISM_FAKE_STDIO_HARNESS before the sidecar launches it under bwrap.
-func testBinaryPath(t *testing.T) string {
-	t.Helper()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
-	// Resolve symlinks so bwrap can bind-mount the real directory.
-	real, err := filepath.EvalSymlinks(exe)
-	if err != nil {
-		// EvalSymlinks can fail on some platforms; fall back to the raw path.
-		return exe
-	}
-	return real
 }
 
 // newStdioSidecar constructs a sidecar configured for the "fake-stdio" harness
@@ -147,12 +128,12 @@ func newStdioSidecar(t *testing.T, d *db.DB, bwrapBin, harnessBinPath string) *s
 func TestRunStartupStdio_HappyPath(t *testing.T) {
 	bwrapBin := requireUsableBwrap(t)
 
-	// Point PRISM_FAKE_STDIO_HARNESS=normal so the test binary writes the
-	// standard 3-frame sequence when invoked as the harness.
+	// Point PRISM_FAKE_STDIO_HARNESS=normal so the harness writes the
+	// standard 3-frame sequence.
 	t.Setenv("PRISM_FAKE_STDIO_HARNESS", "normal")
 
 	d := openTestDB(t)
-	sc := newStdioSidecar(t, d, bwrapBin, testBinaryPath(t))
+	sc := newStdioSidecar(t, d, bwrapBin, sidecartest.FakeStdioHarness(t))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -207,12 +188,12 @@ func TestRunStartupStdio_HappyPath(t *testing.T) {
 func TestRunStartupStdio_SilentExit(t *testing.T) {
 	bwrapBin := requireUsableBwrap(t)
 
-	// Point PRISM_FAKE_STDIO_HARNESS=silent so the test binary exits
+	// Point PRISM_FAKE_STDIO_HARNESS=silent so the harness exits
 	// immediately without writing any JSONL frames.
 	t.Setenv("PRISM_FAKE_STDIO_HARNESS", "silent")
 
 	d := openTestDB(t)
-	sc := newStdioSidecar(t, d, bwrapBin, testBinaryPath(t))
+	sc := newStdioSidecar(t, d, bwrapBin, sidecartest.FakeStdioHarness(t))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

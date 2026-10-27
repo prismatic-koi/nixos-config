@@ -1,19 +1,7 @@
 package integration_test
 
-// TestMain runs the fake stdio harness when PRISM_FAKE_STDIO_HARNESS is set,
-// allowing the test binary to double as the harness process in integration
-// tests. This keeps the fake harness code inside the test binary and out of
-// the production binary.
-//
-// Modes (value of PRISM_FAKE_STDIO_HARNESS):
-//
-//   - "normal": writes 3 JSONL frames (state_change started, msg_assistant, state_change
-//     finished) then exits 0.
-//   - "silent": exits 0 immediately without writing any frames. Exercises the
-//     "pipe closed before first frame" error path in runStartupStdio.
-//
-// TestMain also intercepts re-exec stub invocations of this test binary —
-// see the env and argv checks below.
+// TestMain intercepts re-exec stub invocations of this test binary — see the
+// env and argv checks below.
 //
 // When no interception applies, TestMain runs the normal test suite.
 
@@ -73,15 +61,6 @@ func isolateTmuxTmpdir() func() {
 }
 
 func TestMain(m *testing.M) {
-	switch os.Getenv("PRISM_FAKE_STDIO_HARNESS") {
-	case "normal":
-		runFakeHarnessNormal()
-		os.Exit(0)
-	case "silent":
-		// Exit immediately without writing any frames.
-		os.Exit(0)
-	}
-
 	if os.Getenv("PRISM_TEST_SUBPROCESS") == "1" {
 		// We are a child process acting as a stub subprocess — the
 		// convention shared by the internal/review, internal/session, and
@@ -110,7 +89,7 @@ func TestMain(m *testing.M) {
 	}
 
 	// Default: run the test suite, under the suite-wide tmux isolation. The
-	// early-exit modes above are the binary acting as a harness or sidecar
+	// early-exit modes above are the binary acting as a stub or sidecar
 	// child; they never start a tmux server, so the redirect applies only
 	// here, around m.Run().
 	restore := isolateTmuxTmpdir()
@@ -175,18 +154,4 @@ var suiteStateRoot string
 
 func TestSuiteStateIsolation_XDGInsideSuiteDir(t *testing.T) {
 	stateguardtest.RequireIsolated(t, suiteStateRoot)
-}
-
-// runFakeHarnessNormal writes 3 valid JSONL event frames to stdout and exits.
-// States use agent.AgentState values (active, finished) so the DB state
-// machine does not reject the transitions.
-func runFakeHarnessNormal() {
-	frames := []string{
-		`{"type":"state_change","state":"active"}`,
-		`{"type":"msg_assistant","text":"hello from fake harness"}`,
-		`{"type":"state_change","state":"finished"}`,
-	}
-	for _, f := range frames {
-		fmt.Println(f)
-	}
 }
