@@ -226,7 +226,7 @@ func TestFindOrphanReviewSidecarPIDs_EmptyParent(t *testing.T) {
 	// Give the kernel a beat to populate /proc/<pid>/cmdline.
 	time.Sleep(30 * time.Millisecond)
 
-	killOrphanReviewSidecars("")
+	killOrphanReviewSidecars("", nil)
 
 	if !processExists(pid) {
 		t.Fatalf("stub pid %d was killed despite empty parent — empty-guard regression", pid)
@@ -279,7 +279,7 @@ func TestKillOrphanReviewSidecars_EndToEnd(t *testing.T) {
 		}
 	}
 
-	killOrphanReviewSidecars(parent)
+	killOrphanReviewSidecars(parent, nil)
 
 	// All review/investigator PIDs should be dead within a short timeout
 	// (SIGTERM → process exit → /proc entry gone).
@@ -315,7 +315,7 @@ func TestKillOrphanReviewSidecars_AlreadyExited(t *testing.T) {
 		t.Skip("killOrphanReviewSidecars walks /proc — Linux only")
 	}
 	// Use a parent name that no live process matches.
-	killOrphanReviewSidecars("nonexistent@parent-with-no-children")
+	killOrphanReviewSidecars("nonexistent@parent-with-no-children", nil)
 }
 
 // TestKillOrphanReviewSidecars_RepeatIsIdempotent confirms calling the
@@ -335,7 +335,7 @@ func TestKillOrphanReviewSidecars_RepeatIsIdempotent(t *testing.T) {
 	t.Cleanup(cleanup)
 	time.Sleep(30 * time.Millisecond)
 
-	killOrphanReviewSidecars(parent)
+	killOrphanReviewSidecars(parent, nil)
 
 	// Wait for the stub to die.
 	deadline := time.Now().Add(2 * time.Second)
@@ -349,7 +349,7 @@ func TestKillOrphanReviewSidecars_RepeatIsIdempotent(t *testing.T) {
 	// Second call — must not panic, must not produce an error. Cannot
 	// directly assert "no stderr output" without capturing it, but a
 	// regression to a panic would fail this test.
-	killOrphanReviewSidecars(parent)
+	killOrphanReviewSidecars(parent, nil)
 }
 
 // cmdlineContainsSession returns true when /proc/<pid>/cmdline contains

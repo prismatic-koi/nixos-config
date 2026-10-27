@@ -311,12 +311,8 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		} else {
 			_, _ = tmux.SwitchClientCurrent("scratchpad")
 		}
-		_ = tmux.KillSession(m.session)
-		// Orphan-sidecar safety net: SIGTERM any sidecar processes still alive
-		// for review-group or investigator-group children of this worker. Runs
-		// before the DB-backed cleanup so processes whose DB rows were already
-		// purged are still caught.
-		killOrphanReviewSidecars(m.session)
+		snap := takeCleanupSnapshot(m.session)
+		_ = cleanupKillTmuxSession(m.session)
 		if d, err := openDB(); err == nil {
 			// Stop and remove child review-agent containers BEFORE removing their
 			// DB rows — so a failed stop still has a record to retry against.
@@ -324,7 +320,10 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			// Kill and clean up all review sessions spawned by this parent session,
 			// including their port allocations and DB rows.
 			keepChildren := cleanupReviewChildren(d, m.session)
-			if isolationModeFromDB(d, m.session) != "host" {
+			// Orphan-sidecar safety net, after the child stop: see the header
+			// of cleanup_orphan_sidecars.go.
+			killOrphanReviewSidecars(m.session, keepChildren)
+			if snap.isolationMode != "host" {
 				removeContainerIfExists(m.session)
 			}
 			// Orphan-resource sweep. The interactive TUI path does not
@@ -338,11 +337,10 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			if releaseErr := d.ReleasePort(m.session); releaseErr != nil {
 				proglog.Errorf("[prism] doCleanup: release port: %v\n", releaseErr)
 			}
-			instanceIDForSessions := instanceIDFromStatus(d, m.session)
-			isolationMode := isolationModeFromDB(d, m.session)
+			endSessionsRow := sessionsRowOpen(d, snap.instanceID)
 			_ = d.SetEndedExcept(m.session, keepChildren)
-			if instanceIDForSessions != "" {
-				if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
+			if endSessionsRow {
+				if updErr := d.UpdateSessionEnded(snap.instanceID, "finished"); updErr != nil {
 					proglog.Errorf("[prism] doCleanup: update session ended: %v\n", updErr)
 				}
 			}
@@ -359,15 +357,15 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			// removed from the pi sessions root. The TUI path does not surface
 			// the per-update outcome — failures are logged via proglog inside
 			// the helper.
-			archiveErr, _ := archiveThenSeverPiResume(d, m.session, instanceIDForSessions, isolationMode, severModeHard)
+			archiveErr, _ := archiveThenSeverPiResume(d, m.session, snap.instanceID, snap.isolationMode, severModeHard)
 			if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 				_ = d.PurgeBusMessages(m.session)
 				d.Close()
 				return cleanupDoneMsg{errors.Join(archiveErr, sidecarsNotStoppedError(keepChildren))}
 			}
 			// Other archive errors are non-fatal — cleanup continues.
-			if instanceIDForSessions != "" {
-				removeSessionInstanceDirs(instanceIDForSessions)
+			if snap.instanceID != "" {
+				removeSessionInstanceDirs(snap.instanceID)
 			}
 			_ = d.PurgeBusMessages(m.session)
 			d.Close()
@@ -375,6 +373,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		} else {
 			// DB unavailable — still attempt container removal conservatively.
 			review.KillReviewSessionsForParent(m.session)
+			killOrphanReviewSidecars(m.session, nil)
 			removeContainerIfExists(m.session)
 		}
 
@@ -871,12 +870,8 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	}
 
 	printLine("killing session %s\n", session)
-	_ = tmux.KillSession(session)
-	// Orphan-sidecar safety net: SIGTERM any sidecar processes still alive
-	// for review-group or investigator-group children of this worker. Done
-	// before DB cleanup so processes whose DB rows have already been purged
-	// are still caught.
-	killOrphanReviewSidecars(session)
+	snap := takeCleanupSnapshot(session)
+	_ = cleanupKillTmuxSession(session)
 	// session_killed reflects the post-condition (tmux session is gone),
 	// which is true whether the session was alive or already-dead before this
 	// call. KillSession's error is intentionally ignored above (it returns
@@ -897,7 +892,10 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
 		keepChildren = cleanupReviewChildren(d, session)
-		if isolationModeFromDB(d, session) != "host" {
+		// Orphan-sidecar safety net, after the child stop: see the header of
+		// cleanup_orphan_sidecars.go.
+		killOrphanReviewSidecars(session, keepChildren)
+		if snap.isolationMode != "host" {
 			removeContainerIfExists(session)
 		}
 		// Orphan-resource sweep. Gated on the session's
@@ -912,18 +910,13 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		// HARD cleanup: this path removes the worktree and deletes
 		// the branch, so the session's volumes go with them.
 		applySessionResourceSweep(session, &result, sweepContainersAndVolumes)
-		// Capture instance_id and isolation_mode before SetEnded clears the
-		// row's lifecycle fields. Done before applyDBLifecycleClears so the
-		// CurrentStatus reads inside instanceIDFromStatus still observe the
-		// pre-cleanup row.
-		instanceIDForSessions := instanceIDFromStatus(d, session)
-		isolationMode := isolationModeFromDB(d, session)
+		endSessionsRow := sessionsRowOpen(d, snap.instanceID)
 		// Apply the lifecycle clears — release harness_port and stamp
 		// ended_at — and capture per-update outcomes for the JSON envelope. The
 		// harness_session_id clear runs later, after the archive.
 		applyDBLifecycleClears(d, session, &result, keepChildren...)
-		if instanceIDForSessions != "" {
-			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
+		if endSessionsRow {
+			if updErr := d.UpdateSessionEnded(snap.instanceID, "finished"); updErr != nil {
 				proglog.Errorf("[prism] headlessCleanup: update session ended: %v\n", updErr)
 			}
 		}
@@ -939,7 +932,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		// fails so the transcript is not lost. This is the hard-cleanup path
 		// (worktree and branch destroyed), so the sever is hard: the transcript
 		// is removed from the pi sessions root.
-		archiveErr, severOutcome := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode, severModeHard)
+		archiveErr, severOutcome := archiveThenSeverPiResume(d, session, snap.instanceID, snap.isolationMode, severModeHard)
 		result.HarnessSessionIDCleared = severOutcome
 		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 			// Non-fatal: by this point the worktree, branch, tmux
@@ -950,8 +943,8 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 			archiveCollisionWarning = archiveErr.Error()
 		}
 		// Other archive errors are non-fatal — cleanup continues.
-		if instanceIDForSessions != "" {
-			removeSessionInstanceDirs(instanceIDForSessions)
+		if snap.instanceID != "" {
+			removeSessionInstanceDirs(snap.instanceID)
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
@@ -964,6 +957,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		markDBLifecycleSkipped(&result, fmt.Sprintf("db open failed: %v", err))
 		proglog.Errorf("[prism] headlessCleanup: open db: %v\n", err)
 		review.KillReviewSessionsForParent(session)
+		killOrphanReviewSidecars(session, nil)
 		removeContainerIfExists(session)
 		// No sweep here: containers_enabled is unreadable without the
 		// DB. When we cannot prove the flag was on, default to off
@@ -1057,9 +1051,10 @@ func closeSession(session string) error {
 	} else {
 		_, _ = tmux.SwitchClientCurrent("scratchpad")
 	}
-	_ = tmux.KillSession(session)
+	snap := takeCleanupSnapshot(session)
+	_ = cleanupKillTmuxSession(session)
 	if d, err := openDB(); err == nil {
-		if isolationModeFromDB(d, session) != "host" {
+		if snap.isolationMode != "host" {
 			removeContainerIfExists(session)
 		}
 		// Orphan-resource sweep. closeSession is the interactive @main /
@@ -1074,11 +1069,10 @@ func closeSession(session string) error {
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			proglog.Errorf("[prism] closeSession: release port: %v\n", releaseErr)
 		}
-		instanceIDForSessions := instanceIDFromStatus(d, session)
-		isolationMode := isolationModeFromDB(d, session)
+		endSessionsRow := sessionsRowOpen(d, snap.instanceID)
 		keepChildren, _ := endStoppingReviewChildren(d, session)
-		if instanceIDForSessions != "" {
-			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
+		if endSessionsRow {
+			if updErr := d.UpdateSessionEnded(snap.instanceID, "finished"); updErr != nil {
 				proglog.Errorf("[prism] closeSession: update session ended: %v\n", updErr)
 			}
 		}
@@ -1095,15 +1089,15 @@ func closeSession(session string) error {
 		// resume pointer is cleared. closeSession is the interactive @main path
 		// and does not surface a JSON envelope — the per-update outcome is
 		// captured by the proglog warnings inside the helper.
-		archiveErr, _ := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode, severModeSoft)
+		archiveErr, _ := archiveThenSeverPiResume(d, session, snap.instanceID, snap.isolationMode, severModeSoft)
 		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 			_ = d.PurgeBusMessages(session)
 			d.Close()
 			return errors.Join(archiveErr, sidecarsNotStoppedError(keepChildren))
 		}
 		// Other archive errors are non-fatal — cleanup continues.
-		if instanceIDForSessions != "" {
-			removeSessionInstanceDirs(instanceIDForSessions)
+		if snap.instanceID != "" {
+			removeSessionInstanceDirs(snap.instanceID)
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
@@ -1178,12 +1172,8 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 
 	printLine("killing session %s\n", session)
 	result.SessionKilled = true
-	_ = tmux.KillSession(session)
-	// Orphan-sidecar safety net: SIGTERM any sidecar processes still alive
-	// for review-group or investigator-group children of this session. Done
-	// before DB cleanup so processes whose DB rows have already been purged
-	// are still caught.
-	killOrphanReviewSidecars(session)
+	snap := takeCleanupSnapshot(session)
+	_ = cleanupKillTmuxSession(session)
 	var archiveCollisionWarning string
 	var keepChildren []string
 	if d, err := openDB(); err == nil {
@@ -1193,7 +1183,10 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
 		keepChildren = cleanupReviewChildren(d, session)
-		if isolationModeFromDB(d, session) != "host" {
+		// Orphan-sidecar safety net, after the child stop: see the header of
+		// cleanup_orphan_sidecars.go.
+		killOrphanReviewSidecars(session, keepChildren)
+		if snap.isolationMode != "host" {
 			removeContainerIfExists(session)
 		}
 		// Orphan-resource sweep. See headlessCleanupWithJSONTo for the
@@ -1206,14 +1199,13 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		// must keep the data volumes too. They are swept later, when this
 		// session reaches hard cleanup.
 		applySessionResourceSweep(session, &result, sweepContainersOnly)
-		instanceIDForSessions := instanceIDFromStatus(d, session)
-		isolationMode := isolationModeFromDB(d, session)
+		endSessionsRow := sessionsRowOpen(d, snap.instanceID)
 		// Apply the lifecycle clears — release harness_port and stamp
 		// ended_at — and capture per-update outcomes for the JSON envelope. The
 		// harness_session_id clear runs later, after the archive.
 		applyDBLifecycleClears(d, session, &result, keepChildren...)
-		if instanceIDForSessions != "" {
-			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
+		if endSessionsRow {
+			if updErr := d.UpdateSessionEnded(snap.instanceID, "finished"); updErr != nil {
 				proglog.Errorf("[prism] headlessCloseSession: update session ended: %v\n", updErr)
 			}
 		}
@@ -1229,15 +1221,15 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		// non-@ sessions, open-PR workers, --keep-worktree), so the sever is
 		// soft: the transcript JSONL stays in the pi sessions root — pi's
 		// /resume keeps working — and only the DB resume pointer is cleared.
-		archiveErr, severOutcome := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode, severModeSoft)
+		archiveErr, severOutcome := archiveThenSeverPiResume(d, session, snap.instanceID, snap.isolationMode, severModeSoft)
 		result.HarnessSessionIDCleared = severOutcome
 		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 			// Non-fatal: see headlessCleanup for rationale.
 			archiveCollisionWarning = archiveErr.Error()
 		}
 		// Other archive errors are non-fatal — cleanup continues.
-		if instanceIDForSessions != "" {
-			removeSessionInstanceDirs(instanceIDForSessions)
+		if snap.instanceID != "" {
+			removeSessionInstanceDirs(snap.instanceID)
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
@@ -1248,6 +1240,7 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		markDBLifecycleSkipped(&result, fmt.Sprintf("db open failed: %v", err))
 		proglog.Errorf("[prism] headlessCloseSession: open db: %v\n", err)
 		review.KillReviewSessionsForParent(session)
+		killOrphanReviewSidecars(session, nil)
 		removeContainerIfExists(session)
 	}
 	if archiveCollisionWarning != "" {
