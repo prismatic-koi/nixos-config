@@ -442,10 +442,18 @@ func BuildAgentCmd(opts Opts) (string, error) {
 // sandbox-exec read the slot in `prism agent-run`; host mode has no agent-run
 // process, so the command builder reads it here. The profile name comes from
 // opts.ProfileName, then the spawn_inputs row, then the active profile. Any
-// failure returns an empty slot, and pi then uses its own default.
+// failure returns an empty slot, and pi then uses its own default. A role-less
+// root session of a non-worktree project reads the coordinator slot.
 func hostProfileSlot(opts Opts) config.RoleSlot {
-	if opts.Agent == "" {
-		return config.RoleSlot{}
+	role := opts.Agent
+	if role == "" {
+		// Only the root session of a non-worktree project reads the
+		// coordinator slot, the same rule as profileSlotRole in
+		// cmd/agent_run.go. Any other role-less session reads no slot.
+		if !authz.IsNonWorktreeRoot(opts.SessionName, "", opts.Worktree) {
+			return config.RoleSlot{}
+		}
+		role = "coordinator"
 	}
 	pf, err := config.LoadProfiles()
 	if err != nil {
@@ -465,7 +473,7 @@ func hostProfileSlot(opts Opts) config.RoleSlot {
 	if err != nil || name == "" {
 		return config.RoleSlot{}
 	}
-	slot, _ := config.SlotForRole(pf, name, opts.Agent)
+	slot, _ := config.SlotForRole(pf, name, role)
 	return slot
 }
 

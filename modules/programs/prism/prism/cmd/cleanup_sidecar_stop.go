@@ -48,15 +48,18 @@ func sidecarsNotStoppedError(sessions []string) error {
 func cleanupChildrenOfKeptSession(session string) []string {
 	proglog.Warnf("[prism] warning: sidecar of %q did not stop — keeping its tmux session, row, port, worktree, and branch\n", session)
 	failed := []string{session}
-	killOrphanReviewSidecars(session)
 	d, err := openDB()
 	if err != nil {
 		proglog.Errorf("[prism] cleanup: open db: %v\n", err)
+		killOrphanReviewSidecars(session, nil)
 		return failed
 	}
 	defer d.Close()
 	stopAndRemoveChildContainers(d, session)
-	return append(failed, cleanupReviewChildren(d, session)...)
+	keepChildren := cleanupReviewChildren(d, session)
+	// After the child stop: see the header of cleanup_orphan_sidecars.go.
+	killOrphanReviewSidecars(session, keepChildren)
+	return append(failed, keepChildren...)
 }
 
 // runCleanupTUI runs the interactive cleanup of m. The TUI closes as soon
