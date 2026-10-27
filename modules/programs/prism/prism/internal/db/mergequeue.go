@@ -148,9 +148,16 @@ func (d *DB) UpdateMergeLastChecked(pr int, repo string) error {
 // pass "" for no error. merged_at is populated when status = 'merged';
 // ended_at is always set.
 //
+// Only a watching row changes. The first terminal write decides the
+// outcome, so a later write cannot change it (#3267). For example, a stop
+// of the coordinator sidecar abandons the row for restore to resume, and
+// the old watcher must not then set it to failed. TerminateMerge returns
+// true when it changed the row. It returns false when the row is already
+// terminal or does not exist.
+//
 // repo is required so that the watcher's terminal write only ever touches
 // the row belonging to its own coordinator.
-func (d *DB) TerminateMerge(pr int, repo, status, errMsg string) error {
+func (d *DB) TerminateMerge(pr int, repo, status, errMsg string) (bool, error) {
 	now := time.Now().UnixMilli()
 	var errPtr *string
 	if errMsg != "" {
@@ -166,12 +173,16 @@ UPDATE pending_merges
        error    = ?,
        merged_at = ?,
        ended_at  = ?
- WHERE repo = ? AND pr = ?`
-	_, err := d.conn.Exec(q, status, errPtr, mergedAt, now, repo, pr)
+ WHERE repo = ? AND pr = ? AND status = 'watching'`
+	res, err := d.conn.Exec(q, status, errPtr, mergedAt, now, repo, pr)
 	if err != nil {
-		return fmt.Errorf("db: terminate merge: %w", err)
+		return false, fmt.Errorf("db: terminate merge: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("db: terminate merge: rows affected: %w", err)
+	}
+	return n > 0, nil
 }
 
 // abandonedByStopError is the error of a row that the stop of its

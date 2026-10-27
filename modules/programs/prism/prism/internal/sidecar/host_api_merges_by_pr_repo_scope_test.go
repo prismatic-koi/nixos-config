@@ -29,7 +29,7 @@ func TestHostAPI_MergesByPR_RepoScoping_SidecarDefault(t *testing.T) {
 	if _, err := d.EnqueueMerge(42, "foreign-repo", "foreign-repo@main", "inst-foreign", nil); err != nil {
 		t.Fatalf("EnqueueMerge foreign: %v", err)
 	}
-	if err := d.TerminateMerge(42, "foreign-repo", "merged", ""); err != nil {
+	if _, err := d.TerminateMerge(42, "foreign-repo", "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge foreign: %v", err)
 	}
 
@@ -85,7 +85,7 @@ func TestHostAPI_MergesByPR_CrossRepoCollision_ReturnsCorrectRow(t *testing.T) {
 	if _, err := d.EnqueueMerge(47, "repo-a", "repo-a@main", "inst-a", &titleA); err != nil {
 		t.Fatalf("EnqueueMerge repo-a: %v", err)
 	}
-	if err := d.TerminateMerge(47, "repo-a", "merged", ""); err != nil {
+	if _, err := d.TerminateMerge(47, "repo-a", "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge repo-a: %v", err)
 	}
 	// Repo B: fresh watching row for its own (unrelated) PR #47.

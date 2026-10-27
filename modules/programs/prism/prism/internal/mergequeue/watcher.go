@@ -16,8 +16,10 @@
 //
 // On each terminal outcome (merged, failed, closed) a bus notification is
 // delivered to the enqueuing coordinator session via the harness HTTP API.
-// Every notification names the PR. The merge and close outcomes add the worker
-// session's archive path and prompt git pull + prism cleanup. The
+// If another path ended the row first, the watcher sends no notification
+// (endRow). Every notification names the PR. The merge and close outcomes
+// add the worker session's archive path and prompt git pull + prism
+// cleanup. The
 // required-check failure outcome deliberately omits the cleanup prompt,
 // because the branch is still needed for the fix.
 //
@@ -423,9 +425,8 @@ func (w *Watcher) tick(ctx context.Context) {
 // discipline: it contains "Please clean up the branch and worktree" and does
 // NOT imply prism performed the cleanup itself.
 func (w *Watcher) notifyClosedNotMerged(ctx context.Context, head *db.PendingMerge) {
-	// Scoped by head.Repo.
-	if err := w.db.TerminateMerge(head.PR, head.Repo, "failed", "PR was closed without merging"); err != nil {
-		log.Printf("[mergequeue] TerminateMerge(closed) PR #%d: %v", head.PR, err)
+	if !w.endRow(head, "failed", "PR was closed without merging", "closed") {
+		return
 	}
 	text := fmt.Sprintf("PR #%d closed without merge. Please clean up the branch and worktree.", head.PR)
 	log.Printf("[mergequeue] %s", text)
@@ -436,8 +437,8 @@ func (w *Watcher) notifyClosedNotMerged(ctx context.Context, head *db.PendingMer
 // coordinator once. The terminal row is no longer the head, so the next
 // poll moves on to the next PR and the notification is not repeated.
 func (w *Watcher) notifyConflicting(ctx context.Context, head *db.PendingMerge) {
-	if err := w.db.TerminateMerge(head.PR, head.Repo, "failed", "merge conflict"); err != nil {
-		log.Printf("[mergequeue] TerminateMerge(conflict) PR #%d: %v", head.PR, err)
+	if !w.endRow(head, "failed", "merge conflict", "conflict") {
+		return
 	}
 	text := fmt.Sprintf("PR #%d has conflicts. Worker needs to rebase.", head.PR)
 	log.Printf("[mergequeue] %s", text)
@@ -448,8 +449,8 @@ func (w *Watcher) notifyConflicting(ctx context.Context, head *db.PendingMerge) 
 // notifies the coordinator once (issue #3180). The row is no longer the head,
 // so later polls move on and do not repeat the notification.
 func (w *Watcher) notifyUpdateBranchPermanent(ctx context.Context, head *db.PendingMerge, cause error) {
-	if err := w.db.TerminateMerge(head.PR, head.Repo, "failed", "update-branch refused"); err != nil {
-		log.Printf("[mergequeue] TerminateMerge(update-branch) PR #%d: %v", head.PR, err)
+	if !w.endRow(head, "failed", "update-branch refused", "update-branch") {
+		return
 	}
 	text := fmt.Sprintf("PR #%d is BEHIND and gh pr update-branch failed with an error that no retry fixes: %v. Worker needs to rebase onto the base branch and push.", head.PR, cause)
 	log.Printf("[mergequeue] %s", text)
@@ -472,9 +473,8 @@ func (w *Watcher) notifyUpdateBranchPermanent(ctx context.Context, head *db.Pend
 // failed must be non-empty; the caller guarantees this.
 func (w *Watcher) notifyRequiredChecksFailed(ctx context.Context, head *db.PendingMerge, failed []string) {
 	names := joinFailedCheckNames(failed)
-	// Scoped by head.Repo.
-	if err := w.db.TerminateMerge(head.PR, head.Repo, "failed", "CI failed: "+names); err != nil {
-		log.Printf("[mergequeue] TerminateMerge(ci-failed) PR #%d: %v", head.PR, err)
+	if !w.endRow(head, "failed", "CI failed: "+names, "ci-failed") {
+		return
 	}
 	text := renderRequiredChecksFailedText(head.PR, names)
 	log.Printf("[mergequeue] %s", text)
@@ -513,7 +513,8 @@ func joinFailedCheckNames(names []string) string {
 
 // tryMerge attempts `gh pr merge --squash` on head. On success transitions to
 // merged and notifies; on branch-moved race (exit 1 + "already merged" or
-// "sha1" message) leaves watching; on other errors transitions to failed.
+// "sha1" message) leaves watching; on other errors transitions to failed,
+// unless ctx is cancelled.
 func (w *Watcher) tryMerge(ctx context.Context, head *db.PendingMerge) {
 	log.Printf("[mergequeue] PR #%d CLEAN — attempting gh pr merge --squash", head.PR)
 	out, err := w.runGH(ctx, "pr", "merge", fmt.Sprintf("%d", head.PR), "--squash")
@@ -543,7 +544,16 @@ func (w *Watcher) tryMerge(ctx context.Context, head *db.PendingMerge) {
 		return
 	}
 
-	// Third: genuine failure.
+	// Third: the stop of the sidecar cancels ctx (#3267). The error can come
+	// from the cancel, and the state read above then fails too, so the
+	// outcome is not known. Leave the row watching: the stop abandons it, and
+	// a restore gives it to the next watcher, which reads the PR again.
+	if ctx.Err() != nil {
+		log.Printf("[mergequeue] PR #%d: gh pr merge did not complete before the watcher stopped (%v) — leaving watching", head.PR, ctx.Err())
+		return
+	}
+
+	// Fourth: genuine failure.
 	errMsg := fmt.Sprintf("gh pr merge failed: %s", strings.TrimSpace(string(out)))
 	if len(errMsg) > 500 {
 		errMsg = errMsg[:500]
@@ -614,12 +624,7 @@ func (w *Watcher) succeedAndNotify(ctx context.Context, head *db.PendingMerge, o
 	// view of "when did we merge it" is the moment the watcher transitioned
 	// the row, not the moment GitHub recorded the squash commit.
 	mergedAt := time.Now().UnixMilli()
-	// Pass head.Repo so the terminal write only touches the row belonging
-	// to this coordinator's repo, never a same-numbered row from another
-	// repo sharing the same prism.db.
-	if err := w.db.TerminateMerge(head.PR, head.Repo, "merged", ""); err != nil {
-		log.Printf("[mergequeue] TerminateMerge(merged) PR #%d: %v", head.PR, err)
-	}
+	notify := w.endRow(head, "merged", "", "merged")
 	// Persist pr_merged_at on the worker's spawn_outcome row
 	// alongside the notification. The write happens BEFORE w.notify is called
 	// below so the notification firing path is unchanged — a write error logs
@@ -643,6 +648,9 @@ func (w *Watcher) succeedAndNotify(ctx context.Context, head *db.PendingMerge, o
 		log.Printf("[mergequeue] PR #%d: no worker spawn_outcome row carries pr_number=%d — skipping pr_merged_at persistence", head.PR, head.PR)
 	}
 
+	if !notify {
+		return
+	}
 	notifyText := w.renderSuccessNotifyText(head, outcome, prInfoForExternal)
 	log.Printf("[mergequeue] %s", notifyText)
 	w.notify(ctx, head.SessionName, head.InstanceID, notifyText)
@@ -725,7 +733,8 @@ func renderExternalMergeNotifyText(pr int, prInfo *prInfo) string {
 //
 // The polling state machine only reaches
 // failAndNotify via the tryMerge error path (a genuine `gh pr merge --squash`
-// failure that survived the reconciliation and branch-moved-race checks).
+// failure that survived the reconciliation, branch-moved-race, and
+// cancelled-context checks).
 // The other terminal cases route elsewhere:
 //
 //   - closed without merging → notifyClosedNotMerged
@@ -735,14 +744,32 @@ func renderExternalMergeNotifyText(pr int, prInfo *prInfo) string {
 //
 // See tick() for the routing and discipline.
 func (w *Watcher) failAndNotify(head *db.PendingMerge, errMsg string) {
-	// Pass head.Repo so the terminal write is scoped to this coordinator's
-	// repo.
-	if err := w.db.TerminateMerge(head.PR, head.Repo, "failed", errMsg); err != nil {
-		log.Printf("[mergequeue] TerminateMerge(failed) PR #%d: %v", head.PR, err)
+	if !w.endRow(head, "failed", errMsg, "failed") {
+		return
 	}
 	notifyText := fmt.Sprintf("PR #%d merge failed: %s", head.PR, errMsg)
 	log.Printf("[mergequeue] %s", notifyText)
 	w.notify(context.Background(), head.SessionName, head.InstanceID, notifyText)
+}
+
+// endRow ends the head row with status, scoped to head.Repo, and reports
+// whether the watcher notifies the outcome. If another path ended the row
+// first, the row does not change, and endRow returns false: a stop of the
+// sidecar abandons the row for restore to resume, and `prism merges cancel`
+// reports its own outcome. A notification here then duplicates the
+// notification of the next watcher, or reports an outcome that the row does
+// not hold (#3267). If the write fails, endRow returns true, because the
+// watcher cannot tell whether the row changed.
+func (w *Watcher) endRow(head *db.PendingMerge, status, errMsg, label string) bool {
+	changed, err := w.db.TerminateMerge(head.PR, head.Repo, status, errMsg)
+	if err != nil {
+		log.Printf("[mergequeue] TerminateMerge(%s) PR #%d: %v", label, head.PR, err)
+		return true
+	}
+	if !changed {
+		log.Printf("[mergequeue] PR #%d: the row is no longer watching — no %s notification", head.PR, label)
+	}
+	return changed
 }
 
 // notify delivers a notification to the coordinator via the appropriate
