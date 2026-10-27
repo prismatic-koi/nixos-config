@@ -97,10 +97,12 @@ func TestKillSidecarAndWait_StaleZombie_SocketFreedBeforeReturn(t *testing.T) {
 	})
 }
 
-// TestEnsureSidecarStopped_StaleZombie_SocketFreedBeforeReturn runs the same
+// TestStaleZombie_EnsureSidecarStopped_SocketFreedBeforeReturn runs the same
 // check on EnsureSidecarStopped, the stop of the stale-zombie restart path
-// of ensureAndSwitch.
-func TestEnsureSidecarStopped_StaleZombie_SocketFreedBeforeReturn(t *testing.T) {
+// of ensureAndSwitch. The test is Linux-only, so its name must not start
+// with TestEnsureSidecarStopped: the macOS job of pr-gate.yml selects that
+// prefix and fails on a SKIP.
+func TestStaleZombie_EnsureSidecarStopped_SocketFreedBeforeReturn(t *testing.T) {
 	checkStaleZombieSocketFreed(t, "EnsureSidecarStopped", func(sessionName string) bool {
 		return EnsureSidecarStopped(sessionName, 5*time.Second)
 	})
