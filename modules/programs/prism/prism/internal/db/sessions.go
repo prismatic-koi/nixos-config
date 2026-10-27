@@ -135,6 +135,10 @@ UPDATE sessions
 // instanceID. Called during prism cleanup to record when and how the session
 // ended. archive_path is not set here; UpdateSessionArchivePath sets it later.
 //
+// It overwrites ended_at and end_state with no guard, even when the row is
+// already ended. A caller that must keep an earlier ended_at checks that the
+// row is open first (see sessionsRowOpen in cmd/cleanup_snapshot.go).
+//
 // It is a no-op when no row exists for instanceID (returns nil).
 func (d *DB) UpdateSessionEnded(instanceID, endState string) error {
 	now := time.Now().UnixMilli()

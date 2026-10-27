@@ -15,6 +15,10 @@ import (
 	"strings"
 )
 
+// SilentStartedMarker is the one non-frame line that the silent mode writes.
+// The tests match the same text.
+const SilentStartedMarker = "fakestdioharness-started"
+
 func main() {
 	mode := os.Getenv("PRISM_FAKE_STDIO_HARNESS")
 
@@ -37,6 +41,10 @@ func main() {
 
 	case "silent":
 		// No frames: the "pipe closed before first frame" error path.
+		// One line that is not a JSON frame proves that the harness ran.
+		// The sidecar logs it as an unparseable line and does not count it
+		// as a frame.
+		fmt.Println(SilentStartedMarker)
 
 	case "coalesced_2turn":
 		writeFrame(sc("active"))
