@@ -262,10 +262,11 @@ integration test coverage exists for:
   - A worker in `feature` commits, fetches, pushes with the upstream that
     Prepare writes into `.bare/config` and no config error, rebases,
     force-pushes, and runs `git worktree list`.
-  - After a push from the sandbox, the host does what the pre-flight of
-    `prism review --rebase` does: a fetch, a rebase, and a push with
-    `push.autoSetupRemote`. Then a push and a pull from the sandbox work,
-    and `.bare/config` names one upstream.
+  - After a push from the sandbox, the host runs a bare `git push` with
+    `push.autoSetupRemote`, as a host-pane push does. The `prism review
+    --rebase` pre-flight push no longer matches this: it names an explicit
+    `refs/heads/<branch>` refspec and writes no upstream. Then a push and a
+    pull from the sandbox work, and `.bare/config` names one upstream.
   - The same worker cannot write a file in `main`, make `.pi` in `main` or
     `.agents` at the project root, write `.bare/config` or
     `.bare/hooks/post-checkout`, move `refs/heads/main` or `refs/stash`,

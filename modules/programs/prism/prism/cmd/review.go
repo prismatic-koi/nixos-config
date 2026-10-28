@@ -221,6 +221,17 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return wtErr
 	}
 
+	// Refuse a session that is not in a prism worktree BEFORE any forge or gh
+	// call (#3323, AC1). forge.DetectFromDir, forge.OriginRemoteURL,
+	// review.CheckPRState, and review.ResolvePRBaseRef below each run git (or
+	// gh with a git child) in the worktree dir; for a plain clone or a bare
+	// session dir that git reads a config the session wrote. git.OpenDir runs
+	// no git for a dir outside a prism project, so this gate keeps host git out
+	// of a dir the session controls.
+	if wtErr := review.EnsurePrismWorktree(worktree); wtErr != nil {
+		return wtErr
+	}
+
 	// Detect the forge from the worktree's origin remote. On a gitlab.com
 	// remote the three forge reads below (MR state, base ref, metadata+diff)
 	// resolve via glab instead of gh; on any other remote the GitHub path is
@@ -245,7 +256,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 
 	// Pre-flight rebase gate. Runs BEFORE any review-agent
 	// sessions are spawned and BEFORE any DB rows are written for this round,
-	// so a gate failure (refusal, fetch failure, conflict abort, missing
+	// so a gate failure (refusal, fetch failure, conflict restore, missing
 	// upstream) cannot increment the review-cycle counter — that counter is
 	// derived from per-agent session rows by review.NextRoundNumber, and no
 	// such rows exist on the gate-failure path.
@@ -260,8 +271,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// discoverable PR.
 	//
 	// On --rebase, the gate also performs fetch + rebase + force-push inline;
-	// on rebase conflict it aborts the rebase and restores HEAD before
-	// returning a non-zero error. Never leaves the worktree mid-rebase.
+	// on rebase conflict it restores HEAD without `git rebase --abort` (#3323)
+	// before returning a non-zero error. Never leaves the worktree mid-rebase.
 	baseBranch := review.ResolvePRBaseRef(prNumber, reviewForge, repoURL) // "" on any failure → Preflight defaults to "main"
 	if gateErr := review.Preflight(review.PreflightOpts{
 		Worktree:   worktree,

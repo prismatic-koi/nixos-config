@@ -362,10 +362,13 @@ const gitUpstreamRemote = "origin"
 // config, and git pull and git status know the upstream.
 //
 // The upstream must be in .bare/config, and in no other file. Host-side git
-// in the worktree, for example the push of prism review --rebase, reads
-// .bare/config and not the per-session gitconfig. If it finds no upstream
-// there, it writes one, and git push then refuses a branch that has an
-// upstream in two files.
+// in the worktree reads .bare/config and not the per-session gitconfig: the
+// session's own push, and a bare git push from a host pane. A bare push with
+// no upstream in .bare/config writes one there (push.autoSetupRemote); with
+// an upstream in the per-session gitconfig as well, git push then refuses a
+// branch that has an upstream in two files. The prism review --rebase push
+// is not such a push — it names an explicit refs/heads/<branch> refspec, so
+// it writes no upstream.
 //
 // It does nothing for a session that cannot write its worktree, and when
 // there is no branch. git config reads and writes the config files only. It

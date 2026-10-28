@@ -350,9 +350,13 @@ prism review <pr> --rebase
 
 It performs the fetch + rebase + force-push inline against the resolved base
 ref (not hardcoded `origin/main`) and then proceeds to the review against the
-rebased HEAD. If the rebase produces conflicts, the rebase is aborted, the
-worktree is restored to the original `HEAD`, and the command exits non-zero —
-never leaves the worktree mid-rebase. Resolve conflicts manually and re-run.
+rebased HEAD. If the rebase produces conflicts, the worktree is restored to
+the original `HEAD` (without `git rebase --abort`, so no stash is applied —
+#3323), and the command exits non-zero — never leaves the worktree
+mid-rebase. Resolve conflicts manually and re-run. `--rebase` also refuses
+when the session is not in a prism worktree, when the worktree git dir already
+holds a rebase/merge/cherry-pick/revert/sequencer state, or when `HEAD` is not
+on the branch of the session record; it pushes only that branch.
 
 **Why this gate exists.** Reviewers regularly produce noisy findings of the
 form "you should also update X" when X landed on the base branch after the

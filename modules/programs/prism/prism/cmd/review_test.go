@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,53 @@ import (
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/spf13/pflag"
 )
+
+// runGitOrFail runs git in cwd (default cwd when empty), failing the test on a
+// non-zero exit.
+func runGitOrFail(t *testing.T, cwd string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+// TestRunReview_RefusesNonWorktreeSessionBeforeForge drives runReview with a
+// session whose worktree is a plain clone (not a prism worktree) and asserts
+// it is refused with the "not a prism worktree" message. A refusal with that
+// message proves the worktree gate ran BEFORE the forge/gh calls (#3323, AC1):
+// had those run first, the error would have been a PR-state or forge error.
+func TestRunReview_RefusesNonWorktreeSessionBeforeForge(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	t.Setenv("PRISM_HOST_API", "")
+	t.Setenv("PRISM_SPAWN_PATH", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin.git")
+	runGitOrFail(t, "", "init", "-q", "--bare", origin)
+	plain := filepath.Join(tmp, "plain")
+	runGitOrFail(t, "", "clone", "-q", origin, plain)
+
+	d := openReviewTestDB(t)
+	const session = "testrepo@feat"
+	t.Setenv("PRISM_SESSION_NAME", session)
+	if err := d.UpsertStatus(session, "testrepo", plain, "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	err := runReview(reviewCmd, []string{"999"})
+	if err == nil || !strings.Contains(err.Error(), "not a prism worktree") {
+		t.Fatalf("runReview = %v, want a 'not a prism worktree' refusal before any forge/gh call", err)
+	}
+}
 
 // TestAgentsForHarness_ReturnsAllFive verifies that agentsForHarness always
 // returns the five-agent review set unconditionally.

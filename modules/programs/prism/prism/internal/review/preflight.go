@@ -34,11 +34,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
 // PreflightOpts configures the rebase gate.
@@ -46,9 +49,10 @@ type PreflightOpts struct {
 	// Worktree is the absolute path to the git worktree. Required.
 	Worktree string
 	// Rebase, when true, performs fetch + rebase + force-push inline before
-	// the ancestor check. On rebase conflict the rebase is aborted, the
-	// worktree is restored to the original HEAD, and the gate returns an
-	// error — never leaving the worktree mid-rebase.
+	// the ancestor check. On rebase conflict the worktree is restored to the
+	// original HEAD without `git rebase --abort` (which would apply a planted
+	// autostash — #3323), and the gate returns an error — never leaving the
+	// worktree mid-rebase.
 	Rebase bool
 	// Remote is the git remote to fetch from. Defaults to "origin".
 	Remote string
@@ -61,26 +65,39 @@ type PreflightOpts struct {
 	gitRunner gitRunner
 }
 
-// gitRunner is the test seam for executing git in a specific worktree.
+// gitRunner is the test seam for running git and for inspecting the repo
+// that prism resolved on the host. The metadata methods let the pre-flight
+// refuse a session that is not in a prism worktree and restore after a
+// conflict without trusting state that the session can write.
 type gitRunner interface {
-	run(worktree string, args ...string) (stdout string, stderr string, exitCode int, err error)
+	run(args ...string) (stdout string, stderr string, exitCode int, err error)
+	// gitDir is the resolved git dir, for the pre-existing-state check and
+	// the conflict restore. "" when the runner has no real repo (a test fake
+	// that drives git by scripted argv).
+	gitDir() string
+	// isWorktree reports whether the resolved repo is a pinned prism
+	// worktree. Preflight refuses when it is false (#3323).
+	isWorktree() bool
+	// sessionBranch is the branch of the session record — the path of the
+	// worktree below the project root — never the branch that HEAD names,
+	// which the session can write in its own git dir. "" when it cannot be
+	// derived.
+	sessionBranch() string
 }
 
-// realGit shells out to the system git binary. The worktree belongs to a
-// session, so the command runs through git.OpenDir: it pins the git dir and
-// the common dir and does not trust <worktree>/.git.
-type realGit struct{}
+// realGit runs git through a git.Repo that prism resolved on the host with
+// git.OpenDir: it pins the git dir and the common dir and does not trust
+// <worktree>/.git or a planted commondir. The repo is resolved once, in
+// Preflight, so every command and every metadata read sees one resolution.
+// See docs/invariants/host-git-commands.md.
+type realGit struct{ repo git.Repo }
 
-func (realGit) run(worktree string, args ...string) (string, string, int, error) {
-	repo, err := git.OpenDir(worktree)
-	if err != nil {
-		return "", "", 0, err
-	}
-	cmd := repo.Command(context.Background(), args...)
+func (g realGit) run(args ...string) (string, string, int, error) {
+	cmd := g.repo.Command(context.Background(), args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err = cmd.Run()
+	err := cmd.Run()
 	exitCode := 0
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -94,6 +111,43 @@ func (realGit) run(worktree string, args ...string) (string, string, int, error)
 	return stdout.String(), stderr.String(), exitCode, err
 }
 
+func (g realGit) gitDir() string   { return g.repo.GitDir() }
+func (g realGit) isWorktree() bool { return g.repo.Pinned() && g.repo.WorkTree() != "" }
+
+// sessionBranch derives the branch from the worktree path below the project
+// root, as container.resolveGitWriteScope does. It never reads HEAD: a
+// session can write HEAD in its own git dir, and #3323 (AC4) requires the
+// push to move the branch of the session record, not the branch HEAD names.
+func (g realGit) sessionBranch() string {
+	wt := g.repo.WorkTree()
+	common := g.repo.CommonDir()
+	if wt == "" || common == "" {
+		return ""
+	}
+	// common is <root>/.bare, so the project root is its parent.
+	root := filepath.Dir(common)
+	rel, err := filepath.Rel(root, wt)
+	if err != nil {
+		return ""
+	}
+	branch := filepath.ToSlash(rel)
+	if sessionname.ValidateBranch(branch) != nil {
+		return ""
+	}
+	// Reject a path part that git or a shell would misread as an option or a
+	// non-branch name, so the branch is safe as a git push refspec.
+	for _, part := range strings.Split(branch, "/") {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasPrefix(part, "-") ||
+			strings.HasSuffix(part, ".lock") || strings.HasSuffix(part, ".") {
+			return ""
+		}
+	}
+	if strings.Contains(branch, "..") {
+		return ""
+	}
+	return branch
+}
+
 // PreflightError is returned by Preflight when the gate refuses the review.
 // It carries a Refused flag so callers can distinguish gate refusals from
 // infrastructure errors (fetch failure, missing upstream) — both must exit
@@ -103,7 +157,7 @@ type PreflightError struct {
 	Msg string
 	// Refused is true when the gate refused because the resolved base ref is
 	// not an ancestor of HEAD. False for infrastructure errors (fetch
-	// failure, missing upstream, conflict abort).
+	// failure, missing upstream, conflict restore).
 	Refused bool
 	// CommitsBehind is the number of commits HEAD is behind the remote
 	// branch (HEAD..<remote>/<base>). Populated only when Refused is true.
@@ -135,15 +189,45 @@ func Preflight(opts PreflightOpts) error {
 	}
 	runner := opts.gitRunner
 	if runner == nil {
-		runner = realGit{}
+		repo, openErr := git.OpenDir(opts.Worktree)
+		if openErr != nil {
+			// A redirect that prism refuses (a planted commondir, a nested
+			// .bare, a .git that is not a regular file) or a missing dir.
+			// git.OpenDir runs no host git command in these cases.
+			return &PreflightError{Msg: fmt.Sprintf("prism review: preflight: %v", openErr)}
+		}
+		runner = realGit{repo: repo}
 	}
 	progress := opts.OnProgress
 	if progress == nil {
 		progress = func(string) {}
 	}
 
-	// Step 1: capture original HEAD (only used to restore on conflict abort).
-	origHead, _, _, err := runOrErr(runner, opts.Worktree, "rev-parse", "HEAD")
+	// Refuse a session that is not in a prism worktree (#3323, AC1). In a
+	// plain clone or a bare session dir, git reads a config and hooks that the
+	// session wrote, and a host git command there runs them as the user.
+	// git.OpenDir runs no git command for a dir outside a prism project, so
+	// no host git command runs in the session's dir before this refusal.
+	if !runner.isWorktree() {
+		return &PreflightError{Msg: notAPrismWorktreeMsg(opts.Worktree)}
+	}
+
+	// Refuse a worktree that already holds rebase, merge, cherry-pick, revert,
+	// or sequencer state (#3323, AC2). The session can plant a rebase-merge
+	// dir with an autostash file; a host `git rebase --abort` would then apply
+	// that stash and run a command the session chose. The pre-flight does not
+	// run on a worktree that is already mid-operation.
+	if gd := runner.gitDir(); gd != "" {
+		if state := existingGitOpState(gd); state != "" {
+			return &PreflightError{Msg: fmt.Sprintf(`prism review: preflight: the worktree git dir already holds %s state.
+
+Finish or abort the operation in the worktree, then re-run prism review.
+prism does not run its rebase pre-flight on a worktree that is mid-operation.`, state)}
+		}
+	}
+
+	// Step 1: capture original HEAD (only used to restore on conflict).
+	origHead, _, _, err := runOrErr(runner, "rev-parse", "HEAD")
 	if err != nil {
 		return &PreflightError{Msg: fmt.Sprintf("prism review: preflight: could not resolve HEAD: %v", err)}
 	}
@@ -151,7 +235,7 @@ func Preflight(opts PreflightOpts) error {
 
 	// Step 2: fetch the remote branch. One network round-trip; fast.
 	progress(fmt.Sprintf("preflight: fetching %s/%s …", remote, branch))
-	if _, stderr, code, fetchErr := runner.run(opts.Worktree, "fetch", remote, branch); fetchErr != nil || code != 0 {
+	if _, stderr, code, fetchErr := runner.run("fetch", remote, branch); fetchErr != nil || code != 0 {
 		// Fetch failure is fatal — no fallback to running the review against an
 		// unverified branch. Surface the underlying error verbatim so the user
 		// can see network/auth diagnostics.
@@ -176,7 +260,7 @@ func Preflight(opts PreflightOpts) error {
 	// itself does not advertise the requested branch, or the local checkout
 	// has no such remote). This must NOT silently retry against "main" — if
 	// the resolved base is missing upstream, the operator needs to know.
-	if _, stderr, code, _ := runner.run(opts.Worktree, "rev-parse", "--verify", remoteRef); code != 0 {
+	if _, stderr, code, _ := runner.run("rev-parse", "--verify", remoteRef); code != 0 {
 		return &PreflightError{Msg: fmt.Sprintf(`prism review: no %s ref configured.
 
 After 'git fetch %s %s' the ref %s is still not present. The branch has no
@@ -197,18 +281,39 @@ git stderr: %s`, remoteRef, remote, branch, remoteRef, branch, remote, remote, b
 	// that a successful rebase causes the ancestor check to pass naturally on
 	// the same Preflight call.
 	if opts.Rebase {
-		progress(fmt.Sprintf("preflight: rebasing onto %s …", remoteRef))
-		if _, stderr, code, runErr := runner.run(opts.Worktree, "rebase", remoteRef); runErr != nil || code != 0 {
-			// Rebase failed — abort it and restore HEAD to the original state.
-			// `git rebase --abort` is a no-op (exit 128 with "no rebase in
-			// progress") if the rebase did not actually start, so we run it
-			// unconditionally and ignore its exit code.
-			_, _, _, _ = runner.run(opts.Worktree, "rebase", "--abort")
-			// Defence in depth: if --abort somehow left HEAD shifted, force it
-			// back. `reset --hard <origHead>` is idempotent and safe.
-			if origHead != "" {
-				_, _, _, _ = runner.run(opts.Worktree, "reset", "--hard", origHead)
+		// The rebase acts on HEAD, while the push and the conflict restore act
+		// on the session-record branch. Refuse unless HEAD is on that branch,
+		// so all three act on one branch (#3323, AC4, and review round 1 on PR
+		// #3332). This also fails closed when the branch cannot be derived:
+		// prism never falls back to a bare `git push` that follows HEAD.
+		sessionBranch := runner.sessionBranch()
+		if sessionBranch == "" {
+			return &PreflightError{Msg: fmt.Sprintf(`prism review: preflight: cannot determine the branch of worktree %s, so --rebase is refused.
+
+The worktree path is not a branch name. Rebase and push the branch yourself,
+then re-run 'prism review <pr>' without --rebase.`, opts.Worktree)}
+		}
+		headRef, _, headCode, _ := runner.run("symbolic-ref", "-q", "HEAD")
+		headRef = strings.TrimSpace(headRef)
+		if headCode != 0 || headRef != "refs/heads/"+sessionBranch {
+			on := headRef
+			if on == "" {
+				on = "a detached HEAD"
 			}
+			return &PreflightError{Msg: fmt.Sprintf(`prism review: preflight: HEAD is not on the session branch %q (it is on %s), so --rebase is refused.
+
+prism review --rebase rebases, pushes, and restores the branch of the session
+record. Check out %s, then re-run 'prism review <pr> --rebase'.`, sessionBranch, on, sessionBranch)}
+		}
+
+		progress(fmt.Sprintf("preflight: rebasing onto %s …", remoteRef))
+		if _, stderr, code, runErr := runner.run("rebase", remoteRef); runErr != nil || code != 0 {
+			// Restore WITHOUT `git rebase --abort` (#3323, AC3/AC5): --abort
+			// applies rebase-merge/autostash, and a session can write that
+			// file during a real conflict. restoreAfterPreflightRebase removes
+			// the rebase state dir and resets to the original HEAD, so it
+			// applies no stash and runs no command the session chose.
+			restoreAfterPreflightRebase(runner, origHead)
 			detail := strings.TrimSpace(stderr)
 			if detail == "" && runErr != nil {
 				detail = runErr.Error()
@@ -216,7 +321,8 @@ git stderr: %s`, remoteRef, remote, branch, remoteRef, branch, remote, remote, b
 			if detail == "" {
 				detail = fmt.Sprintf("git rebase exited with code %d", code)
 			}
-			return &PreflightError{Msg: fmt.Sprintf(`prism review: --rebase produced conflicts; rebase aborted, worktree restored to original HEAD.
+			return &PreflightError{Msg: fmt.Sprintf(`prism review: --rebase produced conflicts; the rebase was undone and the
+worktree was restored to its original HEAD.
 
 Resolve conflicts manually:
 
@@ -232,10 +338,16 @@ Then re-run 'prism review <pr>'.
 git stderr (truncated):
 %s`, remote, branch, remoteRef, truncate(detail, 2000))}
 		}
-		// Rebase succeeded. Push with --force-with-lease so a concurrent push
-		// from another worker on the same branch is not silently overwritten.
+		// Rebase succeeded. Push the branch of the session record (#3323,
+		// AC4), never the branch that HEAD names: a session can write HEAD in
+		// its own git dir, so a bare `git push` would let it choose which ref
+		// the host moves. The explicit refs/heads/<branch> refspec cannot be
+		// read as an option, and the guard above has made HEAD == this branch.
+		// --force-with-lease still guards a concurrent push from another worker
+		// on the same branch.
 		progress("preflight: pushing rebased HEAD with --force-with-lease …")
-		if _, stderr, code, runErr := runner.run(opts.Worktree, "push", "--force-with-lease"); runErr != nil || code != 0 {
+		ref := "refs/heads/" + sessionBranch
+		if _, stderr, code, runErr := runner.run("push", "--force-with-lease", remote, ref+":"+ref); runErr != nil || code != 0 {
 			detail := strings.TrimSpace(stderr)
 			if detail == "" && runErr != nil {
 				detail = runErr.Error()
@@ -252,7 +364,7 @@ git stderr (truncated):
 	// `git merge-base --is-ancestor <ancestor> <descendant>` returns 0 when
 	// the first arg is an ancestor of the second, 1 when it is not, other
 	// codes on error (e.g. unknown ref).
-	_, stderr, code, runErr := runner.run(opts.Worktree, "merge-base", "--is-ancestor", remoteRef, "HEAD")
+	_, stderr, code, runErr := runner.run("merge-base", "--is-ancestor", remoteRef, "HEAD")
 	if runErr != nil {
 		return &PreflightError{Msg: fmt.Sprintf("prism review: preflight: merge-base failed: %v", runErr)}
 	}
@@ -265,7 +377,7 @@ git stderr (truncated):
 		// resolved base ref in the "N commits behind …" line and in the
 		// suggested `git fetch` / `git rebase` commands so a worker on a PR
 		// targeting a non-main base sees the right ref to act on.
-		behind := countCommitsBehind(runner, opts.Worktree, remoteRef)
+		behind := countCommitsBehind(runner, remoteRef)
 		return &PreflightError{
 			Refused:       true,
 			CommitsBehind: behind,
@@ -291,8 +403,8 @@ has no uncommitted or local-only state worth preserving).`,
 
 // countCommitsBehind returns the number of commits in remoteRef that are not in
 // HEAD (i.e. commits HEAD is missing). Best effort — returns 0 on any error.
-func countCommitsBehind(runner gitRunner, worktree, remoteRef string) int {
-	out, _, code, _ := runner.run(worktree, "rev-list", "--count", "HEAD.."+remoteRef)
+func countCommitsBehind(runner gitRunner, remoteRef string) int {
+	out, _, code, _ := runner.run("rev-list", "--count", "HEAD.."+remoteRef)
 	if code != 0 {
 		return 0
 	}
@@ -319,11 +431,84 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "\n… (truncated)"
 }
 
+// notAPrismWorktreeMsg is the refusal text for a session that is not in a
+// prism worktree (#3323, AC1).
+func notAPrismWorktreeMsg(worktree string) string {
+	return fmt.Sprintf(`prism review: preflight: %s is not a prism worktree.
+
+The host git steps of the pre-flight (fetch, rebase, push) run only in a prism
+worktree, where prism pins the git dir. In a plain clone or a bare session
+dir, git reads a config that the session wrote, so prism refuses to run git
+there.`, worktree)
+}
+
+// EnsurePrismWorktree returns a *PreflightError when worktree is not a prism
+// worktree. git.OpenDir runs no host git command for a dir outside a prism
+// project, so a caller can place this before any forge or gh call to keep
+// host git out of a dir the session controls (#3323, AC1). Preflight repeats
+// the check through its runner as defence in depth.
+func EnsurePrismWorktree(worktree string) error {
+	if worktree == "" {
+		return &PreflightError{Msg: "prism review: preflight: worktree path is required"}
+	}
+	repo, err := git.OpenDir(worktree)
+	if err != nil {
+		return &PreflightError{Msg: fmt.Sprintf("prism review: preflight: %v", err)}
+	}
+	if !(repo.Pinned() && repo.WorkTree() != "") {
+		return &PreflightError{Msg: notAPrismWorktreeMsg(worktree)}
+	}
+	return nil
+}
+
+// gitOpStateMarkers are the files and dirs in a worktree git dir that mean an
+// operation is in progress: a rebase, a merge, a cherry-pick, a revert, or a
+// sequencer run. Preflight refuses when any is present (#3323, AC2).
+var gitOpStateMarkers = []string{
+	"rebase-merge",
+	"rebase-apply",
+	"sequencer",
+	"MERGE_HEAD",
+	"CHERRY_PICK_HEAD",
+	"REVERT_HEAD",
+}
+
+// existingGitOpState returns the name of the first in-progress-operation
+// marker present in gitDir, or "" when the worktree holds none.
+func existingGitOpState(gitDir string) string {
+	for _, name := range gitOpStateMarkers {
+		if _, err := os.Lstat(filepath.Join(gitDir, name)); err == nil {
+			return name
+		}
+	}
+	return ""
+}
+
+// restoreAfterPreflightRebase undoes a conflicted pre-flight rebase without
+// applying any stash (#3323, AC3/AC5). `git rebase --abort` would apply
+// rebase-merge/autostash, and a session can write that file during a real
+// conflict, so the host must not run it. Instead this removes the rebase
+// state dir directly, re-attaches HEAD to the branch of the session record
+// (the rebase detached it), and resets the worktree to the pre-rebase commit.
+func restoreAfterPreflightRebase(runner gitRunner, origHead string) {
+	if gitDir := runner.gitDir(); gitDir != "" {
+		for _, d := range []string{"rebase-merge", "rebase-apply"} {
+			_ = os.RemoveAll(filepath.Join(gitDir, d))
+		}
+	}
+	if b := runner.sessionBranch(); b != "" {
+		_, _, _, _ = runner.run("symbolic-ref", "HEAD", "refs/heads/"+b)
+	}
+	if origHead != "" {
+		_, _, _, _ = runner.run("reset", "--hard", origHead)
+	}
+}
+
 // runOrErr is a thin wrapper that promotes a non-zero git exit to an error.
 // Used for "the command must succeed" steps where the caller does not want
 // to inspect the exit code separately.
-func runOrErr(r gitRunner, worktree string, args ...string) (string, string, int, error) {
-	stdout, stderr, code, err := r.run(worktree, args...)
+func runOrErr(r gitRunner, args ...string) (string, string, int, error) {
+	stdout, stderr, code, err := r.run(args...)
 	if err != nil {
 		return stdout, stderr, code, err
 	}

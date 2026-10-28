@@ -31,6 +31,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/prismatic-koi/prism/internal/git"
 )
 
 // FormatGateOpts configures the formatter gate.
@@ -100,7 +102,14 @@ func FormatGate(opts FormatGateOpts) error {
 	}
 	runner := opts.gitRunner
 	if runner == nil {
-		runner = realGit{}
+		// Resolve the pinned repo once, as Preflight does. FormatGate runs
+		// after Preflight, which already refused a session outside a prism
+		// worktree, so here an open error is unexpected and is surfaced.
+		repo, openErr := git.OpenDir(opts.Worktree)
+		if openErr != nil {
+			return &FormatGateError{Msg: fmt.Sprintf("prism review: formatgate: %v", openErr)}
+		}
+		runner = realGit{repo: repo}
 	}
 	cmdRunner := opts.cmdRunner
 	if cmdRunner == nil {
@@ -122,7 +131,7 @@ func FormatGate(opts FormatGateOpts) error {
 	// no fetch is performed here. --diff-filter=ACMR excludes deleted files
 	// (nothing to format-check in a file that no longer exists) and renames
 	// are included since the new path is what should be checked.
-	out, stderr, code, err := runner.run(opts.Worktree, "diff", "--name-only", "--diff-filter=ACMR", remoteRef+"...HEAD")
+	out, stderr, code, err := runner.run("diff", "--name-only", "--diff-filter=ACMR", remoteRef+"...HEAD")
 	if err != nil || code != 0 {
 		detail := strings.TrimSpace(stderr)
 		if detail == "" && err != nil {

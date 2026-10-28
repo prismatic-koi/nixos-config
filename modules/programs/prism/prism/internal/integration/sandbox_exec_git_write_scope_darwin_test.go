@@ -397,10 +397,13 @@ echo ../.. > "$gd/commondir.new" && mv "$gd/commondir.new" "$gd/commondir"`)
 	}
 }
 
-// pushAfterHostPush pushes from the sandbox, then does what the pre-flight
-// of prism review --rebase does on the host: a fetch, a rebase, and a push
-// with the host git config, which sets push.autoSetupRemote. Then it pushes
-// and pulls from the sandbox again, and returns the result of that step.
+// pushAfterHostPush pushes from the sandbox, then runs a host-side fetch,
+// rebase, and a bare `git push` with the host git config, which sets
+// push.autoSetupRemote — representative of a bare push from a host pane,
+// which exercises the upstream-single invariant. (The prism review --rebase
+// pre-flight push is NOT a bare push: it names an explicit
+// refs/heads/<branch> refspec and writes no upstream.) Then it pushes and
+// pulls from the sandbox again, and returns the result of that step.
 func pushAfterHostPush(t *testing.T, f *gitScopeFixture) ([]byte, error) {
 	t.Helper()
 	profilePath := writeAugmentedPositiveProfile(t, f.prepared)
