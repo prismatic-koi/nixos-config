@@ -451,6 +451,74 @@ func TestAPI_KillSession(t *testing.T) {
 	}
 }
 
+// sessionNames returns the names of the sessions of s.
+func sessionNames(t *testing.T, s *server) []string {
+	t.Helper()
+	out, err := s.output("list-sessions", "-F", "#{session_name}")
+	if err != nil {
+		t.Fatalf("list-sessions: %v", err)
+	}
+	return strings.Split(out, "\n")
+}
+
+// TestAPI_KillSession_HookGetsClosingName shows that the session-closed
+// hook does not get the name of a session that tmux.KillSession kills. The
+// prism hook ends the rows of the name that it gets, and each prism path
+// that calls tmux.KillSession ends the rows itself (#3297).
+func TestAPI_KillSession_HookGetsClosingName(t *testing.T) {
+	s := newServer(t)
+	withServer(t, s)
+
+	logFile := t.TempDir() + "/hook.log"
+	if err := s.run("set-hook", "-g", "session-closed",
+		"run-shell 'printf \"%s\\n\" \"#{hook_session_name}\" >> "+logFile+"'"); err != nil {
+		t.Fatalf("set-hook: %v", err)
+	}
+	s.newSession("keep")
+	s.newSession("repo@feat")
+
+	if err := tmux.KillSession("repo@feat"); err != nil {
+		t.Fatalf("KillSession: %v", err)
+	}
+
+	var got string
+	deadline := time.Now().Add(5 * time.Second)
+	for got == "" && time.Now().Before(deadline) {
+		b, _ := os.ReadFile(logFile)
+		got = strings.TrimSpace(string(b))
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.HasPrefix(got, tmux.ClosingSessionPrefix) {
+		t.Errorf("hook_session_name = %q, want a name that starts with %q", got, tmux.ClosingSessionPrefix)
+	}
+	names := sessionNames(t, s)
+	for _, n := range names {
+		if n == "repo@feat" || strings.HasPrefix(n, tmux.ClosingSessionPrefix) {
+			t.Errorf("session %q is still present after the kill (sessions: %v)", n, names)
+		}
+	}
+	if !s.hasSession("keep") {
+		t.Error("session keep is gone, want it kept")
+	}
+}
+
+// TestAPI_KillSession_ExactName shows that tmux.KillSession kills no
+// session when no session has exactly the name. A plain -t target can match
+// a session by name prefix.
+func TestAPI_KillSession_ExactName(t *testing.T) {
+	s := newServer(t)
+	withServer(t, s)
+
+	s.newSession("repo@feature-x")
+
+	if err := tmux.KillSession("repo@feat"); err == nil {
+		t.Error("KillSession(repo@feat) = nil, want an error: no session has that name")
+	}
+	if !s.hasSession("repo@feature-x") {
+		t.Errorf("session repo@feature-x is gone after KillSession(repo@feat) (sessions: %v)", sessionNames(t, s))
+	}
+}
+
 // TestAPI_SetAndGetGlobalOption verifies SetGlobalOption/GetGlobalOption.
 func TestAPI_SetAndGetGlobalOption(t *testing.T) {
 	s := newServer(t)

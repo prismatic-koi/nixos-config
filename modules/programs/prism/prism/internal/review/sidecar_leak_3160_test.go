@@ -307,9 +307,9 @@ func TestReap_FailedStopKeepsRowPortAndTmux_3160(t *testing.T) {
 	}
 }
 
-// The release stops the sidecar before it kills the tmux session. The kill
-// fires the session-closed hook, which ends the row, so a stop after the
-// kill could not keep the row reserved.
+// The release stops the sidecar before it kills the tmux session. If the
+// stop fails, the release keeps the tmux session, the row, and the port, so
+// the next sweep retries the whole sequence.
 func TestReap_StopsSidecarBeforeTmuxKill_3160(t *testing.T) {
 	d := openTestDB(t)
 	var mu sync.Mutex

@@ -428,8 +428,10 @@ in
               # session's first pane path and permanently corrupts the worktree
               # field when invoked from a display-popup. See issue #380.
 
-              # Write tmux_session_end event when a session is closed.
-              set-hook -g session-closed "run-shell '${prism} event tmux-session-end --session #{q:session_name}'"
+              # End the rows of a session that closes outside prism.
+              # #{hook_session_name} names the closed session. In this hook,
+              # #{session_name} names a live session (#3297).
+              set-hook -g session-closed "run-shell '${prism} event tmux-session-end --session #{q:hook_session_name}'"
               # Transition to interrupted when a pane dies unexpectedly mid-session.
               # Only the agent window exit is relevant; prism event pane-died
               # ignores exits from other windows (term, edit) and is a no-op for

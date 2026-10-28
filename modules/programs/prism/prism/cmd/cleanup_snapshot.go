@@ -14,11 +14,13 @@ var cleanupKillTmuxSession = tmux.KillSession
 // cleanupSnapshot holds the values of the agent_status row of a session that
 // the DB block of a cleanup path uses.
 //
-// A cleanup path takes the snapshot before the tmux kill. The kill fires the
-// global session-closed hook, and `prism event tmux-session-end` then clears
-// instance_id of the row. A read after the kill can get "", and the cleanup
-// then skips the archive of the transcript and the removal of the instance
-// directories (#3213).
+// A cleanup path takes the snapshot before the tmux kill. The global
+// session-closed hook (`prism event tmux-session-end`) clears instance_id
+// of the row. tmux.KillSession keeps the hook off the row, but the hook
+// still acts when the session closes outside prism, or when the rename of
+// tmux.KillSession fails. A read after the kill can then get "", and the
+// cleanup then skips the archive of the transcript and the removal of the
+// instance directories (#3213).
 type cleanupSnapshot struct {
 	instanceID    string
 	isolationMode string

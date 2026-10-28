@@ -1,10 +1,10 @@
 package cmd
 
-// Tests for #3279: the session-closed hook of the parent closes the tmux
-// session of each open review child, and the hook of the child then clears
-// agent_status.instance_id of the child. The hook of the parent clears the
-// instance ID of the parent. Both can occur before the child cleanup and
-// the spawn_outcome cascade of a cleanup path run.
+// Tests for #3279: the session-closed hook clears agent_status.instance_id
+// of a session that closes outside prism, or whose tmux.KillSession rename
+// fails. The tests act as the hook for the parent and for each review
+// child. Both clears can occur before the child cleanup and the
+// spawn_outcome cascade of a cleanup path run.
 
 import (
 	"os"

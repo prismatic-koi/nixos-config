@@ -507,13 +507,15 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 			return fmt.Errorf("event tmux-session-end: session name must not be empty")
 		}
 
-		// Liveness check: the session-closed hook fires spuriously when a
-		// display-popup is dismissed (tmux reports the popup's pseudo-session
-		// name as the outer session). If the session still exists in tmux it
-		// is a spurious fire — exit 0 without writing anything to the DB.
-		// The check compares exact names: a `-t` target matches by prefix,
+		// Liveness check: if a session with this name exists in tmux, the
+		// row belongs to that session (for example, `prism switch` created
+		// it again after the close) — exit 0 without writing anything to the
+		// DB. The check compares exact names: a `-t` target matches by prefix,
 		// so `repo@feat` would match a live `repo@feature-x` (#3172). If
-		// tmux cannot be queried, keep the row (fail closed).
+		// tmux cannot be queried, keep the row (fail closed). On kill-server
+		// and on SIGTERM (host shutdown), the exiting server refuses each
+		// new client while the hook runs, so the rows stay for `prism
+		// restore` (#3297).
 		//
 		// A sandboxed caller (PRISM_HOST_API set) has no tmux access, so an
 		// unknown answer says nothing there: it proxies to the host as it
