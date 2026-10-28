@@ -16,11 +16,14 @@
 -->
 
 Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap
-code-execution paths), #3334 (bwrap ref integrity — a per-session common dir
-or reftable), #3325 (a nested `.git`). Host-side git: #3322, in
-`docs/invariants/host-git-commands.md`. #3327 found that bwrap cannot reach
-this write scope with bind mounts and reframed the gap as a permanent
-isolator difference — see the "bwrap" section.
+code-execution paths), #3334 (the permanent bwrap refs vector — a per-session
+common dir or reftable), #3337 (the config-detach host-git route — pin the
+keys in `hostGitConfig`), #3327 (the achievable bwrap narrowing —
+`FETCH_HEAD` only for a read-only session), #3326 (user git env hardening),
+#3325 (a nested `.git`). Host-side git: #3322, in
+`docs/invariants/host-git-commands.md`. #3327 found that bwrap cannot bind
+`.bare` read-only to match the sandbox-exec write scope — see the "bwrap"
+section.
 Code: `internal/container/git_write_scope.go`, sections 6, 6e, 17b, 21b,
 21i, 21j, and 21k of `generateProfile` in `internal/container/sandbox_exec.go`, and
 the git step of `sandboxExecIsolator.Prepare` in
@@ -226,12 +229,13 @@ that prism does not run.
   plain `git` that prism does NOT run — a human shell, or another tool at
   the project root — follows `<BareRoot>/.git` -> `.bare` -> the planted
   `.bare/commondir` and reads the `config` and `hooks` the worker wrote. So
-  this stays a host code-execution route. The control is #3326 (user git env
-  hardening): it turns off the code-execution config keys for every user git
-  process, so a planted `config` runs no command even when a plain host
-  `git` reads it. Binding `.bare` read-only — which would stop a worker
-  writing any bare-dir file — is not an option; see "Why bwrap cannot match
-  this scope" below for why.
+  this stays a host code-execution route for a plain `git` that prism does
+  not run. #3326 (user git env hardening, OPEN) will turn off the
+  code-execution config keys for every user git process, so a planted
+  `config` runs no command even when a plain host `git` reads it; until it
+  lands the route is open. Binding `.bare` read-only — which would stop a
+  worker writing any bare-dir file — is not an option; see "Why bwrap cannot
+  match this scope" below for why.
 
 ### Why bwrap cannot match this scope (a permanent isolator difference)
 
@@ -278,27 +282,46 @@ The same two reasons mean bwrap cannot isolate the refs. `.bare/refs` and
 a worker write a loose `refs/heads/main` (or any other live worktree branch)
 that shadows or moves it, write `refs/stash`, create a branch, and write
 `.bare/gc.pid` and `.bare/HEAD`. A read-only pin on a live branch ref is
-detached by the next host-side update of that ref. A bwrap review agent or
-investigator also gets its whole own worktree git dir read-write (`HEAD`,
-the index, the branch ref), where sandbox-exec grants only `FETCH_HEAD`. So
-the table rows for the branch ref and the stash ref, and the "Other
-branches" and "`git gc`" known limits above, hold for sandbox-exec but not
-for bwrap.
+detached by the next host-side update of that ref. So the table rows for the
+branch ref and the stash ref, and the "Other branches" and "`git gc`" known
+limits above, hold for sandbox-exec but not for bwrap. This is the permanent
+refs vector; the structural fix is #3334.
 
-### The two vectors and their controls
+One narrowing is NOT blocked by the two reasons and is achievable. A bwrap
+review agent or investigator gets its whole own worktree git dir read-write
+(`HEAD`, the index, the branch ref) today, where sandbox-exec grants only
+`FETCH_HEAD` (#3293 AC). The own git dir sits under the read-only
+`.bare/worktrees` bind, so a read-only session need only skip the read-write
+re-bind of its own git dir and take a read-write bind of `FETCH_HEAD` that
+the host creates first — no `.bare`-root write is involved. That needs Go
+code, so it is the remaining #3327 work, not this doc change. #3327 stays
+open for it.
 
-1. **A planted `.bare/config` or hook is not host code execution.** The
-   in-sandbox pins of #3315 block the in-sandbox write path, but they are
-   detachable, so they are defence in depth, not the load-bearing control.
-   The load-bearing controls are host-side and do not rest on a bind: #3322
-   makes every git command prism runs set `GIT_DIR` and `GIT_COMMON_DIR` and
-   run with hooks and fsmonitor off, and `OpenBare` refuses a repo that has
-   a `.bare/commondir` file; #3326 sets env overrides that turn off the
-   code-execution config keys (`core.fsmonitor`, `core.hooksPath`,
-   `core.sshCommand`, a filter driver) for every user git process, the
-   shell prompt and gitsigns in a worktree pane included. So a planted
-   `config` or hook runs no command on the host, even if a pin detaches and
-   even for a plain host `git`.
+### The two residual vectors and their tracking
+
+1. **A planted `.bare/config` or hook — an OPEN host-code-execution residual
+   (#3337).** The in-sandbox pins of #3315 block the in-sandbox write path,
+   but under bwrap they are detachable (above), so they are not a reliable
+   control. The host-side controls are partial today:
+   - #3322 makes every git command prism runs set `GIT_DIR` and
+     `GIT_COMMON_DIR`, run with hooks and fsmonitor off, and refuse a repo
+     that has a `.bare/commondir` file. But #3322 does NOT pin
+     `core.sshCommand`, `credential.helper`, or a filter driver — those keep
+     the user's values so fetch and push work (`host-git-commands.md`).
+   - So today, if a concurrent spawn or cleanup renames `.bare/config` and
+     detaches the pin, a worker can write `core.sshCommand` (or
+     `credential.helper`, or a filter driver) into `.bare/config`, and
+     prism's own host git — for example the `prism review --rebase` fetch
+     and push — reads it through `GIT_COMMON_DIR` and runs the command. That
+     is host code execution. It is fixable host-side (pin those keys in
+     `hostGitConfig`) and is tracked by #3337.
+   - #3326 (OPEN) separately hardens every USER git process (the shell
+     prompt and gitsigns in a worktree pane) against a planted `config`, by
+     turning off the code-execution config keys with env overrides. Until
+     #3326 lands a user git in a pane is also exposed; and even after it,
+     #3326's own known limits remain (URL-scoped credential helpers, a
+     remote-named transport key, and a filter driver reached through an
+     attributes file).
 
 2. **A worker can move `.bare/refs/heads/main` or another worktree's branch
    ref — in scope, tracked by #3334.** This changes another session or the

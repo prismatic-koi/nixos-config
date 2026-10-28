@@ -214,9 +214,13 @@ Code: `internal/review/preflight.go`. Tests:
 ## What prism does not change
 
 - `core.sshCommand` and `credential.helper` keep their values. Fetch and
-  push on the host use the credentials of the user, as before. The pinned
-  config is `.bare/config`, which a session cannot write after #3293 and
-  #3315.
+  push on the host use the credentials of the user, as before. Under
+  `sandbox-exec` a session cannot write `.bare/config` (the SBPL profile
+  denies it, #3293). Under `bwrap` the `.bare/config` protection is a
+  read-only bind pin (#3315) that a host-side rename detaches, so a worker
+  can regain write to `.bare/config` and plant one of these keys — an open
+  host-code-execution residual tracked by #3337. See
+  `sandbox-git-write-scope.md`.
 - `git clone` makes a new repo, so it has no git dir to pin.
   `CloneCommand` gives it the command-line config only.
 

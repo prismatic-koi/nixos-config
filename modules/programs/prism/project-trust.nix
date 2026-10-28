@@ -61,7 +61,10 @@
           Bind mounts cannot isolate the refs, so this is a permanent bwrap
           limitation, tracked for a structural fix (a per-session common dir
           or reftable) by issue #3334. Host-side git run in a worker worktree
-          is hardened by issue #3322.
+          is hardened by issue #3322, except for core.sshCommand,
+          credential.helper, and filter drivers: the bwrap .bare/config pin
+          that guards those can be detached by a host rename, an open
+          residual tracked by issue #3337.
 
           PR-branch sessions (issue #3287): `prism pr` and `prism spawn --pr`
           start a session on the branch of an existing PR. prism cannot know
