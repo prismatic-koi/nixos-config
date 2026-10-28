@@ -1,29 +1,32 @@
 # Invariant: the pi agent dir in a sandbox
 
-<!-- doclint-ignore: settings.json, bin/git, dist/utils/shell.js, dist/core/resolve-config-value.js, mcp.json, AGENTS.md, APPEND_SYSTEM.md, SYSTEM.md, models.json, trust.json, auth.json, crashes.json, notion/auth.ts, refreshIfNeeded, migrateLegacyStore -->
+<!-- doclint-ignore: settings.json, bin/git, dist/utils/shell.js, dist/core/resolve-config-value.js, mcp.json, AGENTS.md, APPEND_SYSTEM.md, SYSTEM.md, models.json, trust.json, auth.json, crashes.json, notion/auth.ts, refreshIfNeeded, migrateLegacyStore, sync.lock, sync-state.json, agent/auth.json, session-sync.ts, refreshAnthropicToken, syncSessionAuth, syncSessionAuthSync -->
 <!--
-  These names are files in the pi agent dir ~/.pi/agent at run time, or a
-  file in the external pi coding-agent package (dist/utils/shell.js). They
-  do not exist in this source tree. notion/auth.ts, refreshIfNeeded, and
-  migrateLegacyStore are a TypeScript file and functions in
+  These names are files in the pi agent dir ~/.pi/agent or in the
+  per-session auth dir at run time, or a file in the external pi
+  coding-agent package (dist/utils/shell.js). They do not exist in this
+  source tree. notion/auth.ts, session-sync.ts, refreshIfNeeded,
+  refreshAnthropicToken, syncSessionAuth, syncSessionAuthSync, and
+  migrateLegacyStore are TypeScript files and functions in
   modules/programs/prism/pi/extensions/, outside the prism Go tree.
 -->
 
-Issues: #3284, #3289, #3290. Code: `internal/container/pi_agent_dir.go`,
-`internal/container/pi_shared_state.go`, `appendPIBwrapMounts` in
-`internal/container/pi_invocation.go`, sections 6a, 6c, and 21f of
-`generateProfile` in `internal/container/sandbox_exec.go`, and
+Issues: #3284, #3289, #3290, #3295. Code:
+`internal/container/pi_agent_dir.go`,
+`internal/container/pi_shared_state.go`,
+`internal/container/pi_auth_session.go`, `appendPIBwrapMounts` in
+`internal/container/pi_invocation.go`, sections 6a, 6c, 6d, 21f, and 21h
+of `generateProfile` in `internal/container/sandbox_exec.go`,
+`internal/sidecar/pi_auth_sync.go`, and
 `internal/container/pi_resume_cwd.go`.
 
 ## The rule
 
 A bwrap or sandbox-exec session cannot create, change, or replace a path in
 the host pi agent dir, `~/.pi/agent`. The only exceptions are the paths in
-the write list below.
-
-The rule does not fully stop a worker from running code in a later session:
-a sandbox can still write `auth.json`, and pi runs some values in it as a
-shell command. See "Open limit: a command in auth.json".
+the write list below. The host `auth.json` is not in the list: each
+sandboxed session has its own `auth.json`, and the sidecar copies only
+OAuth entries from it to the host file. See "The per-session auth.json".
 
 Host-mode sessions are not sandboxed. They read and write the host dir as
 before.
@@ -44,7 +47,7 @@ terminal. pi loads these entries with no project-trust check:
 | `skills/`, `prompts/` | Instructions that the model loads. |
 | `models.json` | Provider base URLs and keys. |
 | `trust.json` | Saved project-trust decisions. |
-| `auth.json` | pi runs the key of an `api_key` entry that starts with `!` as a shell command. This file stays writable: see "Open limit: a command in auth.json". |
+| `auth.json` | pi runs the key of an `api_key` entry that starts with `!` as a shell command. A sandbox writes its own `auth.json`: see "The per-session auth.json". |
 
 Most of these entries do not exist on a normal host. If they do not exist,
 pi does not read them. So a sandbox must not create a new name in the dir,
@@ -58,13 +61,13 @@ pi turn.
 
 | Path | Writer and reason | bwrap | sandbox-exec |
 |---|---|---|---|
-| `auth.json` | pi and the anthropic-oauth extension: OAuth token refresh, a write in place. | Read-write file bind. | Write allowed. Create and unlink denied (section 21f). |
+| `auth.json` of the session | pi and the anthropic-oauth extension: OAuth token refresh, a write in place. | A symlink to the per-session file, in a read-write dir bind. | In the per-session agent dir (section 6d). |
 | `atlassian-mcp-oauth.json` | Atlassian extension: OAuth refresh, a write in place. | Read-write file bind. | Write allowed. Create and unlink denied (section 21f). |
-| `auth.json.lock`, `settings.json.lock`, `trust.json.lock`, `models-store.json.lock` | pi: proper-lockfile lock dirs. pi takes the lock on each read of the file, also at start. If pi cannot make them, it exits at start. | Private to the sandbox. | Allowed on the lock-dir node only. |
+| `auth.json.lock`, `settings.json.lock`, `trust.json.lock`, `models-store.json.lock` | pi: proper-lockfile lock dirs. pi takes the lock on each read of the file, also at start. If pi cannot make them, it exits at start. | Private to the sandbox. | In the per-session agent dir. |
 | `sessions/<encoded-cwd>/` of the worktree | pi: the session files of the session. | Read-write dir bind. | Allowed. |
 
-prism makes the sessions dir of the worktree and the two in-place files on
-the host before the sandbox starts (`preparePIAgentDir`).
+prism makes the sessions dir of the worktree and the Atlassian file on the
+host before the sandbox starts (`preparePIAgentDir`).
 
 The shared OAuth refresh lock and the Notion store are not in the agent dir.
 See "The shared state dirs".
@@ -82,18 +85,118 @@ fail in a sandbox with no effect on a normal session:
 
 - bwrap: `PI_CODING_AGENT_DIR` is `/run/prism/pi-agent`, a private dir in the
   tmpfs root of bwrap. Each host entry is a read-only bind in it, except
-  `sessions/`, the credential files, and `*.lock`. A create in the private
-  dir works, but it stays in the sandbox and goes away with it. A host lock
-  dir is not bound, because pi cannot remove a stale lock from a read-only
-  bind. The two shared state dirs are read-write dir binds at their host
-  paths.
-- sandbox-exec: `PI_CODING_AGENT_DIR` is the host `~/.pi/agent`. Section 6a
-  allows a read of the whole dir and a write of the exact names in the write
-  list. Section 6c allows a read and a write of the two shared state dirs.
-  Section 21f denies a create and an unlink of `auth.json` and
-  `atlassian-mcp-oauth.json`. Without it, a session can put a symlink at that
-  path, and a host pi then writes its tokens to the target. Section 21g
-  denies the same for the two shared dir nodes, and a mode change of them.
+  `sessions/`, `auth.json`, the Atlassian file, and `*.lock`. A create in the
+  private dir works, but it stays in the sandbox and goes away with it. A
+  host lock dir is not bound, because pi cannot remove a stale lock from a
+  read-only bind. `auth.json` is a symlink to `/run/prism/pi-auth/auth.json`,
+  and `/run/prism/pi-auth` is a read-write bind of the per-session agent dir.
+  The host `auth.json` is not in the sandbox. The two shared state dirs are
+  read-write dir binds at their host paths.
+- sandbox-exec: `PI_CODING_AGENT_DIR` is the per-session agent dir. It holds
+  the `auth.json` of the session, the lock dirs of pi, and a symlink to each
+  other entry of `~/.pi/agent` (`LinkPIAgentDirEntries`). Section 6d allows a
+  read and a write of that dir. Section 6a allows a read of `~/.pi/agent` and
+  a write of the Atlassian file and of the sessions dir of the worktree, so
+  a write through a symlink to another host entry fails. Section 6c allows
+  a read and a write of the two shared state dirs. Section 21f denies a
+  create and an unlink of `auth.json` and of the Atlassian file in
+  `~/.pi/agent`. Without it, a session can put a symlink at that path, and a
+  host pi then writes its tokens to the target. Section 21g denies the same
+  for the two shared dir nodes, and a mode change of them. Section 21h
+  denies the same for the per-session agent dir node.
+
+## The per-session auth.json
+
+pi 1.4 runs the key of an `api_key` entry in `auth.json` that starts with
+`!` as a shell command (`resolveConfigValue`,
+`dist/core/resolve-config-value.js`). pi has no setting that turns this off.
+Every later pi reads the host `auth.json`: host-mode sessions,
+coordinators, and a pi that a person starts in a terminal. So a sandbox
+must not write that file (#3295).
+
+Each bwrap and sandbox-exec session has its own dir on the host:
+
+| Path | Content | The sandbox can write it |
+|---|---|---|
+| `<state>/prism/pi-auth/<instance id>/` | The root, mode 0700. | No. |
+| `sync.lock` | The flock of the sync and of the prepare. | No. |
+| `sync-state.json` | For each provider, the SHA-256 of the OAuth values that the sync saw. No token. | No. |
+| `agent/` | The per-session agent dir, mode 0700. | Yes. |
+| `agent/auth.json` | The `auth.json` of the session. | Yes. |
+
+`<state>` is `$XDG_STATE_HOME`, else `~/.local/state`. prism agent-run makes
+the dir again from nothing before pi starts (`PreparePIAuthSession`). It
+writes `agent/auth.json` from the host file and leaves out each entry that
+holds a string that starts with `!`, at any depth. A session with no
+instance ID gets no per-session dir, and no `auth.json` from the host.
+`prism cleanup` removes the dir (`removeSessionInstanceDirs`).
+
+The sidecar of the session copies changes between the two files
+(`SyncPIAuthSession`):
+
+- From the session file to the host file: only a `type: "oauth"` entry with
+  a non-empty string `access`, a non-empty string `refresh`, and a finite
+  number `expires`. A string that starts with `!` is refused. Only these
+  four fields are copied. Other fields of the host entry stay. The value
+  must be new: no earlier sync of the session wrote it or read it. pi writes
+  back an old snapshot of the file after a refresh, and a value from that
+  snapshot must not undo a newer host value. If the host entry changed too,
+  the host value wins. A session value never replaces a host entry that is
+  not an OAuth entry.
+- Limits on the host file: a token of more than 16 KiB is refused. A
+  session adds at most two new providers to the host file in its life (a
+  real `/login` adds one). The sync state keeps the count across the starts
+  of the session. No write makes the host file larger than 256 KiB. So a
+  session cannot make the host file so large that `CheckPIAuthFile`
+  refuses every pi start, or that the sync refuses the file of each other
+  session.
+- Limits on the sync state: the session names the providers in its file,
+  so the state records at most 64 providers that the host file does not
+  name, and only names of the provider form. A state file that prism cannot
+  read counts as an allowance that is used up. So a session cannot reset
+  its count of new providers.
+- From the host file to the session file: the whole host file, less each
+  entry with a `!` value.
+
+The sync treats the session file as hostile. It opens the file with
+`O_NOFOLLOW` and `O_NONBLOCK`. It reads only a regular file of at most
+1 MiB that holds one JSON object. Else it changes nothing on the host and
+in the session file, and the sidecar logs the reason. It writes each file
+with a temp file and a rename, so it never follows a symlink at the path.
+Before a write, it checks that the file did not change since its read.
+
+The sync takes the proper-lockfile lock `auth.json.lock` of the host file
+when the lock is free, and does not wait for it. A host-mode pi takes that
+lock first and then waits for the shared refresh lock, around its own
+refresh. The sync holds the refresh lock, or runs for a caller that holds
+it. A wait for the host lock then stops both, and the new token of the
+sandbox does not reach the host file before the host pi refreshes with the
+same refresh token. When the host lock is held, the sync reads the host file
+with no lock. A file of zero bytes is then a write of pi in progress, so the
+sync changes nothing and tries again later. The write is a rename after the
+check that the file did not change.
+
+The sync runs at two times:
+
+- When the anthropic-oauth extension asks for it: `POST /pi-auth/sync` on
+  `PRISM_HOST_API`. Both refresh paths (`refreshAnthropicToken` and
+  `refreshIfNeeded`) call it while they hold the shared refresh lock:
+  before they read `auth.json`, and after they write a new token
+  (`syncSessionAuth`, `syncSessionAuthSync` in `session-sync.ts`). So a
+  session that waits for the lock reads the token that the holder wrote,
+  and sends no refresh request. One refresh serves all sessions. The
+  endpoint does not take the lock, because its caller holds it. prism sets
+  `PRISM_PI_AUTH_SYNC` to `1` only in a sandbox that has a per-session
+  `auth.json`. Without it, the extension does not call the endpoint.
+- On a timer, every 3 s, when one of the two files changed. The timer sync
+  takes the shared refresh lock first (`TakePIRefreshLock`). If the lock is
+  held, it tries again at the next tick. The timer brings `prism account
+  use`, a refresh of another session, and a login in the session to the
+  other file with no restart.
+
+The session reads the new file with no restart. In bwrap, `auth.json` is a
+symlink into a dir bind, so it follows a rename. In sandbox-exec, the file
+is in the dir that `PI_CODING_AGENT_DIR` names.
 
 ## The shared state dirs
 
@@ -135,13 +238,16 @@ dir node, so a sandbox cannot put a symlink in place of a dir.
 ### The OAuth refresh lock (#3289)
 
 pi takes `auth.json.lock` in the agent dir around its own refresh. In bwrap
-that lock dir is private to the sandbox. So the anthropic-oauth extension
+and sandbox-exec that lock dir is private to the session. So the
+anthropic-oauth extension
 takes `anthropic-oauth-refresh.lock` in the shared lock dir around both of
 its refresh paths: the `refreshToken` handler that pi calls, and
 `refreshIfNeeded`. In the lock, it reads `auth.json` again. If another
 session already wrote a valid token, it uses that token and sends no
 request. Else it refreshes and writes the new token before it releases the
-lock.
+lock. In a sandboxed session, `auth.json` is the file of the session, so in
+the lock the extension also asks the sidecar for a sync before the read and
+after the write. See "The per-session auth.json".
 
 - Stale time: a lock dir that nobody touched for 30 s belongs to a dead
   holder. A waiter removes it and refreshes. A live holder touches its lock
@@ -215,16 +321,12 @@ When the check fails:
 The check runs just before pi starts. A session in the same worktree that
 runs at that time can still change a file after the check (limit 4).
 
-## Open limit: a command in auth.json
+## The pre-start check of auth.json
 
-pi 1.4 sends the key of each `type: "api_key"` entry in `auth.json` through
-`resolveConfigValue` (`dist/core/resolve-config-value.js`). A value that
-starts with `!` runs as a shell command. pi has no setting that turns this
-off. A sandbox must write `auth.json` for the OAuth refresh, so it can plant
-such a value. The next pi that reads the file runs the command.
-
-Before each pi start that prism makes, prism reads the host `auth.json` and
-refuses the start if a value in it starts with `!` (`CheckPIAuthFile`). The
+Before each pi start that prism makes, prism also reads the host
+`auth.json` and refuses the start if a value in it starts with `!`
+(`CheckPIAuthFile`, #3284). Before #3295 a sandbox had write access to
+that file, so the check stops a value that such a sandbox put there. The
 error names the file and the provider, and holds no value from the file. A
 file that Go cannot decode as one JSON object is also refused. The check
 runs here:
@@ -234,20 +336,12 @@ runs here:
   starts in the sandbox;
 - `prism quick pr`, before its pi call.
 
-The check covers only the pi starts that prism makes. It does not cover a pi
-that a person starts in a terminal, or a pi that already runs and reads
-`auth.json` again. Follow-up: #3295 (high priority), a per-session
-`auth.json` for each sandbox and a host-side sync of oauth entries only.
-
 ## Known limits
 
 Issues and other docs name these limits by number, so a number does not
-change when a limit goes away. Limits 1 and 3 are resolved: #3289 and
-#3290.
+change when a limit goes away. Limits 1, 2, and 3 are resolved: #3289,
+#3295, and #3290.
 
-- **Limit 2.** bwrap: a file bind keeps the inode that the file had when the
-  sandbox started. `prism account use` replaces `auth.json` with a rename, so
-  a running bwrap session does not see the new account until it restarts.
 - **Limit 4.** Session files: the smallest unit that both isolators can grant
   is `sessions/<encoded-cwd>/` of the worktree. Review agents run in the
   worktree of their worker, so a worker and its review agents can write the
@@ -266,13 +360,31 @@ Other limits:
 - bwrap: a read-only bind keeps the file that a host entry named when the
   sandbox started. A change from `nh switch` is visible after a respawn. A
   host entry that appears later is not visible in a running sandbox.
-- Both isolators: a session can write the credential files. It can put the
-  tokens of another account in them, and later sessions then use that
-  account. A session can already read these tokens. For a command value in
-  `auth.json`, see "Open limit: a command in auth.json".
-- sandbox-exec: a session can make a lock-dir name, or keep a lock dir, so
-  that the lock of a later session fails. This is a denial of service, not
-  code execution.
+- sandbox-exec: the per-session agent dir has a symlink for each host entry
+  at the start. A host entry that appears later is not visible until the
+  next start. A change in a linked file or dir is visible.
+- Both isolators: a session can write OAuth entries in its own `auth.json`,
+  and the sync copies a new valid OAuth entry to the host file. So a session
+  can put the tokens of another account in the host file, and later
+  sessions then use that account. A session can already read these tokens.
+  It cannot put an `api_key` entry, a `!` value, or another field in the
+  host file. It can add at most two providers, and nothing removes them
+  from the host file later.
+- Both isolators: when a host pi holds the lock of the host file, the sync
+  writes the host file with no lock. The host pi then writes back the file
+  that it read before the sync, with its own change. For an Anthropic
+  refresh this is safe: the host pi reads the file again under the refresh
+  lock and keeps the new token. For a change of another provider, for
+  example a GitHub Copilot refresh, the write of the host pi undoes the
+  values that the sync wrote in that time. A sandbox that wrote the host
+  file under the refresh lock before #3295 had the same race.
+- Both isolators: the shared refresh lock covers the Anthropic OAuth
+  refresh of the extension only. pi refreshes the OAuth entry of another
+  provider under its own `auth.json.lock`, which is private to the sandbox.
+  Two sessions can refresh such a provider at the same time. The timer sync
+  copies the result.
+- Both isolators: a session can write the Atlassian file. It can put the
+  tokens of another account in it, and later sessions then use that account.
 - Both isolators: a session can read and replace the Notion store files. It
   can put the tokens or the client registration of another workspace in
   them. Every pi session gets the store, not only the sessions in

@@ -370,8 +370,8 @@ func TestEncodePiCWD_MatchesArchiveImpl(t *testing.T) {
 // when PI_CODING_AGENT_DIR is set on the host, the
 // resolver returns <dir>/sessions (NOT <home>/.pi/agent/sessions) for every
 // mode — including sandbox-exec, which follows the same host
-// resolution (the dispatcher injects PI_CODING_AGENT_DIR into the sandbox
-// env, so pi writes to the host root).
+// resolution (pi writes to the host root through the sessions symlink of
+// its per-session agent dir).
 func TestPIResumeSessionsRoot_PICodingAgentDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -453,7 +453,8 @@ func TestPIInvocation_Resume_SandboxExec_AppendsSessionFromHostRoot(t *testing.T
 	const instanceID = "aaaa2210-bbbb-cccc-dddd-eeeeffff0000"
 
 	// Plant the JSONL under the HOST root — where pi actually writes for
-	// sandbox-exec sessions (the dispatcher injects PI_CODING_AGENT_DIR).
+	// sandbox-exec sessions (through the sessions symlink of the per-session
+	// agent dir).
 	dir := filepath.Join(piDataRoot, "sessions", encodePiCWD(worktree))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir host-root sessions dir: %v", err)

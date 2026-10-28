@@ -487,7 +487,8 @@ func generateDescription(qp config.QuickProfile, diff string) (title, body strin
 	args = append(args, userMsg)
 
 	// pi runs an api_key value in auth.json that starts with "!" as a shell
-	// command, and a sandboxed session can write auth.json (#3284).
+	// command. A sandbox of a prism without #3295 can have put one in the
+	// host file (#3284).
 	if err := container.CheckPIAuthFile(container.PIHostAuthPath()); err != nil {
 		return "", "", fmt.Errorf("quick pr: %w", err)
 	}

@@ -281,11 +281,18 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 			return fmt.Errorf("agent-run: %w", piErr)
 		}
 		// sandbox-exec shares the host filesystem, so the in-sandbox paths for
-		// the PI agent config directory and extension directory are the same as
-		// the host paths. Override the bwrap-oriented sandbox-path defaults so
-		// that PIInvocation and PI_CODING_AGENT_DIR reference host-accessible
-		// paths directly.
+		// the PI agent config directory and extension directory are host
+		// paths. Override the bwrap-oriented sandbox-path defaults so that
+		// PIInvocation and PI_CODING_AGENT_DIR reference host-accessible paths
+		// directly. The agent dir is the per-session dir: it holds the
+		// auth.json of the session and a symlink to each other entry of the
+		// host ~/.pi/agent, so pi never writes the host auth.json (#3295).
+		// With no per-session dir, pi uses the host dir, and section 6a gives
+		// it no write of auth.json.
 		ctrCfg.PIAgentConfigSandboxDir = ctrCfg.PIAgentConfigHostDir
+		if ctrCfg.PIAuthSessionDir != "" {
+			ctrCfg.PIAgentConfigSandboxDir = ctrCfg.PIAuthSessionDir
+		}
 		ctrCfg.PIExtensionSandboxDir = ctrCfg.PIExtensionHostDir
 	}
 
@@ -387,18 +394,23 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	}
 
 	// For PI sessions, set PI_CODING_AGENT_DIR so PI discovers settings.json /
-	// themes / AGENTS.md / skills from the shared host ~/.pi/agent directory.
-	// The role system-prompt is injected at runtime by the prism PI extension,
-	// not via this directory. On Darwin (sandbox-exec) the
-	// in-sandbox path is collapsed to the host path above (sandbox-exec shares
-	// the host filesystem), so PI_CODING_AGENT_DIR ends up pointing at
-	// ~/.pi/agent directly. Section 6a of the SBPL profile allows a read of
-	// that dir and a write of an exact list of paths in it: the credential
-	// files, the pi lock dirs, and the sessions dir of the worktree
-	// (internal/container/pi_agent_dir.go, #3284). Section 6c grants the
-	// shared lock dir and the Notion store dir (pi_shared_state.go).
+	// themes / AGENTS.md / skills. The role system-prompt is injected at
+	// runtime by the prism PI extension, not via this directory. On Darwin
+	// (sandbox-exec) the path is the per-session agent dir set above: the
+	// auth.json of the session, and a symlink to each other entry of
+	// ~/.pi/agent (internal/container/pi_auth_session.go, #3295). Section 6d
+	// of the SBPL profile grants that dir. Section 6a allows a read of
+	// ~/.pi/agent and a write of atlassian-mcp-oauth.json and of the sessions
+	// dir of the worktree (internal/container/pi_agent_dir.go, #3284).
+	// Section 6c grants the shared lock dir and the Notion store dir
+	// (pi_shared_state.go). PRISM_PI_AUTH_SYNC makes the anthropic-oauth
+	// extension ask the sidecar for a sync of the session auth.json around
+	// each token refresh.
 	if ctrCfg.Harness == "pi" && ctrCfg.PIAgentConfigSandboxDir != "" {
 		env = append(env, "PI_CODING_AGENT_DIR="+ctrCfg.PIAgentConfigSandboxDir)
+	}
+	if ctrCfg.Harness == "pi" && ctrCfg.PIAuthSessionDir != "" {
+		env = append(env, container.PIAuthSyncEnvVar+"=1")
 	}
 
 	// GIT_CONFIG_GLOBAL + GIT_SSH_COMMAND: point git and ssh at the generated

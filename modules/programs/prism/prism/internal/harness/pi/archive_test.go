@@ -404,8 +404,8 @@ func TestArchiveAdapter_Archive_MissingSrcPath_NoError(t *testing.T) {
 // is "sandbox-exec", SourcePath resolves the sessions root to the same
 // PI_CODING_AGENT_DIR-honouring host root as host/bwrap mode: pi inside a
 // sandbox-exec session writes its transcripts
-// to the host root (the dispatcher injects PI_CODING_AGENT_DIR=<host
-// ~/.pi/agent> into the sandbox env), NOT the per-session staging HOME the
+// to the host root (through the sessions symlink of the per-session agent
+// dir that PI_CODING_AGENT_DIR names), NOT the per-session staging HOME the
 // pre-fix branch resolved.
 //
 // The encoded-cwd is derived from the host worktree path because sandbox-exec

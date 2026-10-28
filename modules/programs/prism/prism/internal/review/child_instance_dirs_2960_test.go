@@ -4,7 +4,7 @@ package review_test
 // session's own instance-ID-keyed directory trees (work dir and
 // podman-proxy audit dir) must be removed when the parent's cleanup
 // cascades to it, not left behind. Issue #3150 adds the per-session TMPDIR
-// to the same removal.
+// to the same removal, and #3295 the per-session pi auth dir.
 
 import (
 	"os"
@@ -91,12 +91,18 @@ func TestCleanupAgentSession_RemovesChildInstanceDirs(t *testing.T) {
 
 	workDir, auditDir := mkInstanceDirs(t, instanceID)
 	tmpDir := mkSessionTmpDir(t, instanceID)
+	authDir, err := container.PreparePIAuthSession(instanceID, filepath.Join(t.TempDir(), "auth.json"))
+	if err != nil {
+		t.Fatalf("PreparePIAuthSession: %v", err)
+	}
+	authRoot := filepath.Dir(authDir)
 
 	review.CleanupAgentSessionForTest(d, session, db.ReapCauseParentCleanup)
 
 	mustNotExist(t, workDir, "work dir")
 	mustNotExist(t, auditDir, "audit dir")
 	mustNotExist(t, tmpDir, "per-session TMPDIR")
+	mustNotExist(t, authRoot, "per-session pi auth dir")
 }
 
 // TestCleanupAgentSession_NoInstanceID_NoError verifies the edge case where

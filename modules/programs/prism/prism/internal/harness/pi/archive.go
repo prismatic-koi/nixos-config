@@ -41,10 +41,11 @@ package pi
 // an entry whose name ends in `_<HarnessSessionID>.jsonl`.
 //
 // Sandbox-exec sessions (IsolationMode == "sandbox-exec") resolve to the same
-// host root: the dispatcher injects PI_CODING_AGENT_DIR=<host ~/.pi/agent>
-// into the sandbox env and sandbox-exec shares the host filesystem
-// (cmd/agent_run_sandbox_exec_darwin.go), so pi writes its transcripts to the
-// host root. The in-sandbox $HOME is the real host home and there is no
+// host root: the dispatcher sets PI_CODING_AGENT_DIR to the per-session
+// agent dir, whose sessions entry is a symlink to the host sessions root
+// (container.LinkPIAgentDirEntries, #3295), and sandbox-exec shares the host
+// filesystem (cmd/agent_run_sandbox_exec_darwin.go), so pi writes its
+// transcripts to the host root. The in-sandbox $HOME is the real host home and there is no
 // per-session staging HOME at all; the worktree path that pi sees as its
 // CWD is the same as the host worktree path (nothing is remapped), so the
 // encoded-cwd is derived from p.Worktree the same way in every mode.
@@ -93,8 +94,9 @@ func NewArchiveAdapter() harnessarchive.ArchiveAdapter {
 // os.IsNotExist handling treats it as a no-op.
 //
 // For sandbox-exec sessions (IsolationMode == "sandbox-exec"), PI writes under
-// the same host root as host mode: the dispatcher injects PI_CODING_AGENT_DIR
-// into the sandbox env and sandbox-exec shares the host filesystem. The
+// the same host root as host mode: the sessions entry of the per-session
+// agent dir in PI_CODING_AGENT_DIR is a symlink to the host sessions root,
+// and sandbox-exec shares the host filesystem. The
 // worktree path pi uses as its CWD is the same host path in all
 // modes (sandbox-exec mounts the worktree at its native path), so the
 // encoded-cwd is derived from p.Worktree in all cases.
@@ -161,9 +163,10 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 // branch is fallback-only — but it still matches pi's behaviour on hosts
 // where the env var is not set.
 //
-// Sandbox-exec follows the host root because the dispatcher injects
-// PI_CODING_AGENT_DIR=<host ~/.pi/agent> into the sandbox env and
-// sandbox-exec shares the host filesystem (cmd/agent_run_sandbox_exec_darwin.go).
+// Sandbox-exec follows the host root because the sessions entry of the
+// per-session agent dir in PI_CODING_AGENT_DIR is a symlink to the host
+// sessions root (#3295), and sandbox-exec shares the host filesystem
+// (cmd/agent_run_sandbox_exec_darwin.go).
 //
 // The bwrap launch binds the sessions dir of the worktree in the host root
 // into the sandbox (see container.appendPIAgentDirBwrapMounts), so the

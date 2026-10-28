@@ -846,6 +846,8 @@ func profileSlotRole(agentRole string) string {
 //     the prism PI extension, not staged here. Calls
 //     EnsurePISharedStateDirs to make the shared lock dir and Notion store
 //     dir, move the Notion store into its dir once, and record both paths.
+//     Calls PreparePIAuthSession to write the per-session auth.json from
+//     the host file, and records its dir (#3295).
 //  5. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
 //  6. Copies PIProvider, PIModel, PIThinking from the profile slot, then
 //     applies any CLI overrides from `prism agent-run --model` / `--variant`.
@@ -904,13 +906,12 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	// private dir at the sandbox path with read-only binds of the host
 	// entries and read-write binds of the paths that pi must write
 	// (internal/container/pi_agent_dir.go, #3284). On sandbox-exec, the
-	// in-sandbox path is overridden in the dispatcher to equal the host
-	// path because sandbox-exec shares the host filesystem.
+	// dispatcher overrides the in-sandbox path with the per-session agent
+	// dir, a host path, because sandbox-exec shares the host filesystem.
 	//
 	// EnsurePIAgentConfigDir creates the host dir if absent so a fresh install
-	// does not fail the spawn. sessionName is intentionally unused here — the
-	// agent dir is the same host dir for every session.
-	_ = sessionName
+	// does not fail the spawn. The agent dir is the same host dir for every
+	// session.
 	hostDir, sandboxDir, err := container.EnsurePIAgentConfigDir()
 	if err != nil {
 		return fmt.Errorf("pi: resolve agent config dir: %w", err)
@@ -924,10 +925,26 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	// the host and moves the Notion store out of the agent dir once.
 	ctrCfg.PILockHostDir, ctrCfg.PINotionHostDir = container.EnsurePISharedStateDirs(hostDir)
 
-	// A sandboxed session can write auth.json, and pi runs an api_key value
-	// that starts with "!" as a shell command. Refuse the start (#3284).
+	// pi runs an api_key value in auth.json that starts with "!" as a shell
+	// command. Refuse the start when the host file holds such a value: a
+	// sandbox of a prism without #3295 can have put it there (#3284).
 	if err := container.CheckPIAuthFile(filepath.Join(hostDir, "auth.json")); err != nil {
 		return fmt.Errorf("pi: %w", err)
+	}
+
+	// The session reads and writes its own auth.json, not the host file that
+	// later sessions read. prism writes it from the host file, less each
+	// "!" value, and the sidecar syncs its OAuth entries (#3295). With no
+	// instance id there is no per-session dir: the sandbox then has no
+	// auth.json from the host, and pi starts with no login.
+	if ctrCfg.InstanceID != "" {
+		authDir, authErr := container.PreparePIAuthSession(ctrCfg.InstanceID, filepath.Join(hostDir, "auth.json"))
+		if authErr != nil {
+			return fmt.Errorf("pi: %w", authErr)
+		}
+		ctrCfg.PIAuthSessionDir = authDir
+	} else {
+		fmt.Fprintf(os.Stderr, "[agent-run] warning: session %q has no instance id, so pi gets no auth.json from the host\n", sessionName)
 	}
 
 	// Extension host directory from Nix-written config.

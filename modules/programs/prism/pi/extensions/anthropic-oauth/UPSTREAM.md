@@ -57,6 +57,7 @@ it is more actively maintained and is the source of the PR #193 fix.
 | `logger.ts` | griffinmartin | `src/logger.ts` | *(no equivalent)* |
 | `ratelimit.ts` | *(none — local addition, see divergence 14)* | *(no equivalent)* | *(no equivalent)* |
 | `refresh-lock.ts` | *(none — local addition, see divergence 21)* | `src/refresh-lock.ts` (reference only, not ported) | *(no equivalent)* |
+| `session-sync.ts` | *(none — local addition, see divergence 22)* | *(no equivalent)* | *(no equivalent)* |
 | `anthropic-prompt.txt` | griffinmartin | `src/anthropic-prompt.txt` | *(no equivalent)* |
 
 **`oauth-headers.ts` is the exception to "skip `src/index.ts`"** (divergence
@@ -67,19 +68,28 @@ Check them on every port — they carry the WAF fingerprint.
 
 ### Mirrors outside this directory
 
-Two Go files outside this extension mirror it and must change in the same
-commit. Go cannot import TypeScript, so both are hand-maintained:
+Three Go files outside this extension mirror it and must change in the same
+commit. Go cannot import TypeScript, so all three are hand-maintained:
 
 | Mirror | Mirrors | Checked by |
 |---|---|---|
 | `modules/programs/prism/prism/internal/usage/refresh.go` | `model-config.ts` (`ccVersion`, `baseBetas`, `modelOverrides`), `betas.ts::getModelBetas`, `oauth-headers.ts` (user-agent, stainless headers, session id), `stream.ts::CLAUDE_CODE_IDENTITY`, `ratelimit.ts` | `internal/usage/refresh_mirror_test.go` |
 | `modules/programs/prism/prism/internal/account/login.go` | `auth.ts` — `CLIENT_ID`, `AUTHORIZE_URL`, `TOKEN_URL`, `REDIRECT_URI`, `SCOPES`, `USER_AGENT`, `CALLBACK_PORT`, `CALLBACK_HOST`, and the retry constants | *(no mechanical check — read both)* |
+| `modules/programs/prism/prism/internal/container/pi_auth_session.go` | `refresh-lock.ts` (`REFRESH_LOCK_NAME`, `LOCK_TIMINGS.staleMs`, the owner file) and `session-sync.ts` (`SESSION_SYNC_PATH`, `SESSION_SYNC_ENV`) | `internal/container/pi_auth_mirror_test.go` |
 
 `refresh.go` builds the same signed request for `prism account usage` that the
 extension builds for a pi session. If the two disagree, the account probe
 presents a different fingerprint to the same WAF. The mirror test reads
 `model-config.ts` directly and fails on drift, but it covers the three
 model-config symbols only — the header symbols are still checked by hand.
+
+`pi_auth_session.go` runs the sync of the per-session `auth.json` (#3295,
+divergence #22). The sidecar takes the refresh lock of `refresh-lock.ts`
+around its timer sync, and serves the route that `session-sync.ts` calls
+when `SESSION_SYNC_ENV` is set. If one side changes alone, the extension does
+not sync, or the timer sync runs during a refresh, and two sessions send the
+same refresh token again. The mirror test reads both `.ts` files and fails
+on drift.
 
 `login.go` runs the OAuth flow for `prism account login`. Its `oauthUserAgent`
 (`claude-code/2.1.97`) mirrors `auth.ts::USER_AGENT`. Neither is sent on any
@@ -635,6 +645,51 @@ request — both are declared only, because the token endpoint rejects a
     for each pair of paths. Revert-and-fail verified: with the lock turned off
     in both acquire functions, the three one-request tests fail with two
     requests.
+
+22. **A sync of the per-session auth.json in the refresh lock (issue
+    #3295)** — a LOCAL ADDITION in `session-sync.ts`, with calls in
+    `auth.ts` and `credentials.ts`. Do NOT remove the calls during a port.
+
+    **Why it exists.** pi runs the key of an `api_key` entry in `auth.json`
+    that starts with `!` as a shell command. So a bwrap or sandbox-exec
+    session must not write the host `~/.pi/agent/auth.json`, which every
+    later pi reads. Each sandboxed session has its own `auth.json`, and the
+    prism sidecar of the session copies OAuth entries between that file and
+    the host file (`prism/internal/container/pi_auth_session.go`,
+    `prism/internal/sidecar/pi_auth_sync.go`). The lock of divergence 21 is
+    then not enough: a session reads only its own file, so it does not see
+    the token that the holder before it wrote.
+
+    **Where it hooks.** In both refresh paths, while the path holds the
+    shared lock, it asks the sidecar for a sync (`POST /pi-auth/sync` on
+    `PRISM_HOST_API`):
+
+    - before it reads `auth.json`, so that it sees a token that another
+      session wrote. The path then adopts that token and sends no request.
+    - after it writes a new token, so that the host file and the next holder
+      of the lock get it.
+
+    The paths also ask for a sync before the read when the lock wait ends
+    with the lock still held. `refreshAnthropicToken` uses
+    `syncSessionAuth`. `refreshIfNeeded` uses `syncSessionAuthSync`, which
+    sends the request from a child process, as `refreshViaOAuth` does.
+
+    The call does nothing unless `PRISM_PI_AUTH_SYNC` is `1` and
+    `PRISM_HOST_API` is set: prism sets both only in a sandbox that has a
+    per-session `auth.json`. A host-mode pi and a pi in a terminal read and
+    write the host file, as before. A failed sync is logged and the refresh
+    continues, as before #3295. Each sync waits at most 5 s
+    (`SESSION_SYNC_TIMEOUT_MS`), so a sync holder stays below the 30 s
+    stale time of the lock. The request has no body and the answer holds no
+    credential.
+
+    Tests: `session-sync.test.ts`. Its cross-process tests start two real
+    processes, each with its own `auth.json`, that share the lock dir and
+    need a refresh at the same time. A fake sidecar per session copies the
+    entry between the session file and a shared host file. Revert-and-fail
+    verified: with the two calls before the read removed, the three
+    one-request tests fail with two requests. With no sync, the paired test
+    shows two requests with the same old refresh token.
 
 ## Port procedure for future upstream fixes
 
