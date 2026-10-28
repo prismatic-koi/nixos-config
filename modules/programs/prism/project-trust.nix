@@ -47,9 +47,12 @@
 
           Known limit: in a trusted repo, a worker can write .pi resources in
           its own worktree, and the sessions that start there (the worker and
-          its review agents) load them. Under sandbox-exec, a worker can also
-          write the whole project directory of its repo, so it can reach the
-          other worktrees of that repo and .agents/skills at the project root.
+          its review agents) load them. A worker cannot write the other
+          worktrees of its repo or .agents/skills at the project directory
+          (issue #3293). It can write the shared git object store, so a later
+          checkout in another worktree can write a file that it changed
+          (issue #3317). Under bwrap, a worker can also write .bare/config
+          and .bare/hooks (issue #3315).
 
           PR-branch sessions (issue #3287): `prism pr` and `prism spawn --pr`
           start a session on the branch of an existing PR. prism cannot know

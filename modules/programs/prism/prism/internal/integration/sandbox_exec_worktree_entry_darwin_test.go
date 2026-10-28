@@ -5,16 +5,18 @@ package integration_test
 // sandbox_exec_worktree_entry_darwin_test.go — the worktree path guard of
 // the sandbox-exec profile (section 21b of generateProfile).
 //
-// The profile grants (subpath BareRoot) read-write, and the worktree is a
-// child of BareRoot. Without the guard, a sandboxed process can rename the
-// worktree, or BareRoot itself, away and put a symlink at its path. `prism
-// container run --mount` then gives the worktree path to podman on the
-// host, and podman mounts the symlink target.
+// The profile grants (subpath worktree) read-write, and a subpath covers
+// the worktree node. Without the guard, a sandboxed process can rename the
+// worktree away and put a symlink at its path. `prism container run
+// --mount` then gives the worktree path to podman on the host, and podman
+// mounts the symlink target. The guard also lists BareRoot and each other
+// ancestor, so that a later write grant on one of them does not re-open the
+// swap. BareRoot itself has a read grant only (section 6e, #3293).
 //
 // The positive test runs both swaps under the production profile and
 // expects them to fail, while a write inside the worktree still works. The
-// negative tests remove the guard and expect each swap to succeed, which
-// proves that the guard is what stops it.
+// negative tests remove the guard, and for BareRoot also add a write grant
+// of it, and expect each swap to succeed.
 
 import (
 	"os"
@@ -162,15 +164,21 @@ func TestSandboxExecWorktreeEntry_ReplaceableWithoutDeny(t *testing.T) {
 }
 
 // TestSandboxExecWorktreeEntry_BareRootReplaceableWithoutDeny is the paired
-// negative test for the ancestor case: with the deny removed, the sandbox
-// moves BareRoot away and puts a symlink at its path.
+// negative test for the ancestor case: with a write grant of BareRoot and
+// the deny removed, the sandbox moves BareRoot away and puts a symlink at
+// its path.
 func TestSandboxExecWorktreeEntry_BareRootReplaceableWithoutDeny(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
 	m, worktree := newWorktreeEntryManager(t)
-	profilePath := withMutatedProfile(t, m, withoutWorktreeDeny)
+	bareRoot := filepath.Dir(worktree)
+	readClause := "(allow file-read* file-test-existence file-read-metadata\n  (subpath " + sbplQuoteForTest(bareRoot) + "))"
+	writeGrant := "(allow file-read* file-write* file-test-existence file-read-metadata\n  (subpath " + sbplQuoteForTest(bareRoot) + "))"
+	profilePath := withMutatedProfile(t, m, func(p string) string {
+		return withoutWorktreeDeny(strings.Replace(p, readClause, writeGrant, 1))
+	})
 
 	out, err := runWorktreeScript(t, profilePath, worktree, sessionTmpDirOf(t, m), `mv "$BARE" "$DEST/saved" && ln -s / "$BARE"`)
 	if err != nil {

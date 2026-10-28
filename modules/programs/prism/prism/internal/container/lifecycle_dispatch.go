@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -247,6 +248,19 @@ func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string
 	// happen host-side, here. Best-effort: ensureGoCacheDirs logs and
 	// continues, so a host with an unwritable $HOME still starts a session.
 	ensureGoCacheDirs()
+
+	// ── git write scope ──────────────────────────────
+	// Section 6e of the profile grants a write of refs and reflogs, but not
+	// a create of their parent dirs in .bare. So make them on the host here.
+	// A failed check of the scope is logged: the session starts, and git
+	// cannot write the path that the check refused.
+	if m.cfg.BareRoot != "" {
+		scope, err := m.gitScope()
+		if err != nil {
+			log.Printf("container: sandbox-exec: %v", err)
+		}
+		prepareGitWriteDirs(scope, m.cfg.WorktreeReadOnly)
+	}
 
 	// ── pi agent dir ───────────────────────────────
 	// Section 6a of the profile grants a write of the sessions dir of the
