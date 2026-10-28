@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
@@ -406,9 +407,16 @@ func repoConfigHasUpstream(commonDir, branch string) (bool, error) {
 	return false, err
 }
 
-// runGitConfig runs git config with args on the repo in commonDir.
+// runGitConfig runs git config with args on the repo in commonDir. commonDir
+// is <BareRoot>/.bare. The command runs through git.OpenBare, so GIT_DIR and
+// GIT_COMMON_DIR are pinned and git reads no .bare/commondir. See
+// docs/invariants/host-git-commands.md.
 func runGitConfig(commonDir string, args ...string) error {
+	bare, err := git.OpenBare(filepath.Dir(commonDir))
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), gitBareRootTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, "git", append([]string{"--git-dir", commonDir, "config"}, args...)...).Run()
+	return bare.Command(ctx, append([]string{"config"}, args...)...).Run()
 }

@@ -61,6 +61,18 @@ func writeCountScript(t *testing.T, dir, name, remoteURL string) string {
 	return counterPath
 }
 
+// newStubBareRoot returns a project root with an empty .bare dir. The stub
+// git never reads it, but git.OpenBare requires a real .bare dir before it
+// runs git.
+func newStubBareRoot(t *testing.T) string {
+	t.Helper()
+	bareRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(bareRoot, ".bare"), 0o755); err != nil {
+		t.Fatalf("mkdir .bare: %v", err)
+	}
+	return bareRoot
+}
+
 // prependToPATH returns a PATH value with dir prepended.
 func prependToPATH(dir string) string {
 	return dir + string(os.PathListSeparator) + os.Getenv("PATH")
@@ -92,7 +104,7 @@ func TestGithubAccountFromBareRoot_Timeout(t *testing.T) {
 	// Clear the cache so no prior test result leaks in.
 	container.ClearGithubAccountCacheForTest()
 
-	bareRoot := t.TempDir()
+	bareRoot := newStubBareRoot(t)
 	start := time.Now()
 	result := container.GithubAccountFromBareRootUncachedForTest(bareRoot)
 	elapsed := time.Since(start)
@@ -102,7 +114,8 @@ func TestGithubAccountFromBareRoot_Timeout(t *testing.T) {
 	}
 
 	// The function must return within a generous bound. gitBareRootTimeout is 5 s;
-	// each call makes up to two git attempts, so the theoretical ceiling is 10 s.
+	// the git.OpenBare config check has its own 5 s bound, so the theoretical
+	// ceiling is 10 s.
 	// We allow 25 s (2.5×) for slow CI — the important assertion is that we
 	// did NOT wait the full 60 s of the stub.
 	if elapsed > 25*time.Second {
@@ -127,7 +140,7 @@ func TestGithubAccountFromBareRoot_CacheHit(t *testing.T) {
 	// Clear the cache so this test is independent of earlier runs.
 	container.ClearGithubAccountCacheForTest()
 
-	bareRoot := t.TempDir()
+	bareRoot := newStubBareRoot(t)
 
 	// First call — must hit git.
 	result1 := container.GithubAccountFromBareRootForTest(bareRoot)
@@ -139,10 +152,9 @@ func TestGithubAccountFromBareRoot_CacheHit(t *testing.T) {
 	}
 
 	// Read the counter. The script increments by 1 on each git invocation.
-	// Because "git --git-dir <bareRoot>/.bare" fails (the dir exists but has
-	// no .bare subdir), the uncached path also tries "git --git-dir <bareRoot>"
-	// — so one cache miss may invoke git twice. The cache hit must not invoke it
-	// again, so the total count must be ≤ 2.
+	// One cache miss invokes git twice: the extensions.worktreeConfig check
+	// of git.OpenBare and "remote get-url origin". The cache hit must not
+	// invoke it again, so the total count must be ≤ 2.
 	countBytes, err := os.ReadFile(counterPath)
 	if err != nil {
 		t.Fatalf("could not read counter file %s: %v", counterPath, err)
@@ -170,7 +182,7 @@ func TestGithubAccountFromBareRoot_ConcurrentCacheSafety(t *testing.T) {
 
 	container.ClearGithubAccountCacheForTest()
 
-	bareRoot := t.TempDir()
+	bareRoot := newStubBareRoot(t)
 
 	const goroutines = 20
 	results := make([]string, goroutines)

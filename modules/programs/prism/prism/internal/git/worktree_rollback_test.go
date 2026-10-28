@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -39,6 +40,15 @@ func setupBareLayoutRepo(t *testing.T, remoteBranches ...string) string {
 		t.Fatalf("CloneWorktree: %v", err)
 	}
 	return targetDir
+}
+
+// runGit runs git args and returns stdout without surrounding space.
+func runGit(args ...string) (string, error) {
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // branchExists reports whether refs/heads/<branch> exists in the bare-layout

@@ -36,6 +36,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -44,6 +45,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/checkstate"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/forge"
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
 )
@@ -186,10 +188,19 @@ func resolveRepo(database *db.DB, sessionName string) string {
 		return ""
 	}
 
+	// gh finds the repo with git in the worktree. git.EnvForDir pins the git
+	// dir, so a .git file or commondir file in the worktree has no effect.
+	env, envErr := git.EnvForDir(worktree, os.Environ())
+	if envErr != nil {
+		log.Printf("[mergequeue] cannot resolve repo for session %q from worktree %q: %v — watcher will not start",
+			sessionName, worktree, envErr)
+		return ""
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
 	cmd.Dir = worktree
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("[mergequeue] cannot resolve repo for session %q from worktree %q: gh repo view: %v: %s — watcher will not start",

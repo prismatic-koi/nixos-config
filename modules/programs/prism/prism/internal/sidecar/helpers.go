@@ -3,6 +3,7 @@ package sidecar
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"regexp"
@@ -250,6 +251,18 @@ func extractMessageIDFromPayload(raw string) string {
 // repoFromSession returns the repo prefix for a session. See
 // authz.RepoFromSession for the DB-first resolution and the name-parse
 // fallback.
+// validateSpawnRepoName returns an error unless repo is a plain project
+// name: no path separator, not "." or "..", and no leading "-" or "~".
+func validateSpawnRepoName(repo string) error {
+	switch {
+	case strings.HasPrefix(repo, "-"):
+		return fmt.Errorf("invalid repo %q: must not start with '-'", repo)
+	case strings.ContainsAny(repo, `/\`), repo == ".", repo == "..", strings.HasPrefix(repo, "~"):
+		return fmt.Errorf("invalid repo %q: must be a project name, not a path", repo)
+	}
+	return nil
+}
+
 func repoFromSession(sessionName string, d *db.DB) (string, error) {
 	return authz.RepoFromSession(sessionName, d)
 }

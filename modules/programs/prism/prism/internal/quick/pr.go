@@ -20,6 +20,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/git"
 )
 
 // piExecTimeout bounds how long the `pi` subprocess invoked by
@@ -145,15 +146,26 @@ func realPiExec(args []string, stdin string) piResult {
 	}
 }
 
+// The git and gh commands of quick pr run in the cwd. git.OpenDir pins the
+// git dir when the cwd is in a prism project.
+
 func realGitRun(args ...string) error {
-	cmd := exec.Command("git", args...)
+	repo, err := git.OpenDir("")
+	if err != nil {
+		return err
+	}
+	cmd := repo.Command(context.Background(), args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
 func realGitOutput(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	repo, err := git.OpenDir("")
+	if err != nil {
+		return "", err
+	}
+	cmd := repo.Command(context.Background(), args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -162,14 +174,24 @@ func realGitOutput(args ...string) (string, error) {
 }
 
 func realGhRun(args ...string) error {
+	env, err := git.EnvForDir("", os.Environ())
+	if err != nil {
+		return err
+	}
 	cmd := exec.Command("gh", args...)
+	cmd.Env = env
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
 func realGhOutput(args ...string) (string, error) {
+	env, err := git.EnvForDir("", os.Environ())
+	if err != nil {
+		return "", err
+	}
 	cmd := exec.Command("gh", args...)
+	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

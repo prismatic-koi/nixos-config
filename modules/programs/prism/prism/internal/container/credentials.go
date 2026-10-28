@@ -6,12 +6,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/payload"
 )
 
@@ -91,27 +90,21 @@ func githubAccountFromBareRoot(bareRoot string) string {
 // githubAccountFromBareRootUncached performs the actual git subprocess calls
 // without consulting the cache. Exported for testing via export_test.go.
 func githubAccountFromBareRootUncached(bareRoot string) string {
-	// The bare git dir lives at <bareRoot>/.bare — use --git-dir to run git
-	// against it directly without needing to be inside a worktree.
-	bareDir := filepath.Join(bareRoot, ".bare")
+	// git.OpenBare uses <bareRoot>/.bare, or bareRoot itself when it is a
+	// raw bare git dir.
+	bare, err := git.OpenBare(bareRoot)
+	if err != nil {
+		log.Printf("container: %v", err)
+		return ""
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), gitBareRootTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "--git-dir", bareDir, "remote", "get-url", "origin").Output()
+	out, err := bare.Command(ctx, "remote", "get-url", "origin").Output()
 	if err != nil {
 		if ctx.Err() != nil {
-			log.Printf("container: git --git-dir %s remote get-url origin timed out after %s", bareDir, gitBareRootTimeout)
-			return ""
+			log.Printf("container: git --git-dir %s remote get-url origin timed out after %s", bare.GitDir(), gitBareRootTimeout)
 		}
-		// Also try the bareRoot itself in case it IS the raw bare git dir.
-		ctx2, cancel2 := context.WithTimeout(context.Background(), gitBareRootTimeout)
-		defer cancel2()
-		out, err = exec.CommandContext(ctx2, "git", "--git-dir", bareRoot, "remote", "get-url", "origin").Output()
-		if err != nil {
-			if ctx2.Err() != nil {
-				log.Printf("container: git --git-dir %s remote get-url origin timed out after %s", bareRoot, gitBareRootTimeout)
-			}
-			return ""
-		}
+		return ""
 	}
 	return githubAccountFromURL(strings.TrimSpace(string(out)))
 }

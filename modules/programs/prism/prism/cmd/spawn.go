@@ -1119,12 +1119,10 @@ func resolveBareRoot(repoFlag string) (string, error) {
 		}
 	}
 
-	bareRoot := git.BareRoot(panePathRaw)
-	if bareRoot == "" {
-		if git.IsBareRepo(panePathRaw) {
-			bareRoot = panePathRaw
-		}
-	}
+	// The pane path can be in the worktree of a session, which the session
+	// can write. OuterBareRoot ignores a .bare that the session makes there.
+	// prism spawn runs `git worktree add` in this root on the host.
+	bareRoot := git.OuterBareRoot(panePathRaw)
 	if bareRoot == "" {
 		if git.IsInsideRegularRepo(panePathRaw) {
 			return "", fmt.Errorf("this repo isn't using the worktree layout yet\nuse C-f to convert it first")
@@ -1150,12 +1148,16 @@ func selfDeliveryError(targetSession, invoker string) error {
 
 // resolveRepo resolves a repo shorthand (e.g. "nixos-config") to a full path
 // under ~/code, or accepts an absolute path directly.
+//
+// A project root inside another project is refused: it is in a worktree,
+// which a sandboxed session can write. prism spawn runs `git worktree add`
+// in the root on the host. See docs/invariants/host-git-commands.md.
 func resolveRepo(nameOrPath string) (string, error) {
 	// Absolute or home-relative path — use as-is.
 	candidate := expandHome(nameOrPath)
 	if filepath.IsAbs(candidate) {
 		if git.IsBareRepo(candidate) {
-			return candidate, nil
+			return refuseNestedRepo(candidate)
 		}
 		return "", fmt.Errorf("not a prism bare repo: %s", candidate)
 	}
@@ -1164,7 +1166,7 @@ func resolveRepo(nameOrPath string) (string, error) {
 	for _, loc := range switchProjectLocations() {
 		p := filepath.Join(expandHome(loc), nameOrPath)
 		if git.IsBareRepo(p) {
-			return p, nil
+			return refuseNestedRepo(p)
 		}
 	}
 
@@ -1172,6 +1174,15 @@ func resolveRepo(nameOrPath string) (string, error) {
 		"repo %q not found under ~/code — no session was created, so nothing was delivered anywhere\nhint: run `prism clone <url>` to add it",
 		nameOrPath,
 	)
+}
+
+// refuseNestedRepo returns root, or an error when root is inside another
+// prism project.
+func refuseNestedRepo(root string) (string, error) {
+	if outer := git.OuterBareRoot(root); outer != filepath.Clean(root) {
+		return "", fmt.Errorf("%s is inside the prism project %s, so it is not a project root", root, outer)
+	}
+	return root, nil
 }
 
 // resolveBranch determines the branch name to use for the new worktree.

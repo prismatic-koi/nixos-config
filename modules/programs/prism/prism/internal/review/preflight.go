@@ -31,11 +31,14 @@ package review
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/prismatic-koi/prism/internal/git"
 )
 
 // PreflightOpts configures the rebase gate.
@@ -63,16 +66,21 @@ type gitRunner interface {
 	run(worktree string, args ...string) (stdout string, stderr string, exitCode int, err error)
 }
 
-// realGit shells out to the system git binary.
+// realGit shells out to the system git binary. The worktree belongs to a
+// session, so the command runs through git.OpenDir: it pins the git dir and
+// the common dir and does not trust <worktree>/.git.
 type realGit struct{}
 
 func (realGit) run(worktree string, args ...string) (string, string, int, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = worktree
+	repo, err := git.OpenDir(worktree)
+	if err != nil {
+		return "", "", 0, err
+	}
+	cmd := repo.Command(context.Background(), args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	exitCode := 0
 	if err != nil {
 		var exitErr *exec.ExitError

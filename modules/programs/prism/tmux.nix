@@ -247,16 +247,21 @@ in
               unbind b
               unbind d
               # open current repo in browser (prefix+b)
+              # The pane path can be in the worktree of a sandboxed session.
+              # Use the outermost .bare (a session cannot make one above the
+              # project root), and set GIT_DIR and GIT_COMMON_DIR so git
+              # reads no .bare/commondir. See
+              # prism/docs/invariants/host-git-commands.md.
               bind-key b run-shell -b '\
                 dir=#{q:pane_current_path}; \
                 bare=""; \
                 p="$dir"; \
                 while [ "$p" != "/" ]; do \
-                  if [ -d "$p/.bare" ]; then bare="$p/.bare"; break; fi; \
+                  if [ -d "$p/.bare" ]; then bare="$p/.bare"; fi; \
                   p="$(dirname "$p")"; \
                 done; \
                 if [ -n "$bare" ]; then \
-                  url="$(git --git-dir="$bare" remote get-url origin 2>/dev/null)"; \
+                  url="$(GIT_DIR="$bare" GIT_COMMON_DIR="$bare" git remote get-url origin 2>/dev/null)"; \
                 else \
                   url="$(git -C "$dir" remote get-url origin 2>/dev/null)"; \
                 fi; \

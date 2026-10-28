@@ -8,6 +8,8 @@ package cmd
 // coverage of the same two failure modes.
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -61,5 +63,33 @@ func TestSelfDeliveryError_NamesCallerAndRecovery(t *testing.T) {
 	}
 	if strings.Contains(msg, "rewrite") == false {
 		t.Errorf("error does not warn against rewriting from memory: %v", msg)
+	}
+}
+
+// TestResolveRepo_RefusesRootInsideProject: a .bare that a session makes in
+// its own worktree must not become the root of `prism spawn`. The host-side
+// spawn runs `git worktree add` in that root.
+func TestResolveRepo_RefusesRootInsideProject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	proj := filepath.Join(home, "code", "proj")
+	planted := filepath.Join(proj, "main", "x")
+	for _, d := range []string{filepath.Join(proj, ".bare"), filepath.Join(planted, ".bare")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+
+	if got, err := resolveRepo("proj"); err != nil || got != proj {
+		t.Fatalf("resolveRepo(proj) = %q, %v; want %q", got, err, proj)
+	}
+	if got, err := resolveRepo(proj); err != nil || got != proj {
+		t.Fatalf("resolveRepo(%s) = %q, %v; want the root", proj, got, err)
+	}
+	for _, name := range []string{"proj/main/x", planted} {
+		got, err := resolveRepo(name)
+		if err == nil || !strings.Contains(err.Error(), "inside the prism project") {
+			t.Errorf("resolveRepo(%q) = %q, %v; want a refusal", name, got, err)
+		}
 	}
 }
