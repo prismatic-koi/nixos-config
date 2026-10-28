@@ -66,13 +66,21 @@ isolator can use the same function (#3315).
   function does not read `HEAD`, because the session can write it. If the
   path is not a branch name, the session gets no branch ref.
 - The worktree git dir comes from the `.git` file in the worktree, which the
-  session can write. The function accepts it only when it is a direct child
-  of `.bare/worktrees`, it is a directory and not a symlink, and its `gitdir`
-  file is a regular file that names the `.git` file of the worktree. The
-  `gitdir` file of another worktree is in a git dir that the session cannot
-  write. So a session cannot point its `.git` file at another git dir, and
-  get write access to it at its next start. If the check fails, the session
-  gets no git dir, and the agent-run log gives the reason.
+  session can write. The function accepts it only when all of these are
+  true:
+  - The `.git` file of the worktree is a regular file, not a symlink or a
+    directory.
+  - The git dir is a direct child of `.bare/worktrees`, and it is a
+    directory and not a symlink.
+  - Its `gitdir` file is a regular file that names the `.git` file of the
+    worktree. The comparison resolves the symlinks in the worktree path,
+    but not the `.git` part. Otherwise a `.git` symlink to the `.git` file
+    of `main` passes the check.
+
+  The `gitdir` file of another worktree is in a git dir that the session
+  cannot write. So a session cannot point its `.git` file at another git
+  dir, and get write access to it at its next start. If the check fails,
+  the session gets no git dir, and the agent-run log gives the reason.
 
 ## What prism does on the host before the session starts
 

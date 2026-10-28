@@ -82,6 +82,29 @@ func TestResolveGitWriteScope_RefusesForeignGitDir(t *testing.T) {
 		{"git dir of another worktree", func(t *testing.T, root string) string {
 			return gitDirFor(root, "main")
 		}},
+		// git.ResolveWorktreeGitDir follows a .git symlink, so the session
+		// gets the git dir of main, and the gitdir file there names the
+		// target of the symlink.
+		{"a .git symlink to the .git file of another worktree", func(t *testing.T, root string) string {
+			gitFile := filepath.Join(root, "feature", ".git")
+			if err := os.Remove(gitFile); err != nil {
+				t.Fatalf("Remove: %v", err)
+			}
+			if err := os.Symlink(filepath.Join("..", "main", ".git"), gitFile); err != nil {
+				t.Fatalf("Symlink: %v", err)
+			}
+			return gitDirFor(root, "main")
+		}},
+		{"a .git dir in the worktree", func(t *testing.T, root string) string {
+			gitFile := filepath.Join(root, "feature", ".git")
+			if err := os.Remove(gitFile); err != nil {
+				t.Fatalf("Remove: %v", err)
+			}
+			if err := os.Mkdir(gitFile, 0o755); err != nil {
+				t.Fatalf("Mkdir: %v", err)
+			}
+			return gitDirFor(root, "feature")
+		}},
 		{"another worktree", func(t *testing.T, root string) string {
 			return filepath.Join(root, "main")
 		}},
@@ -146,6 +169,21 @@ func TestResolveGitWriteScope_RefusesForeignGitDir(t *testing.T) {
 				t.Errorf("scope.Branch = %q, want %q: the branch does not depend on the git dir", scope.Branch, "feature")
 			}
 		})
+	}
+}
+
+// TestResolveGitWriteScope_WorktreePathThroughSymlink: git writes the
+// gitdir file with the resolved worktree path. A worktree path from prism
+// with a symlink in a parent dir is still the same worktree.
+func TestResolveGitWriteScope_WorktreePathThroughSymlink(t *testing.T) {
+	root := newGitLayout(t, "feature")
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	scope, err := resolveGitWriteScope(alias, filepath.Join(alias, "feature"), gitDirFor(alias, "feature"))
+	if err != nil || scope.GitDir != gitDirFor(alias, "feature") {
+		t.Fatalf("scope = %+v, err = %v; want the git dir of the worktree", scope, err)
 	}
 }
 

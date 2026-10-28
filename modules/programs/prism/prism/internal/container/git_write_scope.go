@@ -52,6 +52,7 @@ const gitGitDirFileLimit = 4096
 // from the .git file in the worktree, which the session can write, so the
 // function accepts it only when all of these are true:
 //
+//   - <worktree>/.git is a regular file, not a symlink.
 //   - It is a direct child of <bareRoot>/.bare/worktrees.
 //   - It is a directory, not a symlink.
 //   - Its gitdir file is a regular file that names <worktree>/.git.
@@ -122,6 +123,10 @@ func checkWorktreeGitDir(commonDir, worktree, gitDir string) error {
 	if gitDir == "" {
 		return errors.New("git write scope: the worktree has no git dir, so no git dir is writable")
 	}
+	gitFile := filepath.Join(worktree, ".git")
+	if fi, err := os.Lstat(gitFile); err != nil || !fi.Mode().IsRegular() {
+		return fmt.Errorf("git write scope: %s is not a regular file, so no git dir is writable", gitFile)
+	}
 	gitDir = filepath.Clean(gitDir)
 	if filepath.Dir(gitDir) != filepath.Join(commonDir, "worktrees") {
 		return fmt.Errorf("git write scope: git dir %s is not in %s, so no git dir is writable",
@@ -137,12 +142,12 @@ func checkWorktreeGitDir(commonDir, worktree, gitDir string) error {
 	if !filepath.IsAbs(pointer) {
 		pointer = filepath.Join(gitDir, pointer)
 	}
-	want := filepath.Join(worktree, ".git")
-	if samePath(filepath.Clean(pointer), want) {
+	pointer = filepath.Clean(pointer)
+	if pointer == gitFile || withRealDir(pointer) == withRealDir(gitFile) {
 		return nil
 	}
 	return fmt.Errorf("git write scope: git dir %s belongs to %s, not to %s, so no git dir is writable",
-		gitDir, pointer, want)
+		gitDir, pointer, gitFile)
 }
 
 // readGitDirBackPointer reads the gitdir file of a worktree git dir. The
@@ -167,15 +172,18 @@ func readGitDirBackPointer(path string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// samePath reports whether a and b name the same path, as strings or after
-// symlink resolution. git writes the gitdir file with the resolved path.
-func samePath(a, b string) bool {
-	if a == b {
-		return true
+// withRealDir returns path with the symlinks in its dir resolved, and its
+// last part as it is. git writes the gitdir file with the resolved path of
+// the worktree. The last part is the .git file of the worktree, which the
+// session can replace with a symlink to the .git file of another worktree.
+// So it must not be resolved. The session cannot replace the worktree dir
+// or its parents (section 21b), so their resolution is safe.
+func withRealDir(path string) string {
+	dir := filepath.Dir(path)
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
 	}
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
-	return errA == nil && errB == nil && ra == rb
+	return filepath.Join(dir, filepath.Base(path))
 }
 
 // branchRefFiles returns the files below CommonDir that git writes to move
