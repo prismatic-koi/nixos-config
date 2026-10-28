@@ -142,6 +142,14 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 		return nil, fmt.Errorf("container: bwrap: %w", err)
 	}
 
+	// Ensure the .bare entries that the read-only overlays bind exist on the
+	// host, so the overlays have a bind source and a worker cannot create them
+	// first (issue #3315). Fatal on failure: the overlays are the security
+	// boundary, so the sandbox must not start with an unprotected .bare.
+	if err := m.ensureBareReadOnlyTargets(); err != nil {
+		return nil, fmt.Errorf("container: bwrap: %w", err)
+	}
+
 	// Build the bwrap args. For PI sessions, BuildArgs stores any
 	// appendPIBwrapMounts error in m.piBwrapErr because BuildArgs cannot return
 	// an error. Check and surface it here where we CAN return an error.

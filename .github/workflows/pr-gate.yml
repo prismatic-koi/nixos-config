@@ -406,7 +406,7 @@ jobs:
           sudo ln -sf "$nix_bash/bin/bash" /usr/bin/sh
           export CGO_ENABLED=0
           nix shell --print-build-logs nixpkgs#coreutils nixpkgs#util-linux nixpkgs#go \
-            --command go test -v ./internal/container/ ./internal/integration/ ./internal/sidecar/ -run '^(TestBwrapBaseline_|TestBwrapUsageStateDir_|TestBwrapPIAgentDir_|TestBwrapGoCacheDirs_|TestBwrapWorktreeReadOnly_|TestBwrapUsrBinEnv_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)' 2>&1 | tee /tmp/go-test-bwrap-live.log
+            --command go test -v ./internal/container/ ./internal/integration/ ./internal/sidecar/ -run '^(TestBwrapBaseline_|TestBwrapBareReadOnly_|TestBwrapUsageStateDir_|TestBwrapPIAgentDir_|TestBwrapGoCacheDirs_|TestBwrapWorktreeReadOnly_|TestBwrapUsrBinEnv_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)' 2>&1 | tee /tmp/go-test-bwrap-live.log
       - name: Guard against SKIP-as-PASS and a zero-test run
         if: always() && steps.changes.outputs.go == 'true'
         run: |
@@ -414,7 +414,7 @@ jobs:
             echo "::error::go test log not found - likely the test step did not run" >&2
             exit 1
           fi
-          sel='^(TestBwrapBaseline_|TestBwrapUsageStateDir_|TestBwrapPIAgentDir_|TestBwrapGoCacheDirs_|TestBwrapWorktreeReadOnly_|TestBwrapUsrBinEnv_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)'
+          sel='^(TestBwrapBaseline_|TestBwrapBareReadOnly_|TestBwrapUsageStateDir_|TestBwrapPIAgentDir_|TestBwrapGoCacheDirs_|TestBwrapWorktreeReadOnly_|TestBwrapUsrBinEnv_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)'
           run_count=$(grep -E '^=== RUN   Test' /tmp/go-test-bwrap-live.log | awk '{print $3}' | grep -cE "$sel" || true)
           skip_lines=$(grep -E '^\s*--- SKIP:|^=== SKIP|    [^ ].*_test\.go:[0-9]+: skipping' /tmp/go-test-bwrap-live.log || true)
           echo "live bwrap tests run: ${run_count:-0}"

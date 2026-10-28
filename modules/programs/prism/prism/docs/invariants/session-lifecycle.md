@@ -372,6 +372,27 @@ prism starts every pi with exactly one of `--approve` and `--no-approve` (issue 
 - The concurrency cap is per-isolator: `bwrap` and `sandbox-exec` each enforce their own cap independently via `Isolator.Cap`; `host` is uncapped (`Isolator.Cap` returns `Limit: 0`).
 - A coordinator running inside a sandbox proxies CLI calls (`prism cleanup`, `prism logs`, `prism merges`, etc.) through `PRISM_HOST_API` to the host sidecar; the host-side prism DB and merge queue remain the source of truth regardless of which side the CLI is invoked from.
 
+### The `.bare` write scope (`bwrap`)
+
+<!-- doclint-ignore: .bare/config, .bare/hooks, .bare/info, .bare/logs, .bare/objects, .bare/refs, .bare/worktrees, info/attributes -->
+<!--
+  These are paths inside the git common dir `.bare` at run time, not files
+  in this source tree. `.bare` is the bare git repo of a prism bare+worktree
+  layout; it exists on a host, not under the repo root.
+-->
+
+- A `bwrap` session binds `<BareRoot>/.bare` read-write, then overlays read-only binds on the paths that make git run code on the host (issue #3315). The overlays are `bwrapBareReadOnlyOverlays` in `internal/container/bwrap.go`. `Manager.ensureBareReadOnlyTargets` creates each bind source on the host first, so a worker cannot create the path before the overlay locks it. Both a worker and a coordinator run under the same overlays.
+- Read-only for a `bwrap` session:
+  - `.bare/config` — a filter driver, `core.fsmonitor`, `core.hooksPath`, or `core.sshCommand` set here runs for every git command in the repo, on the host too.
+  - `.bare/hooks` — a planted hook (for example `post-checkout`) runs when a host git command such as `prism spawn`'s `git --git-dir .bare worktree add` fires it.
+  - `.bare/info` — `info/attributes` can name a filter driver that `config` defines.
+  - `.bare/worktrees` — the private git state of every other worktree, so a worker cannot change a sibling worktree's gitdir, `config.worktree`, or `HEAD`.
+- Read-write for a `bwrap` session: the object store (`.bare/objects`), refs (`.bare/refs`), `packed-refs`, `.bare/logs`, and the session's own worktree git dir (`.bare/worktrees/<own>`). The own worktree git dir is re-exposed read-write with a later `--bind` that wins over the read-only `.bare/worktrees` overlay. So the session can still commit, fetch, push, rebase, and pull in its own worktree.
+- A read-only bind blocks a write two ways: a direct write fails with `EROFS`, and a git `*.lock` rename onto the bind-mounted file fails with `EBUSY`, so `config.lock` cannot replace `config`. The mount point itself cannot be renamed or removed, so a worker cannot move the file aside and create a new one in its place.
+- `git push` of a branch with no upstream prints `error: unable to write upstream branch configuration` and exits 0. `push.autoSetupRemote` tries to write the upstream to the now read-only `.bare/config`, which fails, but the push itself succeeds. #3293 removes this message for `sandbox-exec` with a branch entry in the per-session `GIT_CONFIG_GLOBAL`; a later change brings `bwrap` to the same scope.
+- **Known residual (own `commondir`).** The own worktree git dir is read-write, so a worker can repoint its own `.bare/worktrees/<own>/commondir` at a common dir it controls. The host git commands that prism runs in a worker worktree (`git.SymbolicRef`, `git.ShortHash`) run `symbolic-ref HEAD` and `rev-parse`, which do not refresh the index and run no hook, so they do not trip a repointed common dir. A command that refreshes the index, such as `git status` or `git diff`, would; prism runs no such command in a worker worktree. A follow-up closes this path.
+- The object store and `packed-refs` stay writable for both `bwrap` and `sandbox-exec`. #3293 records them as a known limit of both isolators, with a follow-up issue.
+
 ### Go toolchain and caches (`sandbox-exec`)
 
 - A `sandbox-exec` session can run `go build ./...` and `go test ./...` with no extra environment setup. The Go caches at their default Darwin paths — `~/go/pkg/mod` (GOMODCACHE) and `~/Library/Caches/go-build` (GOCACHE) — are readable and writable from inside the sandbox, and are shared with the host rather than per-session, so a second session starts with a warm cache.

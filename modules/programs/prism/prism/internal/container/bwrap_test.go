@@ -899,6 +899,127 @@ func TestBwrapBuildArgs_MissingBareRootOmitted(t *testing.T) {
 	}
 }
 
+// firstSrcDstIndex returns the index of the first occurrence of
+// "<flag> src src" in args, or -1 when absent.
+func firstSrcDstIndex(args []string, flag, src string) int {
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == flag && args[i+1] == src && args[i+2] == src {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestBwrapBuildArgs_BareReadOnlyOverlays(t *testing.T) {
+	// The .bare bind is read-write, and the code-execution paths (config,
+	// hooks, info) plus the worktrees directory are overlaid read-only on top
+	// of it, so a worker cannot plant a hook or config value that runs on the
+	// host (issue #3315).
+	bareRoot := t.TempDir()
+	bareDir := filepath.Join(bareRoot, ".bare")
+	configPath := filepath.Join(bareDir, "config")
+	hooksDir := filepath.Join(bareDir, "hooks")
+	infoDir := filepath.Join(bareDir, "info")
+	worktreesDir := filepath.Join(bareDir, "worktrees")
+	// Own worktree git dir lives under .bare/worktrees/<name>.
+	worktreeGitDir := filepath.Join(worktreesDir, "feat")
+	for _, d := range []string{hooksDir, infoDir, worktreeGitDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("MkdirAll %q: %v", d, err)
+		}
+	}
+	if err := os.WriteFile(configPath, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:    "repo@feat",
+		Worktree:       t.TempDir(),
+		AllocatedPort:  14010,
+		BareRoot:       bareRoot,
+		WorktreeGitDir: worktreeGitDir,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	// .bare itself is read-write.
+	if !hasBind(args, bareDir) {
+		t.Errorf(".bare %q must be a read-write --bind: %v", bareDir, redactedArgs(args))
+	}
+	// config, hooks, info, and the worktrees dir are read-only overlays.
+	for _, p := range []string{configPath, hooksDir, infoDir, worktreesDir} {
+		if !hasROBind(args, p) {
+			t.Errorf("%q must be a read-only --ro-bind overlay: %v", p, redactedArgs(args))
+		}
+	}
+
+	// Ordering 1: every read-only overlay comes AFTER the read-write .bare
+	// bind, so bwrap layers it on top.
+	bareIdx := firstSrcDstIndex(args, "--bind", bareDir)
+	if bareIdx < 0 {
+		t.Fatalf("no --bind %q in args: %v", bareDir, redactedArgs(args))
+	}
+	for _, p := range []string{configPath, hooksDir, infoDir, worktreesDir} {
+		if roIdx := firstSrcDstIndex(args, "--ro-bind", p); roIdx < bareIdx {
+			t.Errorf("read-only overlay %q at index %d must come after the .bare bind at index %d: %v",
+				p, roIdx, bareIdx, redactedArgs(args))
+		}
+	}
+
+	// Ordering 2: the session's own worktree git dir is re-exposed read-write
+	// AFTER the read-only worktrees overlay, so the later --bind wins for the
+	// own subtree while sibling worktrees stay read-only.
+	if !hasBind(args, worktreeGitDir) {
+		t.Errorf("own worktree git dir %q must be a read-write --bind: %v", worktreeGitDir, redactedArgs(args))
+	}
+	ownIdx := firstSrcDstIndex(args, "--bind", worktreeGitDir)
+	wtIdx := firstSrcDstIndex(args, "--ro-bind", worktreesDir)
+	if ownIdx < 0 || wtIdx < 0 {
+		t.Fatalf("expected both the worktrees ro-bind (%d) and the own rw-bind (%d): %v", wtIdx, ownIdx, redactedArgs(args))
+	}
+	if ownIdx < wtIdx {
+		t.Errorf("own worktree rw-bind at %d must come after the worktrees ro-bind at %d so it wins: %v",
+			ownIdx, wtIdx, redactedArgs(args))
+	}
+}
+
+func TestBwrapBareReadOnlyOverlays_StatGuardedAndOrdered(t *testing.T) {
+	// The helper emits a --ro-bind only for an entry that exists, and emits
+	// the worktrees overlay last (so BuildArgs can re-expose the own gitdir
+	// after it).
+	bareDir := t.TempDir()
+	hooksDir := filepath.Join(bareDir, "hooks")
+	worktreesDir := filepath.Join(bareDir, "worktrees")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll hooks: %v", err)
+	}
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll worktrees: %v", err)
+	}
+	// config and info are absent on purpose.
+
+	args := bwrapBareReadOnlyOverlays(bareDir)
+
+	if !hasROBind(args, hooksDir) {
+		t.Errorf("hooks must be ro-bound when present: %v", args)
+	}
+	if !hasROBind(args, worktreesDir) {
+		t.Errorf("worktrees must be ro-bound when present: %v", args)
+	}
+	if hasROBind(args, filepath.Join(bareDir, "config")) {
+		t.Errorf("absent config must not be bound: %v", args)
+	}
+	if hasROBind(args, filepath.Join(bareDir, "info")) {
+		t.Errorf("absent info must not be bound: %v", args)
+	}
+	// worktrees is emitted last.
+	if got := firstSrcDstIndex(args, "--ro-bind", worktreesDir); got != len(args)-3 {
+		t.Errorf("worktrees overlay must be the last triple (index %d of %d): %v", got, len(args), args)
+	}
+}
+
 // ── Read-only binds ──────────────────────────────────────────────────────────
 
 func TestBwrapBuildArgs_AWSConfigCanonicalBindsGone(t *testing.T) {

@@ -24,6 +24,7 @@ package container
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -989,5 +990,45 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 	// starting.
 	createGoCacheDirs("bwrap", goCacheDirsForGOOS(home, goosLinux))
 
+	return nil
+}
+
+// ensureBareReadOnlyTargets creates the entries directly under .bare that the
+// bwrap read-only overlays bind, so that each overlay has a bind source and a
+// worker cannot create the path itself before the overlay locks it (issue
+// #3315).
+//
+// bwrap aborts at exec time if a bind source is missing, and the overlays are
+// the security boundary of the fix, so a failure here is fatal: return an
+// error so the spawn stops with the real cause rather than starting a sandbox
+// with an unprotected .bare.
+//
+// .bare/hooks and .bare/info are directories (git creates them at clone time);
+// .bare/config is a file. All three normally exist in a bare repo — this is a
+// belt-and-braces guarantee for a repo where one was removed. A missing
+// .bare (BareRoot set but no .bare yet) is not this method's concern: the
+// bind of .bare is itself conditional, so there is nothing to lock down.
+func (m *Manager) ensureBareReadOnlyTargets() error {
+	if m.cfg.BareRoot == "" {
+		return nil
+	}
+	bareDir := filepath.Join(m.cfg.BareRoot, ".bare")
+	if _, err := os.Stat(bareDir); err != nil {
+		return nil
+	}
+	for _, name := range []string{"hooks", "info"} {
+		p := filepath.Join(bareDir, name)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			return fmt.Errorf("container: create read-only bind target %q: %w", p, err)
+		}
+	}
+	configPath := filepath.Join(bareDir, "config")
+	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
+		if wErr := os.WriteFile(configPath, nil, 0o644); wErr != nil {
+			return fmt.Errorf("container: create read-only bind target %q: %w", configPath, wErr)
+		}
+	} else if err != nil {
+		return fmt.Errorf("container: stat read-only bind target %q: %w", configPath, err)
+	}
 	return nil
 }

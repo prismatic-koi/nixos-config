@@ -339,19 +339,36 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// No /workspace remap — this is the key bwrap design difference.
 	args = append(args, bwrapWorktreeBind(cfg)...)
 
-	// ── Bare repo and worktree private git state (read-write) ──────────────
+	// ── Bare repo and worktree private git state ───────────────────────────
 	// Dst == Src: both directories mount at their host paths inside the
 	// sandbox (no canonical-path remapping). This is correct bwrap behaviour
 	// — the git commondir pointer
 	// inside WorktreeGitDir/commondir already points at the absolute host path
 	// for the bare dir, so no remapping is needed. PRISM_BARE_ROOT is updated
 	// below to point at the actual host path rather than /prism-git.
+	//
+	// The .bare bind is read-write so the object store, refs, packed-refs, and
+	// logs stay writable (commit/fetch/push/rebase/pull need them). Read-only
+	// overlays then lock the code-execution paths in the common git dir so a
+	// worker cannot plant a hook or config value that runs on the host
+	// (issue #3315). See bwrapBareReadOnlyOverlays for the path list and the
+	// bind ordering rules.
 	if cfg.BareRoot != "" && cfg.WorktreeGitDir != "" {
 		bareDir := filepath.Join(cfg.BareRoot, ".bare")
 		if _, err := os.Stat(bareDir); err == nil {
 			args = append(args, "--bind", bareDir, bareDir)
+			// Read-only overlays over the read-write .bare bind. Emitted
+			// AFTER the rw .bare bind so bwrap layers them on top, and BEFORE
+			// the own-worktree rw bind below so that bind re-exposes the
+			// session's own git state over the read-only worktrees overlay.
+			args = append(args, bwrapBareReadOnlyOverlays(bareDir)...)
 		}
-		// Worktree private git state (HEAD, index, logs, etc.) — read-write.
+		// Worktree private git state (HEAD, index, logs, etc.) — read-write,
+		// re-exposed on top of the read-only .bare/worktrees overlay above so
+		// the session can still commit, fetch, rebase, and pull in its own
+		// worktree while sibling worktrees' git state stays read-only. bwrap
+		// applies binds left-to-right, so this later --bind wins for the
+		// session's own subtree.
 		// A missing directory here is a real error, not a silent skip:
 		// WorktreeGitDir is resolved from the worktree's own
 		// authoritative .git gitdir pointer, so if it does not exist on disk
@@ -749,6 +766,56 @@ func bwrapUsrBinEnvArgs(src string) []string {
 		"--ro-bind-try", src, "/usr/bin/env",
 		"--remount-ro", "/usr",
 	}
+}
+
+// bwrapBareReadOnlyName lists the entries directly under .bare that a worker
+// must not change: git runs the code in them on the host (issue #3315).
+//
+//   - config  — a filter driver, core.fsmonitor, core.hooksPath, or
+//     core.sshCommand set here runs for every git command in every worktree
+//     of the repo, on the host too.
+//   - hooks   — a planted hook (for example post-checkout) runs when a host
+//     git command such as `prism spawn`'s `git --git-dir .bare worktree add`
+//     fires that hook.
+//   - info    — info/attributes can select a filter driver that config
+//     defines.
+var bwrapBareReadOnlyName = []string{"config", "hooks", "info"}
+
+// bwrapBareReadOnlyOverlays returns the read-only overlay binds that lock the
+// code-execution paths in the common git dir (.bare), to be layered over the
+// read-write .bare bind (issue #3315).
+//
+// Each path is bound read-only so a worker cannot write it: a direct write
+// fails with EROFS, and a git `*.lock` rename onto the bind-mounted file fails
+// with EBUSY, so `config.lock` cannot replace `config`. The mount point itself
+// cannot be renamed or removed (EBUSY), so the worker cannot move the file
+// aside and create a new one in its place. The object store, refs,
+// packed-refs, and logs are not listed here; they stay writable through the
+// base .bare bind, so commit/fetch/push/rebase/pull still work.
+//
+// The whole .bare/worktrees directory is bound read-only so a worker cannot
+// change the private git state of a SIBLING worktree (its config.worktree,
+// HEAD, or gitdir). The caller re-exposes the session's OWN worktree gitdir
+// read-write with a later --bind, which wins for that subtree.
+//
+// A path is included only when it exists on the host, because bwrap aborts on
+// a missing bind source. Manager.ensureBareReadOnlyTargets creates
+// .bare/config, .bare/hooks, and .bare/info on the host before the sandbox
+// starts, so in production all three are present and the worker cannot
+// pre-empt the overlay by creating the path itself.
+func bwrapBareReadOnlyOverlays(bareDir string) []string {
+	var args []string
+	for _, name := range bwrapBareReadOnlyName {
+		p := filepath.Join(bareDir, name)
+		if _, err := os.Stat(p); err == nil {
+			args = append(args, "--ro-bind", p, p)
+		}
+	}
+	wtDir := filepath.Join(bareDir, "worktrees")
+	if _, err := os.Stat(wtDir); err == nil {
+		args = append(args, "--ro-bind", wtDir, wtDir)
+	}
+	return args
 }
 
 // bwrapWorktreeBind returns the bind triple of the worktree: --ro-bind when

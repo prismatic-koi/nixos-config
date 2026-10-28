@@ -669,6 +669,68 @@ func TestWriteSshConfig_BwrapMode_UsesHostHomePath(t *testing.T) {
 	}
 }
 
+func TestEnsureBareReadOnlyTargets_CreatesMissingEntries(t *testing.T) {
+	// The .bare entries that the read-only overlays bind must exist before the
+	// sandbox starts, so a worker cannot create them first (issue #3315).
+	bareRoot := t.TempDir()
+	bareDir := filepath.Join(bareRoot, ".bare")
+	if err := os.MkdirAll(bareDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll bareDir: %v", err)
+	}
+	// hooks, info, and config are all absent.
+
+	m := New(Config{SessionName: "repo@feat", BareRoot: bareRoot})
+	if err := m.ensureBareReadOnlyTargets(); err != nil {
+		t.Fatalf("ensureBareReadOnlyTargets: %v", err)
+	}
+
+	for _, d := range []string{"hooks", "info"} {
+		p := filepath.Join(bareDir, d)
+		if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
+			t.Errorf("expected directory %q to exist (err: %v)", p, err)
+		}
+	}
+	if fi, err := os.Stat(filepath.Join(bareDir, "config")); err != nil || fi.IsDir() {
+		t.Errorf("expected config file to exist as a regular file (err: %v)", err)
+	}
+
+	// Idempotent: a second call does not error and does not truncate an
+	// existing config.
+	configPath := filepath.Join(bareDir, "config")
+	if err := os.WriteFile(configPath, []byte("[core]\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	if err := m.ensureBareReadOnlyTargets(); err != nil {
+		t.Fatalf("ensureBareReadOnlyTargets (second call): %v", err)
+	}
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	if string(got) != "[core]\n" {
+		t.Errorf("existing config must not be truncated; got %q", string(got))
+	}
+}
+
+func TestEnsureBareReadOnlyTargets_NoBareIsNoop(t *testing.T) {
+	// BareRoot set but no .bare yet: nothing to lock down, so no error and no
+	// .bare created (the .bare bind is itself conditional).
+	bareRoot := t.TempDir()
+	m := New(Config{SessionName: "repo@feat", BareRoot: bareRoot})
+	if err := m.ensureBareReadOnlyTargets(); err != nil {
+		t.Fatalf("ensureBareReadOnlyTargets with no .bare: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(bareRoot, ".bare")); !os.IsNotExist(err) {
+		t.Errorf(".bare must not be created when absent (stat err: %v)", err)
+	}
+
+	// Empty BareRoot is also a no-op.
+	m2 := New(Config{SessionName: "repo@feat"})
+	if err := m2.ensureBareReadOnlyTargets(); err != nil {
+		t.Fatalf("ensureBareReadOnlyTargets with empty BareRoot: %v", err)
+	}
+}
+
 func TestPrepareVolumeDirs_BwrapSkipsSessionDir(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
