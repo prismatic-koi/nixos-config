@@ -1039,6 +1039,72 @@ func TestBwrapBareReadOnlyOverlays_StatGuardedAndOrdered(t *testing.T) {
 	}
 }
 
+func TestBwrapWorktreeGitFilePin(t *testing.T) {
+	// <worktree>/.git is pinned read-only when it is a regular file (the
+	// bare+worktree gitfile), and skipped when it is a directory (a normal
+	// clone) or absent (issue #3322).
+	t.Run("regular gitfile is pinned read-only", func(t *testing.T) {
+		wt := t.TempDir()
+		gitFile := filepath.Join(wt, ".git")
+		if err := os.WriteFile(gitFile, []byte("gitdir: /somewhere\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile .git: %v", err)
+		}
+		args := bwrapWorktreeGitFilePin(Config{Worktree: wt})
+		if !hasROBind(args, gitFile) {
+			t.Errorf("regular .git gitfile must be ro-bound: %v", args)
+		}
+	})
+	t.Run(".git directory is not pinned", func(t *testing.T) {
+		wt := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(wt, ".git"), 0o755); err != nil {
+			t.Fatalf("MkdirAll .git: %v", err)
+		}
+		if args := bwrapWorktreeGitFilePin(Config{Worktree: wt}); args != nil {
+			t.Errorf("a .git directory must not be pinned, got %v", args)
+		}
+	})
+	t.Run("absent .git and empty worktree yield nil", func(t *testing.T) {
+		if args := bwrapWorktreeGitFilePin(Config{Worktree: t.TempDir()}); args != nil {
+			t.Errorf("absent .git must yield nil, got %v", args)
+		}
+		if args := bwrapWorktreeGitFilePin(Config{Worktree: ""}); args != nil {
+			t.Errorf("empty worktree must yield nil, got %v", args)
+		}
+	})
+}
+
+func TestBwrapBuildArgs_WorktreeGitFilePinnedAfterWorktreeBind(t *testing.T) {
+	// The <worktree>/.git pin is emitted AFTER the read-write worktree bind so
+	// the later --ro-bind wins for just that file (issue #3322).
+	wt := t.TempDir()
+	gitFile := filepath.Join(wt, ".git")
+	if err := os.WriteFile(gitFile, []byte("gitdir: /x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile .git: %v", err)
+	}
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@feat",
+		Worktree:      wt,
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasBind(args, wt) {
+		t.Fatalf("worktree %q must be a read-write --bind: %v", wt, redactedArgs(args))
+	}
+	if !hasROBind(args, gitFile) {
+		t.Fatalf("worktree .git %q must be a read-only --ro-bind: %v", gitFile, redactedArgs(args))
+	}
+	wtIdx := firstSrcDstIndex(args, "--bind", wt)
+	gitIdx := firstSrcDstIndex(args, "--ro-bind", gitFile)
+	if gitIdx < wtIdx {
+		t.Errorf(".git pin at %d must come after the worktree bind at %d so it wins: %v",
+			gitIdx, wtIdx, redactedArgs(args))
+	}
+}
+
 func TestBwrapOwnWorktreeReadOnlyPins_StatGuarded(t *testing.T) {
 	// The helper pins commondir, gitdir, and config.worktree read-only when
 	// present, and skips an absent one (bwrap aborts on a missing source).

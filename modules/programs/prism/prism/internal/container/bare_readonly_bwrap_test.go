@@ -180,6 +180,80 @@ func TestBwrapBareReadOnly_WithoutOverlaysWritesSucceed(t *testing.T) {
 	}
 }
 
+// worktreeGitFileLayout builds a worktree directory with a .git gitfile and
+// returns (worktree, gitFile). The worktree is otherwise writable.
+func worktreeGitFileLayout(t *testing.T) (worktree, gitFile string) {
+	t.Helper()
+	worktree = t.TempDir()
+	gitFile = filepath.Join(worktree, ".git")
+	if err := os.WriteFile(gitFile, []byte("gitdir: /real/git/dir\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile .git: %v", err)
+	}
+	return worktree, gitFile
+}
+
+// gitFileProbeScript tries to write, rename-over, rename-away, and remove the
+// worktree .git gitfile, printing OK/FAIL per case. A worker that can do any
+// of these can repoint the gitfile and redirect a host git command.
+func gitFileProbeScript(worktree, gitFile string) string {
+	evil := filepath.Join(worktree, "evil")
+	return strings.Join([]string{
+		`if ( printf x >> ` + sh(gitFile) + ` ) 2>/dev/null; then echo git-write OK; else echo git-write FAIL; fi`,
+		`printf 'gitdir: /evil\n' > ` + sh(evil) + ` 2>/dev/null || true`,
+		`if ( mv -f ` + sh(evil) + ` ` + sh(gitFile) + ` ) 2>/dev/null; then echo git-rename-over OK; else echo git-rename-over FAIL; fi`,
+		`if ( mv -f ` + sh(gitFile) + ` ` + sh(filepath.Join(worktree, "git-moved")) + ` ) 2>/dev/null; then echo git-rename-away OK; else echo git-rename-away FAIL; fi`,
+		`if ( rm -f ` + sh(gitFile) + ` ) 2>/dev/null; then echo git-remove OK; else echo git-remove FAIL; fi`,
+	}, "\n")
+}
+
+// TestBwrapBareReadOnly_WorktreeGitFilePinnedReadOnly runs a real bwrap with
+// the worktree bound read-write and <worktree>/.git pinned read-only (the
+// production shape), and checks a worker cannot write, rename, or remove the
+// gitfile (issue #3322).
+func TestBwrapBareReadOnly_WorktreeGitFilePinnedReadOnly(t *testing.T) {
+	bwrapBin := requireUsableBwrapForUsageTest(t)
+	worktree, gitFile := worktreeGitFileLayout(t)
+
+	// Production shape: read-write worktree bind, then the .git ro pin on top.
+	mounts := bwrapWorktreeBind(Config{Worktree: worktree})
+	mounts = append(mounts, bwrapWorktreeGitFilePin(Config{Worktree: worktree})...)
+
+	out, err := runBareProbe(t, bwrapBin, mounts, gitFileProbeScript(worktree, gitFile))
+	if err != nil {
+		t.Fatalf("bwrap probe failed to run: %v\n%s", err, out)
+	}
+	for _, w := range []string{"git-write FAIL", "git-rename-over FAIL", "git-rename-away FAIL", "git-remove FAIL"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("expected %q (.git must be immutable); output:\n%s", w, out)
+		}
+	}
+	// The gitfile must still hold its original content afterwards.
+	if got, rErr := os.ReadFile(gitFile); rErr != nil || string(got) != "gitdir: /real/git/dir\n" {
+		t.Errorf(".git content changed: got %q (err %v)", string(got), rErr)
+	}
+}
+
+// TestBwrapBareReadOnly_WorktreeGitFileWritableWithoutPin is the paired
+// negative: with only the read-write worktree bind (no .git pin), the same
+// writes succeed. So the pin is what makes the gitfile immutable.
+func TestBwrapBareReadOnly_WorktreeGitFileWritableWithoutPin(t *testing.T) {
+	bwrapBin := requireUsableBwrapForUsageTest(t)
+	worktree, gitFile := worktreeGitFileLayout(t)
+
+	// Only the read-write worktree bind — no .git pin.
+	mounts := bwrapWorktreeBind(Config{Worktree: worktree})
+
+	out, err := runBareProbe(t, bwrapBin, mounts, gitFileProbeScript(worktree, gitFile))
+	if err != nil {
+		t.Fatalf("bwrap probe failed to run: %v\n%s", err, out)
+	}
+	// The first write alone proves the worktree is writable without the pin;
+	// that is the no-op proof the pin is load-bearing.
+	if !strings.Contains(out, "git-write OK") {
+		t.Errorf("without the pin, writing .git should succeed; output:\n%s", out)
+	}
+}
+
 // sh single-quotes a path for safe inclusion in the /bin/sh -c script. Test
 // paths come from t.TempDir() and contain no single quotes, but quote anyway.
 func sh(p string) string {

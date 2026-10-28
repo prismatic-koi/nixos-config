@@ -338,6 +338,12 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// Dst == Src: the worktree mounts at its host path inside the sandbox.
 	// No /workspace remap — this is the key bwrap design difference.
 	args = append(args, bwrapWorktreeBind(cfg)...)
+	// Pin <worktree>/.git read-only over the worktree bind so a worker cannot
+	// repoint the gitfile and redirect a host git command (nvim/gitsigns, the
+	// shell prompt, the prism review preflight) to a git dir it controls
+	// (issue #3322). Emitted after the worktree bind so this later --ro-bind
+	// wins for just that file; the rest of the worktree stays read-write.
+	args = append(args, bwrapWorktreeGitFilePin(cfg)...)
 
 	// ── Bare repo and worktree private git state ───────────────────────────
 	// Dst == Src: both directories mount at their host paths inside the
@@ -889,6 +895,39 @@ func bwrapWorktreeBind(cfg Config) []string {
 		flag = "--ro-bind"
 	}
 	return []string{flag, cfg.Worktree, cfg.Worktree}
+}
+
+// bwrapWorktreeGitFilePin returns the read-only overlay bind for the
+// worktree's .git gitfile, to be layered over the worktree bind (issue
+// #3322). In a bare+worktree layout <worktree>/.git is a FILE that points at
+// the worktree git dir (gitdir: <path>); a host git command run with its
+// working directory in the worktree reads it to find the git dir and, through
+// the git dir's commondir, the config and hooks. prism runs nvim and a shell
+// on the host in each worktree (setupFullLayout), and gitsigns and the shell
+// prompt run git there, so a worker that rewrites <worktree>/.git to point at
+// a git dir it controls gets code execution on the host as soon as the user
+// opens the session.
+//
+// Pinning the gitfile read-only over the read-write worktree bind closes that
+// last redirect: a write fails with EROFS, and the mount point cannot be
+// renamed, removed, or replaced (EBUSY). git does not write <worktree>/.git
+// in normal use (only `git worktree repair` does; confirmed by strace), so the
+// pin breaks no git operation.
+//
+// The pin is emitted only when <worktree>/.git is a regular file — the
+// bare+worktree case. A normal (non-bare) clone has a .git DIRECTORY that is
+// the repo itself; pinning that read-only would break it, and such a layout
+// has no WorktreeGitDir and is not a prism worktree session.
+func bwrapWorktreeGitFilePin(cfg Config) []string {
+	if cfg.Worktree == "" {
+		return nil
+	}
+	gitFile := filepath.Join(cfg.Worktree, ".git")
+	info, err := os.Lstat(gitFile)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	return []string{"--ro-bind", gitFile, gitFile}
 }
 
 // Run launches "bwrap <args...>" and waits for it to complete. Stdout and
