@@ -38,8 +38,10 @@ func rollbackCreatedWorktree(bareRoot string, created *git.CreatedWorktree, labe
 	// under a running agent. `prism cleanup` handles that class instead.
 	// The check compares exact names (#3184). If tmux cannot be queried,
 	// keep the worktree: a wrong removal loses work, a wrong skip leaves
-	// a directory that `prism cleanup` removes.
-	if session.TmuxSessionPresence(session.NameFor(created.Path, bareRoot)) != session.TmuxGone {
+	// a directory that `prism cleanup` removes. A name that NameFor refuses
+	// cannot have a tmux session, because tmux.NewSession refuses it too.
+	name, nameErr := session.NameFor(created.Path, bareRoot)
+	if nameErr == nil && session.TmuxSessionPresence(name) != session.TmuxGone {
 		proglog.Warnf("[%s] not rolling back worktree %q: a tmux session exists for it, or tmux cannot be queried\n",
 			label, created.Path)
 		return

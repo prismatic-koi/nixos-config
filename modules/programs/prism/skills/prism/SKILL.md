@@ -142,8 +142,8 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 
 | Flag | Description |
 |---|---|
-| `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. Use a short, descriptive kebab-case name derived from the task (e.g. `update-plex-image`, `fix-login-redirect`) — never an issue number, PR number, or Jira ID. The branch name becomes the session name (e.g. `nixos-config@update-plex-image`), so it must be immediately readable in `prism sessions list` and the tmux picker without looking anything up. |
-| `--pr <number>` | Fetch and check out the branch for this PR number. |
+| `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. Use a short, descriptive kebab-case name derived from the task (e.g. `update-plex-image`, `fix-login-redirect`) — never an issue number, PR number, or Jira ID. The branch name becomes the session name (e.g. `nixos-config@update-plex-image`), so it must be immediately readable in `prism sessions list` and the tmux picker without looking anything up. Use only ASCII letters, digits, `-`, `_`, `.`, and `/`. prism refuses any other character before it makes the worktree, because tmux puts the session name into shell commands. |
+| `--pr <number>` | Fetch and check out the branch for this PR number. prism refuses a PR whose head branch holds a character outside the `--branch` set. |
 | `--prompt <text>` | Instruction passed to the agent on launch. Wrap values containing shell metacharacters in **single quotes**. The value `-` is reserved and reads from stdin (cannot pass a literal `-`). |
 | `--prompt-file <path>` | Read the prompt from a file instead of passing it as an argument. Mutually exclusive with `--prompt`. A single trailing newline is stripped. |
 | `--agent <name>` | Agent to use (`worker` or `plan`). Defaults to `worker`. |

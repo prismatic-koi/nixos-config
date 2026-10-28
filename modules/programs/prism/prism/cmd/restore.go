@@ -4,7 +4,9 @@ package cmd
 //
 // Reads agent_status rows where ended_at IS NULL and recreates any sessions
 // that are no longer present in the running tmux server. Sessions that already
-// exist are skipped silently — safe to call more than once.
+// exist are skipped silently — safe to call more than once. A row whose
+// session name is outside sessionname.SessionNameSafeSet is reported on
+// stderr, counted as failed, and not restored.
 //
 // Stagger: a configurable delay (default 500ms) is inserted between successive
 // session creates to flatten the sidecar startup burst on machines with many
@@ -31,6 +33,7 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
 // restoreOutcome describes what restoreSession did for a given session.
@@ -117,6 +120,14 @@ func Restore(dryRun bool) error {
 	var restored, skipped, failed int
 
 	for _, s := range statuses {
+		// tmux.nix puts the session name into shell commands. A row whose
+		// name is outside the safe set predates the check, so report it and
+		// keep it as it is. The user decides with `prism cleanup` on the host.
+		if err := sessionname.ValidateName(s.SessionName); err != nil {
+			fmt.Fprintf(os.Stderr, "restore %q: not restored: %v\n", s.SessionName, err)
+			failed++
+			continue
+		}
 		if dryRun {
 			// In dry-run mode, show what would happen but never sleep or write.
 			fmt.Printf("would restore: %s (worktree=%s)\n", s.SessionName, s.Worktree)

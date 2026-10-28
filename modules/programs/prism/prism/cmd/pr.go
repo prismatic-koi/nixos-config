@@ -360,7 +360,11 @@ func markPRBranchSession(worktreePath, bareRoot, pr string) error {
 		return fmt.Errorf("prism pr: open DB for the PR-branch record: %w", err)
 	}
 	defer d.Close()
-	if err := session.RecordPRBranch(d, session.NameFor(worktreePath, bareRoot), worktreePath, pr); err != nil {
+	name, err := session.NameFor(worktreePath, bareRoot)
+	if err != nil {
+		return fmt.Errorf("prism pr: %w", err)
+	}
+	if err := session.RecordPRBranch(d, name, worktreePath, pr); err != nil {
 		return fmt.Errorf("prism pr: %w", err)
 	}
 	return nil
@@ -404,7 +408,11 @@ func writeSpawnInputsForPR(cmd *cobra.Command, a prSpawnInputsArgs) {
 	}
 	defer d.Close()
 
-	sessionName := session.NameFor(a.worktreePath, a.bareRoot)
+	sessionName, nameErr := session.NameFor(a.worktreePath, a.bareRoot)
+	if nameErr != nil {
+		proglog.Warnf("[prism pr] warning: could not name the session for spawn_inputs: %v\n", nameErr)
+		return
+	}
 	st, lookupErr := d.CurrentStatus(sessionName)
 	if lookupErr != nil || st == nil || st.InstanceID == nil || *st.InstanceID == "" {
 		proglog.Warnf("[prism pr] warning: could not resolve instance_id for spawn_inputs (%v)\n", lookupErr)

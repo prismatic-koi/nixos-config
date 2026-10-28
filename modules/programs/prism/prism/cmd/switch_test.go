@@ -83,7 +83,7 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 	runInNewWindow(t, s, "home", "/tmp", switchArgs)
 
 	// Derive the expected session name via the same helper used by the binary.
-	expectedSession := session.NameFor(targetDir, "")
+	expectedSession := mustNameFor(t, targetDir, "")
 
 	// Register sidecar cleanup before polling — the binary may have already
 	// launched a sidecar by the time the session appears in tmux.
@@ -140,7 +140,7 @@ func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 	switchArgs := fmt.Sprintf("%s switch --path %s", prismBin, targetDir)
 	runInNewWindow(t, s, "sessionA", "/tmp", switchArgs)
 
-	expectedSession := session.NameFor(targetDir, "")
+	expectedSession := mustNameFor(t, targetDir, "")
 
 	// Register sidecar cleanup before polling — the binary may have already
 	// launched a sidecar by the time the session appears in tmux.

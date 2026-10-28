@@ -20,7 +20,8 @@ let
   # fire the agent-specific action or fall through to a pass-through.
   #
   # The single argument is the value of tmux's #{pane_current_command} format
-  # variable, expanded by tmux before the shell receives it.
+  # variable, expanded by tmux and quoted with #{q:...} before the shell
+  # receives it.
   #
   # Matched values:
   #   bwrap    — bwrap isolation: `prism agent-run` execs bwrap directly, so
@@ -170,6 +171,16 @@ in
           extraConfig =
             # tmux
             ''
+              # Shell quoting rule: run-shell, if-shell, and #() expand tmux
+              # formats into the shell command before the shell reads it. So
+              # each format in such a command uses #{q:...}, unquoted, which
+              # escapes each shell special character of the value. Do not put
+              # #{q:...} in shell quotes. Do not give an expanded value to a
+              # tmux command that expands formats again (display-message -p,
+              # display-popup -d). A session name is also limited to a safe set
+              # (sessionname.SessionNameSafeSet in the prism source), see
+              # prism/docs/invariants/session-lifecycle.md.
+
               # Propagate KITTY_LISTEN_ON into the tmux session environment on
               # attach (issue #2860). tmux fixes its server environment at
               # startup, so a pane started before this line lands will not see
@@ -196,7 +207,7 @@ in
               # the visible bar collapses cleanly when nothing needs surfacing.
               # PRISM_SESSION_NAME is set on prism panes and read by the
               # session-status helper to know which session to render.
-              set -g status-right "#(${prism} sessions status --waiting --tmux-format)#(PRISM_SESSION_NAME=#{session_name} ${prism} sessions session-status --tmux-format)"
+              set -g status-right "#(${prism} sessions status --waiting --tmux-format)#(PRISM_SESSION_NAME=#{q:session_name} ${prism} sessions session-status --tmux-format)"
               set -g status-style 'bg=${neutrals.background_1} fg=${roles.secondary}'
               set -g message-style 'bg=${roles.primary} fg=${neutrals.background_1}'
               set -g mode-style 'bg=${neutrals.background_3} fg=${neutrals.foreground}'
@@ -237,7 +248,7 @@ in
               unbind d
               # open current repo in browser (prefix+b)
               bind-key b run-shell -b '\
-                dir="$(${pkgs.tmux}/bin/tmux display-message -p "#{pane_current_path}")"; \
+                dir=#{q:pane_current_path}; \
                 bare=""; \
                 p="$dir"; \
                 while [ "$p" != "/" ]; do \
@@ -275,8 +286,8 @@ in
               # plain shell / dashboard panes (where the tmux session name does
               # not correspond to a prism session) so a stray Prefix+m there
               # does not crash tmux or surface a stack trace.
-              bind-key m if-shell '[ -n "#{session_name}" ]' \
-                'run-shell -b "if ${prism} mute #{session_name} >/dev/null; then ${pkgs.tmux}/bin/tmux refresh-client -S; else ${pkgs.tmux}/bin/tmux display-message \"prism mute: not a prism session\"; fi"' \
+              bind-key m if-shell 's=#{q:session_name}; [ -n "$s" ]' \
+                'run-shell -b "if ${prism} mute #{q:session_name} >/dev/null; then ${pkgs.tmux}/bin/tmux refresh-client -S; else ${pkgs.tmux}/bin/tmux display-message \"prism mute: not a prism session\"; fi"' \
                 'display-message "prism mute: no current session"'
               # easy config reload
               bind-key r source-file ~/.config/tmux/tmux.conf \; display-message "tmux.conf reloaded"
@@ -298,30 +309,27 @@ in
               # q/esc in that session uses switch-client -l to return the client
               # to wherever it came from (no global options needed).
               bind-key D run-shell \
-                'if [ "$(${pkgs.tmux}/bin/tmux display-message -p "#S")" = "prism-dashboard" ]; then ${pkgs.tmux}/bin/tmux switch-client -l; else ${pkgs.tmux}/bin/tmux has-session -t prism-dashboard 2>/dev/null || ${pkgs.tmux}/bin/tmux new-session -ds prism-dashboard -n dashboard "${prism} dashboard"; ${pkgs.tmux}/bin/tmux switch-client -t prism-dashboard; fi'
+                's=#{q:session_name}; if [ "$s" = "prism-dashboard" ]; then ${pkgs.tmux}/bin/tmux switch-client -l; else ${pkgs.tmux}/bin/tmux has-session -t prism-dashboard 2>/dev/null || ${pkgs.tmux}/bin/tmux new-session -ds prism-dashboard -n dashboard "${prism} dashboard"; ${pkgs.tmux}/bin/tmux switch-client -t prism-dashboard; fi'
 
               # toggle to/from term window (C-Space)
               unbind C-Space
-              bind -n C-Space run-shell 'idx=$(${pkgs.tmux}/bin/tmux list-windows -F "##I:##W" | grep ":term$" | head -1 | cut -d: -f1); cur=$(${pkgs.tmux}/bin/tmux display-message -p "#{window_name}"); if [ -z "$idx" ]; then ${pkgs.tmux}/bin/tmux new-window -n term; elif [ "$cur" = "term" ]; then ${pkgs.tmux}/bin/tmux select-window -t agent; else ${pkgs.tmux}/bin/tmux select-window -t "$idx"; fi'
+              bind -n C-Space run-shell 'idx=$(${pkgs.tmux}/bin/tmux list-windows -F "##I:##W" | grep ":term$" | head -1 | cut -d: -f1); cur=#{q:window_name}; if [ -z "$idx" ]; then ${pkgs.tmux}/bin/tmux new-window -n term; elif [ "$cur" = "term" ]; then ${pkgs.tmux}/bin/tmux select-window -t agent; else ${pkgs.tmux}/bin/tmux select-window -t "$idx"; fi'
 
               # toggle to/from edit window (C-e)
               unbind C-e
-              bind -n C-e run-shell 'idx=$(${pkgs.tmux}/bin/tmux list-windows -F "##I:##W" | grep ":edit$" | head -1 | cut -d: -f1); cur=$(${pkgs.tmux}/bin/tmux display-message -p "#{window_name}"); if [ -z "$idx" ]; then ${pkgs.tmux}/bin/tmux new-window -n edit; elif [ "$cur" = "edit" ]; then ${pkgs.tmux}/bin/tmux select-window -t agent; else ${pkgs.tmux}/bin/tmux select-window -t "$idx"; fi'
+              bind -n C-e run-shell 'idx=$(${pkgs.tmux}/bin/tmux list-windows -F "##I:##W" | grep ":edit$" | head -1 | cut -d: -f1); cur=#{q:window_name}; if [ -z "$idx" ]; then ${pkgs.tmux}/bin/tmux new-window -n edit; elif [ "$cur" = "edit" ]; then ${pkgs.tmux}/bin/tmux select-window -t agent; else ${pkgs.tmux}/bin/tmux select-window -t "$idx"; fi'
 
               # spawn new timestamped worktree from current repo (prefix+a)
               # prism spawn infers the repo from the current pane path, creates
               # a zettelkasten-timestamped branch+worktree, and switches to it.
               #
-              # Wrapped in run-shell so we can resolve #{pane_current_path}
-              # via `tmux display-message -p` at trigger time and substitute
-              # the resolved string into `-d`. On tmux 3.6a,
-              # `display-popup -e VAR=#{format}` does NOT run the value
-              # through tmux format-expansion — a format like
-              # `#{pane_current_path}` arrives inside the popup as the
-              # literal string, not the resolved path (issue #2072). The
-              # run-shell pattern resolves the path in the shell and feeds
-              # it to `-d` directly, sidestepping the bug entirely. The
-              # popup's cwd is enough context for `prism spawn` — its
+              # display-popup expands the formats in `-d` one time, at trigger
+              # time, so `-d` takes #{pane_current_path} directly. No shell
+              # runs, so a path that holds shell syntax or "#" stays a path.
+              # `display-popup -e VAR=#{format}` does NOT expand the value
+              # (issue #2072), so the path does not go through the
+              # environment. The popup's cwd is enough context for
+              # `prism spawn` — its
               # `resolveBareRoot` falls back to `tmux.CurrentPanePath()`
               # for the bare-repo lookup, no env transport needed.
               #
@@ -334,17 +342,17 @@ in
               # dedicated sentinel (rather than reusing PRISM_SPAWN_PATH)
               # ensures sandbox-injected env vars cannot accidentally trip
               # the carve-out from inside a container.
-              bind a run-shell 'path=$(${pkgs.tmux}/bin/tmux display-message -p "#{pane_current_path}"); ${pkgs.tmux}/bin/tmux display-popup -E -d "$path" -w 60% -h 20% -b single -e "PRISM_KEYBIND_SPAWN=1" "${prism} spawn --attach"'
+              bind a display-popup -E -d "#{pane_current_path}" -w 60% -h 20% -b single -e "PRISM_KEYBIND_SPAWN=1" "${prism} spawn --attach"
 
               # agent scrolling keybinds — active when the pane is a prism agent
               # running under bwrap isolation,
               # or hosting pi directly. See sandboxedPaneGuard above for the
               # matching rules. In any other pane (plain shell, editor, dashboard)
               # the literal keystroke is sent through unchanged.
-              bind -n C-u if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys C-M-u' 'send-keys C-u'
-              bind -n C-d if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys C-M-d' 'send-keys C-d'
-              bind -n C-g if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys Home'
-              bind -n C-M-g if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys End'
+              bind -n C-u if-shell '${sandboxedPaneGuard} #{q:pane_current_command}' 'send-keys C-M-u' 'send-keys C-u'
+              bind -n C-d if-shell '${sandboxedPaneGuard} #{q:pane_current_command}' 'send-keys C-M-d' 'send-keys C-d'
+              bind -n C-g if-shell '${sandboxedPaneGuard} #{q:pane_current_command}' 'send-keys Home'
+              bind -n C-M-g if-shell '${sandboxedPaneGuard} #{q:pane_current_command}' 'send-keys End'
 
               # Directional session switching for the agent window (issue #1794).
               #
@@ -354,7 +362,7 @@ in
               # `send-keys`. This preserves neovim's window navigation on the
               # `edit` window and the shell's C-h (backspace) on the `term` window.
               #
-              # The guard is window-name based ("#{window_name}" = "agent"), not
+              # The guard is window-name based (#{window_name} = "agent"), not
               # pane-command based, because the agent window may be on its second
               # pane (a shell next to pi) and the keystroke should still navigate
               # sessions in that case.
@@ -362,16 +370,16 @@ in
               # `run-shell -b` runs `prism nav` in the background so the tmux
               # binding returns immediately; the nav subcommand calls
               # `tmux switch-client` itself.
-              bind -n C-h if-shell '[ "#{window_name}" = "agent" ]' \
+              bind -n C-h if-shell 'w=#{q:window_name}; [ "$w" = agent ]' \
                 'run-shell -b "${prism} nav left"' \
                 'send-keys C-h'
-              bind -n C-j if-shell '[ "#{window_name}" = "agent" ]' \
+              bind -n C-j if-shell 'w=#{q:window_name}; [ "$w" = agent ]' \
                 'run-shell -b "${prism} nav down"' \
                 'send-keys C-j'
-              bind -n C-k if-shell '[ "#{window_name}" = "agent" ]' \
+              bind -n C-k if-shell 'w=#{q:window_name}; [ "$w" = agent ]' \
                 'run-shell -b "${prism} nav up"' \
                 'send-keys C-k'
-              bind -n C-l if-shell '[ "#{window_name}" = "agent" ]' \
+              bind -n C-l if-shell 'w=#{q:window_name}; [ "$w" = agent ]' \
                 'run-shell -b "${prism} nav right"' \
                 'send-keys C-l'
 
@@ -400,15 +408,15 @@ in
               #
               # The script is written to the Nix store via writeShellScript to avoid
               # complex quoting of ESC bytes and printf format strings inside the
-              # tmux bind-key string. #{pane_id} is expanded by tmux before the
-              # shell receives it as $1.
+              # tmux bind-key string. #{pane_id} is expanded and quoted by tmux
+              # before the shell receives it as $1.
               bind -n C-v \
-                if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' \
-                  'run-shell "${clipboardPasteScript} #{pane_id}"' \
+                if-shell '${sandboxedPaneGuard} #{q:pane_current_command}' \
+                  'run-shell "${clipboardPasteScript} #{q:pane_id}"' \
                   'send-keys C-v'
 
               # toggle a split pane with edit and agent
-              bind-key Space if-shell "[ $(tmux display-message -t 'edit' -p '#{window_panes}') -gt 1 ]" \
+              bind-key Space if-shell "[ $(tmux display-message -t 'edit' -p #{q:window_panes}) -gt 1 ]" \
                   "break-pane -s 'edit.1' -n 'agent'" \
                   "join-pane -h -s 'agent.0' -t 'edit'"
 
@@ -421,14 +429,14 @@ in
               # field when invoked from a display-popup. See issue #380.
 
               # Write tmux_session_end event when a session is closed.
-              set-hook -g session-closed "run-shell '${prism} event tmux-session-end --session #{session_name}'"
+              set-hook -g session-closed "run-shell '${prism} event tmux-session-end --session #{q:session_name}'"
               # Transition to interrupted when a pane dies unexpectedly mid-session.
               # Only the agent window exit is relevant; prism event pane-died
               # ignores exits from other windows (term, edit) and is a no-op for
               # non-project sessions and sessions already in a terminal state.
               # #{pane_dead_status} is passed so pane-died can override a prior
               # "finished" state when the exit was non-zero (signal/crash).
-              set-hook -g pane-exited "run-shell '${prism} event pane-died --session #{session_name} --window #{window_name} --exit-code #{pane_dead_status}'"
+              set-hook -g pane-exited "run-shell '${prism} event pane-died --session #{q:session_name} --window #{q:window_name} --exit-code #{q:pane_dead_status}'"
 
               # Remove HM session vars guard from tmux environment so new shells
               # re-evaluate $(cat ...) substitutions for secrets like GITHUB_TOKEN

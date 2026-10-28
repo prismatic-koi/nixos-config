@@ -1255,13 +1255,20 @@ func Attach(name string) error {
 //
 // Falls back to the short commit hash for detached HEAD, and to
 // filepath.Base of the worktree directory when git is not available.
-func NameFor(dir, projectRoot string) string {
+//
+// NameFor returns an error when the name is outside
+// sessionname.SessionNameSafeSet. tmux.nix puts the name into shell
+// commands, so a name with shell syntax must never become a session.
+func NameFor(dir, projectRoot string) (string, error) {
+	name := sessionname.RepoComponent(filepath.Base(dir))
 	if projectRoot != "" {
 		projName := sessionname.RepoComponent(filepath.Base(projectRoot))
-		branch := worktreeBranchComponent(dir)
-		return projName + "@" + branch
+		name = projName + "@" + worktreeBranchComponent(dir)
 	}
-	return sessionname.RepoComponent(filepath.Base(dir))
+	if err := sessionname.ValidateName(name); err != nil {
+		return "", err
+	}
+	return name, nil
 }
 
 // worktreeBranchComponent returns the branch component of a session name for

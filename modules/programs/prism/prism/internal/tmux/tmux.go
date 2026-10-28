@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
 // TmuxBin is the path to the tmux binary. Injected at build time via ldflags
@@ -252,8 +254,13 @@ func AgentStateOf(name string) string {
 	return strings.TrimSpace(state)
 }
 
-// NewSession creates a new detached session.
+// NewSession creates a new detached session. It refuses a name outside
+// sessionname.SessionNameSafeSet, because tmux.nix puts the session name
+// into shell commands.
 func NewSession(name, dir string) error {
+	if err := sessionname.ValidateName(name); err != nil {
+		return err
+	}
 	_, err := run("new-session", "-ds", name, "-c", dir)
 	return err
 }
@@ -328,8 +335,12 @@ func SelectWindow(session string, idx int) error {
 }
 
 // NewSessionDetached creates a new detached session with a working directory.
-// Returns immediately; caller can then configure windows.
+// Returns immediately; caller can then configure windows. It refuses a name
+// outside sessionname.SessionNameSafeSet, as NewSession does.
 func NewSessionDetached(name, dir string) error {
+	if err := sessionname.ValidateName(name); err != nil {
+		return err
+	}
 	args := []string{"new-session", "-ds", name}
 	if dir != "" {
 		args = append(args, "-c", dir)

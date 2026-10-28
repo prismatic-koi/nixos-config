@@ -9,7 +9,7 @@
 //	<parent>~investigate-<slug>         an investigator of <parent>
 //
 // This package is pure. It reads no database and it imports nothing but
-// `strings`, so every layer — internal/db, internal/authz, internal/session,
+// `fmt` and `strings`, so every layer — internal/db, internal/authz, internal/session,
 // internal/review — can share one answer. A predicate that must also consult
 // the database (for example authz.IsRootSession) builds on these functions
 // rather than restating the grammar.
