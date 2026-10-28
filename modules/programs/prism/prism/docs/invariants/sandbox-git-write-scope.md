@@ -145,6 +145,10 @@ isolator can use the same function (#3315).
   `refs/remotes/origin/main`. A fetch writes the correct value again. A
   session that runs `git rebase origin/main` with no fetch first uses the
   changed value, in its own worktree.
+- **Other branches.** A session can move only the branch that its worktree
+  path names. `git checkout -b` and `git branch <name>` fail, and so does a
+  commit on another branch in the worktree. A worker stays on the branch of
+  its worktree.
 - **`git gc`.** A session cannot write `.bare/gc.pid`, so `git gc` and the
   auto maintenance of git stop at their start in a session. Loose objects
   then collect until a git command on the host runs `git gc`.

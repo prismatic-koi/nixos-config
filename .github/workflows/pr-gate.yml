@@ -189,8 +189,8 @@ jobs:
   # section-17b Unix-socket connect allowlist), and
   # TestSandboxExecSessionTmp_* (#3150, the per-session TMPDIR and the
   # section-21e deny on its node), and TestSandboxExecGitWriteScope_*
-  # (#3293, the section-6e git write scope and the section-21i deny), not
-  # the full TestSandboxExec* family. The ContainerSocket and SessionTmp suites
+  # (#3293, the section-6e git write scope and the section-21i and 21j
+  # denies), not the full TestSandboxExec* family. The ContainerSocket and SessionTmp suites
   # need no extra provisioning beyond the Go toolchain already set up above:
   # they build their own CGO-disabled probe and bind their listeners
   # themselves.

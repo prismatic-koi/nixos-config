@@ -943,8 +943,11 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		ForceFresh: true,
 		Headless:   headless,
 		// An investigator gets a read-only worktree under bwrap and
-		// sandbox-exec. Under host, nothing enforces it. The git dir and the
-		// bare repo stay writable. See SpawnOpts.WorktreeReadOnly.
+		// sandbox-exec. Under host, nothing enforces it. Under bwrap, the git
+		// dir and the bare repo stay writable. Under sandbox-exec, only the
+		// shared git paths and FETCH_HEAD in the git dir do, and the branch ref
+		// does not (docs/invariants/sandbox-git-write-scope.md). See
+		// SpawnOpts.WorktreeReadOnly.
 		WorktreeReadOnly: agentRole == "investigate",
 		// ReadinessTimeout=DefaultReadinessTimeout (30s) gates SpawnSession's
 		// return on the agent actually binding its port.

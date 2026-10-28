@@ -242,9 +242,9 @@ func generateProfile(m *Manager) string {
 	// determined (e.g. no home dir) the derived rules are simply omitted.
 	sessionDir, sessionDirErr := m.sessionWorkDirPath()
 
-	// The git write scope (sections 6e and 21i). It reads a file that the
-	// session can write, so read it once: the two sections must name the
-	// same git dir.
+	// The git write scope (sections 6e, 21i, and 21j). It reads a file that
+	// the session can write, so read it once: the three sections must name
+	// the same git dir.
 	gitScope, _ := m.gitScope()
 
 	// The per-session TMPDIR, in both /var symlink forms. Empty when the
