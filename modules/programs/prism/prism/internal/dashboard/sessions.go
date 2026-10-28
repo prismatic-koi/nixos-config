@@ -342,8 +342,9 @@ func BuildDisplayRows(sessions []AgentSession, collapsedGroups map[string]bool, 
 			}
 		}
 		// Build escalated state.
-		states := make([]string, len(currentChildren))
-		for i, ch := range currentChildren {
+		latest := latestAttempts(currentChildren)
+		states := make([]string, len(latest))
+		for i, ch := range latest {
 			states[i] = ch.AgentState
 		}
 		esc := EscalatedState(states)
