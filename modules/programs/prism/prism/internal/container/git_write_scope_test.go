@@ -439,6 +439,57 @@ func TestGenerateProfile_GitRedirectFileDenyFollowsEveryAllow(t *testing.T) {
 	}
 }
 
+// TestGenerateProfile_WorktreeGitFileDenyFollowsEveryAllow: the section-21k
+// deny of the .git file of the worktree follows every allow. Section 6
+// grants the whole worktree, so an allow after the deny gives the write
+// back.
+func TestGenerateProfile_WorktreeGitFileDenyFollowsEveryAllow(t *testing.T) {
+	root := newGitLayout(t, "feature")
+	m := newGitScopeManager(t, root, "feature", Config{AgentRole: "worker", Harness: "pi"})
+	profile := generateProfile(m)
+
+	deny := "(deny file-write*\n  (literal " + quoteSBPL(filepath.Join(root, "feature", ".git")) + "))\n"
+	denyAt := strings.Index(profile, deny)
+	if denyAt < 0 {
+		t.Fatalf("profile has no .git file deny %q.\nprofile:\n%s", deny, profile)
+	}
+	if allowAt := strings.LastIndex(profile, "(allow "); allowAt > denyAt {
+		t.Errorf("an allow clause (offset %d) follows the .git file deny (offset %d).\nprofile:\n%s", allowAt, denyAt, profile)
+	}
+}
+
+// TestGenerateProfile_NoWorktreeGitFileDenyWithoutBareRoot: in a project
+// with no worktrees, .git is the git dir in the worktree, and the session
+// writes it.
+func TestGenerateProfile_NoWorktreeGitFileDenyWithoutBareRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	worktree := t.TempDir()
+	m := newSandboxExecManagerWithInstance(Config{SessionName: "obsidian", Worktree: worktree})
+	if profile := generateProfile(m); strings.Contains(profile, quoteSBPL(filepath.Join(worktree, ".git"))) {
+		t.Errorf("profile names the .git dir of a project with no worktrees:\n%s", profile)
+	}
+}
+
+// TestWorktreeGitFileDeny_ListsResolvedPath: SBPL matches the resolved
+// path, so a worktree path with a symlink in it gets both paths.
+func TestWorktreeGitFileDeny_ListsResolvedPath(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	real, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	clause := worktreeGitFileDeny(link)
+	for _, p := range []string{link, real} {
+		if !strings.Contains(clause, "(literal "+quoteSBPL(filepath.Join(p, ".git"))+")") {
+			t.Errorf("deny clause does not list %s/.git:\n%s", p, clause)
+		}
+	}
+}
+
 // TestGenerateProfile_NoGitScopeWithoutBareRoot: a project with no
 // worktrees has no BareRoot, and the profile names no .bare path.
 func TestGenerateProfile_NoGitScopeWithoutBareRoot(t *testing.T) {

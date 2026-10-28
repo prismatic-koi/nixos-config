@@ -202,6 +202,11 @@ echo plant >> "$gd/commondir" && fail 31
 echo plant >> "$gd/gitdir" && fail 32
 echo '[core]' > "$gd/config.worktree" && fail 33
 echo ../.. > "$gd/commondir.new" && mv "$gd/commondir.new" "$gd/commondir" && fail 34
+echo "gitdir: $BARE/.bare/worktrees/main" > "$WT/.git" && fail 35
+mv "$WT/.git" "$WT/.git.moved" && fail 36
+rm -f "$WT/.git" && fail 37
+cp "$WT/.git" "$WT/.git.new" && mv -f "$WT/.git.new" "$WT/.git" && fail 38
+chmod 600 "$WT/.git" && fail 39
 exit 0`
 
 // TestSandboxExecGitWriteScope_WorkerGitWorksAndPlantsFail: under the
@@ -209,12 +214,22 @@ exit 0`
 // the worktrees. It cannot write in the main worktree, at the project root,
 // in .bare/config, in .bare/hooks, in the git dir of main, or in the branch
 // ref of main or the stash ref, and it cannot move .bare/objects. In its own
-// git dir, it cannot write commondir, gitdir, or config.worktree.
+// git dir, it cannot write commondir, gitdir, or config.worktree. It cannot
+// write, move, remove, replace, or chmod the .git file of its worktree.
 func TestSandboxExecGitWriteScope_WorkerGitWorksAndPlantsFail(t *testing.T) {
 	f := newGitScopeFixture(t, "feature", "worker", false)
 	configBefore, err := os.ReadFile(f.bare("config"))
 	if err != nil {
 		t.Fatalf("read .bare/config: %v", err)
+	}
+	gitFile := filepath.Join(f.worktree, ".git")
+	gitFileBefore, err := os.ReadFile(gitFile)
+	if err != nil {
+		t.Fatalf("read the .git file: %v", err)
+	}
+	gitFileInfo, err := os.Lstat(gitFile)
+	if err != nil {
+		t.Fatalf("Lstat the .git file: %v", err)
 	}
 	redirectBefore := map[string]string{}
 	for _, name := range []string{"commondir", "gitdir"} {
@@ -229,7 +244,7 @@ func TestSandboxExecGitWriteScope_WorkerGitWorksAndPlantsFail(t *testing.T) {
 	profilePath := writeAugmentedPositiveProfile(t, f.prepared)
 	out, err := f.run(t, profilePath, workerScript)
 	if err != nil {
-		t.Fatalf("worker git work failed (exit 10-18) or a plant was not blocked (exit 20-34).\nExit: %v\nOutput: %s\nProfile: %s",
+		t.Fatalf("worker git work failed (exit 10-18) or a plant was not blocked (exit 20-39).\nExit: %v\nOutput: %s\nProfile: %s",
 			err, out, profilePath)
 	}
 
@@ -240,6 +255,12 @@ func TestSandboxExecGitWriteScope_WorkerGitWorksAndPlantsFail(t *testing.T) {
 		if after, _ := os.ReadFile(f.bare("worktrees", "feature", name)); string(after) != before {
 			t.Errorf("%s of the git dir changed:\nbefore: %q\nafter: %q", name, before, after)
 		}
+	}
+	if after, _ := os.ReadFile(gitFile); string(after) != string(gitFileBefore) {
+		t.Errorf("the .git file changed:\nbefore: %q\nafter: %q", gitFileBefore, after)
+	}
+	if fi, err := os.Lstat(gitFile); err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != gitFileInfo.Mode().Perm() {
+		t.Errorf("the .git file is not the same regular file with mode %v after the blocked plants: %v", gitFileInfo.Mode().Perm(), err)
 	}
 	for _, p := range []string{
 		f.bare("worktrees", "feature", "config.worktree"),
@@ -425,6 +446,30 @@ func TestSandboxExecGitWriteScope_PushFailsWithUpstreamInBothFiles(t *testing.T)
 	out, err := pushAfterHostPush(t, f)
 	if err == nil {
 		t.Fatalf("the sandbox pushed with an upstream in two files, so the positive test proves nothing.\nOutput: %s", out)
+	}
+}
+
+// TestSandboxExecGitWriteScope_GitFileReplaceableWithoutDeny is the paired
+// negative test for section 21k: with the deny removed, the session
+// replaces the .git file of its worktree and changes its mode.
+func TestSandboxExecGitWriteScope_GitFileReplaceableWithoutDeny(t *testing.T) {
+	f := newGitScopeFixture(t, "feature", "worker", false)
+	deny := "(deny file-write*\n  (literal " + sbplQuoteForTest(filepath.Join(f.worktree, ".git")) + ")"
+	if real, err := filepath.EvalSymlinks(f.worktree); err == nil && real != f.worktree {
+		deny += "\n  (literal " + sbplQuoteForTest(filepath.Join(real, ".git")) + ")"
+	}
+	deny += ")\n"
+	profilePath := withMutatedProfile(t, f.m, func(p string) string {
+		return strings.Replace(p, deny, "", 1)
+	})
+
+	out, err := f.run(t, profilePath, `cp "$WT/.git" "$WT/.git.new" && mv -f "$WT/.git.new" "$WT/.git" && chmod 600 "$WT/.git"`)
+	if err != nil {
+		t.Fatalf("without the deny the replace still failed, so the positive test proves nothing.\nExit: %v\nOutput: %s\nProfile: %s",
+			err, out, profilePath)
+	}
+	if fi, err := os.Lstat(filepath.Join(f.worktree, ".git")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("without the deny the .git file does not have mode 0600 after the chmod: %v", err)
 	}
 }
 

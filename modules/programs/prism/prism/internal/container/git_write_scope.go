@@ -299,6 +299,27 @@ func (s gitWriteScope) sbplRedirectFileDeny() string {
 	return "(deny file-write*\n  " + strings.Join(rules, "\n  ") + ")\n"
 }
 
+// worktreeGitFileDeny returns the section-21k clause: no write of the .git
+// file of worktree, under its path and its resolved path. Section 6 grants
+// the worktree, and the .git file is in it. The file names the git dir, and
+// each git command in the worktree follows it, the host-side ones included:
+// the nvim and the shell that prism starts in the worktree run git there. A
+// .git file that names a git dir of the session gives git the config and
+// the hooks of that dir. git writes the file only for git worktree repair.
+// Use it only in a bare+worktree layout: in a project with no worktrees,
+// .git is the git dir itself. It returns "" when worktree is empty.
+func worktreeGitFileDeny(worktree string) string {
+	if worktree == "" {
+		return ""
+	}
+	worktree = filepath.Clean(worktree)
+	clause := "(deny file-write*\n  (literal " + quoteSBPL(filepath.Join(worktree, ".git")) + ")"
+	if real, err := filepath.EvalSymlinks(worktree); err == nil && real != worktree {
+		clause += "\n  (literal " + quoteSBPL(filepath.Join(real, ".git")) + ")"
+	}
+	return clause + ")\n"
+}
+
 // prepareGitWriteDirs makes, on the host, the dirs that git needs before
 // the sandbox starts. If the parent dir of a ref or of a reflog is missing,
 // git cannot write the ref: a fetch exits 255 and a commit exits 128. The

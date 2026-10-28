@@ -254,7 +254,8 @@ integration test coverage exists for:
 - **The git write scope** — the section-6e read of the project root and
   write of the git paths, the section-21i deny on a replace of the git dir
   nodes, the section-21j deny on a write of the redirect files in the
-  worktree git dir, and the dirs that Prepare makes in `.bare` (#3293). The fixture is
+  worktree git dir, the section-21k deny on a write of the `.git` file of
+  the worktree, and the dirs that Prepare makes in `.bare` (#3293). The fixture is
   a real bare+worktree layout under `HOME` with the worktrees `main` and
   `feature`, and a bare remote in the per-session TMPDIR. A Nix git runs in
   the sandbox, in the worktree. Under the production profile:
@@ -270,8 +271,10 @@ integration test coverage exists for:
     `.bare/hooks/post-checkout`, move `refs/heads/main` or `refs/stash`,
     write the git dir of `main`, or move `.bare/objects`. In its own git
     dir, it cannot write `commondir`, `gitdir`, or `config.worktree`, or
-    rename a file onto `commondir`. `.bare/config`, `refs/heads/main`,
-    `commondir`, and `gitdir` do not change.
+    rename a file onto `commondir`. It cannot write, move, remove,
+    replace, or chmod the `.git` file of its worktree. `.bare/config`,
+    `refs/heads/main`, `commondir`, `gitdir`, and the `.git` file do not
+    change.
   - The coordinator in `main` pulls with the upstream in `.bare/config`,
     and writes and deletes `refs/stash`. It cannot write in `feature` or
     move `refs/heads/feature`.
@@ -292,6 +295,9 @@ integration test coverage exists for:
   - `TestSandboxExecGitWriteScope_RedirectFilesWritableWithoutDeny` strips
     section 21j. The session writes `config.worktree` and replaces
     `commondir` in its git dir.
+  - `TestSandboxExecGitWriteScope_GitFileReplaceableWithoutDeny` strips
+    section 21k. The session replaces the `.git` file of its worktree and
+    changes its mode.
   - `TestSandboxExecGitWriteScope_CoordinatorStashFailsWithoutStashGrant`
     points the stash rules at another name. The stash write fails.
   - `TestSandboxExecGitWriteScope_WorkerMovesBranch` runs the writes of
@@ -519,7 +525,7 @@ Issue #3284 adds an eighth file, `sandbox_exec_pi_agent_dir_darwin_test.go`,
 for the section-6a pi agent dir rules and the section-21f deny. It needs Nix
 bash and Nix coreutils, and a test-owned `HOME` under the real home.
 Issue #3293 adds a ninth file, `sandbox_exec_git_write_scope_darwin_test.go`,
-for the section-6e git write scope and the section-21i and 21j denies. It needs Nix
+for the section-6e git write scope and the section-21i, 21j, and 21k denies. It needs Nix
 bash, Nix coreutils, and Nix git. It makes its repos under the real home.
 The `-run` selector matches only the `TestSandboxExecGitLabToken_*`,
 `TestSandboxExecGrafanaConfig_*`, `TestSandboxExecPIAgentDir_*`,

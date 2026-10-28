@@ -1435,6 +1435,23 @@ func generateProfile(m *Manager) string {
 		}
 	}
 
+	// ── 21k. FINAL DENY — the .git file of the worktree cannot be written ─
+	// Section 6 grants the worktree, and in a bare+worktree layout the .git
+	// file in it names the git dir. prism starts nvim and a shell on the
+	// host in each worktree, and they run git there, which follows the file.
+	// A .git file that names a git dir of the session runs its config, for
+	// example core.fsmonitor, on the host. The deny covers a write, a
+	// rename, a removal, and a replace of the file. git does not write it in
+	// normal use (git_write_scope.go). The deny must follow every allow.
+	// TestGenerateProfile_WorktreeGitFileDenyFollowsEveryAllow pins the
+	// order.
+	if m.cfg.BareRoot != "" {
+		if clause := worktreeGitFileDeny(m.cfg.Worktree); clause != "" {
+			sb.WriteString("\n")
+			sb.WriteString(clause)
+		}
+	}
+
 	// ── 22. FINAL DENIES — Go module cache is not executable ─
 	// The module cache holds downloaded dependency SOURCE. Section 5k grants
 	// it read-write because the toolchain must populate it. Without this deny,
