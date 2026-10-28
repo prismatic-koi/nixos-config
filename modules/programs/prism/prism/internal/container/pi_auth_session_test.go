@@ -621,6 +621,13 @@ func TestSyncPIAuthSession_HostChangeReachesSession(t *testing.T) {
 			t.Errorf("session %s = %v, want %s %s", p, sess[p], want[0], want[1])
 		}
 	}
+	// The session did not change github-copilot, so the old value in the
+	// session file is not reported as a value of the session.
+	for _, r := range res.Refused {
+		if strings.Contains(r, "github-copilot") {
+			t.Errorf("Refused has the old host value of github-copilot: %q", r)
+		}
+	}
 	if _, ok := sess["openrouter"]; ok {
 		t.Errorf("session has the host entry with a \"!\" value: %v", sess["openrouter"])
 	}

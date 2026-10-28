@@ -374,6 +374,10 @@ func SyncPIAuthSession(instanceID, hostAuthPath string) (PIAuthSyncResult, error
 		entry, reason := piOAuthEntry{}, piAuthOtherProvider
 		if p == piAuthHostProvider {
 			entry, reason = piAuthOAuthEntry(p, sess.entries[p])
+		} else if other, r := piAuthOAuthEntry(p, sess.entries[p]); r == "" && state.seen(p, other.hash()) {
+			// The old host value after a change on the host. A report of it
+			// looks like a planted entry.
+			continue
 		}
 		if reason != "" {
 			// An entry that the sync wrote from the host file is not a
