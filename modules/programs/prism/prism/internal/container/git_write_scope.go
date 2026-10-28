@@ -327,42 +327,53 @@ func prepareGitWriteDirs(s gitWriteScope, readOnly bool) {
 	}
 }
 
-// gitUpstreamRemote is the remote that prism names in the per-session
-// upstream. Each prism layout clones its repo as origin.
+// gitUpstreamRemote is the remote that prism names in the upstream of a
+// branch. Each prism layout clones its repo as origin.
 const gitUpstreamRemote = "origin"
 
-// gitUpstreamSection returns the gitconfig section that names the upstream
-// of the worktree branch. The session cannot write .bare/config, so the
-// upstream that push.autoSetupRemote writes there on the first push goes in
-// the per-session GIT_CONFIG_GLOBAL instead. Then git push writes no config,
-// and git pull and git status know the upstream.
+// ensureGitUpstream writes the upstream of the worktree branch into
+// .bare/config on the host, when the repo config names none. The generated
+// gitconfig sets push.autoSetupRemote, so the first git push of a branch
+// with no upstream writes it into .bare/config. The session cannot write
+// that file. With the upstream in place, a push in the session writes no
+// config, and git pull and git status know the upstream.
 //
-// It returns "" when the repo config already names an upstream for the
-// branch: git push refuses a branch with two upstreams. It also returns ""
-// for a session that cannot write its worktree, and when there is no branch.
-func gitUpstreamSection(s gitWriteScope, readOnly bool) string {
+// The upstream must be in .bare/config, and in no other file. Host-side git
+// in the worktree, for example the push of prism review --rebase, reads
+// .bare/config and not the per-session gitconfig. If it finds no upstream
+// there, it writes one, and git push then refuses a branch that has an
+// upstream in two files.
+//
+// It does nothing for a session that cannot write its worktree, and when
+// there is no branch. git config reads and writes the config files only. It
+// runs no hook and no fsmonitor command. The values come from the worktree
+// path, so the session controls none of them.
+func ensureGitUpstream(s gitWriteScope, readOnly bool) error {
 	if readOnly || s.Branch == "" || s.CommonDir == "" {
-		return ""
+		return nil
 	}
 	has, err := repoConfigHasUpstream(s.CommonDir, s.Branch)
 	if err != nil {
-		log.Printf("container: git write scope: read the upstream of %s: %v", s.Branch, err)
-		return ""
+		return fmt.Errorf("git write scope: read the upstream of %s: %w", s.Branch, err)
 	}
 	if has {
-		return ""
+		return nil
 	}
-	return fmt.Sprintf("\n[branch %q]\n    remote = %s\n    merge = refs/heads/%s\n", s.Branch, gitUpstreamRemote, s.Branch)
+	for _, kv := range [][2]string{
+		{"branch." + s.Branch + ".remote", gitUpstreamRemote},
+		{"branch." + s.Branch + ".merge", "refs/heads/" + s.Branch},
+	} {
+		if err := runGitConfig(s.CommonDir, "--local", kv[0], kv[1]); err != nil {
+			return fmt.Errorf("git write scope: write the upstream of %s: %w", s.Branch, err)
+		}
+	}
+	return nil
 }
 
 // repoConfigHasUpstream reports whether the repo config in commonDir names
-// a merge ref for branch. git config reads the config files only. It runs
-// no hook and no fsmonitor command.
+// a merge ref for branch.
 func repoConfigHasUpstream(commonDir, branch string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitBareRootTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "--git-dir", commonDir, "config", "--local", "--get-all", "branch."+branch+".merge")
-	err := cmd.Run()
+	err := runGitConfig(commonDir, "--local", "--get-all", "branch."+branch+".merge")
 	if err == nil {
 		return true, nil
 	}
@@ -371,4 +382,11 @@ func repoConfigHasUpstream(commonDir, branch string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+// runGitConfig runs git config with args on the repo in commonDir.
+func runGitConfig(commonDir string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), gitBareRootTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, "git", append([]string{"--git-dir", commonDir, "config"}, args...)...).Run()
 }

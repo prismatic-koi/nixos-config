@@ -362,10 +362,6 @@ func (m *Manager) writeSshConfigToDir(sessionDir string) error {
 //
 // Note: sandbox-exec sessions embed the real host key names, while bwrap
 // uses a generic-name bind-mount layout.
-//
-// The gitconfig also names the upstream of the worktree branch when the
-// repo config does not (gitUpstreamSection). The session cannot write the
-// repo config (#3293).
 func (m *Manager) writeGitconfigToDir(sessionDir string) error {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -378,28 +374,12 @@ func (m *Manager) writeGitconfigToDir(sessionDir string) error {
 	if signingKeyName == "" {
 		signingKeyName = "prismatic-koi-ed25519-signingkey"
 	}
-	if err := m.writeGitconfigArtefacts(
+	return m.writeGitconfigArtefacts(
 		filepath.Join(home, ".ssh", signingKeyName+".pub"),
 		SessionWorkDirAllowedSignersPath(sessionDir),
 		SessionWorkDirGitconfigPath(sessionDir),
 		SessionWorkDirAllowedSignersPath(sessionDir),
-	); err != nil {
-		return err
-	}
-	scope, _ := m.gitScope()
-	section := gitUpstreamSection(scope, m.cfg.WorktreeReadOnly)
-	if section == "" {
-		return nil
-	}
-	f, err := os.OpenFile(SessionWorkDirGitconfigPath(sessionDir), os.O_WRONLY|os.O_APPEND, 0)
-	if err != nil {
-		return fmt.Errorf("write gitconfig upstream: %w", err)
-	}
-	if _, err := f.WriteString(section); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("write gitconfig upstream: %w", err)
-	}
-	return f.Close()
+	)
 }
 
 // RemoveSessionWorkDir removes the session work directory tree for the

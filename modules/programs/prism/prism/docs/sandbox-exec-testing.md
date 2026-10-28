@@ -258,9 +258,13 @@ integration test coverage exists for:
   a real bare+worktree layout under `HOME` with the worktrees `main` and
   `feature`, and a bare remote in the per-session TMPDIR. A Nix git runs in
   the sandbox, in the worktree. Under the production profile:
-  - A worker in `feature` commits, fetches, pushes with the per-session
-    upstream and no config error, rebases, force-pushes, and runs
-    `git worktree list`.
+  - A worker in `feature` commits, fetches, pushes with the upstream that
+    Prepare writes into `.bare/config` and no config error, rebases,
+    force-pushes, and runs `git worktree list`.
+  - After a push from the sandbox, the host does what the pre-flight of
+    `prism review --rebase` does: a fetch, a rebase, and a push with
+    `push.autoSetupRemote`. Then a push and a pull from the sandbox work,
+    and `.bare/config` names one upstream.
   - The same worker cannot write a file in `main`, make `.pi` in `main` or
     `.agents` at the project root, write `.bare/config` or
     `.bare/hooks/post-checkout`, move `refs/heads/main` or `refs/stash`,
@@ -292,6 +296,10 @@ integration test coverage exists for:
     points the stash rules at another name. The stash write fails.
   - `TestSandboxExecGitWriteScope_WorkerMovesBranch` runs the writes of
     the review-agent test under the profile of a worker. They work.
+  - `TestSandboxExecGitWriteScope_PushFailsWithUpstreamInBothFiles` moves
+    the upstream from `.bare/config` into the session gitconfig. The push
+    on the host writes a second upstream into `.bare/config`, and the next
+    push from the sandbox fails.
 
   See `sandbox_exec_git_write_scope_darwin_test.go`.
 - **The podman and docker exec deny** — the final deny (section 21c) on

@@ -92,14 +92,22 @@ isolator can use the same function (#3315).
   The session cannot make a dir in `.bare`. If the reflog dir does not exist,
   git cannot write a ref: a fetch exits 255, and a commit exits 128. A fresh
   `git clone --bare` has no `.bare/logs`.
-- `writeGitconfigToDir` writes the upstream of the branch into the
-  per-session `GIT_CONFIG_GLOBAL` file, with `origin` as the remote. The
-  generated gitconfig sets `push.autoSetupRemote`, and without an upstream
-  the first `git push` writes it into `.bare/config`. That write fails in the
-  session. The push still exits 0, but it prints `error: unable to write
-  upstream branch configuration`. prism writes the section only when
-  `.bare/config` names no upstream for the branch, because git refuses to
-  push a branch with an upstream in two files.
+- `ensureGitUpstream` writes the upstream of the branch into `.bare/config`,
+  with `origin` as the remote, when `.bare/config` names none. It does not
+  do this for a review agent or an investigator. The generated gitconfig
+  sets `push.autoSetupRemote`, and without an upstream the first `git push`
+  writes it into `.bare/config`. That write fails in the session. The push
+  still exits 0, but it prints `error: unable to write upstream branch
+  configuration`.
+- The upstream must be in `.bare/config` and in no other file. Host-side
+  git in the worktree reads `.bare/config`, not the per-session
+  `GIT_CONFIG_GLOBAL` file. For example, `prism review --rebase` runs
+  `git push --force-with-lease` on the host. With no upstream in
+  `.bare/config`, that push writes one there. If the per-session file also
+  names an upstream, git then refuses each later push in the session
+  ("multiple upstream branches", exit 128).
+- Before the first push, `git status` reports that the upstream is gone,
+  and `git pull` finds no remote branch. Both change after the first push.
 
 ## Section order in the profile
 

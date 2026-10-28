@@ -500,48 +500,98 @@ func initBareCommonDir(t *testing.T, root string) {
 	}
 }
 
-// TestGitUpstreamSection: the per-session gitconfig names the upstream only
-// when the repo config does not. git push refuses a branch with an
-// upstream in both files.
-func TestGitUpstreamSection(t *testing.T) {
-	root := newGitLayout(t, "feature")
+// repoConfig returns the values of key in the repo config of commonDir.
+func repoConfig(t *testing.T, commonDir, key string) []string {
+	t.Helper()
+	out, err := exec.Command("git", "--git-dir", commonDir, "config", "--local", "--get-all", key).Output()
+	if err != nil {
+		return nil
+	}
+	return strings.Fields(string(out))
+}
+
+// TestEnsureGitUpstream: prism writes the upstream into .bare/config, where
+// host-side git also reads it, and only when the repo config names none.
+// git push refuses a branch with two upstreams.
+func TestEnsureGitUpstream(t *testing.T) {
+	root := newGitLayout(t, "feature", "other")
 	initBareCommonDir(t, root)
 	scope, err := resolveGitWriteScope(root, filepath.Join(root, "feature"), gitDirFor(root, "feature"))
 	if err != nil {
 		t.Fatalf("resolveGitWriteScope: %v", err)
 	}
+	bare := scope.CommonDir
 
-	want := "\n[branch \"feature\"]\n    remote = origin\n    merge = refs/heads/feature\n"
-	if got := gitUpstreamSection(scope, false); got != want {
-		t.Errorf("no repo upstream: section = %q, want %q", got, want)
+	if err := ensureGitUpstream(scope, true); err != nil {
+		t.Fatalf("read-only ensureGitUpstream: %v", err)
 	}
-	if got := gitUpstreamSection(scope, true); got != "" {
-		t.Errorf("read-only session: section = %q, want none", got)
+	if got := repoConfig(t, bare, "branch.feature.merge"); got != nil {
+		t.Fatalf("read-only session: branch.feature.merge = %q, want none", got)
 	}
 
-	if out, err := exec.Command("git", "--git-dir", scope.CommonDir, "config", "branch.feature.merge", "refs/heads/feature").CombinedOutput(); err != nil {
+	for i := 0; i < 2; i++ {
+		if err := ensureGitUpstream(scope, false); err != nil {
+			t.Fatalf("ensureGitUpstream (call %d): %v", i+1, err)
+		}
+		if got := repoConfig(t, bare, "branch.feature.remote"); len(got) != 1 || got[0] != "origin" {
+			t.Errorf("call %d: branch.feature.remote = %q, want [origin]", i+1, got)
+		}
+		if got := repoConfig(t, bare, "branch.feature.merge"); len(got) != 1 || got[0] != "refs/heads/feature" {
+			t.Errorf("call %d: branch.feature.merge = %q, want [refs/heads/feature]", i+1, got)
+		}
+	}
+
+	// An upstream that the repo config already names stays as it is.
+	other, err := resolveGitWriteScope(root, filepath.Join(root, "other"), gitDirFor(root, "other"))
+	if err != nil {
+		t.Fatalf("resolveGitWriteScope(other): %v", err)
+	}
+	if out, err := exec.Command("git", "--git-dir", bare, "config", "branch.other.merge", "refs/heads/upstream-name").CombinedOutput(); err != nil {
 		t.Fatalf("git config: %v: %s", err, out)
 	}
-	if got := gitUpstreamSection(scope, false); got != "" {
-		t.Errorf("repo upstream present: section = %q, want none", got)
+	if err := ensureGitUpstream(other, false); err != nil {
+		t.Fatalf("ensureGitUpstream(other): %v", err)
+	}
+	if got := repoConfig(t, bare, "branch.other.merge"); len(got) != 1 || got[0] != "refs/heads/upstream-name" {
+		t.Errorf("branch.other.merge = %q, want the existing [refs/heads/upstream-name]", got)
+	}
+	if got := repoConfig(t, bare, "branch.other.remote"); got != nil {
+		t.Errorf("branch.other.remote = %q, want none: the existing upstream is not changed", got)
 	}
 }
 
-// TestWriteGitconfigToDir_Upstream: the session gitconfig ends with the
-// upstream section of the worktree branch.
-func TestWriteGitconfigToDir_Upstream(t *testing.T) {
+// TestPrepareSandboxExec_UpstreamInRepoConfigOnly: Prepare writes the
+// upstream into .bare/config, and the session gitconfig names no upstream.
+func TestPrepareSandboxExec_UpstreamInRepoConfigOnly(t *testing.T) {
 	root := newGitLayout(t, "feature")
 	initBareCommonDir(t, root)
 	m := newGitScopeManager(t, root, "feature", Config{AgentRole: "worker"})
-	sessionDir := t.TempDir()
-	if err := m.writeGitconfigToDir(sessionDir); err != nil {
-		t.Fatalf("writeGitconfigToDir: %v", err)
+	sessionDir, err := m.sessionWorkDirPath()
+	if err != nil {
+		t.Fatalf("sessionWorkDirPath: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(m.sandboxExecProfilePath())
+		_ = os.RemoveAll(sessionDir)
+		if tmp, err := m.sessionTmpDirPath(); err == nil {
+			_ = os.RemoveAll(tmp)
+		}
+	})
+	if _, err := m.PrepareSandboxExec(); err != nil {
+		t.Fatalf("PrepareSandboxExec: %v", err)
+	}
+
+	if got := repoConfig(t, filepath.Join(root, ".bare"), "branch.feature.merge"); len(got) != 1 || got[0] != "refs/heads/feature" {
+		t.Errorf("branch.feature.merge in .bare/config = %q, want [refs/heads/feature]", got)
 	}
 	data, err := os.ReadFile(SessionWorkDirGitconfigPath(sessionDir))
 	if err != nil {
-		t.Fatalf("read gitconfig: %v", err)
+		t.Fatalf("read session gitconfig: %v", err)
 	}
-	if !strings.Contains(string(data), "[user]") || !strings.HasSuffix(string(data), "[branch \"feature\"]\n    remote = origin\n    merge = refs/heads/feature\n") {
-		t.Errorf("gitconfig does not hold [user] and end with the upstream section:\n%s", data)
+	if strings.Contains(string(data), "[branch") {
+		t.Errorf("session gitconfig names an upstream, so git sees two:\n%s", data)
+	}
+	if fi, err := os.Stat(filepath.Join(root, ".bare", "logs", "refs", "remotes")); err != nil || !fi.IsDir() {
+		t.Errorf("Prepare did not make .bare/logs/refs/remotes: %v", err)
 	}
 }

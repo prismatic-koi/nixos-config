@@ -251,15 +251,20 @@ func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string
 
 	// ── git write scope ──────────────────────────────
 	// Section 6e of the profile grants a write of refs and reflogs, but not
-	// a create of their parent dirs in .bare. So make them on the host here.
-	// A failed check of the scope is logged: the session starts, and git
-	// cannot write the path that the check refused.
+	// a create of their parent dirs in .bare, and not a write of
+	// .bare/config. So make the dirs and the upstream of the branch on the
+	// host here. A failure is logged: the session starts, and git cannot
+	// write the path that the check refused, or prints an error on the first
+	// push.
 	if m.cfg.BareRoot != "" {
 		scope, err := m.gitScope()
 		if err != nil {
 			log.Printf("container: sandbox-exec: %v", err)
 		}
 		prepareGitWriteDirs(scope, m.cfg.WorktreeReadOnly)
+		if err := ensureGitUpstream(scope, m.cfg.WorktreeReadOnly); err != nil {
+			log.Printf("container: sandbox-exec: %v", err)
+		}
 	}
 
 	// ── pi agent dir ───────────────────────────────

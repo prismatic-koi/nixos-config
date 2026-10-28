@@ -372,6 +372,62 @@ echo ../.. > "$gd/commondir.new" && mv "$gd/commondir.new" "$gd/commondir"`)
 	}
 }
 
+// pushAfterHostPush pushes from the sandbox, then does what the pre-flight
+// of prism review --rebase does on the host: a fetch, a rebase, and a push
+// with the host git config, which sets push.autoSetupRemote. Then it pushes
+// and pulls from the sandbox again, and returns the result of that step.
+func pushAfterHostPush(t *testing.T, f *gitScopeFixture) ([]byte, error) {
+	t.Helper()
+	profilePath := writeAugmentedPositiveProfile(t, f.prepared)
+	if out, err := f.run(t, profilePath, `echo one > one.txt && git add one.txt && git commit -q -m one && git push -q`); err != nil {
+		t.Fatalf("first push from the sandbox failed.\nExit: %v\nOutput: %s", err, out)
+	}
+	hostGit(t, f.nixGit, f.worktree, "fetch", "-q", "origin")
+	hostGit(t, f.nixGit, f.worktree, "rebase", "-q", "origin/main")
+	hostGit(t, f.nixGit, f.worktree, "-c", "push.autoSetupRemote=true", "push", "-q", "--force-with-lease")
+	return f.run(t, profilePath, `echo two > two.txt && git add two.txt && git commit -q -m two && git push -q && git pull -q --rebase`)
+}
+
+// TestSandboxExecGitWriteScope_PushAfterHostPush: Prepare writes the
+// upstream into .bare/config, so a push on the host in the worktree adds no
+// second upstream, and the next push and pull in the sandbox work.
+func TestSandboxExecGitWriteScope_PushAfterHostPush(t *testing.T) {
+	f := newGitScopeFixture(t, "feature", "worker", false)
+	out, err := pushAfterHostPush(t, f)
+	if err != nil {
+		t.Fatalf("push or pull from the sandbox failed after a push on the host.\nExit: %v\nOutput: %s", err, out)
+	}
+	if got := hostGit(t, f.nixGit, f.bareRoot, "--git-dir", f.bare(), "config", "--get-all", "branch.feature.merge"); got != "refs/heads/feature" {
+		t.Errorf("branch.feature.merge in .bare/config = %q, want one refs/heads/feature", got)
+	}
+}
+
+// TestSandboxExecGitWriteScope_PushFailsWithUpstreamInBothFiles is the
+// paired negative test: with the upstream in the session gitconfig and not
+// in .bare/config, the push on the host writes a second upstream into
+// .bare/config, and the next push from the sandbox fails.
+func TestSandboxExecGitWriteScope_PushFailsWithUpstreamInBothFiles(t *testing.T) {
+	f := newGitScopeFixture(t, "feature", "worker", false)
+	hostGit(t, f.nixGit, f.bareRoot, "--git-dir", f.bare(), "config", "--unset", "branch.feature.remote")
+	hostGit(t, f.nixGit, f.bareRoot, "--git-dir", f.bare(), "config", "--unset", "branch.feature.merge")
+	gitconfig, err := os.OpenFile(container.SessionWorkDirGitconfigPath(f.session), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("open session gitconfig: %v", err)
+	}
+	_, err = gitconfig.WriteString("\n[branch \"feature\"]\n    remote = origin\n    merge = refs/heads/feature\n")
+	if closeErr := gitconfig.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatalf("write session gitconfig: %v", err)
+	}
+
+	out, err := pushAfterHostPush(t, f)
+	if err == nil {
+		t.Fatalf("the sandbox pushed with an upstream in two files, so the positive test proves nothing.\nOutput: %s", out)
+	}
+}
+
 // coordinatorScript does the git work of a coordinator in main, then
 // tries the writes that only a worker of feature can do.
 const coordinatorScript = `set -u
