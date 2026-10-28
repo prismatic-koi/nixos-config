@@ -834,8 +834,8 @@ func TestUpsertStatusIfNotTerminal(t *testing.T) {
 		t.Error("UpsertStatusIfNotTerminal (deleted): got updated=true, want false (no-op)")
 	}
 
-	// Should be a no-op when ended_at is set — covers the cleanup race where
-	// KillSession fires pane-exited before SetEnded, but SetEnded runs first.
+	// Should be a no-op when ended_at is set: the pane-died hook can run for
+	// a dead agent pane after a path ended the row.
 	if err := d.UpsertStatus("repo@ended", "repo", "/code/repo/ended", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus (ended): %v", err)
 	}

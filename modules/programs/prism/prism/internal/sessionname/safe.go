@@ -7,7 +7,7 @@ import (
 
 // The safe sets keep a name out of shell syntax. tmux.nix puts a session
 // name into shell commands through tmux formats (status-right, the
-// session-closed and pane-exited hooks, and key bindings), and each place
+// session-closed and pane-died hooks, and key bindings), and each place
 // quotes it with #{q:...}. The safe set is the second layer: a name in the
 // set reads the same to a shell with or without the quote.
 //

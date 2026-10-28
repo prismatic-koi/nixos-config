@@ -295,6 +295,37 @@ func RenameWindow(target, name string) error {
 // an empty map for no additional env vars. The map is iterated in sorted key
 // order so the resulting argument list is deterministic.
 func NewWindow(session string, idx int, name, dir string, cmd string, envVars map[string]string) error {
+	_, err := run(newWindowArgs(session, idx, name, dir, cmd, envVars, nil)...)
+	return err
+}
+
+// NewWindowPane creates a window like NewWindow and returns the ID of its
+// pane, for example "%12".
+func NewWindowPane(session string, idx int, name, dir string, cmd string, envVars map[string]string) (string, error) {
+	return run(newWindowArgs(session, idx, name, dir, cmd, envVars, []string{"-P", "-F", "#{pane_id}"})...)
+}
+
+// AgentPaneOption is the pane option that marks the pane of the agent
+// process. The pane-died hook in tmux.nix passes its value, and
+// `prism event pane-died` acts only for a pane with the value "1". A pane
+// that a user splits off in the agent window does not get the option, so
+// its exit does not change the session state (#3306).
+const AgentPaneOption = "@prism_agent_pane"
+
+// MarkAgentPane sets AgentPaneOption to "1" on the pane paneID. The option
+// belongs to the pane, so it stays on the agent pane when the pane moves to
+// another window.
+func MarkAgentPane(paneID string) error {
+	if !strings.HasPrefix(paneID, "%") {
+		return fmt.Errorf("mark agent pane: %q is not a pane ID", paneID)
+	}
+	_, err := run("set-option", "-p", "-t", paneID, AgentPaneOption, "1")
+	return err
+}
+
+// newWindowArgs returns the new-window argv of NewWindow. extra goes before
+// the command.
+func newWindowArgs(session string, idx int, name, dir string, cmd string, envVars map[string]string, extra []string) []string {
 	args := []string{"new-window", "-t", fmt.Sprintf("%s:%d", session, idx), "-n", name}
 	if dir != "" {
 		args = append(args, "-c", dir)
@@ -310,11 +341,11 @@ func NewWindow(session string, idx int, name, dir string, cmd string, envVars ma
 			args = append(args, "-e", k+"="+envVars[k])
 		}
 	}
+	args = append(args, extra...)
 	if cmd != "" {
 		args = append(args, "sh", "-c", cmd)
 	}
-	_, err := run(args...)
-	return err
+	return args
 }
 
 // SendKeys sends key strokes to a target pane/window.

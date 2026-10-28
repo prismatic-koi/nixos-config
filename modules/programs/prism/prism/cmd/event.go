@@ -5,7 +5,7 @@ package cmd
 // Sub-subcommands:
 //
 //	state-change          --session <name> --state <state> --worktree <path>
-//	pane-died             --session <name> --window <name>
+//	pane-died             --session <name> --window <name> --exit-code <code> --agent-pane <value>
 //	tmux-session-start    --session <name> --worktree <path>
 //	tmux-session-end      --session <name>
 //	compaction            --session <name>
@@ -17,6 +17,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // proxyEventToHostAPI sends a prism event write to the host sidecar when
@@ -198,10 +200,11 @@ var eventStateChangeCmd = &cobra.Command{
 
 // --- pane-died ---
 //
-// Called by the tmux pane-exited hook when the agent pane exits. If the
-// session is currently in an active (non-terminal) state, this transitions it
-// to "interrupted". Sessions already in interrupted or deleted state are left
-// unchanged — this guards against stale hook fires after a clean exit.
+// The tmux pane-died hook (tmux.nix) runs this when a pane process exits.
+// For the agent pane, it sets the session to "interrupted" if the session
+// is in an active (non-terminal) state. Sessions already in interrupted or
+// deleted state are left unchanged — this guards against stale hook fires
+// after a clean exit.
 //
 // When exitCode is non-zero (signal-based exit or crash), "finished" is also
 // overridden with "interrupted" — a non-zero exit means the process did not
@@ -213,12 +216,15 @@ var eventPaneDiedCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		session, _ := cmd.Flags().GetString("session")
 		window, _ := cmd.Flags().GetString("window")
-		exitCode, _ := cmd.Flags().GetInt("exit-code")
+		exitCodeArg, _ := cmd.Flags().GetString("exit-code")
+		agentPane, _ := cmd.Flags().GetString("agent-pane")
 
-		// Only the agent window exit is meaningful — exits from term, edit,
-		// or any other window should not mark the session as interrupted.
-		if window != "agent" {
+		if !isAgentPaneExit(window, agentPane, cmd.Flags().Changed("agent-pane")) {
 			return nil
+		}
+		exitCode, err := paneExitCode(exitCodeArg)
+		if err != nil {
+			return fmt.Errorf("event pane-died: %w", err)
 		}
 
 		if proxied, err := proxyEventToHostAPI("pane-died", session, map[string]string{
@@ -244,6 +250,23 @@ var eventPaneDiedCmd = &cobra.Command{
 			// for races (session ended before the hook wrote a row) or for
 			// genuinely untracked sessions.
 			return nil
+		}
+		if s.State == string(agent.StateIdle) {
+			// The sidecar writes the first state_change event of a session
+			// at the harness handshake, and the row stays idle until the
+			// first turn. With no state_change event, the agent exited
+			// before the handshake. The readiness gate and the startup
+			// timeout of the sidecar handle that case and write "error".
+			// The readiness gate passes on any state_change of the session,
+			// so a write from here passes it for a dead agent, and the
+			// cleanup of a review agent then keeps "interrupted".
+			evts, err := d.QueryEvents(session, 1, nil, nil, []string{"state_change"})
+			if err != nil {
+				return fmt.Errorf("event pane-died: query state_change events: %w", err)
+			}
+			if len(evts) == 0 {
+				return nil
+			}
 		}
 
 		var updated bool
@@ -284,6 +307,33 @@ var eventPaneDiedCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// isAgentPaneExit reports whether the dead pane is the agent pane. The hook
+// passes the value of tmux.AgentPaneOption in --agent-pane. Then only the
+// value "1" counts, in any window: a user split in the agent window has no
+// value, and the agent pane keeps its value when a key binding moves it to
+// the edit window. A caller without --agent-pane, for example the /event
+// proxy, gets the window-name check.
+func isAgentPaneExit(window, agentPane string, agentPaneGiven bool) bool {
+	if agentPaneGiven {
+		return agentPane == "1"
+	}
+	return window == "agent"
+}
+
+// paneExitCode returns the exit code in --exit-code. The hook passes
+// #{pane_dead_status}, which is empty when a signal ended the process. An
+// empty value returns -1, so that it counts as a non-zero exit.
+func paneExitCode(arg string) (int, error) {
+	if arg == "" {
+		return -1, nil
+	}
+	code, err := strconv.Atoi(arg)
+	if err != nil {
+		return 0, fmt.Errorf("--exit-code %q is not a number", arg)
+	}
+	return code, nil
 }
 
 // --- tmux-session-start ---
@@ -832,7 +882,8 @@ func init() {
 	// pane-died flags
 	eventPaneDiedCmd.Flags().String("session", "", "tmux session name")
 	eventPaneDiedCmd.Flags().String("window", "", "tmux window name")
-	eventPaneDiedCmd.Flags().Int("exit-code", 0, "pane exit code (#{pane_dead_status}); non-zero overrides finished→interrupted")
+	eventPaneDiedCmd.Flags().String("exit-code", "0", "pane exit code (#{pane_dead_status}); empty when a signal ended the process; empty or non-zero overrides finished→interrupted")
+	eventPaneDiedCmd.Flags().String("agent-pane", "", "value of the "+tmux.AgentPaneOption+" pane option (#{"+tmux.AgentPaneOption+"}); when given, only the value 1 counts as the agent pane and --window is not read")
 	_ = eventPaneDiedCmd.MarkFlagRequired("session")
 	_ = eventPaneDiedCmd.MarkFlagRequired("window")
 

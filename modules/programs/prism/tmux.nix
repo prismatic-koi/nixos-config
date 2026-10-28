@@ -432,13 +432,15 @@ in
               # #{hook_session_name} names the closed session. In this hook,
               # #{session_name} names a live session (#3297).
               set-hook -g session-closed "run-shell '${prism} event tmux-session-end --session #{q:hook_session_name}'"
-              # Transition to interrupted when a pane dies unexpectedly mid-session.
-              # Only the agent window exit is relevant; prism event pane-died
-              # ignores exits from other windows (term, edit) and is a no-op for
-              # non-project sessions and sessions already in a terminal state.
-              # #{pane_dead_status} is passed so pane-died can override a prior
-              # "finished" state when the exit was non-zero (signal/crash).
-              set-hook -g pane-exited "run-shell '${prism} event pane-died --session #{q:session_name} --window #{q:window_name} --exit-code #{q:pane_dead_status}'"
+              # Set a session to interrupted when its agent process exits.
+              # remain-on-exit is on, so tmux runs pane-died, not pane-exited,
+              # and keeps the dead pane. In this hook the formats name the
+              # session, the window, and the status of the dead pane (#3306).
+              # prism event pane-died acts only for the pane that prism marked
+              # with @prism_agent_pane, so the exit of a user split is ignored.
+              # #{pane_dead_status} is empty when a signal ended the process.
+              # The --flag=value form keeps an empty value on its own flag.
+              set-hook -g pane-died "run-shell '${prism} event pane-died --session=#{q:session_name} --window=#{q:window_name} --exit-code=#{q:pane_dead_status} --agent-pane=#{q:@prism_agent_pane}'"
 
               # Remove HM session vars guard from tmux environment so new shells
               # re-evaluate $(cat ...) substitutions for secrets like GITHUB_TOKEN
