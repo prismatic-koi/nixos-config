@@ -7,7 +7,8 @@ package container
 //     /run/prism/pi-agent and set PI_CODING_AGENT_DIR to that path. The dir
 //     is private to the sandbox. It holds read-only binds of the entries of
 //     the host ~/.pi/agent (settings.json, themes/, AGENTS.md, skills/, and
-//     more), read-write binds of auth.json and atlassian-mcp-oauth.json,
+//     more), a read-write bind of atlassian-mcp-oauth.json, a symlink
+//     auth.json to the per-session auth.json (pi_auth_session.go, #3295),
 //     and a read-write bind of the sessions dir of the worktree. See
 //     pi_agent_dir.go for the write list and the reasons (#3284). Bind the
 //     shared lock dir and the Notion store dir read-write at their host
@@ -307,9 +308,10 @@ func piResolveResumeSession(cfg Config) bool {
 //	               bound into the sandbox at
 //	               $PI_CODING_AGENT_DIR/sessions/<encoded-cwd> (see
 //	               appendPIAgentDirBwrapMounts).
-//	sandbox-exec → the dispatcher injects PI_CODING_AGENT_DIR=<host
-//	               ~/.pi/agent> into the sandbox env and sandbox-exec shares
-//	               the host filesystem (cmd/agent_run_sandbox_exec_darwin.go),
+//	sandbox-exec → PI_CODING_AGENT_DIR is the per-session agent dir, and
+//	               its sessions entry is a symlink to the host sessions root
+//	               (LinkPIAgentDirEntries, #3295). sandbox-exec shares the
+//	               host filesystem (cmd/agent_run_sandbox_exec_darwin.go),
 //	               so pi writes to the host root there too.
 //
 // PI_CODING_AGENT_DIR mirrors pi's own ENV_AGENT_DIR honouring (pi 0.79
@@ -369,9 +371,9 @@ func piResumeHostSessionsRoot() (string, bool) {
 // bwrap, sandbox-exec) resolves to the host sessions root —
 // $PI_CODING_AGENT_DIR/sessions when set, else `~/.pi/agent/sessions/`.
 // For sandbox-exec this removal is load-bearing, not redundant: pi writes
-// its transcripts to the host root (the dispatcher injects
-// PI_CODING_AGENT_DIR into the sandbox env), so the per-session work-dir
-// wipe in RemoveSessionWorkDir never touches them.
+// its transcripts to the host root (through the sessions symlink of the
+// per-session agent dir), so the per-session work-dir wipe in
+// RemoveSessionWorkDir never touches them.
 //
 // Best-effort and non-fatal:
 //
@@ -615,8 +617,9 @@ func PIExtensionHostPath(hostDir string) string {
 //
 //   - PI agent config directory: a private dir at cfg.PIAgentConfigSandboxDir
 //     that holds read-only binds of the entries of cfg.PIAgentConfigHostDir,
-//     read-write binds of the credential files, and a read-write bind of the
-//     sessions dir of cfg.Worktree (appendPIAgentDirBwrapMounts,
+//     read-write binds of the credential files, a symlink auth.json to the
+//     per-session auth.json in cfg.PIAuthSessionDir, and a read-write bind
+//     of the sessions dir of cfg.Worktree (appendPIAgentDirBwrapMounts,
 //     pi_agent_dir.go). Sets PI_CODING_AGENT_DIR to the sandbox path.
 //   - Shared state dirs: cfg.PILockHostDir and cfg.PINotionHostDir,
 //     read-write, at the same path (pi_shared_state.go).
@@ -651,26 +654,37 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 	}
 	if agentConfigHostDir != "" {
 		var err error
-		args, err = appendPIAgentDirBwrapMounts(args, agentConfigHostDir, agentConfigSandboxDir, cfg.Worktree)
+		args, err = appendPIAgentDirBwrapMounts(args, agentConfigHostDir, agentConfigSandboxDir, cfg.Worktree, cfg.PIAuthSessionDir)
 		if err != nil {
 			return nil, err
 		}
 		args = append(args, "--setenv", "PI_CODING_AGENT_DIR", agentConfigSandboxDir)
+		if cfg.PIAuthSessionDir != "" {
+			// The anthropic-oauth extension asks the sidecar to sync the
+			// session auth.json under the shared refresh lock (#3295).
+			args = append(args, "--setenv", PIAuthSyncEnvVar, "1")
+		}
 	}
 
-	// ── Credential files at the host path (read-write) ───────────────────
+	// ── Credential files at the host path ─────────────────────────────────
 	// pi and the extensions read the credential files at
-	// $PI_CODING_AGENT_DIR (bound above). These binds at the host path serve
-	// a code path that resolves $HOME/.pi/agent/<file> directly in the
-	// sandbox. They are the same host files as the binds above, so they add
-	// no write access. preparePIAgentDir creates the files on the host, so
-	// that a login in the sandbox reaches the host.
+	// $PI_CODING_AGENT_DIR (bound above). These entries at the host path
+	// serve a code path that resolves $HOME/.pi/agent/<file> directly in the
+	// sandbox. They are the same files as the entries above, so they add no
+	// write access: a read-write bind of the host Atlassian file, and a
+	// symlink to the per-session auth.json. The host auth.json is not in the
+	// sandbox (#3295).
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		for _, name := range piAgentCredentialFiles {
 			path := filepath.Join(home, ".pi", "agent", name)
 			if fi, statErr := os.Lstat(path); statErr == nil && fi.Mode().IsRegular() {
 				args = append(args, "--bind", path, path)
 			}
+		}
+		if agentConfigHostDir != "" && cfg.PIAuthSessionDir != "" {
+			args = append(args, "--symlink",
+				filepath.Join(piAuthSessionSandboxDir, piAuthFileName),
+				filepath.Join(home, ".pi", "agent", piAuthFileName))
 		}
 	}
 

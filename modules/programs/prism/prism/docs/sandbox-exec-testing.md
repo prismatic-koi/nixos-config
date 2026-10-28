@@ -329,34 +329,49 @@ integration test coverage exists for:
   It does not look below the children of `/var/tmp`.
 - **The pi agent dir** — the section-6a grant on `~/.pi/agent`, for pi
   sessions only: a read of the whole dir, and a write of an exact list
-  (`auth.json`, `atlassian-mcp-oauth.json`, the four pi lock dirs, and the
-  sessions dir of the worktree). Also the section-6c grant on the shared
-  lock dir and the Notion store dir, `~/.local/state/prism/pi-locks` and
+  (`atlassian-mcp-oauth.json` and the sessions dir of the worktree). The
+  section-6d grant on the per-session agent dir, which is
+  `PI_CODING_AGENT_DIR` of the session: it holds the `auth.json` of the
+  session, the pi lock dirs, and a symlink to each other host entry
+  (#3295). Also the section-6c grant on the shared lock dir and the
+  Notion store dir, `~/.local/state/prism/pi-locks` and
   `~/.local/state/prism/pi-notion` (#3289, #3290), the final deny
   (section 21f) on create and unlink of `auth.json` and
-  `atlassian-mcp-oauth.json` (#3284), and the final deny (section 21g) on a
-  replace or a mode change of the two shared dir nodes. The test sets a test-owned `HOME`
-  under the real home (`useTestHome`), so it never touches the real
-  `~/.pi/agent`. Under the production profile, each write that pi and its
-  extensions do in a normal session works and reaches the host. Each plant
-  fails with "Operation not permitted", and the host dir does not change: a
-  change of `settings.json`, a new `SYSTEM.md` or `mcp.json`, a file in
-  `bin/`, a write in the sessions dir of another worktree, a removal or a
-  replacement of `auth.json`, a Notion store name in the agent dir, and a
-  removal, a rename, or a mode change of a shared dir node. The paired
-  negatives:
+  `atlassian-mcp-oauth.json` (#3284), the final deny (section 21g) on a
+  replace or a mode change of the two shared dir nodes, and the final deny
+  (section 21h) on the same for the per-session agent dir node. The test
+  sets a test-owned `HOME` under the real home (`useTestHome`), so it never
+  touches the real `~/.pi/agent`. Under the production profile, each write
+  that pi and its extensions do in a normal session works. A write of
+  `auth.json` reaches the per-session file, and the other writes reach the
+  host. Each plant fails with "Operation not permitted", and the host dir
+  does not change: a change of `settings.json`, a new `SYSTEM.md` or
+  `mcp.json`, a file in `bin/`, a write in the sessions dir of another
+  worktree, a write, a removal, or a replacement of the host `auth.json`, a
+  write through a symlink in the per-session agent dir, a Notion store name
+  in the agent dir, and a removal, a rename, or a mode change of a shared
+  dir node or of the per-session agent dir node. The paired negatives:
   - `TestSandboxExecPIAgentDir_PlantsWorkWithOldGrant` replaces the write
     list with the old read-write grant of the whole dir and strips section
     21f. The plants work.
+  - `TestSandboxExecPIAgentDir_HostAuthWritableWithOldGrant` adds the
+    write grant of the host `auth.json` from #3284. The session writes a
+    `!` value into it.
+  - `TestSandboxExecPIAgentDir_PiWritesDeniedWithoutSessionClause` strips
+    the section-6d clause. The first read or lock-dir `mkdir` in the
+    per-session agent dir fails.
   - `TestSandboxExecPIAgentDir_PiWritesDeniedWithoutWriteClause` strips
-    the section-6a write clause. The first pi lock-dir `mkdir` fails.
+    the section-6a write clause. The write of the Atlassian file fails.
   - `TestSandboxExecPIAgentDir_SharedStateWritesDeniedWithoutClause` strips
     the section-6c clause. The `mkdir` of the refresh lock dir fails.
   - `TestSandboxExecPIAgentDir_SharedDirReplaceWorksWithoutDeny` strips
     section 21g. The session can remove the lock dir node.
+  - `TestSandboxExecPIAgentDir_SessionDirReplaceWorksWithoutDeny` strips
+    section 21h. The session can change the mode of the per-session agent
+    dir node.
   - `TestSandboxExecPIAgentDir_CredentialReplaceWorksWithoutDeny` strips
-    section 21f. The session can remove `auth.json` and put a symlink at
-    its path.
+    section 21f. The session can remove `atlassian-mcp-oauth.json` and put
+    a symlink at its path.
 
   See `sandbox_exec_pi_agent_dir_darwin_test.go`.
 

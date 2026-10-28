@@ -5,13 +5,14 @@ package container
 //
 // pi 1.4 resolves the key of each `type: "api_key"` entry in auth.json with
 // resolveConfigValue (dist/core/resolve-config-value.js). A value that starts
-// with "!" runs as a shell command. A sandboxed session must write auth.json
-// for the OAuth refresh, so it can plant such a value, and the next pi that
-// reads the file runs it. Before each pi start that prism makes, prism reads
-// the file on the host and refuses the start if a value starts with "!".
+// with "!" runs as a shell command. A sandboxed session writes its own
+// auth.json, not the host file (pi_auth_session.go, #3295). A sandbox of a
+// prism without #3295 can have put such a value in the host file. So before
+// each pi start that prism makes, prism reads the host file and refuses the
+// start if a value starts with "!".
 //
-// This check does not cover a pi that a person starts in a terminal, or a
-// pi that already runs. See docs/invariants/sandbox-pi-agent-dir.md.
+// See "The pre-start check of auth.json" in
+// docs/invariants/sandbox-pi-agent-dir.md.
 
 import (
 	"bytes"

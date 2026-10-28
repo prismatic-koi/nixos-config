@@ -15,6 +15,7 @@ import {
   type ClaudeCredentials,
 } from "./credentials.ts"
 import { acquireRefreshLock } from "./refresh-lock.ts"
+import { syncSessionAuth } from "./session-sync.ts"
 
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
@@ -193,6 +194,11 @@ function toOAuthCredentials(creds: ClaudeCredentials): OAuthCredentials {
 // pi accepts, it returns that token and sends no request. Else it refreshes
 // with the newest refresh token on disk, and writes the result before it
 // releases the lock, so that the next holder reads it.
+//
+// In a sandboxed session auth.json is the file of the session (#3295). So
+// in the lock the handler asks the sidecar for a sync before it reads the
+// file, to get a token that another session wrote, and after it writes a
+// new token, so that the host and the next holder get it.
 export async function refreshAnthropicToken(
   credentials: OAuthCredentials,
 ): Promise<OAuthCredentials> {
@@ -206,6 +212,7 @@ export async function refreshAnthropicToken(
 
   const lock = await acquireRefreshLock()
   if (!lock) {
+    await syncSessionAuth("pull")
     const stored = readCredentials()
     if (peerToken(stored)) return toOAuthCredentials(stored)
     // The same fallback as a failed request: keep a token that still works
@@ -221,6 +228,7 @@ export async function refreshAnthropicToken(
   }
 
   try {
+    await syncSessionAuth("pull")
     const stored = readCredentials()
     if (peerToken(stored)) {
       log("refresh_adopted", { expiresAt: stored.expiresAt })
@@ -238,6 +246,7 @@ export async function refreshAnthropicToken(
           expiresAt: result.expires,
         })
         invalidateCache()
+        await syncSessionAuth("push")
       } catch (err) {
         log("credentials_write_error", {
           error: err instanceof Error ? err.message : String(err),

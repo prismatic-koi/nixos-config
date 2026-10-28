@@ -3,6 +3,7 @@ package container
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -585,10 +586,14 @@ func TestAppendPIBwrapMounts_NoPIAuthJSONEnvVar(t *testing.T) {
 	}
 }
 
-func TestAppendPIBwrapMounts_BindsAuthJSONWhenExists(t *testing.T) {
-	// When ~/.pi/agent/auth.json exists on the host, appendPIBwrapMounts must
-	// emit --bind <authPath> <authPath> (read-write) so that OAuth token
-	// refreshes inside the bwrap sandbox are persisted back to the host file.
+func TestAppendPIBwrapMounts_HostAuthJSONNotInSandbox(t *testing.T) {
+	// The host ~/.pi/agent/auth.json is never in the bwrap sandbox, also when
+	// it exists: pi runs an api_key value in it that starts with "!", and a
+	// sandbox must not write the file that later sessions read (#3295). The
+	// sandbox reads and writes the per-session auth.json: a symlink at the
+	// agent dir path and at the host path, to the per-session dir that is
+	// bound at piAuthSessionSandboxDir. PRISM_PI_AUTH_SYNC tells the
+	// anthropic-oauth extension to ask the sidecar for a sync.
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 
@@ -600,6 +605,10 @@ func TestAppendPIBwrapMounts_BindsAuthJSONWhenExists(t *testing.T) {
 	if err := os.WriteFile(authPath, []byte(`{"token":"secret"}`), 0o600); err != nil {
 		t.Fatalf("write auth.json: %v", err)
 	}
+	authDir := filepath.Join(t.TempDir(), "agent")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	extDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
@@ -610,23 +619,42 @@ func TestAppendPIBwrapMounts_BindsAuthJSONWhenExists(t *testing.T) {
 		t.Fatalf("write fake pi binary: %v", err)
 	}
 
-	cfg := Config{
-		PIBinaryPath:       fakePI,
-		PIExtensionHostDir: extDir,
-	}
-
-	args, err := appendPIBwrapMounts(nil, cfg)
-	if err != nil {
-		t.Fatalf("appendPIBwrapMounts: %v", err)
-	}
-
-	// Must contain --bind authPath authPath (read-write, not --ro-bind).
-	if !hasTriple(args, "--bind", authPath, authPath) {
-		t.Errorf("expected --bind %q %q in args; got %v", authPath, authPath, redactedArgs(args))
-	}
-	// Must NOT use --ro-bind for auth.json (OAuth refreshes need write access).
-	if hasTriple(args, "--ro-bind", authPath, authPath) {
-		t.Errorf("--ro-bind must not be used for auth.json (need write access for token refresh); got %v", redactedArgs(args))
+	for _, withAuthDir := range []bool{false, true} {
+		cfg := Config{
+			PIBinaryPath:            fakePI,
+			PIExtensionHostDir:      extDir,
+			PIAgentConfigHostDir:    piAgentDir,
+			PIAgentConfigSandboxDir: "/run/prism/pi-agent",
+		}
+		if withAuthDir {
+			cfg.PIAuthSessionDir = authDir
+		}
+		args, err := appendPIBwrapMounts(nil, cfg)
+		if err != nil {
+			t.Fatalf("appendPIBwrapMounts: %v", err)
+		}
+		for i := 0; i+2 < len(args); i++ {
+			if strings.Contains(args[i], "bind") && args[i+1] == authPath {
+				t.Errorf("withAuthDir=%v: the host auth.json is bound: %v", withAuthDir, redactedArgs(args))
+			}
+		}
+		sessionAuth := piAuthSessionSandboxDir + "/auth.json"
+		hasSync := hasTriple(args, "--setenv", PIAuthSyncEnvVar, "1")
+		if withAuthDir {
+			for _, dst := range []string{"/run/prism/pi-agent/auth.json", authPath} {
+				if !hasTriple(args, "--symlink", sessionAuth, dst) {
+					t.Errorf("expected --symlink %s %s; got %v", sessionAuth, dst, redactedArgs(args))
+				}
+			}
+			if !hasTriple(args, "--bind", authDir, piAuthSessionSandboxDir) {
+				t.Errorf("expected --bind %s %s; got %v", authDir, piAuthSessionSandboxDir, redactedArgs(args))
+			}
+			if !hasSync {
+				t.Errorf("expected --setenv %s 1; got %v", PIAuthSyncEnvVar, redactedArgs(args))
+			}
+		} else if slices.Contains(args, sessionAuth) || hasSync {
+			t.Errorf("with no per-session auth dir, args name it: %v", redactedArgs(args))
+		}
 	}
 }
 

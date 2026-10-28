@@ -1659,8 +1659,8 @@ const (
 //     resolution. The on-disk JSONL transcript. The encoded-cwd directory is keyed off
 //     cfg.Worktree, which is stable across a reused branch name (the worktree
 //     path is derived deterministically from the branch). The same host root
-//     applies to sandbox-exec sessions: pi writes there because the
-//     dispatcher injects PI_CODING_AGENT_DIR into the sandbox env, so this
+//     applies to sandbox-exec sessions: pi writes there through the
+//     sessions symlink of its per-session agent dir, so this
 //     removal is the only step that deletes the transcript — the per-session
 //     work-dir wipe in RemoveSessionWorkDir never touches it. The transcript
 //     is what pi's interactive /resume reads, and it is NOT load-bearing for
@@ -1843,11 +1843,14 @@ var severGateForceAlwaysSever bool
 //   - the per-session podman-proxy audit dir, which sits outside the work
 //     dir so the agent has no write path to its own audit trail (see
 //     internal/container/podman_proxy_audit.go) and therefore needs its
-//     own removal here, and
+//     own removal here,
 //   - the per-session `prism container` audit dir, for the same reason
 //     (see internal/container/prism_container_state.go). It is removed
 //     only after a sweep of the incarnation succeeds
-//     (removePrismContainerAuditDir).
+//     (removePrismContainerAuditDir), and
+//   - the per-session pi auth dir: the auth.json of a bwrap or
+//     sandbox-exec session and its sync state (see
+//     internal/container/pi_auth_session.go, #3295).
 //
 // All removals are non-fatal and idempotent. A directory that does not
 // exist is silently skipped: a bwrap or host session has no work dir, and
@@ -1860,6 +1863,7 @@ func removeSessionInstanceDirs(instanceID string) {
 	container.RemoveSessionTmpDir(instanceID)
 	container.RemovePodmanProxyAuditDir(instanceID)
 	removePrismContainerAuditDir(instanceID)
+	container.RemovePIAuthSession(instanceID)
 }
 
 // instanceIDFromStatus returns the instance_id from the agent_status row for
