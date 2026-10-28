@@ -193,11 +193,15 @@ binds it read-write (#3315).
 
 ## bwrap (#3315)
 
-bwrap closes the code-execution and redirect paths of this write scope, by a
+bwrap closes the direct-write code-execution paths (`.bare/config`,
+`.bare/hooks`, `.bare/info`, the other worktrees) and the in-sandbox redirect
+paths (the own worktree's pointer files and `<worktree>/.git`), by a
 different mechanism than the SBPL profile: it binds `.bare` and the worktree
-read-write, then layers read-only binds over the paths that run code on the
-host. A read-only bind blocks a write with `EROFS`, and the mount point
-cannot be renamed, removed, or replaced (`EBUSY`).
+read-write, then layers read-only binds over those paths. A read-only bind
+blocks a write with `EROFS`, and the mount point cannot be renamed, removed,
+or replaced (`EBUSY`). It does NOT close the top-level `.bare/commondir`
+route (see the last bullet): that stays a host code-execution route until
+#3324.
 
 - `.bare/config`, `.bare/hooks`, `.bare/info`, and the whole
   `.bare/worktrees` tree are read-only; the session's own worktree git dir
@@ -214,10 +218,13 @@ cannot be renamed, removed, or replaced (`EBUSY`).
   not a no-op: any commondir file makes git treat the project root (which
   holds a `.git` gitfile pointing at `.bare`) as a work tree, so a git
   command run there behaves destructively. A worker can still create
-  `.bare/commondir`; the host-side defence is #3322/#3324, whose `OpenBare`
-  refuses a repo that has a `.bare/commondir` file — prism host git refuses
-  the repo until the file is removed, a denial of service, not code
-  execution — rather than following it.
+  `.bare/commondir`. **Until #3324 merges this is a live host
+  code-execution route**: `prism spawn`'s `git --git-dir .bare worktree add`
+  follows a planted `.bare/commondir` and runs a planted hook on the host.
+  After #3324, its `OpenBare` refuses a repo that has a `.bare/commondir`
+  file (prism host git refuses the repo until the file is removed), so the
+  route becomes a denial of service, not code execution. #3321 and #3324
+  therefore depend on each other and should merge close together.
 
 bwrap does NOT yet reach the full sandbox-exec write scope. Because `.bare`,
 `.bare/refs`, and `.bare/logs` are inside the read-write `.bare` bind, a
