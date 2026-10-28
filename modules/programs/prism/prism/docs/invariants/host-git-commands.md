@@ -121,5 +121,8 @@ worktree, because its walk starts at the parent.
   `commondir` redirect, and `runGH` with a stub `gh` that runs git.
 - `internal/git/host_guard_test.go`: `TestHostGit_NoDirectGitExec` fails
   if a non-test file outside `internal/git/host.go` starts git itself. It
-  also fails if a function starts `gh` or `glab` without the env, unless
-  the test names the function with a reason.
+  also fails if a function starts `gh` or `glab` and does not call
+  `git.EnvForDir` or `Repo.Env`, unless the test names the function with a
+  reason. An assignment such as `cmd.Env = os.Environ()` is not a call, so
+  it does not satisfy the check. `TestHostGit_GuardFindings` holds the
+  negative cases.

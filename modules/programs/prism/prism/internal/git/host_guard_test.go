@@ -4,10 +4,12 @@ package git
 // docs/invariants/host-git-commands.md.
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,7 +33,7 @@ var ghWithoutEnvAllowed = map[string]string{
 // hostGitExecAllowed calls exec.Command or exec.CommandContext with "git".
 // Use git.Repo, git.OpenDir, or git.CloneCommand.
 //
-// It also fails if a function starts gh or glab and does not get the env from
+// It also fails if a function starts gh or glab and does not call
 // git.EnvForDir or Repo.Env, unless ghWithoutEnvAllowed names it.
 func TestHostGit_NoDirectGitExec(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
@@ -54,8 +56,18 @@ func TestHostGit_NoDirectGitExec(t *testing.T) {
 		}
 		rel, _ := filepath.Rel(root, path)
 		rel = filepath.ToSlash(rel)
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
 		scanned++
-		checkHostGitFile(t, path, rel)
+		findings, err := checkHostGitSource(rel, src)
+		if err != nil {
+			t.Fatalf("parse %s: %v", rel, err)
+		}
+		for _, f := range findings {
+			t.Error(f)
+		}
 		return nil
 	})
 	if err != nil {
@@ -66,21 +78,103 @@ func TestHostGit_NoDirectGitExec(t *testing.T) {
 	}
 }
 
-func checkHostGitFile(t *testing.T, path, rel string) {
-	t.Helper()
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, nil, 0)
-	if err != nil {
-		t.Fatalf("parse %s: %v", rel, err)
+// TestHostGit_GuardFindings feeds the checker small files. A gh call that
+// sets cmd.Env to a value that is not from git.EnvForDir or Repo.Env must
+// fail: an assignment to the Env field is not a call to Env.
+func TestHostGit_GuardFindings(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"git exec", `package p
+import "os/exec"
+func f() { _ = exec.Command("git", "status") }
+`, 1},
+		{"git exec with a context", `package p
+import ("context"; "os/exec")
+func f(ctx context.Context) { _ = exec.CommandContext(ctx, "git", "status") }
+`, 1},
+		{"gh with the inherited env", `package p
+import ("os"; "os/exec")
+func f() {
+	cmd := exec.Command("gh", "pr", "view")
+	cmd.Env = os.Environ()
+	_ = cmd.Run()
+}
+`, 1},
+		{"glab with a filtered env", `package p
+import ("os"; "os/exec")
+func clean(e []string) []string { return e }
+func f() {
+	cmd := exec.Command("glab", "mr", "view")
+	cmd.Env = clean(os.Environ())
+	_ = cmd.Run()
+}
+`, 1},
+		{"gh with no env", `package p
+import "os/exec"
+func f() { _ = exec.Command("gh", "pr", "view").Run() }
+`, 1},
+		{"gh with git.EnvForDir", `package p
+import ("os"; "os/exec"; "github.com/prismatic-koi/prism/internal/git")
+func f() error {
+	env, err := git.EnvForDir("", os.Environ())
+	if err != nil { return err }
+	cmd := exec.Command("gh", "pr", "view")
+	cmd.Env = env
+	return cmd.Run()
+}
+`, 0},
+		{"gh with Repo.Env in a closure", `package p
+import ("os"; "os/exec"; "github.com/prismatic-koi/prism/internal/git")
+func f(r git.Repo) {
+	env := r.Env(os.Environ())
+	run := func() error {
+		cmd := exec.Command("gh", "api", "x")
+		cmd.Env = env
+		return cmd.Run()
 	}
+	_ = run()
+}
+`, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings, err := checkHostGitSource("internal/p/p.go", []byte(tc.src))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(findings) != tc.want {
+				t.Errorf("findings = %d %v, want %d", len(findings), findings, tc.want)
+			}
+		})
+	}
+}
+
+// checkHostGitSource returns one finding for each call in src that breaks
+// the rule. rel is the path of the file below the module root.
+func checkHostGitSource(rel string, src []byte) ([]string, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, rel, src, 0)
+	if err != nil {
+		return nil, err
+	}
+	var findings []string
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
+		// Only a call counts. `cmd.Env = ...` is a field of exec.Cmd, not
+		// a call to Repo.Env.
 		usesHostEnv := false
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			if sel, ok := n.(*ast.SelectorExpr); ok && (sel.Sel.Name == "EnvForDir" || sel.Sel.Name == "Env") {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "EnvForDir" || sel.Sel.Name == "Env") {
 				usesHostEnv = true
 			}
 			return true
@@ -94,19 +188,20 @@ func checkHostGitFile(t *testing.T, path, rel string) {
 			switch prog {
 			case "git":
 				if !hostGitExecAllowed[rel] {
-					t.Errorf("%s: %s starts git directly; use git.Repo (see docs/invariants/host-git-commands.md)",
-						fset.Position(call.Pos()), fn.Name.Name)
+					findings = append(findings, fmt.Sprintf("%s: %s starts git directly; use git.Repo (see docs/invariants/host-git-commands.md)",
+						fset.Position(call.Pos()), fn.Name.Name))
 				}
 			case "gh", "glab":
 				key := rel + ":" + fn.Name.Name
 				if !usesHostEnv && ghWithoutEnvAllowed[key] == "" {
-					t.Errorf("%s: %s starts %s without git.EnvForDir or Repo.Env (see docs/invariants/host-git-commands.md)",
-						fset.Position(call.Pos()), fn.Name.Name, prog)
+					findings = append(findings, fmt.Sprintf("%s: %s starts %s without a call to git.EnvForDir or Repo.Env (see docs/invariants/host-git-commands.md)",
+						fset.Position(call.Pos()), fn.Name.Name, prog))
 				}
 			}
 			return true
 		})
 	}
+	return findings, nil
 }
 
 // execProgram returns the program name of an exec.Command or
