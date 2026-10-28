@@ -146,35 +146,48 @@
         };
       };
 
-      packages = forEachSystem (pkgs: {
-        # Default prism build — no Go test execution. Used by
-        # nixosConfigurations / darwinConfigurations and by local
-        # `nh switch` so rebuilds are fast. The Go test suite is owned
-        # by the `go-tests` CI job (see .github/workflows/pr-gate.yml).
-        # The homeless-shelter sandbox signal is preserved by the
-        # `nix-build-prism-checked` CI job, which builds prism with
-        # `runChecks = true` (see pkgs/prism.nix).
-        prism = pkgs.callPackage ./pkgs/prism.nix { };
+      packages = forEachSystem (
+        pkgs:
+        {
+          # Default prism build — no Go test execution. Used by
+          # nixosConfigurations / darwinConfigurations and by local
+          # `nh switch` so rebuilds are fast. The Go test suite is owned
+          # by the `go-tests` CI job (see .github/workflows/pr-gate.yml).
+          # The homeless-shelter sandbox signal is preserved by the
+          # `nix-build-prism-checked` CI job, which builds prism with
+          # `runChecks = true` (see pkgs/prism.nix).
+          prism = pkgs.callPackage ./pkgs/prism.nix { };
 
-        # Default battery-monitor build — same `runChecks` split as
-        # prism. Used by nixosConfigurations and local `nh switch`.
-        # The `nix-build-battery-monitor-checked` CI job overrides
-        # `runChecks = true` to preserve the homeless-shelter signal.
-        battery-monitor = pkgs.callPackage ./pkgs/battery-monitor.nix { };
+          # Default battery-monitor build — same `runChecks` split as
+          # prism. Used by nixosConfigurations and local `nh switch`.
+          # The `nix-build-battery-monitor-checked` CI job overrides
+          # `runChecks = true` to preserve the homeless-shelter signal.
+          battery-monitor = pkgs.callPackage ./pkgs/battery-monitor.nix { };
 
-        # flate: agent sessions need it on PATH (issue #2990).
-        flate = pkgs.callPackage ./pkgs/flate.nix { };
+          # flate: agent sessions need it on PATH (issue #2990).
+          flate = pkgs.callPackage ./pkgs/flate.nix { };
 
-        # twg is unfree, and the plain nixpkgs set refuses unfree packages.
-        # Allow twg by name only. Do not set allowUnfree here.
-        twg =
-          (import nixpkgs {
-            inherit (pkgs.stdenv.hostPlatform) system;
-            config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "twg";
-          }).callPackage
-            ./pkgs/twg.nix
-            { };
-      });
+          # twg is unfree, and the plain nixpkgs set refuses unfree packages.
+          # Allow twg by name only. Do not set allowUnfree here.
+          twg =
+            (import nixpkgs {
+              inherit (pkgs.stdenv.hostPlatform) system;
+              config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "twg";
+            }).callPackage
+              ./pkgs/twg.nix
+              { };
+        }
+        // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          # Claude Desktop is unfree. Allow it by name only.
+          claude-desktop =
+            (import nixpkgs {
+              inherit (pkgs.stdenv.hostPlatform) system;
+              config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-desktop";
+            }).callPackage
+              ./pkgs/claude-desktop.nix
+              { };
+        }
+      );
 
       apps = forEachSystem (pkgs: {
         # theme truecolor swatch preview (see

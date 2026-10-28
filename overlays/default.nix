@@ -95,6 +95,14 @@ rec {
       # twg: Atlassian Teamwork Graph CLI, prebuilt and unfree (issue #3195).
       twg = final.callPackage ../pkgs/twg.nix { };
 
+      # claude-desktop: official Linux .deb, prebuilt and unfree (issue #3340).
+      # Linux only; Darwin gets null so evaluation does not break.
+      claude-desktop =
+        if final.stdenv.hostPlatform.isLinux then
+          final.callPackage ../pkgs/claude-desktop.nix { }
+        else
+          null;
+
       prism = final.callPackage ../pkgs/prism.nix { };
 
       # battery-monitor: Linux-only Go daemon (UPower + sysfs +
