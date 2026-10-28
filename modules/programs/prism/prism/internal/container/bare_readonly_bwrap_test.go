@@ -59,16 +59,28 @@ func fakeBareLayout(t *testing.T) (bareDir, ownGitDir, siblingGitDir string) {
 	if err := os.WriteFile(filepath.Join(bareDir, "config"), []byte("[core]\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile config: %v", err)
 	}
+	// The redirect files the overlays pin: the benign top-level commondir, and
+	// the own worktree's commondir / gitdir / config.worktree.
+	if err := os.WriteFile(filepath.Join(bareDir, "commondir"), []byte(".\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile commondir: %v", err)
+	}
+	for _, f := range []string{"commondir", "gitdir", "config.worktree"} {
+		if err := os.WriteFile(filepath.Join(ownGitDir, f), []byte("../..\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile own %s: %v", f, err)
+		}
+	}
 	return bareDir, ownGitDir, siblingGitDir
 }
 
 // productionBareBinds composes the .bare bind sequence exactly as BuildArgs
-// does: the read-write .bare bind, the read-only overlays, then the own
-// worktree read-write bind last (so it wins for that subtree).
+// does: the read-write .bare bind, the read-only overlays, the own worktree
+// read-write bind, then the own-worktree redirect-file pins last (so they win
+// for just those files).
 func productionBareBinds(bareDir, ownGitDir string) []string {
 	args := []string{"--bind", bareDir, bareDir}
 	args = append(args, bwrapBareReadOnlyOverlays(bareDir)...)
-	return append(args, "--bind", ownGitDir, ownGitDir)
+	args = append(args, "--bind", ownGitDir, ownGitDir)
+	return append(args, bwrapOwnWorktreeReadOnlyPins(ownGitDir)...)
 }
 
 // runBareProbe runs script in a minimal bwrap sandbox with the supplied .bare
@@ -111,6 +123,11 @@ func TestBwrapBareReadOnly_OverlaysLockCodeExecutionPaths(t *testing.T) {
 		`if ( printf '' > ` + sh(filepath.Join(bareDir, "hooks", "post-checkout")) + ` ) 2>/dev/null; then echo hooks-create OK; else echo hooks-create FAIL; fi`,
 		`if ( printf '' > ` + sh(filepath.Join(bareDir, "info", "attributes")) + ` ) 2>/dev/null; then echo info-create OK; else echo info-create FAIL; fi`,
 		`if ( printf '' > ` + sh(filepath.Join(siblingGitDir, "config.worktree")) + ` ) 2>/dev/null; then echo sibling-create OK; else echo sibling-create FAIL; fi`,
+		// Top-level commondir and the own worktree redirect files: must FAIL.
+		`if ( printf x >> ` + sh(filepath.Join(bareDir, "commondir")) + ` ) 2>/dev/null; then echo commondir-write OK; else echo commondir-write FAIL; fi`,
+		`if ( printf x >> ` + sh(filepath.Join(ownGitDir, "commondir")) + ` ) 2>/dev/null; then echo own-commondir-write OK; else echo own-commondir-write FAIL; fi`,
+		`if ( printf x >> ` + sh(filepath.Join(ownGitDir, "gitdir")) + ` ) 2>/dev/null; then echo own-gitdir-write OK; else echo own-gitdir-write FAIL; fi`,
+		`if ( printf x >> ` + sh(filepath.Join(ownGitDir, "config.worktree")) + ` ) 2>/dev/null; then echo own-cfgwt-write OK; else echo own-cfgwt-write FAIL; fi`,
 		// Read-write: these must succeed.
 		`if ( printf '' > ` + sh(filepath.Join(ownGitDir, "HEAD.lock")) + ` ) 2>/dev/null; then echo own-create OK; else echo own-create FAIL; fi`,
 		`if ( printf '' > ` + sh(filepath.Join(bareDir, "objects", "tmp-pack")) + ` ) 2>/dev/null; then echo objects-create OK; else echo objects-create FAIL; fi`,
@@ -121,7 +138,10 @@ func TestBwrapBareReadOnly_OverlaysLockCodeExecutionPaths(t *testing.T) {
 		t.Fatalf("bwrap probe failed to run: %v\n%s", err, out)
 	}
 
-	wantReadOnly := []string{"config-write FAIL", "hooks-create FAIL", "info-create FAIL", "sibling-create FAIL"}
+	wantReadOnly := []string{
+		"config-write FAIL", "hooks-create FAIL", "info-create FAIL", "sibling-create FAIL",
+		"commondir-write FAIL", "own-commondir-write FAIL", "own-gitdir-write FAIL", "own-cfgwt-write FAIL",
+	}
 	wantWritable := []string{"own-create OK", "objects-create OK"}
 	for _, w := range wantReadOnly {
 		if !strings.Contains(out, w) {

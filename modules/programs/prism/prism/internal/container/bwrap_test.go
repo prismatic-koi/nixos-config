@@ -920,16 +920,22 @@ func TestBwrapBuildArgs_BareReadOnlyOverlays(t *testing.T) {
 	configPath := filepath.Join(bareDir, "config")
 	hooksDir := filepath.Join(bareDir, "hooks")
 	infoDir := filepath.Join(bareDir, "info")
+	commondirPath := filepath.Join(bareDir, "commondir")
 	worktreesDir := filepath.Join(bareDir, "worktrees")
 	// Own worktree git dir lives under .bare/worktrees/<name>.
 	worktreeGitDir := filepath.Join(worktreesDir, "feat")
+	ownCommondir := filepath.Join(worktreeGitDir, "commondir")
+	ownGitdir := filepath.Join(worktreeGitDir, "gitdir")
+	ownConfigWT := filepath.Join(worktreeGitDir, "config.worktree")
 	for _, d := range []string{hooksDir, infoDir, worktreeGitDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("MkdirAll %q: %v", d, err)
 		}
 	}
-	if err := os.WriteFile(configPath, nil, 0o644); err != nil {
-		t.Fatalf("WriteFile config: %v", err)
+	for _, f := range []string{configPath, commondirPath, ownCommondir, ownGitdir, ownConfigWT} {
+		if err := os.WriteFile(f, nil, 0o644); err != nil {
+			t.Fatalf("WriteFile %q: %v", f, err)
+		}
 	}
 
 	m, _, cleanup := bwrapFixture(t, Config{
@@ -948,8 +954,8 @@ func TestBwrapBuildArgs_BareReadOnlyOverlays(t *testing.T) {
 	if !hasBind(args, bareDir) {
 		t.Errorf(".bare %q must be a read-write --bind: %v", bareDir, redactedArgs(args))
 	}
-	// config, hooks, info, and the worktrees dir are read-only overlays.
-	for _, p := range []string{configPath, hooksDir, infoDir, worktreesDir} {
+	// config, hooks, info, commondir, and the worktrees dir are read-only overlays.
+	for _, p := range []string{configPath, hooksDir, infoDir, commondirPath, worktreesDir} {
 		if !hasROBind(args, p) {
 			t.Errorf("%q must be a read-only --ro-bind overlay: %v", p, redactedArgs(args))
 		}
@@ -982,6 +988,19 @@ func TestBwrapBuildArgs_BareReadOnlyOverlays(t *testing.T) {
 	if ownIdx < wtIdx {
 		t.Errorf("own worktree rw-bind at %d must come after the worktrees ro-bind at %d so it wins: %v",
 			ownIdx, wtIdx, redactedArgs(args))
+	}
+
+	// Ordering 3: the redirect files inside the own worktree git dir
+	// (commondir, gitdir, config.worktree) are pinned read-only AFTER the own
+	// worktree rw-bind, so those later --ro-binds win for just those files.
+	for _, p := range []string{ownCommondir, ownGitdir, ownConfigWT} {
+		if !hasROBind(args, p) {
+			t.Errorf("own worktree redirect file %q must be a read-only --ro-bind: %v", p, redactedArgs(args))
+		}
+		if pinIdx := firstSrcDstIndex(args, "--ro-bind", p); pinIdx < ownIdx {
+			t.Errorf("own worktree pin %q at %d must come after the own rw-bind at %d so it wins: %v",
+				p, pinIdx, ownIdx, redactedArgs(args))
+		}
 	}
 }
 
@@ -1017,6 +1036,37 @@ func TestBwrapBareReadOnlyOverlays_StatGuardedAndOrdered(t *testing.T) {
 	// worktrees is emitted last.
 	if got := firstSrcDstIndex(args, "--ro-bind", worktreesDir); got != len(args)-3 {
 		t.Errorf("worktrees overlay must be the last triple (index %d of %d): %v", got, len(args), args)
+	}
+}
+
+func TestBwrapOwnWorktreeReadOnlyPins_StatGuarded(t *testing.T) {
+	// The helper pins commondir, gitdir, and config.worktree read-only when
+	// present, and skips an absent one (bwrap aborts on a missing source).
+	wtGitDir := t.TempDir()
+	commondir := filepath.Join(wtGitDir, "commondir")
+	gitdir := filepath.Join(wtGitDir, "gitdir")
+	for _, f := range []string{commondir, gitdir} {
+		if err := os.WriteFile(f, []byte("../..\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile %q: %v", f, err)
+		}
+	}
+	// config.worktree absent on purpose.
+
+	args := bwrapOwnWorktreeReadOnlyPins(wtGitDir)
+
+	if !hasROBind(args, commondir) {
+		t.Errorf("commondir must be ro-bound when present: %v", args)
+	}
+	if !hasROBind(args, gitdir) {
+		t.Errorf("gitdir must be ro-bound when present: %v", args)
+	}
+	if hasROBind(args, filepath.Join(wtGitDir, "config.worktree")) {
+		t.Errorf("absent config.worktree must not be bound: %v", args)
+	}
+
+	// An empty worktree git dir yields no pins.
+	if got := bwrapOwnWorktreeReadOnlyPins(""); got != nil {
+		t.Errorf("empty worktreeGitDir must yield nil, got %v", got)
 	}
 }
 

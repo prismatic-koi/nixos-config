@@ -674,12 +674,13 @@ func TestEnsureBareReadOnlyTargets_CreatesMissingEntries(t *testing.T) {
 	// sandbox starts, so a worker cannot create them first (issue #3315).
 	bareRoot := t.TempDir()
 	bareDir := filepath.Join(bareRoot, ".bare")
-	if err := os.MkdirAll(bareDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll bareDir: %v", err)
+	worktreeGitDir := filepath.Join(bareDir, "worktrees", "feat")
+	if err := os.MkdirAll(worktreeGitDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll worktreeGitDir: %v", err)
 	}
-	// hooks, info, and config are all absent.
+	// hooks, info, config, commondir, and config.worktree are all absent.
 
-	m := New(Config{SessionName: "repo@feat", BareRoot: bareRoot})
+	m := New(Config{SessionName: "repo@feat", BareRoot: bareRoot, WorktreeGitDir: worktreeGitDir})
 	if err := m.ensureBareReadOnlyTargets(); err != nil {
 		t.Fatalf("ensureBareReadOnlyTargets: %v", err)
 	}
@@ -692,6 +693,14 @@ func TestEnsureBareReadOnlyTargets_CreatesMissingEntries(t *testing.T) {
 	}
 	if fi, err := os.Stat(filepath.Join(bareDir, "config")); err != nil || fi.IsDir() {
 		t.Errorf("expected config file to exist as a regular file (err: %v)", err)
+	}
+	// .bare/commondir must be created with the benign "." content.
+	if got, err := os.ReadFile(filepath.Join(bareDir, "commondir")); err != nil || string(got) != ".\n" {
+		t.Errorf("expected .bare/commondir to contain \".\"; got %q (err %v)", string(got), err)
+	}
+	// The own worktree's config.worktree must be created.
+	if fi, err := os.Stat(filepath.Join(worktreeGitDir, "config.worktree")); err != nil || fi.IsDir() {
+		t.Errorf("expected own config.worktree to exist as a regular file (err: %v)", err)
 	}
 
 	// Idempotent: a second call does not error and does not truncate an
@@ -709,6 +718,28 @@ func TestEnsureBareReadOnlyTargets_CreatesMissingEntries(t *testing.T) {
 	}
 	if string(got) != "[core]\n" {
 		t.Errorf("existing config must not be truncated; got %q", string(got))
+	}
+}
+
+func TestEnsureBareReadOnlyTargets_NormalisesPlantedCommondir(t *testing.T) {
+	// A commondir value a worker planted while .bare was still writable is
+	// normalised back to the benign "." (issue #3315).
+	bareRoot := t.TempDir()
+	bareDir := filepath.Join(bareRoot, ".bare")
+	if err := os.MkdirAll(bareDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll bareDir: %v", err)
+	}
+	commondir := filepath.Join(bareDir, "commondir")
+	if err := os.WriteFile(commondir, []byte("/evil/common\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile commondir: %v", err)
+	}
+
+	m := New(Config{SessionName: "repo@feat", BareRoot: bareRoot})
+	if err := m.ensureBareReadOnlyTargets(); err != nil {
+		t.Fatalf("ensureBareReadOnlyTargets: %v", err)
+	}
+	if got, err := os.ReadFile(commondir); err != nil || string(got) != ".\n" {
+		t.Errorf("planted commondir must be normalised to \".\"; got %q (err %v)", string(got), err)
 	}
 }
 

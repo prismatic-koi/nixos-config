@@ -378,6 +378,11 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		// stashed on the Manager and surfaced by Prepare.
 		if _, err := os.Stat(cfg.WorktreeGitDir); err == nil {
 			args = append(args, "--bind", cfg.WorktreeGitDir, cfg.WorktreeGitDir)
+			// Pin the redirect files inside the own worktree git dir read-only,
+			// AFTER the read-write bind above so these later --ro-binds win for
+			// just those files. The rest of the own git dir stays read-write for
+			// HEAD, index, logs, and the rebase state (issue #3315).
+			args = append(args, bwrapOwnWorktreeReadOnlyPins(cfg.WorktreeGitDir)...)
 		} else {
 			m.worktreeGitDirErr = fmt.Errorf("worktree git dir %q: %w", cfg.WorktreeGitDir, err)
 		}
@@ -769,17 +774,26 @@ func bwrapUsrBinEnvArgs(src string) []string {
 }
 
 // bwrapBareReadOnlyName lists the entries directly under .bare that a worker
-// must not change: git runs the code in them on the host (issue #3315).
+// must not change: git runs, or is redirected to, code in them on the host
+// (issue #3315).
 //
-//   - config  — a filter driver, core.fsmonitor, core.hooksPath, or
+//   - config    — a filter driver, core.fsmonitor, core.hooksPath, or
 //     core.sshCommand set here runs for every git command in every worktree
 //     of the repo, on the host too.
-//   - hooks   — a planted hook (for example post-checkout) runs when a host
+//   - hooks     — a planted hook (for example post-checkout) runs when a host
 //     git command such as `prism spawn`'s `git --git-dir .bare worktree add`
 //     fires that hook.
-//   - info    — info/attributes can select a filter driver that config
+//   - info      — info/attributes can select a filter driver that config
 //     defines.
-var bwrapBareReadOnlyName = []string{"config", "hooks", "info"}
+//   - commondir — git follows a commondir file in the git dir and takes its
+//     config and hooks from the directory it names. A worker that creates
+//     .bare/commondir pointing at a directory it controls (built under the
+//     writable .bare/objects or .bare/refs) makes every host
+//     `git --git-dir .bare …` command read that directory's config and hooks.
+//     Manager.ensureBareReadOnlyTargets pins .bare/commondir to "." (the git
+//     dir itself, a no-op) so the overlay has a target and the worker cannot
+//     create or change it.
+var bwrapBareReadOnlyName = []string{"config", "hooks", "info", "commondir"}
 
 // bwrapBareReadOnlyOverlays returns the read-only overlay binds that lock the
 // code-execution paths in the common git dir (.bare), to be layered over the
@@ -814,6 +828,48 @@ func bwrapBareReadOnlyOverlays(bareDir string) []string {
 	wtDir := filepath.Join(bareDir, "worktrees")
 	if _, err := os.Stat(wtDir); err == nil {
 		args = append(args, "--ro-bind", wtDir, wtDir)
+	}
+	return args
+}
+
+// bwrapOwnWorktreeReadOnlyName lists the files in the session's own worktree
+// git dir (.bare/worktrees/<id>) that a worker must not write, because each
+// redirects where a host git command takes its config and hooks from when it
+// runs with its working directory in the worktree (issue #3315):
+//
+//   - commondir      — names the common git dir; a repointed commondir sends
+//     config and hooks lookups to a directory the worker controls.
+//   - gitdir         — the back-pointer to the worktree's .git file.
+//   - config.worktree — a per-worktree config (read when
+//     extensions.worktreeConfig is set) that can carry core.hooksPath,
+//     core.fsmonitor, or core.sshCommand.
+//
+// git does not write any of them during a normal commit, fetch, push,
+// rebase, or pull (confirmed by strace), so pinning them read-only over the
+// read-write own-worktree bind breaks no git operation.
+var bwrapOwnWorktreeReadOnlyName = []string{"commondir", "gitdir", "config.worktree"}
+
+// bwrapOwnWorktreeReadOnlyPins returns the read-only overlay binds that pin
+// the redirect files inside the session's own worktree git dir, to be layered
+// over the read-write own-worktree bind (issue #3315). The own-worktree bind
+// must stay read-write so the session can commit, fetch, rebase, and pull;
+// these pins lock only the three pointer files that would otherwise let a
+// worker redirect a host git command's config and hooks.
+//
+// Each file is bound only when it exists on the host: bwrap aborts on a
+// missing bind source. commondir and gitdir always exist in a worktree git
+// dir; Manager.ensureBareReadOnlyTargets creates an empty config.worktree so
+// the overlay has a target and the worker cannot create one.
+func bwrapOwnWorktreeReadOnlyPins(worktreeGitDir string) []string {
+	if worktreeGitDir == "" {
+		return nil
+	}
+	var args []string
+	for _, name := range bwrapOwnWorktreeReadOnlyName {
+		p := filepath.Join(worktreeGitDir, name)
+		if _, err := os.Stat(p); err == nil {
+			args = append(args, "--ro-bind", p, p)
+		}
 	}
 	return args
 }
