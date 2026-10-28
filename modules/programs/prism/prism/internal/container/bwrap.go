@@ -794,26 +794,24 @@ func bwrapUsrBinEnvArgs(src string) []string {
 }
 
 // bwrapBareReadOnlyName lists the entries directly under .bare that a worker
-// must not change: git runs, or is redirected to, code in them on the host
-// (issue #3315).
+// must not change: git runs the code in them on the host (issue #3315).
 //
-//   - config    — a filter driver, core.fsmonitor, core.hooksPath, or
+//   - config — a filter driver, core.fsmonitor, core.hooksPath, or
 //     core.sshCommand set here runs for every git command in every worktree
 //     of the repo, on the host too.
-//   - hooks     — a planted hook (for example post-checkout) runs when a host
+//   - hooks  — a planted hook (for example post-checkout) runs when a host
 //     git command such as `prism spawn`'s `git --git-dir .bare worktree add`
 //     fires that hook.
-//   - info      — info/attributes can select a filter driver that config
+//   - info   — info/attributes can select a filter driver that config
 //     defines.
-//   - commondir — git follows a commondir file in the git dir and takes its
-//     config and hooks from the directory it names. A worker that creates
-//     .bare/commondir pointing at a directory it controls (built under the
-//     writable .bare/objects or .bare/refs) makes every host
-//     `git --git-dir .bare …` command read that directory's config and hooks.
-//     Manager.ensureBareReadOnlyTargets pins .bare/commondir to "." (the git
-//     dir itself, a no-op) so the overlay has a target and the worker cannot
-//     create or change it.
-var bwrapBareReadOnlyName = []string{"config", "hooks", "info", "commondir"}
+//
+// The top-level .bare/commondir is NOT pinned here. A benign commondir file
+// is not a no-op: any commondir file makes git treat the project root (which
+// has a .git gitfile pointing at .bare) as a work tree, so a git command run
+// there behaves destructively. The top-level commondir redirect belongs to
+// the host-side git hardening of #3322: #3324 makes prism host git refuse a
+// repo that has a .bare/commondir file (fail closed), rather than follow it.
+var bwrapBareReadOnlyName = []string{"config", "hooks", "info"}
 
 // bwrapBareReadOnlyOverlays returns the read-only overlay binds that lock the
 // code-execution paths in the common git dir (.bare), to be layered over the

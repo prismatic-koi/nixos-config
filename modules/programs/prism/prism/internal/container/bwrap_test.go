@@ -802,7 +802,7 @@ type bareWorktreeLayout struct {
 }
 
 // newBareWorktreeLayout builds a minimal valid bare+worktree layout under a
-// temp dir: <root>/.bare with hooks/info/config/commondir; a worktree at
+// temp dir: <root>/.bare with hooks/info/config; a worktree at
 // <root>/<branch> whose .git gitfile points at the worktree git dir; and the
 // worktree git dir at .bare/worktrees/<branch> whose gitdir back-pointer
 // names the worktree .git. resolveGitWriteScope accepts this (branch =
@@ -824,7 +824,6 @@ func newBareWorktreeLayout(t *testing.T, branch string) bareWorktreeLayout {
 		}
 	}
 	write(filepath.Join(bareDir, "config"), "[core]\n")
-	write(filepath.Join(bareDir, "commondir"), ".\n")
 	write(filepath.Join(worktree, ".git"), "gitdir: "+wtGitDir+"\n")
 	write(filepath.Join(wtGitDir, "gitdir"), filepath.Join(worktree, ".git")+"\n")
 	write(filepath.Join(wtGitDir, "commondir"), "../..\n")
@@ -990,7 +989,6 @@ func TestBwrapBuildArgs_BareReadOnlyOverlays(t *testing.T) {
 	configPath := filepath.Join(bareDir, "config")
 	hooksDir := filepath.Join(bareDir, "hooks")
 	infoDir := filepath.Join(bareDir, "info")
-	commondirPath := filepath.Join(bareDir, "commondir")
 	worktreesDir := filepath.Join(bareDir, "worktrees")
 	worktreeGitDir := layout.worktreeGitDir
 	ownCommondir := filepath.Join(worktreeGitDir, "commondir")
@@ -1013,8 +1011,12 @@ func TestBwrapBuildArgs_BareReadOnlyOverlays(t *testing.T) {
 	if !hasBind(args, bareDir) {
 		t.Errorf(".bare %q must be a read-write --bind: %v", bareDir, redactedArgs(args))
 	}
-	// config, hooks, info, commondir, and the worktrees dir are read-only overlays.
-	for _, p := range []string{configPath, hooksDir, infoDir, commondirPath, worktreesDir} {
+	// config, hooks, info, and the worktrees dir are read-only overlays. The
+	// top-level .bare/commondir is deliberately NOT pinned (#3322/#3324).
+	if hasROBind(args, filepath.Join(bareDir, "commondir")) {
+		t.Errorf(".bare/commondir must NOT be pinned by the bind layer: %v", redactedArgs(args))
+	}
+	for _, p := range []string{configPath, hooksDir, infoDir, worktreesDir} {
 		if !hasROBind(args, p) {
 			t.Errorf("%q must be a read-only --ro-bind overlay: %v", p, redactedArgs(args))
 		}

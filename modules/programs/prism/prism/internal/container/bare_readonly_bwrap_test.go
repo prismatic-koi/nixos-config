@@ -59,11 +59,9 @@ func fakeBareLayout(t *testing.T) (bareDir, ownGitDir, siblingGitDir string) {
 	if err := os.WriteFile(filepath.Join(bareDir, "config"), []byte("[core]\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile config: %v", err)
 	}
-	// The redirect files the overlays pin: the benign top-level commondir, and
-	// the own worktree's commondir / gitdir / config.worktree.
-	if err := os.WriteFile(filepath.Join(bareDir, "commondir"), []byte(".\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile commondir: %v", err)
-	}
+	// The own worktree redirect files the overlays pin: commondir / gitdir /
+	// config.worktree. The top-level .bare/commondir is deliberately not
+	// pinned (#3322/#3324 owns it), so it is not created here.
 	for _, f := range []string{"commondir", "gitdir", "config.worktree"} {
 		if err := os.WriteFile(filepath.Join(ownGitDir, f), []byte("../..\n"), 0o644); err != nil {
 			t.Fatalf("WriteFile own %s: %v", f, err)
@@ -123,8 +121,7 @@ func TestBwrapBareReadOnly_OverlaysLockCodeExecutionPaths(t *testing.T) {
 		`if ( printf '' > ` + sh(filepath.Join(bareDir, "hooks", "post-checkout")) + ` ) 2>/dev/null; then echo hooks-create OK; else echo hooks-create FAIL; fi`,
 		`if ( printf '' > ` + sh(filepath.Join(bareDir, "info", "attributes")) + ` ) 2>/dev/null; then echo info-create OK; else echo info-create FAIL; fi`,
 		`if ( printf '' > ` + sh(filepath.Join(siblingGitDir, "config.worktree")) + ` ) 2>/dev/null; then echo sibling-create OK; else echo sibling-create FAIL; fi`,
-		// Top-level commondir and the own worktree redirect files: must FAIL.
-		`if ( printf x >> ` + sh(filepath.Join(bareDir, "commondir")) + ` ) 2>/dev/null; then echo commondir-write OK; else echo commondir-write FAIL; fi`,
+		// The own worktree redirect files: must FAIL.
 		`if ( printf x >> ` + sh(filepath.Join(ownGitDir, "commondir")) + ` ) 2>/dev/null; then echo own-commondir-write OK; else echo own-commondir-write FAIL; fi`,
 		`if ( printf x >> ` + sh(filepath.Join(ownGitDir, "gitdir")) + ` ) 2>/dev/null; then echo own-gitdir-write OK; else echo own-gitdir-write FAIL; fi`,
 		`if ( printf x >> ` + sh(filepath.Join(ownGitDir, "config.worktree")) + ` ) 2>/dev/null; then echo own-cfgwt-write OK; else echo own-cfgwt-write FAIL; fi`,
@@ -140,7 +137,7 @@ func TestBwrapBareReadOnly_OverlaysLockCodeExecutionPaths(t *testing.T) {
 
 	wantReadOnly := []string{
 		"config-write FAIL", "hooks-create FAIL", "info-create FAIL", "sibling-create FAIL",
-		"commondir-write FAIL", "own-commondir-write FAIL", "own-gitdir-write FAIL", "own-cfgwt-write FAIL",
+		"own-commondir-write FAIL", "own-gitdir-write FAIL", "own-cfgwt-write FAIL",
 	}
 	wantWritable := []string{"own-create OK", "objects-create OK"}
 	for _, w := range wantReadOnly {

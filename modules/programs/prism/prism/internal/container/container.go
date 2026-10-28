@@ -1009,18 +1009,15 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 // .bare (BareRoot set but no .bare yet) is not this method's concern: the
 // bind of .bare is itself conditional, so there is nothing to lock down.
 //
-// It also pins the git-common-dir redirect files (issue #3315):
+// It also creates the own worktree's config.worktree empty so its overlay has
+// a target; git reads it only when extensions.worktreeConfig is set, which the
+// read-only .bare/config cannot enable.
 //
-//   - .bare/commondir is normalised to "." so the overlay has a target and
-//     git resolves the common dir to .bare itself (a no-op). A value of "."
-//     keeps `git --git-dir .bare` working for every command prism runs
-//     (worktree add/list/remove/prune, fetch, branch, config); only the
-//     unused `rev-parse --is-bare-repository` changes, and prism detects a
-//     bare repo from the filesystem, not from that probe. An empty commondir
-//     makes git fail, so the content must never be left empty.
-//   - the own worktree's config.worktree is created empty so its overlay has
-//     a target; git reads it only when extensions.worktreeConfig is set,
-//     which the read-only .bare/config cannot enable.
+// It does NOT create or pin the top-level .bare/commondir. A benign commondir
+// is not a no-op: any commondir file makes git treat the project root (which
+// holds a .git gitfile pointing at .bare) as a work tree. That redirect
+// belongs to the host-side git hardening of #3322/#3324, not to this bind
+// layer.
 func (m *Manager) ensureBareReadOnlyTargets() error {
 	if m.cfg.BareRoot == "" {
 		return nil
@@ -1036,15 +1033,6 @@ func (m *Manager) ensureBareReadOnlyTargets() error {
 		}
 	}
 	if err := ensureFileExists(filepath.Join(bareDir, "config"), nil); err != nil {
-		return err
-	}
-
-	// Pin .bare/commondir to "." (normalise any pre-existing value, including a
-	// value a worker planted before this fix shipped). "." resolves the common
-	// dir to .bare itself, so a host `git --git-dir .bare` command cannot be
-	// redirected to a worker-controlled directory.
-	commondirPath := filepath.Join(bareDir, "commondir")
-	if err := normaliseFileContent(commondirPath, ".\n"); err != nil {
 		return err
 	}
 
@@ -1070,23 +1058,6 @@ func ensureFileExists(path string, content []byte) error {
 		}
 	} else if err != nil {
 		return fmt.Errorf("container: stat read-only bind target %q: %w", path, err)
-	}
-	return nil
-}
-
-// normaliseFileContent writes content to path when the file is absent or its
-// current content differs. This both creates the bind target and overwrites a
-// value a worker may have planted while the path was still writable.
-func normaliseFileContent(path, content string) error {
-	cur, err := os.ReadFile(path)
-	if err == nil && string(cur) == content {
-		return nil
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("container: read read-only bind target %q: %w", path, err)
-	}
-	if wErr := os.WriteFile(path, []byte(content), 0o644); wErr != nil {
-		return fmt.Errorf("container: write read-only bind target %q: %w", path, wErr)
 	}
 	return nil
 }
