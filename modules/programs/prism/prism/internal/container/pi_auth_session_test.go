@@ -97,6 +97,34 @@ func (e piAuthEnv) writeSessionEntry(t *testing.T, provider, entry string) {
 	writeFile(t, e.sessionAuth(), string(out))
 }
 
+// removeHostEntry removes one entry of the host file, as a logout on the
+// host does.
+func (e piAuthEnv) removeHostEntry(t *testing.T, provider string) {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(mustRead(t, e.hostAuth)), &m); err != nil {
+		t.Fatal(err)
+	}
+	delete(m, provider)
+	out, _ := json.Marshal(m)
+	writeFile(t, e.hostAuth, string(out))
+}
+
+// loginAgain adds the anthropic entry to the host file n times. Each time,
+// a logout on the host removes the entry, and a login in the session adds
+// it again. Each add counts as a new provider of the session.
+func (e piAuthEnv) loginAgain(t *testing.T, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		e.removeHostEntry(t, "anthropic")
+		e.sync(t)
+		e.writeSessionEntry(t, "anthropic", fmt.Sprintf(`{"type":"oauth","access":"login-%d","refresh":"login-%d-r","expires":%d}`, i, i, 9000+i))
+		if res := e.sync(t); !slices.Equal(res.ToHost, []string{"anthropic"}) {
+			t.Fatalf("login %d: result = %+v, want anthropic to the host", i, res)
+		}
+	}
+}
+
 func (e piAuthEnv) sync(t *testing.T) PIAuthSyncResult {
 	t.Helper()
 	res, err := SyncPIAuthSession(e.id, e.hostAuth)
@@ -215,23 +243,22 @@ func TestPIAuthSessionRoot_RefusesBadInstanceID(t *testing.T) {
 // refresh, and expires are copied. The other fields of the host entry stay,
 // and the other host entries do not change.
 func TestSyncPIAuthSession_RefreshReachesHost(t *testing.T) {
-	e := newPIAuthEnv(t, piAuthTestHost)
+	e := newPIAuthEnv(t, strings.Replace(piAuthTestHost, `"expires": 1000}`, `"expires": 1000, "hostField": "keep"}`, 1))
+	hostBefore := readJSONFile(t, e.hostAuth)
 	e.writeSessionEntry(t, "anthropic", `{"type":"oauth","access":"access-1","refresh":"refresh-1","expires":5000,"key":"!evil","extra":{"x":"y"}}`)
-	e.writeSessionEntry(t, "github-copilot", `{"type":"oauth","access":"c2","refresh":"cr2","expires":3000}`)
 
 	res := e.sync(t)
-	if want := []string{"anthropic", "github-copilot"}; !slices.Equal(res.ToHost, want) {
+	if want := []string{"anthropic"}; !slices.Equal(res.ToHost, want) || len(res.Refused) != 0 {
 		t.Errorf("ToHost = %v, want %v (refused: %v)", res.ToHost, want, res.Refused)
 	}
 	host := readJSONFile(t, e.hostAuth)
-	if want := map[string]any{"type": "oauth", "access": "access-1", "refresh": "refresh-1", "expires": float64(5000)}; !jsonEqual(host["anthropic"], want) {
+	if want := map[string]any{"type": "oauth", "access": "access-1", "refresh": "refresh-1", "expires": float64(5000), "hostField": "keep"}; !jsonEqual(host["anthropic"], want) {
 		t.Errorf("host anthropic = %v, want %v", host["anthropic"], want)
 	}
-	if want := map[string]any{"type": "oauth", "access": "c2", "refresh": "cr2", "expires": float64(3000), "enterpriseUrl": "ghe.example"}; !jsonEqual(host["github-copilot"], want) {
-		t.Errorf("host github-copilot = %v, want %v", host["github-copilot"], want)
-	}
-	if host["openai"]["key"] != "!op read secret" || host["openrouter"]["key"] != "sk-or-1" {
-		t.Errorf("other host entries changed: %v", host)
+	for _, p := range []string{"github-copilot", "openai", "openrouter"} {
+		if !jsonEqual(host[p], hostBefore[p]) {
+			t.Errorf("host %s = %v, want it unchanged: %v", p, host[p], hostBefore[p])
+		}
 	}
 	if fi, err := os.Stat(e.hostAuth); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Errorf("host mode = (%v, %v), want 0600", fi, err)
@@ -260,24 +287,34 @@ func jsonEqual(a, b any) bool {
 // Each other value is refused with a reason, and the session file gets the
 // host value again.
 func TestSyncPIAuthSession_RefusesEveryOtherValue(t *testing.T) {
-	cases := map[string]struct{ provider, entry string }{
-		"command api key":    {"openrouter", `{"type":"api_key","key":"!touch /tmp/planted"}`},
-		"new command key":    {"evil", `{"type":"api_key","key":"!touch /tmp/planted"}`},
-		"api key over oauth": {"anthropic", `{"type":"api_key","key":"sk-plain"}`},
-		"expires string":     {"anthropic", `{"type":"oauth","access":"a","refresh":"r","expires":"5000"}`},
-		"expires infinite":   {"anthropic", `{"type":"oauth","access":"a","refresh":"r","expires":1e400}`},
-		"access number":      {"anthropic", `{"type":"oauth","access":5,"refresh":"r","expires":5000}`},
-		"access null":        {"anthropic", `{"type":"oauth","access":null,"refresh":"r","expires":5000}`},
-		"no refresh":         {"anthropic", `{"type":"oauth","access":"a","expires":5000}`},
-		"empty access":       {"anthropic", `{"type":"oauth","access":"","refresh":"r","expires":5000}`},
-		"command access":     {"anthropic", `{"type":"oauth","access":"!touch /tmp/x","refresh":"r","expires":5000}`},
-		"not an object":      {"anthropic", `"!touch /tmp/x"`},
-		"oauth over api key": {"openrouter", `{"type":"oauth","access":"a","refresh":"r","expires":5000}`},
-		"bad provider name":  {"../x", `{"type":"oauth","access":"a","refresh":"r","expires":5000}`},
+	apiKeyHost := strings.Replace(piAuthTestHost, `"anthropic": {"type": "oauth", "access": "access-0", "refresh": "refresh-0", "expires": 1000}`,
+		`"anthropic": {"type": "api_key", "key": "sk-ant-1"}`, 1)
+	if apiKeyHost == piAuthTestHost {
+		t.Fatal("the fixture with an anthropic api key is the default fixture")
+	}
+	cases := map[string]struct{ provider, entry, host string }{
+		"command api key":    {"openrouter", `{"type":"api_key","key":"!touch /tmp/planted"}`, ""},
+		"new command key":    {"evil", `{"type":"api_key","key":"!touch /tmp/planted"}`, ""},
+		"api key over oauth": {"anthropic", `{"type":"api_key","key":"sk-plain"}`, ""},
+		"expires string":     {"anthropic", `{"type":"oauth","access":"a","refresh":"r","expires":"5000"}`, ""},
+		"expires infinite":   {"anthropic", `{"type":"oauth","access":"a","refresh":"r","expires":1e400}`, ""},
+		"access number":      {"anthropic", `{"type":"oauth","access":5,"refresh":"r","expires":5000}`, ""},
+		"access null":        {"anthropic", `{"type":"oauth","access":null,"refresh":"r","expires":5000}`, ""},
+		"no refresh":         {"anthropic", `{"type":"oauth","access":"a","expires":5000}`, ""},
+		"empty access":       {"anthropic", `{"type":"oauth","access":"","refresh":"r","expires":5000}`, ""},
+		"command access":     {"anthropic", `{"type":"oauth","access":"!touch /tmp/x","refresh":"r","expires":5000}`, ""},
+		"not an object":      {"anthropic", `"!touch /tmp/x"`, ""},
+		"oauth over api key": {"anthropic", `{"type":"oauth","access":"a","refresh":"r","expires":5000}`, apiKeyHost},
+		"other provider":     {"github-copilot", `{"type":"oauth","access":"a","refresh":"r","expires":5000}`, ""},
+		"bad provider name":  {"../x", `{"type":"oauth","access":"a","refresh":"r","expires":5000}`, ""},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			e := newPIAuthEnv(t, piAuthTestHost)
+			host := tc.host
+			if host == "" {
+				host = piAuthTestHost
+			}
+			e := newPIAuthEnv(t, host)
 			hostBefore := mustRead(t, e.hostAuth)
 			e.writeSessionEntry(t, tc.provider, tc.entry)
 
@@ -420,26 +457,106 @@ func TestSyncPIAuthSession_SymlinkTargetHasNewToken(t *testing.T) {
 // a sync already saw does not undo a newer host value.
 func TestSyncPIAuthSession_OldSnapshotDoesNotUndoHost(t *testing.T) {
 	e := newPIAuthEnv(t, piAuthTestHost)
-	oldCopilot := `{"type":"oauth","access":"c-access","refresh":"c-refresh","expires":2000,"enterpriseUrl":"ghe.example"}`
+	oldAnthropic := `{"type":"oauth","access":"access-0","refresh":"refresh-0","expires":1000}`
 
-	// Another session refreshed copilot, and the sync copies it here.
-	writeFile(t, e.hostAuth, strings.Replace(piAuthTestHost, `"access": "c-access", "refresh": "c-refresh", "expires": 2000`,
-		`"access": "c-new", "refresh": "c-new-r", "expires": 4000`, 1))
+	// Another session refreshed anthropic, and the sync copies it here.
+	writeFile(t, e.hostAuth, strings.Replace(piAuthTestHost, `"access": "access-0", "refresh": "refresh-0", "expires": 1000`,
+		`"access": "a-new", "refresh": "a-new-r", "expires": 4000`, 1))
 	if res := e.sync(t); !res.ToSession {
 		t.Fatalf("the host change did not reach the session: %+v", res)
 	}
 	// pi writes its old snapshot back.
-	e.writeSessionEntry(t, "github-copilot", oldCopilot)
+	e.writeSessionEntry(t, "anthropic", oldAnthropic)
 
 	res := e.sync(t)
 	if len(res.ToHost) != 0 {
 		t.Errorf("ToHost = %v, want none: the old value undid the host value", res.ToHost)
 	}
-	if got := readJSONFile(t, e.hostAuth)["github-copilot"]["access"]; got != "c-new" {
-		t.Errorf("host copilot access = %v, want c-new", got)
+	if got := readJSONFile(t, e.hostAuth)["anthropic"]["access"]; got != "a-new" {
+		t.Errorf("host anthropic access = %v, want a-new", got)
 	}
-	if got := readJSONFile(t, e.sessionAuth())["github-copilot"]["access"]; got != "c-new" {
-		t.Errorf("session copilot access = %v, want c-new", got)
+	if got := readJSONFile(t, e.sessionAuth())["anthropic"]["access"]; got != "a-new" {
+		t.Errorf("session anthropic access = %v, want a-new", got)
+	}
+}
+
+// The sync copies only the anthropic entry from a session file to the host
+// file (#3314). A github-copilot entry with a planted proxy-ep host, or a
+// valid OAuth entry of any other provider, changes nothing in the host
+// file. The sync reports the reason once, and the session file gets the
+// host value again.
+func TestSyncPIAuthSession_OtherProviderDoesNotReachHost(t *testing.T) {
+	planted := `{"type":"oauth","access":"tid=x;exp=9999999999;proxy-ep=proxy.attacker.example;","refresh":"r","expires":9999999999999}`
+	noCopilot := strings.Replace(piAuthTestHost,
+		`  "github-copilot": {"type": "oauth", "access": "c-access", "refresh": "c-refresh", "expires": 2000, "enterpriseUrl": "ghe.example"},
+`, "", 1)
+	if strings.Contains(noCopilot, "github-copilot") {
+		t.Fatal("the fixture with no copilot entry still has one")
+	}
+	cases := map[string]struct{ host, provider, entry string }{
+		"copilot over the host entry": {piAuthTestHost, "github-copilot", planted},
+		"new copilot entry":           {noCopilot, "github-copilot", planted},
+		"new oauth provider":          {piAuthTestHost, "openai-codex", `{"type":"oauth","access":"a","refresh":"r","expires":5000}`},
+		"oauth over api key":          {piAuthTestHost, "openrouter", `{"type":"oauth","access":"a","refresh":"r","expires":5000}`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newPIAuthEnv(t, tc.host)
+			hostBefore := mustRead(t, e.hostAuth)
+			sessHostView := readJSONFile(t, e.sessionAuth())[tc.provider]
+			e.writeSessionEntry(t, tc.provider, tc.entry)
+
+			res := e.sync(t)
+			if len(res.ToHost) != 0 {
+				t.Errorf("ToHost = %v, want none", res.ToHost)
+			}
+			want := fmt.Sprintf(`provider %q: the sync copies only the "anthropic" entry to the host file`, tc.provider)
+			if !slices.Equal(res.Refused, []string{want}) {
+				t.Errorf("Refused = %q, want [%q]", res.Refused, want)
+			}
+			if got := mustRead(t, e.hostAuth); got != hostBefore {
+				t.Errorf("host file changed:\n%s", got)
+			}
+			if !res.ToSession {
+				t.Errorf("the session file did not get the host value again")
+			}
+			if got := readJSONFile(t, e.sessionAuth())[tc.provider]; !jsonEqual(got, sessHostView) {
+				t.Errorf("session %s = %v, want the host view %v", tc.provider, got, sessHostView)
+			}
+
+			// The same value again is not reported again.
+			e.writeSessionEntry(t, tc.provider, tc.entry)
+			if res := e.sync(t); len(res.Refused) != 0 || len(res.ToHost) != 0 {
+				t.Errorf("second sync = %+v, want no refusal and no copy", res)
+			}
+			if got := mustRead(t, e.hostAuth); got != hostBefore {
+				t.Errorf("host file changed after the second sync:\n%s", got)
+			}
+		})
+	}
+}
+
+// An Anthropic refresh in one session reaches the host file, and the sync
+// of another session brings the new token to that session.
+func TestSyncPIAuthSession_RefreshReachesOtherSession(t *testing.T) {
+	a := newPIAuthEnv(t, piAuthTestHost)
+	bID := "66666666-7777-8888-9999-000000000000"
+	bDir, err := PreparePIAuthSession(bID, a.hostAuth)
+	if err != nil {
+		t.Fatalf("PreparePIAuthSession: %v", err)
+	}
+	bRoot, _ := PIAuthSessionRoot(bID)
+	b := piAuthEnv{id: bID, hostAuth: a.hostAuth, agentDir: bDir, root: bRoot}
+
+	a.writeSessionEntry(t, "anthropic", `{"type":"oauth","access":"access-a","refresh":"refresh-a","expires":5000}`)
+	if res := a.sync(t); !slices.Equal(res.ToHost, []string{"anthropic"}) {
+		t.Fatalf("sync of session a = %+v, want anthropic to the host", res)
+	}
+	if res := b.sync(t); !res.ToSession || len(res.ToHost) != 0 {
+		t.Errorf("sync of session b = %+v, want a write of the session file only", res)
+	}
+	if got := readJSONFile(t, b.sessionAuth())["anthropic"]; got["access"] != "access-a" || got["refresh"] != "refresh-a" {
+		t.Errorf("session b anthropic = %v, want the token of session a", got)
 	}
 }
 
@@ -471,12 +588,19 @@ func TestSyncPIAuthSession_HostWinsAConflict(t *testing.T) {
 	}
 }
 
-// prism account use, or a refresh of another session, reaches the session
-// file with no restart. A "!" value on the host does not.
+// prism account use, a refresh of another session, or a login on the host
+// reaches the session file with no restart, for each provider. A "!" value
+// on the host does not.
 func TestSyncPIAuthSession_HostChangeReachesSession(t *testing.T) {
 	e := newPIAuthEnv(t, piAuthTestHost)
 	other := strings.Replace(piAuthTestHost, `"access": "access-0"`, `"access": "acct2"`, 1)
+	other = strings.Replace(other, `"access": "c-access"`, `"access": "c-new"`, 1)
 	other = strings.Replace(other, `"sk-or-1"`, `"!curl evil"`, 1)
+	other = strings.Replace(other, `{
+`, `{
+  "openai-codex": {"type": "oauth", "access": "x-access", "refresh": "x-refresh", "expires": 3000},
+  "groq": {"type": "api_key", "key": "gsk-1"},
+`, 1)
 	tmp := e.hostAuth + ".new"
 	writeFile(t, tmp, other)
 	if err := os.Rename(tmp, e.hostAuth); err != nil {
@@ -487,8 +611,22 @@ func TestSyncPIAuthSession_HostChangeReachesSession(t *testing.T) {
 		t.Errorf("result = %+v, want a write of the session file only", res)
 	}
 	sess := readJSONFile(t, e.sessionAuth())
-	if sess["anthropic"]["access"] != "acct2" {
-		t.Errorf("session anthropic = %v, want acct2", sess["anthropic"])
+	for p, want := range map[string][2]string{
+		"anthropic":      {"access", "acct2"},
+		"github-copilot": {"access", "c-new"},
+		"openai-codex":   {"access", "x-access"},
+		"groq":           {"key", "gsk-1"},
+	} {
+		if sess[p][want[0]] != want[1] {
+			t.Errorf("session %s = %v, want %s %s", p, sess[p], want[0], want[1])
+		}
+	}
+	// The session did not change github-copilot, so the old value in the
+	// session file is not reported as a value of the session.
+	for _, r := range res.Refused {
+		if strings.Contains(r, "github-copilot") {
+			t.Errorf("Refused has the old host value of github-copilot: %q", r)
+		}
 	}
 	if _, ok := sess["openrouter"]; ok {
 		t.Errorf("session has the host entry with a \"!\" value: %v", sess["openrouter"])
@@ -590,13 +728,15 @@ func TestSyncPIAuthSession_DoesNotWaitForHostLock(t *testing.T) {
 	}
 }
 
-// A session cannot make the host file grow without a limit: it adds at most
-// piAuthMaxNewProviders providers in its life, a token of more than
+// A session cannot make the host file grow without a limit: no entry of
+// another provider reaches it, the session adds the anthropic entry at most
+// piAuthMaxNewProviders times in its life, a token of more than
 // piAuthMaxTokenLen bytes is refused, and no write makes the host file
-// larger than piAuthHostWriteLimit. An update of an existing provider still
+// larger than piAuthHostWriteLimit. An update of an existing entry still
 // works after the limit.
 func TestSyncPIAuthSession_LimitsHostGrowth(t *testing.T) {
 	e := newPIAuthEnv(t, piAuthTestHost)
+	hostBefore := mustRead(t, e.hostAuth)
 	entry := `{"type":"oauth","access":"a","refresh":"r","expires":1}`
 	m := map[string]json.RawMessage{}
 	for i := 0; i < 500; i++ {
@@ -605,32 +745,40 @@ func TestSyncPIAuthSession_LimitsHostGrowth(t *testing.T) {
 	data, _ := json.Marshal(m)
 	writeFile(t, e.sessionAuth(), string(data))
 
-	res := e.sync(t)
-	if len(res.ToHost) != piAuthMaxNewProviders {
-		t.Errorf("ToHost = %v, want %d new providers", res.ToHost, piAuthMaxNewProviders)
+	if res := e.sync(t); len(res.ToHost) != 0 {
+		t.Errorf("ToHost = %v, want none", res.ToHost)
 	}
-	host := readJSONFile(t, e.hostAuth)
-	if len(host) != 4+piAuthMaxNewProviders {
-		t.Errorf("host has %d entries, want %d", len(host), 4+piAuthMaxNewProviders)
+	if got := mustRead(t, e.hostAuth); got != hostBefore {
+		t.Errorf("host file changed:\n%s", got)
 	}
+
+	e.loginAgain(t, piAuthMaxNewProviders)
 
 	// The count is kept across a new start of the session.
 	if _, err := PreparePIAuthSession(e.id, e.hostAuth); err != nil {
 		t.Fatal(err)
 	}
-	e.writeSessionEntry(t, "pnew", entry)
-	if res := e.sync(t); len(res.ToHost) != 0 {
-		t.Errorf("after a restart ToHost = %v, want none", res.ToHost)
+	e.removeHostEntry(t, "anthropic")
+	e.sync(t)
+	e.writeSessionEntry(t, "anthropic", entry)
+	if res := e.sync(t); len(res.ToHost) != 0 || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "already added") {
+		t.Errorf("after a restart result = %+v, want the new entry refused", res)
+	}
+	if _, ok := readJSONFile(t, e.hostAuth)["anthropic"]; ok {
+		t.Errorf("the host file has the anthropic entry after the limit")
 	}
 
-	// A long token is refused.
+	// A login on the host gives the entry back. Then a long token is
+	// refused.
+	writeFile(t, e.hostAuth, piAuthTestHost)
+	e.sync(t)
 	long := strings.Repeat("a", piAuthMaxTokenLen+1)
 	e.writeSessionEntry(t, "anthropic", `{"type":"oauth","access":"`+long+`","refresh":"r","expires":7000}`)
 	if res := e.sync(t); len(res.ToHost) != 0 || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "longer than") {
 		t.Errorf("result = %+v, want the long token refused", res)
 	}
 
-	// An update of an existing provider works.
+	// An update of an existing entry works.
 	e.writeSessionEntry(t, "anthropic", `{"type":"oauth","access":"access-9","refresh":"refresh-9","expires":9000}`)
 	if res := e.sync(t); !slices.Equal(res.ToHost, []string{"anthropic"}) {
 		t.Errorf("result = %+v, want anthropic to the host", res)
@@ -658,17 +806,12 @@ func TestSyncPIAuthSession_HostWriteLimit(t *testing.T) {
 }
 
 // A session cannot reset its own sync state. The reset sequence of the
-// review of #3312: add two providers, then write many non-OAuth entries so
-// that the state grows past its read limit, then add more providers. The
-// state stays small, and the third and fourth providers are refused.
+// review of #3312: use up the count of new providers, then write many
+// entries so that the state grows past its read limit, then add a provider
+// again. The state stays small, and the add is refused.
 func TestSyncPIAuthSession_SessionCannotResetState(t *testing.T) {
 	e := newPIAuthEnv(t, piAuthTestHost)
-	entry := `{"type":"oauth","access":"a","refresh":"r","expires":1}`
-	e.writeSessionEntry(t, "p1", entry)
-	e.writeSessionEntry(t, "p2", entry)
-	if res := e.sync(t); len(res.ToHost) != 2 {
-		t.Fatalf("result = %+v, want p1 and p2 to the host", res)
-	}
+	e.loginAgain(t, piAuthMaxNewProviders)
 
 	for round := 0; round < 3; round++ {
 		m := map[string]json.RawMessage{}
@@ -691,13 +834,14 @@ func TestSyncPIAuthSession_SessionCannotResetState(t *testing.T) {
 		t.Errorf("readPIAuthSyncState: %v", err)
 	}
 
-	e.writeSessionEntry(t, "p3", entry)
-	e.writeSessionEntry(t, "p4", entry)
+	e.removeHostEntry(t, "anthropic")
+	e.sync(t)
+	e.writeSessionEntry(t, "anthropic", `{"type":"oauth","access":"a","refresh":"r","expires":1}`)
 	if res := e.sync(t); len(res.ToHost) != 0 {
 		t.Errorf("ToHost = %v after the state flood, want none", res.ToHost)
 	}
-	if host := readJSONFile(t, e.hostAuth); host["p3"] != nil || host["p4"] != nil {
-		t.Errorf("host has p3 or p4: %v", host)
+	if _, ok := readJSONFile(t, e.hostAuth)["anthropic"]; ok {
+		t.Errorf("the host file has the anthropic entry after the state flood")
 	}
 }
 
@@ -705,8 +849,10 @@ func TestSyncPIAuthSession_SessionCannotResetState(t *testing.T) {
 // provider.
 func TestSyncPIAuthSession_BadStateFailsClosed(t *testing.T) {
 	e := newPIAuthEnv(t, piAuthTestHost)
+	e.removeHostEntry(t, "anthropic")
+	e.sync(t)
 	writeFile(t, filepath.Join(e.root, piAuthSyncStateName), `{"providers":`)
-	e.writeSessionEntry(t, "pnew", `{"type":"oauth","access":"a","refresh":"r","expires":1}`)
+	e.writeSessionEntry(t, "anthropic", `{"type":"oauth","access":"a","refresh":"r","expires":1}`)
 	res := e.sync(t)
 	if len(res.ToHost) != 0 {
 		t.Errorf("ToHost = %v with a bad state, want none", res.ToHost)

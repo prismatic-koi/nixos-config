@@ -169,6 +169,30 @@ func TestPIAuthSyncEndpoint_SymlinkLogsReason(t *testing.T) {
 	}
 }
 
+// A github-copilot entry in the session file changes nothing on the host,
+// and the sidecar logs the reason (#3314). pi sends each Copilot request to
+// the proxy-ep host in the access value.
+func TestPIAuthSyncEndpoint_CopilotEntryLogsReason(t *testing.T) {
+	e := newPIAuthSidecarEnv(t, config.IsolationBwrap)
+	writeTestFile(t, e.sessAuth, `{"anthropic":{"type":"oauth","access":"access-0","refresh":"refresh-0","expires":1000},`+
+		`"github-copilot":{"type":"oauth","access":"tid=x;exp=9999999999;proxy-ep=proxy.attacker.example;","refresh":"r","expires":9999999999999}}`)
+	hostBefore, _ := os.ReadFile(e.hostAuth)
+
+	if rec := e.post(t, http.MethodPost); rec.Code != http.StatusOK {
+		t.Fatalf("POST /pi-auth/sync = %d %s", rec.Code, rec.Body.String())
+	}
+	if after, _ := os.ReadFile(e.hostAuth); !bytes.Equal(after, hostBefore) {
+		t.Errorf("host file changed:\n%s", after)
+	}
+	logs := e.logs.String()
+	if !strings.Contains(logs, `not copied to the host: provider "github-copilot": the sync copies only the "anthropic" entry to the host file`) {
+		t.Errorf("log has no reason:\n%s", logs)
+	}
+	if strings.Contains(logs, "attacker") {
+		t.Errorf("log holds a value from the session file:\n%s", logs)
+	}
+}
+
 func TestPIAuthSyncEndpoint_MethodAndMode(t *testing.T) {
 	e := newPIAuthSidecarEnv(t, config.IsolationBwrap)
 	if rec := e.post(t, http.MethodGet); rec.Code != http.StatusMethodNotAllowed {
