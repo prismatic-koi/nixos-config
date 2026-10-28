@@ -83,7 +83,13 @@ isolator can use the same function (#3315).
   The `gitdir` file of another worktree is in a git dir that the session
   cannot write. So a session cannot point its `.git` file at another git
   dir, and get write access to it at its next start. If the check fails,
-  the session gets no git dir, and the agent-run log gives the reason.
+  the session gets no git dir. `prism agent-run` writes the reason to its
+  stderr, in the tmux pane of the session, before pi starts. The reason is
+  not in `agent-run.log`.
+- A project root behind a symlink gets no git dir. git writes the `.git`
+  file with the resolved path, so the git dir is not below
+  `<project root>/.bare/worktrees` as prism names it. The sandbox matches
+  resolved paths, so the worktree grant has the same limit.
 
 ## What prism does on the host before the session starts
 

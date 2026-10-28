@@ -172,9 +172,12 @@ func TestResolveGitWriteScope_RefusesForeignGitDir(t *testing.T) {
 	}
 }
 
-// TestResolveGitWriteScope_WorktreePathThroughSymlink: git writes the
-// gitdir file with the resolved worktree path. A worktree path from prism
-// with a symlink in a parent dir is still the same worktree.
+// TestResolveGitWriteScope_WorktreePathThroughSymlink: the gitdir
+// back-pointer holds the resolved worktree path, and the project root,
+// the worktree, and the git dir hold the same symlink. The comparison
+// resolves the dirs, so the check accepts the git dir. In production, the
+// git dir comes from the .git file as a resolved path, so a symlinked
+// project root gets no git dir: the docs/invariants entry states it.
 func TestResolveGitWriteScope_WorktreePathThroughSymlink(t *testing.T) {
 	root := newGitLayout(t, "feature")
 	alias := filepath.Join(t.TempDir(), "alias")
