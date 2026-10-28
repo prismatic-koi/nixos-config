@@ -44,6 +44,7 @@
     ./ssh.nix
     ./tailscale-client
     ./twg.nix
+    ./claude-desktop.nix
     ./vimiv.nix
     ./virt-manager.nix
     ./wgnord.nix
