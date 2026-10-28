@@ -9,7 +9,7 @@
 -->
 
 Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap),
-#3322 (host-side git in a worker worktree).
+#3322 (host-side git in a worker worktree), #3325 (a nested `.git`).
 Code: `internal/container/git_write_scope.go`, sections 6, 6e, 17b, 21b,
 21i, 21j, and 21k of `generateProfile` in `internal/container/sandbox_exec.go`, and
 the git step of `sandboxExecIsolator.Prepare` in
@@ -159,6 +159,14 @@ isolator can use the same function (#3315).
   then collect until a git command on the host runs `git gc`.
 - **bwrap.** bwrap binds the whole `.bare` read-write. A bwrap session can
   write `.bare/config` and `.bare/hooks`. Follow-up: #3315.
+- **A nested `.git` in the worktree (both isolators).** Section 21k
+  covers the `.git` file at the top of the worktree only. A session can
+  still put a `.git` file or dir in a subdir of its worktree. git that runs
+  in that subdir stops there, and reads the config of the git dir that it
+  names. The nvim and the shell that prism starts on the host run git in
+  the dir of the open file or of the shell. A deny of `.git` at any depth
+  does not close this: a rename of a dir that already holds `.git` into
+  the worktree makes no new path named `.git`. Follow-up: #3325.
 - **Host-side git in a worktree (bwrap).** A sandbox-exec session cannot
   write the `.git` file or the redirect files of its git dir (sections 21j
   and 21k). bwrap does not have these denies yet. Follow-ups: #3315,

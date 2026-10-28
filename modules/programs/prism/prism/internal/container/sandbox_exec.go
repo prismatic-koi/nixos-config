@@ -1442,7 +1442,9 @@ func generateProfile(m *Manager) string {
 	// A .git file that names a git dir of the session runs its config, for
 	// example core.fsmonitor, on the host. The deny covers a write, a
 	// rename, a removal, and a replace of the file. git does not write it in
-	// normal use (git_write_scope.go). The deny must follow every allow.
+	// normal use (git_write_scope.go). The deny covers the top-level .git
+	// file only: a .git in a subdir of the worktree still redirects git that
+	// runs in that subdir (#3325). The deny must follow every allow.
 	// TestGenerateProfile_WorktreeGitFileDenyFollowsEveryAllow pins the
 	// order.
 	if m.cfg.BareRoot != "" {
