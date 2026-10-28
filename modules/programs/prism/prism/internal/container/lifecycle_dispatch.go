@@ -150,6 +150,31 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 		return nil, fmt.Errorf("container: bwrap: %w", err)
 	}
 
+	// ── git write scope (host-side prep) ─────────────────────────────────
+	// #3315 makes .bare/config and the ref/reflog parent dirs read-only to
+	// the session, so the same host-side preparation sandbox-exec does
+	// (#3293/#3320) is needed for bwrap too:
+	//   - prepareGitWriteDirs makes the branch ref/reflog parent dirs in
+	//     .bare; without them a commit exits 128 and a fetch 255, because the
+	//     session cannot create them under the read-only .bare.
+	//   - ensureGitUpstream writes the branch upstream into .bare/config (the
+	//     session gitconfig sets push.autoSetupRemote but cannot write the
+	//     read-only .bare/config). Without it the session's git push prints
+	//     the upstream error, and the host-side push of `prism review
+	//     --rebase` writes a second upstream into .bare/config that makes each
+	//     later push exit 128 ("multiple upstream branches").
+	// Best-effort: a failure is logged and the session still starts.
+	if m.cfg.BareRoot != "" {
+		scope, scopeErr := m.gitScope()
+		if scopeErr != nil {
+			log.Printf("container: bwrap: %v", scopeErr)
+		}
+		prepareGitWriteDirs(scope, m.cfg.WorktreeReadOnly)
+		if err := ensureGitUpstream(scope, m.cfg.WorktreeReadOnly); err != nil {
+			log.Printf("container: bwrap: %v", err)
+		}
+	}
+
 	// Build the bwrap args. For PI sessions, BuildArgs stores any
 	// appendPIBwrapMounts error in m.piBwrapErr because BuildArgs cannot return
 	// an error. Check and surface it here where we CAN return an error.
