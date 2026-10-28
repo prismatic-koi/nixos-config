@@ -57,9 +57,11 @@
           the worktree .git file (issue #3315) -- but refs stay writable: a
           bwrap worker can still move another worktree's branch ref (main
           included) and write refs/stash, so a later pull or stash pop in
-          main can write a file it chose, the same risk as the object store,
-          until issue #3327. Host-side git run in a worker worktree is
-          hardened by issue #3322.
+          main can write a file it chose, the same risk as the object store.
+          Bind mounts cannot isolate the refs, so this is a permanent bwrap
+          limitation, tracked for a structural fix (a per-session common dir
+          or reftable) by issue #3334. Host-side git run in a worker worktree
+          is hardened by issue #3322.
 
           PR-branch sessions (issue #3287): `prism pr` and `prism spawn --pr`
           start a session on the branch of an existing PR. prism cannot know

@@ -3,9 +3,11 @@
 <!-- doclint-ignore: .bare/config, .bare/gc.pid, .bare/hooks, .bare/info, .bare/logs, .bare/logs/refs/remotes, .bare/objects, .bare/packed-refs, .bare/refs/remotes, .bare/refs/tags, .bare/worktrees, .bare/commondir, logs/HEAD, refs/remotes/origin/main, FETCH_HEAD, ORIG_HEAD, core.hooksPath -->
 <!-- doclint-ignore: .agents/skills, .pi/extensions, .pi/mcp.json, .pi/settings.json -->
 <!-- doclint-ignore: .bare/refs, .bare/HEAD, refs/heads/main, refs/stash, detach_mounts, branch.autoSetupMerge -->
+<!-- doclint-ignore: .bare/packed-refs.lock, refs/heads, .bare/refs/heads/main -->
 <!--
   The extra .bare/* and refs/* names are git paths in the common dir at run
-  time, not files in this source tree.
+  time, not files in this source tree. .bare/packed-refs.lock is the lock
+  file git creates in the .bare root on every ref update.
 -->
 <!--
   These names are paths in the git common dir (.bare) of a prism repo, git
@@ -14,8 +16,11 @@
 -->
 
 Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap
-code-execution paths), #3327 (the full bwrap write scope), #3325 (a nested
-`.git`). Host-side git: #3322, in `docs/invariants/host-git-commands.md`.
+code-execution paths), #3334 (bwrap ref integrity — a per-session common dir
+or reftable), #3325 (a nested `.git`). Host-side git: #3322, in
+`docs/invariants/host-git-commands.md`. #3327 found that bwrap cannot reach
+this write scope with bind mounts and reframed the gap as a permanent
+isolator difference — see the "bwrap" section.
 Code: `internal/container/git_write_scope.go`, sections 6, 6e, 17b, 21b,
 21i, 21j, and 21k of `generateProfile` in `internal/container/sandbox_exec.go`, and
 the git step of `sandboxExecIsolator.Prepare` in
@@ -221,36 +226,97 @@ that prism does not run.
   plain `git` that prism does NOT run — a human shell, or another tool at
   the project root — follows `<BareRoot>/.git` -> `.bare` -> the planted
   `.bare/commondir` and reads the `config` and `hooks` the worker wrote. So
-  this stays a host code-execution route for host git outside prism's
-  control. Follow-ups: #3326 (user git env hardening) and #3327 (the full
-  bwrap write scope, which binds `.bare` read-only so no bare-dir file is
-  worker-writable).
+  this stays a host code-execution route. The control is #3326 (user git env
+  hardening): it turns off the code-execution config keys for every user git
+  process, so a planted `config` runs no command even when a plain host
+  `git` reads it. Binding `.bare` read-only — which would stop a worker
+  writing any bare-dir file — is not an option; see "Why bwrap cannot match
+  this scope" below for why.
 
-bwrap does NOT yet reach the full sandbox-exec write scope. Because `.bare`,
-`.bare/refs`, and `.bare/logs` are inside the read-write `.bare` bind, a
-bwrap session can still move the branch ref of another worktree
-(`refs/heads/main` included) and create a branch, write `refs/stash` and its
-reflog (sandbox-exec grants the stash ref to the coordinator only), and write
-`.bare/gc.pid` and `.bare/HEAD`. A bwrap review agent or investigator also
-gets its whole own worktree git dir read-write (`HEAD`, the index, the branch
-ref), where sandbox-exec grants only `FETCH_HEAD`. So the table rows for the
-branch ref and the stash ref, and the "Other branches" and "`git gc`" known
-limits above, hold for sandbox-exec but not yet for bwrap. Bringing bwrap to
-the same scope is #3327.
+### Why bwrap cannot match this scope (a permanent isolator difference)
 
-A host rename can detach a bwrap read-only pin (not verified on a live
-kernel). The pins are bind mounts over the shared `.bare` dentry (Dst ==
-Src). Since Linux 3.18, a host-side rename onto, or unlink of, a bound file
-calls `detach_mounts` on that dentry and removes the overlay in every running
-bwrap session, across namespaces. prism renames `.bare/config` host-side
-(`ensureGitUpstream` at spawn, `git worktree add -b` through
-`branch.autoSetupMerge`, `git branch -d` at cleanup), so a concurrent spawn
-or cleanup can re-open `.bare/config` read-write for a running worker. #3327
-removes the dependency — it binds `.bare` read-only and binds read-write only
-the directories a session must write, and adds a live-bwrap test of a host
-rename — and #3326 hardens the user git environment. sandbox-exec is not
-affected: its profile is an allowlist, not a bind.
+bwrap does not reach the sandbox-exec write scope for the files inside
+`.bare`, and bind mounts cannot achieve it. This is a permanent difference
+between the two isolators, not a follow-up. #3327 set out to close it by
+binding `.bare` read-only and binding read-write only the directories a
+session writes. That design is not implementable, for two reasons found
+during #3327 and both reproduced with `strace` on git 2.56.
 
-The object store and `packed-refs` stay writable under bwrap too, so the
-"both isolators" limits above apply. See the `.bare` write scope (bwrap)
-section of `session-lifecycle.md` for the bind ordering.
+1. **Bind mounts are directory-granular; SBPL is per-access.** A bwrap mount
+   makes a path read-only in one of two ways: a read-only bind of the path
+   itself (a file pin), or a read-only bind of a parent directory. A
+   read-only parent protects every child, so it cannot keep `config`
+   read-only and a sibling writable. A file pin is file-granular but
+   detachable (reason 2 below). sandbox-exec has neither limit: its SBPL
+   profile is a path filter that the kernel evaluates at each access, not a
+   mount, so it allows `.bare/packed-refs.lock` and denies `.bare/config` in
+   the same directory, and no rename can detach a rule.
+
+2. **git forces `.bare` to be writable, so the read-only-parent route is
+   closed.** The files ref backend creates `.bare/packed-refs.lock` in the
+   `.bare` root on every ref update — every commit and every rebase, even
+   for a loose ref with no `packed-refs` file. So a read-only `.bare` makes
+   every commit print `error: unable to create .bare/packed-refs.lock`
+   (non-fatal — the loose ref still updates) and makes every ref deletion
+   fail (fatal): `git fetch --prune` and `git branch -d` exit non-zero and
+   leave the ref. A read-only `.bare` therefore breaks the worker commit and
+   the coordinator `git fetch --prune`. `.bare` must stay writable.
+
+With `.bare` writable, the only protection left for `.bare/config` (and
+`.bare/hooks`, `.bare/info`, the pointer files) is a read-only bind of the
+file over it — what #3315 does. Since Linux 3.18 a host-side rename onto, or
+unlink of, a bound file calls `detach_mounts` on that dentry and removes the
+pin in every running bwrap session, across namespaces. prism renames
+`.bare/config` host-side (`ensureGitUpstream` at spawn, `git worktree add -b`
+through `branch.autoSetupMerge`, `git branch -d` at cleanup), so a concurrent
+spawn or cleanup can re-open `.bare/config` read-write for a running worker.
+(This is reasoned from the kernel source; it is not verified on a live
+kernel, because a worker cannot start a nested bwrap.)
+
+The same two reasons mean bwrap cannot isolate the refs. `.bare/refs` and
+`.bare/logs` must be writable for a commit, and a writable `refs/heads` lets
+a worker write a loose `refs/heads/main` (or any other live worktree branch)
+that shadows or moves it, write `refs/stash`, create a branch, and write
+`.bare/gc.pid` and `.bare/HEAD`. A read-only pin on a live branch ref is
+detached by the next host-side update of that ref. A bwrap review agent or
+investigator also gets its whole own worktree git dir read-write (`HEAD`,
+the index, the branch ref), where sandbox-exec grants only `FETCH_HEAD`. So
+the table rows for the branch ref and the stash ref, and the "Other
+branches" and "`git gc`" known limits above, hold for sandbox-exec but not
+for bwrap.
+
+### The two vectors and their controls
+
+1. **A planted `.bare/config` or hook is not host code execution.** The
+   in-sandbox pins of #3315 block the in-sandbox write path, but they are
+   detachable, so they are defence in depth, not the load-bearing control.
+   The load-bearing controls are host-side and do not rest on a bind: #3322
+   makes every git command prism runs set `GIT_DIR` and `GIT_COMMON_DIR` and
+   run with hooks and fsmonitor off, and `OpenBare` refuses a repo that has
+   a `.bare/commondir` file; #3326 sets env overrides that turn off the
+   code-execution config keys (`core.fsmonitor`, `core.hooksPath`,
+   `core.sshCommand`, a filter driver) for every user git process, the
+   shell prompt and gitsigns in a worktree pane included. So a planted
+   `config` or hook runs no command on the host, even if a pin detaches and
+   even for a plain host `git`.
+
+2. **A worker can move `.bare/refs/heads/main` or another worktree's branch
+   ref — in scope, tracked by #3334.** This changes another session or the
+   coordinator's local view, which is in the threat model, and bind mounts
+   cannot block it. The structural fix is #3334: give each bwrap worker its
+   own git common dir (or use the reftable backend), so `.bare/refs` is not
+   shared, and prism reconciles the worker's own commits into `.bare` at
+   push or review time. The practical reach today is limited — the
+   coordinator merges through GitHub, not the local ref, and `git pull
+   --ff-only` in `main` rejects a non-fast-forward planted ref — but it is
+   still in scope. #3334 holds the design.
+
+### Do not bind `.bare` read-only for bwrap (regression note)
+
+It was tried in #3327 and does not work. git needs `.bare/packed-refs.lock`
+in the `.bare` root on every commit, so a read-only `.bare` breaks the worker
+commit (an `error:` line on every commit) and the coordinator `git fetch
+--prune` (a hard failure). The object store and
+`packed-refs` stay writable under bwrap, as under sandbox-exec, so the "both
+isolators" limits above apply. See the `.bare` write scope (bwrap) section of
+`session-lifecycle.md` for the bind ordering.
