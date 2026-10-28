@@ -195,13 +195,13 @@ describe("readCredentials back-compat", () => {
 // ---------------------------------------------------------------------------
 //
 // The path resolution order is PI_AUTH_JSON > PI_CODING_AGENT_DIR/auth.json
-// > homedir()/.pi/agent/auth.json. On the host and in sandbox-exec, the
-// middle entry is the host ~/.pi/agent, so a read surfaces the host-side
-// rename of `prism account use`. In bwrap, since #3284, auth.json is a file
-// bind in a private agent dir, which pins the inode: the swap reaches a
-// running bwrap session only after a restart.
+// > homedir()/.pi/agent/auth.json. On the host, the middle entry is the host
+// ~/.pi/agent, so a read surfaces the host-side rename of `prism account
+// use`. In bwrap and sandbox-exec, since #3295, it is the auth.json of the
+// session. The sidecar replaces that file with a rename when the host file
+// changes, so a read surfaces the swap there too.
 //
-// We can't observe the bwrap behaviour from a unit test, but we CAN
+// We can't observe the sandbox behaviour from a unit test, but we CAN
 // verify the precedence: when PI_AUTH_JSON is unset and
 // PI_CODING_AGENT_DIR is set, readCredentials() must consult
 // <PI_CODING_AGENT_DIR>/auth.json.

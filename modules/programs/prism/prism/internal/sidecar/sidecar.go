@@ -492,6 +492,9 @@ type Sidecar struct {
 	// how many host-API listeners this process starts.
 	binaryStaleOnce sync.Once
 	binaryStaleDiag string
+	// piAuth holds the state of the pi auth sync of a bwrap or sandbox-exec
+	// session (pi_auth_sync.go, #3295).
+	piAuth piAuthSyncer
 	// shuttingDown is set to true at the start of Shutdown(). Used by Run()
 	// to prevent OnReady from firing after SIGTERM even when the HTTP health
 	// probe succeeds during the container-stop grace period. Protected by mu.
@@ -1063,6 +1066,11 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	s.mu.Lock()
 	s.reviewRecoveryCancel = recoveryCancel
 	s.mu.Unlock()
+
+	// Stage 2c: the pi auth sync of a bwrap or sandbox-exec session. It
+	// copies OAuth entries between the auth.json of the session and the host
+	// auth.json (pi_auth_sync.go, #3295). It needs the instance ID of stage 1.
+	s.startPIAuthSync(ctx)
 
 	// Stage 3: transport-shape gate. Consult the harness registry to
 	// determine the wire-level shape and dispatch to the appropriate startup

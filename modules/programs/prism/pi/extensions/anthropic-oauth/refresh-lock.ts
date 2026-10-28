@@ -50,6 +50,11 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { log } from "./logger.ts"
 
+// Go copy: the prism sidecar takes this lock around its timer sync of the
+// per-session auth.json (TakePIRefreshLock, piRefreshLockName, and
+// piRefreshLockStale in prism/internal/container/pi_auth_session.go). Change
+// REFRESH_LOCK_NAME, LOCK_TIMINGS.staleMs, or the owner file on both sides.
+// TestPIAuthSync_ExtensionUsesSameValues fails when they differ.
 export const REFRESH_LOCK_NAME = "anthropic-oauth-refresh.lock"
 
 export const LOCK_TIMINGS = {

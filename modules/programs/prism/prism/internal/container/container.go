@@ -311,11 +311,20 @@ type Config struct {
 	// config directory (~/.pi/agent). When non-empty and Harness == "pi",
 	// BuildArgs (bwrap) makes a private dir at PIAgentConfigSandboxDir with
 	// read-only binds of the entries of this directory, and sets
-	// PI_CODING_AGENT_DIR to the in-sandbox path. Only auth.json,
-	// atlassian-mcp-oauth.json, and the sessions dir of the worktree are bound
-	// read-write (pi_agent_dir.go, #3284). The role system-prompt is injected
-	// at runtime by the prism PI extension, not via this directory.
+	// PI_CODING_AGENT_DIR to the in-sandbox path. Only
+	// atlassian-mcp-oauth.json and the sessions dir of the worktree are bound
+	// read-write (pi_agent_dir.go, #3284). auth.json comes from
+	// PIAuthSessionDir. The role system-prompt is injected at runtime by the
+	// prism PI extension, not via this directory.
 	PIAgentConfigHostDir string
+
+	// PIAuthSessionDir is the host path of the per-session dir that holds
+	// the auth.json of the session (PreparePIAuthSession, #3295). bwrap binds
+	// it into the sandbox and makes auth.json of the sandbox agent dir a
+	// symlink into it. sandbox-exec uses it as the pi agent dir, and its
+	// profile grants a write of it. Empty means that the session has no
+	// auth.json from the host.
+	PIAuthSessionDir string
 
 	// PIAgentConfigSandboxDir is the in-sandbox path at which the PI agent
 	// config directory is mounted. Defaults to /run/prism/pi-agent when empty.

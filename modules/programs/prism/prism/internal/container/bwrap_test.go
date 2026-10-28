@@ -2112,10 +2112,11 @@ func TestBwrapBuildArgs_ConfigDirMountsPinned(t *testing.T) {
 	}
 	// The pi agent dir is a private dir (--dir, not a bind) at
 	// ~/.config/prism/pi-agent. Only the credential files and the sessions
-	// dir of the worktree are bound into it read-write (#3284). The fixture
-	// agent dir has no other entries, so there is no read-only entry bind.
+	// dir of the worktree are bound into it read-write (#3284). auth.json is
+	// not bound: it is a symlink to the per-session auth.json (#3295), and
+	// this fixture has no per-session dir. The fixture agent dir has no
+	// other entries, so there is no read-only entry bind.
 	withPI := maps.Clone(base)
-	withPI["prism/pi-agent/auth.json"] = "--bind"
 	withPI["prism/pi-agent/atlassian-mcp-oauth.json"] = "--bind"
 	withPI["prism/pi-extensions"] = "--ro-bind"
 

@@ -50,8 +50,8 @@ func TestRemovePiResumeJSONL_RemovesMatchingFile(t *testing.T) {
 
 // TestRemovePiResumeJSONL_SandboxExec_RemovesFromHostRoot is the
 // regression guard for cleanup: for a sandbox-exec-shaped config, the
-// transcript JSONL lives at the HOST sessions root (pi writes there because
-// the dispatcher injects PI_CODING_AGENT_DIR into the sandbox env), and
+// transcript JSONL lives at the HOST sessions root (pi writes there through
+// the sessions symlink of its per-session agent dir), and
 // RemovePiResumeJSONL must remove it from there. A resolver that pointed at
 // a per-session HOME would make the removal a silent no-op that left dead
 // transcripts accumulating under the host root.

@@ -233,6 +233,7 @@ func (s *Sidecar) HostAPIHandlerForTest() http.Handler {
 //	GET  /groups/monitor-log — return the review monitor log of one round (role-scoped)
 //	POST /event         — write a lifecycle event to the host DB (all roles; own session only)
 //	POST /usage/snapshot — persist a rate-limit snapshot for the active account (all roles)
+//	POST /pi-auth/sync  — sync the per-session pi auth.json with the host auth.json (all roles; own session only)
 //	POST /escalate      — escalate to coordinator (all roles; cross-session from= is coordinator only)
 //	POST /investigate   — spawn an investigate-agent session (coordinator only)
 //	POST /feedback      — append a feedback entry to the host feedback.jsonl (all roles)
@@ -3124,6 +3125,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		s.logger().Printf("sidecar: host-API /usage/snapshot: wrote snapshot for account %q", snap.Account)
 		writeJSON(w, http.StatusOK, map[string]string{"account": snap.Account})
 	})
+
+	// POST /pi-auth/sync — see pi_auth_sync.go (#3295).
+	mux.HandleFunc(piAuthSyncRoute, s.handlePIAuthSync)
 
 	// POST /escalate
 	// Request:  {"prompt":"...","to":"<session>" (optional),"from":"<session>" (optional)}

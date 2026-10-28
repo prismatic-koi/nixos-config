@@ -14,10 +14,12 @@ package container
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 const piAgentLiveSandboxDir = "/run/prism/pi-agent"
@@ -72,17 +74,38 @@ func hostTree(t *testing.T, dir string) []string {
 
 func piAgentLiveArgs(t *testing.T, hostDir, worktree string) []string {
 	t.Helper()
-	args, err := appendPIAgentDirBwrapMounts(nil, hostDir, piAgentLiveSandboxDir, worktree)
+	args, err := appendPIAgentDirBwrapMounts(nil, hostDir, piAgentLiveSandboxDir, worktree, piAuthLiveDir(t, hostDir))
 	if err != nil {
 		t.Fatalf("appendPIAgentDirBwrapMounts: %v", err)
 	}
 	return args
 }
 
+// piAuthLiveDirPath is the per-session auth dir of the fixture: next to the
+// host agent dir.
+func piAuthLiveDirPath(hostDir string) string {
+	return filepath.Join(filepath.Dir(filepath.Dir(hostDir)), "pi-auth", "agent")
+}
+
+// piAuthLiveDir makes the per-session auth dir of the fixture, with an
+// auth.json, and returns it.
+func piAuthLiveDir(t *testing.T, hostDir string) string {
+	t.Helper()
+	dir := piAuthLiveDirPath(hostDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(`{"session":"start"}`), 0o600); err != nil {
+		t.Fatalf("write session auth.json: %v", err)
+	}
+	return dir
+}
+
 // The write list works and reaches the host: the four pi lock dirs, an
-// in-place write of auth.json and atlassian-mcp-oauth.json, and a new
-// session file in the sessions dir of the worktree. A Notion token file
-// that is still in the agent dir, before the move to its own dir, is
+// in-place write of atlassian-mcp-oauth.json, and a new session file in the
+// sessions dir of the worktree. An in-place write of auth.json reaches the
+// per-session auth.json, not the host auth.json (#3295). A Notion token
+// file that is still in the agent dir, before the move to its own dir, is
 // read-only.
 func TestBwrapPIAgentDir_PiWritesWork(t *testing.T) {
 	bwrapBin := requireUsableBwrapForUsageTest(t)
@@ -107,7 +130,7 @@ printf '{"type":"message"}\n' >> "$A/sessions/` + enc + `/s.jsonl"
 		t.Fatalf("a pi write failed in the sandbox: %v\n%s", err, out)
 	}
 	for name, want := range map[string]string{
-		"auth.json":                    "refreshed",
+		"auth.json":                    `{"anthropic":{}}`,
 		"atlassian-mcp-oauth.json":     "atlassian",
 		"sessions/" + enc + "/s.jsonl": "{\"type\":\"session\"}\n{\"type\":\"message\"}\n",
 	} {
@@ -116,6 +139,94 @@ printf '{"type":"message"}\n' >> "$A/sessions/` + enc + `/s.jsonl"
 			t.Errorf("host %s = (%q, %v), want %q", name, got, err, want)
 		}
 	}
+	sessionAuth := filepath.Join(piAuthLiveDirPath(hostDir), "auth.json")
+	if got, err := os.ReadFile(sessionAuth); err != nil || string(got) != "refreshed" {
+		t.Errorf("session auth.json = (%q, %v), want %q", got, err, "refreshed")
+	}
+}
+
+// pi in the sandbox sees a host-side rename of the per-session auth.json,
+// with no restart: the sidecar replaces the file that way after `prism
+// account use` or a refresh of another session (#3295). auth.json in the
+// agent dir is a symlink into a dir bind, so it follows the rename.
+func TestBwrapPIAgentDir_SessionAuthFollowsHostRename(t *testing.T) {
+	bwrapBin := requireUsableBwrapForUsageTest(t)
+	hostDir, worktree := piAgentLiveFixture(t)
+	args := piAgentLiveArgs(t, hostDir, worktree)
+	authDir := piAuthLiveDirPath(hostDir)
+
+	out := runAuthRenameInBwrap(t, bwrapBin, args, authDir, piAuthSessionSandboxDir)
+	if want := "{\"session\":\"start\"}\n{\"session\":\"renamed\"}"; out != want {
+		t.Errorf("auth.json in the sandbox before and after the host rename = %q, want %q", out, want)
+	}
+}
+
+// The no-op proof: with a file bind of auth.json, the layout of #3284, the
+// sandbox keeps the old file after the rename. So the test above can fail.
+func TestBwrapPIAgentDir_FileBindMissesHostRename(t *testing.T) {
+	bwrapBin := requireUsableBwrapForUsageTest(t)
+	hostDir, _ := piAgentLiveFixture(t)
+	authDir := piAuthLiveDir(t, hostDir)
+	A := piAgentLiveSandboxDir
+	oldArgs := []string{"--dir", "/run/prism", "--dir", A,
+		"--bind", filepath.Join(authDir, "auth.json"), A + "/auth.json",
+		"--bind", authDir, "/run/prism/signal"}
+
+	out := runAuthRenameInBwrap(t, bwrapBin, oldArgs, authDir, "/run/prism/signal")
+	if want := "{\"session\":\"start\"}\n{\"session\":\"start\"}"; out != want {
+		t.Errorf("with a file bind, auth.json in the sandbox = %q, want the old file twice", out)
+	}
+}
+
+// runAuthRenameInBwrap starts a sandbox that reads $A/auth.json, waits
+// while the host replaces authDir/auth.json with a rename, and reads it
+// again. signalDir is the path of authDir in the sandbox. It returns the
+// two reads.
+func runAuthRenameInBwrap(t *testing.T, bwrapBin string, args []string, authDir, signalDir string) string {
+	t.Helper()
+	script := `A=` + piAgentLiveSandboxDir + `
+cat "$A/auth.json" || exit 5
+echo
+: > ` + signalDir + `/ready || exit 6
+i=0
+while [ ! -e ` + signalDir + `/go ]; do
+  i=$((i+1)); [ $i -gt 400 ] && exit 7
+  sleep 0.05
+done
+cat "$A/auth.json" || exit 8
+`
+	cmd := exec.Command(bwrapBin, bwrapUsageTestArgs(t, args, script)...)
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start bwrap: %v", err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(authDir, "ready")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatalf("the sandbox did not get ready: %s", out.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	tmp := filepath.Join(authDir, ".auth.json.new")
+	if err := os.WriteFile(tmp, []byte(`{"session":"renamed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, filepath.Join(authDir, "auth.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(authDir, "go"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("bwrap: %v\n%s", err, out.String())
+	}
+	return strings.TrimSpace(out.String())
 }
 
 // A worker cannot change, replace, or add a path in the host agent dir,
@@ -135,8 +246,6 @@ func TestBwrapPIAgentDir_PlantsDoNotReachHost(t *testing.T) {
 		`touch ` + A + `/bin/git`,
 		`touch ` + A + `/themes/x.json`,
 		`printf '{}' > ` + A + `/trust.json`,
-		`rm ` + A + `/auth.json`,
-		`mv ` + A + `/auth.json ` + A + `/a2`,
 		`ls ` + A + `/sessions/--other-worktree--`,
 	}
 	for _, script := range mustFail {

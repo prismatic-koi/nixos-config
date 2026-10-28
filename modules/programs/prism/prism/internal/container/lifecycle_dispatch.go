@@ -252,10 +252,19 @@ func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string
 	// Section 6a of the profile grants a write of the sessions dir of the
 	// worktree, but not a create of its parent dirs. Section 21f denies a
 	// create of the credential files. So make them on the host here.
-	// Best-effort, like ensureGoCacheDirs.
+	// Best-effort, like ensureGoCacheDirs. Then link each host entry into the
+	// per-session agent dir, which is PI_CODING_AGENT_DIR of the session
+	// (#3295). A failed link is a hard fail: without the links, pi starts
+	// with no settings and no extensions.
 	if m.cfg.Harness == "pi" {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
-			preparePIAgentDir(filepath.Join(home, ".pi", "agent"), m.cfg.Worktree)
+			hostDir := filepath.Join(home, ".pi", "agent")
+			preparePIAgentDir(hostDir, m.cfg.Worktree)
+			if m.cfg.PIAuthSessionDir != "" {
+				if err := LinkPIAgentDirEntries(hostDir, m.cfg.PIAuthSessionDir); err != nil {
+					return nil, fmt.Errorf("container: sandbox-exec: %w", err)
+				}
+			}
 		}
 	}
 

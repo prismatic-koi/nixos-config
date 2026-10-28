@@ -880,15 +880,13 @@ func generateProfile(m *Manager) string {
 	// every later session loads code and prompts from it, host sessions too
 	// (#3284). pi_agent_dir.go lists what pi and its extensions write during
 	// a normal session, and why. This section allows a read of the whole dir
-	// and a write of exactly those paths:
-	//   - auth.json and atlassian-mcp-oauth.json (in-place writes);
-	//   - the four proper-lockfile lock dirs that pi makes in the root (the
-	//     node only: proper-lockfile calls mkdir, utimes, and rmdir on it);
+	// and a write of exactly these paths:
+	//   - atlassian-mcp-oauth.json (an in-place write);
 	//   - sessions/<encoded-cwd>/ of the worktree, not of another worktree.
-	// The Notion store is not in this dir: see section 6c.
-	// The lock dirs stay shared with host sessions, because SBPL can grant a
-	// name. Section 21f takes back the create and the unlink of the two
-	// in-place files.
+	// pi writes auth.json and makes its lock dirs in the per-session agent
+	// dir: see section 6d. The host auth.json has no write grant (#3295).
+	// The Notion store is not in this dir: see section 6c. Section 21f takes
+	// back the create and the unlink of auth.json and of the in-place file.
 	//
 	// The rule is gated on Harness == "pi" so non-pi sessions are not
 	// exposed to the pi credential directory. It is emitted for pi sessions
@@ -910,6 +908,22 @@ func generateProfile(m *Manager) string {
 	// two Config fields. An empty field gives no rule.
 	if m.cfg.Harness == "pi" {
 		if clause := piSharedStateSBPLAllow(m.cfg.PILockHostDir, m.cfg.PINotionHostDir); clause != "" {
+			sb.WriteString(clause)
+			sb.WriteString("\n")
+		}
+	}
+
+	// ── 6d. pi per-session agent dir (pi sessions only) ───────────────────────────
+	// PI_CODING_AGENT_DIR of a sandbox-exec session is its per-session dir
+	// (pi_auth_session.go, #3295). It holds the auth.json of the session,
+	// the lock dirs of pi, and a symlink to each other entry of ~/.pi/agent.
+	// A read and a write of the whole dir: only this session reads it, and
+	// the sidecar copies only OAuth entries from it to the host auth.json.
+	// The symlink targets are in ~/.pi/agent, so section 6a decides which of
+	// them pi can write. prism agent-run makes the dir and sets the Config
+	// field. An empty field gives no rule.
+	if m.cfg.Harness == "pi" {
+		if clause := piAuthSessionSBPLAllow(m.cfg.PIAuthSessionDir); clause != "" {
 			sb.WriteString(clause)
 			sb.WriteString("\n")
 		}
@@ -1325,14 +1339,15 @@ func generateProfile(m *Manager) string {
 	}
 
 	// ── 21f. FINAL DENY — the pi credential files cannot be replaced ─
-	// Section 6a grants a write of auth.json and atlassian-mcp-oauth.json.
-	// pi and the extensions write both files in place, and Prepare makes
-	// them on the host. Without this deny, the session can remove a file and
-	// put a symlink at its path. A host pi then follows the symlink and
-	// writes its tokens to a file that the session chose (#3284). The deny
-	// must follow every allow, because SBPL resolves a conflict in favour of
-	// the later rule. TestGenerateProfile_PIAgentCredentialDenyFollowsEveryAllow
-	// pins the order.
+	// Section 6a grants a write of atlassian-mcp-oauth.json. The extension
+	// writes it in place, and Prepare makes it on the host. Without this
+	// deny, the session can remove the file and put a symlink at its path. A
+	// host pi then follows the symlink and writes its tokens to a file that
+	// the session chose (#3284). The deny also names auth.json, which has no
+	// write grant (#3295). The deny must follow every allow, because SBPL
+	// resolves a conflict in favour of the later rule.
+	// TestGenerateProfile_PIAgentCredentialDenyFollowsEveryAllow pins the
+	// order.
 	if m.cfg.Harness == "pi" && home != "" {
 		sb.WriteString("\n")
 		sb.WriteString(piAgentDirSBPLDeny(filepath.Join(home, ".pi", "agent")))
@@ -1347,6 +1362,20 @@ func generateProfile(m *Manager) string {
 	// TestGenerateProfile_PISharedStateDenyFollowsEveryAllow pins the order.
 	if m.cfg.Harness == "pi" {
 		if clause := piSharedStateSBPLDeny(m.cfg.PILockHostDir, m.cfg.PINotionHostDir); clause != "" {
+			sb.WriteString("\n")
+			sb.WriteString(clause)
+		}
+	}
+
+	// ── 21h. FINAL DENY — the per-session agent dir node cannot be replaced ─
+	// Section 6d grants a subpath of the per-session agent dir, and a subpath
+	// covers the dir node too. A session must not remove the dir and put a
+	// symlink at its path: the sidecar then writes the session auth.json, with
+	// the host tokens, where the session chose. The parent dir has no write
+	// grant. The deny must follow every allow.
+	// TestGenerateProfile_PIAuthSessionDenyFollowsEveryAllow pins the order.
+	if m.cfg.Harness == "pi" {
+		if clause := piAuthSessionSBPLDeny(m.cfg.PIAuthSessionDir); clause != "" {
 			sb.WriteString("\n")
 			sb.WriteString(clause)
 		}

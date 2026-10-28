@@ -8,7 +8,8 @@
 //   - refreshViaOAuth is the primary refresh path (no CLI fallback)
 //   - No multi-account/account-switching support (pi is single-account)
 //   - refreshIfNeeded refreshes under the shared lock of refresh-lock.ts
-//     (UPSTREAM.md divergence #21)
+//     (UPSTREAM.md divergence #21), and asks the sidecar to sync the
+//     per-session auth.json in the lock (session-sync.ts, divergence #22)
 
 import { execFileSync } from "node:child_process"
 import {
@@ -23,6 +24,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { log } from "./logger.ts"
 import { acquireRefreshLockSync } from "./refresh-lock.ts"
+import { syncSessionAuthSync } from "./session-sync.ts"
 
 export interface ClaudeCredentials {
   accessToken: string
@@ -52,16 +54,16 @@ export const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
  *   3. ~/.pi/agent/auth.json           legacy fallback.
  *
  * The middle entry is the critical piece for `prism account use`. On the
- * host and in sandbox-exec, $PI_CODING_AGENT_DIR is the host ~/.pi/agent, so
- * a read sees a host-side `os.Rename` swap (renames included). Combined with
- * the mtime check below, this makes the swap visible to a running pi without
- * a restart.
+ * host, $PI_CODING_AGENT_DIR is the host ~/.pi/agent, so a read sees a
+ * host-side `os.Rename` swap. Combined with the mtime check below, this
+ * makes the swap visible to a running pi without a restart.
  *
- * bwrap is the exception since #3284: the agent dir in the sandbox is
- * private, and auth.json in it is a file bind. Linux `mount --bind` on a
- * file pins the source inode at mount time, so a host-side `os.Rename`
- * (which creates a new inode) is NOT visible in an already-running bwrap
- * sandbox. The swap reaches a bwrap session when it restarts.
+ * In bwrap and sandbox-exec, auth.json is the auth file of the session, not
+ * the host file (#3295). In bwrap it is a symlink to a file in a dir bind.
+ * In sandbox-exec $PI_CODING_AGENT_DIR is the per-session dir. The sidecar
+ * replaces the session file with a rename when the host file changes, and a
+ * read sees the new file, so a swap also reaches a running sandboxed
+ * session with no restart.
  */
 function getAuthJsonPath(): string {
   if (process.env.PI_AUTH_JSON) return process.env.PI_AUTH_JSON
@@ -285,7 +287,8 @@ function isFresh(creds: ClaudeCredentials): boolean {
  * time. Under the lock it reads auth.json again: if another session has
  * already written a fresh token, it returns that token and sends no
  * request. It writes a new token before it releases the lock, so the next
- * holder reads it.
+ * holder reads it. In a sandboxed session it asks the sidecar for a sync of
+ * the per-session auth.json before the read and after the write (#3295).
  */
 export function refreshIfNeeded(
   creds: ClaudeCredentials,
@@ -302,6 +305,7 @@ export function refreshIfNeeded(
   if (!lock) {
     // Another session still refreshes, or this process refreshes on the
     // async path. Do not refresh: use a token that it already wrote.
+    syncSessionAuthSync("pull")
     const stored = readCredentials()
     if (stored && isFresh(stored)) {
       cachedCreds = null
@@ -312,6 +316,7 @@ export function refreshIfNeeded(
   }
 
   try {
+    syncSessionAuthSync("pull")
     const current = readCredentials() ?? creds
     if (isFresh(current)) {
       log("refresh_adopted", { expiresAt: current.expiresAt })
@@ -322,6 +327,7 @@ export function refreshIfNeeded(
       const fresh = refresh(current.refreshToken)
       if (fresh && isFresh(fresh)) {
         writeCredentials(fresh)
+        syncSessionAuthSync("push")
         cachedCreds = null // invalidate cache so next call sees fresh creds
         return fresh
       }
