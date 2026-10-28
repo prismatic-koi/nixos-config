@@ -7,6 +7,179 @@
 let
   username = config.nx.username;
   homeDir = config.home-manager.users.${username}.home.homeDirectory;
+  signingKey = "${homeDir}/.ssh/prismatic-koi-ed25519-signingkey.pub";
+  allowedSignersFile = "${homeDir}/.ssh/allowed_signers";
+
+  # Config that every git process of the user gets in its environment. A
+  # sandboxed prism session can write a repo config that git on the host
+  # reads, and environment config has priority over every config file. The
+  # tests, the limits, and where the variables reach are in
+  # modules/programs/prism/prism/docs/invariants/user-git-overrides.md.
+  #
+  # environment.d cannot hold an empty value, and git stops with "missing
+  # config value" when one GIT_CONFIG_VALUE_<n> is absent. So the systemd and
+  # launchd environments get only the entries that have a value.
+  gitConfigOverrides = [
+    # Keys that run a program: turn them off.
+    {
+      key = "core.fsmonitor";
+      value = "false";
+    }
+    {
+      key = "core.hooksPath";
+      value = "/dev/null";
+    }
+    {
+      key = "core.pager";
+      value = "cat";
+    }
+    {
+      key = "core.editor";
+      value = ":";
+    }
+    {
+      key = "sequence.editor";
+      value = ":";
+    }
+    {
+      key = "core.askPass";
+      value = "";
+    }
+    {
+      key = "core.alternateRefsCommand";
+      value = "";
+    }
+    {
+      key = "gpg.ssh.defaultKeyCommand";
+      value = "";
+    }
+    {
+      key = "protocol.ext.allow";
+      value = "never";
+    }
+    # No value turns diff.external off: git runs any value, and an empty
+    # value makes each git diff fail. So pin it to a program that prints the
+    # builtin diff.
+    {
+      key = "diff.external";
+      value = "${builtinExternalDiff}";
+    }
+    {
+      key = "diff.trustExitCode";
+      value = "true";
+    }
+    # GIT_ATTR_SOURCE does not cover the global attributes file, and a repo
+    # config can name any file.
+    {
+      key = "core.attributesFile";
+      value = "/dev/null";
+    }
+    # Keys that the owner uses: pin them to the values of this module, or to
+    # the git default.
+    {
+      key = "core.sshCommand";
+      value = "ssh";
+    }
+    {
+      key = "credential.helper";
+      value = "";
+    }
+    {
+      key = "gpg.format";
+      value = "ssh";
+    }
+    {
+      key = "gpg.ssh.program";
+      value = "ssh-keygen";
+    }
+    {
+      key = "user.signingKey";
+      value = signingKey;
+    }
+    {
+      key = "gpg.ssh.allowedSignersFile";
+      value = allowedSignersFile;
+    }
+    {
+      key = "gpg.program";
+      value = "gpg";
+    }
+    {
+      key = "gpg.openpgp.program";
+      value = "gpg";
+    }
+    {
+      key = "gpg.x509.program";
+      value = "gpgsm";
+    }
+    {
+      key = "diff.ignoreSubmodules";
+      value = "all";
+    }
+    {
+      key = "status.submoduleSummary";
+      value = "false";
+    }
+    {
+      key = "submodule.recurse";
+      value = "false";
+    }
+    {
+      key = "fetch.recurseSubmodules";
+      value = "false";
+    }
+    {
+      key = "push.recurseSubmodules";
+      value = "no";
+    }
+  ];
+
+  gitEnvOverrides = {
+    # The empty tree: git reads no .gitattributes file.
+    GIT_ATTR_SOURCE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    # A partial-clone config makes git status, diff, and blame fetch a
+    # missing object, and the fetch runs remote.<name>.uploadpack.
+    GIT_NO_LAZY_FETCH = "1";
+    # pager.<command> has priority over core.pager. GIT_PAGER has priority
+    # over both.
+    GIT_PAGER = "cat";
+    # git uses the first core.gitProxy that matches, so a later config value
+    # cannot replace a repo value. A set GIT_PROXY_COMMAND makes git skip the
+    # config, and an empty one means no proxy.
+    GIT_PROXY_COMMAND = "";
+  };
+
+  toGitConfigEnv =
+    overrides:
+    {
+      GIT_CONFIG_COUNT = toString (lib.length overrides);
+    }
+    // lib.listToAttrs (
+      lib.concatLists (
+        lib.imap0 (i: o: [
+          (lib.nameValuePair "GIT_CONFIG_KEY_${toString i}" o.key)
+          (lib.nameValuePair "GIT_CONFIG_VALUE_${toString i}" o.value)
+        ]) overrides
+      )
+    );
+
+  builtinExternalDiff = lib.getExe (
+    pkgs.writeShellApplication {
+      name = "git-builtin-external-diff";
+      runtimeInputs = [
+        pkgs.coreutils
+        pkgs.gawk
+        pkgs.git
+        pkgs.gnugrep
+      ];
+      text = builtins.readFile ./git-builtin-external-diff.sh;
+    }
+  );
+
+  shellGitEnv = toGitConfigEnv gitConfigOverrides // gitEnvOverrides;
+  serviceGitEnv =
+    toGitConfigEnv (lib.filter (o: o.value != "") gitConfigOverrides)
+    // lib.filterAttrs (_: v: v != "") gitEnvOverrides;
 in
 {
   options = {
@@ -48,7 +221,7 @@ in
                   user = {
                     name = "prismatic-koi";
                     email = "ben@tinfoilforest.nz";
-                    signingKey = "${homeDir}/.ssh/prismatic-koi-ed25519-signingkey.pub";
+                    inherit signingKey;
                   };
                   push = {
                     autoSetupRemote = true;
@@ -59,7 +232,7 @@ in
                   gpg = {
                     format = "ssh";
                     "ssh" = {
-                      allowedSignersFile = "${homeDir}/.ssh/allowed_signers";
+                      inherit allowedSignersFile;
                     };
                   };
                   commit = {
@@ -76,6 +249,11 @@ in
                   credential = {
                     helper = "";
                   };
+                  # git uses a bare repo only when --git-dir or GIT_DIR names
+                  # it. A repo config cannot change this key.
+                  safe = {
+                    bareRepository = "explicit";
+                  };
                 };
               }
             ];
@@ -83,8 +261,40 @@ in
           home.packages = with pkgs; [
             gh
           ];
+
+          # zsh sources this file from .zshenv, for login and non-login
+          # shells. tmux removes the source-once guard from its server
+          # environment, so each new pane sources it again.
+          home.sessionVariables = shellGitEnv;
         };
       }
+
+      # Linux: the systemd user manager, for the units and for the tmux server
+      # that prism-restore starts.
+      (lib.mkIf isLinux {
+        home-manager.users.${username}.systemd.user.sessionVariables = serviceGitEnv;
+      })
+
+      # Darwin: the launchd user domain, for the agents and for the apps that
+      # launchd starts. launchctl setenv acts only on processes that start
+      # after it, so this agent runs at each login.
+      (lib.mkIf isDarwin {
+        home-manager.users.${username}.launchd.agents.git-env-overrides = {
+          enable = true;
+          config = {
+            ProgramArguments = [
+              "/bin/sh"
+              "-c"
+              (lib.concatStringsSep "\n" (
+                lib.mapAttrsToList (
+                  name: value: "/bin/launchctl setenv ${name} ${lib.escapeShellArg value}"
+                ) serviceGitEnv
+              ))
+            ];
+            RunAtLoad = true;
+          };
+        };
+      })
 
       # Linux: sops secrets via system config
       (lib.mkIf isLinux {

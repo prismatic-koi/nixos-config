@@ -343,3 +343,16 @@ commit (an `error:` line on every commit) and the coordinator `git fetch
 `packed-refs` stay writable under bwrap, as under sandbox-exec, so the "both
 isolators" limits above apply. See the `.bare` write scope (bwrap) section of
 `session-lifecycle.md` for the bind ordering.
+
+## User git on the host (#3326)
+
+Each git process of the user on the host gets config in its environment.
+git reads this config after each config file, so a planted `.bare/config`,
+a nested git dir, or a staged submodule cannot change the keys in the list.
+The list turns off the keys that run a program, ignores submodules and
+`.gitattributes`, and pins the keys of SSH commit signing. It applies to the
+shell prompt and gitsigns in a worktree pane, and to a plain `git` at the
+project root (the `.bare/commondir` route above).
+
+The list, the tests, where the variables reach, and the known limits are in
+`docs/invariants/user-git-overrides.md`.
