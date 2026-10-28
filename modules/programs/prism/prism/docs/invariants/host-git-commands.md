@@ -6,7 +6,7 @@
   names in a git dir. They are git names, not names in this source tree.
 -->
 
-Issues: #3322, #3315, #3293. Code: `internal/git/host.go`
+Issues: #3322, #3315, #3293, #3325. Code: `internal/git/host.go`
 (`OpenBare`, `OpenWorktree`, `OpenDir`, `OuterBareRoot`, `EnvForDir`,
 `CloneCommand`), and the prefix+b keybind in the tmux config of prism
 (modules/programs/prism/tmux.nix, outside the prism Go tree).
@@ -62,8 +62,12 @@ the only defence is a git dir and a project root that the session cannot
 write.
 
 #3293 and #3315 stop a direct write to `.bare/config`, `.bare/hooks`, and
-the git dirs of other worktrees. They do not stop a redirect, because the
-redirect names a dir outside `.bare`.
+the git dirs of other worktrees. Sections 21j and 21k of the sandbox-exec
+profile also deny a write of `<worktree>/.git` and of the redirect files of
+the git dir of the session, and #3321 does the same for bwrap. See
+`docs/invariants/sandbox-git-write-scope.md`. The host-side pin stays as
+defence in depth: it does not depend on the sandbox rules, and it also
+covers a host mode session and a `.bare` in a subdir of a worktree.
 
 ## How prism computes the dirs
 
@@ -124,7 +128,8 @@ inside another project, for a path that a user types on the host too.
   in that clone reads config that the session wrote.
 - **Tools in the host panes.** prism starts nvim and a shell in the edit
   and term windows of a session, on the host, in the worktree. Their git
-  plugins and prompts run git there, and this rule does not cover them.
+  plugins and prompts run git there, and this rule does not cover them. A
+  nested `.git` in a worktree subdir reaches them. Follow-up: #3325.
 - **Refs.** A session can write the refs of `.bare`, and a host command
   acts on those refs. For example, the `--rebase` pre-flight pushes the
   branch that `HEAD` of the session names. This rule is about commands

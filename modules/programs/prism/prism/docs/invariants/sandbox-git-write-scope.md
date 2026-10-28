@@ -9,7 +9,8 @@
 -->
 
 Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap),
-#3322 (host-side git in a worker worktree), #3325 (a nested `.git`).
+#3325 (a nested `.git`). Host-side git: #3322, in
+`docs/invariants/host-git-commands.md`.
 Code: `internal/container/git_write_scope.go`, sections 6, 6e, 17b, 21b,
 21i, 21j, and 21k of `generateProfile` in `internal/container/sandbox_exec.go`, and
 the git step of `sandboxExecIsolator.Prepare` in
@@ -175,5 +176,7 @@ isolator can use the same function (#3315).
   the worktree makes no new path named `.git`. Follow-up: #3325.
 - **Host-side git in a worktree (bwrap).** A sandbox-exec session cannot
   write the `.git` file or the redirect files of its git dir (sections 21j
-  and 21k). bwrap does not have these denies yet. Follow-ups: #3315,
-  #3322.
+  and 21k). bwrap does not have these denies yet. Follow-up: #3315. Each
+  host git command that prism runs sets `GIT_DIR` and `GIT_COMMON_DIR`
+  itself, so a redirect in a bwrap worktree does not reach it. See
+  `docs/invariants/host-git-commands.md` (#3322).
