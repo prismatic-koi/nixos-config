@@ -187,9 +187,11 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 	if m.credentialsErr != nil {
 		return nil, fmt.Errorf("container: bwrap: %w", m.credentialsErr)
 	}
-	// worktreeGitDirErr uses the same error-stashing pattern: the
-	// WorktreeGitDir path is authoritative (resolved from the worktree's .git
-	// pointer), so a missing directory is a real error and must fail the spawn.
+	// worktreeGitDirErr uses the same error-stashing pattern: BuildArgs binds
+	// only the worktree git dir that resolveGitWriteScope accepts, and stashes
+	// an error when the check fails (a git dir that is missing, outside
+	// .bare/worktrees, or whose .git / gitdir back-pointer disagree). The
+	// session must not start with its git state unbound, so surface it here.
 	if m.worktreeGitDirErr != nil {
 		return nil, fmt.Errorf("container: bwrap: %w", m.worktreeGitDirErr)
 	}

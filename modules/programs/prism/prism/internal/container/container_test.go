@@ -674,13 +674,25 @@ func TestEnsureBareReadOnlyTargets_CreatesMissingEntries(t *testing.T) {
 	// sandbox starts, so a worker cannot create them first (issue #3315).
 	bareRoot := t.TempDir()
 	bareDir := filepath.Join(bareRoot, ".bare")
+	worktree := filepath.Join(bareRoot, "feat")
 	worktreeGitDir := filepath.Join(bareDir, "worktrees", "feat")
-	if err := os.MkdirAll(worktreeGitDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll worktreeGitDir: %v", err)
+	for _, d := range []string{worktreeGitDir, worktree} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("MkdirAll %q: %v", d, err)
+		}
 	}
-	// hooks, info, config, commondir, and config.worktree are all absent.
+	// The gitScope skeleton: the .git gitfile and the git-dir gitdir
+	// back-pointer, so resolveGitWriteScope accepts the git dir. hooks, info,
+	// config, commondir, and config.worktree are all absent, to prove the call
+	// creates the ones it should.
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: "+worktreeGitDir+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile .git: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreeGitDir, "gitdir"), []byte(filepath.Join(worktree, ".git")+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile gitdir: %v", err)
+	}
 
-	m := New(Config{SessionName: "repo@feat", BareRoot: bareRoot, WorktreeGitDir: worktreeGitDir})
+	m := New(Config{SessionName: "repo@feat", BareRoot: bareRoot, Worktree: worktree, WorktreeGitDir: worktreeGitDir})
 	if err := m.ensureBareReadOnlyTargets(); err != nil {
 		t.Fatalf("ensureBareReadOnlyTargets: %v", err)
 	}

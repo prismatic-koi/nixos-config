@@ -489,12 +489,13 @@ type Manager struct {
 	// as piBwrapErr.
 	credentialsErr error
 
-	// worktreeGitDirErr holds any error produced when WorktreeGitDir does not
-	// exist on disk at BuildArgs time. WorktreeGitDir is resolved from the
-	// worktree's authoritative .git pointer, so a missing directory is a real
-	// error and must be reported, not silently skipped. BuildArgs
-	// cannot return an error, so it stashes the error here and Prepare
-	// surfaces it — same pattern as piBwrapErr.
+	// worktreeGitDirErr holds the error produced when the worktree git dir
+	// fails the resolveGitWriteScope check at BuildArgs time (#3293/#3320):
+	// the git dir is missing, is not a direct child of .bare/worktrees, or the
+	// worktree .git and the git-dir gitdir back-pointer disagree. The session
+	// can write its own .git file, so an unvalidated git dir must not be bound
+	// read-write. BuildArgs cannot return an error, so it stashes the error
+	// here and Prepare surfaces it — same pattern as piBwrapErr.
 	worktreeGitDirErr error
 }
 
@@ -1036,14 +1037,14 @@ func (m *Manager) ensureBareReadOnlyTargets() error {
 		return err
 	}
 
-	// The own worktree's config.worktree, pinned empty so a worker cannot plant
-	// one. Only when the worktree git dir exists; a missing one is surfaced as
-	// a hard error by BuildArgs' own stat of WorktreeGitDir.
-	if m.cfg.WorktreeGitDir != "" {
-		if _, err := os.Stat(m.cfg.WorktreeGitDir); err == nil {
-			if err := ensureFileExists(filepath.Join(m.cfg.WorktreeGitDir, "config.worktree"), nil); err != nil {
-				return err
-			}
+	// The own worktree's config.worktree, created empty so the own-worktree
+	// overlay has a target and a worker cannot plant one. Created under the git
+	// dir that resolveGitWriteScope validated — the same path BuildArgs binds.
+	// When the check fails GitDir is empty, BuildArgs stashes the error, and
+	// Prepare fails the spawn, so there is nothing to create here.
+	if scope, _ := m.gitScope(); scope.GitDir != "" {
+		if err := ensureFileExists(filepath.Join(scope.GitDir, "config.worktree"), nil); err != nil {
+			return err
 		}
 	}
 	return nil
