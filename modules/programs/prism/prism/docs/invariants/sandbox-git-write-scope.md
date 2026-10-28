@@ -2,7 +2,7 @@
 
 <!-- doclint-ignore: .bare/config, .bare/gc.pid, .bare/hooks, .bare/info, .bare/logs, .bare/logs/refs/remotes, .bare/objects, .bare/packed-refs, .bare/refs/remotes, .bare/refs/tags, .bare/worktrees, .bare/commondir, logs/HEAD, refs/remotes/origin/main, FETCH_HEAD, ORIG_HEAD, core.hooksPath -->
 <!-- doclint-ignore: .agents/skills, .pi/extensions, .pi/mcp.json, .pi/settings.json -->
-<!-- doclint-ignore: .bare/refs, .bare/HEAD, refs/heads/main, refs/stash -->
+<!-- doclint-ignore: .bare/refs, .bare/HEAD, refs/heads/main, refs/stash, detach_mounts, branch.autoSetupMerge -->
 <!--
   The extra .bare/* and refs/* names are git paths in the common dir at run
   time, not files in this source tree.
@@ -236,6 +236,19 @@ ref), where sandbox-exec grants only `FETCH_HEAD`. So the table rows for the
 branch ref and the stash ref, and the "Other branches" and "`git gc`" known
 limits above, hold for sandbox-exec but not yet for bwrap. Bringing bwrap to
 the same scope is #3327.
+
+A host rename can detach a bwrap read-only pin (not verified on a live
+kernel). The pins are bind mounts over the shared `.bare` dentry (Dst ==
+Src). Since Linux 3.18, a host-side rename onto, or unlink of, a bound file
+calls `detach_mounts` on that dentry and removes the overlay in every running
+bwrap session, across namespaces. prism renames `.bare/config` host-side
+(`ensureGitUpstream` at spawn, `git worktree add -b` through
+`branch.autoSetupMerge`, `git branch -d` at cleanup), so a concurrent spawn
+or cleanup can re-open `.bare/config` read-write for a running worker. #3327
+removes the dependency — it binds `.bare` read-only and binds read-write only
+the directories a session must write, and adds a live-bwrap test of a host
+rename — and #3326 hardens the user git environment. sandbox-exec is not
+affected: its profile is an allowlist, not a bind.
 
 The object store and `packed-refs` stay writable under bwrap too, so the
 "both isolators" limits above apply. See the `.bare` write scope (bwrap)
