@@ -155,9 +155,11 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 	// upstream must be written on the host, the same as sandbox-exec does
 	// (#3293/#3320). The session gitconfig sets push.autoSetupRemote but
 	// cannot write the read-only .bare/config, so without this the session's
-	// git push prints the upstream error, and the host-side push of `prism
-	// review --rebase` writes a second upstream into .bare/config that makes
-	// each later push exit 128 ("multiple upstream branches").
+	// git push prints the upstream error. A bare host push (for example from a
+	// host pane) with no upstream in .bare/config writes one; with an upstream
+	// in the per-session gitconfig as well, each later push exits 128
+	// ("multiple upstream branches"). The `prism review --rebase` push writes
+	// no upstream — it names an explicit refs/heads/<branch> refspec.
 	//
 	// prepareGitWriteDirs is NOT called for bwrap: under bwrap .bare and its
 	// refs/ and logs/ subtrees are inside the read-write .bare bind, so git

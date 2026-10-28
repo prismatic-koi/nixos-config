@@ -115,11 +115,12 @@ binds it read-write (#3315).
   configuration`.
 - The upstream must be in `.bare/config` and in no other file. Host-side
   git in the worktree reads `.bare/config`, not the per-session
-  `GIT_CONFIG_GLOBAL` file. For example, `prism review --rebase` runs
-  `git push --force-with-lease` on the host. With no upstream in
-  `.bare/config`, that push writes one there. If the per-session file also
-  names an upstream, git then refuses each later push in the session
-  ("multiple upstream branches", exit 128).
+  `GIT_CONFIG_GLOBAL` file. For example, a bare `git push` from a host pane
+  with no upstream in `.bare/config` writes one there. If the per-session
+  file also names an upstream, git then refuses each later push in the
+  session ("multiple upstream branches", exit 128). The `prism review
+  --rebase` push names an explicit `refs/heads/<branch>` refspec, so it
+  writes no upstream.
 - Before the first push, `git status` reports that the upstream is gone,
   and `git pull` finds no remote branch. Both change after the first push.
 

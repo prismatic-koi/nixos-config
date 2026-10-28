@@ -1,6 +1,6 @@
 # Invariant: host git commands
 
-<!-- doclint-ignore: .bare/commondir, .bare/config, .bare/hooks, .bare/worktrees, core.hooksPath, core.fsmonitor, core.sshCommand, credential.helper, extensions.worktreeConfig, config.worktree, submodule.recurse, fetch.recurseSubmodules, push.recurseSubmodules, diff.ignoreSubmodules, protocol.ext.allow, GIT_CONFIG_PARAMETERS, GIT_PAGER, gitdir, commondir -->
+<!-- doclint-ignore: .bare/commondir, .bare/config, .bare/hooks, .bare/worktrees, core.hooksPath, core.fsmonitor, core.sshCommand, credential.helper, extensions.worktreeConfig, config.worktree, submodule.recurse, fetch.recurseSubmodules, push.recurseSubmodules, diff.ignoreSubmodules, protocol.ext.allow, GIT_CONFIG_PARAMETERS, GIT_PAGER, gitdir, commondir, rebase-merge/autostash -->
 <!--
   These names are git config keys, git environment variables, and file
   names in a git dir. They are git names, not names in this source tree.
@@ -179,7 +179,8 @@ what that pre-flight does on the host:
   file, and `git rebase --abort` applies that stash.
 - It does not run `git rebase --abort`. On a conflict it removes the rebase
   state dir, re-attaches `HEAD` to the branch, and runs `reset --hard`. It
-  applies no stash, so a planted `autostash` file never runs.
+  applies no stash on this abort path, so a planted `autostash` file does not
+  run through it.
 - It pushes the branch of the session record — the path of the worktree
   below the project root — not the branch that `HEAD` names. A session can
   write `HEAD` in its own git dir, so the push names the branch with an
@@ -188,6 +189,22 @@ what that pre-flight does on the host:
   worktree path, and when `HEAD` is not on that branch. The rebase acts on
   `HEAD`, so this keeps the rebase, the push, and the restore on one branch.
   prism never falls back to a bare `git push` that follows `HEAD`.
+
+**Open vulnerability: the success-path autostash (#3335).** A `git rebase`
+that **succeeds** still applies a `rebase-merge/autostash` file if one is
+present when it finishes, whatever its config (`--no-autostash` does not stop
+this; git applies a file it did not write). A sandboxed session can write
+`rebase-merge/` in its own git dir while the host `git rebase` runs
+(`docs/invariants/sandbox-git-write-scope.md`; bwrap binds all of `.bare`).
+So a session can plant the `autostash` file after `preflight.go` starts the
+rebase and before it ends, and git then applies that commit on the host, as
+the user — the same submodule-filter chain as #3323, through a successful
+rebase rather than the abort path. The pre-existing-state refusal and the
+stash-free restore do not close this: both act before the rebase starts or
+after it fails, not during a rebase that succeeds. This is a worker-triggered
+host code-execution path that is still **open**. The structural fix is to run
+the `--rebase` steps in the session sandbox, not on the host — tracked in
+#3335 (high priority).
 
 Code: `internal/review/preflight.go`. Tests:
 `internal/review/preflight_host_git_test.go`.
