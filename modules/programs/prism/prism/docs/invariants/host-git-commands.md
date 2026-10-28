@@ -52,8 +52,10 @@ a dir with its own config and hooks:
 - `.bare/commondir` does the same for a command with `GIT_DIR=.bare`. A
   bwrap session can write it: #3315 deliberately does not pin the top-level
   `.bare/commondir` (no commondir content is a no-op — any such file makes
-  git treat the project root as a work tree). #3327 binds `.bare`
-  read-only.
+  git treat the project root as a work tree). bwrap cannot bind `.bare`
+  read-only to stop the write (it breaks commit — see
+  `sandbox-git-write-scope.md`); the host-side control is `OpenBare`
+  refusing a repo that has a `.bare/commondir` file.
 - A `.bare` in a subdir of the worktree. A walk up from a cwd in that
   subdir finds it before the real project root. A sandboxed coordinator
   can also name that subdir as the project root, through the `repo` field
@@ -212,9 +214,13 @@ Code: `internal/review/preflight.go`. Tests:
 ## What prism does not change
 
 - `core.sshCommand` and `credential.helper` keep their values. Fetch and
-  push on the host use the credentials of the user, as before. The pinned
-  config is `.bare/config`, which a session cannot write after #3293 and
-  #3315.
+  push on the host use the credentials of the user, as before. Under
+  `sandbox-exec` a session cannot write `.bare/config` (the SBPL profile
+  denies it, #3293). Under `bwrap` the `.bare/config` protection is a
+  read-only bind pin (#3315) that a host-side rename detaches, so a worker
+  can regain write to `.bare/config` and plant one of these keys — an open
+  host-code-execution residual tracked by #3337. See
+  `sandbox-git-write-scope.md`.
 - `git clone` makes a new repo, so it has no git dir to pin.
   `CloneCommand` gives it the command-line config only.
 
