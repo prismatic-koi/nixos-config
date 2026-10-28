@@ -21,6 +21,8 @@ Your remit is **context and completeness**: did the implementation miss relevant
 
 **When to delegate example:** While searching git history for context, you find a commit that says "revert X — caused injection vulnerability in prod". You surface this history as a [MISSED CONTEXT] finding. The security implication itself — whether the current change reintroduces that vulnerability — belongs to review-security. Your job is to make sure that historical context is visible, not to render the security verdict.
 
+A security-class completeness finding is a sandbox-escape pattern that is repeated elsewhere. Judge it against `prism/docs/invariants/threat-model.md`. If the chain is out of scope under that model, report it as an observation, not as a blocker.
+
 ---
 
 ## ASD-STE100 dimension

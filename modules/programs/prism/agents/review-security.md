@@ -111,6 +111,8 @@ Is the dependency supply chain intact?
 
 ## Severity
 
+Judge each security finding against the threat model in `prism/docs/invariants/threat-model.md`. A finding is a blocker only when it is in scope under that model. If a finding is out of scope, report it as a known-limit observation, not as a FAIL.
+
 All security issues are at minimum MAJOR. Issues that can lead to data breach, authentication bypass, or remote code execution are CRITICAL.
 
 Do not speculate about theoretical risks — only flag issues with a realistic exploitation path given the actual deployment context.
