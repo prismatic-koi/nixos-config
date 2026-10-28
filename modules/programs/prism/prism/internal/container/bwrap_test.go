@@ -795,23 +795,56 @@ func TestBwrapBuildArgs_PrismProfilesJSONAbsentNoBind(t *testing.T) {
 	}
 }
 
+// bareWorktreeLayout holds the paths of a minimal bare+worktree layout that
+// resolveGitWriteScope accepts.
+type bareWorktreeLayout struct {
+	bareRoot, bareDir, worktree, worktreeGitDir string
+}
+
+// newBareWorktreeLayout builds a minimal valid bare+worktree layout under a
+// temp dir: <root>/.bare with hooks/info/config/commondir; a worktree at
+// <root>/<branch> whose .git gitfile points at the worktree git dir; and the
+// worktree git dir at .bare/worktrees/<branch> whose gitdir back-pointer
+// names the worktree .git. resolveGitWriteScope accepts this (branch =
+// <branch>, GitDir = the worktree git dir), so BuildArgs binds the git dir.
+func newBareWorktreeLayout(t *testing.T, branch string) bareWorktreeLayout {
+	t.Helper()
+	root := t.TempDir()
+	bareDir := filepath.Join(root, ".bare")
+	worktree := filepath.Join(root, branch)
+	wtGitDir := filepath.Join(bareDir, "worktrees", branch)
+	for _, d := range []string{filepath.Join(bareDir, "hooks"), filepath.Join(bareDir, "info"), wtGitDir, worktree} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("MkdirAll %q: %v", d, err)
+		}
+	}
+	write := func(p, c string) {
+		if err := os.WriteFile(p, []byte(c), 0o644); err != nil {
+			t.Fatalf("WriteFile %q: %v", p, err)
+		}
+	}
+	write(filepath.Join(bareDir, "config"), "[core]\n")
+	write(filepath.Join(bareDir, "commondir"), ".\n")
+	write(filepath.Join(worktree, ".git"), "gitdir: "+wtGitDir+"\n")
+	write(filepath.Join(wtGitDir, "gitdir"), filepath.Join(worktree, ".git")+"\n")
+	write(filepath.Join(wtGitDir, "commondir"), "../..\n")
+	write(filepath.Join(wtGitDir, "config.worktree"), "")
+	return bareWorktreeLayout{root, bareDir, worktree, wtGitDir}
+}
+
 func TestBwrapBuildArgs_BareRepoBoundAtHostPath(t *testing.T) {
 	// When BareRoot and WorktreeGitDir are set, the bare repo (.bare dir) and
 	// worktree private git state are both bound at their host paths (Dst == Src),
 	// with no canonical-path remapping.
-	bareRoot := t.TempDir()
-	bareDir := filepath.Join(bareRoot, ".bare")
-	if err := os.MkdirAll(bareDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll bareDir: %v", err)
-	}
-
-	worktreeGitDir := t.TempDir()
+	layout := newBareWorktreeLayout(t, "feat")
+	bareDir := layout.bareDir
+	worktreeGitDir := layout.worktreeGitDir
 
 	m, _, cleanup := bwrapFixture(t, Config{
 		SessionName:    "repo@feat",
-		Worktree:       t.TempDir(),
+		Worktree:       layout.worktree,
 		AllocatedPort:  14010,
-		BareRoot:       bareRoot,
+		BareRoot:       layout.bareRoot,
 		WorktreeGitDir: worktreeGitDir,
 	})
 	defer cleanup()
@@ -834,6 +867,43 @@ func TestBwrapBuildArgs_BareRepoBoundAtHostPath(t *testing.T) {
 		if tri[1] == "/prism-git" {
 			t.Errorf("unexpected --bind _ /prism-git found (bwrap must use Dst==Src): %v", redactedArgs(args))
 		}
+	}
+}
+
+func TestBwrapBuildArgs_RejectsUnvalidatedWorktreeGitDir(t *testing.T) {
+	// When the worktree's .git points at a SIBLING worktree's git dir rather
+	// than its own, resolveGitWriteScope rejects it: bwrap must not bind that
+	// git dir read-write (binding a sibling would expose it), and must stash a
+	// hard error so Prepare fails the spawn (#3293/#3320).
+	layout := newBareWorktreeLayout(t, "feat")
+	// A sibling worktree git dir whose gitdir back-pointer names a different
+	// worktree (.bare/worktrees/main → <root>/main/.git, not feat).
+	sibling := filepath.Join(layout.bareDir, "worktrees", "main")
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatalf("MkdirAll sibling: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "gitdir"),
+		[]byte(filepath.Join(layout.bareRoot, "main", ".git")+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile sibling gitdir: %v", err)
+	}
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:    "repo@feat",
+		Worktree:       layout.worktree,
+		AllocatedPort:  14010,
+		BareRoot:       layout.bareRoot,
+		WorktreeGitDir: sibling, // the attacker-pointed git dir
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasBind(args, sibling) {
+		t.Errorf("a sibling git dir %q that fails the write-scope check must not be bound: %v", sibling, redactedArgs(args))
+	}
+	if m.worktreeGitDirErr == nil {
+		t.Fatal("expected m.worktreeGitDirErr to be set when the git dir fails the write-scope check, got nil")
 	}
 }
 
@@ -915,34 +985,23 @@ func TestBwrapBuildArgs_BareReadOnlyOverlays(t *testing.T) {
 	// hooks, info) plus the worktrees directory are overlaid read-only on top
 	// of it, so a worker cannot plant a hook or config value that runs on the
 	// host (issue #3315).
-	bareRoot := t.TempDir()
-	bareDir := filepath.Join(bareRoot, ".bare")
+	layout := newBareWorktreeLayout(t, "feat")
+	bareDir := layout.bareDir
 	configPath := filepath.Join(bareDir, "config")
 	hooksDir := filepath.Join(bareDir, "hooks")
 	infoDir := filepath.Join(bareDir, "info")
 	commondirPath := filepath.Join(bareDir, "commondir")
 	worktreesDir := filepath.Join(bareDir, "worktrees")
-	// Own worktree git dir lives under .bare/worktrees/<name>.
-	worktreeGitDir := filepath.Join(worktreesDir, "feat")
+	worktreeGitDir := layout.worktreeGitDir
 	ownCommondir := filepath.Join(worktreeGitDir, "commondir")
 	ownGitdir := filepath.Join(worktreeGitDir, "gitdir")
 	ownConfigWT := filepath.Join(worktreeGitDir, "config.worktree")
-	for _, d := range []string{hooksDir, infoDir, worktreeGitDir} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatalf("MkdirAll %q: %v", d, err)
-		}
-	}
-	for _, f := range []string{configPath, commondirPath, ownCommondir, ownGitdir, ownConfigWT} {
-		if err := os.WriteFile(f, nil, 0o644); err != nil {
-			t.Fatalf("WriteFile %q: %v", f, err)
-		}
-	}
 
 	m, _, cleanup := bwrapFixture(t, Config{
 		SessionName:    "repo@feat",
-		Worktree:       t.TempDir(),
+		Worktree:       layout.worktree,
 		AllocatedPort:  14010,
-		BareRoot:       bareRoot,
+		BareRoot:       layout.bareRoot,
 		WorktreeGitDir: worktreeGitDir,
 	})
 	defer cleanup()

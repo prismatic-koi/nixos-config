@@ -375,22 +375,36 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		// worktree while sibling worktrees' git state stays read-only. bwrap
 		// applies binds left-to-right, so this later --bind wins for the
 		// session's own subtree.
-		// A missing directory here is a real error, not a silent skip:
-		// WorktreeGitDir is resolved from the worktree's own
-		// authoritative .git gitdir pointer, so if it does not exist on disk
-		// something is genuinely wrong (e.g. corrupted worktree bookkeeping)
-		// and the sandbox must not silently start without the agent's git
-		// state bound in. BuildArgs cannot return an error, so the error is
-		// stashed on the Manager and surfaced by Prepare.
-		if _, err := os.Stat(cfg.WorktreeGitDir); err == nil {
-			args = append(args, "--bind", cfg.WorktreeGitDir, cfg.WorktreeGitDir)
+		//
+		// The path to bind is the one resolveGitWriteScope accepts, NOT the raw
+		// cfg.WorktreeGitDir (#3293/#3320). WorktreeGitDir is derived on the host
+		// from the worktree's own .git file, which the session can write, so an
+		// unvalidated value could point at <BareRoot>/.bare itself or at a
+		// sibling worktree's git dir — binding that read-write would undo the
+		// read-only overlays above or expose a sibling. gitScope checks that the
+		// git dir is a direct child of .bare/worktrees and that the worktree's
+		// .git / the git dir's gitdir back-pointer agree, and returns an empty
+		// GitDir when the check fails.
+		//
+		// An empty GitDir is a real error, not a silent skip: a healthy prism
+		// worktree always passes the check, so a failure means the worktree
+		// bookkeeping is missing or has been tampered with, and the sandbox must
+		// not start without the agent's git state bound in. BuildArgs cannot
+		// return an error, so the error is stashed on the Manager and surfaced
+		// by Prepare.
+		scope, scopeErr := m.gitScope()
+		if scope.GitDir != "" {
+			args = append(args, "--bind", scope.GitDir, scope.GitDir)
 			// Pin the redirect files inside the own worktree git dir read-only,
 			// AFTER the read-write bind above so these later --ro-binds win for
 			// just those files. The rest of the own git dir stays read-write for
 			// HEAD, index, logs, and the rebase state (issue #3315).
-			args = append(args, bwrapOwnWorktreeReadOnlyPins(cfg.WorktreeGitDir)...)
+			args = append(args, bwrapOwnWorktreeReadOnlyPins(scope.GitDir)...)
 		} else {
-			m.worktreeGitDirErr = fmt.Errorf("worktree git dir %q: %w", cfg.WorktreeGitDir, err)
+			if scopeErr == nil {
+				scopeErr = fmt.Errorf("worktree %q has no writable git dir", cfg.Worktree)
+			}
+			m.worktreeGitDirErr = fmt.Errorf("worktree git dir %q failed the git write-scope check: %w", cfg.WorktreeGitDir, scopeErr)
 		}
 	}
 
