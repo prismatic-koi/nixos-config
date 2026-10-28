@@ -243,10 +243,13 @@ integration test coverage exists for:
 - **The worktree path deny** — the final deny (section 21b) on unlink and
   create of the worktree and of every ancestor of it, `BareRoot` included.
   Under the production profile, a write inside the worktree works, and a
-  rename or removal of the worktree or of `BareRoot` fails. The paired
-  negatives strip the deny and replace each path with a symlink. The
-  `BareRoot` negative also adds a write grant of `BareRoot`, because
-  section 6e grants a read of it only. See
+  rename or removal of the worktree or of `BareRoot` fails, also a move of
+  the worktree into the per-session TMPDIR. The paired negatives strip the
+  deny and replace each path with a symlink. The worktree negative moves
+  the worktree into the TMPDIR, because section 6e grants only a read of
+  `BareRoot`, so a move to a sibling of the worktree fails with or without
+  the deny. The `BareRoot` negative also adds a write grant of `BareRoot`.
+  See
   `sandbox_exec_worktree_entry_darwin_test.go`.
 - **The git write scope** — the section-6e read of the project root and
   write of the git paths, the section-21i deny on a replace of the git dir
