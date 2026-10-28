@@ -374,7 +374,7 @@ prism starts every pi with exactly one of `--approve` and `--no-approve` (issue 
 
 ### The `.bare` write scope (`bwrap`)
 
-<!-- doclint-ignore: .bare/config, .bare/hooks, .bare/info, .bare/logs, .bare/objects, .bare/refs, .bare/worktrees, info/attributes -->
+<!-- doclint-ignore: .bare/config, .bare/hooks, .bare/info, .bare/logs, .bare/objects, .bare/refs, .bare/worktrees, .bare/commondir, info/attributes -->
 <!--
   These are paths inside the git common dir `.bare` at run time, not files
   in this source tree. `.bare` is the bare git repo of a prism bare+worktree
@@ -389,8 +389,12 @@ prism starts every pi with exactly one of `--approve` and `--no-approve` (issue 
   - `.bare/worktrees` — the private git state of every other worktree, so a worker cannot change a sibling worktree's gitdir, `config.worktree`, or `HEAD`.
 - Read-write for a `bwrap` session: the object store (`.bare/objects`), refs (`.bare/refs`), `packed-refs`, `.bare/logs`, and the session's own worktree git dir (`.bare/worktrees/<own>`). The own worktree git dir is re-exposed read-write with a later `--bind` that wins over the read-only `.bare/worktrees` overlay. So the session can still commit, fetch, push, rebase, and pull in its own worktree.
 - A read-only bind blocks a write two ways: a direct write fails with `EROFS`, and a git `*.lock` rename onto the bind-mounted file fails with `EBUSY`, so `config.lock` cannot replace `config`. The mount point itself cannot be renamed or removed, so a worker cannot move the file aside and create a new one in its place.
-- `git push` of a branch with no upstream prints `error: unable to write upstream branch configuration` and exits 0. `push.autoSetupRemote` tries to write the upstream to the now read-only `.bare/config`, which fails, but the push itself succeeds. #3293 removes this message for `sandbox-exec` with a branch entry in the per-session `GIT_CONFIG_GLOBAL`; a later change brings `bwrap` to the same scope.
-- **Known residual (own `commondir`).** The own worktree git dir is read-write, so a worker can repoint its own `.bare/worktrees/<own>/commondir` at a common dir it controls. The host git commands that prism runs in a worker worktree (`git.SymbolicRef`, `git.ShortHash`) run `symbolic-ref HEAD` and `rev-parse`, which do not refresh the index and run no hook, so they do not trip a repointed common dir. A command that refreshes the index, such as `git status` or `git diff`, would; prism runs no such command in a worker worktree. A follow-up closes this path.
+- `git push` of a branch with no upstream prints `error: unable to write upstream branch configuration` and exits 0. `push.autoSetupRemote` tries to write the upstream to the now read-only `.bare/config`, which fails, but the push itself succeeds. A bare `git pull` on a branch that never recorded an upstream fails for the same reason. #3293 removes this for `sandbox-exec` with a branch entry in the per-session `GIT_CONFIG_GLOBAL`; a later change brings `bwrap` to the same scope.
+- **Open gap — git common-dir redirection (AC3 of #3315 not fully met by the bind layer alone).** The `.bare` root and the worktree stay writable, so a worker can redirect git's common dir to a `config` and `hooks` directory it controls, which the read-only overlays on `config`/`hooks`/`info` do not stop (the redirect points at a different directory). Three pointer files do this:
+  - `.bare/commondir` — a host `git --git-dir .bare …` command follows it. `prism spawn`'s `git --git-dir .bare worktree add` then runs a planted hook on the host.
+  - `.bare/worktrees/<own>/commondir` (read-write, part of the own worktree git dir) and `<worktree>/.git` (the worktree is read-write for a worker) — a host command run with `cmd.Dir` in the worktree follows these. `prism review`'s host-side preflight runs `git fetch` (and, with `--rebase`, `git rebase`/`git push`) with `cmd.Dir = <worktree>` (`internal/review/preflight.go`, `internal/sidecar/host_api.go`), which fires `reference-transaction`, `pre-push`, and `core.sshCommand` from the redirected directory.
+
+  Closing this needs host-side hardening (run the host git commands with `GIT_COMMON_DIR`/`GIT_DIR` pinned to the real `.bare`, hooks and fsmonitor disabled) plus validation that `WorktreeGitDir` is a direct child of `.bare/worktrees/` before the read-write bind. That work is outside the `.bare`-bind scope of #3315 and overlaps the `sandbox-exec` write-scope work (#3293) and the worktree-git-dir validation of #3320; it is tracked as a follow-up.
 - The object store and `packed-refs` stay writable for both `bwrap` and `sandbox-exec`. #3293 records them as a known limit of both isolators, with a follow-up issue.
 
 ### Go toolchain and caches (`sandbox-exec`)

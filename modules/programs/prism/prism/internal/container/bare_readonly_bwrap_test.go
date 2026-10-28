@@ -99,17 +99,21 @@ func TestBwrapBareReadOnly_OverlaysLockCodeExecutionPaths(t *testing.T) {
 	bwrapBin := requireUsableBwrapForUsageTest(t)
 	bareDir, ownGitDir, siblingGitDir := fakeBareLayout(t)
 
-	// The script tries each write and prints OK/FAIL per case. Each case is
-	// independent so a single blocked write does not mask the others.
+	// The script tries each write and prints OK/FAIL per case. Each write runs
+	// in a subshell with `printf`, never the `:` special built-in: a redirect
+	// failure on a POSIX special built-in exits the whole script (bash in POSIX
+	// mode is /bin/sh on the CI runner), which would mask every later case
+	// after the first read-only write. A subshell + regular built-in isolates
+	// each case so one blocked write does not stop the others.
 	script := strings.Join([]string{
 		// Read-only: these must FAIL.
-		`if printf x >> ` + sh(filepath.Join(bareDir, "config")) + ` 2>/dev/null; then echo config-write OK; else echo config-write FAIL; fi`,
-		`if : > ` + sh(filepath.Join(bareDir, "hooks", "post-checkout")) + ` 2>/dev/null; then echo hooks-create OK; else echo hooks-create FAIL; fi`,
-		`if : > ` + sh(filepath.Join(bareDir, "info", "attributes")) + ` 2>/dev/null; then echo info-create OK; else echo info-create FAIL; fi`,
-		`if : > ` + sh(filepath.Join(siblingGitDir, "config.worktree")) + ` 2>/dev/null; then echo sibling-create OK; else echo sibling-create FAIL; fi`,
+		`if ( printf x >> ` + sh(filepath.Join(bareDir, "config")) + ` ) 2>/dev/null; then echo config-write OK; else echo config-write FAIL; fi`,
+		`if ( printf '' > ` + sh(filepath.Join(bareDir, "hooks", "post-checkout")) + ` ) 2>/dev/null; then echo hooks-create OK; else echo hooks-create FAIL; fi`,
+		`if ( printf '' > ` + sh(filepath.Join(bareDir, "info", "attributes")) + ` ) 2>/dev/null; then echo info-create OK; else echo info-create FAIL; fi`,
+		`if ( printf '' > ` + sh(filepath.Join(siblingGitDir, "config.worktree")) + ` ) 2>/dev/null; then echo sibling-create OK; else echo sibling-create FAIL; fi`,
 		// Read-write: these must succeed.
-		`if : > ` + sh(filepath.Join(ownGitDir, "HEAD.lock")) + ` 2>/dev/null; then echo own-create OK; else echo own-create FAIL; fi`,
-		`if : > ` + sh(filepath.Join(bareDir, "objects", "tmp-pack")) + ` 2>/dev/null; then echo objects-create OK; else echo objects-create FAIL; fi`,
+		`if ( printf '' > ` + sh(filepath.Join(ownGitDir, "HEAD.lock")) + ` ) 2>/dev/null; then echo own-create OK; else echo own-create FAIL; fi`,
+		`if ( printf '' > ` + sh(filepath.Join(bareDir, "objects", "tmp-pack")) + ` ) 2>/dev/null; then echo objects-create OK; else echo objects-create FAIL; fi`,
 	}, "\n")
 
 	out, err := runBareProbe(t, bwrapBin, productionBareBinds(bareDir, ownGitDir), script)
@@ -139,9 +143,9 @@ func TestBwrapBareReadOnly_WithoutOverlaysWritesSucceed(t *testing.T) {
 	bareDir, _, siblingGitDir := fakeBareLayout(t)
 
 	script := strings.Join([]string{
-		`if printf x >> ` + sh(filepath.Join(bareDir, "config")) + ` 2>/dev/null; then echo config-write OK; else echo config-write FAIL; fi`,
-		`if : > ` + sh(filepath.Join(bareDir, "hooks", "post-checkout")) + ` 2>/dev/null; then echo hooks-create OK; else echo hooks-create FAIL; fi`,
-		`if : > ` + sh(filepath.Join(siblingGitDir, "config.worktree")) + ` 2>/dev/null; then echo sibling-create OK; else echo sibling-create FAIL; fi`,
+		`if ( printf x >> ` + sh(filepath.Join(bareDir, "config")) + ` ) 2>/dev/null; then echo config-write OK; else echo config-write FAIL; fi`,
+		`if ( printf '' > ` + sh(filepath.Join(bareDir, "hooks", "post-checkout")) + ` ) 2>/dev/null; then echo hooks-create OK; else echo hooks-create FAIL; fi`,
+		`if ( printf '' > ` + sh(filepath.Join(siblingGitDir, "config.worktree")) + ` ) 2>/dev/null; then echo sibling-create OK; else echo sibling-create FAIL; fi`,
 	}, "\n")
 
 	// Only the read-write .bare bind — no overlays.
