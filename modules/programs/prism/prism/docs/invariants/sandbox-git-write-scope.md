@@ -3,11 +3,9 @@
 <!-- doclint-ignore: .bare/config, .bare/gc.pid, .bare/hooks, .bare/info, .bare/logs, .bare/logs/refs/remotes, .bare/objects, .bare/packed-refs, .bare/refs/remotes, .bare/refs/tags, .bare/worktrees, .bare/commondir, logs/HEAD, refs/remotes/origin/main, FETCH_HEAD, ORIG_HEAD, core.hooksPath -->
 <!-- doclint-ignore: .agents/skills, .pi/extensions, .pi/mcp.json, .pi/settings.json -->
 <!-- doclint-ignore: .bare/refs, .bare/HEAD, refs/heads/main, refs/stash -->
-<!-- doclint-ignore: OpenBare -->
 <!--
   The extra .bare/* and refs/* names are git paths in the common dir at run
-  time. OpenBare is the host-git entry point that PR #3324 (#3322) adds; it
-  is a forward pointer and does not exist in this tree until #3324 merges.
+  time, not files in this source tree.
 -->
 <!--
   These names are paths in the git common dir (.bare) of a prism repo, git
@@ -16,8 +14,8 @@
 -->
 
 Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap
-code-execution paths), #3327 (the full bwrap write scope), #3322 (host-side
-git in a worker worktree), #3325 (a nested `.git`).
+code-execution paths), #3327 (the full bwrap write scope), #3325 (a nested
+`.git`). Host-side git: #3322, in `docs/invariants/host-git-commands.md`.
 Code: `internal/container/git_write_scope.go`, sections 6, 6e, 17b, 21b,
 21i, 21j, and 21k of `generateProfile` in `internal/container/sandbox_exec.go`, and
 the git step of `sandboxExecIsolator.Prepare` in
@@ -180,16 +178,14 @@ binds it read-write (#3315).
   the dir of the open file or of the shell. A deny of `.git` at any depth
   does not close this: a rename of a dir that already holds `.git` into
   the worktree makes no new path named `.git`. Follow-up: #3325.
-- **Host-side git in a worktree (both isolators).** Neither isolator can
-  write the `.git` file or the redirect files of its git dir: sandbox-exec
-  denies them (sections 21j and 21k); bwrap pins them read-only over the
-  read-write binds (#3315). But a host git command run with its working
-  directory in a worker worktree — the `prism review` preflight `git
-  fetch`/`rebase`, and the nvim and shell that prism starts there — is not
-  itself hardened (pinned `GIT_DIR`/`GIT_COMMON_DIR`, hooks and fsmonitor
-  off). The read-only pins stop a worker rewriting the pointer files, which
-  closes the sandboxed route; the host-side hardening is the defence that
-  does not depend on those pins holding. Follow-up: #3322.
+- **Host-side git in a worktree (both isolators).** sandbox-exec denies the
+  `.git` file and the redirect files of its git dir (sections 21j and 21k);
+  bwrap pins them read-only over the read-write binds (#3315). And #3322
+  (#3324) hardens the host side: every host git command prism runs sets
+  `GIT_DIR` and `GIT_COMMON_DIR` itself and runs with hooks and fsmonitor
+  off, and `OpenBare` refuses a repo that has a `.bare/commondir` file, so a
+  redirect in a worker worktree does not reach a host command. See
+  `docs/invariants/host-git-commands.md`.
 
 ## bwrap (#3315)
 
@@ -199,9 +195,8 @@ paths (the own worktree's pointer files and `<worktree>/.git`), by a
 different mechanism than the SBPL profile: it binds `.bare` and the worktree
 read-write, then layers read-only binds over those paths. A read-only bind
 blocks a write with `EROFS`, and the mount point cannot be renamed, removed,
-or replaced (`EBUSY`). It does NOT close the top-level `.bare/commondir`
-route (see the last bullet): that stays a host code-execution route until
-#3324.
+or replaced (`EBUSY`). It does not pin the top-level `.bare/commondir` (see
+the last bullet); #3322/#3324 handles that route.
 
 - `.bare/config`, `.bare/hooks`, `.bare/info`, and the whole
   `.bare/worktrees` tree are read-only; the session's own worktree git dir
@@ -218,13 +213,12 @@ route (see the last bullet): that stays a host code-execution route until
   not a no-op: any commondir file makes git treat the project root (which
   holds a `.git` gitfile pointing at `.bare`) as a work tree, so a git
   command run there behaves destructively. A worker can still create
-  `.bare/commondir`. **Until #3324 merges this is a live host
-  code-execution route**: `prism spawn`'s `git --git-dir .bare worktree add`
-  follows a planted `.bare/commondir` and runs a planted hook on the host.
-  After #3324, its `OpenBare` refuses a repo that has a `.bare/commondir`
-  file (prism host git refuses the repo until the file is removed), so the
-  route becomes a denial of service, not code execution. #3321 and #3324
-  therefore depend on each other and should merge close together.
+  `.bare/commondir`. #3322 (#3324, merged) makes this a denial of service,
+  not code execution: `OpenBare` refuses a repo that has a `.bare/commondir`
+  file (prism host git refuses the repo until the file is removed), and host
+  git commands set `GIT_COMMON_DIR` so they do not follow a planted one.
+  Without #3324, `prism spawn`'s `git --git-dir .bare worktree add` would
+  follow a planted `.bare/commondir` and run a planted hook on the host.
 
 bwrap does NOT yet reach the full sandbox-exec write scope. Because `.bare`,
 `.bare/refs`, and `.bare/logs` are inside the read-write `.bare` bind, a
