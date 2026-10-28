@@ -27,9 +27,10 @@ package container
 // it on a timer and when the anthropic-oauth extension asks for it under the
 // shared refresh lock (internal/sidecar/pi_auth_sync.go):
 //
-//   - From the session file to the host file: only a type "oauth" entry with
-//     a string access, a string refresh, and a finite number expires, and
-//     only these fields. The value must be new: no earlier sync of the
+//   - From the session file to the host file: only the entry of the
+//     anthropic provider (piAuthHostProvider), only as a type "oauth" entry
+//     with a string access, a string refresh, and a finite number expires,
+//     and only these fields. The value must be new: no earlier sync of the
 //     session wrote it or read it. pi writes back an old snapshot of the file
 //     after a refresh, and a value from that snapshot must not undo a newer
 //     host value. If the host entry changed too, the host value wins.
@@ -146,8 +147,17 @@ var ErrPIRefreshLockHeld = errors.New("the shared OAuth refresh lock is held")
 
 var piAuthInstanceIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
-// piAuthProviderRe is the form of a provider name that the sync copies from
-// a session file to the host file.
+// piAuthHostProvider is the only provider whose entry the sync copies from a
+// session file to the host file (#3314). The anthropic-oauth extension
+// shares its refresh between the sessions under the shared refresh lock.
+// For another provider, an OAuth value can hold more than a token: pi 1.4
+// sends each github-copilot request to the host that the access value
+// names. Each session refreshes such a provider alone: a Copilot refresh
+// token does not rotate, so the host does not need the new value.
+const piAuthHostProvider = "anthropic"
+
+// piAuthProviderRe is the form of a provider name that the sync records in
+// the sync state.
 var piAuthProviderRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // PIAuthSessionRoot returns <state>/prism/pi-auth/<instanceID>, where
@@ -361,15 +371,21 @@ func SyncPIAuthSession(instanceID, hostAuthPath string) (PIAuthSyncResult, error
 	hostChanged := false
 	newProviders := 0
 	for _, p := range sortedKeys(sess.entries) {
-		entry, reason := piAuthOAuthEntry(p, sess.entries[p])
+		entry, reason := piOAuthEntry{}, piAuthOtherProvider
+		if p == piAuthHostProvider {
+			entry, reason = piAuthOAuthEntry(p, sess.entries[p])
+		}
 		if reason != "" {
 			// An entry that the sync wrote from the host file is not a
 			// change of the session. Report each other refusal once.
 			rawHash := piAuthRawHash(sess.entries[p])
 			same := samePIAuth(map[string]json.RawMessage{p: sess.entries[p]}, map[string]json.RawMessage{p: host.entries[p]})
 			if !same && !state.seen(p, rawHash) {
-				if reason == piAuthNotOAuth {
+				switch reason {
+				case piAuthNotOAuth:
 					reason = fmt.Sprintf("provider %s: the entry is not an OAuth entry", piAuthName(p))
+				case piAuthOtherProvider:
+					reason = fmt.Sprintf("provider %s: the sync copies only the %q entry to the host file", piAuthName(p), piAuthHostProvider)
 				}
 				res.Refused = append(res.Refused, reason)
 				state.addSessionSeen(p, rawHash)
@@ -490,6 +506,10 @@ func PIAuthFileRevision(path string) string {
 // piAuthNotOAuth is the reason for an entry that is not of type "oauth". The
 // sync does not copy such an entry.
 const piAuthNotOAuth = "not oauth"
+
+// piAuthOtherProvider is the reason for an entry of a provider that is not
+// piAuthHostProvider.
+const piAuthOtherProvider = "other provider"
 
 // piAuthMaxRefused is the largest number of reasons that one sync returns,
 // so that a session cannot fill the sidecar log.

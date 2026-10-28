@@ -5,14 +5,14 @@ package sidecar
 //
 // A sandboxed session reads and writes its own auth.json
 // (internal/container/pi_auth_session.go). The sidecar of the session runs
-// on the host, and copies OAuth entries between that file and the host
-// ~/.pi/agent/auth.json:
+// on the host. It copies the host ~/.pi/agent/auth.json to that file, and
+// only the anthropic OAuth entry of that file to the host file:
 //
 //   - on a timer, so that `prism account use`, a refresh of another session,
-//     and a login in the session reach the other file with no restart. The
-//     timer sync takes the shared OAuth refresh lock, so it does not run in
-//     the middle of a refresh of the anthropic-oauth extension. If the lock
-//     is held, it tries again at the next tick.
+//     and an Anthropic login in the session reach the other file with no
+//     restart. The timer sync takes the shared OAuth refresh lock, so it
+//     does not run in the middle of a refresh of the anthropic-oauth
+//     extension. If the lock is held, it tries again at the next tick.
 //   - on POST /pi-auth/sync. The anthropic-oauth extension calls it while it
 //     holds the shared refresh lock: before it reads auth.json, to get a
 //     token that another session wrote, and after it writes a new token, so

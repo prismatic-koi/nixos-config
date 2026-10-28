@@ -11,7 +11,7 @@
   modules/programs/prism/pi/extensions/, outside the prism Go tree.
 -->
 
-Issues: #3284, #3289, #3290, #3295. Code:
+Issues: #3284, #3289, #3290, #3295, #3314. Code:
 `internal/container/pi_agent_dir.go`,
 `internal/container/pi_shared_state.go`,
 `internal/container/pi_auth_session.go`, `appendPIBwrapMounts` in
@@ -25,8 +25,9 @@ of `generateProfile` in `internal/container/sandbox_exec.go`,
 A bwrap or sandbox-exec session cannot create, change, or replace a path in
 the host pi agent dir, `~/.pi/agent`. The only exceptions are the paths in
 the write list below. The host `auth.json` is not in the list: each
-sandboxed session has its own `auth.json`, and the sidecar copies only
-OAuth entries from it to the host file. See "The per-session auth.json".
+sandboxed session has its own `auth.json`, and the sidecar copies only the
+OAuth entry of the `anthropic` provider from it to the host file. See "The
+per-session auth.json".
 
 Host-mode sessions are not sandboxed. They read and write the host dir as
 before.
@@ -134,8 +135,9 @@ instance ID gets no per-session dir, and no `auth.json` from the host.
 The sidecar of the session copies changes between the two files
 (`SyncPIAuthSession`):
 
-- From the session file to the host file: only a `type: "oauth"` entry with
-  a non-empty string `access`, a non-empty string `refresh`, and a finite
+- From the session file to the host file: only the entry of the
+  `anthropic` provider, and only as a `type: "oauth"` entry with a
+  non-empty string `access`, a non-empty string `refresh`, and a finite
   number `expires`. A string that starts with `!` is refused. Only these
   four fields are copied. Other fields of the host entry stay. The value
   must be new: no earlier sync of the session wrote it or read it. pi writes
@@ -143,13 +145,21 @@ The sidecar of the session copies changes between the two files
   snapshot must not undo a newer host value. If the host entry changed too,
   the host value wins. A session value never replaces a host entry that is
   not an OAuth entry.
+- The entry of each other provider is refused, and the sidecar logs the
+  reason once for each value (#3314). For the `github-copilot` provider,
+  the OAuth `access` value also sets the API host: pi 1.4 sends each Copilot
+  request to the `proxy-ep=` host in the token. A copy of such a value lets
+  a session send the conversations of a host pi to a host of its choice. So
+  a `/login` in a sandbox for a provider other than `anthropic` does not
+  reach the host file. Log in on the host for those providers.
 - Limits on the host file: a token of more than 16 KiB is refused. A
-  session adds at most two new providers to the host file in its life (a
-  real `/login` adds one). The sync state keeps the count across the starts
-  of the session. No write makes the host file larger than 256 KiB. So a
-  session cannot make the host file so large that `CheckPIAuthFile`
-  refuses every pi start, or that the sync refuses the file of each other
-  session.
+  session adds a new provider to the host file at most two times in its
+  life. Only `anthropic` can be new, so the count applies when a session
+  logs in again after a logout on the host. The sync state keeps the count
+  across the starts of the session. No write makes the host file larger
+  than 256 KiB. So a session cannot make the host file so large that
+  `CheckPIAuthFile` refuses every pi start, or that the sync refuses the
+  file of each other session.
 - Limits on the sync state: the session names the providers in its file,
   so the state records at most 64 providers that the host file does not
   name, and only names of the provider form. A state file that prism cannot
@@ -191,8 +201,8 @@ The sync runs at two times:
 - On a timer, every 3 s, when one of the two files changed. The timer sync
   takes the shared refresh lock first (`TakePIRefreshLock`). If the lock is
   held, it tries again at the next tick. The timer brings `prism account
-  use`, a refresh of another session, and a login in the session to the
-  other file with no restart.
+  use`, a refresh of another session, and an Anthropic login in the session
+  to the other file with no restart.
 
 The session reads the new file with no restart. In bwrap, `auth.json` is a
 symlink into a dir bind, so it follows a rename. In sandbox-exec, the file
@@ -363,21 +373,12 @@ Other limits:
 - sandbox-exec: the per-session agent dir has a symlink for each host entry
   at the start. A host entry that appears later is not visible until the
   next start. A change in a linked file or dir is visible.
-- Both isolators: a session can write OAuth entries in its own `auth.json`,
-  and the sync copies a new valid OAuth entry to the host file. So a session
-  can put the tokens of another account in the host file, and later
-  sessions then use that account. A session can already read these tokens.
-  It cannot put an `api_key` entry, a `!` value, or another field in the
-  host file. It can add at most two providers, and nothing removes them
-  from the host file later.
-- Both isolators: for the `github-copilot` provider, the OAuth `access`
-  value also sets the API host. pi 1.4 sends each Copilot request to the
-  `proxy-ep=` host in the token. So a session can write a Copilot entry
-  that names a host of its choice, and the sync copies it to the host file.
-  A host-mode pi that then uses a Copilot model sends its conversation to
-  that host and runs the tool calls that it returns. No prism profile uses
-  Copilot, so a person must select a Copilot model by hand. Follow-up:
-  #3314, which copies only the Anthropic entry to the host file.
+- Both isolators: a session can write the `anthropic` OAuth entry in its
+  own `auth.json`, and the sync copies a new valid value to the host file.
+  So a session can put the tokens of another Anthropic account in the host
+  file, and later sessions then use that account. A session can already
+  read these tokens. It cannot put an `api_key` entry, a `!` value, another
+  field, or the entry of another provider in the host file.
 - Both isolators: when a host pi holds the lock of the host file, the sync
   writes the host file with no lock. The host pi then writes back the file
   that it read before the sync, with its own change. For an Anthropic
@@ -389,8 +390,13 @@ Other limits:
 - Both isolators: the shared refresh lock covers the Anthropic OAuth
   refresh of the extension only. pi refreshes the OAuth entry of another
   provider under its own `auth.json.lock`, which is private to the sandbox.
-  Two sessions can refresh such a provider at the same time. The timer sync
-  copies the result.
+  Two sessions can refresh such a provider at the same time. The sync does
+  not copy the result to the host file, and the next sync writes the host
+  value back to the session file. If the host value is expired, the session
+  refreshes again at its next request. A Copilot refresh token does not
+  rotate, so this is safe for Copilot. For a provider whose refresh token
+  rotates, a refresh in a session makes the host refresh token invalid. Log
+  in on the host again for that provider.
 - Both isolators: a session can write the Atlassian file. It can put the
   tokens of another account in it, and later sessions then use that account.
 - Both isolators: a session can read and replace the Notion store files. It
