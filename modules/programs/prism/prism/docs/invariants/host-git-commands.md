@@ -30,10 +30,15 @@ file:
 | `core.hooksPath` | `/dev/null` | No hook runs. |
 | `core.fsmonitor` | `false` | No fsmonitor command runs. |
 | `submodule.recurse`, `fetch.recurseSubmodules`, `push.recurseSubmodules` | `false`, `false`, `no` | A submodule has its own git dir in the worktree, with its own config. |
-| `diff.ignoreSubmodules` | `all` | A submodule status runs git in the submodule. |
+| `diff.ignoreSubmodules` | `all` | A submodule status runs git in the submodule. This is the default only: an `ignore=` entry in `.gitmodules` overrides it. `git.Stat` adds `--ignore-submodules=all` on the command line for that reason. |
 | `protocol.ext.allow` | `never` | No `ext::` remote helper runs. |
 
 `GIT_PAGER` is `cat`, so no pager runs.
+
+Command-line config cannot stop a submodule status that a `.gitmodules`
+`ignore=` entry turns on. The `.gitmodules` file is in the worktree, so the
+session writes it. Only the `--ignore-submodules=all` option on the command
+line has priority over it.
 
 ## Why
 
@@ -116,6 +121,14 @@ inside another project, for a path that a user types on the host too.
 
 ## Known limits
 
+- **The `--rebase` pre-flight and `git rebase --abort`.** A session can
+  write `rebase-merge` in its own git dir, with an `autostash` commit. The
+  host `git rebase` then fails, and the pre-flight runs `git rebase
+  --abort`, which applies the autostash. The stash apply runs `git status`.
+  If `.gitmodules` sets `ignore = none` for a gitlink, that status runs git
+  in the submodule, and a filter driver from the submodule config runs on
+  the host. The pin and the command-line config do not stop this.
+  Follow-up: #3323.
 - **A project root outside every project.** `OpenBare` accepts a root that
   is not inside a prism project. If a sandboxed session can write such a
   dir (for example under `~/.npm`) and can make prism use it as a session
