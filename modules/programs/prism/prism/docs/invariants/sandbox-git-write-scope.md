@@ -2,14 +2,22 @@
 
 <!-- doclint-ignore: .bare/config, .bare/gc.pid, .bare/hooks, .bare/info, .bare/logs, .bare/logs/refs/remotes, .bare/objects, .bare/packed-refs, .bare/refs/remotes, .bare/refs/tags, .bare/worktrees, .bare/commondir, logs/HEAD, refs/remotes/origin/main, FETCH_HEAD, ORIG_HEAD, core.hooksPath -->
 <!-- doclint-ignore: .agents/skills, .pi/extensions, .pi/mcp.json, .pi/settings.json -->
+<!-- doclint-ignore: .bare/refs, .bare/HEAD, refs/heads/main, refs/stash -->
+<!-- doclint-ignore: OpenBare -->
+<!--
+  The extra .bare/* and refs/* names are git paths in the common dir at run
+  time. OpenBare is the host-git entry point that PR #3324 (#3322) adds; it
+  is a forward pointer and does not exist in this tree until #3324 merges.
+-->
 <!--
   These names are paths in the git common dir (.bare) of a prism repo, git
   files and config keys, and project resources that pi loads from a
   worktree. They exist in a repo at run time, not in this source tree.
 -->
 
-Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap),
-#3322 (host-side git in a worker worktree), #3325 (a nested `.git`).
+Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap
+code-execution paths), #3327 (the full bwrap write scope), #3322 (host-side
+git in a worker worktree), #3325 (a nested `.git`).
 Code: `internal/container/git_write_scope.go`, sections 6, 6e, 17b, 21b,
 21i, 21j, and 21k of `generateProfile` in `internal/container/sandbox_exec.go`, and
 the git step of `sandboxExecIsolator.Prepare` in
@@ -183,25 +191,45 @@ binds it read-write (#3315).
   closes the sandboxed route; the host-side hardening is the defence that
   does not depend on those pins holding. Follow-up: #3322.
 
-## bwrap parity (#3315)
+## bwrap (#3315)
 
-bwrap reaches the same write scope as sandbox-exec by a different mechanism:
-it binds `.bare` and the worktree read-write, then layers read-only binds
-over the paths the table above keeps read-only. A read-only bind blocks a
-write with `EROFS`, and the mount point cannot be renamed, removed, or
-replaced (`EBUSY`).
+bwrap closes the code-execution and redirect paths of this write scope, by a
+different mechanism than the SBPL profile: it binds `.bare` and the worktree
+read-write, then layers read-only binds over the paths that run code on the
+host. A read-only bind blocks a write with `EROFS`, and the mount point
+cannot be renamed, removed, or replaced (`EBUSY`).
 
 - `.bare/config`, `.bare/hooks`, `.bare/info`, and the whole
   `.bare/worktrees` tree are read-only; the session's own worktree git dir
   is re-exposed read-write on top.
-- `.bare/commondir` is pinned to the benign `.` (the git dir itself), so a
-  host `git --git-dir .bare …` command cannot be redirected.
 - `commondir`, `gitdir`, and `config.worktree` in the own worktree git dir,
   and the worktree `.git` file, are pinned read-only over the read-write
   binds — the bwrap equivalent of sections 21j and 21k.
-- On the host, the bwrap `Prepare` runs `prepareGitWriteDirs` and
-  `ensureGitUpstream`, and binds only the worktree git dir that
-  `resolveGitWriteScope` accepts, the same as sandbox-exec.
+- On the host, the bwrap `Prepare` runs `ensureGitUpstream` and binds only
+  the worktree git dir that `resolveGitWriteScope` accepts, the same as
+  sandbox-exec. It does not run `prepareGitWriteDirs`: under bwrap the ref
+  and reflog parent dirs are inside the read-write `.bare` bind, so git
+  creates them itself.
+- The top-level `.bare/commondir` is NOT pinned. A benign commondir file is
+  not a no-op: any commondir file makes git treat the project root (which
+  holds a `.git` gitfile pointing at `.bare`) as a work tree, so a git
+  command run there behaves destructively. A worker can still create
+  `.bare/commondir`; the host-side defence is #3322/#3324, whose `OpenBare`
+  refuses a repo that has a `.bare/commondir` file — prism host git refuses
+  the repo until the file is removed, a denial of service, not code
+  execution — rather than following it.
+
+bwrap does NOT yet reach the full sandbox-exec write scope. Because `.bare`,
+`.bare/refs`, and `.bare/logs` are inside the read-write `.bare` bind, a
+bwrap session can still move the branch ref of another worktree
+(`refs/heads/main` included) and create a branch, write `refs/stash` and its
+reflog (sandbox-exec grants the stash ref to the coordinator only), and write
+`.bare/gc.pid` and `.bare/HEAD`. A bwrap review agent or investigator also
+gets its whole own worktree git dir read-write (`HEAD`, the index, the branch
+ref), where sandbox-exec grants only `FETCH_HEAD`. So the table rows for the
+branch ref and the stash ref, and the "Other branches" and "`git gc`" known
+limits above, hold for sandbox-exec but not yet for bwrap. Bringing bwrap to
+the same scope is #3327.
 
 The object store and `packed-refs` stay writable under bwrap too, so the
 "both isolators" limits above apply. See the `.bare` write scope (bwrap)
