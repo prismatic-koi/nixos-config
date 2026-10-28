@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/config/configtest"
+	"github.com/prismatic-koi/prism/internal/forge"
 	"github.com/prismatic-koi/prism/internal/git"
 )
 
@@ -573,5 +574,60 @@ func TestPreflight_HostGit_RebaseConflictRestores(t *testing.T) {
 	}
 	if out := gitOut(t, l.worker, "status", "--porcelain"); out != "" {
 		t.Errorf("worktree not clean after restore: %q", out)
+	}
+}
+
+// TestEnsurePrismWorktree_HostGit checks that EnsurePrismWorktree accepts a
+// prism worktree and refuses a plain clone. The control shows that a forge
+// read runs git in the plain clone's dir — the host git run that AC1 forbids
+// for a non-worktree session, and that the cmd-level gate now prevents (#3323,
+// AC1).
+func TestEnsurePrismWorktree_HostGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	l := newPreflightLayout(t)
+
+	if err := EnsurePrismWorktree(l.worker); err != nil {
+		t.Errorf("EnsurePrismWorktree(worktree) = %v, want nil", err)
+	}
+
+	plain := filepath.Join(t.TempDir(), "plain")
+	mustGit(t, "", "clone", "-q", l.origin, plain)
+	// Control: forge.OriginRemoteURL runs git in the dir and reads its config
+	// (it returns the origin), the host git run AC1 forbids for a non-worktree
+	// session. EnsurePrismWorktree lets cmd/review.go gate it.
+	if url := forge.OriginRemoteURL(plain); url == "" {
+		t.Fatal("control: forge.OriginRemoteURL ran no git in the plain clone; the control does not work")
+	}
+	if err := EnsurePrismWorktree(plain); err == nil || !strings.Contains(err.Error(), "not a prism worktree") {
+		t.Errorf("EnsurePrismWorktree(plain clone) = %v, want a 'not a prism worktree' refusal", err)
+	}
+}
+
+// TestPreflight_HostGit_RefusesRebaseWhenHeadOffSessionBranch moves HEAD onto
+// a branch other than the one the worktree path names, then shows that
+// --rebase is refused before the rebase, and that neither branch moves (review
+// round 1 on PR #3332). The rebase acts on HEAD, so it must act on the branch
+// that the push and the restore act on.
+func TestPreflight_HostGit_RefusesRebaseWhenHeadOffSessionBranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	l := newPreflightLayout(t)
+	l.advance(t) // origin/main advances, so --rebase would do real work
+	mustGit(t, l.worker, "switch", "-q", "-c", "feat-v2")
+	featTip := gitOut(t, l.worker, "rev-parse", "refs/heads/feat")
+	v2Tip := gitOut(t, l.worker, "rev-parse", "refs/heads/feat-v2")
+
+	err := Preflight(PreflightOpts{Worktree: l.worker, Rebase: true})
+	if err == nil || !strings.Contains(err.Error(), "not on the session branch") {
+		t.Fatalf("Preflight = %v, want a refusal that HEAD is not on the session branch", err)
+	}
+	if got := gitOut(t, l.worker, "rev-parse", "refs/heads/feat"); got != featTip {
+		t.Errorf("feat moved to %q, want %q (the gate must refuse before the rebase)", got, featTip)
+	}
+	if got := gitOut(t, l.worker, "rev-parse", "refs/heads/feat-v2"); got != v2Tip {
+		t.Errorf("feat-v2 moved to %q, want %q", got, v2Tip)
 	}
 }

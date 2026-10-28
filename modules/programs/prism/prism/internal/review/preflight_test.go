@@ -49,11 +49,15 @@ func (f *fakeGit) on(args string, resp scriptedResponse) *fakeGit {
 func (f *fakeGit) run(args ...string) (string, string, int, error) {
 	key := strings.Join(args, " ")
 	f.calls = append(f.calls, key)
-	resp, ok := f.script[key]
-	if !ok {
-		return "", "", 1, fmt.Errorf("fakeGit: no script for: %s", key)
+	if resp, ok := f.script[key]; ok {
+		return resp.stdout, resp.stderr, resp.exitCode, resp.err
 	}
-	return resp.stdout, resp.stderr, resp.exitCode, resp.err
+	// Default: HEAD is on the session branch, so the --rebase guard passes
+	// unless a test scripts a different symbolic-ref answer.
+	if key == "symbolic-ref -q HEAD" {
+		return "refs/heads/" + f.branch + "\n", "", 0, nil
+	}
+	return "", "", 1, fmt.Errorf("fakeGit: no script for: %s", key)
 }
 
 func (f *fakeGit) gitDir() string        { return f.dir }
@@ -435,6 +439,45 @@ func TestPreflight_NonWorktreeRefused(t *testing.T) {
 	}
 	if len(fg.calls) != 0 {
 		t.Errorf("no git command must run for a non-worktree session; calls=%v", fg.calls)
+	}
+}
+
+// TestPreflight_RebaseRefusedWhenHeadOffSessionBranch verifies that --rebase
+// is refused when HEAD is not on the session branch, before the rebase runs
+// (review round 1 on PR #3332). Otherwise the rebase acts on one branch while
+// the push and restore act on another.
+func TestPreflight_RebaseRefusedWhenHeadOffSessionBranch(t *testing.T) {
+	fg := newFakeGit() // sessionBranch "feat"
+	fg.on("rev-parse HEAD", scriptedResponse{stdout: "deadbeef\n", exitCode: 0}).
+		on("fetch origin main", scriptedResponse{exitCode: 0}).
+		on("rev-parse --verify origin/main", scriptedResponse{stdout: "abc123\n", exitCode: 0}).
+		on("symbolic-ref -q HEAD", scriptedResponse{stdout: "refs/heads/feat-v2\n", exitCode: 0})
+
+	err := Preflight(PreflightOpts{Worktree: "/fake/worktree", Rebase: true, gitRunner: fg})
+	if err == nil || !strings.Contains(err.Error(), "not on the session branch") {
+		t.Fatalf("Preflight = %v, want a refusal naming the session branch", err)
+	}
+	if fg.called("rebase origin/main") || fg.called("push --force-with-lease origin refs/heads/feat:refs/heads/feat") {
+		t.Errorf("no rebase or push must run when HEAD is off the session branch; calls=%v", fg.calls)
+	}
+}
+
+// TestPreflight_RebaseRefusedWhenNoSessionBranch verifies that --rebase fails
+// closed when the session branch cannot be derived — no bare push that would
+// follow HEAD (review round 1 on PR #3332).
+func TestPreflight_RebaseRefusedWhenNoSessionBranch(t *testing.T) {
+	fg := newFakeGit()
+	fg.branch = ""
+	fg.on("rev-parse HEAD", scriptedResponse{stdout: "deadbeef\n", exitCode: 0}).
+		on("fetch origin main", scriptedResponse{exitCode: 0}).
+		on("rev-parse --verify origin/main", scriptedResponse{stdout: "abc123\n", exitCode: 0})
+
+	err := Preflight(PreflightOpts{Worktree: "/fake/worktree", Rebase: true, gitRunner: fg})
+	if err == nil || !strings.Contains(err.Error(), "cannot determine the branch") {
+		t.Fatalf("Preflight = %v, want a refusal that the branch cannot be determined", err)
+	}
+	if fg.called("push --force-with-lease") {
+		t.Errorf("a bare `push --force-with-lease` must not run; calls=%v", fg.calls)
 	}
 }
 

@@ -184,6 +184,10 @@ what that pre-flight does on the host:
   below the project root — not the branch that `HEAD` names. A session can
   write `HEAD` in its own git dir, so the push names the branch with an
   explicit `refs/heads/<branch>` refspec.
+- With `--rebase`, it refuses when it cannot derive that branch from the
+  worktree path, and when `HEAD` is not on that branch. The rebase acts on
+  `HEAD`, so this keeps the rebase, the push, and the restore on one branch.
+  prism never falls back to a bare `git push` that follows `HEAD`.
 
 Code: `internal/review/preflight.go`. Tests:
 `internal/review/preflight_host_git_test.go`.

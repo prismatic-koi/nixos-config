@@ -221,6 +221,17 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return wtErr
 	}
 
+	// Refuse a session that is not in a prism worktree BEFORE any forge or gh
+	// call (#3323, AC1). forge.DetectFromDir, forge.OriginRemoteURL,
+	// review.CheckPRState, and review.ResolvePRBaseRef below each run git (or
+	// gh with a git child) in the worktree dir; for a plain clone or a bare
+	// session dir that git reads a config the session wrote. git.OpenDir runs
+	// no git for a dir outside a prism project, so this gate keeps host git out
+	// of a dir the session controls.
+	if wtErr := review.EnsurePrismWorktree(worktree); wtErr != nil {
+		return wtErr
+	}
+
 	// Detect the forge from the worktree's origin remote. On a gitlab.com
 	// remote the three forge reads below (MR state, base ref, metadata+diff)
 	// resolve via glab instead of gh; on any other remote the GitHub path is
