@@ -195,8 +195,9 @@ paths (the own worktree's pointer files and `<worktree>/.git`), by a
 different mechanism than the SBPL profile: it binds `.bare` and the worktree
 read-write, then layers read-only binds over those paths. A read-only bind
 blocks a write with `EROFS`, and the mount point cannot be renamed, removed,
-or replaced (`EBUSY`). It does not pin the top-level `.bare/commondir` (see
-the last bullet); #3322/#3324 handles that route.
+or replaced from inside the sandbox (`EBUSY`). It does not pin the top-level
+`.bare/commondir` (see the last bullet); that route stays open to host git
+that prism does not run.
 
 - `.bare/config`, `.bare/hooks`, `.bare/info`, and the whole
   `.bare/worktrees` tree are read-only; the session's own worktree git dir
@@ -213,12 +214,16 @@ the last bullet); #3322/#3324 handles that route.
   not a no-op: any commondir file makes git treat the project root (which
   holds a `.git` gitfile pointing at `.bare`) as a work tree, so a git
   command run there behaves destructively. A worker can still create
-  `.bare/commondir`. #3322 (#3324, merged) makes this a denial of service,
-  not code execution: `OpenBare` refuses a repo that has a `.bare/commondir`
-  file (prism host git refuses the repo until the file is removed), and host
-  git commands set `GIT_COMMON_DIR` so they do not follow a planted one.
-  Without #3324, `prism spawn`'s `git --git-dir .bare worktree add` would
-  follow a planted `.bare/commondir` and run a planted hook on the host.
+  `.bare/commondir`. For prism's OWN host git this is at most a denial of
+  service: #3322's (#3324) `OpenBare` refuses a repo that has a
+  `.bare/commondir` file, and prism's host git sets `GIT_COMMON_DIR`. But a
+  plain `git` that prism does NOT run — a human shell, or another tool at
+  the project root — follows `<BareRoot>/.git` -> `.bare` -> the planted
+  `.bare/commondir` and reads the `config` and `hooks` the worker wrote. So
+  this stays a host code-execution route for host git outside prism's
+  control. Follow-ups: #3326 (user git env hardening) and #3327 (the full
+  bwrap write scope, which binds `.bare` read-only so no bare-dir file is
+  worker-writable).
 
 bwrap does NOT yet reach the full sandbox-exec write scope. Because `.bare`,
 `.bare/refs`, and `.bare/logs` are inside the read-write `.bare` bind, a
