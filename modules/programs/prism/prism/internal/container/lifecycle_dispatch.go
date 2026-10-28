@@ -142,6 +142,38 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 		return nil, fmt.Errorf("container: bwrap: %w", err)
 	}
 
+	// Ensure the .bare entries that the read-only overlays bind exist on the
+	// host, so the overlays have a bind source and a worker cannot create them
+	// first (issue #3315). Fatal on failure: the overlays are the security
+	// boundary, so the sandbox must not start with an unprotected .bare.
+	if err := m.ensureBareReadOnlyTargets(); err != nil {
+		return nil, fmt.Errorf("container: bwrap: %w", err)
+	}
+
+	// ── git upstream (host-side prep) ────────────────────────────────────
+	// #3315 makes .bare/config read-only to the session, so the branch
+	// upstream must be written on the host, the same as sandbox-exec does
+	// (#3293/#3320). The session gitconfig sets push.autoSetupRemote but
+	// cannot write the read-only .bare/config, so without this the session's
+	// git push prints the upstream error, and the host-side push of `prism
+	// review --rebase` writes a second upstream into .bare/config that makes
+	// each later push exit 128 ("multiple upstream branches").
+	//
+	// prepareGitWriteDirs is NOT called for bwrap: under bwrap .bare and its
+	// refs/ and logs/ subtrees are inside the read-write .bare bind, so git
+	// creates the ref and reflog parent dirs itself. That helper exists for
+	// sandbox-exec, where the profile grants no write of those parent dirs.
+	// Best-effort: a failure is logged and the session still starts.
+	if m.cfg.BareRoot != "" {
+		scope, scopeErr := m.gitScope()
+		if scopeErr != nil {
+			log.Printf("container: bwrap: %v", scopeErr)
+		}
+		if err := ensureGitUpstream(scope, m.cfg.WorktreeReadOnly); err != nil {
+			log.Printf("container: bwrap: %v", err)
+		}
+	}
+
 	// Build the bwrap args. For PI sessions, BuildArgs stores any
 	// appendPIBwrapMounts error in m.piBwrapErr because BuildArgs cannot return
 	// an error. Check and surface it here where we CAN return an error.
@@ -155,9 +187,11 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 	if m.credentialsErr != nil {
 		return nil, fmt.Errorf("container: bwrap: %w", m.credentialsErr)
 	}
-	// worktreeGitDirErr uses the same error-stashing pattern: the
-	// WorktreeGitDir path is authoritative (resolved from the worktree's .git
-	// pointer), so a missing directory is a real error and must fail the spawn.
+	// worktreeGitDirErr uses the same error-stashing pattern: BuildArgs binds
+	// only the worktree git dir that resolveGitWriteScope accepts, and stashes
+	// an error when the check fails (a git dir that is missing, outside
+	// .bare/worktrees, or whose .git / gitdir back-pointer disagree). The
+	// session must not start with its git state unbound, so surface it here.
 	if m.worktreeGitDirErr != nil {
 		return nil, fmt.Errorf("container: bwrap: %w", m.worktreeGitDirErr)
 	}
