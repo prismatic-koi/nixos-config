@@ -1,16 +1,21 @@
 # Invariant: the write scope of a sandbox-exec session in its repo
 
-<!-- doclint-ignore: .bare/config, .bare/gc.pid, .bare/hooks, .bare/logs, .bare/logs/refs/remotes, .bare/objects, .bare/packed-refs, .bare/refs/remotes, .bare/refs/tags, .bare/worktrees, logs/HEAD, refs/remotes/origin/main, FETCH_HEAD, ORIG_HEAD, core.hooksPath -->
+<!-- doclint-ignore: .bare/config, .bare/gc.pid, .bare/hooks, .bare/info, .bare/logs, .bare/logs/refs/remotes, .bare/objects, .bare/packed-refs, .bare/refs/remotes, .bare/refs/tags, .bare/worktrees, .bare/commondir, logs/HEAD, refs/remotes/origin/main, FETCH_HEAD, ORIG_HEAD, core.hooksPath -->
 <!-- doclint-ignore: .agents/skills, .pi/extensions, .pi/mcp.json, .pi/settings.json -->
+<!-- doclint-ignore: .bare/refs, .bare/HEAD, refs/heads/main, refs/stash, detach_mounts, branch.autoSetupMerge -->
+<!--
+  The extra .bare/* and refs/* names are git paths in the common dir at run
+  time, not files in this source tree.
+-->
 <!--
   These names are paths in the git common dir (.bare) of a prism repo, git
   files and config keys, and project resources that pi loads from a
   worktree. They exist in a repo at run time, not in this source tree.
 -->
 
-Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap),
-#3325 (a nested `.git`). Host-side git: #3322, in
-`docs/invariants/host-git-commands.md`.
+Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap
+code-execution paths), #3327 (the full bwrap write scope), #3325 (a nested
+`.git`). Host-side git: #3322, in `docs/invariants/host-git-commands.md`.
 Code: `internal/container/git_write_scope.go`, sections 6, 6e, 17b, 21b,
 21i, 21j, and 21k of `generateProfile` in `internal/container/sandbox_exec.go`, and
 the git step of `sandboxExecIsolator.Prepare` in
@@ -61,7 +66,8 @@ reads the git dirs of the other worktrees for `git worktree list`.
 ## How prism decides the scope
 
 `resolveGitWriteScope` builds the scope from three values. The bwrap
-isolator can use the same function (#3315).
+isolator uses the same function to validate its worktree git dir before it
+binds it read-write (#3315).
 
 - The project root and the worktree come from prism on the host. A session
   cannot change them.
@@ -164,8 +170,6 @@ isolator can use the same function (#3315).
 - **`git gc`.** A session cannot write `.bare/gc.pid`, so `git gc` and the
   auto maintenance of git stop at their start in a session. Loose objects
   then collect until a git command on the host runs `git gc`.
-- **bwrap.** bwrap binds the whole `.bare` read-write. A bwrap session can
-  write `.bare/config` and `.bare/hooks`. Follow-up: #3315.
 - **A nested `.git` in the worktree (both isolators).** Section 21k
   covers the `.git` file at the top of the worktree only. A session can
   still put a `.git` file or dir in a subdir of its worktree. git that runs
@@ -174,9 +178,78 @@ isolator can use the same function (#3315).
   the dir of the open file or of the shell. A deny of `.git` at any depth
   does not close this: a rename of a dir that already holds `.git` into
   the worktree makes no new path named `.git`. Follow-up: #3325.
-- **Host-side git in a worktree (bwrap).** A sandbox-exec session cannot
-  write the `.git` file or the redirect files of its git dir (sections 21j
-  and 21k). bwrap does not have these denies yet. Follow-up: #3315. Each
-  host git command that prism runs sets `GIT_DIR` and `GIT_COMMON_DIR`
-  itself, so a redirect in a bwrap worktree does not reach it. See
-  `docs/invariants/host-git-commands.md` (#3322).
+- **Host-side git in a worktree (both isolators).** sandbox-exec denies the
+  `.git` file and the redirect files of its git dir (sections 21j and 21k);
+  bwrap pins them read-only over the read-write binds (#3315). And #3322
+  (#3324) hardens the host side: every host git command prism runs sets
+  `GIT_DIR` and `GIT_COMMON_DIR` itself and runs with hooks and fsmonitor
+  off, and `OpenBare` refuses a repo that has a `.bare/commondir` file, so a
+  redirect in a worker worktree does not reach a host command. See
+  `docs/invariants/host-git-commands.md`.
+
+## bwrap (#3315)
+
+bwrap closes the direct-write code-execution paths (`.bare/config`,
+`.bare/hooks`, `.bare/info`, the other worktrees) and the in-sandbox redirect
+paths (the own worktree's pointer files and `<worktree>/.git`), by a
+different mechanism than the SBPL profile: it binds `.bare` and the worktree
+read-write, then layers read-only binds over those paths. A read-only bind
+blocks a write with `EROFS`, and the mount point cannot be renamed, removed,
+or replaced from inside the sandbox (`EBUSY`). It does not pin the top-level
+`.bare/commondir` (see the last bullet); that route stays open to host git
+that prism does not run.
+
+- `.bare/config`, `.bare/hooks`, `.bare/info`, and the whole
+  `.bare/worktrees` tree are read-only; the session's own worktree git dir
+  is re-exposed read-write on top.
+- `commondir`, `gitdir`, and `config.worktree` in the own worktree git dir,
+  and the worktree `.git` file, are pinned read-only over the read-write
+  binds — the bwrap equivalent of sections 21j and 21k.
+- On the host, the bwrap `Prepare` runs `ensureGitUpstream` and binds only
+  the worktree git dir that `resolveGitWriteScope` accepts, the same as
+  sandbox-exec. It does not run `prepareGitWriteDirs`: under bwrap the ref
+  and reflog parent dirs are inside the read-write `.bare` bind, so git
+  creates them itself.
+- The top-level `.bare/commondir` is NOT pinned. A benign commondir file is
+  not a no-op: any commondir file makes git treat the project root (which
+  holds a `.git` gitfile pointing at `.bare`) as a work tree, so a git
+  command run there behaves destructively. A worker can still create
+  `.bare/commondir`. For prism's OWN host git this is at most a denial of
+  service: #3322's (#3324) `OpenBare` refuses a repo that has a
+  `.bare/commondir` file, and prism's host git sets `GIT_COMMON_DIR`. But a
+  plain `git` that prism does NOT run — a human shell, or another tool at
+  the project root — follows `<BareRoot>/.git` -> `.bare` -> the planted
+  `.bare/commondir` and reads the `config` and `hooks` the worker wrote. So
+  this stays a host code-execution route for host git outside prism's
+  control. Follow-ups: #3326 (user git env hardening) and #3327 (the full
+  bwrap write scope, which binds `.bare` read-only so no bare-dir file is
+  worker-writable).
+
+bwrap does NOT yet reach the full sandbox-exec write scope. Because `.bare`,
+`.bare/refs`, and `.bare/logs` are inside the read-write `.bare` bind, a
+bwrap session can still move the branch ref of another worktree
+(`refs/heads/main` included) and create a branch, write `refs/stash` and its
+reflog (sandbox-exec grants the stash ref to the coordinator only), and write
+`.bare/gc.pid` and `.bare/HEAD`. A bwrap review agent or investigator also
+gets its whole own worktree git dir read-write (`HEAD`, the index, the branch
+ref), where sandbox-exec grants only `FETCH_HEAD`. So the table rows for the
+branch ref and the stash ref, and the "Other branches" and "`git gc`" known
+limits above, hold for sandbox-exec but not yet for bwrap. Bringing bwrap to
+the same scope is #3327.
+
+A host rename can detach a bwrap read-only pin (not verified on a live
+kernel). The pins are bind mounts over the shared `.bare` dentry (Dst ==
+Src). Since Linux 3.18, a host-side rename onto, or unlink of, a bound file
+calls `detach_mounts` on that dentry and removes the overlay in every running
+bwrap session, across namespaces. prism renames `.bare/config` host-side
+(`ensureGitUpstream` at spawn, `git worktree add -b` through
+`branch.autoSetupMerge`, `git branch -d` at cleanup), so a concurrent spawn
+or cleanup can re-open `.bare/config` read-write for a running worker. #3327
+removes the dependency — it binds `.bare` read-only and binds read-write only
+the directories a session must write, and adds a live-bwrap test of a host
+rename — and #3326 hardens the user git environment. sandbox-exec is not
+affected: its profile is an allowlist, not a bind.
+
+The object store and `packed-refs` stay writable under bwrap too, so the
+"both isolators" limits above apply. See the `.bare` write scope (bwrap)
+section of `session-lifecycle.md` for the bind ordering.

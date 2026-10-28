@@ -24,6 +24,7 @@ package container
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -488,12 +489,13 @@ type Manager struct {
 	// as piBwrapErr.
 	credentialsErr error
 
-	// worktreeGitDirErr holds any error produced when WorktreeGitDir does not
-	// exist on disk at BuildArgs time. WorktreeGitDir is resolved from the
-	// worktree's authoritative .git pointer, so a missing directory is a real
-	// error and must be reported, not silently skipped. BuildArgs
-	// cannot return an error, so it stashes the error here and Prepare
-	// surfaces it — same pattern as piBwrapErr.
+	// worktreeGitDirErr holds the error produced when the worktree git dir
+	// fails the resolveGitWriteScope check at BuildArgs time (#3293/#3320):
+	// the git dir is missing, is not a direct child of .bare/worktrees, or the
+	// worktree .git and the git-dir gitdir back-pointer disagree. The session
+	// can write its own .git file, so an unvalidated git dir must not be bound
+	// read-write. BuildArgs cannot return an error, so it stashes the error
+	// here and Prepare surfaces it — same pattern as piBwrapErr.
 	worktreeGitDirErr error
 }
 
@@ -989,5 +991,74 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 	// starting.
 	createGoCacheDirs("bwrap", goCacheDirsForGOOS(home, goosLinux))
 
+	return nil
+}
+
+// ensureBareReadOnlyTargets creates the entries directly under .bare that the
+// bwrap read-only overlays bind, so that each overlay has a bind source and a
+// worker cannot create the path itself before the overlay locks it (issue
+// #3315).
+//
+// bwrap aborts at exec time if a bind source is missing, and the overlays are
+// the security boundary of the fix, so a failure here is fatal: return an
+// error so the spawn stops with the real cause rather than starting a sandbox
+// with an unprotected .bare.
+//
+// .bare/hooks and .bare/info are directories (git creates them at clone time);
+// .bare/config is a file. All three normally exist in a bare repo — this is a
+// belt-and-braces guarantee for a repo where one was removed. A missing
+// .bare (BareRoot set but no .bare yet) is not this method's concern: the
+// bind of .bare is itself conditional, so there is nothing to lock down.
+//
+// It also creates the own worktree's config.worktree empty so its overlay has
+// a target; git reads it only when extensions.worktreeConfig is set, which the
+// read-only .bare/config cannot enable.
+//
+// It does NOT create or pin the top-level .bare/commondir. A benign commondir
+// is not a no-op: any commondir file makes git treat the project root (which
+// holds a .git gitfile pointing at .bare) as a work tree. That redirect
+// belongs to the host-side git hardening of #3322/#3324, not to this bind
+// layer.
+func (m *Manager) ensureBareReadOnlyTargets() error {
+	if m.cfg.BareRoot == "" {
+		return nil
+	}
+	bareDir := filepath.Join(m.cfg.BareRoot, ".bare")
+	if _, err := os.Stat(bareDir); err != nil {
+		return nil
+	}
+	for _, name := range []string{"hooks", "info"} {
+		p := filepath.Join(bareDir, name)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			return fmt.Errorf("container: create read-only bind target %q: %w", p, err)
+		}
+	}
+	if err := ensureFileExists(filepath.Join(bareDir, "config"), nil); err != nil {
+		return err
+	}
+
+	// The own worktree's config.worktree, created empty so the own-worktree
+	// overlay has a target and a worker cannot plant one. Created under the git
+	// dir that resolveGitWriteScope validated — the same path BuildArgs binds.
+	// When the check fails GitDir is empty, BuildArgs stashes the error, and
+	// Prepare fails the spawn, so there is nothing to create here.
+	if scope, _ := m.gitScope(); scope.GitDir != "" {
+		if err := ensureFileExists(filepath.Join(scope.GitDir, "config.worktree"), nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureFileExists creates path with the given content (0o644) only when it
+// does not already exist. An existing file is left untouched.
+func ensureFileExists(path string, content []byte) error {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		if wErr := os.WriteFile(path, content, 0o644); wErr != nil {
+			return fmt.Errorf("container: create read-only bind target %q: %w", path, wErr)
+		}
+	} else if err != nil {
+		return fmt.Errorf("container: stat read-only bind target %q: %w", path, err)
+	}
 	return nil
 }

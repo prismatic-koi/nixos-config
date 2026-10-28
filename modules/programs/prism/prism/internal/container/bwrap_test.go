@@ -795,23 +795,55 @@ func TestBwrapBuildArgs_PrismProfilesJSONAbsentNoBind(t *testing.T) {
 	}
 }
 
+// bareWorktreeLayout holds the paths of a minimal bare+worktree layout that
+// resolveGitWriteScope accepts.
+type bareWorktreeLayout struct {
+	bareRoot, bareDir, worktree, worktreeGitDir string
+}
+
+// newBareWorktreeLayout builds a minimal valid bare+worktree layout under a
+// temp dir: <root>/.bare with hooks/info/config; a worktree at
+// <root>/<branch> whose .git gitfile points at the worktree git dir; and the
+// worktree git dir at .bare/worktrees/<branch> whose gitdir back-pointer
+// names the worktree .git. resolveGitWriteScope accepts this (branch =
+// <branch>, GitDir = the worktree git dir), so BuildArgs binds the git dir.
+func newBareWorktreeLayout(t *testing.T, branch string) bareWorktreeLayout {
+	t.Helper()
+	root := t.TempDir()
+	bareDir := filepath.Join(root, ".bare")
+	worktree := filepath.Join(root, branch)
+	wtGitDir := filepath.Join(bareDir, "worktrees", branch)
+	for _, d := range []string{filepath.Join(bareDir, "hooks"), filepath.Join(bareDir, "info"), wtGitDir, worktree} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("MkdirAll %q: %v", d, err)
+		}
+	}
+	write := func(p, c string) {
+		if err := os.WriteFile(p, []byte(c), 0o644); err != nil {
+			t.Fatalf("WriteFile %q: %v", p, err)
+		}
+	}
+	write(filepath.Join(bareDir, "config"), "[core]\n")
+	write(filepath.Join(worktree, ".git"), "gitdir: "+wtGitDir+"\n")
+	write(filepath.Join(wtGitDir, "gitdir"), filepath.Join(worktree, ".git")+"\n")
+	write(filepath.Join(wtGitDir, "commondir"), "../..\n")
+	write(filepath.Join(wtGitDir, "config.worktree"), "")
+	return bareWorktreeLayout{root, bareDir, worktree, wtGitDir}
+}
+
 func TestBwrapBuildArgs_BareRepoBoundAtHostPath(t *testing.T) {
 	// When BareRoot and WorktreeGitDir are set, the bare repo (.bare dir) and
 	// worktree private git state are both bound at their host paths (Dst == Src),
 	// with no canonical-path remapping.
-	bareRoot := t.TempDir()
-	bareDir := filepath.Join(bareRoot, ".bare")
-	if err := os.MkdirAll(bareDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll bareDir: %v", err)
-	}
-
-	worktreeGitDir := t.TempDir()
+	layout := newBareWorktreeLayout(t, "feat")
+	bareDir := layout.bareDir
+	worktreeGitDir := layout.worktreeGitDir
 
 	m, _, cleanup := bwrapFixture(t, Config{
 		SessionName:    "repo@feat",
-		Worktree:       t.TempDir(),
+		Worktree:       layout.worktree,
 		AllocatedPort:  14010,
-		BareRoot:       bareRoot,
+		BareRoot:       layout.bareRoot,
 		WorktreeGitDir: worktreeGitDir,
 	})
 	defer cleanup()
@@ -834,6 +866,43 @@ func TestBwrapBuildArgs_BareRepoBoundAtHostPath(t *testing.T) {
 		if tri[1] == "/prism-git" {
 			t.Errorf("unexpected --bind _ /prism-git found (bwrap must use Dst==Src): %v", redactedArgs(args))
 		}
+	}
+}
+
+func TestBwrapBuildArgs_RejectsUnvalidatedWorktreeGitDir(t *testing.T) {
+	// When the worktree's .git points at a SIBLING worktree's git dir rather
+	// than its own, resolveGitWriteScope rejects it: bwrap must not bind that
+	// git dir read-write (binding a sibling would expose it), and must stash a
+	// hard error so Prepare fails the spawn (#3293/#3320).
+	layout := newBareWorktreeLayout(t, "feat")
+	// A sibling worktree git dir whose gitdir back-pointer names a different
+	// worktree (.bare/worktrees/main → <root>/main/.git, not feat).
+	sibling := filepath.Join(layout.bareDir, "worktrees", "main")
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatalf("MkdirAll sibling: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "gitdir"),
+		[]byte(filepath.Join(layout.bareRoot, "main", ".git")+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile sibling gitdir: %v", err)
+	}
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:    "repo@feat",
+		Worktree:       layout.worktree,
+		AllocatedPort:  14010,
+		BareRoot:       layout.bareRoot,
+		WorktreeGitDir: sibling, // the attacker-pointed git dir
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasBind(args, sibling) {
+		t.Errorf("a sibling git dir %q that fails the write-scope check must not be bound: %v", sibling, redactedArgs(args))
+	}
+	if m.worktreeGitDirErr == nil {
+		t.Fatal("expected m.worktreeGitDirErr to be set when the git dir fails the write-scope check, got nil")
 	}
 }
 
@@ -896,6 +965,235 @@ func TestBwrapBuildArgs_MissingBareRootOmitted(t *testing.T) {
 	bareDir := filepath.Join(bareRoot, ".bare")
 	if hasBind(args, bareDir) {
 		t.Errorf("missing bareDir %q should be omitted but found as --bind in args: %v", bareDir, redactedArgs(args))
+	}
+}
+
+// firstSrcDstIndex returns the index of the first occurrence of
+// "<flag> src src" in args, or -1 when absent.
+func firstSrcDstIndex(args []string, flag, src string) int {
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == flag && args[i+1] == src && args[i+2] == src {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestBwrapBuildArgs_BareReadOnlyOverlays(t *testing.T) {
+	// The .bare bind is read-write, and the code-execution paths (config,
+	// hooks, info) plus the worktrees directory are overlaid read-only on top
+	// of it, so a worker cannot plant a hook or config value that runs on the
+	// host (issue #3315).
+	layout := newBareWorktreeLayout(t, "feat")
+	bareDir := layout.bareDir
+	configPath := filepath.Join(bareDir, "config")
+	hooksDir := filepath.Join(bareDir, "hooks")
+	infoDir := filepath.Join(bareDir, "info")
+	worktreesDir := filepath.Join(bareDir, "worktrees")
+	worktreeGitDir := layout.worktreeGitDir
+	ownCommondir := filepath.Join(worktreeGitDir, "commondir")
+	ownGitdir := filepath.Join(worktreeGitDir, "gitdir")
+	ownConfigWT := filepath.Join(worktreeGitDir, "config.worktree")
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:    "repo@feat",
+		Worktree:       layout.worktree,
+		AllocatedPort:  14010,
+		BareRoot:       layout.bareRoot,
+		WorktreeGitDir: worktreeGitDir,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	// .bare itself is read-write.
+	if !hasBind(args, bareDir) {
+		t.Errorf(".bare %q must be a read-write --bind: %v", bareDir, redactedArgs(args))
+	}
+	// config, hooks, info, and the worktrees dir are read-only overlays. The
+	// top-level .bare/commondir is deliberately NOT pinned (#3322/#3324).
+	if hasROBind(args, filepath.Join(bareDir, "commondir")) {
+		t.Errorf(".bare/commondir must NOT be pinned by the bind layer: %v", redactedArgs(args))
+	}
+	for _, p := range []string{configPath, hooksDir, infoDir, worktreesDir} {
+		if !hasROBind(args, p) {
+			t.Errorf("%q must be a read-only --ro-bind overlay: %v", p, redactedArgs(args))
+		}
+	}
+
+	// Ordering 1: every read-only overlay comes AFTER the read-write .bare
+	// bind, so bwrap layers it on top.
+	bareIdx := firstSrcDstIndex(args, "--bind", bareDir)
+	if bareIdx < 0 {
+		t.Fatalf("no --bind %q in args: %v", bareDir, redactedArgs(args))
+	}
+	for _, p := range []string{configPath, hooksDir, infoDir, worktreesDir} {
+		if roIdx := firstSrcDstIndex(args, "--ro-bind", p); roIdx < bareIdx {
+			t.Errorf("read-only overlay %q at index %d must come after the .bare bind at index %d: %v",
+				p, roIdx, bareIdx, redactedArgs(args))
+		}
+	}
+
+	// Ordering 2: the session's own worktree git dir is re-exposed read-write
+	// AFTER the read-only worktrees overlay, so the later --bind wins for the
+	// own subtree while sibling worktrees stay read-only.
+	if !hasBind(args, worktreeGitDir) {
+		t.Errorf("own worktree git dir %q must be a read-write --bind: %v", worktreeGitDir, redactedArgs(args))
+	}
+	ownIdx := firstSrcDstIndex(args, "--bind", worktreeGitDir)
+	wtIdx := firstSrcDstIndex(args, "--ro-bind", worktreesDir)
+	if ownIdx < 0 || wtIdx < 0 {
+		t.Fatalf("expected both the worktrees ro-bind (%d) and the own rw-bind (%d): %v", wtIdx, ownIdx, redactedArgs(args))
+	}
+	if ownIdx < wtIdx {
+		t.Errorf("own worktree rw-bind at %d must come after the worktrees ro-bind at %d so it wins: %v",
+			ownIdx, wtIdx, redactedArgs(args))
+	}
+
+	// Ordering 3: the redirect files inside the own worktree git dir
+	// (commondir, gitdir, config.worktree) are pinned read-only AFTER the own
+	// worktree rw-bind, so those later --ro-binds win for just those files.
+	for _, p := range []string{ownCommondir, ownGitdir, ownConfigWT} {
+		if !hasROBind(args, p) {
+			t.Errorf("own worktree redirect file %q must be a read-only --ro-bind: %v", p, redactedArgs(args))
+		}
+		if pinIdx := firstSrcDstIndex(args, "--ro-bind", p); pinIdx < ownIdx {
+			t.Errorf("own worktree pin %q at %d must come after the own rw-bind at %d so it wins: %v",
+				p, pinIdx, ownIdx, redactedArgs(args))
+		}
+	}
+}
+
+func TestBwrapBareReadOnlyOverlays_StatGuardedAndOrdered(t *testing.T) {
+	// The helper emits a --ro-bind only for an entry that exists, and emits
+	// the worktrees overlay last (so BuildArgs can re-expose the own gitdir
+	// after it).
+	bareDir := t.TempDir()
+	hooksDir := filepath.Join(bareDir, "hooks")
+	worktreesDir := filepath.Join(bareDir, "worktrees")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll hooks: %v", err)
+	}
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll worktrees: %v", err)
+	}
+	// config and info are absent on purpose.
+
+	args := bwrapBareReadOnlyOverlays(bareDir)
+
+	if !hasROBind(args, hooksDir) {
+		t.Errorf("hooks must be ro-bound when present: %v", args)
+	}
+	if !hasROBind(args, worktreesDir) {
+		t.Errorf("worktrees must be ro-bound when present: %v", args)
+	}
+	if hasROBind(args, filepath.Join(bareDir, "config")) {
+		t.Errorf("absent config must not be bound: %v", args)
+	}
+	if hasROBind(args, filepath.Join(bareDir, "info")) {
+		t.Errorf("absent info must not be bound: %v", args)
+	}
+	// worktrees is emitted last.
+	if got := firstSrcDstIndex(args, "--ro-bind", worktreesDir); got != len(args)-3 {
+		t.Errorf("worktrees overlay must be the last triple (index %d of %d): %v", got, len(args), args)
+	}
+}
+
+func TestBwrapWorktreeGitFilePin(t *testing.T) {
+	// <worktree>/.git is pinned read-only when it is a regular file (the
+	// bare+worktree gitfile), and skipped when it is a directory (a normal
+	// clone) or absent (issue #3322).
+	t.Run("regular gitfile is pinned read-only", func(t *testing.T) {
+		wt := t.TempDir()
+		gitFile := filepath.Join(wt, ".git")
+		if err := os.WriteFile(gitFile, []byte("gitdir: /somewhere\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile .git: %v", err)
+		}
+		args := bwrapWorktreeGitFilePin(Config{Worktree: wt})
+		if !hasROBind(args, gitFile) {
+			t.Errorf("regular .git gitfile must be ro-bound: %v", args)
+		}
+	})
+	t.Run(".git directory is not pinned", func(t *testing.T) {
+		wt := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(wt, ".git"), 0o755); err != nil {
+			t.Fatalf("MkdirAll .git: %v", err)
+		}
+		if args := bwrapWorktreeGitFilePin(Config{Worktree: wt}); args != nil {
+			t.Errorf("a .git directory must not be pinned, got %v", args)
+		}
+	})
+	t.Run("absent .git and empty worktree yield nil", func(t *testing.T) {
+		if args := bwrapWorktreeGitFilePin(Config{Worktree: t.TempDir()}); args != nil {
+			t.Errorf("absent .git must yield nil, got %v", args)
+		}
+		if args := bwrapWorktreeGitFilePin(Config{Worktree: ""}); args != nil {
+			t.Errorf("empty worktree must yield nil, got %v", args)
+		}
+	})
+}
+
+func TestBwrapBuildArgs_WorktreeGitFilePinnedAfterWorktreeBind(t *testing.T) {
+	// The <worktree>/.git pin is emitted AFTER the read-write worktree bind so
+	// the later --ro-bind wins for just that file (issue #3322).
+	wt := t.TempDir()
+	gitFile := filepath.Join(wt, ".git")
+	if err := os.WriteFile(gitFile, []byte("gitdir: /x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile .git: %v", err)
+	}
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@feat",
+		Worktree:      wt,
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasBind(args, wt) {
+		t.Fatalf("worktree %q must be a read-write --bind: %v", wt, redactedArgs(args))
+	}
+	if !hasROBind(args, gitFile) {
+		t.Fatalf("worktree .git %q must be a read-only --ro-bind: %v", gitFile, redactedArgs(args))
+	}
+	wtIdx := firstSrcDstIndex(args, "--bind", wt)
+	gitIdx := firstSrcDstIndex(args, "--ro-bind", gitFile)
+	if gitIdx < wtIdx {
+		t.Errorf(".git pin at %d must come after the worktree bind at %d so it wins: %v",
+			gitIdx, wtIdx, redactedArgs(args))
+	}
+}
+
+func TestBwrapOwnWorktreeReadOnlyPins_StatGuarded(t *testing.T) {
+	// The helper pins commondir, gitdir, and config.worktree read-only when
+	// present, and skips an absent one (bwrap aborts on a missing source).
+	wtGitDir := t.TempDir()
+	commondir := filepath.Join(wtGitDir, "commondir")
+	gitdir := filepath.Join(wtGitDir, "gitdir")
+	for _, f := range []string{commondir, gitdir} {
+		if err := os.WriteFile(f, []byte("../..\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile %q: %v", f, err)
+		}
+	}
+	// config.worktree absent on purpose.
+
+	args := bwrapOwnWorktreeReadOnlyPins(wtGitDir)
+
+	if !hasROBind(args, commondir) {
+		t.Errorf("commondir must be ro-bound when present: %v", args)
+	}
+	if !hasROBind(args, gitdir) {
+		t.Errorf("gitdir must be ro-bound when present: %v", args)
+	}
+	if hasROBind(args, filepath.Join(wtGitDir, "config.worktree")) {
+		t.Errorf("absent config.worktree must not be bound: %v", args)
+	}
+
+	// An empty worktree git dir yields no pins.
+	if got := bwrapOwnWorktreeReadOnlyPins(""); got != nil {
+		t.Errorf("empty worktreeGitDir must yield nil, got %v", got)
 	}
 }
 
