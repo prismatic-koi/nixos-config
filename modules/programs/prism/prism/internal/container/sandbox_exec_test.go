@@ -348,12 +348,17 @@ func TestGenerateProfile_NetworkUnixSocketAllowlist(t *testing.T) {
 		`(require-not (literal "/var/run/syslog"))`,
 		`(require-not (literal "/nix/var/nix/daemon-socket/socket"))`,
 		`(require-not (subpath "/Users/u/code/repo/main"))`,
-		`(require-not (subpath "/Users/u/code/repo"))`,
 	}
 	for _, want := range wantAllowed {
 		if !strings.Contains(clause, want) {
 			t.Errorf("section-17b deny missing allowed socket %s; clause:\n%s", want, clause)
 		}
+	}
+
+	// The project root holds the other worktrees, where the session cannot
+	// write. A socket there belongs to another session (#3293).
+	if bad := `(require-not (subpath "/Users/u/code/repo"))`; strings.Contains(clause, bad) {
+		t.Errorf("section-17b deny allows a connect in the project root %s; clause:\n%s", bad, clause)
 	}
 
 	sessionDir, err := m.sessionWorkDirPath()
@@ -440,9 +445,10 @@ func TestGenerateProfile_V3CryptexAndTmpRules(t *testing.T) {
 }
 
 // TestGenerateProfile_SessionWorkDirAndWorktreeRules verifies that the
-// profile emitted by generateProfile includes the per-session work dir,
-// worktree, and bare repo as (allow file-read* file-write* (subpath ...))
-// clauses when the Manager has InstanceID, Worktree, and BareRoot set.
+// profile emitted by generateProfile includes the per-session work dir and
+// the worktree as (allow file-read* file-write* (subpath ...)) clauses, and
+// the bare repo root, when the Manager has InstanceID, Worktree, and
+// BareRoot set.
 func TestGenerateProfile_SessionWorkDirAndWorktreeRules(t *testing.T) {
 	// Drive the work-dir base via $XDG_STATE_HOME. sessionWorkDirPath
 	// honours XDG_STATE_HOME first and falls
@@ -472,8 +478,9 @@ func TestGenerateProfile_SessionWorkDirAndWorktreeRules(t *testing.T) {
 	if !strings.Contains(profile, "/tmp/fake-worktree") {
 		t.Errorf("profile missing worktree path /tmp/fake-worktree; full profile:\n%s", profile)
 	}
-	// The profile allows the full BareRoot (not just .bare/) so the agent can
-	// probe for project config files (e.g. .opencode/) at the repo root.
+	// The profile allows a read of the full BareRoot (not just .bare/) so the
+	// agent can read project files (for example .agents/skills) at the repo
+	// root. TestGenerateProfile_GitWriteScope covers the write.
 	if !strings.Contains(profile, "/tmp/fake-bare") {
 		t.Errorf("profile missing bare repo path /tmp/fake-bare; full profile:\n%s", profile)
 	}

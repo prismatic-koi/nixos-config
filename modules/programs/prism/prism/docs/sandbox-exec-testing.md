@@ -1,9 +1,12 @@
 # sandbox-exec testing convention
 
 <!-- doclint-ignore: auth.json, settings.json, SYSTEM.md, mcp.json -->
+<!-- doclint-ignore: .bare/config, .bare/hooks/post-checkout, .bare/logs, .bare/objects, refs/heads/feature, refs/heads/main, refs/stash -->
 <!--
-  These names are files in the pi agent dir ~/.pi/agent at run time
-  (see docs/invariants/sandbox-pi-agent-dir.md). They do not exist in this
+  The names in the first list are files in the pi agent dir ~/.pi/agent at
+  run time (see docs/invariants/sandbox-pi-agent-dir.md). The names in the
+  second list are paths and refs in the git common dir of the test repo of
+  sandbox_exec_git_write_scope_darwin_test.go. None of them exists in this
   source tree.
 -->
 
@@ -207,7 +210,7 @@ In addition to the system-paths allow set (covered first by #1187 / #1192),
 integration test coverage exists for:
 
 - **Session work dir writes** — the per-session work dir
-  (`(subpath "<sessionDir>")`), plus the worktree, bare repo, and host-API
+  (`(subpath "<sessionDir>")`), plus the worktree, the git paths, and host-API
   socket dir.
 - **Env-var credential reads** — sops-backed configs read through stable
   host paths (for example, `~/.config/aws/readonly-config` via `AWS_CONFIG_FILE`,
@@ -240,9 +243,71 @@ integration test coverage exists for:
 - **The worktree path deny** — the final deny (section 21b) on unlink and
   create of the worktree and of every ancestor of it, `BareRoot` included.
   Under the production profile, a write inside the worktree works, and a
-  rename or removal of the worktree or of `BareRoot` fails. The paired
-  negatives strip the deny and replace each path with a symlink. See
+  rename or removal of the worktree or of `BareRoot` fails, also a move of
+  the worktree into the per-session TMPDIR. The paired negatives strip the
+  deny and replace each path with a symlink. The worktree negative moves
+  the worktree into the TMPDIR, because section 6e grants only a read of
+  `BareRoot`, so a move to a sibling of the worktree fails with or without
+  the deny. The `BareRoot` negative also adds a write grant of `BareRoot`.
+  See
   `sandbox_exec_worktree_entry_darwin_test.go`.
+- **The git write scope** — the section-6e read of the project root and
+  write of the git paths, the section-21i deny on a replace of the git dir
+  nodes, the section-21j deny on a write of the redirect files in the
+  worktree git dir, the section-21k deny on a write of the `.git` file of
+  the worktree, and the dirs that Prepare makes in `.bare` (#3293). The fixture is
+  a real bare+worktree layout under `HOME` with the worktrees `main` and
+  `feature`, and a bare remote in the per-session TMPDIR. A Nix git runs in
+  the sandbox, in the worktree. Under the production profile:
+  - A worker in `feature` commits, fetches, pushes with the upstream that
+    Prepare writes into `.bare/config` and no config error, rebases,
+    force-pushes, and runs `git worktree list`.
+  - After a push from the sandbox, the host does what the pre-flight of
+    `prism review --rebase` does: a fetch, a rebase, and a push with
+    `push.autoSetupRemote`. Then a push and a pull from the sandbox work,
+    and `.bare/config` names one upstream.
+  - The same worker cannot write a file in `main`, make `.pi` in `main` or
+    `.agents` at the project root, write `.bare/config` or
+    `.bare/hooks/post-checkout`, move `refs/heads/main` or `refs/stash`,
+    write the git dir of `main`, or move `.bare/objects`. In its own git
+    dir, it cannot write `commondir`, `gitdir`, or `config.worktree`, or
+    rename a file onto `commondir`. It cannot write, move, remove,
+    replace, or chmod the `.git` file of its worktree. `.bare/config`,
+    `refs/heads/main`, `commondir`, `gitdir`, and the `.git` file do not
+    change.
+  - The coordinator in `main` pulls with the upstream in `.bare/config`,
+    and writes and deletes `refs/stash`. It cannot write in `feature` or
+    move `refs/heads/feature`.
+  - A review agent in `feature` runs `git status`, `git fetch`,
+    `git diff`, and `git log`. It cannot move `refs/heads/feature`, and
+    cannot write `HEAD` or the index of `feature`.
+
+  The paired negatives:
+  - `TestSandboxExecGitWriteScope_PlantsWorkWithOldGrant` changes the read
+    of the project root back to the old read-write grant. The plants work.
+  - `TestSandboxExecGitWriteScope_CommitFailsWithoutGitClause` points
+    each `.bare` rule at a missing dir. A commit fails.
+  - `TestSandboxExecGitWriteScope_FetchFailsWithoutPreparedDirs` removes
+    `.bare/logs` after Prepare. A fetch fails.
+  - `TestSandboxExecGitWriteScope_ObjectsReplaceableWithoutNodeDeny`
+    strips section 21i. The session replaces `.bare/objects` with a
+    symlink.
+  - `TestSandboxExecGitWriteScope_RedirectFilesWritableWithoutDeny` strips
+    section 21j. The session writes `config.worktree` and replaces
+    `commondir` in its git dir.
+  - `TestSandboxExecGitWriteScope_GitFileReplaceableWithoutDeny` strips
+    section 21k. The session replaces the `.git` file of its worktree and
+    changes its mode.
+  - `TestSandboxExecGitWriteScope_CoordinatorStashFailsWithoutStashGrant`
+    points the stash rules at another name. The stash write fails.
+  - `TestSandboxExecGitWriteScope_WorkerMovesBranch` runs the writes of
+    the review-agent test under the profile of a worker. They work.
+  - `TestSandboxExecGitWriteScope_PushFailsWithUpstreamInBothFiles` moves
+    the upstream from `.bare/config` into the session gitconfig. The push
+    on the host writes a second upstream into `.bare/config`, and the next
+    push from the sandbox fails.
+
+  See `sandbox_exec_git_write_scope_darwin_test.go`.
 - **The podman and docker exec deny** — the final deny (section 21c) on
   exec of a file named `podman`, `docker`, `.podman-wrapped`, or
   `.docker-wrapped`. Under the production profile, a copy of Nix bash
@@ -423,8 +488,8 @@ workflow already uses that same action. The job then runs the tests inside
 `nix shell`:
 
 ```
-nix shell nixpkgs#bash nixpkgs#coreutils \
-  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp)' -race
+nix shell nixpkgs#bash nixpkgs#coreutils nixpkgs#git \
+  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope)' -race
 ```
 
 The tests in `sandbox_exec_gitlab_token_darwin_test.go` and
@@ -434,7 +499,7 @@ The production secrets.d deny regexes key off that path. A bare `macos-15`
 runner starts with `TMPDIR` under `/private/tmp`, so the job exports
 `TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"` before it runs `go test`.
 
-**Selector scope: eight named families, not the whole `TestSandboxExec*`
+**Selector scope: nine named families, not the whole `TestSandboxExec*`
 family.** Issue #2749's problem statement names exactly two affected files:
 `sandbox_exec_gitlab_token_darwin_test.go` and
 `sandbox_exec_grafana_config_darwin_test.go`. Issue #3061 adds a third file,
@@ -459,11 +524,15 @@ for the per-session TMPDIR. It uses the same probe and needs no Nix tool.
 Issue #3284 adds an eighth file, `sandbox_exec_pi_agent_dir_darwin_test.go`,
 for the section-6a pi agent dir rules and the section-21f deny. It needs Nix
 bash and Nix coreutils, and a test-owned `HOME` under the real home.
+Issue #3293 adds a ninth file, `sandbox_exec_git_write_scope_darwin_test.go`,
+for the section-6e git write scope and the section-21i, 21j, and 21k denies. It needs Nix
+bash, Nix coreutils, and Nix git. It makes its repos under the real home.
 The `-run` selector matches only the `TestSandboxExecGitLabToken_*`,
 `TestSandboxExecGrafanaConfig_*`, `TestSandboxExecPIAgentDir_*`,
 `TestSandboxExecWorktreeEntry_*`, `TestSandboxExecWorktreeReadOnly_*`,
-`TestSandboxExecContainerCLI_*`, `TestSandboxExecContainerSocket_*`, and
-`TestSandboxExecSessionTmp_*` functions. A wider `^TestSandboxExec`
+`TestSandboxExecContainerCLI_*`, `TestSandboxExecContainerSocket_*`,
+`TestSandboxExecSessionTmp_*`, and `TestSandboxExecGitWriteScope_*`
+functions. A wider `^TestSandboxExec`
 selector was tried first. PR #2785 (round-2 review) found that this
 selector skips several other sandbox-exec suites on a bare `macos-15`
 runner. For example, the playwright suite
@@ -540,11 +609,12 @@ default moves to `host` mode.
 
 ### Nix-store binary requirement
 
-The selected test files call two Nix-store helpers. `requireNixBash`
+The selected test files call three Nix-store helpers. `requireNixBash`
 (defined in `sandbox_exec_helpers_darwin_test.go`) resolves `bash`.
 `requireNixCoreutilsDir` (defined in
 `sandbox_exec_worktree_entry_darwin_test.go`) resolves `mv`, and its
-directory supplies the other coreutils. Each helper resolves its binary
+directory supplies the other coreutils. `requireNixGit` (defined in
+`sandbox_exec_session_work_dir_darwin_test.go`) resolves `git`. Each helper resolves its binary
 through `exec.LookPath` and `filepath.EvalSymlinks`, then skips the test if
 the resolved path is not under `/nix/store/`. Apple-signed and Homebrew
 binaries fail with SIGABRT under the deny-default sandbox (see #1190). A
@@ -555,10 +625,11 @@ The job's guard step catches that and fails on it. The tests still do not
 actually run in that case. The job installs Nix and runs the tests
 through `nix shell` for this reason. It does not rely on
 whatever `bash` the bare runner image happens to ship. A future selector
-widening that pulls in a suite calling `requireNixGit`, `requireNixAws`,
-or `requireNixKubectl` must add the corresponding
+widening that pulls in a suite calling `requireNixAws` or
+`requireNixKubectl` must add the corresponding
 `nixpkgs#` package to this `nix shell` invocation. The job adds
-`nixpkgs#coreutils` for `requireNixCoreutilsDir` in the same way.
+`nixpkgs#coreutils` for `requireNixCoreutilsDir` and `nixpkgs#git` for
+`requireNixGit` in the same way.
 
 ## Out of scope
 

@@ -214,9 +214,11 @@ func ensureGoCacheDirs() {
 //   - RW subpath grants for the two Go cache dirs — ~/go/pkg/mod and
 //     ~/Library/Caches/go-build — so the repo AGENTS.md quality gate
 //     (`go build ./...` / `go test ./...`) runs as documented
-//   - Session work dir / worktree / bare repo / host-API socket dir (RW) —
-//     the work dir (subpath <sessionDir>) and the per-session TMPDIR are
-//     the two per-session writable grants
+//   - Session work dir / worktree / host-API socket dir (RW) — the work dir
+//     (subpath <sessionDir>) and the per-session TMPDIR are the two
+//     per-session writable grants
+//   - The project root (BareRoot) read-only, and a write of only the git
+//     paths that the session needs (section 6e, #3293)
 //   - Process and IPC primitives required by dyld, AMFI, and the agent
 //   - (allow network*), narrowed by a deny of every Unix-socket connect
 //     except an allowlist (section 17b). No shared temp tree is on the
@@ -239,6 +241,11 @@ func generateProfile(m *Manager) string {
 	// Derive the per-session work dir. When it cannot be
 	// determined (e.g. no home dir) the derived rules are simply omitted.
 	sessionDir, sessionDirErr := m.sessionWorkDirPath()
+
+	// The git write scope (sections 6e, 21i, and 21j). It reads a file that
+	// the session can write, so read it once: the three sections must name
+	// the same git dir.
+	gitScope, _ := m.gitScope()
 
 	// The per-session TMPDIR, in both /var symlink forms. Empty when the
 	// path cannot be derived; Prepare then fails before the profile is used.
@@ -827,7 +834,7 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 6. Session work dir + worktree + bare repo + host-API socket (RW) ─
+	// ── 6. Session work dir + worktree + host-API socket (RW) ─────────────
 	// Session-specific read-write paths.
 	// file-test-existence and file-read-metadata added alongside file-read*
 	// and file-write* for dyld/AMFI compatibility in the v3 profile.
@@ -844,15 +851,11 @@ func generateProfile(m *Manager) string {
 	if sessionDirErr == nil {
 		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
 		sb.WriteString("  (subpath " + quoteSBPL(sessionDir) + ")\n")
-		// Worktree — the git checkout the agent works in.
+		// Worktree — the git checkout the agent works in. The project root
+		// (BareRoot) and the other worktrees in it have no write grant here:
+		// see section 6e.
 		if m.cfg.Worktree != "" {
 			sb.WriteString("  (subpath " + quoteSBPL(m.cfg.Worktree) + ")\n")
-		}
-		// Bare repo root — full RW access so the agent can probe for project
-		// config files (e.g. .opencode/, AGENTS.md) at the top level and git
-		// can write pack files, ref updates, etc. in .bare/.
-		if m.cfg.BareRoot != "" {
-			sb.WriteString("  (subpath " + quoteSBPL(m.cfg.BareRoot) + ")\n")
 		}
 		// Host-API socket directory — the sidecar's per-session socket dir.
 		// The run-dir (subpath ...) rule covers agent-run.log,
@@ -927,6 +930,25 @@ func generateProfile(m *Manager) string {
 			sb.WriteString(clause)
 			sb.WriteString("\n")
 		}
+	}
+
+	// ── 6e. Project root read, git write scope (#3293) ─────────────────────
+	// A read of the whole project root (BareRoot): pi and other tools read
+	// project files, for example .agents/skills, in each ancestor of the
+	// worktree, and git reads the git dirs of the other worktrees for git
+	// worktree list. A write of only the git paths that a commit, a fetch, a
+	// push, and a rebase write (git_write_scope.go). The other worktrees,
+	// .bare/config, and .bare/hooks have no write grant. A session that can
+	// write in another worktree, or in a file that git or pi loads there,
+	// changes what the coordinator of the repo runs.
+	//
+	// A session can still change an object in .bare/objects, which git needs
+	// for a commit and a fetch. A later checkout in another worktree then
+	// writes the changed object. See the known limits in
+	// prism/docs/invariants/sandbox-git-write-scope.md.
+	if m.cfg.BareRoot != "" {
+		sb.WriteString(gitScope.sbplAllow(m.cfg.BareRoot, m.cfg.WorktreeReadOnly, m.cfg.AgentRole == "coordinator"))
+		sb.WriteString("\n")
 	}
 
 	// ── 6b. BareRoot ancestor probe allows ───────────────────────────────
@@ -1196,13 +1218,16 @@ func generateProfile(m *Manager) string {
 	//   - mDNSResponder: DNS name resolution;
 	//   - syslog: libsystem logging;
 	//   - the nix daemon socket: `nix build`;
-	//   - the per-session TMPDIR (section 3), the session work dir, the
-	//     worktree, and the bare repo: the scratch trees where `go test ./...`
-	//     binds and dials its own Unix sockets. Section 5k makes that quality
+	//   - the per-session TMPDIR (section 3), the session work dir, and the
+	//     worktree: the scratch trees where `go test ./...` binds and dials
+	//     its own Unix sockets. Section 5k makes that quality
 	//     gate runnable in-sandbox. The in-sandbox TMPDIR is the per-session
 	//     TMPDIR, so most test sockets land there. Remove these entries and
 	//     about 60 socket tests in internal/sidecar, internal/session, and cmd
 	//     fail.
+	//
+	// The project root (BareRoot) is not in the set. The session cannot
+	// write there (section 6e), so a socket there belongs to another session.
 	//
 	// No shared temp tree is in the set: not /tmp, not /private/tmp, and not
 	// the user $TMPDIR (/var/folders). The host sockets there stay denied:
@@ -1251,20 +1276,20 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("(allow user-preference-read)\n")
 
 	// ── 21b. FINAL DENY — the worktree path cannot be replaced ─
-	// Section 6 grants read-write on (subpath BareRoot). That rule covers
-	// the BareRoot node itself and every directory between BareRoot and the
-	// worktree. Without this deny, the agent can rename one of those
-	// directories away and put a symlink at its path. `prism container run
-	// --mount` gives the worktree path to podman on the host, and podman
-	// then mounts the symlink target: any directory that the podman machine
-	// shares, the whole home directory included.
+	// Section 6 grants (subpath worktree), and a subpath covers the worktree
+	// node too. Without this deny, the agent can rename the worktree away and
+	// put a symlink at its path. `prism container run --mount` gives the
+	// worktree path to podman on the host, and podman then mounts the symlink
+	// target: any directory that the podman machine shares, the whole home
+	// directory included.
 	//
-	// The deny lists the worktree and every ancestor up to /. An ancestor
-	// that no grant covers is denied already. It is listed so that a later
-	// grant cannot re-open it. The rules match the directory nodes only, so
-	// files below the worktree keep the section-6 grant. The deny must
-	// follow every allow, because SBPL resolves a conflict in favour of the
-	// later rule. TestGenerateProfile_WorktreeEntryDenyFollowsEveryAllow
+	// The deny lists the worktree and every ancestor up to /, BareRoot
+	// included. An ancestor that no grant covers is denied already. It is
+	// listed so that a later grant cannot re-open it. The rules match the
+	// directory nodes only, so files below the worktree keep the section-6
+	// grant. The deny must follow every allow, because SBPL resolves a
+	// conflict in favour of the later rule.
+	// TestGenerateProfile_WorktreeEntryDenyFollowsEveryAllow
 	// pins the order.
 	if m.cfg.Worktree != "" {
 		var nodes []string
@@ -1298,13 +1323,12 @@ func generateProfile(m *Manager) string {
 	sb.WriteString(containerCLIExecDeny)
 
 	// ── 21d. FINAL DENY — a read-only worktree ─
-	// Section 6 grants read-write on the worktree and on BareRoot, its
-	// parent. For a review agent or an investigator, this deny takes the
-	// write back. The deny must follow every allow, because SBPL resolves a
-	// conflict in favour of the later rule.
-	// TestGenerateProfile_WorktreeReadOnlyDenyFollowsEveryAllow pins the
-	// order. The worktree git dir is in BareRoot, not in the worktree, so
-	// git can still write the index.
+	// Section 6 grants read-write on the worktree. For a review agent or an
+	// investigator, this deny takes the write back. The deny must follow
+	// every allow, because SBPL resolves a conflict in favour of the later
+	// rule. TestGenerateProfile_WorktreeReadOnlyDenyFollowsEveryAllow pins
+	// the order. The worktree git dir is in .bare, not in the worktree.
+	// Section 6e grants such a session only FETCH_HEAD in it.
 	if m.cfg.WorktreeReadOnly && m.cfg.Worktree != "" {
 		sb.WriteString("\n")
 		sb.WriteString(worktreeReadOnlyDeny(m.cfg.Worktree))
@@ -1376,6 +1400,55 @@ func generateProfile(m *Manager) string {
 	// TestGenerateProfile_PIAuthSessionDenyFollowsEveryAllow pins the order.
 	if m.cfg.Harness == "pi" {
 		if clause := piAuthSessionSBPLDeny(m.cfg.PIAuthSessionDir); clause != "" {
+			sb.WriteString("\n")
+			sb.WriteString(clause)
+		}
+	}
+
+	// ── 21i. FINAL DENY — the git dir nodes cannot be replaced ─
+	// Section 6e grants a subpath of .bare/objects, of three ref and reflog
+	// dirs, and of the worktree git dir. A subpath covers the dir node too.
+	// A session must not move such a dir away and put a symlink at its path:
+	// each other worktree then reads objects and refs from a dir that the
+	// session chose. The deny must follow every allow.
+	// TestGenerateProfile_GitNodeDenyFollowsEveryAllow pins the order.
+	if m.cfg.BareRoot != "" {
+		if clause := gitScope.sbplNodeDeny(); clause != "" {
+			sb.WriteString("\n")
+			sb.WriteString(clause)
+		}
+	}
+
+	// ── 21j. FINAL DENY — the git dir redirect files cannot be written ─
+	// Section 6e grants a subpath of the worktree git dir. commondir,
+	// gitdir, and config.worktree in it tell git where the common dir is and
+	// which config to read, for each git command in the worktree, prism on
+	// the host included. A commondir that names a dir of the session gives
+	// git the config and the hooks of that dir. git does not write these
+	// files in normal use (git_write_scope.go). The deny must follow every
+	// allow. TestGenerateProfile_GitRedirectFileDenyFollowsEveryAllow pins
+	// the order.
+	if m.cfg.BareRoot != "" {
+		if clause := gitScope.sbplRedirectFileDeny(); clause != "" {
+			sb.WriteString("\n")
+			sb.WriteString(clause)
+		}
+	}
+
+	// ── 21k. FINAL DENY — the .git file of the worktree cannot be written ─
+	// Section 6 grants the worktree, and in a bare+worktree layout the .git
+	// file in it names the git dir. prism starts nvim and a shell on the
+	// host in each worktree, and they run git there, which follows the file.
+	// A .git file that names a git dir of the session runs its config, for
+	// example core.fsmonitor, on the host. The deny covers a write, a
+	// rename, a removal, and a replace of the file. git does not write it in
+	// normal use (git_write_scope.go). The deny covers the top-level .git
+	// file only: a .git in a subdir of the worktree still redirects git that
+	// runs in that subdir (#3325). The deny must follow every allow.
+	// TestGenerateProfile_WorktreeGitFileDenyFollowsEveryAllow pins the
+	// order.
+	if m.cfg.BareRoot != "" {
+		if clause := worktreeGitFileDeny(m.cfg.Worktree); clause != "" {
 			sb.WriteString("\n")
 			sb.WriteString(clause)
 		}
@@ -1525,9 +1598,6 @@ func networkUnixSocketDeny(m *Manager, sessionDir string, sessionDirErr error, s
 	}
 	if m.cfg.Worktree != "" {
 		allowed = append(allowed, "(subpath "+quoteSBPL(m.cfg.Worktree)+")")
-	}
-	if m.cfg.BareRoot != "" {
-		allowed = append(allowed, "(subpath "+quoteSBPL(m.cfg.BareRoot)+")")
 	}
 
 	var sb strings.Builder

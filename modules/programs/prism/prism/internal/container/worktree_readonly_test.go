@@ -63,8 +63,8 @@ func TestBwrapBuildArgs_WorktreeReadOnly(t *testing.T) {
 // TestGenerateProfile_WorktreeReadOnlyDenyFollowsEveryAllow: for a
 // read-only session, the profile denies file-write* on the worktree after
 // the last allow. SBPL takes the later rule, so an allow after the deny
-// gives the write back. The section-6 grants on the worktree and BareRoot
-// stay, so the deny is what makes the worktree read-only.
+// gives the write back. The section-6 grant on the worktree stays, so the
+// deny is what makes the worktree read-only.
 func TestGenerateProfile_WorktreeReadOnlyDenyFollowsEveryAllow(t *testing.T) {
 	m := newAuditLocationTestManager(t)
 	m.cfg.WorktreeReadOnly = true
@@ -79,10 +79,8 @@ func TestGenerateProfile_WorktreeReadOnlyDenyFollowsEveryAllow(t *testing.T) {
 		t.Errorf("an allow clause (offset %d) follows the read-only worktree deny (offset %d); SBPL takes the later rule.\nprofile:\n%s",
 			allowAt, denyAt, profile)
 	}
-	for _, grant := range []string{m.cfg.Worktree, m.cfg.BareRoot} {
-		if !strings.Contains(profile, "  (subpath "+quoteSBPL(grant)+")\n") {
-			t.Fatalf("fixture premise changed: the profile no longer grants (subpath %s)", grant)
-		}
+	if !strings.Contains(profile, "  (subpath "+quoteSBPL(m.cfg.Worktree)+")\n") {
+		t.Fatalf("fixture premise changed: the profile no longer grants (subpath %s)", m.cfg.Worktree)
 	}
 }
 

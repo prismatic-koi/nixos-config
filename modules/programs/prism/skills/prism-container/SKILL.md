@@ -27,7 +27,7 @@ macOS, a connect to a Unix domain socket is a `network-outbound` operation
 that carries the socket path. The sandbox-exec profile denies
 `network-outbound` to every Unix socket except an allowlist: the host-API
 socket, DNS, the system log, the nix daemon, the session work dir, the
-worktree, the bare repo, and the per-session TMPDIR. The podman machine API
+worktree, and the per-session TMPDIR. The podman machine API
 socket sits under the per-user `$TMPDIR`, or under `/private/tmp/podman`
 when `TMPDIR` is unset. A connect to it fails with a sandbox denial
 (`EPERM`) in either location. A TCP connect carries an IP endpoint, not a
