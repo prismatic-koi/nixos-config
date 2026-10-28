@@ -1615,16 +1615,19 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
-		// Validate req.Repo server-side as defence-in-depth: it is forwarded
-		// as a literal --repo argv value to the host-side prism spawn
-		// subprocess, so a value starting with "-" could otherwise be
-		// misread as a CLI flag rather than a value. resolveRepo (invoked by
-		// the host-side prism spawn) rejects anything that fails to resolve
-		// to a bare repo, but that check happens after argv construction, so
-		// this guards the injection shape specifically.
-		if req.Repo != "" && strings.HasPrefix(req.Repo, "-") {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid repo %q: must not start with '-'", req.Repo))
-			return
+		// Validate req.Repo server-side. It is forwarded as a literal --repo
+		// argv value to the host-side prism spawn subprocess. A value that
+		// starts with "-" can be read as a CLI flag. A path lets the caller
+		// name a dir that it can write, for example a .bare in its own
+		// worktree, and the host-side spawn runs `git worktree add` there.
+		// So the value must be a plain project name, which resolveRepo looks
+		// up under the configured project locations. See
+		// docs/invariants/host-git-commands.md.
+		if req.Repo != "" {
+			if err := validateSpawnRepoName(req.Repo); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 
 		// targetRepo is the --repo value actually forwarded: the client's

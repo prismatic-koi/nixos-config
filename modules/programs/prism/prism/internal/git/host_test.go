@@ -595,3 +595,49 @@ func TestCloneWorktree_RelativeTarget(t *testing.T) {
 		t.Errorf("RemoveWorktree: %v", err)
 	}
 }
+
+// TestHostGit_NestedRootRefused plants a full .bare in a subdir of the worker
+// worktree, with a smudge filter for every file. The hooks-off config does
+// not turn off a filter driver, so the only defence is to refuse the root.
+// A coordinator can name such a root through `/spawn {"repo": ...}`.
+func TestHostGit_NestedRootRefused(t *testing.T) {
+	f := newHostFixture(t)
+	planted := filepath.Join(f.worker, "x")
+	bareDir := filepath.Join(planted, ".bare")
+	if out, err := exec.Command("git", "clone", "-q", "--bare", f.origin, bareDir).CombinedOutput(); err != nil {
+		t.Fatalf("plant .bare: %v\n%s", err, out)
+	}
+	cfg, err := os.OpenFile(filepath.Join(bareDir, "config"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open planted config: %v", err)
+	}
+	fmt.Fprintf(cfg, "[filter \"evil\"]\n\tsmudge = \"echo smudge >> '%s'; cat\"\n", f.marker)
+	if err := cfg.Close(); err != nil {
+		t.Fatalf("close planted config: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bareDir, "info"), 0o755); err != nil {
+		t.Fatalf("mkdir info: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bareDir, "info", "attributes"), []byte("* filter=evil\n"), 0o644); err != nil {
+		t.Fatalf("write attributes: %v", err)
+	}
+
+	// The control uses the env of a pinned Repo for the planted root, so it
+	// also shows that the hostGitConfig does not stop a filter driver.
+	control := Repo{gitDir: bareDir, commonDir: bareDir, dir: bareDir}
+	_, _ = control.CombinedOutput("worktree", "add", filepath.Join(planted, "control"), "main")
+	if lines := f.markerLines(t); len(lines) == 0 {
+		t.Fatal("control: a pinned worktree add in the planted root did not run the smudge filter; the plant does not work")
+	}
+
+	if _, err := OpenBare(planted); err == nil || !strings.Contains(err.Error(), "inside the prism project") {
+		t.Errorf("OpenBare = %v, want a refusal for a root inside a project", err)
+	}
+	if _, err := CreateWorktree(planted, "spawned"); err == nil {
+		t.Error("CreateWorktree: want a refusal")
+	}
+	if err := FetchRemote(planted); err == nil {
+		t.Error("FetchRemote: want a refusal")
+	}
+	f.requireNoPayload(t, "the commands for the planted root")
+}

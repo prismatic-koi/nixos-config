@@ -105,8 +105,11 @@ func (r Repo) Pinned() bool { return r.gitDir != "" }
 
 // OpenBare returns the Repo of the bare repo of the project at root. root is
 // the dir that holds .bare. The caller must get root from a source that a
-// sandboxed session cannot write: the session record, a configured project
-// location, or OuterBareRoot.
+// sandboxed session cannot write: the session record, a project name under a
+// configured project location, or OuterBareRoot.
+//
+// OpenBare refuses a root inside another prism project. Such a root is in a
+// worktree, so a sandboxed session can have made its .bare.
 //
 // If root has no .bare and root itself is a bare git dir, OpenBare uses root.
 func OpenBare(root string) (Repo, error) {
@@ -116,6 +119,9 @@ func OpenBare(root string) (Repo, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return Repo{}, fmt.Errorf("host git: %w", err)
+	}
+	if outer := OuterBareRoot(abs); outer != "" && outer != abs {
+		return Repo{}, fmt.Errorf("host git: %s is inside the prism project %s, so prism does not run git in it", abs, outer)
 	}
 	gitDir := filepath.Join(abs, ".bare")
 	if _, statErr := os.Lstat(gitDir); errors.Is(statErr, os.ErrNotExist) && IsRawBareGitDir(abs) {

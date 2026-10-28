@@ -47,12 +47,19 @@ a dir with its own config and hooks:
 - `.bare/commondir` does the same for a command with `GIT_DIR=.bare`. A
   bwrap session can write it before #3315.
 - A `.bare` in a subdir of the worktree. A walk up from a cwd in that
-  subdir finds it before the real project root.
+  subdir finds it before the real project root. A sandboxed coordinator
+  can also name that subdir as the project root, through the `repo` field
+  of a `/spawn` request.
 
 A config can set `core.fsmonitor`, `core.sshCommand`, `credential.helper`,
 or a filter driver. Each runs a command. A hook runs a command. So a host
 git command that lets git find its git dir runs a command that the session
 wrote, with the rights of the user.
+
+The command-line config below turns off hooks and fsmonitor. It cannot turn
+off a filter driver, `core.sshCommand`, or `credential.helper`. For these,
+the only defence is a git dir and a project root that the session cannot
+write.
 
 #3293 and #3315 stop a direct write to `.bare/config`, `.bare/hooks`, and
 the git dirs of other worktrees. They do not stop a redirect, because the
@@ -62,7 +69,9 @@ redirect names a dir outside `.bare`.
 
 - **Bare repo.** `OpenBare(root)` uses `<root>/.bare`. It refuses a
   `.bare` that is a symlink or a file, and a `.bare/commondir`. A bare
-  repo has no `commondir` file.
+  repo has no `commondir` file. It also refuses a root inside another prism
+  project: that root is in a worktree, so a session can have made its
+  `.bare`.
 - **Worktree.** `OpenWorktree(root, worktree)` does not read
   `<worktree>/.git`. The git dir is the entry in `.bare/worktrees` whose
   `gitdir` file points back at `<worktree>/.git`. A session can write the
@@ -83,9 +92,14 @@ redirect names a dir outside `.bare`.
   `OpenBare` refuses the repo when the common config turns the key on.
 
 A caller gets the project root from a source that a session cannot write:
-the session record, a configured project location, `--repo`, or
+the session record, a project name under a configured project location, or
 `OuterBareRoot`. `BareRoot(worktree)` is safe only for the top dir of a
 worktree, because its walk starts at the parent.
+
+The `repo` field of a `/spawn` request comes from the session. The handler
+accepts only a plain project name: no path separator, not `.` or `..`, and
+no leading `-` or `~`. `resolveRepo` in `cmd/spawn.go` refuses a root
+inside another project, for a path that a user types on the host too.
 
 ## What prism does not change
 
@@ -98,6 +112,12 @@ worktree, because its walk starts at the parent.
 
 ## Known limits
 
+- **A project root outside every project.** `OpenBare` accepts a root that
+  is not inside a prism project. If a sandboxed session can write such a
+  dir (for example under `~/.npm`) and can make prism use it as a session
+  dir (a DB row that it writes through `/event`, then `/switch`), then a
+  later host git command for that session reads config that the session
+  wrote.
 - **A project that is not a prism project.** Outside a prism project,
   `OpenDir` does not pin the git dir: git finds it from the dir. A session
   that runs in a plain clone can write its `.git`, so a host git command
@@ -119,6 +139,12 @@ worktree, because its walk starts at the parent.
 - `internal/review/preflight_host_git_test.go`: the `/review` pre-flight
   with `--rebase` on a bare+worktree layout, with a `.git` redirect and a
   `commondir` redirect, and `runGH` with a stub `gh` that runs git.
+- `TestHostAPI_Spawn_RepoMustBeAPlainName` and
+  `TestResolveRepo_RefusesRootInsideProject`: the `/spawn` handler refuses
+  a `repo` value that is a path, and `resolveRepo` refuses a root inside
+  another project. `TestHostGit_NestedRootRefused` plants a `.bare` with a
+  smudge filter in a worktree subdir and makes sure that `OpenBare` refuses
+  it.
 - `internal/git/host_guard_test.go`: `TestHostGit_NoDirectGitExec` fails
   if a non-test file outside `internal/git/host.go` starts git itself. It
   also fails if a function starts `gh` or `glab` and does not call

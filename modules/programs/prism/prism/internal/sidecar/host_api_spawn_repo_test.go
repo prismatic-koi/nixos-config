@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -158,5 +159,51 @@ exit 1
 	}
 	if !strings.Contains(rr.Body.String(), "does-not-exist") {
 		t.Errorf("error body %q does not name the unresolvable repo value", rr.Body.String())
+	}
+}
+
+// TestHostAPI_Spawn_RepoMustBeAPlainName: the host-side prism spawn runs
+// `git worktree add` in the root that --repo names. A path lets the caller
+// name a .bare that it planted in its own worktree, so the handler refuses
+// it before it starts the subprocess. See
+// docs/invariants/host-git-commands.md.
+func TestHostAPI_Spawn_RepoMustBeAPlainName(t *testing.T) {
+	d := openTestDB(t)
+
+	ranFile := filepath.Join(t.TempDir(), "ran")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := "#!/bin/sh\ntouch " + ranFile + "\n"
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	sc := New(Config{
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
+		HarnessURL:      "http://localhost:14000",
+		DB:              d,
+		Clock:           newTestClock(),
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	})
+
+	for _, repo := range []string{
+		"test-repo/main/x",
+		"/home/u/code/test-repo/main/x",
+		"~/code/x",
+		"..",
+		".",
+		`test-repo\main`,
+		"-x",
+	} {
+		body := `{"branch":"b","prompt":"hi","repo":` + strconv.Quote(repo) + `}`
+		rr := doHostAPI(t, sc, http.MethodPost, "/spawn", body)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("repo %q: status = %d, want 400; body = %s", repo, rr.Code, rr.Body.String())
+		}
+	}
+	if _, err := os.Stat(ranFile); err == nil {
+		t.Error("the handler started prism spawn for a repo value that is a path")
 	}
 }
