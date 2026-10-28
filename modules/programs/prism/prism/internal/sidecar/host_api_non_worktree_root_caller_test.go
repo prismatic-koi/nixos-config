@@ -42,6 +42,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/db"
 	pih "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/sessionname"
@@ -429,10 +430,12 @@ func TestResolveRoleForSession_NonWorktreeRootTakesCoordinatorSlot(t *testing.T)
 // from its cwd.
 //
 // /event refuses the first step for every caller, because the session is not
-// the caller's own (#3207). The test then seeds the agent_status row that
-// the real `prism event tmux-session-start` writes for the chosen directory,
-// so the /switch gate is tested on its own. If /switch loses its gate, the
-// worker cases fail with 200 and a recorded `switch --path` exec.
+// the caller's own (#3207). /switch does not read the row: it takes the
+// directory from the prism project roots in config.json (#3330). The test
+// still seeds the row that the real `prism event tmux-session-start` writes
+// for the chosen directory. The chosen directory is a project root in each
+// case, so the /switch gate is tested on its own. If /switch loses its gate,
+// the worker cases fail with 200 and a recorded `switch --path` exec.
 func TestHostAPI_Switch_WorkerCannotStartANonWorktreeRoot(t *testing.T) {
 	const target = "prism-test-nwevil"
 
@@ -458,10 +461,11 @@ func TestHostAPI_Switch_WorkerCannotStartANonWorktreeRoot(t *testing.T) {
 			argvLog := filepath.Join(t.TempDir(), "argv.log")
 			stub := "#!/bin/sh\necho \"$*\" >> '" + argvLog + "'\nexit 0\n"
 			sc, d := nwrSidecar(t, tc.session, tc.agentRole, tc.worktree, tc.callerRootAgent, stub, nil)
-			chosen := filepath.Join(t.TempDir(), "nixos-config")
+			chosen := filepath.Join(t.TempDir(), target)
 			if err := os.MkdirAll(chosen, 0o755); err != nil {
 				t.Fatalf("mkdir chosen dir: %v", err)
 			}
+			configtest.AllowProjectRoots(t, chosen)
 
 			rr := doHostAPI(t, sc, http.MethodPost, "/event",
 				`{"kind":"tmux-session-start","session":"`+target+`","args":{"worktree":"`+chosen+`"}}`)

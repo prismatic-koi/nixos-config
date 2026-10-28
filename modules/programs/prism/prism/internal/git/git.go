@@ -402,6 +402,12 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	gitFile := filepath.Join(dir, ".git")
 	origGit := filepath.Join(dir, ".git.orig")
 
+	// OpenBare refuses the converted root later, so refuse it before the
+	// clone.
+	if err := requireProjectRoot(dir); err != nil {
+		return "", err
+	}
+
 	progress("converting " + filepath.Base(dir) + " to bare+worktree layout...")
 
 	src, err := OpenDir(dir)
@@ -1072,8 +1078,18 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	bareDir := filepath.Join(targetDir, ".bare")
 	gitFile := filepath.Join(targetDir, ".git")
 
+	_, statErr := os.Stat(targetDir)
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", targetDir, err)
+	}
+	// OpenBare refuses the new root later, so refuse it before the clone. A
+	// project_specific root must exist for the check, so check after the
+	// mkdir.
+	if err := requireProjectRoot(targetDir); err != nil {
+		if statErr != nil {
+			_ = os.Remove(targetDir)
+		}
+		return err
 	}
 
 	// Clone bare.

@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
 )
@@ -85,6 +86,9 @@ func newGitScopeFixture(t *testing.T, branch, role string, readOnly bool) *gitSc
 	seed := filepath.Join(wrap, "seed")
 	bareRoot := filepath.Join(wrap, "repo")
 	bare := filepath.Join(bareRoot, ".bare")
+	// Prepare writes the upstream with host git, which runs only in a prism
+	// project root.
+	configtest.AllowProjectRoots(t, bareRoot)
 	hostGit(t, nixGit, wrap, "init", "-q", seed)
 	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("seed\n"), 0o644); err != nil {
 		t.Fatalf("write README: %v", err)

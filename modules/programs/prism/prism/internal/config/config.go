@@ -593,6 +593,12 @@ func expandHomePath(p string) string {
 	return filepath.Join(home, p[2:])
 }
 
+// FilePath returns the path of the config file that Load reads, or "" if
+// no home directory is discoverable. The file can be absent.
+func FilePath() string {
+	return configFilePath()
+}
+
 // configFilePath returns the path to look for the config file.
 // Returns "" if no home directory is discoverable.
 func configFilePath() string {

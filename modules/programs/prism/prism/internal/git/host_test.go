@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 )
 
 // hostFixture is a scratch prism project: a local origin, a project root with
@@ -45,6 +47,7 @@ func newHostFixture(t *testing.T) hostFixture {
 		t.Fatalf("clone origin: %v\n%s", err, out)
 	}
 	root := t.TempDir()
+	configtest.AllowProjectRoots(t, root)
 	if err := CloneWorktree(origin, root, func(string) {}); err != nil {
 		t.Fatalf("CloneWorktree: %v", err)
 	}
@@ -384,6 +387,7 @@ func TestOpenBare_RefusesSymlinkAndFile(t *testing.T) {
 	}
 
 	linkRoot := t.TempDir()
+	configtest.AllowProjectRoots(t, linkRoot)
 	if err := os.Symlink(target, filepath.Join(linkRoot, ".bare")); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
@@ -392,6 +396,7 @@ func TestOpenBare_RefusesSymlinkAndFile(t *testing.T) {
 	}
 
 	fileRoot := t.TempDir()
+	configtest.AllowProjectRoots(t, fileRoot)
 	if err := os.WriteFile(filepath.Join(fileRoot, ".bare"), []byte("gitdir: "+target+"\n"), 0o644); err != nil {
 		t.Fatalf("write .bare file: %v", err)
 	}
@@ -578,6 +583,7 @@ func TestCloneWorktree_RelativeTarget(t *testing.T) {
 	}
 	cwd := t.TempDir()
 	t.Chdir(cwd)
+	configtest.AllowProjectRoots(t, filepath.Join(cwd, "proj"))
 	if err := CloneWorktree(origin, "proj", func(string) {}); err != nil {
 		t.Fatalf("CloneWorktree: %v", err)
 	}

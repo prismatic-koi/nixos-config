@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/container"
 )
 
@@ -148,6 +149,7 @@ func TestCredentialEnvVars_RoleSpecificWins(t *testing.T) {
 	path := writeTokenFile(t, "ghp_fromfile\n")
 
 	bareRoot := t.TempDir()
+	configtest.AllowProjectRoots(t, bareRoot)
 	bareDir := filepath.Join(bareRoot, ".bare")
 	if out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v\n%s", err, out)

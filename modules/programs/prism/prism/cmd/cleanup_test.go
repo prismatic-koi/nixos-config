@@ -27,6 +27,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
@@ -336,6 +337,7 @@ func TestHeadlessCleanup_InvalidWorktreePath(t *testing.T) {
 	// Use a fake bareRoot (also just a plain directory) so git.RemoveWorktree
 	// fails with a "not a git worktree" error.
 	fakeBareRoot := t.TempDir()
+	configtest.AllowProjectRoots(t, fakeBareRoot)
 
 	err = headlessCleanup(session, "stale-branch", notAWorktree, fakeBareRoot)
 	if err != nil {
@@ -382,6 +384,7 @@ func TestHeadlessCleanup_ForceDeletesSquashMergedBranch(t *testing.T) {
 	if err := os.MkdirAll(bareRoot, 0o755); err != nil {
 		t.Fatalf("mkdir bareRoot: %v", err)
 	}
+	configtest.AllowProjectRoots(t, bareRoot)
 	if out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v\n%s", err, out)
 	}
@@ -572,6 +575,7 @@ func TestHeadlessCleanup_BranchDeleteFailure(t *testing.T) {
 	if err := os.MkdirAll(bareRoot, 0o755); err != nil {
 		t.Fatalf("mkdir bareRoot: %v", err)
 	}
+	configtest.AllowProjectRoots(t, bareRoot)
 	if out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v\n%s", err, out)
 	}
@@ -665,6 +669,7 @@ func setupMinimalBareRepo(t *testing.T) (bareRoot, worktreePath, branchName stri
 	if err := os.MkdirAll(bareRoot, 0o755); err != nil {
 		t.Fatalf("mkdir bareRoot: %v", err)
 	}
+	configtest.AllowProjectRoots(t, bareRoot)
 
 	// Initialize a bare repo.
 	if out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput(); err != nil {

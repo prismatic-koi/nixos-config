@@ -2618,24 +2618,26 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// Coordinator role only. `prism switch` on the host creates the
-		// session when it does not exist, in the directory that the DB row
-		// names, and /event lets a sandboxed caller write that row for any
-		// session name. Without this gate, a worker can start a role-less
-		// session in a directory it writes (for example under ~/.npm). That
-		// session is a non-worktree root (authz.IsNonWorktreeRoot), so it has
-		// the coordinator role, and pi loads the project extensions of the
-		// worker from its cwd. callerHasCoordinatorRole reads Config.AgentRole
-		// first, so a role that a worker forges in the DB does not pass.
+		// session when it does not exist. Without this gate, a worker can
+		// start a role-less root session of a non-worktree project
+		// (authz.IsNonWorktreeRoot), and that session has the coordinator
+		// role. callerHasCoordinatorRole reads Config.AgentRole first, so a
+		// role that a worker forges in the DB does not pass.
 		if !s.callerHasCoordinatorRole() {
 			writeError(w, http.StatusForbidden, "workers cannot perform switch")
 			return
 		}
 
-		// Resolve worktree path for the session from the DB, then use
+		// Take the directory from config.json and host git, not from the
+		// agent_status row, which the /event proxy writes (#3330). Then use
 		// prism switch --path <worktree> to switch the tmux client.
-		worktreePath, err := s.worktreePathForSession(req.Session)
+		worktreePath, err := switchPathForSession(req.Session)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("resolve worktree: %v", err))
+			status := http.StatusInternalServerError
+			if errors.Is(err, errNoSwitchTarget) {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, fmt.Sprintf("resolve worktree: %v", err))
 			return
 		}
 
@@ -4286,22 +4288,6 @@ func knownEventKindsStr() string {
 		result += n
 	}
 	return result
-}
-
-// worktreePathForSession looks up the worktree path for a session from the DB.
-// Used by the /switch host-API handler to resolve the path for prism switch --path.
-func (s *Sidecar) worktreePathForSession(sessionName string) (string, error) {
-	status, err := s.cfg.DB.CurrentStatus(sessionName)
-	if err != nil {
-		return "", fmt.Errorf("db lookup: %w", err)
-	}
-	if status == nil {
-		return "", fmt.Errorf("session %q not found in DB", sessionName)
-	}
-	if status.Worktree == "" {
-		return "", fmt.Errorf("session %q has no worktree path in DB", sessionName)
-	}
-	return status.Worktree, nil
 }
 
 // ReviewSentinelPassed and ReviewSentinelFailed are the terminal lines written

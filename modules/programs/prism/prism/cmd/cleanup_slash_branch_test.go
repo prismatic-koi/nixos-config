@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/git"
 )
 
@@ -31,6 +32,7 @@ func setupBareRepoWithBranch(t *testing.T, branchName string) (bareRoot, worktre
 	if err := os.MkdirAll(bareRoot, 0o755); err != nil {
 		t.Fatalf("mkdir bareRoot: %v", err)
 	}
+	configtest.AllowProjectRoots(t, bareRoot)
 	if out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v\n%s", err, out)
 	}

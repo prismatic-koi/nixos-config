@@ -38,6 +38,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
@@ -80,6 +81,7 @@ func initBareRepoWithMainWorktree(t *testing.T, baseDir, repoName string) string
 	if err := os.MkdirAll(bareRoot, 0o755); err != nil {
 		t.Fatalf("mkdir bareRoot: %v", err)
 	}
+	configtest.AllowProjectRoots(t, bareRoot)
 	if out, err := exec.Command("git", "init", "--bare", "-b", "main", bareDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v\n%s", err, out)
 	}
@@ -173,6 +175,7 @@ func TestExistingWorktreeForBranch_NoWorktreeAtExpectedPath(t *testing.T) {
 	if err := os.MkdirAll(bareRoot, 0o755); err != nil {
 		t.Fatalf("mkdir bareRoot: %v", err)
 	}
+	configtest.AllowProjectRoots(t, bareRoot)
 	if out, err := exec.Command("git", "init", "--bare", "-b", "main", bareDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v\n%s", err, out)
 	}
@@ -532,6 +535,7 @@ func TestRunSpawn_MainBranch_NoSession_NoMainWorktree_FallsThrough(t *testing.T)
 	if err := os.MkdirAll(bareRoot, 0o755); err != nil {
 		t.Fatalf("mkdir bareRoot: %v", err)
 	}
+	configtest.AllowProjectRoots(t, bareRoot)
 	if out, err := exec.Command("git", "init", "--bare", "-b", "main", bareDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v\n%s", err, out)
 	}

@@ -26,7 +26,6 @@
 package projecttrust
 
 import (
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -133,7 +132,7 @@ func (p Policy) onPRBranch(sessionName, dir string) bool {
 	}
 	root := sessionname.Root(sessionName)
 	for _, r := range records {
-		if r.SessionName == root || filepath.Clean(r.Worktree) == dir || sameDir(dir, r.Worktree) {
+		if r.SessionName == root || filepath.Clean(r.Worktree) == dir || config.SameDir(dir, r.Worktree) {
 			return true
 		}
 	}
@@ -172,34 +171,5 @@ func isWorktreeOf(dir, bare string) bool {
 }
 
 func (p Policy) isProjectRoot(root string) bool {
-	parent := filepath.Dir(root)
-	for _, loc := range p.ProjectLocations {
-		if sameDir(parent, config.ExpandHomePath(loc)) {
-			return true
-		}
-	}
-	for _, spec := range p.ProjectSpecific {
-		if sameDir(root, config.ExpandHomePath(spec)) {
-			return true
-		}
-	}
-	return false
-}
-
-// sameDir compares by file identity, not by string, so a configured
-// "~/documents/obsidian" matches "~/Documents/obsidian" on a case-insensitive
-// macOS volume.
-func sameDir(a, b string) bool {
-	if !filepath.IsAbs(b) {
-		return false
-	}
-	ai, err := os.Stat(a)
-	if err != nil || !ai.IsDir() {
-		return false
-	}
-	bi, err := os.Stat(b)
-	if err != nil {
-		return false
-	}
-	return os.SameFile(ai, bi)
+	return config.IsProjectRoot(p.ProjectLocations, p.ProjectSpecific, root)
 }

@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 )
 
 // setupBareLayoutRepo builds a prism bare-layout repo (a .bare/ dir plus a
@@ -36,6 +38,7 @@ func setupBareLayoutRepo(t *testing.T, remoteBranches ...string) string {
 		t.Fatalf("bare clone for remote: %v\n%s", err, out)
 	}
 	targetDir := t.TempDir()
+	configtest.AllowProjectRoots(t, targetDir)
 	if err := CloneWorktree(remoteDir, targetDir, func(string) {}); err != nil {
 		t.Fatalf("CloneWorktree: %v", err)
 	}
