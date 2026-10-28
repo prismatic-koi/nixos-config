@@ -443,18 +443,41 @@ func TestGenerateProfile_GitRedirectFileDenyFollowsEveryAllow(t *testing.T) {
 // deny of the .git file of the worktree follows every allow. Section 6
 // grants the whole worktree, so an allow after the deny gives the write
 // back.
+//
+// The second case puts the project root behind a symlink, as /var is on
+// Darwin, so the deny also lists the resolved path.
 func TestGenerateProfile_WorktreeGitFileDenyFollowsEveryAllow(t *testing.T) {
-	root := newGitLayout(t, "feature")
-	m := newGitScopeManager(t, root, "feature", Config{AgentRole: "worker", Harness: "pi"})
-	profile := generateProfile(m)
+	for _, viaSymlink := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "via symlink"}[viaSymlink], func(t *testing.T) {
+			real := newGitLayout(t, "feature")
+			root := real
+			if viaSymlink {
+				root = filepath.Join(t.TempDir(), "alias")
+				if err := os.Symlink(real, root); err != nil {
+					t.Fatalf("Symlink: %v", err)
+				}
+			}
+			m := newGitScopeManager(t, root, "feature", Config{AgentRole: "worker", Harness: "pi"})
+			profile := generateProfile(m)
 
-	deny := "(deny file-write*\n  (literal " + quoteSBPL(filepath.Join(root, "feature", ".git")) + "))\n"
-	denyAt := strings.Index(profile, deny)
-	if denyAt < 0 {
-		t.Fatalf("profile has no .git file deny %q.\nprofile:\n%s", deny, profile)
-	}
-	if allowAt := strings.LastIndex(profile, "(allow "); allowAt > denyAt {
-		t.Errorf("an allow clause (offset %d) follows the .git file deny (offset %d).\nprofile:\n%s", allowAt, denyAt, profile)
+			deny := worktreeGitFileDeny(m.cfg.Worktree)
+			denyAt := strings.Index(profile, deny)
+			if denyAt < 0 {
+				t.Fatalf("profile has no .git file deny %q.\nprofile:\n%s", deny, profile)
+			}
+			if allowAt := strings.LastIndex(profile, "(allow "); allowAt > denyAt {
+				t.Errorf("an allow clause (offset %d) follows the .git file deny (offset %d).\nprofile:\n%s", allowAt, denyAt, profile)
+			}
+			resolved, err := filepath.EvalSymlinks(filepath.Join(root, "feature"))
+			if err != nil {
+				t.Fatalf("EvalSymlinks: %v", err)
+			}
+			for _, wt := range []string{filepath.Join(root, "feature"), resolved} {
+				if !strings.Contains(deny, "(literal "+quoteSBPL(filepath.Join(wt, ".git"))+")") {
+					t.Errorf("the .git file deny does not list %s/.git:\n%s", wt, deny)
+				}
+			}
+		})
 	}
 }
 
