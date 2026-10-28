@@ -19,10 +19,10 @@ import (
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
-// sessionClosedHookLine returns the line of tmux.nix that registers the
-// session-closed hook. The nix build copies only the prism Go module, so
-// the test skips there. Everywhere else the file must exist.
-func sessionClosedHookLine(t *testing.T) string {
+// tmuxNixLine returns the first line of tmux.nix that starts with prefix,
+// with the indent removed. The nix build copies only the prism Go module,
+// so the test skips there. Everywhere else the file must exist.
+func tmuxNixLine(t *testing.T, prefix string) string {
 	t.Helper()
 	if os.Getenv("NIX_BUILD_TOP") != "" {
 		t.Skip("skipping inside the nix build sandbox (NIX_BUILD_TOP is set): tmux.nix is outside the prism Go module")
@@ -32,22 +32,28 @@ func sessionClosedHookLine(t *testing.T) string {
 		t.Fatalf("read tmux.nix: %v", err)
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		if line = strings.TrimSpace(line); strings.HasPrefix(line, "set-hook -g session-closed ") {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, prefix) {
 			return line
 		}
 	}
-	t.Fatal("tmux.nix has no `set-hook -g session-closed` line")
+	t.Fatalf("tmux.nix has no line that starts with %q", prefix)
 	return ""
 }
 
-// installSessionClosedHook installs the hook line of tmux.nix on s. A
-// wrapper runs bin in place of ${prism} and appends "<args> rc=<status>" to
-// the returned log file when bin exits.
+// installSessionClosedHook installs the session-closed hook line of
+// tmux.nix on s. See installTmuxNixHook.
 func installSessionClosedHook(t *testing.T, s *cmdTestServer, bin, root string) string {
 	t.Helper()
-	line := sessionClosedHookLine(t)
-	if !strings.Contains(line, "${prism}") {
-		t.Fatalf("hook line %q has no ${prism}", line)
+	return installTmuxNixHook(t, s, bin, root, tmuxNixLine(t, "set-hook -g session-closed "))
+}
+
+// installTmuxNixHook sources lines of tmux.nix on s. A wrapper runs bin in
+// place of ${prism} and appends "<args> rc=<status>" to the returned log
+// file when bin exits. The first line must hold ${prism}.
+func installTmuxNixHook(t *testing.T, s *cmdTestServer, bin, root string, lines ...string) string {
+	t.Helper()
+	if len(lines) == 0 || !strings.Contains(lines[0], "${prism}") {
+		t.Fatalf("hook lines %q: the first line has no ${prism}", lines)
 	}
 	logFile := filepath.Join(root, "hook.log")
 	wrapper := filepath.Join(root, "bin", "prism-hook")
@@ -59,7 +65,7 @@ func installSessionClosedHook(t *testing.T, s *cmdTestServer, bin, root string) 
 		t.Fatalf("write hook wrapper: %v", err)
 	}
 	conf := filepath.Join(root, "hook.conf")
-	if err := os.WriteFile(conf, []byte(strings.ReplaceAll(line, "${prism}", wrapper)+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(conf, []byte(strings.ReplaceAll(strings.Join(lines, "\n"), "${prism}", wrapper)+"\n"), 0o600); err != nil {
 		t.Fatalf("write hook conf: %v", err)
 	}
 	if err := s.run("source-file", conf); err != nil {

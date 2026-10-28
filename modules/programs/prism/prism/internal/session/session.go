@@ -1167,8 +1167,12 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// tmux.KillSession + spawn_failed event) runs instead. A discarded error
 	// here hides the real failure behind a bare "not ready within 30s"
 	// timeout.
-	if err := tmux.NewWindow(name, 1, "agent", directory, agentCmd, agentPaneEnvVars(opts)); err != nil {
+	paneID, err := tmux.NewWindowPane(name, 1, "agent", directory, agentCmd, agentPaneEnvVars(opts))
+	if err != nil {
 		return fmt.Errorf("setupFullLayout: create agent window for %q: %w", name, err)
+	}
+	if err := tmux.MarkAgentPane(paneID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: setupFullLayout: %q: %v (an exit of the agent will not set the session to interrupted)\n", name, err)
 	}
 
 	// Cosmetic windows below: the term window and window-selection are

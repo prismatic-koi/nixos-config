@@ -1316,8 +1316,12 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	if err := tmux.NewSessionDetached(opts.SessionName, opts.Worktree); err != nil {
 		return fmt.Errorf("spawn session: new tmux session %q: %w", opts.SessionName, err)
 	}
-	if err := tmux.NewWindow(opts.SessionName, 1, "agent", opts.Worktree, agentCmd, agentOnlyPaneEnvVars(opts, mode)); err != nil {
+	paneID, err := tmux.NewWindowPane(opts.SessionName, 1, "agent", opts.Worktree, agentCmd, agentOnlyPaneEnvVars(opts, mode))
+	if err != nil {
 		return fmt.Errorf("spawn session: new agent window for %q: %w", opts.SessionName, err)
+	}
+	if err := tmux.MarkAgentPane(paneID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: spawnAgentOnlyLayout: %q: %v (an exit of the agent will not set the session to interrupted)\n", opts.SessionName, err)
 	}
 	_ = tmux.SelectWindow(opts.SessionName, 1)
 	return nil

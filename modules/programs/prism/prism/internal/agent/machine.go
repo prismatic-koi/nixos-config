@@ -9,8 +9,11 @@ import "fmt"
 //
 //   - idle → active: the normal startup path (tmux-session-start sets idle, then
 //     session.created fires active in the plugin).
-//   - idle → interrupted: pane-died before the session was ever active (rare but
-//     possible if the agent process crashes before session.created fires).
+//   - idle → interrupted: SIGTERM of the sidecar before the session was ever
+//     active, or the pane-died hook when the agent exits after the harness
+//     handshake and before its first turn. The hook leaves an idle session with
+//     no state_change event unchanged: the readiness gate and the startup
+//     timeout of the sidecar handle an agent that exits before the handshake.
 //   - idle → error: container startup failure (WaitHealthy timeout or CreateSession
 //     failure) before the session became active. The sidecar writes error directly
 //     to avoid relying on the pane-died tmux hook for state cleanup.
