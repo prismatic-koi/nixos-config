@@ -370,6 +370,14 @@ Other limits:
   It cannot put an `api_key` entry, a `!` value, or another field in the
   host file. It can add at most two providers, and nothing removes them
   from the host file later.
+- Both isolators: for the `github-copilot` provider, the OAuth `access`
+  value also sets the API host. pi 1.4 sends each Copilot request to the
+  `proxy-ep=` host in the token. So a session can write a Copilot entry
+  that names a host of its choice, and the sync copies it to the host file.
+  A host-mode pi that then uses a Copilot model sends its conversation to
+  that host and runs the tool calls that it returns. No prism profile uses
+  Copilot, so a person must select a Copilot model by hand. Follow-up:
+  #3314, which copies only the Anthropic entry to the host file.
 - Both isolators: when a host pi holds the lock of the host file, the sync
   writes the host file with no lock. The host pi then writes back the file
   that it read before the sync, with its own change. For an Anthropic
