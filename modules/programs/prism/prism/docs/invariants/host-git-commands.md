@@ -163,6 +163,31 @@ letter case. `TestSwitchPathForSession`,
 `TestSwitch_TwoStepPathToAWritableDir_3330` runs the two steps of the
 issue from end to end.
 
+## The `/review` rebase pre-flight (#3323)
+
+`prism review` runs a pre-flight on the host: it fetches the base ref, and
+with `--rebase` it also rebases the worktree and pushes. These rules bound
+what that pre-flight does on the host:
+
+- It runs only in a prism worktree. For a session that is not in a prism
+  worktree (a plain clone, a bare session dir), `git.OpenDir` does not pin
+  the git dir and runs no git command, so the pre-flight refuses and runs no
+  host git command in that dir.
+- It refuses a worktree whose git dir already holds `rebase-merge`,
+  `rebase-apply`, `sequencer`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, or
+  `REVERT_HEAD`. A session can plant a `rebase-merge` dir with an `autostash`
+  file, and `git rebase --abort` applies that stash.
+- It does not run `git rebase --abort`. On a conflict it removes the rebase
+  state dir, re-attaches `HEAD` to the branch, and runs `reset --hard`. It
+  applies no stash, so a planted `autostash` file never runs.
+- It pushes the branch of the session record — the path of the worktree
+  below the project root — not the branch that `HEAD` names. A session can
+  write `HEAD` in its own git dir, so the push names the branch with an
+  explicit `refs/heads/<branch>` refspec.
+
+Code: `internal/review/preflight.go`. Tests:
+`internal/review/preflight_host_git_test.go`.
+
 ## What prism does not change
 
 - `core.sshCommand` and `credential.helper` keep their values. Fetch and
@@ -174,14 +199,6 @@ issue from end to end.
 
 ## Known limits
 
-- **The `--rebase` pre-flight and `git rebase --abort`.** A session can
-  write `rebase-merge` in its own git dir, with an `autostash` commit. The
-  host `git rebase` then fails, and the pre-flight runs `git rebase
-  --abort`, which applies the autostash. The stash apply runs `git status`.
-  If `.gitmodules` sets `ignore = none` for a gitlink, that status runs git
-  in the submodule, and a filter driver from the submodule config runs on
-  the host. The pin and the command-line config do not stop this.
-  Follow-up: #3323.
 - **A project that is not a prism project.** Outside a prism project,
   `OpenDir` does not pin the git dir: git finds it from the dir. A session
   that runs in a plain clone can write its `.git`, so a host git command
@@ -191,9 +208,12 @@ issue from end to end.
   plugins and prompts run git there, and this rule does not cover them. A
   nested `.git` in a worktree subdir reaches them. Follow-up: #3325.
 - **Refs.** A session can write the refs of `.bare`, and a host command
-  acts on those refs. For example, the `--rebase` pre-flight pushes the
-  branch that `HEAD` of the session names. This rule is about commands
-  that run, not about ref values.
+  acts on those refs. For example, a session can change a remote-tracking
+  ref, and a later `git rebase origin/<base>` with no fetch first uses the
+  changed value. This rule is about commands that run, not about ref values.
+  The `--rebase` pre-flight is an exception for the branch it moves: it
+  pushes the branch of the session record, not the branch that `HEAD` names
+  (#3323, in the `/review` pre-flight section above).
 
 ## Tests
 
@@ -203,7 +223,11 @@ issue from end to end.
   not run. The payload writes only to a marker in `t.TempDir()`.
 - `internal/review/preflight_host_git_test.go`: the `/review` pre-flight
   with `--rebase` on a bare+worktree layout, with a `.git` redirect and a
-  `commondir` redirect, and `runGH` with a stub `gh` that runs git.
+  `commondir` redirect, and `runGH` with a stub `gh` that runs git. It also
+  covers #3323: the refusal of a non-worktree session, the refusal of a
+  pre-existing rebase or merge state, the autostash chain (control: `git
+  rebase --abort` runs the planted filter; fix: the pre-flight refuses it),
+  and the stash-free conflict restore.
 - `TestHostAPI_Spawn_RepoMustBeAPlainName` and
   `TestResolveRepo_RefusesRootInsideProject`: the `/spawn` handler refuses
   a `repo` value that is a path, and `resolveRepo` refuses a root inside

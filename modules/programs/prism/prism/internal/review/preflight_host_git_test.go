@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/git"
@@ -252,5 +253,325 @@ func TestRunGH_HostGit_WorktreeGitFileRedirect(t *testing.T) {
 	}
 	if lines := l.takeMarker(t); len(lines) != 0 {
 		t.Fatalf("runGH ran a payload that the worker wrote: %v", lines)
+	}
+}
+
+// ── #3323 security regression tests ────────────────────────────────────────
+
+// gitOut runs git in cwd and returns its trimmed stdout, failing the test on
+// a non-zero exit.
+func gitOut(t *testing.T, cwd string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = cwd
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitOutEnv is gitOut with an explicit environment (for GIT_INDEX_FILE).
+func gitOutEnv(t *testing.T, cwd string, env []string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = cwd
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// mustGitEnv runs git in cwd with an explicit environment, failing on error.
+func mustGitEnv(t *testing.T, cwd string, env []string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = cwd
+	cmd.Env = env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+// gitHashBlob writes content as a blob and returns its object id.
+func gitHashBlob(t *testing.T, cwd, content string) string {
+	t.Helper()
+	cmd := exec.Command("git", "hash-object", "-w", "--stdin")
+	cmd.Dir = cwd
+	cmd.Stdin = strings.NewReader(content)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git hash-object: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// touchFuture bumps the mtime of path well into the future so git treats the
+// index entry as stat-dirty and re-runs its filter on the next status.
+func touchFuture(t *testing.T, path string) {
+	t.Helper()
+	future := time.Now().Add(10 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatalf("chtimes %s: %v", path, err)
+	}
+}
+
+// plantAutostashChain builds the host-code-execution chain from the #3323
+// issue comment in the worker worktree: a committed submodule "sub" with a
+// ".gitmodules" `ignore = none` entry and an evil clean filter in its own git
+// dir, plus a rebase-merge dir whose autostash file names a stash-shaped
+// commit. On the host, `git rebase --abort` applies that autostash, runs a
+// submodule status, and the submodule filter runs as the user — even with the
+// pinned `diff.ignoreSubmodules=all`, which the `ignore = none` entry
+// overrides. It returns the worker git dir and the pre-plant HEAD.
+func plantAutostashChain(t *testing.T, l preflightLayout) (gitDir, origHead string) {
+	t.Helper()
+	sub := filepath.Join(l.worker, "sub")
+	mustGit(t, "", "init", "-q", sub)
+	writeFile(t, filepath.Join(sub, "f.txt"), "hello\n")
+	mustGit(t, sub, "add", "f.txt")
+	mustGit(t, sub, "commit", "-q", "-m", "subinit")
+	mustGit(t, sub, "config", "filter.evil.clean", fmt.Sprintf("echo pwned >> '%s'; cat", l.marker))
+	if err := os.MkdirAll(filepath.Join(sub, ".git", "info"), 0o755); err != nil {
+		t.Fatalf("mkdir sub/.git/info: %v", err)
+	}
+	writeFile(t, filepath.Join(sub, ".git", "info", "attributes"), "* filter=evil\n")
+	subSHA := gitOut(t, sub, "rev-parse", "HEAD")
+
+	mustGit(t, l.worker, "update-index", "--add", "--cacheinfo", "160000,"+subSHA+",sub")
+	writeFile(t, filepath.Join(l.worker, ".gitmodules"),
+		"[submodule \"sub\"]\n\tpath = sub\n\turl = ./sub\n\tignore = none\n")
+	mustGit(t, l.worker, "add", ".gitmodules")
+	mustGit(t, l.worker, "commit", "-q", "-m", "add submodule sub")
+
+	resolved, err := git.ResolveWorktreeGitDir(l.worker)
+	if err != nil {
+		t.Fatalf("resolve git dir: %v", err)
+	}
+	gitDir = resolved
+	origHead = gitOut(t, l.worker, "rev-parse", "HEAD")
+	writeRebaseMerge(t, l.worker, gitDir, origHead)
+	return gitDir, origHead
+}
+
+// writeRebaseMerge writes the rebase-merge state dir for the worker worktree
+// with an autostash file naming a freshly built stash-shaped commit, and
+// makes the submodule file stat-dirty so the clean filter re-runs on status.
+func writeRebaseMerge(t *testing.T, worker, gitDir, origHead string) {
+	t.Helper()
+	stash := stashShapedCommit(t, worker, origHead)
+	dir := filepath.Join(gitDir, "rebase-merge")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir rebase-merge: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "head-name"), "refs/heads/feat\n")
+	writeFile(t, filepath.Join(dir, "orig-head"), origHead+"\n")
+	writeFile(t, filepath.Join(dir, "onto"), origHead+"\n")
+	writeFile(t, filepath.Join(dir, "autostash"), stash+"\n")
+	touchFuture(t, filepath.Join(worker, "sub", "f.txt"))
+}
+
+// stashShapedCommit builds a stash-shaped commit with git commit-tree (no
+// `git stash`, which is blocked for worker sessions). The work-tree parent is
+// the index commit, so `git stash apply` accepts it. The scratch index keeps
+// the worker's own index untouched.
+func stashShapedCommit(t *testing.T, worker, origHead string) string {
+	t.Helper()
+	baseTree := gitOut(t, worker, "rev-parse", origHead+"^{tree}")
+	iCommit := gitOut(t, worker, "commit-tree", baseTree, "-p", origHead, "-m", "index on feat")
+	blob := gitHashBlob(t, worker, "stashed content\n")
+	scratch := filepath.Join(t.TempDir(), "scratch-index")
+	env := append(os.Environ(), "GIT_INDEX_FILE="+scratch)
+	mustGitEnv(t, worker, env, "read-tree", baseTree)
+	mustGitEnv(t, worker, env, "update-index", "--add", "--cacheinfo", "100644,"+blob+",stashed.txt")
+	wtree := gitOutEnv(t, worker, env, "write-tree")
+	return gitOut(t, worker, "commit-tree", wtree, "-p", origHead, "-p", iCommit, "-m", "WIP on feat")
+}
+
+// TestPreflight_HostGit_RefusesNonWorktree plants an evil core.fsmonitor in a
+// plain clone (no .bare above it) and shows that Preflight refuses it and runs
+// no host git command in its dir (#3323, AC1).
+func TestPreflight_HostGit_RefusesNonWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	l := newPreflightLayout(t)
+	plain := filepath.Join(t.TempDir(), "plain")
+	mustGit(t, "", "clone", "-q", l.origin, plain)
+	mustGit(t, plain, "config", "core.fsmonitor", fmt.Sprintf("echo pwned >> '%s'; false", l.marker))
+
+	err := Preflight(PreflightOpts{Worktree: plain, Rebase: true})
+	if err == nil || !strings.Contains(err.Error(), "not a prism worktree") {
+		t.Fatalf("Preflight = %v, want a refusal naming 'not a prism worktree'", err)
+	}
+	if lines := l.takeMarker(t); len(lines) != 0 {
+		t.Fatalf("Preflight ran a host git command in the non-worktree dir: %v", lines)
+	}
+}
+
+// TestPreflight_HostGit_RefusesPreexistingRebaseState plants each in-progress
+// operation marker in the worker git dir and shows that Preflight refuses it
+// by name (#3323, AC2).
+func TestPreflight_HostGit_RefusesPreexistingRebaseState(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	cases := []struct {
+		name  string
+		isDir bool
+	}{
+		{"rebase-merge", true},
+		{"rebase-apply", true},
+		{"sequencer", true},
+		{"MERGE_HEAD", false},
+		{"CHERRY_PICK_HEAD", false},
+		{"REVERT_HEAD", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newPreflightLayout(t)
+			gitDir, err := git.ResolveWorktreeGitDir(l.worker)
+			if err != nil {
+				t.Fatalf("resolve git dir: %v", err)
+			}
+			if tc.isDir {
+				if err := os.MkdirAll(filepath.Join(gitDir, tc.name), 0o755); err != nil {
+					t.Fatalf("mkdir %s: %v", tc.name, err)
+				}
+			} else {
+				writeFile(t, filepath.Join(gitDir, tc.name), gitOut(t, l.worker, "rev-parse", "HEAD")+"\n")
+			}
+			err = Preflight(PreflightOpts{Worktree: l.worker, Rebase: true})
+			if err == nil || !strings.Contains(err.Error(), tc.name) {
+				t.Fatalf("Preflight = %v, want a refusal naming %q", err, tc.name)
+			}
+		})
+	}
+}
+
+// TestPreflight_HostGit_RebaseAutostashChainRefused is the #3323 regression
+// test. The control shows the chain runs on the host through the old restore
+// (`git rebase --abort`) even with the pinned config. The fix shows Preflight
+// refuses the pre-existing rebase state before any git command runs, so the
+// payload never runs (AC2, AC3).
+func TestPreflight_HostGit_RebaseAutostashChainRefused(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	l := newPreflightLayout(t)
+	gitDir, origHead := plantAutostashChain(t, l)
+
+	// Control: the host's old restore (`git rebase --abort`) through a pinned
+	// Repo applies the autostash and runs the submodule filter on the host.
+	// The pin does not stop this (the reason #3323 exists).
+	repo, err := git.OpenDir(l.worker)
+	if err != nil {
+		t.Fatalf("OpenDir: %v", err)
+	}
+	_, _ = repo.CombinedOutput("rebase", "--abort")
+	if len(l.takeMarker(t)) == 0 {
+		t.Fatal("control: git rebase --abort did not run the planted payload; the plant does not work")
+	}
+
+	// Re-plant the rebase-merge state that the control consumed.
+	writeRebaseMerge(t, l.worker, gitDir, origHead)
+
+	// Fix: Preflight refuses the pre-existing rebase state before running any
+	// git command, so the payload never runs.
+	err = Preflight(PreflightOpts{Worktree: l.worker, Rebase: true})
+	if err == nil || !strings.Contains(err.Error(), "rebase-merge") {
+		t.Fatalf("Preflight = %v, want a refusal naming rebase-merge state", err)
+	}
+	if lines := l.takeMarker(t); len(lines) != 0 {
+		t.Fatalf("Preflight ran the planted payload: %v", lines)
+	}
+}
+
+// TestPreflight_HostGit_RestoreAppliesNoStash shows that the conflict restore
+// applies no stash: it plants the autostash chain, confirms with the control
+// that `git rebase --abort` would run the payload, then runs
+// restoreAfterPreflightRebase directly and shows the payload does not run and
+// the worktree is restored (#3323, AC5).
+func TestPreflight_HostGit_RestoreAppliesNoStash(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	l := newPreflightLayout(t)
+	gitDir, origHead := plantAutostashChain(t, l)
+
+	repo, err := git.OpenDir(l.worker)
+	if err != nil {
+		t.Fatalf("OpenDir: %v", err)
+	}
+	_, _ = repo.CombinedOutput("rebase", "--abort")
+	if len(l.takeMarker(t)) == 0 {
+		t.Fatal("control: the plant does not run the payload")
+	}
+
+	// Re-plant and simulate a mid-rebase state: rebase-merge present and HEAD
+	// detached. Write HEAD directly so no git command runs.
+	writeRebaseMerge(t, l.worker, gitDir, origHead)
+	writeFile(t, filepath.Join(gitDir, "HEAD"), origHead+"\n")
+
+	restoreAfterPreflightRebase(realGit{repo: repo}, origHead)
+
+	if lines := l.takeMarker(t); len(lines) != 0 {
+		t.Fatalf("restore applied a stash and ran the payload: %v", lines)
+	}
+	if _, err := os.Stat(filepath.Join(gitDir, "rebase-merge")); !os.IsNotExist(err) {
+		t.Errorf("rebase-merge still present after restore: %v", err)
+	}
+	if ref := gitOut(t, l.worker, "symbolic-ref", "HEAD"); ref != "refs/heads/feat" {
+		t.Errorf("HEAD = %q, want refs/heads/feat", ref)
+	}
+	if head := gitOut(t, l.worker, "rev-parse", "HEAD"); head != origHead {
+		t.Errorf("HEAD commit = %q, want origHead %q", head, origHead)
+	}
+}
+
+// TestPreflight_HostGit_RebaseConflictRestores drives a real rebase conflict
+// and shows the worktree returns to its pre-flight state with no stash applied
+// (#3323, AC5): HEAD on the session branch at the original commit, no
+// rebase-merge dir, clean tree.
+func TestPreflight_HostGit_RebaseConflictRestores(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	l := newPreflightLayout(t)
+	writeFile(t, filepath.Join(l.worker, "README.md"), "feat change\n")
+	mustGit(t, l.worker, "add", "README.md")
+	mustGit(t, l.worker, "commit", "-q", "-m", "feat edits README")
+	origHead := gitOut(t, l.worker, "rev-parse", "HEAD")
+
+	// Advance origin/main with a conflicting README via a scratch clone.
+	scratch := filepath.Join(t.TempDir(), "scratch")
+	mustGit(t, "", "clone", "-q", l.origin, scratch)
+	writeFile(t, filepath.Join(scratch, "README.md"), "main change\n")
+	mustGit(t, scratch, "add", "README.md")
+	mustGit(t, scratch, "commit", "-q", "-m", "main edits README")
+	mustGit(t, scratch, "push", "-q", "origin", "main")
+
+	err := Preflight(PreflightOpts{Worktree: l.worker, Rebase: true})
+	if err == nil || !strings.Contains(err.Error(), "produced conflicts") {
+		t.Fatalf("Preflight = %v, want a conflict error", err)
+	}
+
+	if ref := gitOut(t, l.worker, "symbolic-ref", "HEAD"); ref != "refs/heads/feat" {
+		t.Errorf("HEAD = %q, want refs/heads/feat", ref)
+	}
+	if head := gitOut(t, l.worker, "rev-parse", "HEAD"); head != origHead {
+		t.Errorf("HEAD commit = %q, want origHead %q", head, origHead)
+	}
+	gitDir, err := git.ResolveWorktreeGitDir(l.worker)
+	if err != nil {
+		t.Fatalf("resolve git dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(gitDir, "rebase-merge")); !os.IsNotExist(err) {
+		t.Errorf("rebase-merge still present after restore: %v", err)
+	}
+	if out := gitOut(t, l.worker, "status", "--porcelain"); out != "" {
+		t.Errorf("worktree not clean after restore: %q", out)
 	}
 }

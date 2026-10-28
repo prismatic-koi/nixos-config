@@ -3,7 +3,6 @@ package review
 import (
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -25,13 +24,21 @@ type scriptedResponse struct {
 // fakeGit is a gitRunner that returns scripted responses based on the args
 // (joined with spaces) it receives. Calls without a registered script entry
 // return a "no script for: ..." error so missing setup is loud.
+//
+// The metadata fields model a pinned prism worktree by default: isWorktree
+// true, sessionBranch "feat", and an empty gitDir so the real-filesystem
+// state check and conflict-restore dir removal are no-ops in unit tests. The
+// real-filesystem behaviour is covered in preflight_host_git_test.go.
 type fakeGit struct {
-	script map[string]scriptedResponse
-	calls  []string
+	script      map[string]scriptedResponse
+	calls       []string
+	branch      string
+	dir         string
+	notWorktree bool
 }
 
 func newFakeGit() *fakeGit {
-	return &fakeGit{script: map[string]scriptedResponse{}}
+	return &fakeGit{script: map[string]scriptedResponse{}, branch: "feat"}
 }
 
 func (f *fakeGit) on(args string, resp scriptedResponse) *fakeGit {
@@ -39,7 +46,7 @@ func (f *fakeGit) on(args string, resp scriptedResponse) *fakeGit {
 	return f
 }
 
-func (f *fakeGit) run(_ string, args ...string) (string, string, int, error) {
+func (f *fakeGit) run(args ...string) (string, string, int, error) {
 	key := strings.Join(args, " ")
 	f.calls = append(f.calls, key)
 	resp, ok := f.script[key]
@@ -48,6 +55,10 @@ func (f *fakeGit) run(_ string, args ...string) (string, string, int, error) {
 	}
 	return resp.stdout, resp.stderr, resp.exitCode, resp.err
 }
+
+func (f *fakeGit) gitDir() string        { return f.dir }
+func (f *fakeGit) isWorktree() bool      { return !f.notWorktree }
+func (f *fakeGit) sessionBranch() string { return f.branch }
 
 func (f *fakeGit) called(args string) bool {
 	for _, c := range f.calls {
@@ -205,7 +216,7 @@ func TestPreflight_RebaseHappyPath(t *testing.T) {
 		on("fetch origin main", scriptedResponse{exitCode: 0}).
 		on("rev-parse --verify origin/main", scriptedResponse{stdout: "abc123\n", exitCode: 0}).
 		on("rebase origin/main", scriptedResponse{exitCode: 0}).
-		on("push --force-with-lease", scriptedResponse{exitCode: 0}).
+		on("push --force-with-lease origin refs/heads/feat:refs/heads/feat", scriptedResponse{exitCode: 0}).
 		on("merge-base --is-ancestor origin/main HEAD", scriptedResponse{exitCode: 0})
 
 	err := Preflight(PreflightOpts{
@@ -219,20 +230,28 @@ func TestPreflight_RebaseHappyPath(t *testing.T) {
 	for _, want := range []string{
 		"fetch origin main",
 		"rebase origin/main",
-		"push --force-with-lease",
+		"push --force-with-lease origin refs/heads/feat:refs/heads/feat",
 		"merge-base --is-ancestor origin/main HEAD",
 	} {
 		if !fg.called(want) {
 			t.Errorf("Preflight (--rebase): expected %q to be called; calls=%v", want, fg.calls)
 		}
 	}
+	// The push must name the session branch explicitly, never a bare
+	// current-branch push that follows HEAD (#3323, AC4).
+	if fg.called("push --force-with-lease") {
+		t.Errorf("Preflight (--rebase): bare `push --force-with-lease` must not run; calls=%v", fg.calls)
+	}
 }
 
-// TestPreflight_RebaseConflictAbortsAndRestores verifies that an inline-rebase
-// conflict triggers `git rebase --abort` and a `reset --hard <origHead>` to
-// restore the worktree, and returns a non-zero error instructing the worker to
-// resolve manually. The worktree must NEVER be left mid-rebase.
-func TestPreflight_RebaseConflictAbortsAndRestores(t *testing.T) {
+// TestPreflight_RebaseConflictRestoresWithoutStash verifies that an
+// inline-rebase conflict restores the worktree WITHOUT `git rebase --abort`
+// (#3323): the gate re-attaches HEAD to the session branch and resets to the
+// original HEAD, and returns a non-zero error telling the worker to resolve
+// manually. `git rebase --abort` must never run, because it would apply a
+// rebase-merge/autostash file the session can plant. The worktree must never
+// be left mid-rebase.
+func TestPreflight_RebaseConflictRestoresWithoutStash(t *testing.T) {
 	fg := newFakeGit().
 		on("rev-parse HEAD", scriptedResponse{stdout: "deadbeef\n", exitCode: 0}).
 		on("fetch origin main", scriptedResponse{exitCode: 0}).
@@ -241,7 +260,7 @@ func TestPreflight_RebaseConflictAbortsAndRestores(t *testing.T) {
 			stderr:   "CONFLICT (content): Merge conflict in foo.txt\nfatal: ...",
 			exitCode: 1,
 		}).
-		on("rebase --abort", scriptedResponse{exitCode: 0}).
+		on("symbolic-ref HEAD refs/heads/feat", scriptedResponse{exitCode: 0}).
 		on("reset --hard deadbeef", scriptedResponse{exitCode: 0})
 
 	err := Preflight(PreflightOpts{
@@ -261,7 +280,7 @@ func TestPreflight_RebaseConflictAbortsAndRestores(t *testing.T) {
 	}
 	for _, want := range []string{
 		"--rebase produced conflicts",
-		"rebase aborted",
+		"restored to its original HEAD",
 		"Resolve conflicts manually",
 		"CONFLICT (content)",
 	} {
@@ -269,18 +288,22 @@ func TestPreflight_RebaseConflictAbortsAndRestores(t *testing.T) {
 			t.Errorf("Preflight (--rebase conflict): message missing %q; got:\n%s", want, pe.Msg)
 		}
 	}
-	// The abort + reset must have been issued so the worktree is not
-	// left mid-rebase.
-	if !fg.called("rebase --abort") {
-		t.Errorf("Preflight (--rebase conflict): expected `rebase --abort`; calls=%v", fg.calls)
+	// The stash-free restore must have run: re-attach HEAD to the session
+	// branch, then reset to the original HEAD.
+	if !fg.called("symbolic-ref HEAD refs/heads/feat") {
+		t.Errorf("Preflight (--rebase conflict): expected `symbolic-ref HEAD refs/heads/feat`; calls=%v", fg.calls)
 	}
 	if !fg.called("reset --hard deadbeef") {
-		t.Errorf("Preflight (--rebase conflict): expected `reset --hard deadbeef` to restore HEAD; calls=%v", fg.calls)
+		t.Errorf("Preflight (--rebase conflict): expected `reset --hard deadbeef`; calls=%v", fg.calls)
 	}
-	// Ancestor check must NOT have been called after a conflict abort —
-	// the gate exits before reaching that step.
+	// `git rebase --abort` must NEVER run: it applies rebase-merge/autostash.
+	if fg.called("rebase --abort") {
+		t.Errorf("Preflight (--rebase conflict): `rebase --abort` must not run (#3323); calls=%v", fg.calls)
+	}
+	// Ancestor check must NOT have been called after a conflict — the gate
+	// exits before reaching that step.
 	if fg.called("merge-base --is-ancestor origin/main HEAD") {
-		t.Errorf("Preflight (--rebase conflict): merge-base must not run after conflict abort; calls=%v", fg.calls)
+		t.Errorf("Preflight (--rebase conflict): merge-base must not run after conflict; calls=%v", fg.calls)
 	}
 }
 
@@ -344,7 +367,7 @@ func TestPreflight_NoIncrementsCounter(t *testing.T) {
 				on("fetch origin main", scriptedResponse{exitCode: 0}).
 				on("rev-parse --verify origin/main", scriptedResponse{stdout: "abc\n", exitCode: 0}).
 				on("rebase origin/main", scriptedResponse{stderr: "CONFLICT", exitCode: 1}).
-				on("rebase --abort", scriptedResponse{exitCode: 0}).
+				on("symbolic-ref HEAD refs/heads/feat", scriptedResponse{exitCode: 0}).
 				on("reset --hard deadbeef", scriptedResponse{exitCode: 0}),
 		},
 	}
@@ -371,6 +394,47 @@ func TestPreflight_NoIncrementsCounter(t *testing.T) {
 	// counter exactly where it started.
 	if got := NextRoundNumber(d, parent); got != 1 {
 		t.Fatalf("after 3 gate failures: NextRoundNumber=%d, want 1 (gate failures must not consume cycles)", got)
+	}
+}
+
+// TestPreflight_RebasePushesSessionBranchNotHead verifies that the --rebase
+// push targets the branch of the session record through an explicit
+// refs/heads/<branch> refspec, never a bare `git push` that would follow the
+// session-controlled HEAD (#3323, AC4). sessionBranch is derived from the
+// worktree path, so the fake returns it directly.
+func TestPreflight_RebasePushesSessionBranchNotHead(t *testing.T) {
+	fg := newFakeGit()
+	fg.branch = "work-branch"
+	fg.on("rev-parse HEAD", scriptedResponse{stdout: "deadbeef\n", exitCode: 0}).
+		on("fetch origin main", scriptedResponse{exitCode: 0}).
+		on("rev-parse --verify origin/main", scriptedResponse{stdout: "abc123\n", exitCode: 0}).
+		on("rebase origin/main", scriptedResponse{exitCode: 0}).
+		on("push --force-with-lease origin refs/heads/work-branch:refs/heads/work-branch", scriptedResponse{exitCode: 0}).
+		on("merge-base --is-ancestor origin/main HEAD", scriptedResponse{exitCode: 0})
+
+	if err := Preflight(PreflightOpts{Worktree: "/fake/worktree", Rebase: true, gitRunner: fg}); err != nil {
+		t.Fatalf("Preflight: unexpected error: %v", err)
+	}
+	if !fg.called("push --force-with-lease origin refs/heads/work-branch:refs/heads/work-branch") {
+		t.Errorf("expected a push of the session-branch refspec; calls=%v", fg.calls)
+	}
+	if fg.called("push --force-with-lease") {
+		t.Errorf("a bare `push --force-with-lease` (follows HEAD) must not run; calls=%v", fg.calls)
+	}
+}
+
+// TestPreflight_NonWorktreeRefused verifies that Preflight refuses a runner
+// that reports it is not a prism worktree, before any git command runs
+// (#3323, AC1).
+func TestPreflight_NonWorktreeRefused(t *testing.T) {
+	fg := newFakeGit()
+	fg.notWorktree = true
+	err := Preflight(PreflightOpts{Worktree: "/fake/worktree", Rebase: true, gitRunner: fg})
+	if err == nil || !strings.Contains(err.Error(), "not a prism worktree") {
+		t.Fatalf("Preflight = %v, want a refusal naming 'not a prism worktree'", err)
+	}
+	if len(fg.calls) != 0 {
+		t.Errorf("no git command must run for a non-worktree session; calls=%v", fg.calls)
 	}
 }
 
@@ -554,7 +618,7 @@ func TestPreflight_NonMainBaseRebaseTargetsResolvedRef(t *testing.T) {
 		on("fetch origin eks-pipeline", scriptedResponse{exitCode: 0}).
 		on("rev-parse --verify origin/eks-pipeline", scriptedResponse{stdout: "abc123\n", exitCode: 0}).
 		on("rebase origin/eks-pipeline", scriptedResponse{exitCode: 0}).
-		on("push --force-with-lease", scriptedResponse{exitCode: 0}).
+		on("push --force-with-lease origin refs/heads/feat:refs/heads/feat", scriptedResponse{exitCode: 0}).
 		on("merge-base --is-ancestor origin/eks-pipeline HEAD", scriptedResponse{exitCode: 0})
 
 	err := Preflight(PreflightOpts{
@@ -569,7 +633,7 @@ func TestPreflight_NonMainBaseRebaseTargetsResolvedRef(t *testing.T) {
 	for _, want := range []string{
 		"fetch origin eks-pipeline",
 		"rebase origin/eks-pipeline",
-		"push --force-with-lease",
+		"push --force-with-lease origin refs/heads/feat:refs/heads/feat",
 		"merge-base --is-ancestor origin/eks-pipeline HEAD",
 	} {
 		if !fg.called(want) {
@@ -644,7 +708,7 @@ func TestPreflight_NonMainBaseRebaseConflictAbortsAndRestores(t *testing.T) {
 			stderr:   "CONFLICT (content): Merge conflict in foo.txt",
 			exitCode: 1,
 		}).
-		on("rebase --abort", scriptedResponse{exitCode: 0}).
+		on("symbolic-ref HEAD refs/heads/feat", scriptedResponse{exitCode: 0}).
 		on("reset --hard deadbeef", scriptedResponse{exitCode: 0})
 
 	err := Preflight(PreflightOpts{
@@ -663,11 +727,14 @@ func TestPreflight_NonMainBaseRebaseConflictAbortsAndRestores(t *testing.T) {
 	if pe.Refused {
 		t.Errorf("Preflight (--rebase conflict, non-main): must not be Refused=true; got %+v", pe)
 	}
-	if !fg.called("rebase --abort") {
-		t.Errorf("Preflight (--rebase conflict, non-main): expected `rebase --abort`; calls=%v", fg.calls)
+	if !fg.called("symbolic-ref HEAD refs/heads/feat") {
+		t.Errorf("Preflight (--rebase conflict, non-main): expected `symbolic-ref HEAD refs/heads/feat`; calls=%v", fg.calls)
 	}
 	if !fg.called("reset --hard deadbeef") {
 		t.Errorf("Preflight (--rebase conflict, non-main): expected `reset --hard deadbeef`; calls=%v", fg.calls)
+	}
+	if fg.called("rebase --abort") {
+		t.Errorf("Preflight (--rebase conflict, non-main): `rebase --abort` must not run (#3323); calls=%v", fg.calls)
 	}
 	// Recovery commands must name the resolved base, not origin/main.
 	for _, want := range []string{
@@ -682,34 +749,35 @@ func TestPreflight_NonMainBaseRebaseConflictAbortsAndRestores(t *testing.T) {
 
 // ── integration test against a real local git repo ────────────────────────────
 
-// TestPreflight_RealGit_AncestorPasses creates a real local git repo with two
-// branches (main and feature), where feature is up to date with main, and
-// verifies Preflight passes against the real git binary. This exercises the
-// `realGit` runner end-to-end (the unit tests above use the fake runner).
+// TestPreflight_RealGit_AncestorPasses verifies Preflight passes against the
+// real git binary when the worker worktree already contains origin/main. It
+// drives the realGit runner end-to-end on a prism bare+worktree layout
+// (newPreflightLayout, in preflight_host_git_test.go). A plain clone is no
+// longer a valid target: Preflight refuses a session that is not in a prism
+// worktree (#3323, AC1).
 func TestPreflight_RealGit_AncestorPasses(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not in PATH")
 	}
 
-	worktree, _ := setupRealRepo(t)
+	l := newPreflightLayout(t)
 
-	if err := Preflight(PreflightOpts{Worktree: worktree}); err != nil {
+	if err := Preflight(PreflightOpts{Worktree: l.worker}); err != nil {
 		t.Fatalf("Preflight: unexpected error on up-to-date branch: %v", err)
 	}
 }
 
-// TestPreflight_RealGit_BehindMainRefuses creates a real repo where main has
-// advanced past the feature branch (feature does not contain main's tip) and
-// verifies Preflight returns a Refused error.
+// TestPreflight_RealGit_BehindMainRefuses advances origin/main past the worker
+// branch and verifies Preflight returns a Refused error.
 func TestPreflight_RealGit_BehindMainRefuses(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not in PATH")
 	}
 
-	worktree, advanceMain := setupRealRepo(t)
-	advanceMain(t, "extra commit on main")
+	l := newPreflightLayout(t)
+	l.advance(t)
 
-	err := Preflight(PreflightOpts{Worktree: worktree})
+	err := Preflight(PreflightOpts{Worktree: l.worker})
 	if err == nil {
 		t.Fatal("Preflight: expected refusal when main has advanced, got nil")
 	}
@@ -723,68 +791,6 @@ func TestPreflight_RealGit_BehindMainRefuses(t *testing.T) {
 	if pe.CommitsBehind < 1 {
 		t.Errorf("Preflight: expected CommitsBehind >= 1; got %d", pe.CommitsBehind)
 	}
-}
-
-// setupRealRepo creates a bare "remote" plus a local clone, makes an initial
-// commit on main, branches a feature, and checks out feature. It returns the
-// feature worktree path and a helper that advances main on the bare remote so
-// that origin/main moves past feature after `git fetch origin main`.
-//
-// The helper also takes care of `t.TempDir()` cleanup; callers should not
-// inspect the returned remote.
-func setupRealRepo(t *testing.T) (worktree string, advanceMain func(t *testing.T, msg string)) {
-	t.Helper()
-
-	// Don't let any user-level git config (e.g. signing) interfere.
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
-
-	root := t.TempDir()
-	bare := filepath.Join(root, "remote.git")
-	mustGit(t, "", "init", "--bare", "-b", "main", bare)
-
-	// Local clone: this is our "feature" worktree.
-	worktree = filepath.Join(root, "local")
-	mustGit(t, "", "clone", bare, worktree)
-	mustGit(t, worktree, "config", "user.email", "test@example.com")
-	mustGit(t, worktree, "config", "user.name", "Test")
-	mustGit(t, worktree, "config", "commit.gpgsign", "false")
-	mustGit(t, worktree, "config", "tag.gpgsign", "false")
-
-	// Initial commit on main.
-	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("init\n"), 0o644); err != nil {
-		t.Fatalf("write README: %v", err)
-	}
-	mustGit(t, worktree, "add", ".")
-	mustGit(t, worktree, "commit", "-m", "init")
-	mustGit(t, worktree, "push", "origin", "main")
-
-	// Branch off as `feature`. The clone's HEAD is now `feature` but
-	// origin/main is at the same commit (so the gate passes initially).
-	mustGit(t, worktree, "checkout", "-b", "feature")
-
-	// advanceMain: append a commit to main on the bare remote so that
-	// `git fetch origin main` from the worktree pulls a new origin/main
-	// that is NOT an ancestor of the feature HEAD.
-	advanceMain = func(t *testing.T, msg string) {
-		t.Helper()
-
-		// Use a separate scratch worktree on the bare remote to push from.
-		scratch := filepath.Join(root, "scratch-"+msg)
-		mustGit(t, "", "clone", bare, scratch)
-		mustGit(t, scratch, "config", "user.email", "test@example.com")
-		mustGit(t, scratch, "config", "user.name", "Test")
-		mustGit(t, scratch, "config", "commit.gpgsign", "false")
-		mustGit(t, scratch, "checkout", "main")
-		if err := os.WriteFile(filepath.Join(scratch, "advance.txt"), []byte(msg+"\n"), 0o644); err != nil {
-			t.Fatalf("write advance: %v", err)
-		}
-		mustGit(t, scratch, "add", ".")
-		mustGit(t, scratch, "commit", "-m", msg)
-		mustGit(t, scratch, "push", "origin", "main")
-	}
-	return worktree, advanceMain
 }
 
 // mustGit runs git with the given args in cwd (or the default cwd if empty),

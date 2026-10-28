@@ -245,7 +245,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 
 	// Pre-flight rebase gate. Runs BEFORE any review-agent
 	// sessions are spawned and BEFORE any DB rows are written for this round,
-	// so a gate failure (refusal, fetch failure, conflict abort, missing
+	// so a gate failure (refusal, fetch failure, conflict restore, missing
 	// upstream) cannot increment the review-cycle counter — that counter is
 	// derived from per-agent session rows by review.NextRoundNumber, and no
 	// such rows exist on the gate-failure path.
@@ -260,8 +260,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// discoverable PR.
 	//
 	// On --rebase, the gate also performs fetch + rebase + force-push inline;
-	// on rebase conflict it aborts the rebase and restores HEAD before
-	// returning a non-zero error. Never leaves the worktree mid-rebase.
+	// on rebase conflict it restores HEAD without `git rebase --abort` (#3323)
+	// before returning a non-zero error. Never leaves the worktree mid-rebase.
 	baseBranch := review.ResolvePRBaseRef(prNumber, reviewForge, repoURL) // "" on any failure → Preflight defaults to "main"
 	if gateErr := review.Preflight(review.PreflightOpts{
 		Worktree:   worktree,
