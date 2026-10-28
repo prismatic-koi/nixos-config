@@ -62,10 +62,16 @@ var ghExecOutput = ghExecOutputReal
 // cwd), returning its stdout. The context bounds the subprocess lifetime:
 // exec.CommandContext kills it when the deadline fires.
 func ghExecOutputReal(ctx context.Context, workdir string, args ...string) ([]byte, error) {
+	// gh finds the repo with git in workdir, the worktree of the session.
+	env, err := git.EnvForDir(workdir, os.Environ())
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	if workdir != "" {
 		cmd.Dir = workdir
 	}
+	cmd.Env = env
 	return cmd.Output()
 }
 

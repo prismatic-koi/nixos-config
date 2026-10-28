@@ -29,6 +29,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/checkstate"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/forge"
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
@@ -700,8 +701,14 @@ type checkEntry = checkstate.CheckEntry
 func probeInitialState(pr int) (initialStateDecision, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	prOut, err := exec.CommandContext(ctx, "gh", "pr", "view", fmt.Sprintf("%d", pr),
-		"--json", "state,number,title,mergedAt,mergeStateStatus,reviewDecision,baseRefName,statusCheckRollup").CombinedOutput()
+	env, err := git.EnvForDir("", os.Environ())
+	if err != nil {
+		return initialStateDecision{}, err
+	}
+	viewCmd := exec.CommandContext(ctx, "gh", "pr", "view", fmt.Sprintf("%d", pr),
+		"--json", "state,number,title,mergedAt,mergeStateStatus,reviewDecision,baseRefName,statusCheckRollup")
+	viewCmd.Env = env
+	prOut, err := viewCmd.CombinedOutput()
 	if err != nil {
 		return initialStateDecision{}, fmt.Errorf("PR #%d not found or gh CLI error: %s", pr, strings.TrimSpace(string(prOut)))
 	}
@@ -874,8 +881,14 @@ func probeBranchProtection(baseRef string) (bool, []string, int, error) {
 	if baseRef == "" {
 		baseRef = "main"
 	}
+	env, err := git.EnvForDir("", os.Environ())
+	if err != nil {
+		return false, nil, 0, err
+	}
 	run := func(ctx context.Context, args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, "gh", args...).CombinedOutput()
+		cmd := exec.CommandContext(ctx, "gh", args...)
+		cmd.Env = env
+		return cmd.CombinedOutput()
 	}
 	res, err := branchprotect.Probe(ctx, run,
 		fmt.Sprintf("repos/{owner}/{repo}/branches/%s/protection", baseRef),

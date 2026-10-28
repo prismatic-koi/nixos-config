@@ -1119,12 +1119,10 @@ func resolveBareRoot(repoFlag string) (string, error) {
 		}
 	}
 
-	bareRoot := git.BareRoot(panePathRaw)
-	if bareRoot == "" {
-		if git.IsBareRepo(panePathRaw) {
-			bareRoot = panePathRaw
-		}
-	}
+	// The pane path can be in the worktree of a session, which the session
+	// can write. OuterBareRoot ignores a .bare that the session makes there.
+	// prism spawn runs `git worktree add` in this root on the host.
+	bareRoot := git.OuterBareRoot(panePathRaw)
 	if bareRoot == "" {
 		if git.IsInsideRegularRepo(panePathRaw) {
 			return "", fmt.Errorf("this repo isn't using the worktree layout yet\nuse C-f to convert it first")

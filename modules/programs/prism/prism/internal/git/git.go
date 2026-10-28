@@ -2,6 +2,7 @@
 package git
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -55,11 +56,18 @@ func Stat(dir string) (DiffStat, error) {
 	var total DiffStat
 	var firstErr error
 
+	repo, err := OpenDir(dir)
+	if err != nil {
+		return DiffStat{}, err
+	}
+	// --ignore-submodules=all on the command line: a submodule entry in
+	// .gitmodules can override the config default, and a submodule status
+	// runs git in the submodule, with its own config.
 	for _, args := range [][]string{
-		{"-C", dir, "diff", "--numstat", "HEAD"},
-		{"-C", dir, "diff", "--numstat", "--cached"},
+		{"diff", "--numstat", "--ignore-submodules=all", "HEAD"},
+		{"diff", "--numstat", "--ignore-submodules=all", "--cached"},
 	} {
-		out, err := exec.Command("git", args...).Output()
+		out, err := repo.Command(context.Background(), args...).Output()
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -141,45 +149,20 @@ func IsInsideRegularRepo(dir string) bool {
 	return false
 }
 
-// gitDir returns the path to the git bare directory for a prism repo.
-// Normally this is <projectPath>/.bare. When projectPath itself is a raw bare
-// git dir (e.g. /prism-git in container mode), it is returned directly so
-// that all git operations work without requiring a .bare wrapper.
-func gitDir(projectPath string) string {
-	candidate := filepath.Join(projectPath, ".bare")
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate
-	}
-	// If projectPath is itself a raw bare git dir, use it directly.
-	if IsRawBareGitDir(projectPath) {
-		return projectPath
-	}
-	// Fall through to the standard path (will fail if .bare doesn't exist,
-	// which is the correct behaviour for non-bare project dirs).
-	return candidate
-}
-
-// runGit runs git with the given args and returns trimmed stdout.
-func runGit(args ...string) (string, error) {
-	out, err := exec.Command("git", args...).Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
 // DefaultBranch returns the default branch name for a bare-layout repo.
 // It tries refs/remotes/origin/HEAD first, then falls back to main/master.
 func DefaultBranch(projectPath string) string {
-	bare := gitDir(projectPath)
-	ref, err := runGit("--git-dir", bare, "symbolic-ref", "refs/remotes/origin/HEAD")
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return ""
+	}
+	ref, err := bare.Output("symbolic-ref", "refs/remotes/origin/HEAD")
 	if err == nil && ref != "" {
 		parts := strings.Split(ref, "/")
 		return parts[len(parts)-1]
 	}
 	for _, branch := range []string{"main", "master"} {
-		if err := exec.Command("git", "--git-dir", bare, "rev-parse", "--verify",
-			"refs/heads/"+branch).Run(); err == nil {
+		if err := bare.Run("rev-parse", "--verify", "refs/heads/"+branch); err == nil {
 			return branch
 		}
 	}
@@ -189,8 +172,11 @@ func DefaultBranch(projectPath string) string {
 // Worktrees returns the list of worktree paths for a bare-layout repo,
 // with the default branch worktree first.
 func Worktrees(projectPath string) []string {
-	bare := gitDir(projectPath)
-	out, err := runGit("--git-dir", bare, "worktree", "list", "--porcelain")
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return nil
+	}
+	out, err := bare.Output("worktree", "list", "--porcelain")
 	if err != nil {
 		return nil
 	}
@@ -259,32 +245,38 @@ type CreatedWorktree struct {
 // branchName must already be sanitised. Returns a CreatedWorktree describing
 // what was created so callers can register a rollback.
 func CreateWorktree(projectPath, branchName string) (CreatedWorktree, error) {
-	bare := gitDir(projectPath)
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return CreatedWorktree{}, err
+	}
 	worktreePath := filepath.Join(projectPath, branchName)
+	// git runs in the bare dir, so give it an absolute path.
+	worktreeArg, err := filepath.Abs(worktreePath)
+	if err != nil {
+		return CreatedWorktree{}, err
+	}
 
 	// Check if branch already exists locally.
-	localErr := exec.Command("git", "--git-dir", bare, "rev-parse", "--verify",
-		"refs/heads/"+branchName).Run()
+	localErr := bare.Run("rev-parse", "--verify", "refs/heads/"+branchName)
 	if localErr == nil {
 		// Branch exists locally — add worktree at that branch. The branch
 		// pre-exists, so a rollback must never delete it.
-		if out, err := exec.Command("git", "--git-dir", bare, "worktree", "add",
-			worktreePath, branchName).CombinedOutput(); err != nil {
+		if out, err := bare.CombinedOutput("worktree", "add",
+			worktreeArg, branchName); err != nil {
 			return CreatedWorktree{}, fmt.Errorf("worktree add: %w: %s", err, out)
 		}
 		return CreatedWorktree{Path: worktreePath, Branch: branchName}, nil
 	}
 
 	// Check if branch exists on remote.
-	remoteErr := exec.Command("git", "--git-dir", bare, "rev-parse", "--verify",
-		"refs/remotes/origin/"+branchName).Run()
+	remoteErr := bare.Run("rev-parse", "--verify", "refs/remotes/origin/"+branchName)
 	if remoteErr == nil {
 		// Track the remote branch. The local ref is created here (via -b),
 		// but it checks out a pre-existing remote branch — a rollback must
 		// not delete it (a failed `prism pr` keeps the PR branch and
 		// loses only the worktree).
-		if out, err := exec.Command("git", "--git-dir", bare, "worktree", "add",
-			worktreePath, "-b", branchName, "origin/"+branchName).CombinedOutput(); err != nil {
+		if out, err := bare.CombinedOutput("worktree", "add",
+			worktreeArg, "-b", branchName, "origin/"+branchName); err != nil {
 			return CreatedWorktree{}, fmt.Errorf("worktree add (remote): %w: %s", err, out)
 		}
 		return CreatedWorktree{Path: worktreePath, Branch: branchName}, nil
@@ -295,15 +287,14 @@ func CreateWorktree(projectPath, branchName string) (CreatedWorktree, error) {
 	if base == "" {
 		base = "HEAD"
 	}
-	if out, err := exec.Command("git", "--git-dir", bare, "worktree", "add",
-		"-b", branchName, worktreePath, base).CombinedOutput(); err != nil {
+	if out, err := bare.CombinedOutput("worktree", "add",
+		"-b", branchName, worktreeArg, base); err != nil {
 		return CreatedWorktree{}, fmt.Errorf("worktree add (new): %w: %s", err, out)
 	}
 	// Record the fork point so a rollback can prove the branch still has no
 	// commits of its own before deleting it. If the lookup fails, stay
 	// conservative: report the branch as not-forked so a rollback keeps it.
-	forkPoint, fpErr := runGit("--git-dir", bare, "rev-parse", "--verify",
-		"refs/heads/"+branchName)
+	forkPoint, fpErr := bare.Output("rev-parse", "--verify", "refs/heads/"+branchName)
 	if fpErr != nil || forkPoint == "" {
 		return CreatedWorktree{Path: worktreePath, Branch: branchName}, nil
 	}
@@ -328,7 +319,10 @@ func CreateWorktree(projectPath, branchName string) (CreatedWorktree, error) {
 // error so the caller can log them; callers must never let this error mask
 // the original spawn failure.
 func RollbackCreatedWorktree(projectPath string, c CreatedWorktree) error {
-	bare := gitDir(projectPath)
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return fmt.Errorf("rollback created worktree: %w", err)
+	}
 	var errs []string
 
 	if err := RemoveWorktree(projectPath, c.Path); err != nil {
@@ -336,15 +330,14 @@ func RollbackCreatedWorktree(projectPath string, c CreatedWorktree) error {
 		// unregistered or its directory was deleted out from under git.
 		// Both are already-unwound states: prune stale bookkeeping, then
 		// report a failure only if the worktree is still registered.
-		_ = exec.Command("git", "--git-dir", bare, "worktree", "prune").Run()
+		_ = bare.Run("worktree", "prune")
 		if isWorktreeRegistered(projectPath, c.Path) {
 			errs = append(errs, fmt.Sprintf("remove worktree %q: %v", c.Path, err))
 		}
 	}
 
 	if c.BranchForked && c.Branch != "" {
-		tip, tipErr := runGit("--git-dir", bare, "rev-parse", "--verify",
-			"refs/heads/"+c.Branch)
+		tip, tipErr := bare.Output("rev-parse", "--verify", "refs/heads/"+c.Branch)
 		switch {
 		case tipErr != nil:
 			// Branch already gone — idempotent success.
@@ -401,14 +394,23 @@ var convertToBareStepHook func(step string) error
 // layout in-place. progress receives human-readable step messages.
 // Returns the path to the default-branch worktree on success.
 func ConvertToBare(dir string, progress func(string)) (string, error) {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
 	barePath := filepath.Join(dir, ".bare")
 	gitFile := filepath.Join(dir, ".git")
 	origGit := filepath.Join(dir, ".git.orig")
 
 	progress("converting " + filepath.Base(dir) + " to bare+worktree layout...")
 
+	src, err := OpenDir(dir)
+	if err != nil {
+		return "", err
+	}
+
 	// Detect current branch.
-	headOut, err := runGit("-C", dir, "symbolic-ref", "--short", "HEAD")
+	headOut, err := src.Output("symbolic-ref", "--short", "HEAD")
 	defaultBranch := "main"
 	if err == nil && headOut != "" {
 		defaultBranch = headOut
@@ -416,7 +418,7 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	progress("  default branch: " + defaultBranch)
 
 	// Get remote URL.
-	remoteURL, err := runGit("-C", dir, "remote", "get-url", "origin")
+	remoteURL, err := src.Output("remote", "get-url", "origin")
 	if err != nil || remoteURL == "" {
 		return "", fmt.Errorf("could not get remote URL")
 	}
@@ -498,7 +500,7 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 
 	// Clone bare.
 	progress("  cloning bare repo (this may take a moment)...")
-	if out, err := exec.Command("git", "clone", "--bare", remoteURL, barePath).
+	if out, err := CloneCommand(dir, "--bare", remoteURL, barePath).
 		CombinedOutput(); err != nil {
 		rollback("")
 		if rollbackErr != nil {
@@ -508,19 +510,26 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	}
 	progress("  bare clone done")
 
+	bare, err := OpenBare(dir)
+	if err != nil {
+		rollback("")
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
+		return "", err
+	}
+
 	// Configure fetch refspec.
 	progress("  configuring remote tracking refs...")
-	if out, err := exec.Command("git", "--git-dir", barePath, "config",
-		"remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").
-		CombinedOutput(); err != nil {
+	if out, err := bare.CombinedOutput("config",
+		"remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
 		rollback("")
 		if rollbackErr != nil {
 			progress("  WARNING: " + rollbackErr.Error())
 		}
 		return "", fmt.Errorf("config fetch refspec: %w: %s", err, out)
 	}
-	if out, err := exec.Command("git", "--git-dir", barePath, "fetch", "origin").
-		CombinedOutput(); err != nil {
+	if out, err := bare.CombinedOutput("fetch", "origin"); err != nil {
 		rollback("")
 		if rollbackErr != nil {
 			progress("  WARNING: " + rollbackErr.Error())
@@ -538,8 +547,7 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	}
 
 	// Set upstream.
-	_ = exec.Command("git", "--git-dir", barePath, "branch",
-		"--set-upstream-to", "origin/"+defaultBranch, defaultBranch).Run()
+	_ = bare.Run("branch", "--set-upstream-to", "origin/"+defaultBranch, defaultBranch)
 
 	// Move working tree contents into <defaultBranch>/.
 	// MkdirAll is used because the branch name may contain slashes (e.g. "feat/foo").
@@ -727,7 +735,7 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	}
 
 	// Prune stale entries.
-	_ = exec.Command("git", "--git-dir", barePath, "worktree", "prune").Run()
+	_ = bare.Run("worktree", "prune")
 
 	// Populate the index from the branch HEAD so the worktree is not treated
 	// as fully untracked. Manual worktree registration skips this step that
@@ -744,11 +752,15 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 			return "", hookErr
 		}
 	}
-	if out, err := exec.Command("git",
-		"--git-dir", worktreesDir,
-		"--work-tree", worktreePath,
-		"read-tree", "HEAD",
-	).CombinedOutput(); err != nil {
+	wt, err := OpenWorktree(dir, worktreePath)
+	if err != nil {
+		rollback(worktreePath)
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
+		return "", fmt.Errorf("read-tree: %w", err)
+	}
+	if out, err := wt.CombinedOutput("read-tree", "HEAD"); err != nil {
 		rollback(worktreePath)
 		if rollbackErr != nil {
 			progress("  WARNING: " + rollbackErr.Error())
@@ -785,15 +797,20 @@ func SanitiseBranch(raw string) string {
 
 // BranchExists returns true if branch exists in the bare-layout repo at projectPath.
 func BranchExists(projectPath, branch string) bool {
-	bare := gitDir(projectPath)
-	return exec.Command("git", "--git-dir", bare, "rev-parse", "--verify",
-		"refs/heads/"+branch).Run() == nil
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return false
+	}
+	return bare.Run("rev-parse", "--verify", "refs/heads/"+branch) == nil
 }
 
 // BranchMerged returns true if branch is fully merged into defaultBranch.
 func BranchMerged(projectPath, branch, defaultBranch string) bool {
-	bare := gitDir(projectPath)
-	out, err := runGit("--git-dir", bare, "branch", "--merged", defaultBranch)
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return false
+	}
+	out, err := bare.Output("branch", "--merged", defaultBranch)
 	if err != nil {
 		return false
 	}
@@ -808,9 +825,11 @@ func BranchMerged(projectPath, branch, defaultBranch string) bool {
 // DeleteBranch deletes the branch in the bare-layout repo (safe delete).
 // Returns an error if the branch is not merged; caller should use ForceDeleteBranch if needed.
 func DeleteBranch(projectPath, branch string) error {
-	bare := gitDir(projectPath)
-	out, err := exec.Command("git", "--git-dir", bare, "branch", "-d", branch).
-		CombinedOutput()
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return err
+	}
+	out, err := bare.CombinedOutput("branch", "-d", branch)
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -819,9 +838,11 @@ func DeleteBranch(projectPath, branch string) error {
 
 // ForceDeleteBranch force-deletes the branch.
 func ForceDeleteBranch(projectPath, branch string) error {
-	bare := gitDir(projectPath)
-	out, err := exec.Command("git", "--git-dir", bare, "branch", "-D", branch).
-		CombinedOutput()
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return err
+	}
+	out, err := bare.CombinedOutput("branch", "-D", branch)
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -830,9 +851,16 @@ func ForceDeleteBranch(projectPath, branch string) error {
 
 // RemoveWorktree removes a worktree from the bare-layout repo (force).
 func RemoveWorktree(projectPath, worktreePath string) error {
-	bare := gitDir(projectPath)
-	out, err := exec.Command("git", "--git-dir", bare, "worktree", "remove",
-		"--force", worktreePath).CombinedOutput()
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return err
+	}
+	// git runs in the bare dir, so give it an absolute path.
+	worktreeArg, err := filepath.Abs(worktreePath)
+	if err != nil {
+		return err
+	}
+	out, err := bare.CombinedOutput("worktree", "remove", "--force", worktreeArg)
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -841,8 +869,11 @@ func RemoveWorktree(projectPath, worktreePath string) error {
 
 // FetchRemote runs git fetch origin for a bare-layout repo.
 func FetchRemote(projectPath string) error {
-	bare := gitDir(projectPath)
-	out, err := exec.Command("git", "--git-dir", bare, "fetch", "origin").CombinedOutput()
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return err
+	}
+	out, err := bare.CombinedOutput("fetch", "origin")
 	if err != nil {
 		return fmt.Errorf("fetch origin: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -852,14 +883,19 @@ func FetchRemote(projectPath string) error {
 // PRBranch uses the gh CLI to return the head branch name for a given PR number
 // in the repo at projectPath.
 func PRBranch(projectPath, prNumber string) (string, error) {
-	bare := gitDir(projectPath)
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return "", err
+	}
 	// Resolve the remote URL so gh knows which repo to query.
-	remoteURL, err := runGit("--git-dir", bare, "remote", "get-url", "origin")
+	remoteURL, err := bare.Output("remote", "get-url", "origin")
 	if err != nil || remoteURL == "" {
 		return "", fmt.Errorf("could not determine remote URL")
 	}
-	out, err := exec.Command("gh", "pr", "view", prNumber,
-		"--repo", remoteURL, "--json", "headRefName", "--jq", ".headRefName").Output()
+	gh := exec.Command("gh", "pr", "view", prNumber,
+		"--repo", remoteURL, "--json", "headRefName", "--jq", ".headRefName")
+	gh.Env = bare.Env(os.Environ())
+	out, err := gh.Output()
 	if err != nil {
 		return "", fmt.Errorf("gh pr view: %w", err)
 	}
@@ -875,8 +911,11 @@ func PRBranch(projectPath, prNumber string) (string, error) {
 // cannot be read; callers that only need forge classification can ignore the
 // error and treat "" as "assume GitHub".
 func OriginRemoteURL(projectPath string) (string, error) {
-	bare := gitDir(projectPath)
-	return runGit("--git-dir", bare, "remote", "get-url", "origin")
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return "", err
+	}
+	return bare.Output("remote", "get-url", "origin")
 }
 
 // FetchGitLabMRBranch fetches the source branch of gitlab.com merge request
@@ -901,9 +940,12 @@ func FetchGitLabMRBranch(projectPath, iid string, resolveSourceBranch func(iid s
 	if sourceBranch == "" {
 		return "", fmt.Errorf("could not determine source branch for MR %s", iid)
 	}
-	bare := gitDir(projectPath)
+	bare, err := OpenBare(projectPath)
+	if err != nil {
+		return "", err
+	}
 	refspec := fmt.Sprintf("+refs/merge-requests/%s/head:refs/heads/%s", iid, sourceBranch)
-	if out, fErr := exec.Command("git", "--git-dir", bare, "fetch", "origin", refspec).CombinedOutput(); fErr != nil {
+	if out, fErr := bare.CombinedOutput("fetch", "origin", refspec); fErr != nil {
 		return "", fmt.Errorf("fetch MR %s head ref: %w: %s", iid, fErr, strings.TrimSpace(string(out)))
 	}
 	return sourceBranch, nil
@@ -1001,18 +1043,32 @@ func DefaultBranchFromBareRoot(bareRoot string) string {
 // "refs/heads/feat/my-thing"). Returns an error if HEAD is detached or the
 // directory is not a git repo.
 func SymbolicRef(worktree string) (string, error) {
-	return runGit("-C", worktree, "symbolic-ref", "HEAD")
+	repo, err := OpenDir(worktree)
+	if err != nil {
+		return "", err
+	}
+	return repo.Output("symbolic-ref", "HEAD")
 }
 
 // ShortHash returns the abbreviated commit hash for HEAD in worktree.
 // Returns an error if the directory is not a git repo.
 func ShortHash(worktree string) (string, error) {
-	return runGit("-C", worktree, "rev-parse", "--short", "HEAD")
+	repo, err := OpenDir(worktree)
+	if err != nil {
+		return "", err
+	}
+	return repo.Output("rev-parse", "--short", "HEAD")
 }
 
 // CloneWorktree clones repoURL into targetDir using the prism bare+worktree layout.
 // progress receives human-readable step messages.
 func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
+	// The git commands below run in the bare dir, so the paths must be
+	// absolute.
+	targetDir, err := filepath.Abs(targetDir)
+	if err != nil {
+		return err
+	}
 	bareDir := filepath.Join(targetDir, ".bare")
 	gitFile := filepath.Join(targetDir, ".git")
 
@@ -1022,22 +1078,26 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 
 	// Clone bare.
 	progress("cloning " + repoURL + "...")
-	if out, err := exec.Command("git", "clone", "--bare", repoURL, bareDir).
+	if out, err := CloneCommand("", "--bare", repoURL, bareDir).
 		CombinedOutput(); err != nil {
 		_ = os.RemoveAll(targetDir)
 		return fmt.Errorf("git clone --bare: %w: %s", err, out)
 	}
 
+	bare, err := OpenBare(targetDir)
+	if err != nil {
+		_ = os.RemoveAll(targetDir)
+		return err
+	}
+
 	// Configure fetch refspec.
-	if out, err := exec.Command("git", "--git-dir", bareDir, "config",
-		"remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").
-		CombinedOutput(); err != nil {
+	if out, err := bare.CombinedOutput("config",
+		"remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
 		_ = os.RemoveAll(targetDir)
 		return fmt.Errorf("config fetch refspec: %w: %s", err, out)
 	}
 
-	if out, err := exec.Command("git", "--git-dir", bareDir, "fetch", "origin").
-		CombinedOutput(); err != nil {
+	if out, err := bare.CombinedOutput("fetch", "origin"); err != nil {
 		_ = os.RemoveAll(targetDir)
 		return fmt.Errorf("fetch origin: %w: %s", err, out)
 	}
@@ -1070,20 +1130,19 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	// renamed to main without yet pushing a commit, for-each-ref returns a
 	// non-empty result and we correctly keep the non-empty path, which will
 	// fail loudly if the specific default branch ref is missing.
-	refsOut, err := exec.Command("git", "--git-dir", bareDir, "for-each-ref",
-		"--count=1", "refs/heads").Output()
+	refsOut, err := bare.Output("for-each-ref", "--count=1", "refs/heads")
 	if err != nil {
 		_ = os.RemoveAll(targetDir)
 		return fmt.Errorf("for-each-ref: %w", err)
 	}
-	isEmpty := strings.TrimSpace(string(refsOut)) == ""
+	isEmpty := refsOut == ""
 
 	if isEmpty {
 		// Empty repo — skip upstream tracking (no branch exists to track) and
 		// create an orphan worktree so the user can make the first commit.
 		progress("remote repository is empty — creating orphan worktree for '" + defaultBranch + "'...")
-		if out, err := exec.Command("git", "--git-dir", bareDir, "worktree",
-			"add", "--orphan", "-b", defaultBranch, worktreeDir).CombinedOutput(); err != nil {
+		if out, err := bare.CombinedOutput("worktree",
+			"add", "--orphan", "-b", defaultBranch, worktreeDir); err != nil {
 			_ = os.RemoveAll(targetDir)
 			return fmt.Errorf("worktree add --orphan: %w: %s", err, out)
 		}
@@ -1094,17 +1153,16 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 
 	// Set upstream tracking.
 	progress("setting up tracking for branch '" + defaultBranch + "'...")
-	if out, err := exec.Command("git", "--git-dir", bareDir, "branch",
-		"--set-upstream-to", "origin/"+defaultBranch, defaultBranch).
-		CombinedOutput(); err != nil {
+	if out, err := bare.CombinedOutput("branch",
+		"--set-upstream-to", "origin/"+defaultBranch, defaultBranch); err != nil {
 		_ = os.RemoveAll(targetDir)
 		return fmt.Errorf("set upstream: %w: %s", err, out)
 	}
 
 	// Create default branch worktree.
 	progress("creating worktree for branch '" + defaultBranch + "'...")
-	if out, err := exec.Command("git", "--git-dir", bareDir, "worktree",
-		"add", worktreeDir, defaultBranch).CombinedOutput(); err != nil {
+	if out, err := bare.CombinedOutput("worktree",
+		"add", worktreeDir, defaultBranch); err != nil {
 		_ = os.RemoveAll(targetDir)
 		return fmt.Errorf("worktree add: %w: %s", err, out)
 	}

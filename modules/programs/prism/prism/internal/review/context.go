@@ -20,6 +20,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/forge"
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/gitlab"
 	"github.com/prismatic-koi/prism/internal/proglog"
 )
@@ -110,10 +111,11 @@ const gitWorktreeTimeout = 10 * time.Second
 func runGitInWorktree(worktree string, args ...string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), gitWorktreeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
-	if worktree != "" {
-		cmd.Dir = worktree
+	repo, err := git.OpenDir(worktree)
+	if err != nil {
+		return ""
 	}
+	cmd := repo.Command(ctx, args...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
@@ -169,8 +171,14 @@ const ghTimeout = 30 * time.Second
 func runGH(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ghTimeout)
 	defer cancel()
+	// gh finds the repo with git in the cwd. On the /review path the cwd is
+	// the worktree of the session, so git.EnvForDir pins the git dir.
+	env, err := git.EnvForDir("", sanitisedGHEnv(os.Environ()))
+	if err != nil {
+		return "", fmt.Errorf("gh %s: %w", strings.Join(args, " "), err)
+	}
 	cmd := exec.CommandContext(ctx, "gh", args...)
-	cmd.Env = sanitisedGHEnv(os.Environ())
+	cmd.Env = env
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

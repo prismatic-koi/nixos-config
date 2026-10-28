@@ -10,8 +10,9 @@
 package forge
 
 import (
-	"os/exec"
 	"strings"
+
+	"github.com/prismatic-koi/prism/internal/git"
 )
 
 // Forge identifies which git hosting service a remote belongs to.
@@ -47,15 +48,15 @@ func IsGitLab(remoteURL string) bool {
 // git repo, no origin remote, git not on PATH) — callers should treat that
 // as "cannot determine, assume GitHub", matching FromRemoteURL's default.
 func OriginRemoteURL(dir string) string {
-	args := []string{"remote", "get-url", "origin"}
-	if dir != "" {
-		args = append([]string{"-C", dir}, args...)
-	}
-	out, err := exec.Command("git", args...).Output()
+	repo, err := git.OpenDir(dir)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	url, err := repo.Output("remote", "get-url", "origin")
+	if err != nil {
+		return ""
+	}
+	return url
 }
 
 // DetectFromDir combines OriginRemoteURL and FromRemoteURL for the common

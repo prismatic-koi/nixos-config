@@ -19,6 +19,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/git"
 )
 
 // glabTimeout is the per-call timeout for a glab invocation. Matches the
@@ -69,12 +71,18 @@ type execRunner struct{}
 func (execRunner) Run(args ...string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), glabTimeout)
 	defer cancel()
+	// Without -R, glab finds the repo with git in the cwd, which can be the
+	// worktree of a session. git.EnvForDir pins the git dir.
+	env, err := git.EnvForDir("", os.Environ())
+	if err != nil {
+		return "", "", fmt.Errorf("glab %s: %w", strings.Join(args, " "), err)
+	}
 	cmd := exec.CommandContext(ctx, "glab", args...)
-	cmd.Env = os.Environ()
+	cmd.Env = env
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return stdout.String(), stderr.String(),
 			fmt.Errorf("glab %s timed out after %s: %w", strings.Join(args, " "), glabTimeout, context.DeadlineExceeded)

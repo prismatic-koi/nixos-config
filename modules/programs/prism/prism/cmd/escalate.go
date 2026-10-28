@@ -789,8 +789,15 @@ func newEscalateHostAPIClient(apiURL string) (*http.Client, string, error) {
 // runCmdInDir runs name with args in dir and returns stdout. A non-zero exit
 // returns an error that includes the stderr output.
 func runCmdInDir(dir, name string, args ...string) (string, error) {
+	// dir is the worktree of the calling session. gh finds the repo with git
+	// in dir, so git.EnvForDir pins the git dir.
+	env, err := git.EnvForDir(dir, os.Environ())
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
 	c := exec.Command(name, args...)
 	c.Dir = dir
+	c.Env = env
 	var stdout, stderr bytes.Buffer
 	c.Stdout = &stdout
 	c.Stderr = &stderr
