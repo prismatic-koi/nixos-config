@@ -50,7 +50,10 @@ a dir with its own config and hooks:
 - `.bare/worktrees/<own>/commondir` names the common dir, where git reads
   `config` and `hooks/`.
 - `.bare/commondir` does the same for a command with `GIT_DIR=.bare`. A
-  bwrap session can write it before #3315.
+  bwrap session can write it: #3315 deliberately does not pin the top-level
+  `.bare/commondir` (no commondir content is a no-op — any such file makes
+  git treat the project root as a work tree). #3327 binds `.bare`
+  read-only.
 - A `.bare` in a subdir of the worktree. A walk up from a cwd in that
   subdir finds it before the real project root. A sandboxed coordinator
   can also name that subdir as the project root, through the `repo` field
