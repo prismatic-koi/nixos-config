@@ -172,6 +172,9 @@ func BuildReviewChildSummaries(children []AgentSession) []ReviewChildSummary {
 		// looking for "review-" anchored after a "-".
 		// Simplest: split on "-" and look for "review-<rest>" suffix.
 		if name := trailingReviewAgent(ch.Name); name != "" {
+			if prev, seen := byAgent[name]; seen && review.FallbackIndexFromSession(prev.Name) > review.FallbackIndexFromSession(ch.Name) {
+				continue
+			}
 			byAgent[name] = ch
 		}
 	}
@@ -212,7 +215,30 @@ func trailingReviewAgent(sessionName string) string {
 	if len(sessionName) <= len(rk)+1 {
 		return ""
 	}
-	return sessionName[len(rk)+1:]
+	// The name parser of internal/review strips a "-fallback-<k>" suffix, so a
+	// fallback session maps to the base role of its agent.
+	return review.AgentNameFromSession(rk + "-" + sessionName[len(rk)+1:])
+}
+
+// latestAttempts drops each review session that a later fallback of the same
+// agent replaced. It keeps the order of children.
+func latestAttempts(children []AgentSession) []AgentSession {
+	best := map[string]int{}
+	for _, ch := range children {
+		if a := trailingReviewAgent(ch.Name); a != "" {
+			if k := review.FallbackIndexFromSession(ch.Name); k > best[a] {
+				best[a] = k
+			}
+		}
+	}
+	out := make([]AgentSession, 0, len(children))
+	for _, ch := range children {
+		if a := trailingReviewAgent(ch.Name); a != "" && review.FallbackIndexFromSession(ch.Name) < best[a] {
+			continue
+		}
+		out = append(out, ch)
+	}
+	return out
 }
 
 // ── width budget ─────────────────────────────────────────────────────────────
