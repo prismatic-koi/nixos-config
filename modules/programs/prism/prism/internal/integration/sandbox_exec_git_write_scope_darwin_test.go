@@ -197,32 +197,52 @@ git update-ref refs/stash HEAD && fail 27
 echo plant > "$BARE/.bare/worktrees/main/HEAD" && fail 28
 mv "$BARE/.bare/objects" "$WT/objects-moved" && fail 29
 git config branch.feature.description plant && fail 30
+gd=$(git rev-parse --git-dir)
+echo plant >> "$gd/commondir" && fail 31
+echo plant >> "$gd/gitdir" && fail 32
+echo '[core]' > "$gd/config.worktree" && fail 33
+echo ../.. > "$gd/commondir.new" && mv "$gd/commondir.new" "$gd/commondir" && fail 34
 exit 0`
 
 // TestSandboxExecGitWriteScope_WorkerGitWorksAndPlantsFail: under the
 // production profile a worker commits, fetches, pushes, rebases, and lists
 // the worktrees. It cannot write in the main worktree, at the project root,
 // in .bare/config, in .bare/hooks, in the git dir of main, or in the branch
-// ref of main or the stash ref, and it cannot move .bare/objects.
+// ref of main or the stash ref, and it cannot move .bare/objects. In its own
+// git dir, it cannot write commondir, gitdir, or config.worktree.
 func TestSandboxExecGitWriteScope_WorkerGitWorksAndPlantsFail(t *testing.T) {
 	f := newGitScopeFixture(t, "feature", "worker", false)
 	configBefore, err := os.ReadFile(f.bare("config"))
 	if err != nil {
 		t.Fatalf("read .bare/config: %v", err)
 	}
+	redirectBefore := map[string]string{}
+	for _, name := range []string{"commondir", "gitdir"} {
+		data, err := os.ReadFile(f.bare("worktrees", "feature", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		redirectBefore[name] = string(data)
+	}
 	mainBefore := hostGit(t, f.nixGit, f.bareRoot, "--git-dir", f.bare(), "rev-parse", "refs/heads/main")
 
 	profilePath := writeAugmentedPositiveProfile(t, f.prepared)
 	out, err := f.run(t, profilePath, workerScript)
 	if err != nil {
-		t.Fatalf("worker git work failed (exit 10-18) or a plant was not blocked (exit 20-30).\nExit: %v\nOutput: %s\nProfile: %s",
+		t.Fatalf("worker git work failed (exit 10-18) or a plant was not blocked (exit 20-34).\nExit: %v\nOutput: %s\nProfile: %s",
 			err, out, profilePath)
 	}
 
 	if configAfter, _ := os.ReadFile(f.bare("config")); string(configAfter) != string(configBefore) {
 		t.Errorf(".bare/config changed:\nbefore:\n%s\nafter:\n%s", configBefore, configAfter)
 	}
+	for name, before := range redirectBefore {
+		if after, _ := os.ReadFile(f.bare("worktrees", "feature", name)); string(after) != before {
+			t.Errorf("%s of the git dir changed:\nbefore: %q\nafter: %q", name, before, after)
+		}
+	}
 	for _, p := range []string{
+		f.bare("worktrees", "feature", "config.worktree"),
 		filepath.Join(f.bareRoot, "main", "plant.txt"),
 		filepath.Join(f.bareRoot, "main", ".pi"),
 		filepath.Join(f.bareRoot, ".agents"),
@@ -319,6 +339,36 @@ func TestSandboxExecGitWriteScope_ObjectsReplaceableWithoutNodeDeny(t *testing.T
 	}
 	if fi, err := os.Lstat(f.bare("objects")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Errorf("without the node deny .bare/objects is not a symlink after the swap: %v", err)
+	}
+}
+
+// TestSandboxExecGitWriteScope_RedirectFilesWritableWithoutDeny is the
+// paired negative test for section 21j: with the deny removed, the session
+// writes config.worktree and replaces commondir in its git dir.
+func TestSandboxExecGitWriteScope_RedirectFilesWritableWithoutDeny(t *testing.T) {
+	f := newGitScopeFixture(t, "feature", "worker", false)
+	gitDir, err := git.ResolveWorktreeGitDir(f.worktree)
+	if err != nil {
+		t.Fatalf("ResolveWorktreeGitDir: %v", err)
+	}
+	var lits []string
+	for _, name := range []string{"commondir", "gitdir", "config.worktree"} {
+		lits = append(lits, "(literal "+sbplQuoteForTest(filepath.Join(gitDir, name))+")")
+	}
+	redirectDeny := "(deny file-write*\n  " + strings.Join(lits, "\n  ") + ")\n"
+	profilePath := withMutatedProfile(t, f.m, func(p string) string {
+		return strings.Replace(p, redirectDeny, "", 1)
+	})
+
+	out, err := f.run(t, profilePath, `gd=$(git rev-parse --git-dir) &&
+echo '[core]' > "$gd/config.worktree" &&
+echo ../.. > "$gd/commondir.new" && mv "$gd/commondir.new" "$gd/commondir"`)
+	if err != nil {
+		t.Fatalf("without the deny the writes still failed, so the positive test proves nothing.\nExit: %v\nOutput: %s\nProfile: %s",
+			err, out, profilePath)
+	}
+	if _, err := os.Stat(filepath.Join(gitDir, "config.worktree")); err != nil {
+		t.Errorf("without the deny config.worktree is missing after the write: %v", err)
 	}
 }
 

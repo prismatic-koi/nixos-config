@@ -8,9 +8,10 @@
   worktree. They exist in a repo at run time, not in this source tree.
 -->
 
-Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap).
+Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap),
+#3322 (host-side git in a worker worktree).
 Code: `internal/container/git_write_scope.go`, sections 6, 6e, 17b, 21b,
-and 21i of `generateProfile` in `internal/container/sandbox_exec.go`, and
+21i, and 21j of `generateProfile` in `internal/container/sandbox_exec.go`, and
 the git step of `sandboxExecIsolator.Prepare` in
 `internal/container/lifecycle_dispatch.go`.
 
@@ -33,7 +34,7 @@ A session can write these paths in its repo, and no other path:
 | `.bare/refs/remotes/`, `.bare/logs/refs/remotes/` | Each session. | A fetch writes each remote-tracking ref and its reflog. A push writes the ref of the pushed branch. |
 | `.bare/refs/tags/` | Each session. | A fetch writes the tags that it follows. |
 | `.bare/packed-refs`, with `.lock` and `.new` | Each session. | A ref delete (`git fetch --prune`) rewrites the file. Each update of a packed ref takes the lock. |
-| `.bare/worktrees/<id>/` of its worktree | Each session that can write its worktree. | `HEAD`, `index`, `logs/HEAD`, `FETCH_HEAD`, `ORIG_HEAD`, and `rebase-merge/`. |
+| `.bare/worktrees/<id>/` of its worktree, except `commondir`, `gitdir`, and `config.worktree` | Each session that can write its worktree. | `HEAD`, `index`, `logs/HEAD`, `FETCH_HEAD`, `ORIG_HEAD`, and `rebase-merge/`. |
 | `FETCH_HEAD` in `.bare/worktrees/<id>/` of its worktree | A review agent and an investigator. | A fetch writes it. `git status`, `git diff`, and `git log` work when git cannot write the index. |
 | The branch ref and the reflog of its worktree, each with `.lock` | Each session that can write its worktree. | A commit, a rebase, and a pull move the branch. |
 | The stash ref and its reflog, each with `.lock` | The coordinator only. | The coordinator is the only prism session that can use `git stash`. |
@@ -52,6 +53,7 @@ reads the git dirs of the other worktrees for `git worktree list`.
 | `.bare/hooks/` | git runs a hook in each worktree. prism on the host runs `git worktree add` for each spawn, and that command runs `post-checkout`. |
 | `.bare/worktrees/<id>/` of another worktree | `HEAD` and `index` of another worktree decide what its next commit holds. A review agent runs in the worktree of its worker, and an investigator runs in the worktree of the session that started it, often `main`. So these two get only `FETCH_HEAD` in the git dir of their worktree. |
 | The branch ref of another worktree, and the stash ref | The next pull, reset, or stash pop in that worktree writes the files of the commit that the ref names. |
+| `commondir`, `gitdir`, and `config.worktree` in `.bare/worktrees/<id>/` of its own worktree | Each git command in the worktree reads them, prism on the host included. For example, the pre-flight of `prism review` runs `git fetch` in the worktree. A `commondir` that names a dir of the session gives git the config and the hooks of that dir. git does not write these files for a commit, a fetch, a push, a rebase, a pull, `git status`, or `git gc`. |
 | `.bare/gc.pid`, `.bare/info/` | `git gc` writes them, and it also rewrites the reflogs of every worktree. A session does not run `git gc`. |
 
 ## How prism decides the scope
@@ -110,9 +112,13 @@ isolator can use the same function (#3315).
   of each dir node that section 6e grants as a subpath. Without it, a
   session can move `.bare/objects` away and put a symlink to a dir of its
   choice at the path.
+- Section 21j denies each write of `commondir`, `gitdir`, and
+  `config.worktree` in the worktree git dir, which section 6e grants as a
+  subpath.
 - Each deny follows every allow, because SBPL takes the later rule.
-  `TestGenerateProfile_GitNodeDenyFollowsEveryAllow` pins the order of
-  section 21i.
+  `TestGenerateProfile_GitNodeDenyFollowsEveryAllow` and
+  `TestGenerateProfile_GitRedirectFileDenyFollowsEveryAllow` pin the order
+  of sections 21i and 21j.
 
 ## Known limits
 
@@ -136,3 +142,7 @@ isolator can use the same function (#3315).
   then collect until a git command on the host runs `git gc`.
 - **bwrap.** bwrap binds the whole `.bare` read-write. A bwrap session can
   write `.bare/config` and `.bare/hooks`. Follow-up: #3315.
+- **The `.git` file of the worktree.** The session can write the `.git`
+  file of its worktree, which names the git dir. A git command on the host
+  in the worktree follows it. Section 21j does not cover this file.
+  Follow-up: #3322.

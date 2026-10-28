@@ -39,6 +39,14 @@ var gitSharedWriteDirs = []string{"objects", "refs/remotes", "refs/tags", "logs/
 // ref delete (fetch --prune) and for each update of a packed ref.
 var gitSharedWriteFiles = []string{"packed-refs", "packed-refs.lock", "packed-refs.new"}
 
+// gitDirRedirectFiles are the files in a worktree git dir that tell git
+// where the common dir is, where the worktree is, and which extra config to
+// read. Each git command in the worktree reads them, host-side commands
+// included. A commondir that names a dir of the session gives git the
+// config and the hooks of that dir. git writes none of them for a commit, a
+// fetch, a push, a rebase, a pull, git status, or git gc.
+var gitDirRedirectFiles = []string{"commondir", "gitdir", "config.worktree"}
+
 // gitStashRef is the stash ref. It is shared by all worktrees, so only the
 // coordinator, the one prism session that can use git stash, can write it.
 const gitStashRef = "refs/stash"
@@ -209,7 +217,8 @@ func refWriteFiles(ref string) []string {
 //   - The stash ref: the coordinator only. A worker that writes the stash
 //     can change the files that the next git stash pop of the coordinator
 //     writes in the main worktree.
-//   - The worktree git dir: a session that can write its worktree.
+//   - The worktree git dir: a session that can write its worktree. Section
+//     21j takes back the redirect files in it (gitDirRedirectFiles).
 //   - FETCH_HEAD in the worktree git dir: a session that cannot write its
 //     worktree. A review agent runs in the worktree of its worker, and an
 //     investigator runs in the worktree of the session that started it,
@@ -274,6 +283,20 @@ func (s gitWriteScope) sbplNodeDeny() string {
 	}
 	return "(deny file-write-unlink file-write-create file-write-mode file-write-flags file-write-acl\n  " +
 		strings.Join(rules, "\n  ") + ")\n"
+}
+
+// sbplRedirectFileDeny returns the section-21j clause: no write of the
+// redirect files in the worktree git dir, which section 6e grants as a
+// subpath. It returns "" when the scope has no git dir.
+func (s gitWriteScope) sbplRedirectFileDeny() string {
+	if s.GitDir == "" {
+		return ""
+	}
+	var rules []string
+	for _, f := range gitDirRedirectFiles {
+		rules = append(rules, "(literal "+quoteSBPL(filepath.Join(s.GitDir, f))+")")
+	}
+	return "(deny file-write*\n  " + strings.Join(rules, "\n  ") + ")\n"
 }
 
 // prepareGitWriteDirs makes, on the host, the dirs that git needs before

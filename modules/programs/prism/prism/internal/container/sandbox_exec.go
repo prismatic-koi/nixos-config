@@ -1419,6 +1419,22 @@ func generateProfile(m *Manager) string {
 		}
 	}
 
+	// ── 21j. FINAL DENY — the git dir redirect files cannot be written ─
+	// Section 6e grants a subpath of the worktree git dir. commondir,
+	// gitdir, and config.worktree in it tell git where the common dir is and
+	// which config to read, for each git command in the worktree, prism on
+	// the host included. A commondir that names a dir of the session gives
+	// git the config and the hooks of that dir. git does not write these
+	// files in normal use (git_write_scope.go). The deny must follow every
+	// allow. TestGenerateProfile_GitRedirectFileDenyFollowsEveryAllow pins
+	// the order.
+	if m.cfg.BareRoot != "" {
+		if clause := gitScope.sbplRedirectFileDeny(); clause != "" {
+			sb.WriteString("\n")
+			sb.WriteString(clause)
+		}
+	}
+
 	// ── 22. FINAL DENIES — Go module cache is not executable ─
 	// The module cache holds downloaded dependency SOURCE. Section 5k grants
 	// it read-write because the toolchain must populate it. Without this deny,

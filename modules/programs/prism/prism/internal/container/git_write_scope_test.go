@@ -410,6 +410,35 @@ func TestGenerateProfile_GitNodeDenyFollowsEveryAllow(t *testing.T) {
 	}
 }
 
+// TestGenerateProfile_GitRedirectFileDenyFollowsEveryAllow: the section-21j
+// deny of commondir, gitdir, and config.worktree in the worktree git dir
+// follows every allow. SBPL takes the later rule, so an allow after the
+// deny gives the write back, and section 6e grants the whole git dir.
+func TestGenerateProfile_GitRedirectFileDenyFollowsEveryAllow(t *testing.T) {
+	root := newGitLayout(t, "feature")
+	m := newGitScopeManager(t, root, "feature", Config{AgentRole: "worker", Harness: "pi"})
+	profile := generateProfile(m)
+
+	var lits []string
+	for _, f := range []string{"commondir", "gitdir", "config.worktree"} {
+		lits = append(lits, "(literal "+quoteSBPL(filepath.Join(gitDirFor(root, "feature"), f))+")")
+	}
+	deny := "(deny file-write*\n  " + strings.Join(lits, "\n  ") + ")\n"
+	denyAt := strings.Index(profile, deny)
+	if denyAt < 0 {
+		t.Fatalf("profile has no git redirect file deny %q.\nprofile:\n%s", deny, profile)
+	}
+	if allowAt := strings.LastIndex(profile, "(allow "); allowAt > denyAt {
+		t.Errorf("an allow clause (offset %d) follows the git redirect file deny (offset %d).\nprofile:\n%s", allowAt, denyAt, profile)
+	}
+
+	// With no git dir, the profile grants none and needs no deny.
+	m.cfg.WorktreeGitDir = gitDirFor(root, "main")
+	if profile := generateProfile(m); strings.Contains(profile, "commondir") {
+		t.Errorf("profile names commondir with no accepted git dir:\n%s", profile)
+	}
+}
+
 // TestGenerateProfile_NoGitScopeWithoutBareRoot: a project with no
 // worktrees has no BareRoot, and the profile names no .bare path.
 func TestGenerateProfile_NoGitScopeWithoutBareRoot(t *testing.T) {
