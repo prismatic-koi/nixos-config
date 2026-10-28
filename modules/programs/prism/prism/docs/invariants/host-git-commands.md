@@ -113,6 +113,56 @@ accepts only a plain project name: no path separator, not `.` or `..`, and
 no leading `-` or `~`. `resolveRepo` in `cmd/spawn.go` refuses a root
 inside another project, for a path that a user types on the host too.
 
+## Project roots
+
+Issue: #3330. Code: `IsProjectRoot` and `SameDir` in
+`internal/config/project_roots.go`, `OpenBare` in `internal/git/host.go`,
+and `switchPathForSession` in `internal/sidecar/switch_path.go`.
+
+- `OpenBare(root)` refuses a root that is not a prism project root in
+  config.json. A prism project root is a dir in a `project_locations`
+  entry, or a `project_specific` entry. The error wraps
+  `ErrNotProjectRoot`.
+- A sandboxed session can write dirs outside the project roots, for
+  example under `~/.npm`. It can make a `.bare` there with a config that
+  sets `core.sshCommand` or a filter driver. The command-line config does
+  not turn off these keys. So host git must not run in such a root.
+- `OpenBare` compares the root with each entry by file identity
+  (`SameDir`). So it accepts a root that a symlink reaches, and a root
+  with another letter case on a case-insensitive macOS volume.
+  `projecttrust` uses the same reader.
+- `OpenWorktree`, `OpenDir`, and `EnvForDir` call `OpenBare`, so they
+  refuse such a root too. `CloneWorktree` and `ConvertToBare` refuse it
+  before the clone.
+- A sandbox cannot read config.json. So in a sandbox, `OpenBare` uses the
+  default project roots, `~/code` and `~/documents/obsidian`.
+
+`/switch` gives a dir to `prism switch --path`, which runs host git in it.
+The handler takes that dir from the project roots and from host git, not
+from `agent_status`. The `/event` proxy writes the `worktree` column of
+the row of its own session, so a sandboxed session can set that value.
+
+- For `<repo>@<branch>`, the dir is the worktree of the project root named
+  `<repo>` that `session.NameFor` gives that name. For a name with no
+  branch, the dir is a project root with that name and no `.bare`. A
+  descendant gets the dir of its root session.
+- A session can write the `gitdir` file of its own entry in
+  `.bare/worktrees`. Then `git worktree list` lists a path that the
+  session chose. `/switch` accepts a listed path only if it is in the
+  project root and `OpenDir` gives it as the work tree.
+- If no dir has the name, `/switch` returns HTTP 404. If two dirs have
+  it, `/switch` returns HTTP 500 and names the two dirs.
+
+Tests: `TestOpenBare_RefusesRootOutsideProjectRoots` plants a `.bare`
+with `core.sshCommand` outside the project roots, and makes sure that the
+plant runs with plain pinned git and does not run with prism.
+`TestOpenBare_AcceptsConfiguredProjectRoots` covers the symlink and the
+letter case. `TestSwitchPathForSession`,
+`TestSwitchPathForSession_RedirectedOwnEntry`, and
+`TestHostAPI_Switch_IgnoresTheAgentStatusWorktree` cover `/switch`.
+`TestSwitch_TwoStepPathToAWritableDir_3330` runs the two steps of the
+issue from end to end.
+
 ## What prism does not change
 
 - `core.sshCommand` and `credential.helper` keep their values. Fetch and
@@ -132,12 +182,6 @@ inside another project, for a path that a user types on the host too.
   in the submodule, and a filter driver from the submodule config runs on
   the host. The pin and the command-line config do not stop this.
   Follow-up: #3323.
-- **A project root outside every project.** `OpenBare` accepts a root that
-  is not inside a prism project. If a sandboxed session can write such a
-  dir (for example under `~/.npm`) and can make prism use it as a session
-  dir (a DB row that it writes through `/event`, then `/switch`), then a
-  later host git command for that session reads config that the session
-  wrote.
 - **A project that is not a prism project.** Outside a prism project,
   `OpenDir` does not pin the git dir: git finds it from the dir. A session
   that runs in a plain clone can write its `.git`, so a host git command

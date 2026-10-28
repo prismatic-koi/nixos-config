@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 )
 
 // newGitLayout makes a prism bare+worktree layout with no git objects: for
@@ -572,6 +574,7 @@ func initBareCommonDir(t *testing.T, root string) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not on PATH: %v", err)
 	}
+	configtest.AllowProjectRoots(t, root)
 	if out, err := exec.Command("git", "init", "-q", "--bare", filepath.Join(root, ".bare")).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v: %s", err, out)
 	}

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/git"
 )
 
@@ -51,6 +52,7 @@ func newPreflightLayout(t *testing.T) preflightLayout {
 	mustGit(t, seed, "push", "-q", "origin", "main")
 
 	root := filepath.Join(tmp, "proj")
+	configtest.AllowProjectRoots(t, root)
 	if err := git.CloneWorktree(origin, root, func(string) {}); err != nil {
 		t.Fatalf("CloneWorktree: %v", err)
 	}

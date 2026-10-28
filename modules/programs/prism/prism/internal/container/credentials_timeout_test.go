@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/container"
 )
 
@@ -67,6 +68,7 @@ func writeCountScript(t *testing.T, dir, name, remoteURL string) string {
 func newStubBareRoot(t *testing.T) string {
 	t.Helper()
 	bareRoot := t.TempDir()
+	configtest.AllowProjectRoots(t, bareRoot)
 	if err := os.Mkdir(filepath.Join(bareRoot, ".bare"), 0o755); err != nil {
 		t.Fatalf("mkdir .bare: %v", err)
 	}
@@ -231,6 +233,7 @@ func TestGithubAccountFromBareRoot_ExistingHappyPath(t *testing.T) {
 
 	const remoteURL = "git@github.com:prismatic-koi/nixos-config.git"
 	bareRoot := t.TempDir()
+	configtest.AllowProjectRoots(t, bareRoot)
 	bareDir := filepath.Join(bareRoot, ".bare")
 	if out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v\n%s", err, out)

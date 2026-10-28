@@ -37,6 +37,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
@@ -195,7 +196,7 @@ func TestHostAPI_ExecContext_KillsChildOnCancel(t *testing.T) {
 			role:        "coordinator",
 			sessionName: "myrepo@main",
 			repo:        "myrepo",
-			body:        `{"session":"myrepo@feature-x"}`,
+			body:        `{"session":"prism-test-switch-target"}`,
 		},
 		{
 			name:        "event",
@@ -241,13 +242,16 @@ func TestHostAPI_ExecContext_KillsChildOnCancel(t *testing.T) {
 			pidFile := filepath.Join(t.TempDir(), "child.pid")
 			sc := newSidecarWithSleepStub(t, tc.sessionName, tc.repo, tc.role, pidFile, d)
 
-			// /switch resolves the target session's worktree from the DB
-			// before shelling out, so we must seed an agent_status row for
-			// the target. Without this the handler returns 500 before exec.
+			// /switch resolves the dir of the target session from the
+			// prism project roots in config.json before shelling out, so
+			// the target must be a project root. Without this the handler
+			// returns 404 before exec.
 			if tc.path == "/switch" {
-				if err := d.UpsertStatus("myrepo@feature-x", "myrepo", "/tmp/myrepo-feature-x", "active", nil, nil); err != nil {
-					t.Fatalf("seed switch target session: %v", err)
+				target := filepath.Join(t.TempDir(), "prism-test-switch-target")
+				if err := os.Mkdir(target, 0o755); err != nil {
+					t.Fatalf("mkdir switch target: %v", err)
 				}
+				configtest.AllowProjectRoots(t, target)
 			}
 
 			// Drive the handler in a goroutine so we can synchronise on the

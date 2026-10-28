@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
@@ -288,6 +289,7 @@ func TestCredentialEnvVars_WorkerGetsWorkerToken(t *testing.T) {
 func makeBareRootWithRemote(t *testing.T, remoteURL string) string {
 	t.Helper()
 	bareRoot := t.TempDir()
+	configtest.AllowProjectRoots(t, bareRoot)
 	bareDir := filepath.Join(bareRoot, ".bare")
 	out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput()
 	if err != nil {

@@ -28,6 +28,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/config"
 )
 
 // hostGitConfig is the config that every host git command gets as
@@ -72,6 +74,10 @@ var hostGitStrippedEnv = []string{
 // the git dir, and a sandboxed session can write its own git dir.
 var ErrWorktreeConfig = errors.New("extensions.worktreeConfig is on in the common config. With it, git reads config.worktree from a git dir that a sandboxed session can write, so prism does not run host git commands in this repo")
 
+// ErrNotProjectRoot is returned when a project root is not a prism project
+// root in config.json.
+var ErrNotProjectRoot = errors.New("not a prism project root. A prism project root is a dir in a project_locations entry of the prism config.json, or a project_specific entry. A sandboxed session can write a dir outside these, so prism does not run git in it")
+
 // worktreeConfigCheckTimeout bounds the config read of refuseWorktreeConfig.
 // The read is local, so a longer run means that git hangs.
 const worktreeConfigCheckTimeout = 5 * time.Second
@@ -108,6 +114,11 @@ func (r Repo) Pinned() bool { return r.gitDir != "" }
 // sandboxed session cannot write: the session record, a project name under a
 // configured project location, or OuterBareRoot.
 //
+// OpenBare refuses a root that is not a prism project root in config.json
+// (config.Config.IsProjectRoot). A sandboxed session can write dirs outside
+// every project, for example under ~/.npm, and so can make the .bare of such
+// a root.
+//
 // OpenBare refuses a root inside another prism project. Such a root is in a
 // worktree, so a sandboxed session can have made its .bare.
 //
@@ -122,6 +133,9 @@ func OpenBare(root string) (Repo, error) {
 	}
 	if outer := OuterBareRoot(abs); outer != "" && outer != abs {
 		return Repo{}, fmt.Errorf("host git: %s is inside the prism project %s, so prism does not run git in it", abs, outer)
+	}
+	if err := requireProjectRoot(abs); err != nil {
+		return Repo{}, err
 	}
 	gitDir := filepath.Join(abs, ".bare")
 	if _, statErr := os.Lstat(gitDir); errors.Is(statErr, os.ErrNotExist) && IsRawBareGitDir(abs) {
@@ -465,6 +479,16 @@ func isStrippedGitEnv(k string) bool {
 		}
 	}
 	return false
+}
+
+// requireProjectRoot returns ErrNotProjectRoot unless the absolute path root
+// is a prism project root in config.json. It reads config.json each time, so
+// a long-running process sees a config that a switch rewrote.
+func requireProjectRoot(root string) error {
+	if !config.LoadFresh().IsProjectRoot(root) {
+		return fmt.Errorf("host git: %s: %w", root, ErrNotProjectRoot)
+	}
+	return nil
 }
 
 // requireRealDir returns an error unless p is a directory and not a symlink.

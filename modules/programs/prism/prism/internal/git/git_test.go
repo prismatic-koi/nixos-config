@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 )
 
 // initRepo creates a minimal git repo at dir on branchName with one commit.
@@ -182,6 +184,7 @@ func runGitIn(t *testing.T, dir string, args ...string) string {
 
 func TestConvertToBare(t *testing.T) {
 	dir := t.TempDir()
+	configtest.AllowProjectRoots(t, dir)
 	remoteDir := t.TempDir()
 	initRepoWithRemote(t, dir, remoteDir, "main")
 
@@ -273,6 +276,7 @@ func TestConvertToBare(t *testing.T) {
 
 func TestConvertToBare_SlashBranch(t *testing.T) {
 	dir := t.TempDir()
+	configtest.AllowProjectRoots(t, dir)
 	remoteDir := t.TempDir()
 	branchName := "feat/foo"
 	initRepoWithRemote(t, dir, remoteDir, branchName)
@@ -310,6 +314,7 @@ func TestConvertToBare_SlashBranch(t *testing.T) {
 
 func TestConvertToBare_PreexistingFiles(t *testing.T) {
 	dir := t.TempDir()
+	configtest.AllowProjectRoots(t, dir)
 	remoteDir := t.TempDir()
 	initRepoWithRemote(t, dir, remoteDir, "main")
 
@@ -350,6 +355,7 @@ func TestConvertToBare_PreexistingFiles(t *testing.T) {
 
 func TestConvertToBare_NoRemote(t *testing.T) {
 	dir := t.TempDir()
+	configtest.AllowProjectRoots(t, dir)
 	// initRepo creates a repo with no remote.
 	initRepo(t, dir, "main")
 
@@ -606,6 +612,7 @@ func initEmptyBareRepo(t *testing.T, dir, defaultBranch string) {
 func TestCloneWorktree_EmptyRepo(t *testing.T) {
 	remoteDir := t.TempDir()
 	targetDir := t.TempDir()
+	configtest.AllowProjectRoots(t, targetDir)
 
 	initEmptyBareRepo(t, remoteDir, "main")
 
@@ -680,6 +687,7 @@ func TestCloneWorktree_EmptyRepo(t *testing.T) {
 func TestCloneWorktree_NonEmptyRepo(t *testing.T) {
 	remoteDir := t.TempDir()
 	targetDir := t.TempDir()
+	configtest.AllowProjectRoots(t, targetDir)
 
 	// Create a non-empty bare remote: clone a repo with one commit.
 	srcDir := t.TempDir()
@@ -789,6 +797,7 @@ func TestConvertToBare_PostMoveRollback(t *testing.T) {
 		step := step // capture
 		t.Run(step, func(t *testing.T) {
 			dir := t.TempDir()
+			configtest.AllowProjectRoots(t, dir)
 			remoteDir := t.TempDir()
 			initRepoWithRemote(t, dir, remoteDir, "main")
 
@@ -819,6 +828,7 @@ func TestConvertToBare_PostMoveRollback(t *testing.T) {
 // directory succeeds â i.e. rollback fully restores the pre-conversion state.
 func TestConvertToBare_RollbackEnablesRerun(t *testing.T) {
 	dir := t.TempDir()
+	configtest.AllowProjectRoots(t, dir)
 	remoteDir := t.TempDir()
 	initRepoWithRemote(t, dir, remoteDir, "main")
 

@@ -5,11 +5,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 )
 
 // TestOriginRemoteURL returns the origin URL of a bare-layout repo.
 func TestOriginRemoteURL(t *testing.T) {
 	bareRoot := t.TempDir()
+	configtest.AllowProjectRoots(t, bareRoot)
 	origin := t.TempDir()
 	tmpRepo := t.TempDir()
 	initRepo(t, tmpRepo, "main")
@@ -60,6 +63,7 @@ func TestFetchGitLabMRBranch(t *testing.T) {
 	}
 
 	bareRoot := t.TempDir()
+	configtest.AllowProjectRoots(t, bareRoot)
 	barePath := filepath.Join(bareRoot, ".bare")
 	if out, err := exec.Command("git", "clone", "--bare", origin, barePath).CombinedOutput(); err != nil {
 		t.Fatalf("clone .bare: %v\n%s", err, out)

@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/container"
 )
 
@@ -33,6 +34,7 @@ func setupBareRepo(t *testing.T, remoteURL string) string {
 		t.Skip("git not available")
 	}
 	bareRoot := t.TempDir()
+	configtest.AllowProjectRoots(t, bareRoot)
 	bareDir := filepath.Join(bareRoot, ".bare")
 	if out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v\n%s", err, out)
