@@ -1470,6 +1470,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Isolation             string   `json:"isolation"`
 			Harness               string   `json:"harness"`
 			IgnoreConcurrencyCap  bool     `json:"ignore_concurrency_cap"`
+			OverBudget            string   `json:"over_budget"`
 			Reuse                 bool     `json:"reuse"`
 			ModelVariantOverrides string   `json:"model_variant_overrides"` // JSON-encoded map[string]string
 			Abtest                []string `json:"abtest"`                  // two-element array of profile names
@@ -1680,6 +1681,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.IgnoreConcurrencyCap {
 			args = append(args, "--ignore-concurrency-cap")
 		}
+		if req.OverBudget != "" {
+			args = append(args, "--over-budget", req.OverBudget)
+		}
 		if req.Reuse {
 			args = append(args, "--reuse")
 		}
@@ -1726,6 +1730,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.IgnoreConcurrencyCap {
 			logArgs = append(logArgs, "--ignore-concurrency-cap")
+		}
+		if req.OverBudget != "" {
+			logArgs = append(logArgs, "--over-budget", "<omitted>")
 		}
 		if req.Reuse {
 			logArgs = append(logArgs, "--reuse")

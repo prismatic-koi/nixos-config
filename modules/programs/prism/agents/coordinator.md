@@ -79,7 +79,7 @@ Use `prism spawn`. Load the prism skill first if not already loaded. Record the 
 - `--prompt` must be self-contained: include enough context that the agent doesn't need to ask clarifying questions. Reference the ticket/issue number so the agent can read it directly.
 - `--profile <tier>` — for non-trivial spawns, pass the tier selected in the Complexity triage section (above). This is a primary field, not an optional override.
 - Note the session name printed by prism — you will need it for check-ins and cleanup.
-- If `prism spawn` prints a `spawn budget:` line with a warning or an over-limit message, tell the user in your reply.
+- If `prism spawn` prints a `spawn budget:` line with a warning or an over-limit message, tell the user in your reply. If `prism spawn` refuses a worker for the budget, ask the user before you use `--over-budget`; the `prism` skill ("Spawn budget line") has the rules.
 
 ---
 

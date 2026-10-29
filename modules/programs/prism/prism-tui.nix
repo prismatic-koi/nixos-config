@@ -235,7 +235,8 @@ in
         Each `prism spawn` of a worker prints the 7-day worker spawn count
         and this limit. At 95% of the limit or more, it tells the user to
         finish the current work and stop for the day. At the limit or
-        more, it prints an over-limit warning. It still starts the worker.
+        more, `prism spawn` refuses the worker unless the caller passes
+        `--over-budget <reason>` (issue #3178).
         The exporter publishes the value as the gauge `prism_spawn_limit`.
         Written to config.json as spawn_budget_limit.
       '';

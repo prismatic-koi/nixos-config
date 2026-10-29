@@ -1,6 +1,10 @@
 package exporter
 
-import "sort"
+import (
+	"sort"
+
+	"github.com/prismatic-koi/prism/internal/spawnbudget"
+)
 
 // The closed label set behind prism_agent_events_total{type}.
 //
@@ -74,20 +78,21 @@ const OtherEventType = "other"
 // internal/sidecar/sidecar.go persists from a named case rather than from its
 // `default:` branch.
 var knownEventTypes = map[string]struct{}{
-	"audit":              {},
-	"auto_retry_end":     {},
-	"auto_retry_start":   {},
-	"compaction":         {},
-	"doom_loop_detected": {},
-	"error":              {},
-	"escalation":         {},
-	"msg_assistant":      {},
-	"msg_user":           {},
-	"permission_ask":     {},
-	"permission_denied":  {},
-	"provider_error":     {},
-	"run_error":          {},
-	"session.escalated":  {},
+	"audit":                        {},
+	"auto_retry_end":               {},
+	"auto_retry_start":             {},
+	"compaction":                   {},
+	"doom_loop_detected":           {},
+	"error":                        {},
+	"escalation":                   {},
+	"msg_assistant":                {},
+	"msg_user":                     {},
+	"permission_ask":               {},
+	"permission_denied":            {},
+	"provider_error":               {},
+	"run_error":                    {},
+	"session.escalated":            {},
+	spawnbudget.EventSpawnOverride: {},
 	// review.verdict_pass / review.verdict_fail /
 	// review.verdict_pass_with_disagreement are written by
 	// internal/review/monitor.go writeVerdictEvent: one durable
