@@ -3,11 +3,13 @@ package cmd
 // prism confirm-bare — add the .bare of a project to the bare repo record.
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/git"
+	prismSession "github.com/prismatic-koi/prism/internal/session"
 )
 
 var confirmBareCmd = &cobra.Command{
@@ -31,13 +33,27 @@ The command refuses while a session runs in the project root or in a dir
 above it.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		gitDir, err := git.ConfirmBare(args[0])
+		gitDir, err := git.ConfirmBare(args[0], sessionRunsInTmux)
 		if err != nil {
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "recorded %s\n", gitDir)
 		return nil
 	},
+}
+
+// sessionRunsInTmux asks the tmux server of the host for the session. A
+// sandbox has no access to that server, so a session cannot change the
+// answer.
+func sessionRunsInTmux(name string) (bool, error) {
+	switch prismSession.TmuxSessionPresence(name) {
+	case prismSession.TmuxPresent:
+		return true, nil
+	case prismSession.TmuxGone:
+		return false, nil
+	default:
+		return false, errors.New("tmux gave no clear answer")
+	}
 }
 
 func init() {

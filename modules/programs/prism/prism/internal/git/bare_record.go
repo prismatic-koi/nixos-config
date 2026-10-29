@@ -139,6 +139,10 @@ func requirePrismBare(gitDir string, info os.FileInfo) error {
 		gitDir, ErrNotPrismBare, filepath.Dir(gitDir))
 }
 
+// SessionRuns reports whether a session with the name runs on the host. It
+// returns an error when it cannot tell.
+type SessionRuns func(name string) (bool, error)
+
 // ErrConfirmInSandbox is returned when ConfirmBare runs in a sandbox.
 var ErrConfirmInSandbox = errors.New("prism confirm-bare runs only on the host. A sandbox cannot write the bare repo record. Run the command in a shell on the host")
 
@@ -150,7 +154,13 @@ var ErrConfirmInSandbox = errors.New("prism confirm-bare runs only on the host. 
 // refuses a root whose .git is a directory, and a raw bare git dir: prism
 // makes neither. It refuses while a session runs in the root or in a dir
 // above it, because that session can write the .bare after the confirmation.
-func ConfirmBare(root string) (string, error) {
+//
+// A session runs if its start record is open (SessionStart.Open), or if runs
+// says so. runs must ask a source that the host controls, such as tmux. A
+// session can end its own start record and keep its sandbox: the sidecar
+// ends the record when the session sends session_shutdown. If runs cannot
+// tell, ConfirmBare refuses.
+func ConfirmBare(root string, runs SessionRuns) (string, error) {
 	if inSandbox() {
 		return "", ErrConfirmInSandbox
 	}
@@ -184,6 +194,16 @@ func ConfirmBare(root string) (string, error) {
 	for _, s := range sessionsAtOrAbove(starts, statSessionDirs(starts), pr) {
 		if s.Open {
 			return "", fmt.Errorf("host git: confirm %s: the session %s runs in %s, so it can write this root. Stop the session first", r.gitDir, s.Name, s.Worktree)
+		}
+		if runs == nil {
+			return "", fmt.Errorf("host git: confirm %s: no check of the running sessions is set", r.gitDir)
+		}
+		running, err := runs(s.Name)
+		if err != nil {
+			return "", fmt.Errorf("host git: confirm %s: prism cannot tell if the session %s runs: %v. A session that runs in %s can write this root", r.gitDir, s.Name, err, s.Worktree)
+		}
+		if running {
+			return "", fmt.Errorf("host git: confirm %s: the session %s runs, and it started in %s, so it can write this root. Stop the session first", r.gitDir, s.Name, s.Worktree)
 		}
 	}
 	if err := recordBare(r.gitDir); err != nil {

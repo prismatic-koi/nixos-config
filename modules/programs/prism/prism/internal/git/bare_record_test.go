@@ -499,6 +499,56 @@ func TestBareRecord_StartNeedsTheReader(t *testing.T) {
 	}
 }
 
+// noSessionRuns is a SessionRuns for a host with no running session.
+func noSessionRuns(string) (bool, error) { return false, nil }
+
+// TestConfirmBare_AsksTheHost (#3364): a session can end its own start
+// record and keep its sandbox, because the sidecar ends the record when the
+// session sends session_shutdown. So ConfirmBare also asks the host if the
+// session runs. It refuses when the host says that the session runs, and
+// when the host cannot tell.
+func TestConfirmBare_AsksTheHost(t *testing.T) {
+	isolateHostGitConfig(t)
+	recordFile := useBareRecord(t)
+	code := filepath.Join(t.TempDir(), "code")
+	if err := os.MkdirAll(code, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeProjectConfig(t, []string{code}, nil)
+	root := filepath.Join(code, "repo")
+	prismLayout(t, newOrigin(t), root)
+	// The start record of the root session has an end time, as after a
+	// session_shutdown frame.
+	setSessionStarts(t, SessionStart{Name: "repo", Worktree: root})
+
+	var asked []string
+	running := func(name string) (bool, error) {
+		asked = append(asked, name)
+		return true, nil
+	}
+	if _, err := ConfirmBare(root, running); err == nil || !strings.Contains(err.Error(), "the session repo runs") {
+		t.Errorf("ConfirmBare while the host says that the session runs = %v, want a refusal that names the session", err)
+	}
+	if len(asked) != 1 || asked[0] != "repo" {
+		t.Errorf("ConfirmBare asked the host for %q, want [repo]", asked)
+	}
+	unknown := func(string) (bool, error) { return false, errors.New("no answer") }
+	if _, err := ConfirmBare(root, unknown); err == nil || !strings.Contains(err.Error(), "cannot tell") {
+		t.Errorf("ConfirmBare when the host cannot tell = %v, want a refusal", err)
+	}
+	if _, err := ConfirmBare(root, nil); err == nil {
+		t.Error("ConfirmBare with no check of the running sessions: want a refusal")
+	}
+	if _, err := os.Stat(recordFile); err == nil {
+		if paths := readRecordPaths(t, recordFile); hasPath(paths, filepath.Join(root, ".bare")) {
+			t.Errorf("record = %v, want no entry after the refusals", paths)
+		}
+	}
+	if _, err := ConfirmBare(root, noSessionRuns); err != nil {
+		t.Errorf("ConfirmBare when no session runs: %v", err)
+	}
+}
+
 // TestConfirmBare: the owner adds a .bare that the start of the record did
 // not get. ConfirmBare refuses a plain clone, a root outside the project
 // roots, a root in which a session runs, and a sandbox.
@@ -534,7 +584,7 @@ func TestConfirmBare(t *testing.T) {
 	if _, err := OpenBare(idle); !errors.Is(err, ErrNotPrismBare) {
 		t.Fatalf("OpenBare(%s) before the confirmation = %v, want ErrNotPrismBare", idle, err)
 	}
-	gitDir, err := ConfirmBare(idle)
+	gitDir, err := ConfirmBare(idle, noSessionRuns)
 	if err != nil {
 		t.Fatalf("ConfirmBare(%s): %v", idle, err)
 	}
@@ -545,16 +595,16 @@ func TestConfirmBare(t *testing.T) {
 		t.Errorf("OpenBare(%s) after the confirmation: %v", idle, err)
 	}
 
-	if _, err := ConfirmBare(busy); err == nil || !strings.Contains(err.Error(), "the session busy runs in") {
+	if _, err := ConfirmBare(busy, noSessionRuns); err == nil || !strings.Contains(err.Error(), "the session busy runs in") {
 		t.Errorf("ConfirmBare(%s) while a session runs in the root = %v, want a refusal that names the session", busy, err)
 	}
-	if _, err := ConfirmBare(plain); err == nil || !strings.Contains(err.Error(), "plain clone") {
+	if _, err := ConfirmBare(plain, noSessionRuns); err == nil || !strings.Contains(err.Error(), "plain clone") {
 		t.Errorf("ConfirmBare(%s), a plain clone = %v, want a refusal", plain, err)
 	}
-	if _, err := ConfirmBare(raw); err == nil || !strings.Contains(err.Error(), "bare git dir") {
+	if _, err := ConfirmBare(raw, noSessionRuns); err == nil || !strings.Contains(err.Error(), "bare git dir") {
 		t.Errorf("ConfirmBare(%s), a raw bare git dir = %v, want a refusal", raw, err)
 	}
-	if _, err := ConfirmBare(outside); !errors.Is(err, ErrNotProjectRoot) {
+	if _, err := ConfirmBare(outside, noSessionRuns); !errors.Is(err, ErrNotProjectRoot) {
 		t.Errorf("ConfirmBare(%s) = %v, want ErrNotProjectRoot", outside, err)
 	}
 	paths := readRecordPaths(t, recordFile)
@@ -569,12 +619,12 @@ func TestConfirmBare(t *testing.T) {
 
 	busyStart.Open = false
 	setSessionStarts(t, busyStart)
-	if _, err := ConfirmBare(busy); err != nil {
+	if _, err := ConfirmBare(busy, noSessionRuns); err != nil {
 		t.Errorf("ConfirmBare(%s) after the session ended: %v", busy, err)
 	}
 
 	t.Setenv("PRISM_HOST_API", "unix:///nonexistent/host-api.sock")
-	if _, err := ConfirmBare(idle); !errors.Is(err, ErrConfirmInSandbox) {
+	if _, err := ConfirmBare(idle, noSessionRuns); !errors.Is(err, ErrConfirmInSandbox) {
 		t.Errorf("ConfirmBare in a sandbox = %v, want ErrConfirmInSandbox", err)
 	}
 }

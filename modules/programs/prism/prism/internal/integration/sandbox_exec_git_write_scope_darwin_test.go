@@ -105,7 +105,7 @@ func newGitScopeFixture(t *testing.T, branch, role string, readOnly bool) *gitSc
 	hostGit(t, nixGit, wrap, "--git-dir", bare, "worktree", "add", "-q", "-b", "feature", filepath.Join(bareRoot, "feature"), "main")
 	// Host git runs only in a .bare in the bare repo record. The state dir is
 	// new, so the record starts with no entry.
-	if _, err := git.ConfirmBare(bareRoot); err != nil && !errors.Is(err, git.ErrConfirmInSandbox) {
+	if _, err := git.ConfirmBare(bareRoot, func(string) (bool, error) { return false, nil }); err != nil && !errors.Is(err, git.ErrConfirmInSandbox) {
 		t.Fatalf("ConfirmBare: %v", err)
 	}
 
