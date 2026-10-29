@@ -454,8 +454,12 @@ func stagedFiles() ([]string, error) {
 	return strings.Split(out, "\n"), nil
 }
 
+// stagedDiff passes --no-ext-diff because no config value turns off
+// diff.external, and a worker can plant one in the repo config. A filter or
+// diff driver needs an attribute, and host git reads none from the tree
+// (git.Repo.Env sets GIT_ATTR_SOURCE).
 func stagedDiff() (string, error) {
-	out, err := gitOutputFn("diff", "--cached")
+	out, err := gitOutputFn("diff", "--cached", "--no-ext-diff")
 	if err != nil {
 		return "", fmt.Errorf("git diff --cached: %w", err)
 	}

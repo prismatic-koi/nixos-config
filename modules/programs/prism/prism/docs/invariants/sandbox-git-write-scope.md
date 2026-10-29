@@ -311,29 +311,35 @@ open for it.
 
 ### The two residual vectors and their tracking
 
-1. **A planted `.bare/config` or hook — an OPEN host-code-execution residual
-   (#3337).** The in-sandbox pins of #3315 block the in-sandbox write path,
-   but under bwrap they are detachable (above), so they are not a reliable
-   control. The host-side controls are partial today:
+1. **A planted `.bare/config` — closed for prism host git by #3337, with
+   one open residual (#3349).** The in-sandbox pins of #3315 block the
+   in-sandbox write path, but under bwrap they are detachable (above), so
+   they are not a reliable control. The host-side controls:
    - #3322 makes every git command prism runs set `GIT_DIR` and
      `GIT_COMMON_DIR`, run with hooks and fsmonitor off, and refuse a repo
-     that has a `.bare/commondir` file. But #3322 does NOT pin
-     `core.sshCommand`, `credential.helper`, or a filter driver — those keep
-     the user's values so fetch and push work (`host-git-commands.md`).
-   - So today, if a concurrent spawn or cleanup renames `.bare/config` and
-     detaches the pin, a worker can write `core.sshCommand` (or
-     `credential.helper`, or a filter driver) into `.bare/config`, and
-     prism's own host git — for example the `prism review --rebase` fetch
-     and push — reads it through `GIT_COMMON_DIR` and runs the command. That
-     is host code execution. It is fixable host-side (pin those keys in
-     `hostGitConfig`) and is tracked by #3337.
+     that has a `.bare/commondir` file.
+   - #3337 pins each other config key that runs a program, for example
+     `core.sshCommand`, `credential.helper`, the signing programs, and the
+     config hooks. It sets `GIT_ATTR_SOURCE`, so a planted filter, diff, or
+     merge driver does not run, and it refuses a local remote. So a
+     `.bare/config` that a worker writes after a detach runs no command in
+     prism host git. The list is in `host-git-commands.md`.
+   - The residual: a planted `hook.<event>.command` defeats the
+     `hook.<event>.enabled = false` pin, and a planted config hook then runs
+     in prism host git. #3349 tracks it. `info/attributes` can also select a
+     planted driver, but the `.bare/info` bind is a directory bind that a
+     rename of `.bare/config` does not detach.
    - #3326 (merged) separately hardens every USER git process (the shell
      prompt and gitsigns in a worktree pane) against a planted `config`, by
      turning off the code-execution config keys with env overrides. Its own
      known limits remain (a filter or diff driver reached through a planted
-     `.gitattributes` or `info/attributes`, the tool selectors of a typed
-     `git help`/`git difftool`/`git mergetool`, and URL- or remote-named
-     keys) — see `docs/invariants/user-git-overrides.md`.
+     `.gitattributes` or `info/attributes`, a merge driver that
+     `merge=<name>` or a planted `merge.default` selects on a typed pull,
+     merge, or rebase with a conflict, a planted `gc.recentObjectsHook`
+     that auto maintenance runs after a typed commit or fetch, the tool
+     selectors of a typed `git help`/`git difftool`/`git mergetool`, and
+     URL- or remote-named keys, `remote.<name>.vcs` included). #3346 tracks
+     them — see `docs/invariants/user-git-overrides.md`.
 
 2. **A worker can move `.bare/refs/heads/main` or another worktree's branch
    ref — in scope, tracked by #3334.** This changes another session or the

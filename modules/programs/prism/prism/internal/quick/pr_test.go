@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -673,4 +674,17 @@ func flagValue(t *testing.T, argv []string, flag string) string {
 		}
 	}
 	return ""
+}
+
+// TestStagedDiff_NoExternalDiff: no config value turns off diff.external, so
+// the staged diff of quick pr must pass --no-ext-diff (#3337).
+func TestStagedDiff_NoExternalDiff(t *testing.T) {
+	r := newRecorder()
+	installSeams(t, r)
+	if _, err := stagedDiff(); err != nil {
+		t.Fatalf("stagedDiff: %v", err)
+	}
+	if len(r.gitCalls) != 1 || !slices.Contains(r.gitCalls[0], "--no-ext-diff") {
+		t.Errorf("git calls = %v, want one diff call with --no-ext-diff", r.gitCalls)
+	}
 }
