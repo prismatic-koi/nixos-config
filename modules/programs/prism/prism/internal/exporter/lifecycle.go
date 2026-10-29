@@ -5,6 +5,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/metrics"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/spawnbudget"
 )
 
 // lifecycle.go — the seven lifecycle and outcome counters.
@@ -33,6 +34,7 @@ const (
 	MetricEscalationsTotal         = "prism_escalations_total"
 	MetricDoomLoopsTotal           = "prism_doom_loops_total"
 	MetricPermissionDeniedTotal    = "prism_permission_denied_total"
+	MetricSpawnOverridesTotal      = "prism_spawn_overrides_total"
 )
 
 // TailerLifecycleEvents is the state-file key the lifecycle tailer's cursor
@@ -109,6 +111,7 @@ type lifecycleCounters struct {
 	escalationsTotal         *metrics.CounterVec
 	doomLoopsTotal           *metrics.CounterVec
 	permissionDeniedTotal    *metrics.CounterVec
+	spawnOverridesTotal      *metrics.CounterVec
 }
 
 // newLifecycleCounters constructs and registers the seven CounterVecs.
@@ -168,6 +171,11 @@ func newLifecycleCounters(reg *metrics.Registry) *lifecycleCounters {
 			"Total prism permission denials observed by the exporter, by repo.",
 			[]string{"repo"},
 		),
+		spawnOverridesTotal: metrics.NewCounterVec(
+			MetricSpawnOverridesTotal,
+			"Total prism spawn --over-budget overrides observed by the exporter, by repo.",
+			[]string{"repo"},
+		),
 	}
 	reg.MustRegister(lc.spawnsTotal)
 	reg.MustRegister(lc.sessionsEndedTotal)
@@ -176,6 +184,7 @@ func newLifecycleCounters(reg *metrics.Registry) *lifecycleCounters {
 	reg.MustRegister(lc.escalationsTotal)
 	reg.MustRegister(lc.doomLoopsTotal)
 	reg.MustRegister(lc.permissionDeniedTotal)
+	reg.MustRegister(lc.spawnOverridesTotal)
 	return lc
 }
 
@@ -203,6 +212,8 @@ func (lc *lifecycleCounters) apply(ev lifecycleEvent) error {
 		return lc.doomLoopsTotal.Inc(repoLabel(ev.Repo))
 	case eventTypePermissionDenied:
 		return lc.permissionDeniedTotal.Inc(repoLabel(ev.Repo))
+	case spawnbudget.EventSpawnOverride:
+		return lc.spawnOverridesTotal.Inc(repoLabel(ev.Repo))
 	default:
 		if verdict, ok := verdictLabel(ev.Type); ok {
 			return lc.reviewVerdictsTotal.Inc(verdict, repoLabel(ev.Repo), ev.AgentRole, ev.ProfileName)

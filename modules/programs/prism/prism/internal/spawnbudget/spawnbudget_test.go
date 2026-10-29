@@ -59,7 +59,7 @@ func TestLine_OneLinePerLevel(t *testing.T) {
 		{
 			name: "over",
 			r:    spawnbudget.Result{Count: 196, Limit: 120, Known: true, Fleet: true},
-			want: []string{"196 of 120", "163%", "OVER THE LIMIT", "Prism starts this worker", "stop for the day"},
+			want: []string{"196 of 120", "163%", "OVER THE LIMIT", "stop for the day"},
 		},
 		{
 			name: "local only",

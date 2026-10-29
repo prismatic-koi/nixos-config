@@ -3,9 +3,10 @@
 //
 // The count is the higher of two values: the fleet-wide count from
 // Prometheus (prism_spawns_total, all hosts) and the count in the local
-// prism database (this host only). The budget only warns. It never stops a
-// spawn, and a failed lookup never delays a spawn by more than
-// LookupTimeout.
+// prism database (this host only). At 100% of the limit, `prism spawn`
+// refuses to start a worker unless the caller passes --over-budget
+// (issue #3178). A failed lookup never delays a spawn by more than
+// LookupTimeout, and an unknown count never refuses a spawn.
 package spawnbudget
 
 import (
@@ -50,6 +51,11 @@ const (
 	// the line in the output of the host-side `prism spawn` by this prefix
 	// and returns it to a sandboxed caller.
 	LinePrefix = "spawn budget:"
+
+	// EventSpawnOverride is the agent_events.type that `prism spawn
+	// --over-budget` writes for each override. The exporter counts it as
+	// prism_spawn_overrides_total, by repo.
+	EventSpawnOverride = "spawn.over_budget_override"
 )
 
 // Level is the position of a count relative to the limit.
@@ -138,7 +144,7 @@ func (r Result) Line() string {
 		LinePrefix, r.Count, r.Limit, r.Percent(), r.Scope())
 	switch r.Level() {
 	case LevelOver:
-		return base + " OVER THE LIMIT. Prism starts this worker. Finish the current work and stop for the day."
+		return base + " OVER THE LIMIT. Finish the current work and stop for the day."
 	case LevelNear:
 		return fmt.Sprintf("%s WARNING: %d%% of the limit or more. Finish the current work and stop for the day.",
 			base, NearPercent)
