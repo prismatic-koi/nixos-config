@@ -1521,6 +1521,24 @@ A lookup table of log patterns, their causes, and remediation hints:
 
 - **Zombie DB rows (session in `prism sessions list` but no live tmux session)** — a previous session's process died without cleaning up DB state. Use `prism cleanup --yes --session <name>` to end the row (stamps `ended_at`, releases any dangling port, clears the pi resume linkage) so it drops out of the active-session view. The row itself is preserved; re-spawning on the same branch name reuses it by re-seeding `state` back to `idle`.
 
+- **`Pane is dead` in the agent window, or a coordinator notice that says `Agent <session> is not connected to its sidecar`** — the agent process stopped. See [Recovering a dead agent pane](#recovering-a-dead-agent-pane).
+
+### Recovering a dead agent pane
+
+When the agent process of a session exits, the agent window shows `Pane is dead`. The session goes to `interrupted`. After 30 seconds the sidecar sets it to `error`, with the note `reconnect timeout`. The sidecar keeps each prompt that it cannot deliver, for example a review-complete prompt. While a review-complete prompt waits, the coordinator gets a notice.
+
+To recover the session, restart the agent and its sidecar together:
+
+1. Open a shell on the host, outside the session. The restart closes all windows of the session.
+2. Run `prism restore --session <session>`.
+3. Run `prism sessions list`. Make sure that the session is not in state `error`.
+
+`prism restore --session` closes the tmux session and stops the sidecar. Then it starts the sidecar and the agent again, the same as `prism restart` does for all sessions. The agent continues its conversation. The new sidecar sends the prompts that the old sidecar kept. The merge queue of a coordinator continues.
+
+A sandboxed session cannot run `prism restore`. If you are a sandboxed agent, ask the user to run the command.
+
+Do not use a bare `tmux respawn-pane` on the agent pane. It restarts the agent, and not the sidecar. If no sidecar runs for the session, the new agent runs with no sidecar. Then prism records no events, and no prompt or review result reaches the agent (#3345).
+
 ### Escalation
 
 If two diagnostic cycles (`prism checkin` + `prism logs`) do not clarify the issue, **escalate to the user** rather than continuing to probe in circles. Document what you observed in each cycle and what remains unclear. Do not run a third diagnostic cycle on your own.

@@ -562,10 +562,21 @@ type Sidecar struct {
 	// Set after the first Accept() in runStartupSocketPipe. Protected by mu.
 	harnessPipeConn net.Conn
 	// harnessPipeOutCh is the channel carrying outbound frames to the extension.
-	// runStartupSocketPipe drains it in a writer goroutine. Protected by mu
-	// on set (before the goroutine starts); after that only the writer goroutine
-	// reads from it; callers enqueue via enqueueHarnessPipeFrame.
+	// runStartupSocketPipe drains it in a writer goroutine. It is non-nil only
+	// while an extension is connected and its handshake is complete, so a
+	// frame sent while no agent is connected is refused, not dropped by the
+	// writer (#3345). Protected by mu; callers enqueue via
+	// enqueueHarnessPipeFrame.
 	harnessPipeOutCh chan []byte
+	// harnessPipeDetached is true from the reconnect timeout until an
+	// extension connects again: no agent is connected, and the session is in
+	// state error. Protected by mu.
+	harnessPipeDetached bool
+	// heldReviewNotified holds the delivery IDs of the buffered
+	// review-complete prompts that the coordinator was told about while the
+	// session was detached, so that each prompt causes one notification.
+	// Protected by mu.
+	heldReviewNotified map[string]bool
 	// harnessPipeAbortAck, when non-nil, is closed by the socket-pipe writer
 	// goroutine immediately after processing an abort frame (that is, after the
 	// write attempt completes, whether or not the underlying conn was healthy).
@@ -2029,8 +2040,15 @@ const (
 // (no preceding session_shutdown), the sidecar flushes the accumulator, logs
 // the drop, and waits up to pipeDisconnectTimeout for a new connection. If a
 // new connection arrives within the window, the handshake is replayed and the
-// frame loop resumes. If no connection arrives before the timeout (or ctx is
-// cancelled), the session transitions to error state and the function returns.
+// frame loop resumes. If no connection arrives before the timeout, the session
+// transitions to error state and the listener stays open with no deadline: a
+// later connection, for example from a respawned agent pane, gets the
+// handshake, the session goes back to active, and held prompts are flushed
+// (#3345). The function returns when ctx is cancelled or the listener closes.
+//
+// s.harnessPipeOutCh is set only while a handshaken connection is live, so
+// a prompt sent while no agent is connected is buffered by /prompt, not
+// dropped by the writer.
 //
 // A clean session_shutdown exits the loop immediately without waiting for
 // reconnect.
@@ -2106,38 +2124,59 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 	// their PersistKey set so the post-flush DELETE targets the exact row.
 	s.restorePendingReplayFromDB()
 
-	// closePipeListener closes the listener and removes the socket file on a
-	// clean exit or timeout. Called exactly once at the end of the function.
+	type acceptResult struct {
+		conn net.Conn
+		err  error
+	}
+	// pendingAccept carries the result of the one Accept call in flight. A
+	// timeout does not end that call, and the loop waits again after a
+	// timeout, so the next wait must read the same call. A second concurrent
+	// Accept can take the connection of a new agent and leave it unread, and
+	// that agent then runs with no sidecar (#3345).
+	var pendingAccept chan acceptResult
+
+	// closePipeListener closes the listener and removes the socket file.
+	// Called exactly once at the end of the function.
 	closePipeListener := func() {
 		_ = ln.Close()
 		if s.cfg.HarnessPipeSockPath != "" {
 			_ = os.Remove(s.cfg.HarnessPipeSockPath)
 		}
+		if pendingAccept != nil {
+			if ar := <-pendingAccept; ar.conn != nil {
+				_ = ar.conn.Close()
+			}
+		}
 	}
 	defer closePipeListener()
 
-	// acceptWithTimeout waits up to the given duration for a new connection.
+	// acceptWithTimeout waits up to the given duration for a new connection,
+	// or with no deadline when timeout is 0.
 	// Returns the connection and an outcome value identifying which select
 	// case fired. The outcome is required (not just a bool) because the caller
 	// must perform a state=error write on timeout even when ctx is concurrently
 	// cancelled. Collapsing timeout and ctx-cancel into a single "!ok" branch
 	// lets the select pick ctx.Done() under contended scheduling and
 	// short-circuits the state write.
-	type acceptResult struct {
-		conn net.Conn
-		err  error
-	}
 	acceptWithTimeout := func(timeout time.Duration) (net.Conn, acceptOutcome, error) {
-		ch := make(chan acceptResult, 1)
-		go func() {
-			c, e := ln.Accept()
-			ch <- acceptResult{c, e}
-		}()
-		deadline := time.Now().Add(timeout)
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
+		if pendingAccept == nil {
+			ch := make(chan acceptResult, 1)
+			go func() {
+				c, e := ln.Accept()
+				ch <- acceptResult{c, e}
+			}()
+			pendingAccept = ch
+		}
+		var timerC <-chan time.Time
+		var deadline time.Time
+		if timeout > 0 {
+			deadline = time.Now().Add(timeout)
+			timer := time.NewTimer(timeout)
+			defer timer.Stop()
+			timerC = timer.C
+		}
 		select {
-		case <-timer.C:
+		case <-timerC:
 			return nil, acceptTimedOut, nil
 		case <-ctx.Done():
 			// Prefer the timeout outcome whenever the wall-clock deadline has
@@ -2146,11 +2185,12 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			// state=error write. Under contended scheduling the deadline can
 			// elapse well before the timer goroutine delivers to timer.C, so a
 			// strict "is timer.C ready?" check is not reliable.
-			if !time.Now().Before(deadline) {
+			if timeout > 0 && !time.Now().Before(deadline) {
 				return nil, acceptTimedOut, nil
 			}
 			return nil, acceptCtxCanceled, nil
-		case ar := <-ch:
+		case ar := <-pendingAccept:
+			pendingAccept = nil
 			if ar.err != nil {
 				// Carry the underlying Accept() error so the caller can log
 				// it and route the failure through a distinct diagnostic
@@ -2163,11 +2203,10 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 
 	// Set up the shared outbound channel. It is created once and shared across
 	// reconnections. The writer goroutine runs for the lifetime of the session,
-	// draining frames to whichever conn is currently live.
+	// draining frames to whichever conn is currently live. The channel is
+	// published in s.harnessPipeOutCh only while a handshaken connection is
+	// live (see the handshake and the drop below).
 	outCh := make(chan []byte, 64)
-	s.mu.Lock()
-	s.harnessPipeOutCh = outCh
-	s.mu.Unlock()
 
 	// connMu serialises conn replacement during reconnect so the writer
 	// goroutine always writes to the latest live connection.
@@ -2211,7 +2250,8 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 
 	// --- Main reconnect loop ----------------------------------------------
 	// acceptTimeout governs how long to wait for the FIRST connection.
-	// After a non-shutdown drop it switches to pipeDisconnectTimeout.
+	// After a non-shutdown drop it switches to pipeDisconnectTimeout. After
+	// a timeout it is 0: the loop waits with no deadline.
 	acceptTimeout := startupTimeout
 
 	// effectiveMaxLineBytes is the per-frame byte cap for this connection.
@@ -2267,18 +2307,22 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 				// and an external ctx cancel can land in the same window, and
 				// skipping the write because ctx happens to be cancelled
 				// leaves the session stuck at "idle" forever.
+				//
+				// Do not return here. A new agent process of this session,
+				// for example after a respawn of a crashed agent pane,
+				// connects to this listener. If the listener closes, that
+				// agent runs with no events and no prompts (#3345).
 				s.mu.Lock()
 				s.flushPipeAccum()
 				s.upsertState(agent.StateError, nil, nil)
 				s.writeEvent("state_change", map[string]string{"state": string(agent.StateError), "note": "reconnect timeout"}, nil)
 				s.lastState = agent.StateError
-				s.harnessPipeOutCh = nil
+				s.harnessPipeDetached = true
 				s.mu.Unlock()
-				err := fmt.Errorf("sidecar: runStartupSocketPipe: timed out waiting for extension to (re)connect (timeout=%s)", acceptTimeout)
-				s.logger().Printf("%v", err)
-				close(outCh)
-				<-writerDone
-				return err
+				s.logger().Printf("sidecar: runStartupSocketPipe: timed out waiting for extension to (re)connect (timeout=%s); the session is in state error, and the listener stays open for a new agent process", acceptTimeout)
+				s.notifyHeldReviewComplete()
+				acceptTimeout = 0
+				continue
 			case acceptListenerErr:
 				// Listener Accept() returned an error — typically "use of
 				// closed network connection" after Shutdown() closed the
@@ -2344,8 +2388,11 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			activeConn = nil
 			connMu.Unlock()
 			// Treat a hello read failure like a premature disconnect: wait for
-			// reconnect within reconnectTimeout.
-			acceptTimeout = reconnectTimeout
+			// reconnect within reconnectTimeout. A detached session (timeout
+			// 0) keeps waiting with no deadline.
+			if acceptTimeout != 0 {
+				acceptTimeout = reconnectTimeout
+			}
 			continue
 		}
 		if n := len(helloLine); n > 0 && helloLine[n-1] == '\n' {
@@ -2436,11 +2483,22 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			connMu.Lock()
 			activeConn = nil
 			connMu.Unlock()
-			acceptTimeout = reconnectTimeout
+			if acceptTimeout != 0 {
+				acceptTimeout = reconnectTimeout
+			}
 			continue
 		}
 
 		s.logger().Printf("sidecar: runStartupSocketPipe: handshake complete (harness=%q version=%q)", helloFrame.Harness, helloFrame.HarnessVersion)
+
+		// Publish the outbound channel only now. The extension has its
+		// hello_ack, so no frame can reach it ahead of the hello_ack.
+		s.mu.Lock()
+		s.harnessPipeOutCh = outCh
+		reattached := s.harnessPipeDetached
+		s.harnessPipeDetached = false
+		s.heldReviewNotified = nil
+		s.mu.Unlock()
 
 		// Signal readiness on the first successful handshake only.
 		if !onReadyFired {
@@ -2458,6 +2516,18 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			}
 			s.mu.Unlock()
 			onReadyFired = true
+		} else if reattached {
+			// A new agent process connected after the reconnect timeout
+			// wrote state error. The session is attached again.
+			s.mu.Lock()
+			if !s.shuttingDown {
+				s.upsertState(agent.StateActive, nil, nil)
+				s.writeEvent("state_change", map[string]string{"state": string(agent.StateActive), "note": "agent reconnected"}, nil)
+				s.lastState = agent.StateActive
+				s.touchActivity()
+			}
+			s.mu.Unlock()
+			s.logger().Printf("sidecar: runStartupSocketPipe: an agent connected after the reconnect timeout; session -> active")
 		}
 
 		// Flush any prompts that were buffered while the PI extension was
@@ -2509,6 +2579,11 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			}
 		}
 
+		// No agent is connected now: /prompt buffers a prompt durably
+		// instead of queueing it for a writer with no connection.
+		s.mu.Lock()
+		s.harnessPipeOutCh = nil
+		s.mu.Unlock()
 		_ = conn.Close()
 		connMu.Lock()
 		activeConn = nil

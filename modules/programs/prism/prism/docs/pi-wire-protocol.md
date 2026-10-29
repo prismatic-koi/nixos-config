@@ -1057,9 +1057,17 @@ If a new connection arrives within the window, the full P2.WIRE handshake
 is replayed (`hello` / `hello_ack`) and the frame loop resumes. The
 `OnReady` callback is **not** re-fired on subsequent connections.
 
-If no connection arrives before the timeout expires (or the context is
-cancelled), the session transitions to `error` state and the sidecar
-returns an error.
+If no connection arrives before the timeout expires, the session
+transitions to `error` state with the note `reconnect timeout`. The
+listener stays open, with no deadline. A later connection, for example
+from a respawned agent pane, gets the full handshake. The session then
+goes back to `active` with the note `agent reconnected`, and the sidecar
+flushes the prompts that it buffered (#3345). The accept loop ends only
+when the context is cancelled or the listener closes.
+
+The sidecar queues an outbound frame only while a connection is live and
+its handshake is complete. At all other times, a `prompt` (§6.2) is
+buffered and replayed after the next handshake.
 
 The extension **must** guard `connect()` so it only fires when not
 already connected (`if (socket !== null || connected) return`). This
@@ -1141,15 +1149,18 @@ If the sidecar crashes:
   already uses.
 - The extension on the other end observes the connection drop (kernel
   RST or EOF on read) and PI continues running standalone. PI's TUI
-  remains visible to the user. Restarting the sidecar via
-  `prism restore` re-creates the socket but does **not** re-establish
-  a connection to the still-running PI — the extension will not retry.
-  The user sees a session in `error` state and must spawn a new session.
-  This is the same UX as opencode-after-sidecar-crash today.
+  remains visible to the user. A new sidecar re-creates the socket but
+  does **not** re-establish a connection to the still-running PI — the
+  extension will not retry. `prism restore --session <session>` restarts
+  the sidecar and PI together, and PI resumes its conversation.
 
 If PI / the extension crashes:
 
 - The sidecar observes connection drop per §7.2.
+- A new PI process of the session, for example from a respawned pane,
+  connects to the same listener (§7.2). The recovery that the `prism`
+  skill gives is `prism restore --session <session>`, because a respawn
+  of the pane alone does not restart a sidecar that is not running.
 
 ## 8. Compatibility with opencode and forward-compat
 
