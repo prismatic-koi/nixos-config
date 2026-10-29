@@ -227,6 +227,31 @@ func TestCloneWorktree_RefusesTargetOutsideProjectRoots(t *testing.T) {
 		t.Errorf("the refused clone removed a file that was there: %v", err)
 	}
 
+	// A target in a project location that is a symlink to a dir outside the
+	// project roots. OpenBare checks the resolved root, so the check before
+	// the clone must check it too. The symlink and its dir are kept.
+	empty := filepath.Join(base, "empty")
+	if err := os.MkdirAll(empty, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(code, "link")
+	if err := os.Symlink(empty, link); err != nil {
+		t.Fatal(err)
+	}
+	var steps []string
+	if err := CloneWorktree(origin, link, func(msg string) { steps = append(steps, msg) }); !errors.Is(err, ErrNotProjectRoot) {
+		t.Errorf("CloneWorktree(%s -> %s) = %v, want ErrNotProjectRoot", link, empty, err)
+	}
+	if len(steps) != 0 {
+		t.Errorf("CloneWorktree(%s) started the clone: %q", link, steps)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the refused clone removed the symlink %s: %v", link, err)
+	}
+	if _, err := os.Stat(filepath.Join(empty, ".bare")); !os.IsNotExist(err) {
+		t.Errorf("the refused clone left %s/.bare: %v", empty, err)
+	}
+
 	inside := filepath.Join(code, "repo")
 	if err := CloneWorktree(origin, inside, func(string) {}); err != nil {
 		t.Errorf("CloneWorktree(%s): %v", inside, err)
@@ -258,5 +283,19 @@ func TestConvertToBare_RefusesDirOutsideProjectRoots(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".bare")); !os.IsNotExist(err) {
 		t.Errorf("the refused conversion made .bare: %v", err)
+	}
+
+	// The same repo through a symlink in a project location: the check
+	// before the clone uses the resolved dir, as OpenBare does.
+	link := filepath.Join(code, "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	var steps []string
+	if _, err := ConvertToBare(link, func(msg string) { steps = append(steps, msg) }); !errors.Is(err, ErrNotProjectRoot) {
+		t.Errorf("ConvertToBare(%s -> %s) = %v, want ErrNotProjectRoot", link, dir, err)
+	}
+	if len(steps) != 0 {
+		t.Errorf("ConvertToBare(%s) started the conversion: %q", link, steps)
 	}
 }

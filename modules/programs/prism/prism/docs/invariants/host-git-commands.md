@@ -221,6 +221,8 @@ and `switchPathForSession` in `internal/sidecar/switch_path.go`.
   `projecttrust` uses the same reader.
 - `OpenWorktree`, `OpenDir`, and `EnvForDir` call `OpenBare`, so they
   refuse such a root too. `CloneWorktree` and `ConvertToBare` refuse it
+  before the clone. They check the resolved path, as `OpenBare` does, so a
+  target that is a symlink to a dir outside the project roots is refused
   before the clone. A refused `CloneWorktree` removes each dir that it
   made, also the parents of the target.
 - A sandbox cannot read config.json. So in a sandbox, `OpenBare` uses the

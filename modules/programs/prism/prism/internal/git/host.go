@@ -257,8 +257,8 @@ func OpenBare(root string) (Repo, error) {
 	if outer := OuterBareRoot(resolved); outer != "" && outer != resolved {
 		return Repo{}, fmt.Errorf("host git: %s is inside the prism project %s, so prism does not run git in it", abs, outer)
 	}
-	if !config.LoadFresh().IsProjectRoot(resolved) {
-		return Repo{}, fmt.Errorf("host git: %s: %w", abs, ErrNotProjectRoot)
+	if err := requireResolvedProjectRoot(resolved, abs); err != nil {
+		return Repo{}, err
 	}
 	gitDir := filepath.Join(resolved, ".bare")
 	info, err := os.Lstat(gitDir)
@@ -630,12 +630,25 @@ func isStrippedGitEnv(k string) bool {
 	return false
 }
 
-// requireProjectRoot returns ErrNotProjectRoot unless the absolute path root
-// is a prism project root in config.json. It reads config.json each time, so
-// a long-running process sees a config that a switch rewrote.
+// requireProjectRoot returns ErrNotProjectRoot unless root, with its
+// symlinks resolved, is a prism project root in config.json. OpenBare runs
+// the same check on the resolved root, so CloneWorktree and ConvertToBare
+// refuse before the clone each root that OpenBare refuses after it.
 func requireProjectRoot(root string) error {
-	if !config.LoadFresh().IsProjectRoot(root) {
-		return fmt.Errorf("host git: %s: %w", root, ErrNotProjectRoot)
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("host git: project root: %w", err)
+	}
+	return requireResolvedProjectRoot(resolved, root)
+}
+
+// requireResolvedProjectRoot returns ErrNotProjectRoot, with name in the
+// message, unless resolved is a prism project root in config.json. It reads
+// config.json each time, so a long-running process sees a config that a
+// switch rewrote.
+func requireResolvedProjectRoot(resolved, name string) error {
+	if !config.LoadFresh().IsProjectRoot(resolved) {
+		return fmt.Errorf("host git: %s: %w", name, ErrNotProjectRoot)
 	}
 	return nil
 }
