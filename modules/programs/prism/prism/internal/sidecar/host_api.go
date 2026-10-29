@@ -2878,7 +2878,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//
 	// The host DB keeps the role and the worktree that prism wrote at start.
 	// `prism restore` and the caller-role gates read them, so a proxied event
-	// must not change them.
+	// must not change them. The start of the bare repo record also reads the
+	// worktree (startBareRecord and ConfirmBare in internal/git, #3364): a
+	// worktree that a session chose can make host git trust a planted .bare.
 	//
 	// Security: accessible only over the Unix socket (consistent with all other
 	// host-API endpoints — no network exposure).

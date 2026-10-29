@@ -256,6 +256,7 @@ Both hooks above run on the host. A `prism event <kind>` that runs inside a sand
 - Each `args` key must be in `eventArgAllowlist` for the kind. Any other key gets HTTP 400. `tmux-session-start` takes no `agent-role`, so only prism on the host writes `root_agent_name`. No kind takes `session`.
 - A `worktree` must be the start worktree of the sidecar (`Config.Worktree`). Any other path gets HTTP 403. The host run always gets the start worktree.
 - So a proxied event cannot write a row for another session. It also cannot change the role or the worktree that prism wrote at start. `prism restore` and the caller-role gates read those two values.
+- The start of the bare repo record reads the worktree of each `sessions` row (`startBareRecord` and `ConfirmBare` in `internal/git/bare_record.go`, #3364). It trusts a `.bare` only when a row names a worktree in its root and no row names the root or a dir above it. If a proxied event can write another worktree, a session can hide its own start dir from that check and add a worktree row. Host git then trusts a `.bare` that the session planted, and runs its driver. See "How prism starts the record" in `host-git-commands.md`.
 
 ## Project trust
 

@@ -10,9 +10,9 @@
   git and nvim names, not names in this source tree.
 -->
 
-Issues: #3322, #3315, #3293, #3347, #3337, #3333. Code: `internal/git/host.go`
+Issues: #3322, #3315, #3293, #3347, #3337, #3333, #3364. Code: `internal/git/host.go`
 (`OpenBare`, `OpenWorktree`, `OpenDir`, `OuterBareRoot`, `EnvForDir`,
-`CloneCommand`), `internal/git/bare_record.go`, the prefix+b keybind in the tmux config of prism
+`CloneCommand`), `internal/git/bare_record.go`, `internal/db/session_starts.go`, `cmd/confirm_bare.go`, the prefix+b keybind in the tmux config of prism
 (modules/programs/prism/tmux.nix, outside the prism Go tree), and the nvim
 config of prism (modules/programs/prism/neovim, outside the prism Go tree).
 
@@ -309,11 +309,119 @@ driver or that hook.
   record, so the host refuses a `.bare` that a sandbox makes. Run
   `prism convert` and `prism clone` in a shell on the host.
 
-If there is no record file, prism starts a new record. It records each
-`.bare` in a project root of config.json, so a project that prism made
-before the record existed stays usable. It skips a root whose `.git` is a
-directory, because that root is a plain clone. A `.bare` that a session
-makes after the start is not in the record.
+### How prism starts the record (#3364)
+
+Code: `startBareRecord` and `ConfirmBare` in `internal/git/bare_record.go`,
+`SessionStarts` in `internal/db/session_starts.go`, and
+`cmd/confirm_bare.go`.
+
+If there is no record file with the start mark, prism starts the record
+one time, so a project that prism made before the record existed stays
+usable. A session can plant a `.bare` before that time. The files of a plant can be the same
+as the files of a `.bare` that prism made. So prism does not start the
+record from the `.bare` dirs on disk. It starts the record from the session
+start records, the rows of the `sessions` table in `prism.db`:
+
+- prism writes each start record on the host, with the start dir that
+  prism computed. No sandbox can write `prism.db`. The `/event` proxy
+  refuses a start dir that is not the start dir of the caller
+  (`session-lifecycle.md`, "The `/event` proxy"). The start of the record
+  depends on that check.
+- A `.bare` in a project root of config.json goes in the record only if
+  both of these are true:
+  1. A start record names a dir below the root, and the first part of the
+     dir below the root is not `.bare`. That dir is a worktree that prism
+     made with the `.bare`.
+  2. No start record names the root or a dir above the root. A session in
+     such a dir can write the root, so it can have planted the `.bare`. A
+     meta-session (`scratchpad`, `prism-dashboard`) runs no agent, so its
+     start record does not count.
+- prism skips a root whose `.git` is a directory, because that root is a
+  plain clone.
+- Check 1 compares paths only, so a symlink that a session made cannot put
+  a dir in a root. Check 2 compares paths and file identity. A match that
+  is too wide refuses a good `.bare`, and the owner can confirm it. A match
+  that is too narrow accepts a plant.
+- If prism cannot read the start records, it writes no record file and
+  refuses the `.bare`. The next prism command tries again. `internal/db`
+  gives the reader to `internal/git`, because `internal/db` imports
+  `internal/git`.
+- A record that this start makes has the start mark `"start":
+  "session-starts"`. prism treats a record file with no start mark as no
+  record, and starts the record again. The start of #3363 wrote such a
+  file from the `.bare` dirs on disk, so it can hold a plant. prism keeps
+  no entry of that file. A `.bare` that `prism clone` or `prism convert`
+  made after #3363 goes in the new record through check 1, or through
+  `prism confirm-bare` (below).
+
+A plant cannot enter the record for these reasons:
+
+- To plant a `.bare`, a session must write the root. That session is the
+  root session of a plain clone, or a session in a dir above the root. Its
+  start record names the root or a dir above it, so check 2 refuses the
+  root. This is also true when the session ended.
+- prism removes a start record 90 days after its session ends
+  (`db.Prune`). If that start record is gone, check 1 refuses the root,
+  unless a worktree session started in the plant.
+- After the update, a worktree session cannot start in the plant before
+  the record with the start mark exists. To start one, prism runs host git
+  in the root first, through `OpenBare`, and `OpenBare` starts the record.
+  The start record of the new session comes after that.
+
+A `.bare` that a session makes after the start is not in the record.
+
+The start of the record does not get a `.bare` in a project with no
+worktree session in the last 90 days. It also does not get a `.bare` in a
+project that was a plain clone with a session in it, and that `prism
+convert` changed before the update. For such a `.bare`, the owner confirms
+it one time:
+
+1. Make sure that you made the `.bare` with `prism clone` or `prism
+   convert`.
+2. Make sure that no session ran in a plain clone of the project after
+   that. Such a session can have replaced the `.bare`.
+3. Stop each session that runs in the project root or in a dir above it.
+4. In a shell on the host, run `prism confirm-bare <root>`.
+
+`prism confirm-bare` does the checks of `OpenBare`, except the record
+check, and records the `.bare`. It refuses a root whose `.git` is a
+directory, and a raw bare git dir. In a sandbox, it refuses with
+`ErrConfirmInSandbox`. The error of `OpenBare` for a `.bare` that is not
+in the record names this command. If `OpenBare` refuses a `.bare` that
+you made later, for example a moved project, do the same steps.
+
+`prism confirm-bare` also refuses while a session that started in the
+root or in a dir above it runs, because that session can write the
+`.bare` after the confirmation. On Linux, this refusal stops each write
+after the confirmation. On Darwin, it does not stop a process that the
+session detached (see "Known limits", #3375). It uses two signals, and
+either one refuses:
+
+- The start record is open (`SessionStarts` in
+  `internal/db/session_starts.go`). A `sessions` row is open when it has
+  no end time, and the `agent_status` row of the name has no end time and
+  names the same instance, or no instance. prism can leave a `sessions` row
+  open after its session stops (#3027). Then `agent_status` names another
+  instance, has an end time, or is gone, and the row does not refuse. If a
+  record refuses and the session does not run, end it with
+  `prism cleanup --yes --session <name>`, then run `prism confirm-bare`
+  again. The error gives this step.
+- The tmux server of the host lists the session, or does not give a clear
+  answer. A session can end its own `sessions` row and keep its sandbox:
+  the sidecar ends the row when the session sends `session_shutdown` on
+  the harness pipe. A sandbox has no access to the tmux server, so on
+  Linux this signal is the one that a session cannot change. On Darwin, a
+  detached process outlives the tmux session (see "Known limits", #3375).
+
+A session cannot set the `agent_status` values through the `/event` proxy
+("The `/event` proxy" in `session-lifecycle.md`). `tmux-session-start`
+changes `instance_id` only when `agent_status` names no instance, or the
+`sessions` row of that instance has an end time. It then writes a new
+open row, which refuses. It sets no end time. On the host,
+`tmux-session-end` writes nothing while tmux lists the session or does not
+answer.
+
+### The record in a sandbox
 
 A sandbox cannot read the prism state dir. So in a sandbox, prism does
 not use the record, and `OpenBare` accepts a `.bare` that is not in it.
@@ -322,26 +430,39 @@ gives the session nothing more. prism finds a sandbox with
 `sandboxenv.IsInsideSandbox`, which reads `PRISM_HOST_API`. The sidecar
 sets that variable only in a sandboxed session.
 
-If `OpenBare` refuses a `.bare` that you made, do these steps:
-
-1. Stop each session that runs in a plain clone.
-2. Remove `bare-repos.json` from the prism state dir.
-3. Run the prism command again. prism starts a new record.
+### The routes that the record covers
 
 Host git also reads no `.gitattributes` file (`GIT_ATTR_SOURCE`, #3337).
 The record covers the two routes that `GIT_ATTR_SOURCE` does not cover:
 `info/attributes` and the config hook of #3349.
 
-Tests: `TestOpenBare_RefusesBareThatPrismDidNotMake` plants a `.bare` in
+### Tests of the record
+
+`TestOpenBare_RefusesBareThatPrismDidNotMake` plants a `.bare` in
 a plain clone in a project location, with a smudge filter that
 `info/attributes` selects and a config hook. It makes sure that the plant
 runs with plain pinned git and does not run with prism.
-`TestBareRecord_StartsFromProjectRoots`,
+`TestBareRecord_StartRefusesBarePlantedBefore` plants a `.bare` in a
+plain clone before the record exists, with a start record of a worktree
+session in the root. The start record of the planting session runs,
+ended, is in a dir above the root, or is gone. It makes sure that the
+plant runs with plain pinned git, and that the start of the record does
+not record it. `OpenBare` and `CreateWorktree` refuse it, and no payload
+runs. `TestBareRecord_StartsFromSessionStarts` covers each check of the
+start, and `TestBareRecord_StartNeedsTheReader` covers a missing reader.
+`TestBareRecord_RestartsAnUnmarkedRecord` writes a record with no start
+mark that holds a plant, as the start of #3363 did. It makes sure that
+prism starts the record again and refuses the plant.
+`TestConfirmBare` covers `prism confirm-bare`, and
+`TestConfirmBare_AsksTheHost` covers the tmux signal.
+`TestSessionStarts_ReadsTheSessionsTable` reads the real schema, and
+`TestSessionStarts_StartTheBareRecord` makes sure that `internal/db` gives
+the reader to `OpenBare`.
 `TestBareRecord_ReplacedBareRefused`,
 `TestBareRecord_ConvertRecordsAndRollbackForgets`, and
 `TestBareRecord_NotUsedInSandbox`, and
-`TestBareRecord_NoBareMadeInSandbox` cover the start, the inode, the
-rollback, and the sandbox. `TestOpenBare_ChecksTheResolvedRoot` covers the
+`TestBareRecord_NoBareMadeInSandbox` cover the inode, the rollback, and
+the sandbox. `TestOpenBare_ChecksTheResolvedRoot` covers the
 one resolve of the root. `OpenBare` gives a resolved common dir, and a
 work tree keeps the path of the caller.
 `TestPreflight_HostGit_RebaseThroughSymlinkedParent` makes sure that the
@@ -541,18 +662,20 @@ table.
   sandboxed root session of the plain clone runs. That session can write
   the new `.bare` until prism stops it. The record does not stop this,
   because prism made that `.bare`. #3361 tracks this route.
-- **The start of the record (#3364).** The start records each `.bare` in
-  a project root, so it also records a `.bare` that a session planted
-  before the start. This route is in scope. The root session of a plain
-  clone can plant the `.bare` and replace its `.git` dir with a `.git`
-  file. It has the coordinator role, so it can then call `/spawn`, which
-  runs `git worktree add` on the host. The start skips a plain clone whose
-  `.git` dir is still there. #3364 tracks the fix: start the record from
-  the DB start records of the sessions, which a session cannot write, or
-  from a one-time confirmation of each `.bare` by the owner.
+- **A plant that host git used before the update.** The start of the
+  record records a plant if a worktree session started in it before the
+  update, and `db.Prune` removed the start record of the planting session.
+  The host git command of that start ran the payload before the update,
+  so the host was already exposed.
+- **`prism confirm-bare` on Darwin (#3375).** On Darwin, a process that a
+  session detaches (`setsid`, `nohup`) outlives the session, because
+  `sandbox-exec` has no PID namespace. After `prism confirm-bare` of a
+  root that such a session started in, that process can still write
+  `.bare/config` and `.bare/info/attributes`, and the record still accepts
+  the `.bare`. #3375 tracks the fix.
 - **A moved, copied, or restored project.** The `.bare` has another inode
-  or another path, so `OpenBare` refuses it. Do the steps in "The bare
-  repo record" above.
+  or another path, so `OpenBare` refuses it. Do the steps for
+  `prism confirm-bare` in "How prism starts the record" above.
 
 - **A project that is not a prism project.** Outside a prism project,
   `OpenDir` does not pin the git dir: git finds it from the dir. A session

@@ -13,6 +13,11 @@ package git
 // in the prism state dir. No sandbox can write that dir. With the inode, a
 // stale entry does not match: a .bare that a session makes at the path of a
 // removed project has another inode.
+//
+// The first record comes from the session start records in prism.db, not
+// from the .bare dirs on disk (#3364). A session can plant a .bare before the
+// first record, and no check of the files can tell a plant from a .bare that
+// prism made.
 
 import (
 	"encoding/json"
@@ -20,11 +25,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"syscall"
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
 // ErrNotPrismBare is returned when a bare repo is not in the record of the
@@ -42,8 +49,15 @@ type bareRecordEntry struct {
 }
 
 type bareRecordFile struct {
+	// Start is bareRecordStart in a record that startBareRecord began.
+	Start string            `json:"start,omitempty"`
 	Repos []bareRecordEntry `json:"repos"`
 }
+
+// bareRecordStart marks a record that began from the session start records.
+// A record with no mark began from the .bare dirs on disk (#3363), so it can
+// hold a plant (#3364). readBareRecord treats it as no record.
+const bareRecordStart = "session-starts"
 
 // allowUnrecordedBare makes requirePrismBare accept each bare repo. Only
 // tests set it, through AllowUnrecordedBareForTest.
@@ -118,8 +132,84 @@ func requirePrismBare(gitDir string, info os.FileInfo) error {
 			return fmt.Errorf("host git: %s: %w. prism could not remove the stale entry from the record: %v", gitDir, ErrNotPrismBare, err)
 		}
 	}
-	return fmt.Errorf("host git: %s: %w. If you made this bare repo, stop each session that runs in a plain clone. Then remove %s. The next prism command records each .bare in a project root again",
-		gitDir, ErrNotPrismBare, filepath.Join(dir, bareRecordName))
+	if filepath.Base(gitDir) != ".bare" {
+		return fmt.Errorf("host git: %s: %w", gitDir, ErrNotPrismBare)
+	}
+	return fmt.Errorf("host git: %s: %w. If you made this bare repo with prism clone or prism convert, and no session ran in a plain clone of this project since then, run \"prism confirm-bare %s\" in a shell on the host",
+		gitDir, ErrNotPrismBare, filepath.Dir(gitDir))
+}
+
+// SessionRuns reports whether a session with the name runs on the host. It
+// returns an error when it cannot tell.
+type SessionRuns func(name string) (bool, error)
+
+// ErrConfirmInSandbox is returned when ConfirmBare runs in a sandbox.
+var ErrConfirmInSandbox = errors.New("prism confirm-bare runs only on the host. A sandbox cannot write the bare repo record. Run the command in a shell on the host")
+
+// ConfirmBare adds the .bare of the project at root to the record, because
+// the owner says that prism made it. It is for a .bare that the first record
+// did not get (startBareRecord). It returns the git dir that it recorded.
+//
+// ConfirmBare does the checks of OpenBare, except the record check. It
+// refuses a root whose .git is a directory, and a raw bare git dir: prism
+// makes neither. It refuses while a session runs in the root or in a dir
+// above it, because that session can write the .bare after the confirmation.
+//
+// A session runs if its start record is open (SessionStart.Open), or if runs
+// says so. runs must ask a source that the host controls, such as tmux. A
+// session can end its own start record and keep its sandbox: the sidecar
+// ends the record when the session sends session_shutdown. If runs cannot
+// tell, ConfirmBare refuses.
+func ConfirmBare(root string, runs SessionRuns) (string, error) {
+	if inSandbox() {
+		return "", ErrConfirmInSandbox
+	}
+	r, err := openBare(root, func(string, os.FileInfo) error { return nil })
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("host git: %w", err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("host git: project root: %w", err)
+	}
+	if r.gitDir != filepath.Join(resolvedRoot, ".bare") {
+		return "", fmt.Errorf("host git: confirm %s: the root is a bare git dir. prism does not make a bare git dir as a project root", r.gitDir)
+	}
+	if g, err := os.Lstat(filepath.Join(resolvedRoot, ".git")); err == nil && g.IsDir() {
+		return "", fmt.Errorf("host git: confirm %s: %s/.git is a directory. The root is a plain clone, and prism does not make a .bare next to the .git dir of a plain clone", r.gitDir, resolvedRoot)
+	}
+	dir, err := bareRecordDir()
+	if err != nil {
+		return "", err
+	}
+	starts, err := readSessionStarts(dir)
+	if err != nil {
+		return "", err
+	}
+	pr := projectRoot{path: filepath.Clean(abs), resolved: resolvedRoot}
+	for _, s := range sessionsAtOrAbove(starts, statSessionDirs(starts), pr) {
+		if s.Open {
+			return "", fmt.Errorf("host git: confirm %s: a session record with no end time names the session %s in %s. A session there can write this root. If the session does not run, end it with \"prism cleanup --yes --session %s\", then run this command again", r.gitDir, s.Name, s.Worktree, s.Name)
+		}
+		if runs == nil {
+			return "", fmt.Errorf("host git: confirm %s: no check of the running sessions is set", r.gitDir)
+		}
+		running, err := runs(s.Name)
+		if err != nil {
+			return "", fmt.Errorf("host git: confirm %s: prism cannot tell if the session %s runs: %v. A session that runs in %s can write this root", r.gitDir, s.Name, err, s.Worktree)
+		}
+		if running {
+			return "", fmt.Errorf("host git: confirm %s: the session %s runs, and it started in %s, so it can write this root. Stop the session first", r.gitDir, s.Name, s.Worktree)
+		}
+	}
+	if err := recordBare(r.gitDir); err != nil {
+		return "", err
+	}
+	return r.gitDir, nil
 }
 
 // recordBare adds gitDir, a .bare that prism made, to the record.
@@ -189,8 +279,8 @@ func forgetBare(gitDir string) error {
 	})
 }
 
-// loadBareRecord reads the record. If there is no record, it starts one
-// (startBareRecord).
+// loadBareRecord reads the record. If there is no record, or the record has
+// no start mark, it starts one (startBareRecord).
 func loadBareRecord(dir string) (bareRecordFile, error) {
 	rec, err := readBareRecord(dir)
 	if !errors.Is(err, os.ErrNotExist) {
@@ -211,24 +301,78 @@ func readOrStartBareRecord(dir string) (bareRecordFile, error) {
 	if !errors.Is(err, os.ErrNotExist) {
 		return rec, err
 	}
-	rec = startBareRecord()
+	rec, err = startBareRecord(dir)
+	if err != nil {
+		return bareRecordFile{}, err
+	}
 	if err := writeBareRecord(dir, rec); err != nil {
 		return bareRecordFile{}, err
 	}
 	return rec, nil
 }
 
-// startBareRecord returns a record of each .bare in a project root of
-// config.json. prism uses it one time, when there is no record file, so a
-// .bare that prism made before the record existed stays usable.
+// SessionStart is the start record of one session in prism.db: the name of
+// the session and the dir that prism started it in. prism writes it on the
+// host. Open is true when the record has no end time.
+type SessionStart struct {
+	Name     string
+	Worktree string
+	Open     bool
+}
+
+var sessionStartSource atomic.Pointer[func(dbPath string) ([]SessionStart, error)]
+
+// SetSessionStartSource sets the function that reads the session start
+// records from the prism.db at dbPath. internal/db sets it in its init,
+// because internal/git cannot import internal/db.
+func SetSessionStartSource(read func(dbPath string) ([]SessionStart, error)) {
+	sessionStartSource.Store(&read)
+}
+
+// readSessionStarts reads the session start records from prism.db in dir,
+// the prism state dir.
+func readSessionStarts(dir string) ([]SessionStart, error) {
+	read := sessionStartSource.Load()
+	if read == nil {
+		return nil, errors.New("host git: no reader of the session start records is set. internal/db sets it")
+	}
+	starts, err := (*read)(filepath.Join(dir, "prism.db"))
+	if err != nil {
+		return nil, fmt.Errorf("host git: read the session start records: %w", err)
+	}
+	return starts, nil
+}
+
+// startBareRecord returns the first record. prism uses it one time, when
+// there is no record file with the start mark, so a .bare that prism made
+// before the record existed stays usable.
 //
-// It skips a root whose .git is a directory. That root is a plain clone, and
-// prism does not make a .bare next to the .git dir of a plain clone.
-func startBareRecord() bareRecordFile {
-	var rec bareRecordFile
+// A session that can write a project root can plant a .bare in it, and the
+// files of a plant can be the same as the files of a .bare that prism made
+// (#3364). So the first record comes from the session start records in
+// prism.db. prism writes them on the host, with the dir that prism computed,
+// and no sandbox can write them. A .bare in a project root goes in the
+// record only if both of these are true:
+//
+//   - A session started in a worktree of the root. prism made that worktree
+//     with the .bare.
+//   - No session started in the root or in a dir above it. Such a session
+//     can write the root, so it can have planted the .bare. A meta-session
+//     runs no agent, so it does not count.
+//
+// It also skips a root whose .git is a directory. That root is a plain
+// clone, and prism does not make a .bare next to the .git dir of a plain
+// clone. ConfirmBare adds a .bare that the first record does not get.
+func startBareRecord(dir string) (bareRecordFile, error) {
+	starts, err := readSessionStarts(dir)
+	if err != nil {
+		return bareRecordFile{}, err
+	}
+	infos := statSessionDirs(starts)
+	rec := bareRecordFile{Start: bareRecordStart}
 	seen := map[string]bool{}
 	for _, root := range configuredProjectRoots(config.LoadFresh()) {
-		gitDir := filepath.Join(root, ".bare")
+		gitDir := filepath.Join(root.resolved, ".bare")
 		if seen[gitDir] {
 			continue
 		}
@@ -237,28 +381,135 @@ func startBareRecord() bareRecordFile {
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		if g, err := os.Lstat(filepath.Join(root, ".git")); err == nil && g.IsDir() {
+		if g, err := os.Lstat(filepath.Join(root.resolved, ".git")); err == nil && g.IsDir() {
+			continue
+		}
+		if !worktreeSessionIn(starts, root) || len(sessionsAtOrAbove(starts, infos, root)) > 0 {
 			continue
 		}
 		if ino, ok := inodeOf(info); ok {
 			rec.Repos = append(rec.Repos, bareRecordEntry{Path: gitDir, Ino: ino})
 		}
 	}
-	return rec
+	return rec, nil
 }
 
-// configuredProjectRoots returns each project root of cfg that exists, as a
-// resolved path: each dir in a project location, and each project_specific
-// dir.
-func configuredProjectRoots(cfg config.Config) []string {
-	var roots []string
+// projectRoot is a project root of config.json: path as config.json gives
+// it, and resolved with no symlink.
+type projectRoot struct {
+	path     string
+	resolved string
+}
+
+func (r projectRoot) forms() []string {
+	if r.path == r.resolved {
+		return []string{r.resolved}
+	}
+	return []string{r.path, r.resolved}
+}
+
+// worktreeSessionIn reports whether a session started in a dir below root,
+// other than a dir in .bare. The compare is by path only, so a symlink that a
+// session made cannot make a dir seem to be below root.
+func worktreeSessionIn(starts []SessionStart, root projectRoot) bool {
+	for _, s := range starts {
+		w := filepath.Clean(s.Worktree)
+		if !filepath.IsAbs(w) {
+			continue
+		}
+		for _, form := range root.forms() {
+			if first, ok := firstPartBelow(w, form); ok && first != ".bare" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// statSessionDirs returns the Stat result of each start dir that exists.
+func statSessionDirs(starts []SessionStart) map[string]os.FileInfo {
+	infos := map[string]os.FileInfo{}
+	for _, s := range starts {
+		w := filepath.Clean(s.Worktree)
+		if _, done := infos[w]; done || !filepath.IsAbs(w) {
+			continue
+		}
+		if info, err := os.Stat(w); err == nil && info.IsDir() {
+			infos[w] = info
+		} else {
+			infos[w] = nil
+		}
+	}
+	return infos
+}
+
+// sessionsAtOrAbove returns each session, other than a meta-session, that
+// started in root or in a dir above root. infos is the result of
+// statSessionDirs. A session matches by path, or by file identity with root
+// or with a dir above it. A match that is too wide refuses a root, and a
+// match that is too narrow accepts a plant, so both compares count.
+func sessionsAtOrAbove(starts []SessionStart, infos map[string]os.FileInfo, root projectRoot) []SessionStart {
+	var above []os.FileInfo
+	for p := root.resolved; ; p = filepath.Dir(p) {
+		if info, err := os.Stat(p); err == nil {
+			above = append(above, info)
+		}
+		if filepath.Dir(p) == p {
+			break
+		}
+	}
+	var out []SessionStart
+	for _, s := range starts {
+		if sessionname.IsMeta(s.Name) {
+			continue
+		}
+		w := filepath.Clean(s.Worktree)
+		if !filepath.IsAbs(w) {
+			continue
+		}
+		match := false
+		for _, form := range root.forms() {
+			if _, below := firstPartBelow(form, w); below || form == w {
+				match = true
+			}
+		}
+		if info := infos[w]; info != nil && !match {
+			for _, a := range above {
+				if os.SameFile(info, a) {
+					match = true
+					break
+				}
+			}
+		}
+		if match {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// firstPartBelow returns the first part of path below dir. ok is false when
+// path is not below dir. Both paths must be absolute and clean.
+func firstPartBelow(path, dir string) (first string, ok bool) {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	first, _, _ = strings.Cut(rel, string(filepath.Separator))
+	return first, true
+}
+
+// configuredProjectRoots returns each project root of cfg that exists: each
+// dir in a project location, and each project_specific dir.
+func configuredProjectRoots(cfg config.Config) []projectRoot {
+	var roots []projectRoot
 	add := func(p string) {
 		resolved, err := filepath.EvalSymlinks(p)
 		if err != nil {
 			return
 		}
 		if info, err := os.Stat(resolved); err == nil && info.IsDir() {
-			roots = append(roots, resolved)
+			roots = append(roots, projectRoot{path: filepath.Clean(p), resolved: resolved})
 		}
 	}
 	for _, loc := range cfg.ProjectLocations {
@@ -294,6 +545,9 @@ func readBareRecord(dir string) (bareRecordFile, error) {
 	var rec bareRecordFile
 	if err := json.Unmarshal(data, &rec); err != nil {
 		return bareRecordFile{}, fmt.Errorf("host git: parse %s: %w", path, err)
+	}
+	if rec.Start != bareRecordStart {
+		return bareRecordFile{}, fmt.Errorf("host git: %s has no start mark %q: %w", path, bareRecordStart, os.ErrNotExist)
 	}
 	return rec, nil
 }
