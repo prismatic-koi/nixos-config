@@ -539,12 +539,15 @@ table.
   sandboxed root session of the plain clone runs. That session can write
   the new `.bare` until prism stops it. The record does not stop this,
   because prism made that `.bare`. #3361 tracks this route.
-- **The start of the record.** The start records each `.bare` in a
-  project root, so it also records a `.bare` that a session planted before
-  the start. prism starts the record one time, at the first prism command
-  after the update that adds it. The start skips a plain clone whose
-  `.git` dir is still there. A later start needs the owner to remove the
-  record file by hand.
+- **The start of the record (#3364).** The start records each `.bare` in
+  a project root, so it also records a `.bare` that a session planted
+  before the start. This route is in scope. The root session of a plain
+  clone can plant the `.bare` and replace its `.git` dir with a `.git`
+  file. It has the coordinator role, so it can then call `/spawn`, which
+  runs `git worktree add` on the host. The start skips a plain clone whose
+  `.git` dir is still there. #3364 tracks the fix: start the record from
+  the DB start records of the sessions, which a session cannot write, or
+  from a one-time confirmation of each `.bare` by the owner.
 - **A moved, copied, or restored project.** The `.bare` has another inode
   or another path, so `OpenBare` refuses it. Do the steps in "The bare
   repo record" above.
