@@ -324,7 +324,9 @@ start records, the rows of the `sessions` table in `prism.db`:
 
 - prism writes each start record on the host, with the start dir that
   prism computed. No sandbox can write `prism.db`. The `/event` proxy
-  refuses a start dir that is not the start dir of the caller.
+  refuses a start dir that is not the start dir of the caller
+  (`session-lifecycle.md`, "The `/event` proxy"). The start of the record
+  depends on that check.
 - A `.bare` in a project root of config.json goes in the record only if
   both of these are true:
   1. A start record names a dir below the root, and the first part of the
