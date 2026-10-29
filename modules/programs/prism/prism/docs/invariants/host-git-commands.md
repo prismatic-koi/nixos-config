@@ -2,6 +2,7 @@
 
 <!-- doclint-ignore: .bare/commondir, .bare/config, .bare/hooks, .bare/worktrees, core.hooksPath, core.fsmonitor, core.sshCommand, credential.helper, extensions.worktreeConfig, config.worktree, submodule.recurse, fetch.recurseSubmodules, push.recurseSubmodules, diff.ignoreSubmodules, protocol.ext.allow, GIT_CONFIG_PARAMETERS, GIT_PAGER, gitdir, commondir, rebase-merge/autostash, info/attributes, b:git_dir -->
 <!-- doclint-ignore: status.submoduleSummary, protocol.file.allow, core.askPass, core.editor, sequence.editor, core.alternateRefsCommand, core.attributesFile, gpg.program, gpg.openpgp.program, gpg.x509.program, gpg.ssh.program, gpg.ssh.defaultKeyCommand, interactive.diffFilter, maintenance.auto, core.gitProxy, core.pager, diff.external, gc.recentObjectsHook, uploadpack.packObjectsHook -->
+<!-- doclint-ignore: merge.default -->
 <!-- doclint-ignore: GIT_ATTR_SOURCE, GIT_PROXY_COMMAND, GIT_NO_LAZY_FETCH, GIT_SSH_COMMAND, GIT_ASKPASS, GIT_EDITOR, SSH_ASKPASS, info/attributes, .bare/info, .bare/info/attributes, objects/info/alternates, .gitattributes, imap.tunnel, man.viewer, web.browser, modules/programs/git.nix -->
 <!--
   These names are git config keys, git environment variables, file names
@@ -52,6 +53,7 @@ planted value in `.bare/config` and a payload that writes a marker file.
 | `gpg.ssh.defaultKeyCommand` | empty | No command runs when no signing key is set. The commit then fails. |
 | `interactive.diffFilter` | `cat` | No filter runs on `add -p`. `cat` passes the diff through. |
 | `maintenance.auto` | `false` | No auto maintenance runs after a fetch, a commit, a merge, or a rebase. Auto maintenance runs `git gc`, and `git gc` runs each value of `gc.recentObjectsHook`. No value of that key turns it off. |
+| `merge.default` | a newline | With no `merge` attribute, git uses the merge driver that `merge.default` names. `GIT_ATTR_SOURCE` makes every `merge` attribute unset, so a planted `merge.default` needs no attribute. git looks for a configured driver of that name before a built-in one. So a planted `merge.text.driver` beats the value `text`, and a planted `[merge ""]` section beats an empty value. A subsection name in a config file cannot hold a newline, so no config file can define a driver with this name. git then uses the built-in text merge. |
 
 Every host git command also gets these environment variables:
 
@@ -74,7 +76,7 @@ reason given.
 
 | Key | Reason |
 |---|---|
-| `filter.<driver>.*`, `diff.<driver>.textconv`, `diff.<driver>.command`, `merge.<driver>.driver` | The repo chooses the name, so the list cannot pin it. A driver runs only when an attribute selects it. `GIT_ATTR_SOURCE` and `core.attributesFile` remove each source of attributes that a worker can write on the config-detach route. `info/attributes` is the other source: see "`info/attributes`" below. |
+| `filter.<driver>.*`, `diff.<driver>.textconv`, `diff.<driver>.command`, `merge.<driver>.driver`, `merge.<driver>.recursive` | The repo chooses the name, so the list cannot pin it. A filter or diff driver runs only when an attribute selects it. A merge driver runs when an attribute or `merge.default` selects it, and `merge.default` is in the list. `GIT_ATTR_SOURCE` and `core.attributesFile` remove each source of attributes that a worker can write on the config-detach route. `info/attributes` is the other source: see "`info/attributes`" below. |
 | `diff.external` | git has no value that turns it off. An empty value makes each diff that writes a patch fail. prism host git writes one patch: `git diff --cached` in `prism quick pr`, and it passes `--no-ext-diff`. The other host diffs write names or numbers only, and git runs no external diff for them. |
 | `core.pager`, `pager.<command>` | `GIT_PAGER` has priority. |
 | `core.gitProxy` | `GIT_PROXY_COMMAND` (above). |
@@ -460,9 +462,11 @@ table.
   checkout, a status, a diff, a commit, a signed commit, a rebase with a
   conflict, and a config command. For `core.sshCommand` and the signing
   programs, a stand-in program on `PATH` makes sure that git runs the
-  pinned program. `TestHostGitConfig_DocListsEveryKey` makes sure that
-  this doc lists each key. `TestStagedDiff_NoExternalDiff` covers the
-  `--no-ext-diff` of `prism quick pr`.
+  pinned program. `TestHostGit_PlantedMergeDefault` plants
+  `merge.default` with no attribute, and also the driver names `text` and
+  `""`. `TestHostGitConfig_DocListsEveryKey` makes sure that this doc lists
+  each key. `TestStagedDiff_NoExternalDiff` covers the `--no-ext-diff` of
+  `prism quick pr`.
 - The test fixtures of `cmd`, `internal/git`, `internal/review`, and
   `internal/sidecar` use a local origin. Their `TestMain` calls
   `git.AllowFileTransportForTest`. `TestHostGit_FileTransportRefused`

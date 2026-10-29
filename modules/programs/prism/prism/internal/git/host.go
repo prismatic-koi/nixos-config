@@ -71,7 +71,19 @@ var hostGitConfig = append([][2]string{
 	{"gpg.ssh.defaultKeyCommand", ""},
 	{"interactive.diffFilter", "cat"},
 	{"maintenance.auto", "false"},
+	{"merge.default", noMergeDriver},
 }, hookEventsOff()...)
+
+// noMergeDriver is a merge driver name that no config file can define,
+// because a subsection name in a config file cannot hold a newline.
+//
+// With no merge attribute, git uses the driver that merge.default names, and
+// GIT_ATTR_SOURCE makes every merge attribute unset. git looks for a
+// configured driver of that name before a built-in one, so a planted
+// merge.text.driver beats merge.default=text, and a planted [merge ""]
+// beats an empty value. git finds no driver for this name and uses the
+// built-in text merge.
+const noMergeDriver = "\n"
 
 // hookEvents is each hook event of githooks(5) on git 2.56. git 2.56 runs a
 // hook that config defines (hook.<name>.command and hook.<name>.event), and

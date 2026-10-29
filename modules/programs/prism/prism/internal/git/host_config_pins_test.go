@@ -176,24 +176,64 @@ func TestHostGit_PlantedCredentialHelperAndAskPass(t *testing.T) {
 // driverAttributes selects the planted drivers for every path.
 const driverAttributes = "* filter=evil diff=evil merge=evil\n"
 
-// plantDrivers commits a .gitattributes that selects the evil drivers on
-// main, and then plants drivers in .bare/config. The commit comes first,
-// because a plain commit with the drivers in place runs them.
-func (f hostFixture) plantDrivers(t *testing.T, drivers ...[2]string) {
+// commitOnMain commits files on main with plain git. A test calls it before
+// it plants config, because a plain commit runs a planted driver.
+func (f hostFixture) commitOnMain(t *testing.T, files map[string]string) {
 	t.Helper()
 	setCommitIdentity(t)
-	if err := os.WriteFile(filepath.Join(f.main, ".gitattributes"), []byte(driverAttributes), 0o644); err != nil {
-		t.Fatal(err)
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(f.main, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(f.main, "data.txt"), []byte("base\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{{"add", "."}, {"commit", "-q", "-m", "attributes"}} {
+	for _, args := range [][]string{{"add", "."}, {"commit", "-q", "-m", "setup"}} {
 		if out, err := plainGit(t, f.main, args...); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
+}
+
+// plantDrivers commits a .gitattributes that selects the evil drivers on
+// main, and then plants drivers in .bare/config.
+func (f hostFixture) plantDrivers(t *testing.T, drivers ...[2]string) {
+	t.Helper()
+	f.commitOnMain(t, map[string]string{".gitattributes": driverAttributes, "data.txt": "base\n"})
 	plantConfig(t, f.bare(), drivers...)
+}
+
+// conflictingBranches makes the worktrees control and spawned from main, and
+// commits a change of data.txt on each of them and on main. It commits
+// through host git, so a planted config runs nothing. A rebase of control or
+// spawned onto main then has a conflict in data.txt. It returns the host
+// Repo of spawned.
+func (f hostFixture) conflictingBranches(t *testing.T) Repo {
+	t.Helper()
+	var spawned Repo
+	for _, name := range []string{"control", "spawned", "main"} {
+		dir := filepath.Join(f.root, name)
+		if name != "main" {
+			created, err := CreateWorktree(f.root, name)
+			if err != nil {
+				t.Fatalf("CreateWorktree %s: %v", name, err)
+			}
+			dir = created.Path
+		}
+		if err := os.WriteFile(filepath.Join(dir, "data.txt"), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		repo, err := OpenWorktree(f.root, dir)
+		if err != nil {
+			t.Fatalf("OpenWorktree %s: %v", name, err)
+		}
+		if out, err := repo.CombinedOutput("commit", "-q", "-a", "-m", name); err != nil {
+			t.Fatalf("commit %s: %v\n%s", name, err, out)
+		}
+		if name == "spawned" {
+			spawned = repo
+		}
+	}
+	f.requireNoPayload(t, "the host commits of the setup")
+	return spawned
 }
 
 // TestHostGit_PlantedFilterDriver: a .gitattributes in the tree selects a
@@ -255,42 +295,45 @@ func TestHostGit_PlantedFilterDriver(t *testing.T) {
 func TestHostGit_PlantedMergeDriver(t *testing.T) {
 	f := newHostFixture(t)
 	f.plantDrivers(t, [2]string{"merge.evil.driver", f.payload("mergedriver") + "; false"})
-
-	// Two branches from main that change data.txt.
-	mainRepo, err := OpenWorktree(f.root, f.main)
-	if err != nil {
-		t.Fatalf("OpenWorktree main: %v", err)
-	}
-	var branches []Repo
-	for _, name := range []string{"control", "spawned"} {
-		created, err := CreateWorktree(f.root, name)
-		if err != nil {
-			t.Fatalf("CreateWorktree %s: %v", name, err)
-		}
-		if err := os.WriteFile(filepath.Join(created.Path, "data.txt"), []byte(name+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		repo, err := OpenWorktree(f.root, created.Path)
-		if err != nil {
-			t.Fatalf("OpenWorktree %s: %v", name, err)
-		}
-		if out, err := repo.CombinedOutput("commit", "-q", "-a", "-m", name); err != nil {
-			t.Fatalf("commit %s: %v\n%s", name, err, out)
-		}
-		branches = append(branches, repo)
-	}
-	if err := os.WriteFile(filepath.Join(f.main, "data.txt"), []byte("main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := mainRepo.CombinedOutput("commit", "-q", "-a", "-m", "main"); err != nil {
-		t.Fatalf("commit main: %v\n%s", err, out)
-	}
-	f.requireNoPayload(t, "the host commits of the setup")
+	spawned := f.conflictingBranches(t)
 
 	f.requireControlFires(t, filepath.Join(f.root, "control"), "rebase", "main")
 
-	_, _ = branches[1].CombinedOutput("rebase", "main")
+	_, _ = spawned.CombinedOutput("rebase", "main")
 	f.requireNoPayload(t, "a host rebase with a conflict")
+}
+
+// TestHostGit_PlantedMergeDefault: with no merge attribute, git uses the
+// driver that merge.default names. A planted merge.default needs no
+// attribute, and GIT_ATTR_SOURCE makes every merge attribute unset. A host
+// rebase with a conflict runs no planted driver. The plant also defines the
+// driver names text and "", which beat a pin of merge.default to text or to
+// an empty value.
+func TestHostGit_PlantedMergeDefault(t *testing.T) {
+	f := newHostFixture(t)
+	f.commitOnMain(t, map[string]string{"data.txt": "base\n"})
+	plantConfig(t, f.bare(),
+		[2]string{"merge.default", "evil"},
+		[2]string{"merge.evil.driver", f.payload("mergedefault") + "; false"},
+		[2]string{"merge.text.driver", f.payload("mergetext") + "; false"},
+	)
+	cfg, err := os.OpenFile(filepath.Join(f.bare(), "config"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(cfg, "[merge \"\"]\n\tdriver = %s; false\n", f.payload("mergeempty"))
+	if err := cfg.Close(); err != nil {
+		t.Fatal(err)
+	}
+	spawned := f.conflictingBranches(t)
+
+	f.requireControlFires(t, filepath.Join(f.root, "control"), "rebase", "main")
+
+	out, err := spawned.CombinedOutput("rebase", "main")
+	if err == nil || !strings.Contains(string(out), "CONFLICT") {
+		t.Errorf("host rebase = %v, %q; want a conflict from the built-in text merge", err, out)
+	}
+	f.requireNoPayload(t, "a host rebase with a conflict and no merge attribute")
 }
 
 // TestHostGit_PlantedConfigHook: a hook that a planted config defines does

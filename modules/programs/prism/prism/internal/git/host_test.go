@@ -8,6 +8,7 @@ package git
 // run. The payload only appends a line to a marker file in t.TempDir().
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -532,9 +533,9 @@ func TestRepoEnv_GitReadsHardening(t *testing.T) {
 		t.Fatalf("OpenBare: %v", err)
 	}
 	for _, kv := range hostGitConfigValues() {
-		got, err := bare.Output("config", "--get", kv[0])
-		if err != nil || got != kv[1] {
-			t.Errorf("git config --get %s = %q, %v; want %q", kv[0], got, err, kv[1])
+		out, err := bare.Command(context.Background(), "config", "--get", kv[0]).Output()
+		if got := string(out); err != nil || got != kv[1]+"\n" {
+			t.Errorf("git config --get %s = %q, %v; want %q", kv[0], got, err, kv[1]+"\n")
 		}
 	}
 }
