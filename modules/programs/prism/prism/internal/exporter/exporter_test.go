@@ -215,6 +215,7 @@ func TestExporter_ShipsExactlyTheSpecifiedMetrics(t *testing.T) {
 		exporter.MetricModelCostUSDTotal,
 		exporter.MetricModelTokensTotal,
 		exporter.MetricPermissionDeniedTotal,
+		exporter.MetricSpawnOverridesTotal,
 		exporter.MetricReviewAgentVerdictsTotal,
 		exporter.MetricReviewVerdictsTotal,
 		exporter.MetricSessionsActive,
@@ -560,6 +561,7 @@ func TestExporter_ExposesNoUnboundedLabel(t *testing.T) {
 		exporter.MetricEscalationsTotal:         1000,
 		exporter.MetricDoomLoopsTotal:           1000,
 		exporter.MetricPermissionDeniedTotal:    1000,
+		exporter.MetricSpawnOverridesTotal:      1000,
 		// The cost metrics. account_org_id, provider, model_id, kind, and
 		// profile are all bounded at low tens; account and
 		// workspace_id on prism_account_info are operator-controlled and

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/spawnbudget"
 )
@@ -184,4 +186,63 @@ func TestProxySpawn_PrintsRelayedBudgetLine(t *testing.T) {
 			}
 		})
 	}
+}
+
+func budgetCmd(t *testing.T, args ...string) *cobra.Command {
+	t.Helper()
+	c := &cobra.Command{Use: "spawn"}
+	c.Flags().String("over-budget", "", overBudgetHelp)
+	var buf bytes.Buffer
+	c.SetErr(&buf)
+	if err := c.ParseFlags(args); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestEnforceWorkerSpawnBudget(t *testing.T) {
+	under := spawnbudget.Result{Count: 5, Limit: 120, Known: true}
+	unknown := spawnbudget.Result{Limit: 120}
+	bare := t.TempDir()
+	cases := []struct {
+		name    string
+		role    string
+		res     spawnbudget.Result
+		args    []string
+		wantErr string
+	}{
+		{"over refuses", "worker", overBudget, nil, "--over-budget"},
+		{"over with reason starts", "worker", overBudget, []string{"--over-budget", "urgent"}, ""},
+		{"empty reason refused", "worker", overBudget, []string{"--over-budget", ""}, "needs a reason"},
+		{"empty reason under limit refused", "worker", under, []string{"--over-budget", " "}, "needs a reason"},
+		{"under starts", "worker", under, nil, ""},
+		{"unknown count starts", "worker", unknown, nil, ""},
+		{"coordinator over starts", "coordinator", overBudget, nil, ""},
+		{"review over starts", "review-code", overBudget, nil, ""},
+		{"investigate over starts", "investigate", overBudget, nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withFakeSpawnBudget(t, tc.res)
+			c := budgetCmd(t, tc.args...)
+			err := enforceWorkerSpawnBudget(c, tc.role, config.Config{}, bare, "fix-x")
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+
+	t.Run("refusal message gives count and limit", func(t *testing.T) {
+		withFakeSpawnBudget(t, overBudget)
+		err := enforceWorkerSpawnBudget(budgetCmd(t), "worker", config.Config{}, bare, "x")
+		if err == nil || !strings.Contains(err.Error(), "196 of 120") {
+			t.Fatalf("err = %v, want count and limit", err)
+		}
+	})
 }

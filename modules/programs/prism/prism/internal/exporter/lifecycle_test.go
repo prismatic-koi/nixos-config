@@ -15,6 +15,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/exporter"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/spawnbudget"
 )
 
 // spawnFixture wires up a sessions row (agent_role), an agent_status row
@@ -703,5 +704,15 @@ func TestExporter_SpawnsTotalNeverDecreasesAcrossRestart(t *testing.T) {
 	after, ok := spawnSample(t, h, restarted)
 	if !ok || after < first || after != 1 {
 		t.Fatalf("after restart = %v (exists %v), before = %v, want 1 and no decrease", after, ok, first)
+	}
+}
+
+func TestExporter_SpawnOverridesTotalIncrementsPerOverride(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+	h.writeEvent(spawnbudget.EventSpawnOverride, 0)
+	h.writeEvent(spawnbudget.EventSpawnOverride, 0)
+	if got := counterValue(t, h, exporter.MetricSpawnOverridesTotal, map[string]string{"repo": "nixos-config"}); got != 2 {
+		t.Errorf("prism_spawn_overrides_total{repo=nixos-config} = %v, want 2", got)
 	}
 }

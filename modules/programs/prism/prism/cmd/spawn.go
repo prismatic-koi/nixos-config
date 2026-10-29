@@ -83,6 +83,10 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	providerFlag, _ := cmd.Flags().GetString("provider")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
 	ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
+	overBudgetReason, err := overBudgetFlag(cmd)
+	if err != nil {
+		return err
+	}
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
 	modelOverrideFlag, _ := cmd.Flags().GetStringArray("model-override")
 	reuseFlag, _ := cmd.Flags().GetBool("reuse")
@@ -186,6 +190,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 			"model":                  modelFlag,
 			"variant":                variantFlag,
 			"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
+			"over_budget":            overBudgetReason,
 			"abtest":                 abtestFlag,
 		}
 		// Unreachable in practice — validateProviderFlag above rejects
@@ -267,6 +272,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"model":                  modelFlag,
 		"variant":                variantFlag,
 		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
+		"over_budget":            overBudgetReason,
 		"reuse":                  reuseFlag,
 	}
 	// Only forward "provider" when the user actually passed a value. An empty
@@ -396,6 +402,7 @@ func init() {
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	spawnCmd.Flags().String("harness", "pi", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, config.IgnoreConcurrencyCapHelp)
+	spawnCmd.Flags().String("over-budget", "", overBudgetHelp)
 	spawnCmd.Flags().Bool("wait", false, "Block until the spawned agent finishes its initial prompt. Without --wait, returns immediately.")
 	spawnCmd.Flags().Duration("wait-timeout", defaultSpawnWaitTimeout, "Timeout for --wait. Ignored when --wait is not set.")
 	spawnCmd.Flags().Bool("json", false, "Emit the terminal status as a JSON object on stdout (only useful with --wait). Suppresses textual output.")
@@ -788,7 +795,9 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 
 	// The spawn budget line. It runs after every early return that starts no
 	// session (dedupe refusal, reuse) and before the first side effect.
-	printWorkerSpawnBudget(cmd.ErrOrStderr(), plannedRole, cfg)
+	if err := enforceWorkerSpawnBudget(cmd, plannedRole, cfg, bareRoot, branch); err != nil {
+		return err
+	}
 
 	// Create the worktree (handles local, remote-tracking, and new branches).
 	//
@@ -1407,7 +1416,9 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 
 	// One budget line for the pair. Both arms count, but the lookup runs
 	// once, before either arm starts.
-	printWorkerSpawnBudget(cmd.ErrOrStderr(), plannedRole, cfg)
+	if err := enforceWorkerSpawnBudget(cmd, plannedRole, cfg, bareRoot, baseBranch); err != nil {
+		return err
+	}
 
 	pairID := generateAbtestPairID()
 
