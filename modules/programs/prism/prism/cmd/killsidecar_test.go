@@ -38,6 +38,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/git"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
@@ -152,9 +153,12 @@ func TestMain(m *testing.M) {
 	// Sandbox-env isolation: unset the sidecar-injected PRISM_* vars
 	// so the suite controls its full environment surface.
 	restoreSandboxEnv := isolateSuiteFromSandboxEnv()
+	// The spawn, pr, and switch fixtures use a local-path origin.
+	restoreFileTransport := git.AllowFileTransportForTest()
 
 	code := m.Run()
 
+	restoreFileTransport()
 	restoreStateEnv()
 	restoreSandboxEnv()
 	restoreTmuxEnv()

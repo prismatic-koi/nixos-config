@@ -12,7 +12,9 @@ package git
 // Repo closes the redirect. prism computes the git dir and the common dir on
 // the host from the project root and sets GIT_DIR and GIT_COMMON_DIR, so git
 // reads config and hooks from those dirs only. Env also turns off the config
-// keys that run a command and that prism does not need on the host.
+// keys that run a command, or pins them to the git default, because a worker
+// can still write the config of the common dir after a bwrap pin detaches
+// (#3337).
 //
 // The rule is in docs/invariants/host-git-commands.md.
 // TestHostGit_NoDirectGitExec fails if a non-test file outside this file
@@ -27,6 +29,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/config"
@@ -34,23 +37,99 @@ import (
 
 // hostGitConfig is the config that every host git command gets as
 // command-line config. Command-line config has priority over every config
-// file.
+// file. Each value was tested on git 2.56. docs/invariants/host-git-commands.md
+// gives the reason for each key.
+//
+// An empty value does not always turn a key off. An empty core.sshCommand or
+// gpg.ssh.program makes git run an empty command, so those keys get the git
+// default.
 //
 // The submodule keys are necessary in addition to the pinned git dir: a
 // submodule has its own git dir in the worktree, and its config is not
 // prism's.
-var hostGitConfig = [][2]string{
+var hostGitConfig = append([][2]string{
 	{"core.hooksPath", "/dev/null"},
 	{"core.fsmonitor", "false"},
 	{"submodule.recurse", "false"},
 	{"fetch.recurseSubmodules", "false"},
 	{"push.recurseSubmodules", "no"},
 	{"diff.ignoreSubmodules", "all"},
+	{"status.submoduleSummary", "false"},
 	{"protocol.ext.allow", "never"},
+	{"protocol.file.allow", "never"},
+	{"core.sshCommand", "ssh"},
+	{"credential.helper", ""},
+	{"core.askPass", ""},
+	{"core.editor", ":"},
+	{"sequence.editor", ":"},
+	{"core.alternateRefsCommand", ""},
+	{"core.attributesFile", "/dev/null"},
+	{"gpg.program", "gpg"},
+	{"gpg.openpgp.program", "gpg"},
+	{"gpg.x509.program", "gpgsm"},
+	{"gpg.ssh.program", "ssh-keygen"},
+	{"gpg.ssh.defaultKeyCommand", ""},
+	{"interactive.diffFilter", "cat"},
+	{"maintenance.auto", "false"},
+}, hookEventsOff()...)
+
+// hookEvents is each hook event of githooks(5) on git 2.56. git 2.56 runs a
+// hook that config defines (hook.<name>.command and hook.<name>.event), and
+// core.hooksPath does not stop it.
+var hookEvents = []string{
+	"applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit",
+	"pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit",
+	"pre-rebase", "post-checkout", "post-merge", "pre-push", "pre-receive",
+	"update", "proc-receive", "post-receive", "post-update",
+	"reference-transaction", "push-to-checkout", "pre-auto-gc",
+	"post-rewrite", "sendemail-validate", "fsmonitor-watchman",
+	"p4-changelist", "p4-prepare-changelist", "p4-post-changelist",
+	"p4-pre-submit", "post-index-change",
 }
 
-// hostGitStrippedEnv names the inherited variables that change where git
-// finds its repository. Env removes them and sets its own values.
+// hookEventsOff returns hook.<event>.enabled = false for each hook event.
+// A config that also sets hook.<event>.command defeats this (#3349).
+func hookEventsOff() [][2]string {
+	out := make([][2]string, 0, len(hookEvents))
+	for _, event := range hookEvents {
+		out = append(out, [2]string{"hook." + event + ".enabled", "false"})
+	}
+	return out
+}
+
+// emptyTree is the SHA-1 object name of the empty tree. git knows this object
+// without a read of the object store.
+const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+// allowFileTransport makes Env allow the file transport. Only tests set it,
+// through AllowFileTransportForTest.
+var allowFileTransport atomic.Bool
+
+// AllowFileTransportForTest makes host git allow a remote that is a local
+// path, which test fixtures use as origin. Production host git refuses such a
+// remote (protocol.file.allow = never). Call restore when the test ends.
+func AllowFileTransportForTest() (restore func()) {
+	prev := allowFileTransport.Swap(true)
+	return func() { allowFileTransport.Store(prev) }
+}
+
+// hostGitConfigValues returns hostGitConfig with the values that Env uses.
+func hostGitConfigValues() [][2]string {
+	out := make([][2]string, len(hostGitConfig))
+	copy(out, hostGitConfig)
+	if allowFileTransport.Load() {
+		for i := range out {
+			if out[i][0] == "protocol.file.allow" {
+				out[i][1] = "always"
+			}
+		}
+	}
+	return out
+}
+
+// hostGitStrippedEnv names the inherited variables that Env removes. Some
+// change where git finds its repository. Env sets its own value for the
+// others.
 var hostGitStrippedEnv = []string{
 	"GIT_DIR",
 	"GIT_COMMON_DIR",
@@ -67,6 +146,9 @@ var hostGitStrippedEnv = []string{
 	"GIT_NO_REPLACE_OBJECTS",
 	"GIT_CONFIG",
 	"GIT_PAGER",
+	"GIT_ATTR_SOURCE",
+	"GIT_PROXY_COMMAND",
+	"GIT_NO_LAZY_FETCH",
 }
 
 // ErrWorktreeConfig is returned when the common config of a project turns
@@ -375,6 +457,11 @@ func EnvForDir(dir string, base []string) ([]string, error) {
 // GIT_DIR, GIT_COMMON_DIR, and GIT_WORK_TREE of r, and with hostGitConfig
 // added to GIT_CONFIG_PARAMETERS. A git child of a gh or glab command gets
 // the same values.
+//
+// For a pinned Repo, Env also sets GIT_ATTR_SOURCE to the empty tree, so git
+// reads no .gitattributes file and a planted filter, diff, or merge driver
+// does not run. git stops with an error if GIT_ATTR_SOURCE is set and there
+// is no repository, so a Repo that is not pinned does not get it.
 func (r Repo) Env(base []string) []string {
 	return hostEnv(base, r.gitDir, r.commonDir, r.workTree)
 }
@@ -443,7 +530,7 @@ func (r Repo) refuseWorktreeConfig() error {
 }
 
 func hostEnv(base []string, gitDir, commonDir, workTree string) []string {
-	out := make([]string, 0, len(base)+5)
+	out := make([]string, 0, len(base)+8)
 	params := ""
 	for _, kv := range base {
 		k, v, _ := strings.Cut(kv, "=")
@@ -456,15 +543,27 @@ func hostEnv(base []string, gitDir, commonDir, workTree string) []string {
 		}
 		out = append(out, kv)
 	}
-	for _, kv := range hostGitConfig {
+	for _, kv := range hostGitConfigValues() {
 		if params != "" {
 			params += " "
 		}
 		params += "'" + kv[0] + "=" + kv[1] + "'"
 	}
-	out = append(out, "GIT_CONFIG_PARAMETERS="+params, "GIT_PAGER=cat")
+	// GIT_PROXY_COMMAND: git uses the first core.gitProxy that matches, so a
+	// command-line value cannot replace a planted one. A set
+	// GIT_PROXY_COMMAND makes git skip core.gitProxy, and an empty one means
+	// no proxy.
+	//
+	// GIT_NO_LAZY_FETCH: a planted partial-clone config makes git fetch a
+	// missing object from a remote that the config names.
+	out = append(out,
+		"GIT_CONFIG_PARAMETERS="+params,
+		"GIT_PAGER=cat",
+		"GIT_PROXY_COMMAND=",
+		"GIT_NO_LAZY_FETCH=1",
+	)
 	if gitDir != "" {
-		out = append(out, "GIT_DIR="+gitDir, "GIT_COMMON_DIR="+commonDir)
+		out = append(out, "GIT_DIR="+gitDir, "GIT_COMMON_DIR="+commonDir, "GIT_ATTR_SOURCE="+emptyTree)
 	}
 	if workTree != "" {
 		out = append(out, "GIT_WORK_TREE="+workTree)

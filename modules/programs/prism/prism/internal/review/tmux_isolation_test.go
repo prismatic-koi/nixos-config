@@ -45,6 +45,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -105,7 +106,10 @@ func TestMain(m *testing.M) {
 	// restoreState removes the suite dir, and the forensic logs of
 	// truncateProgressMsg with it.
 	review.SetProgressLogDirForTest(suiteStateRoot)
+	// The pre-flight fixtures use a local-path origin.
+	restoreFileTransport := git.AllowFileTransportForTest()
 	code := m.Run()
+	restoreFileTransport()
 	restoreState()
 	restore()
 	os.Exit(code)

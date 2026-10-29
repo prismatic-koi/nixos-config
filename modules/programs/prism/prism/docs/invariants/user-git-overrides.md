@@ -69,7 +69,7 @@ The PR of #3326 holds the full table of tests.
 | `submodule.recurse` | `false` | No recursion. |
 | `fetch.recurseSubmodules` | `false` | No fetch in a submodule. |
 | `push.recurseSubmodules` | `no` | No push in a submodule. |
-| `hook.<event>.enabled` (every githooks(5) event) | `false` | No config-defined hook. git 2.56 runs `hook.<name>.command` even with `core.hooksPath = /dev/null`; this stops it per event. |
+| `hook.<event>.enabled` (every githooks(5) event) | `false` | Stops a config-defined hook for the event. git 2.56 runs `hook.<name>.command` even with `core.hooksPath = /dev/null`. A planted `hook.<event>.command` defeats this pin, and a config hook with another name then runs (#3349). |
 
 Environment variables:
 
@@ -221,7 +221,7 @@ staged submodule (#3343).
   value. These entries act only on a credential prompt or a credential
   helper, a fetch from a repo with alternates, a signature with no signing
   key, and a `git://` fetch. The host git of prism adds its own config
-  (#3322), and #3337 tracks the keys that it does not pin.
+  (#3322), and #3337 pins these keys for it.
 - **A key that a later git version adds.** The list is for git 2.56. Do
   the tests again when git changes.
 - **A language server in the host nvim.** It runs project code by design.

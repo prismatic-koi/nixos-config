@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
@@ -59,7 +60,10 @@ func TestMain(m *testing.M) {
 
 	var restoreState func()
 	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
+	// The /switch fixtures clone a local-path origin.
+	restoreFileTransport := git.AllowFileTransportForTest()
 	code := m.Run()
+	restoreFileTransport()
 	restoreState()
 	os.Exit(code)
 }

@@ -1,13 +1,15 @@
 # Invariant: host git commands
 
 <!-- doclint-ignore: .bare/commondir, .bare/config, .bare/hooks, .bare/worktrees, core.hooksPath, core.fsmonitor, core.sshCommand, credential.helper, extensions.worktreeConfig, config.worktree, submodule.recurse, fetch.recurseSubmodules, push.recurseSubmodules, diff.ignoreSubmodules, protocol.ext.allow, GIT_CONFIG_PARAMETERS, GIT_PAGER, gitdir, commondir, rebase-merge/autostash, info/attributes, b:git_dir -->
+<!-- doclint-ignore: status.submoduleSummary, protocol.file.allow, core.askPass, core.editor, sequence.editor, core.alternateRefsCommand, core.attributesFile, gpg.program, gpg.openpgp.program, gpg.x509.program, gpg.ssh.program, gpg.ssh.defaultKeyCommand, interactive.diffFilter, maintenance.auto, core.gitProxy, core.pager, diff.external, gc.recentObjectsHook, uploadpack.packObjectsHook -->
+<!-- doclint-ignore: GIT_ATTR_SOURCE, GIT_PROXY_COMMAND, GIT_NO_LAZY_FETCH, GIT_SSH_COMMAND, GIT_ASKPASS, GIT_EDITOR, SSH_ASKPASS, info/attributes, .bare/info, .bare/info/attributes, objects/info/alternates, .gitattributes, imap.tunnel, man.viewer, web.browser, modules/programs/git.nix -->
 <!--
   These names are git config keys, git environment variables, file names
   in a git dir, and a buffer variable of the nvim plugin fugitive. They are
   git and nvim names, not names in this source tree.
 -->
 
-Issues: #3322, #3315, #3293, #3347. Code: `internal/git/host.go`
+Issues: #3322, #3315, #3293, #3347, #3337. Code: `internal/git/host.go`
 (`OpenBare`, `OpenWorktree`, `OpenDir`, `OuterBareRoot`, `EnvForDir`,
 `CloneCommand`), the prefix+b keybind in the tmux config of prism
 (modules/programs/prism/tmux.nix, outside the prism Go tree), and the nvim
@@ -25,22 +27,93 @@ same environment from `git.EnvForDir` or `Repo.Env`.
 
 Every host git command also gets this command-line config, in
 `GIT_CONFIG_PARAMETERS`. Command-line config has priority over every config
-file:
+file, `.bare/config` included. Each row was tested on git 2.56 with a
+planted value in `.bare/config` and a payload that writes a marker file.
 
-| Key | Value | Reason |
+| Key | Value | Effect |
 |---|---|---|
-| `core.hooksPath` | `/dev/null` | No hook runs. |
+| `core.hooksPath` | `/dev/null` | No hook from a hooks dir runs. |
+| `hook.<event>.enabled` (each of the 28 events of githooks(5)) | `false` | No hook that config defines runs (`hook.<name>.command` with `hook.<name>.event`). `core.hooksPath` does not stop these hooks. A config that also sets `hook.<event>.command` defeats this pin: see "Open residual" below. |
 | `core.fsmonitor` | `false` | No fsmonitor command runs. |
 | `submodule.recurse`, `fetch.recurseSubmodules`, `push.recurseSubmodules` | `false`, `false`, `no` | A submodule has its own git dir in the worktree, with its own config. |
 | `diff.ignoreSubmodules` | `all` | A submodule status runs git in the submodule. This is the default only: an `ignore=` entry in `.gitmodules` overrides it. `git.Stat` adds `--ignore-submodules=all` on the command line for that reason. |
+| `status.submoduleSummary` | `false` | No summary runs git in a submodule. |
 | `protocol.ext.allow` | `never` | No `ext::` remote helper runs. |
+| `protocol.file.allow` | `never` | git refuses a remote that is a local path or a `file://` URL. Without this pin, a planted remote URL, push URL, or `url.<base>.insteadOf` that names a local repo makes git run `remote.<name>.uploadpack` and `remote.<name>.receivepack` on the host, and the hooks of that repo. |
+| `core.sshCommand` | `ssh` | The git default. git runs `ssh` from `PATH`, so SSH auth works as before. An empty value makes git run an empty command, and each SSH fetch fails. An inherited `GIT_SSH_COMMAND` still has priority, as before. |
+| `credential.helper` | empty | An empty value clears the list of helpers. git reads command-line config last, so the list is empty, `credential.<url>.helper` included. A `gh` child adds its own helper after this entry, so `gh` auth works. |
+| `core.askPass` | empty | No askpass program runs. git does not use `SSH_ASKPASS`. An inherited `GIT_ASKPASS` still has priority. |
+| `core.editor`, `sequence.editor` | `:` | git runs no editor. An inherited `GIT_EDITOR` still has priority. |
+| `core.alternateRefsCommand` | empty | No command runs for the refs of an alternate. A worker can write `objects/info/alternates`. A fetch still works. |
+| `core.attributesFile` | `/dev/null` | A planted config cannot name an attributes file that selects a driver. |
+| `gpg.program`, `gpg.openpgp.program` | `gpg` | The git default. These run to sign a commit (`prism quick pr`, a rebase with `commit.gpgSign`) and to verify a signature. |
+| `gpg.x509.program` | `gpgsm` | The git default. |
+| `gpg.ssh.program` | `ssh-keygen` | The git default. An empty value makes git run an empty command. |
+| `gpg.ssh.defaultKeyCommand` | empty | No command runs when no signing key is set. The commit then fails. |
+| `interactive.diffFilter` | `cat` | No filter runs on `add -p`. `cat` passes the diff through. |
+| `maintenance.auto` | `false` | No auto maintenance runs after a fetch, a commit, a merge, or a rebase. Auto maintenance runs `git gc`, and `git gc` runs each value of `gc.recentObjectsHook`. No value of that key turns it off. |
 
-`GIT_PAGER` is `cat`, so no pager runs.
+Every host git command also gets these environment variables:
+
+| Variable | Value | Effect |
+|---|---|---|
+| `GIT_PAGER` | `cat` | No pager runs. `GIT_PAGER` has priority over `core.pager` and `pager.<command>`. |
+| `GIT_ATTR_SOURCE` | the empty tree | git reads no `.gitattributes` file from the worktree, the index, or the tree, so a planted filter, diff, or merge driver does not run. A pinned `Repo` only: git stops with an error when `GIT_ATTR_SOURCE` is set and there is no repository. |
+| `GIT_PROXY_COMMAND` | empty | git uses the first `core.gitProxy` that matches, so command-line config cannot replace a planted value. A set `GIT_PROXY_COMMAND` makes git skip `core.gitProxy`, and an empty value means no proxy. |
+| `GIT_NO_LAZY_FETCH` | `1` | A planted partial-clone config cannot make git fetch a missing object from a remote that the config names. |
 
 Command-line config cannot stop a submodule status that a `.gitmodules`
 `ignore=` entry turns on. The `.gitmodules` file is in the worktree, so the
 session writes it. Only the `--ignore-submodules=all` option on the command
 line has priority over it.
+
+### Keys that are not in the list
+
+These keys also run a program. Each one is safe for prism host git for the
+reason given.
+
+| Key | Reason |
+|---|---|
+| `filter.<driver>.*`, `diff.<driver>.textconv`, `diff.<driver>.command`, `merge.<driver>.driver` | The repo chooses the name, so the list cannot pin it. A driver runs only when an attribute selects it. `GIT_ATTR_SOURCE` and `core.attributesFile` remove each source of attributes that a worker can write on the config-detach route. `info/attributes` is the other source: see "`info/attributes`" below. |
+| `diff.external` | git has no value that turns it off. An empty value makes each diff that writes a patch fail. prism host git writes one patch: `git diff --cached` in `prism quick pr`, and it passes `--no-ext-diff`. The other host diffs write names or numbers only, and git runs no external diff for them. |
+| `core.pager`, `pager.<command>` | `GIT_PAGER` has priority. |
+| `core.gitProxy` | `GIT_PROXY_COMMAND` (above). |
+| `gc.recentObjectsHook` | `maintenance.auto = false` (above). prism host git runs no `git gc`. |
+| `remote.<name>.uploadpack`, `remote.<name>.receivepack`, `remote.<name>.url`, `url.<base>.insteadOf` | For an SSH remote, the remote server runs the upload-pack and receive-pack command, not the host. `protocol.file.allow = never` refuses a local remote. |
+| `remote.<name>.vcs`, a `<transport>::<address>` URL | git runs `git-remote-<transport>` from `PATH` or from the exec path of git. A worker cannot put a program there. `protocol.ext.allow = never` refuses the `ext` helper. |
+| `uploadpack.packObjectsHook` | git reads it only from the system, global, and command-line config. |
+| `alias.*` | prism host git runs built-in commands only. An alias cannot replace a built-in command. |
+| `diff.tool`, `merge.tool`, `man.viewer`, `web.browser`, `trailer.<token>.cmd`, `submodule.<name>.update`, `sendemail.*`, `imap.tunnel`, `tar.<format>.command` | Only `git difftool`, `git mergetool`, `git help`, `git interpret-trailers` (or `--trailer`), `git submodule update`, `git send-email`, `git imap-send`, and `git archive` run them. prism host git runs none of these commands. |
+
+### `info/attributes`
+
+`GIT_ATTR_SOURCE` does not cover `$GIT_COMMON_DIR/info/attributes`, and no
+config key or environment variable turns off this file. A driver that
+`info/attributes` selects runs in prism host git. On the config-detach route
+the sandbox stops the write: `sandbox-exec` denies a write in `.bare/info`,
+and bwrap binds `.bare/info` read-only as a directory. A rename of
+`.bare/config` does not detach that bind. A session that makes its own
+`.bare` at a project root also writes `info/attributes`. #3333 tracks that
+route.
+
+### Open residual: a config hook with a friendly name (#3349)
+
+git 2.56 applies `hook.<event>.enabled = false` to the whole event only when
+no config entry uses the event name as a hook name. A planted
+`hook.<event>.command` makes the event name a hook name. The pin then turns
+off only that hook, and a planted hook with another name for the same event
+runs. No command-line value turns off a hook whose name prism does not know.
+This is open, and #3349 tracks it. The fix is a `.bare/config` that a worker
+cannot write (#3327, #3334).
+
+### The config-detach route
+
+A host rename of `.bare/config` detaches the read-only bwrap pin, and a
+worker can then write `.bare/config` (#3337, `sandbox-git-write-scope.md`).
+The list and the environment above close this route for prism host git: a
+planted `.bare/config` runs no command on a host fetch, push, worktree add,
+checkout, commit, rebase, or config command. The one exception is the
+config hook of #3349 above.
 
 ## Why
 
@@ -68,10 +141,10 @@ or a filter driver. Each runs a command. A hook runs a command. So a host
 git command that lets git find its git dir runs a command that the session
 wrote, with the rights of the user.
 
-The command-line config below turns off hooks and fsmonitor. It cannot turn
-off a filter driver, `core.sshCommand`, or `credential.helper`. For these,
-the only defence is a git dir and a project root that the session cannot
-write.
+The command-line config and the environment above turn off these keys in
+the common config. They cannot turn off a driver that a planted
+`info/attributes` selects, or the config hook of #3349. For these, the only
+defence is a git dir and a project root that the session cannot write.
 
 #3293 and #3315 stop a direct write to `.bare/config`, `.bare/hooks`, and
 the git dirs of other worktrees. Sections 21j and 21k of the sandbox-exec
@@ -129,8 +202,9 @@ and `switchPathForSession` in `internal/sidecar/switch_path.go`.
   `ErrNotProjectRoot`.
 - A sandboxed session can write dirs outside the project roots, for
   example under `~/.npm`. It can make a `.bare` there with a config that
-  sets `core.sshCommand` or a filter driver. The command-line config does
-  not turn off these keys. So host git must not run in such a root.
+  defines a filter driver and an `info/attributes` that selects it. The
+  environment of host git does not turn off that driver. So host git must
+  not run in such a root.
 - `OpenBare` compares the root with each entry by file identity
   (`SameDir`). So it accepts a root that a symlink reaches, and a root
   with another letter case on a case-insensitive macOS volume.
@@ -158,8 +232,9 @@ the row of its own session, so a sandboxed session can set that value.
   it, `/switch` returns HTTP 500 and names the two dirs.
 
 Tests: `TestOpenBare_RefusesRootOutsideProjectRoots` plants a `.bare`
-with `core.sshCommand` outside the project roots, and makes sure that the
-plant runs with plain pinned git and does not run with prism.
+with a smudge filter that `info/attributes` selects, outside the project
+roots. It makes sure that the plant runs with plain pinned git and does
+not run with prism.
 `TestOpenBare_AcceptsConfiguredProjectRoots` covers the symlink and the
 letter case. `TestSwitchPathForSession`,
 `TestSwitchPathForSession_RedirectedOwnEntry`, and
@@ -215,14 +290,16 @@ Code: `internal/review/preflight.go`. Tests:
 
 ## What prism does not change
 
-- `core.sshCommand` and `credential.helper` keep their values. Fetch and
-  push on the host use the credentials of the user, as before. Under
-  `sandbox-exec` a session cannot write `.bare/config` (the SBPL profile
-  denies it, #3293). Under `bwrap` the `.bare/config` protection is a
-  read-only bind pin (#3315) that a host-side rename detaches, so a worker
-  can regain write to `.bare/config` and plant one of these keys — an open
-  host-code-execution residual tracked by #3337. See
-  `sandbox-git-write-scope.md`.
+- Fetch and push on the host use SSH auth, as before. git runs `ssh` from
+  `PATH`, and `ssh` reads the SSH config and the agent of the user. The
+  global git config of the owner sets no `core.sshCommand` and an empty
+  `credential.helper` (`modules/programs/git.nix`), so the pins give the
+  same values.
+- A `gh` command adds its own credential helper on the command line, after
+  the empty `credential.helper`, so `gh` auth works.
+- An inherited `GIT_SSH_COMMAND`, `GIT_ASKPASS`, or `GIT_EDITOR` keeps
+  priority over the pins. A worker cannot set the environment of prism on
+  the host.
 - `git clone` makes a new repo, so it has no git dir to pin.
   `CloneCommand` gives it the command-line config only.
 
@@ -340,6 +417,22 @@ table.
   The `--rebase` pre-flight is an exception for the branch it moves: it
   pushes the branch of the session record, not the branch that `HEAD` names
   (#3323, in the `/review` pre-flight section above).
+- **A local remote.** prism host git fetches and pushes `origin` only.
+  `origin` comes from the URL of `prism clone` or the clone prompt of
+  `prism switch`, or from the `origin` of a repo that `prism convert`
+  converts. If that URL is a local path, the clone or the fetch stops with
+  `transport 'file' not allowed`.
+- **No auto maintenance.** prism host git starts no `git gc`. User git and
+  bwrap sessions still start it. A `sandbox-exec` session cannot start it,
+  so loose objects collect until a user git command on the host starts it.
+- **A SHA-256 repo.** `GIT_ATTR_SOURCE` names the SHA-1 empty tree. In a
+  SHA-256 repo, a host git command that reads attributes stops with
+  `bad --attr-source or GIT_ATTR_SOURCE`. It runs no driver.
+- **`git apply`.** On git 2.56, `git apply` stops with a segmentation
+  fault when `GIT_ATTR_SOURCE` is set (`user-git-overrides.md`). prism
+  host git and the `gh` commands of prism run no `git apply`.
+- **A key that a later git version adds.** The list is for git 2.56. Do
+  the tests again when git changes.
 
 ## Tests
 
@@ -360,6 +453,20 @@ table.
   another project. `TestHostGit_NestedRootRefused` plants a `.bare` with a
   smudge filter in a worktree subdir and makes sure that `OpenBare` refuses
   it.
+- `internal/git/host_config_pins_test.go` (#3337): one test for each class
+  of key in the list. Each test plants the keys in `.bare/config`, runs a
+  plain git command to make sure that the payload runs, and then runs the
+  prism command. The commands are a fetch, a push, a worktree add, a
+  checkout, a status, a diff, a commit, a signed commit, a rebase with a
+  conflict, and a config command. For `core.sshCommand` and the signing
+  programs, a stand-in program on `PATH` makes sure that git runs the
+  pinned program. `TestHostGitConfig_DocListsEveryKey` makes sure that
+  this doc lists each key. `TestStagedDiff_NoExternalDiff` covers the
+  `--no-ext-diff` of `prism quick pr`.
+- The test fixtures of `cmd`, `internal/git`, `internal/review`, and
+  `internal/sidecar` use a local origin. Their `TestMain` calls
+  `git.AllowFileTransportForTest`. `TestHostGit_FileTransportRefused`
+  turns the file transport off again and makes sure that git refuses it.
 - `internal/git/host_guard_test.go`: `TestHostGit_NoDirectGitExec` fails
   if a non-test file outside `internal/git/host.go` starts git itself. It
   also fails if a function starts `gh` or `glab` and does not call
