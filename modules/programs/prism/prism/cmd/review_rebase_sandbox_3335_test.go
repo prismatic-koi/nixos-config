@@ -6,11 +6,13 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -153,6 +155,90 @@ func TestRunReview_HostDirectRebaseRefusesSandboxedSession(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bwrap") {
 		t.Errorf("refusal should name the bwrap isolation mode: %v", err)
+	}
+}
+
+// TestRunReview_HostDirectRebaseAllowedForHostSession checks the other side of
+// the #3335 host-direct gate: a genuine host-mode session is NOT refused by
+// the isolation check — it proceeds past it (here to the prism-worktree check,
+// which rejects the non-worktree temp dir). Without this, an inverted or
+// widened check would silently refuse host-mode --rebase and nothing would
+// fail.
+func TestRunReview_HostDirectRebaseAllowedForHostSession(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	t.Setenv("PRISM_SPAWN_PATH", "")
+
+	d := openReviewTestDB(t)
+	const session = "testrepo@feat"
+	t.Setenv("PRISM_SESSION_NAME", session)
+	if err := d.UpsertStatus(session, "testrepo", t.TempDir(), "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetIsolationMode(session, "host"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+
+	if err := reviewCmd.Flags().Set("rebase", "true"); err != nil {
+		t.Fatalf("set --rebase: %v", err)
+	}
+	t.Cleanup(func() { _ = reviewCmd.Flags().Set("rebase", "false") })
+
+	err := runReview(reviewCmd, []string{"123"})
+	if err == nil || strings.Contains(err.Error(), "not allowed on the host") {
+		t.Fatalf("host-mode --rebase must not be refused by the isolation gate; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "not a prism worktree") {
+		t.Errorf("host-mode --rebase should proceed past the isolation gate to the worktree check; got %v", err)
+	}
+}
+
+// TestRunReview_SandboxedRebaseProgressQuietUnderWaitJSON checks that the
+// in-sandbox rebase progress lines are dropped under --wait --json (so stdout
+// stays JSON-only) and stream otherwise. The stub records the progress
+// callback the container branch passes and calls it.
+func TestRunReview_SandboxedRebaseProgressQuietUnderWaitJSON(t *testing.T) {
+	openReviewTestDB(t)
+	t.Setenv("PRISM_SESSION_NAME", "testrepo@feat")
+	t.Setenv("PRISM_SPAWN_PATH", "")
+	// A non-dialable socket is fine: rebaseInSandbox returns a sentinel error
+	// before proxyReviewAsync is called.
+	t.Setenv("PRISM_HOST_API", "unix:///nonexistent-3335.sock")
+
+	sentinel := errors.New("sentinel: stop after progress")
+	orig := rebaseInSandbox
+	rebaseInSandbox = func(_ string, onProgress func(string)) error {
+		onProgress("preflight: rebasing onto origin/main …")
+		return sentinel
+	}
+	t.Cleanup(func() { rebaseInSandbox = orig })
+	t.Cleanup(func() {
+		_ = reviewCmd.Flags().Set("rebase", "false")
+		_ = reviewCmd.Flags().Set("wait", "false")
+		_ = reviewCmd.Flags().Set("json", "false")
+	})
+
+	run := func(wait, jsonOut bool) string {
+		if err := reviewCmd.Flags().Set("rebase", "true"); err != nil {
+			t.Fatalf("set --rebase: %v", err)
+		}
+		if err := reviewCmd.Flags().Set("wait", strconv.FormatBool(wait)); err != nil {
+			t.Fatalf("set --wait: %v", err)
+		}
+		if err := reviewCmd.Flags().Set("json", strconv.FormatBool(jsonOut)); err != nil {
+			t.Fatalf("set --json: %v", err)
+		}
+		return captureStdout(t, func() {
+			if err := runReview(reviewCmd, []string{"123"}); !errors.Is(err, sentinel) {
+				t.Fatalf("runReview = %v, want the sentinel error from the stub", err)
+			}
+		})
+	}
+
+	if out := run(true, true); strings.Contains(out, "rebasing onto") {
+		t.Errorf("--wait --json: rebase progress must not reach stdout, got %q", out)
+	}
+	if out := run(false, false); !strings.Contains(out, "rebasing onto") {
+		t.Errorf("without --wait --json: rebase progress should stream to stdout, got %q", out)
 	}
 }
 

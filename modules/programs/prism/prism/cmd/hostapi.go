@@ -625,8 +625,9 @@ func promptdeliveryOutcomeForProxy(buffered, replayed bool) promptdelivery.Deliv
 	}
 }
 
-// reviewProxyExtras carries the `prism review` flags beyond agents, timeout,
-// and rebase that the sandboxed route forwards to the sidecar.
+// reviewProxyExtras carries the `prism review` flags beyond agents and timeout
+// that the sandboxed route forwards to the sidecar. (--rebase is not
+// forwarded: a sandboxed session rebases in its own sandbox, #3335.)
 type reviewProxyExtras struct {
 	Models        map[string]string
 	DiffInlineMax int

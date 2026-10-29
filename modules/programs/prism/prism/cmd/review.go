@@ -261,10 +261,13 @@ func runReview(cmd *cobra.Command, args []string) error {
 		if mode := resolveParentIsolationMode(parentSession); mode != string(config.IsolationHost) {
 			return fmt.Errorf(`prism review: --rebase is not allowed on the host for a %s.
 
-The session is sandboxed, so its --rebase steps must run in its own sandbox,
-not on the host. Run 'prism review %s --rebase' from the agent pane of the
-session (not from the host term window), or rebase and push the branch
-yourself and re-run 'prism review %s' without --rebase.`,
+Only a host-mode session rebases on the host. The --rebase steps of a
+sandboxed session must run in its own sandbox. Run 'prism review %s --rebase'
+from the agent pane of the session, or prompt the worker to rebase and push
+and then re-run 'prism review %s' without --rebase. Do not rebase this
+worktree from the host term window: a host rebase there runs the worktree's
+git at the owner's trust level, which is the race #3335 closes for the
+sandboxed path.`,
 				isolationModeDescription(mode), prNumber, prNumber)
 		}
 	}
@@ -638,10 +641,11 @@ func resolveReviewWorktree(parentSession string) (string, error) {
 // rebase-merge/autostash, head-name, or orig-head applies at the worker's own
 // trust level: it cannot make the host run a command or move a host-owned
 // branch. The worktree comes from PRISM_SPAWN_PATH — the host worktree path the
-// sidecar injects, visible at the same absolute path inside the sandbox — and
-// falls back to the current directory. It reuses review.Preflight, the same
-// code the host-mode path runs; only the process it runs in differs. It is a
-// package var so a test can replace it.
+// container layer injects (internal/container/bwrap.go,
+// cmd/agent_run_sandbox_exec_darwin.go), visible at the same absolute path
+// inside the sandbox — and falls back to the current directory. It reuses
+// review.Preflight, the same code the host-mode path runs; only the process it
+// runs in differs. It is a package var so a test can replace it.
 var rebaseInSandbox = func(prNumber string, onProgress func(string)) error {
 	worktree := os.Getenv("PRISM_SPAWN_PATH")
 	if worktree == "" {
