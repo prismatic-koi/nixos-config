@@ -1,10 +1,10 @@
 # Invariant: the git overrides of the user session
 
-<!-- doclint-ignore: core.alternateRefsCommand, core.askPass, core.attributesFile, core.gitProxy, gpg.openpgp.program, gpg.ssh.defaultKeyCommand, gpg.x509.program, log.showSignature, status.submoduleSummary -->
+<!-- doclint-ignore: core.alternateRefsCommand, core.askPass, core.attributesFile, core.gitProxy, gpg.openpgp.program, gpg.ssh.defaultKeyCommand, gpg.x509.program, log.showSignature, status.submoduleSummary, interactive.diffFilter -->
 <!-- doclint-ignore: diff.tool, merge.tool, man.viewer, web.browser, help.format -->
 <!-- doclint-ignore: EDITOR, VISUAL, SSH_ASKPASS, GIT_ATTR_SOURCE, GIT_EDITOR, GIT_NO_LAZY_FETCH, GIT_PROXY_COMMAND, vcs_info -->
 <!-- doclint-ignore: .bare/config, .bare/info, info/attributes, git.nix, tmux.nix, modules/programs/git.nix, systemd.user.sessionVariables -->
-<!-- doclint-ignore: attr.tree, AGENTS.md, gitsigns.nix -->
+<!-- doclint-ignore: attr.tree, AGENTS.md, gitsigns.nix, on_attach, git_commits -->
 <!--
   These names are git config keys, environment variables that git and zsh
   read, paths in a git dir at run time, and Nix files and options outside
@@ -185,9 +185,12 @@ staged submodule (#3343).
 - **The gitsigns current-line blame.** It runs `git blame --contents` on
   the working buffer. `--no-textconv` (set in `gitsigns.nix`) stops a diff
   textconv driver. A planted clean filter still runs when git normalises
-  the buffer, and `git blame` has no flag for it. Same vector as the first
-  limit, tracked by #3346. The gitsigns signs path runs its own diff and
-  invokes no driver (verified on git 2.56).
+  the buffer, and `git blame` has no flag for it. At the worktree root the
+  filter config needs a planted `.bare/config` (#3346). In a nested or
+  submodule git dir that gitsigns attaches to with no `cd`, no planted
+  `.bare/config` is needed: that is the open vulnerability #3347 below. The
+  gitsigns signs path runs its own diff and invokes no driver (verified on
+  git 2.56).
 - **A planted tool selector.** A typed `git help` runs the program of
   `man.viewer` and `man.<tool>.cmd`, or of `help.format=web`, `web.browser`,
   and `browser.<tool>.cmd`. A typed `git difftool` runs `diff.tool` and
@@ -198,8 +201,10 @@ staged submodule (#3343).
   `git status` at the worktree root runs git in the submodule, and a driver
   in the submodule git dir runs. The prompt and gitsigns give
   `--ignore-submodules`, so they do not. Fix: #3343.
-- **A nested git dir.** A `cd` into a subdir whose git dir uses a key that
-  is not on the list. The owner accepted this on #3325.
+- **A nested git dir, by `cd`.** A `cd` into a subdir whose git dir uses a
+  key that is not on the list. The owner accepted this on #3325. A nested
+  git dir that a host-pane tool reaches with no `cd` is a different case:
+  the open vulnerability #3347 below.
 - **Keys with a name that the repo chooses.** For example
   `remote.<name>.uploadpack`, `remote.<name>.url`, and
   `url.<base>.insteadOf` run for a fetch, a pull, or a push; the tool
@@ -214,3 +219,24 @@ staged submodule (#3343).
   the tests again when git changes.
 - **A language server in the host nvim.** It runs project code by design.
   The threat model puts it out of scope.
+
+## Known open vulnerability (#3347)
+
+This is an in-scope vulnerability, not an accepted limit. The nvim panes of
+a session run git in a nested or submodule `.git` with no `cd`: gitsigns
+attaches to the git dir of the file that the owner opens, and the Telescope
+pickers (for example `git_commits`) run git in the dir of the buffer. A
+worker fully controls a nested or submodule git dir that it writes, so it
+can plant a filter driver, a diff driver, or `diff.external` in that git
+dir, with an `info/attributes` or a `.gitattributes` that selects it. The
+driver then runs on the host when the owner opens the file (gitsigns blame,
+after 200 ms) or opens the picker (the Telescope preview runs `git diff`).
+No `.bare/config` detach is needed, because the config is in a git dir that
+the worker controls.
+
+The env overrides of this doc cannot close this: git reads the driver config
+from the nested git dir, and `--no-textconv` stops only the blame textconv,
+not a clean filter or `diff.external`. The fix is nvim plugin config — a
+gitsigns `on_attach` that refuses a git dir that is not the nvim working
+dir, and a Telescope previewer that passes `--no-ext-diff` — a different
+domain from `git.nix`. Tracked by #3347.

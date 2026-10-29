@@ -235,8 +235,11 @@ Code: `internal/review/preflight.go`. Tests:
   plugins and prompts run git there, and this rule does not cover them.
   #3326 hardens the git environment of these panes: it turns off the
   code-execution config keys for every user git process (see
-  `user-git-overrides.md`). A planted driver that a nested `.git` (#3325)
-  or a `.gitattributes` selects is a known limit of #3326 (#3346).
+  `user-git-overrides.md`). A planted driver that a `.gitattributes` at the
+  worktree root selects is a known limit (#3346). A nested or submodule
+  `.git` that a host-pane tool (gitsigns on file-open, a Telescope picker)
+  reaches with no `cd` is an open in-scope vulnerability tracked by #3347;
+  an explicit `cd` into such a subdir is the owner-accepted case of #3325.
 - **Refs.** A session can write the refs of `.bare`, and a host command
   acts on those refs. For example, a session can change a remote-tracking
   ref, and a later `git rebase origin/<base>` with no fetch first uses the
