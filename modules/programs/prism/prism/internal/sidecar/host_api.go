@@ -1228,7 +1228,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					// Source is propagated so flushPendingReplay can clear
 					// reviewingInFlight after the replayed frame is enqueued on
 					// the new connection.
-					s.bufferPendingReplay(pendingReplayDelivery{
+					s.holdPrompt(pendingReplayDelivery{
 						DeliveryID: req.DeliveryID,
 						Text:       req.Prompt,
 						DeliverAs:  deliverAs,

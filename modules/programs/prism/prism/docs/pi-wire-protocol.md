@@ -1023,12 +1023,12 @@ check, no port probe, no HTTP poll. This is a deliberate inversion of
 opencode's pattern, where readiness is signalled by HTTP `/global/health`
 returning 2xx.
 
-If no frame arrives within the startup timeout
+If no connection arrives within the startup timeout
 (`Config.StartupConnectTimeout`, default `DefaultStartupConnectTimeout` =
-5 minutes, the same default as bwrap-mode opencode in
-`internal/sidecar/sidecar.go`), the sidecar transitions the session to
-`error` via `writeStartupError` and tears down. This mirrors the existing
-behaviour for opencode-on-bwrap.
+5 minutes), the sidecar sets the session to `error` with the note
+`reconnect timeout`. This is the same path as the reconnect timeout in
+§7.2: the listener stays open, and a late extension gets the handshake.
+The first handshake also calls `OnReady`, as in step 6 (#3345).
 
 ### 7.2 Connection dropped mid-session
 

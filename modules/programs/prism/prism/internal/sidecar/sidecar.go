@@ -1105,27 +1105,21 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		case harness.TransportStdioPipe:
 			return s.runStartupStdio(ctx)
 		case harness.TransportSocketPipe:
-			// The host-API and harness-pipe are independent surfaces. When the
-			// harness-pipe handshake fails (extension never dials, bad hello,
-			// version mismatch, timeout), the host-API server must NOT be torn
-			// down — the in-sandbox `prism` CLI depends on it for the full
-			// session lifetime. Instead: log/record the failure, transition
-			// the harness to error state, and then hold until the external
-			// shutdown trigger arrives (context cancel, SIGTERM, prism cleanup).
+			// The host-API and harness-pipe are independent surfaces. The
+			// in-sandbox `prism` CLI depends on the host-API for the full
+			// session lifetime, so a harness-pipe failure must NOT tear it
+			// down.
 			//
-			// runStartupSocketPipe already records the error state in the DB and
-			// logs via writeStartupError before returning. The only decision
-			// here is whether to propagate the error (fatal path) or absorb it
-			// (harness-error, host-API still alive path).
+			// runStartupSocketPipe does not return at a startup or reconnect
+			// timeout: it writes state error and keeps the listener open for a
+			// new agent (#3345). It returns an error after a handshake protocol
+			// failure (bad hello, version mismatch), a listener error, or ctx
+			// cancellation, and nil after a clean session_shutdown. It records
+			// the error state before it returns a protocol or listener error.
 			//
-			// When runStartupSocketPipe returns nil (clean session_shutdown or
-			// ctx cancellation), control falls through to ctx.Err() at the
-			// bottom — the clean path.
-			//
-			// When it returns a non-nil error, absorb it: the harness is
-			// already in error state, and the host-API listener is still
-			// running. Block on ctx.Done() so Run() outlives the handshake
-			// failure and the host-API server keeps accepting connections.
+			// When it returns a non-nil error, absorb it: block on ctx.Done()
+			// so Run() outlives the failure and the host-API server keeps
+			// accepting connections.
 			if pipeErr := s.runStartupSocketPipe(ctx); pipeErr != nil {
 				// The harness-pipe loop failed. Log the failure (writeStartupError
 				// was already called inside runStartupSocketPipe, so the DB row is
@@ -1141,8 +1135,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				// Shutdown() path handles all cleanup.
 				return nil
 			}
-			// Clean pipe exit (session_shutdown or ctx cancel): fall through to
-			// return ctx.Err() at the bottom of Run().
+			// Clean pipe exit (session_shutdown).
 			return ctx.Err()
 		default:
 			return fmt.Errorf("sidecar: unsupported transport shape %q for harness %q", shape, s.cfg.HarnessName)
@@ -3242,6 +3235,23 @@ func (s *Sidecar) bufferPendingReplay(d pendingReplayDelivery) {
 		}
 	}
 	s.pendingReplayDeliveries = append(s.pendingReplayDeliveries, d)
+}
+
+// holdPrompt buffers d with bufferPendingReplay, and then flushes the buffer
+// when an agent is connected. A handshake publishes harnessPipeOutCh and then
+// flushes. If that flush copies the buffer before d is in it, d stays there
+// until the next handshake. For a review-complete prompt the worker then
+// waits with no notice, so the check after the buffer write is necessary.
+//
+// Concurrency: acquires s.mu internally; do NOT call with s.mu held.
+func (s *Sidecar) holdPrompt(d pendingReplayDelivery) {
+	s.bufferPendingReplay(d)
+	s.mu.Lock()
+	connected := s.harnessPipeOutCh != nil
+	s.mu.Unlock()
+	if connected {
+		s.flushPendingReplay()
+	}
 }
 
 // flushPendingReplay drains the pending-replay buffer to the PI extension,

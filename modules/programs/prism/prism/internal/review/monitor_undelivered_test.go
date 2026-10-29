@@ -5,26 +5,34 @@ package review_test
 
 import (
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
+	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sidecar/sidecartest"
 )
 
-// TestMonitorFunc_DeliveryFailure_ReportsUndelivered covers a worker whose
-// sidecar does not answer. The monitor wrote active before it tried to
-// deliver. After the retries fail, the worker must show error (AC2), keep the
-// prompt for a new sidecar, and the coordinator must get a notice (AC3).
-func TestMonitorFunc_DeliveryFailure_ReportsUndelivered(t *testing.T) {
-	const (
-		coordinator = "prism-test@main"
-		worker      = "prism-test@dead-sidecar"
-		prNumber    = "99345"
-	)
+// undeliveredSetup is a pi worker in reviewing, with a finished round of
+// one FAIL verdict, and a coordinator in the same repo.
+type undeliveredSetup struct {
+	bus      *sidecartest.Bus
+	d        *db.DB
+	worker   string
+	prNumber string
+	opts     review.MonitorOpts
+	fallback string
+}
+
+func newUndeliveredSetup(t *testing.T, worker, prNumber string) *undeliveredSetup {
+	t.Helper()
+	const coordinator = "prism-test@main"
 	bus := sidecartest.NewIsolated(t, coordinator)
 	d := bus.DB
 	if err := d.QueryRow(
@@ -32,8 +40,6 @@ func TestMonitorFunc_DeliveryFailure_ReportsUndelivered(t *testing.T) {
 	).Scan(new(string)); err != nil {
 		t.Fatalf("seed coordinator: %v", err)
 	}
-
-	// A pi worker in reviewing. No sidecar listens on its host-API socket.
 	if err := d.UpsertStatus(worker, "prism-test", "/wt", "reviewing", nil, nil); err != nil {
 		t.Fatalf("seed worker: %v", err)
 	}
@@ -56,26 +62,31 @@ func TestMonitorFunc_DeliveryFailure_ReportsUndelivered(t *testing.T) {
 	}
 	seedAssistantEvent(t, d, agentSession, "Blocking issue.\n<verdict>FAIL</verdict>")
 
-	fallbackPath := filepath.Join(os.TempDir(), fmt.Sprintf("prism-review-%s-round-1-result.md", prNumber))
-	t.Cleanup(func() { _ = os.Remove(fallbackPath) })
+	fallback := filepath.Join(os.TempDir(), fmt.Sprintf("prism-review-%s-round-1-result.md", prNumber))
+	t.Cleanup(func() { _ = os.Remove(fallback) })
 
-	err = review.MonitorFunc(review.MonitorOpts{
-		GroupID:              groupID,
-		WorkerSession:        worker,
-		PRNumber:             prNumber,
-		Round:                1,
-		Agents:               []review.Agent{{Name: "review-goal"}},
-		AgentSessions:        []string{agentSession},
-		DBPath:               d.Path(),
-		PollInterval:         10 * time.Millisecond,
-		MaxDeliveryRetries:   0,
-		DeliveryRetryBackoff: time.Millisecond,
-	})
-	if err == nil {
-		t.Fatal("MonitorFunc returned nil, want the delivery error")
+	return &undeliveredSetup{
+		bus: bus, d: d, worker: worker, prNumber: prNumber, fallback: fallback,
+		opts: review.MonitorOpts{
+			GroupID:              groupID,
+			WorkerSession:        worker,
+			PRNumber:             prNumber,
+			Round:                1,
+			Agents:               []review.Agent{{Name: "review-goal"}},
+			AgentSessions:        []string{agentSession},
+			DBPath:               d.Path(),
+			PollInterval:         10 * time.Millisecond,
+			MaxDeliveryRetries:   0,
+			DeliveryRetryBackoff: time.Millisecond,
+		},
 	}
+}
 
-	st, err := d.CurrentStatus(worker)
+// assertErrorAndNotice checks the worker state, the state_change note, and
+// that one coordinator notice holds each of want.
+func (s *undeliveredSetup) assertErrorAndNotice(t *testing.T, want ...string) {
+	t.Helper()
+	st, err := s.d.CurrentStatus(s.worker)
 	if err != nil || st == nil {
 		t.Fatalf("CurrentStatus(worker): %v", err)
 	}
@@ -83,28 +94,83 @@ func TestMonitorFunc_DeliveryFailure_ReportsUndelivered(t *testing.T) {
 		t.Errorf("worker state after the failed delivery = %q, want error", st.State)
 	}
 	var notes int
-	if err := d.QueryRow(
-		`SELECT COUNT(*) FROM agent_events WHERE session_name = ? AND type = 'state_change' AND payload LIKE '%review-complete not delivered%'`, worker,
+	if err := s.d.QueryRow(
+		`SELECT COUNT(*) FROM agent_events WHERE session_name = ? AND type = 'state_change' AND payload LIKE '%review-complete not delivered%'`, s.worker,
 	).Scan(&notes); err != nil || notes != 1 {
 		t.Errorf("state_change events with the undelivered note = %d (err %v), want 1", notes, err)
 	}
+	want = append(want,
+		"did not receive the review-complete prompt of review round 1 for PR #"+s.prNumber,
+		"The session is in state error.",
+		"The result is in "+s.fallback,
+		"prism restore --session "+s.worker,
+	)
+	for _, w := range want {
+		if !s.bus.BodyContains(w) {
+			t.Errorf("no coordinator notice contains %q; bodies: %q", w, s.bus.CopyBodies())
+		}
+	}
+	var audit int
+	if err := s.d.QueryRow(
+		`SELECT COUNT(*) FROM bus_messages WHERE from_session = ? AND delivered_at IS NOT NULL`, s.worker,
+	).Scan(&audit); err != nil || audit != 1 {
+		t.Errorf("delivered bus_messages audit rows = %d (err %v), want 1", audit, err)
+	}
+}
 
-	rows, err := d.LoadPendingReplayDeliveries(worker)
+// TestMonitorFunc_DeliveryFailure_ReportsUndelivered covers a worker whose
+// sidecar does not answer. The monitor wrote active before it tried to
+// deliver. After the retries fail, the worker must show error (AC2), keep the
+// prompt for a new sidecar, and the coordinator must get a notice (AC3).
+func TestMonitorFunc_DeliveryFailure_ReportsUndelivered(t *testing.T) {
+	s := newUndeliveredSetup(t, "prism-test@dead-sidecar", "99345")
+
+	if err := review.MonitorFunc(s.opts); err == nil {
+		t.Fatal("MonitorFunc returned nil, want the delivery error")
+	}
+
+	s.assertErrorAndNotice(t, "prism keeps the prompt, and a new sidecar of the session sends it")
+	rows, err := s.d.LoadPendingReplayDeliveries(s.worker)
 	if err != nil {
 		t.Fatalf("LoadPendingReplayDeliveries: %v", err)
 	}
-	if len(rows) != 1 || rows[0].DeliveryID != review.RecoveryDeliveryID(groupID) || rows[0].Source != "review-complete" ||
-		!strings.Contains(rows[0].Text, "PR #"+prNumber) {
+	if len(rows) != 1 || rows[0].DeliveryID != review.RecoveryDeliveryID(s.opts.GroupID) || rows[0].Source != "review-complete" ||
+		!strings.Contains(rows[0].Text, "PR #"+s.prNumber) {
 		t.Errorf("pending replay rows = %+v, want the review-complete prompt kept for a new sidecar", rows)
 	}
+}
 
-	for _, want := range []string{
-		"did not receive the review-complete prompt of review round 1 for PR #" + prNumber,
-		"The result is in " + fallbackPath,
-		"prism restore --session " + worker,
-	} {
-		if !bus.BodyContains(want) {
-			t.Errorf("no coordinator notice contains %q; bodies: %q", want, bus.CopyBodies())
-		}
+// TestMonitorFunc_DeliveryFailure_SidecarAnswers_DoesNotKeepPrompt covers a
+// worker sidecar that answers but refuses the delivery. That sidecar loads
+// the replay buffer only at its next start, so a kept row can deliver the
+// result a second time. The monitor must not keep it, and the notice must
+// say so.
+func TestMonitorFunc_DeliveryFailure_SidecarAnswers_DoesNotKeepPrompt(t *testing.T) {
+	s := newUndeliveredSetup(t, "prism-test@refusing-sidecar", "99346")
+
+	sockPath, err := session.SidecarHostAPIPath(s.worker)
+	if err != nil {
+		t.Fatalf("SidecarHostAPIPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o700); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen %s: %v", sockPath, err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "refused", http.StatusInternalServerError)
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	if err := review.MonitorFunc(s.opts); err == nil {
+		t.Fatal("MonitorFunc returned nil, want the delivery error")
+	}
+
+	s.assertErrorAndNotice(t, "A sidecar of the session answers, so prism does not keep the prompt")
+	if rows, err := s.d.LoadPendingReplayDeliveries(s.worker); err != nil || len(rows) != 0 {
+		t.Errorf("pending replay rows = %+v (err %v), want none while a sidecar answers", rows, err)
 	}
 }

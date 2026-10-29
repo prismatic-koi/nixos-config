@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -1551,7 +1552,8 @@ func TestSocketPipe_ReconnectAfterDrop(t *testing.T) {
 }
 
 // TestSocketPipe_ReconnectTimeout verifies that if no reconnect arrives within
-// pipeDisconnectTimeout, the sidecar transitions to error state and exits.
+// pipeDisconnectTimeout, the sidecar transitions to error state and keeps
+// running until its context is cancelled (#3345).
 func TestSocketPipe_ReconnectTimeout(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
@@ -1586,10 +1588,11 @@ func TestSocketPipe_ReconnectTimeout(t *testing.T) {
 	sc := New(cfg)
 	wait := runSocketPipeSidecar(sc)
 
-	// Never connect — just wait for the sidecar to time out.
+	// Never connect — just wait for the sidecar to time out. wait cancels
+	// the context at the detach, so only a cancelled run is correct here.
 	err := wait()
-	if err == nil {
-		t.Error("expected runStartupSocketPipe to return error on connect timeout")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("runStartupSocketPipe returned %v, want context.Canceled: it must keep running after the timeout", err)
 	}
 
 	s := getState(t, sc.cfg.DB, sc.cfg.SessionName)

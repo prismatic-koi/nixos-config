@@ -26,9 +26,10 @@ import (
 	"github.com/prismatic-koi/prism/internal/sidecar/sidecartest"
 )
 
-// startSocketPipe runs runStartupSocketPipe until the test ends. Unlike
-// runSocketPipeSidecar it does not stop at the reconnect timeout.
-func startSocketPipe(t *testing.T, sc *Sidecar) {
+// startSocketPipe runs runStartupSocketPipe until the returned stop function
+// runs, or until the test ends. Unlike runSocketPipeSidecar it does not stop
+// at the reconnect timeout.
+func startSocketPipe(t *testing.T, sc *Sidecar) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -36,10 +37,15 @@ func startSocketPipe(t *testing.T, sc *Sidecar) {
 		defer close(done)
 		_ = sc.runStartupSocketPipe(ctx)
 	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
+	t.Cleanup(stop)
+	return stop
 }
 
 // waitDetached waits until the reconnect timeout has detached the session.
@@ -203,11 +209,56 @@ func TestSocketPipe_DisconnectWindow_PromptIsBuffered(t *testing.T) {
 	}
 }
 
+// noticeLog records the coordinator notices of a sidecar.
+//
+// It does not call WaitNotifies while the pipe loop runs: the loop can call
+// goNotify at the timeout, and a WaitGroup Add at zero that runs at the same
+// time as Wait is a data race.
+type noticeLog struct {
+	sc   *Sidecar
+	stop func()
+	mu   sync.Mutex
+	list []string
+}
+
+func (l *noticeLog) add(text string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.list = append(l.list, text)
+}
+
+func (l *noticeLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.list...)
+}
+
+// waitFor returns the notices when there are at least n of them, or after
+// 3 seconds.
+func (l *noticeLog) waitFor(n int) []string {
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		got := l.snapshot()
+		if len(got) >= n || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// final stops the pipe loop, waits for each notice goroutine, and returns
+// all notices. No goroutine can start a notice after the loop stops.
+func (l *noticeLog) final() []string {
+	l.stop()
+	l.sc.WaitNotifies()
+	return l.snapshot()
+}
+
 // newDetachedWorkerSidecar returns a socket-pipe worker sidecar, with a
 // coordinator in the same repo, whose first agent connected and then
-// crashed, so the reconnect timeout has detached it. The returned function
-// returns the coordinator notices that the sidecar sent.
-func newDetachedWorkerSidecar(t *testing.T, worker string, reconnectTimeout time.Duration, detach bool) (*Sidecar, func() []string) {
+// crashed. When detach is true, it returns after the reconnect timeout has
+// detached the session.
+func newDetachedWorkerSidecar(t *testing.T, worker string, reconnectTimeout time.Duration, detach bool) (*Sidecar, *noticeLog) {
 	t.Helper()
 	const repo = "prism-test"
 	coordinator := "prism-test@main"
@@ -230,31 +281,21 @@ func newDetachedWorkerSidecar(t *testing.T, worker string, reconnectTimeout time
 		IsolationMode:         config.IsolationMode("host"),
 		Harness:               pih.New("", "", ""),
 	})
-	var (
-		mu      sync.Mutex
-		notices []string
-	)
+	notices := &noticeLog{sc: sc}
 	sc.notifyCoordinatorDeliverFn = func(sessionName string, _ *db.Status, text string, _ func(string, *db.Status) map[string]any, _ string, _ string) error {
 		if sessionName != coordinator {
 			t.Errorf("notice sent to %q, want the coordinator %q", sessionName, coordinator)
 		}
-		mu.Lock()
-		notices = append(notices, text)
-		mu.Unlock()
+		notices.add(text)
 		return nil
 	}
-	startSocketPipe(t, sc)
+	notices.stop = startSocketPipe(t, sc)
 	conn, _ := dialAndHandshake(t, sockPath)
 	_ = conn.Close()
 	if detach {
 		waitDetached(t, sc)
 	}
-	return sc, func() []string {
-		sc.WaitNotifies()
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]string(nil), notices...)
-	}
+	return sc, notices
 }
 
 // TestPrompt_Detached_ReviewCompleteKeepsErrorAndNotifiesCoordinator is the
@@ -295,7 +336,7 @@ func TestPrompt_Detached_ReviewCompleteKeepsErrorAndNotifiesCoordinator(t *testi
 	}
 	waitForStateChangeNote(t, d, worker, "no agent connected")
 
-	got := notices()
+	got := notices.waitFor(1)
 	if len(got) != 1 {
 		t.Fatalf("coordinator notices = %d (%q), want 1", len(got), got)
 	}
@@ -311,9 +352,6 @@ func TestPrompt_Detached_ReviewCompleteKeepsErrorAndNotifiesCoordinator(t *testi
 	if strings.Contains(got[0], "a disagreement for the finish") {
 		t.Errorf("notice %q carries the pending disagreement; only a finish notification may take it", got[0])
 	}
-	if _, ok, err := d.ConsumePendingDisagreement(worker); err != nil || !ok {
-		t.Errorf("pending disagreement after the notice: ok=%v err=%v, want it kept for the finish", ok, err)
-	}
 
 	// Another prompt while detached keeps the state, and sends no second
 	// notice for the same review result.
@@ -322,8 +360,14 @@ func TestPrompt_Detached_ReviewCompleteKeepsErrorAndNotifiesCoordinator(t *testi
 	if !strings.Contains(rr.Body.String(), `"buffered":true`) {
 		t.Fatalf("second POST /prompt body %s, want buffered", rr.Body.String())
 	}
-	if got := notices(); len(got) != 1 {
+	if got := notices.final(); len(got) != 1 {
 		t.Errorf("coordinator notices after a second prompt = %d, want still 1", len(got))
+	}
+
+	// Read the disagreement only after final: a write here while a notice
+	// goroutine writes its audit row can fail with "database is locked".
+	if _, ok, err := d.ConsumePendingDisagreement(worker); err != nil || !ok {
+		t.Errorf("pending disagreement after the notice: ok=%v err=%v, want it kept for the finish", ok, err)
 	}
 }
 
@@ -333,7 +377,7 @@ func TestPrompt_Detached_ReviewCompleteKeepsErrorAndNotifiesCoordinator(t *testi
 // The timeout sends the notice.
 func TestSocketPipe_ReconnectTimeout_NotifiesHeldReviewComplete(t *testing.T) {
 	const worker = "prism-test@window-review"
-	sc, notices := newDetachedWorkerSidecar(t, worker, 500*time.Millisecond, false)
+	sc, notices := newDetachedWorkerSidecar(t, worker, 1500*time.Millisecond, false)
 
 	groupID, err := sc.cfg.DB.RegisterGroupWithPR(worker, "77", 2)
 	if err != nil {
@@ -362,20 +406,51 @@ func TestSocketPipe_ReconnectTimeout_NotifiesHeldReviewComplete(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), `"buffered":true`) {
 		t.Fatalf("POST /prompt in the window: body %s, want buffered", rr.Body.String())
 	}
-	if got := notices(); len(got) != 0 {
+	sc.mu.Lock()
+	detachedEarly := sc.harnessPipeDetached
+	sc.mu.Unlock()
+	if detachedEarly {
+		t.Fatal("the reconnect timeout fired before the prompt: the test did not run in the window")
+	}
+	// Only the timeout or a later /prompt sends this notice, and neither
+	// ran yet.
+	if got := notices.snapshot(); len(got) != 0 {
 		t.Fatalf("coordinator notices in the reconnect window = %q, want none", got)
 	}
 
-	// The timeout sets the detached flag before it sends the notice, so
-	// poll for the notice.
 	waitDetached(t, sc)
-	deadline = time.Now().Add(3 * time.Second)
-	got := notices()
-	for len(got) == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-		got = notices()
-	}
+	notices.waitFor(1)
+	got := notices.final()
 	if len(got) != 1 || !strings.Contains(got[0], "review round 2 for PR #77") {
 		t.Fatalf("coordinator notices after the timeout = %q, want one notice for PR #77 round 2", got)
+	}
+}
+
+// TestHoldPrompt_AgentConnectedDuringBuffer covers a handshake that publishes
+// the outbound channel after /prompt saw it nil and before the prompt is in
+// the buffer. The handshake flush then misses the prompt, so holdPrompt must
+// flush it.
+func TestHoldPrompt_AgentConnectedDuringBuffer(t *testing.T) {
+	sc := newSocketPipeSidecar(t, shortSockPath(t))
+	pipeCh := make(chan []byte, 8)
+	sc.mu.Lock()
+	sc.harnessPipeOutCh = pipeCh
+	sc.mu.Unlock()
+
+	sc.holdPrompt(pendingReplayDelivery{DeliveryID: "hold-1", Text: "held during a handshake", DeliverAs: "nextTurn", Source: "review-complete"})
+
+	// A flushed review-complete prompt is followed by reviewing_state.
+	frames := drainFrames(pipeCh)
+	if len(frames) == 0 || !strings.Contains(string(frames[0]), `"text":"held during a handshake"`) || !strings.Contains(string(frames[0]), `"replay":true`) {
+		t.Fatalf("frames = %v, want the held prompt with replay=true first", framesForLog(frames))
+	}
+	sc.mu.Lock()
+	left := len(sc.pendingReplayDeliveries)
+	sc.mu.Unlock()
+	if left != 0 {
+		t.Errorf("pendingReplayDeliveries = %d after holdPrompt, want 0", left)
+	}
+	if rows, err := sc.cfg.DB.LoadPendingReplayDeliveries(sc.cfg.SessionName); err != nil || len(rows) != 0 {
+		t.Errorf("durable rows after holdPrompt = %v (err %v), want none", rows, err)
 	}
 }
