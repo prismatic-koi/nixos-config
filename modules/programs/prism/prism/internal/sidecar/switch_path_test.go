@@ -80,6 +80,9 @@ func newSwitchLayout(t *testing.T) switchLayout {
 	if err := git.CloneWorktree(src, l.writable, func(string) {}); err == nil {
 		t.Fatal("CloneWorktree outside the project roots succeeded; the config does not work")
 	}
+	if err := os.MkdirAll(filepath.Dir(l.writable), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if out, err := exec.Command("cp", "-R", l.root, l.writable).CombinedOutput(); err != nil {
 		t.Fatalf("copy the project: %v\n%s", err, out)
 	}
@@ -184,6 +187,69 @@ func TestSwitchPathForSession_RedirectedOwnEntry(t *testing.T) {
 				t.Errorf("gitdir -> %s: switchPathForSession(%q) = %q, %v; want %q", target, name, got, err, l.main)
 			}
 		}
+	}
+}
+
+// TestWorktreeRootIn_RefusesPathInBare is AC 3 of #3333. A session can
+// write the gitdir file of its own entry in .bare/worktrees. If the file
+// names a .git in that entry, `git worktree list` lists a path in .bare, and
+// OpenDir gives that path as the work tree. It is not a switch target.
+func TestWorktreeRootIn_RefusesPathInBare(t *testing.T) {
+	l := newSwitchLayout(t)
+	own := filepath.Join(l.root, ".bare", "worktrees", "x")
+	if err := os.WriteFile(filepath.Join(own, "gitdir"), []byte(filepath.Join(own, ".git")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(own, ".git"), []byte("gitdir: "+own+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !listsPath(git.Worktrees(l.root), own) {
+		t.Fatalf("control: git worktree list = %q, want it to list %s", git.Worktrees(l.root), own)
+	}
+	if r, err := git.OpenDir(own); err != nil || r.WorkTree() != own {
+		t.Fatalf("control: OpenDir(%s) = work tree %q, %v; want the path in .bare", own, r.WorkTree(), err)
+	}
+	if wt, ok := worktreeRootIn(l.root, own); ok {
+		t.Errorf("worktreeRootIn(%s) = %q, true; want a refusal", own, wt)
+	}
+}
+
+// TestSwitchPathForSession_DirListedTwice is AC 4 of #3333. A session points
+// the gitdir file of its own entry at the .git of another worktree, so `git
+// worktree list` lists that worktree two times. /switch gives the worktree
+// one time, not HTTP 500.
+func TestSwitchPathForSession_DirListedTwice(t *testing.T) {
+	l := newSwitchLayout(t)
+	created, err := git.CreateWorktree(l.root, "dup")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	dup := created.Path
+	gitdir := filepath.Join(l.root, ".bare", "worktrees", "x", "gitdir")
+	if err := os.WriteFile(gitdir, []byte(filepath.Join(dup, ".git")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	listed := 0
+	for _, p := range git.Worktrees(l.root) {
+		if listsPath([]string{p}, dup) {
+			listed++
+		}
+	}
+	if listed != 2 {
+		t.Fatalf("control: git worktree list = %q, want %s two times", git.Worktrees(l.root), dup)
+	}
+
+	if got, err := switchPathForSession(swRepo + "@dup"); err != nil || got != dup {
+		t.Errorf("switchPathForSession = %q, %v; want %q", got, err, dup)
+	}
+
+	argvLog := filepath.Join(t.TempDir(), "argv.log")
+	stub := "#!/bin/sh\necho \"$*\" >> '" + argvLog + "'\nexit 0\n"
+	sc, _ := nwrSidecar(t, swRepo+"@main", "coordinator", l.main, "coordinator", stub, nil)
+	rr := doHostAPI(t, sc, http.MethodPost, "/switch", `{"session":"`+swRepo+`@dup"}`)
+	logged, _ := os.ReadFile(argvLog)
+	if argv := strings.TrimSpace(string(logged)); rr.Code != http.StatusOK || argv != "switch --path "+dup {
+		t.Errorf("/switch: status = %d, body = %s, argv = %q; want 200 and %q", rr.Code, rr.Body.String(), argv, "switch --path "+dup)
 	}
 }
 

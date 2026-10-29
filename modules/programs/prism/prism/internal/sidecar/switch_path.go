@@ -62,7 +62,7 @@ func switchPathForSession(sessionName string) (string, error) {
 				continue
 			}
 			if n, err := session.NameFor(wt, root); err == nil && n == name {
-				matches = append(matches, wt)
+				matches = appendDir(matches, wt)
 			}
 		}
 	}
@@ -117,10 +117,25 @@ func projectRootsNamed(cfg config.Config, repo string) []string {
 	return roots
 }
 
+// appendDir appends dir to dirs unless dirs already holds that dir. `git
+// worktree list` lists a dir two times when a session points the gitdir file
+// of its own entry at another worktree.
+func appendDir(dirs []string, dir string) []string {
+	for _, d := range dirs {
+		if d == dir || config.SameDir(d, dir) {
+			return dirs
+		}
+	}
+	return append(dirs, dir)
+}
+
 // worktreeRootIn returns listed, a path from `git worktree list` of the bare
 // repo in root, as a path under root, and reports whether it is the root of a
 // worktree of that repo. git can list a resolved path (for example
 // /private/var on macOS), so the compare resolves symlinks.
+//
+// It refuses a path in <root>/.bare. A session can write its own git dir
+// there, and no worktree of prism is in .bare.
 func worktreeRootIn(root, listed string) (string, bool) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -132,6 +147,12 @@ func worktreeRootIn(root, listed string) (string, bool) {
 	}
 	rel, err := filepath.Rel(realRoot, realListed)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	// The compare by file identity also refuses another letter case of .bare
+	// on a case-insensitive volume.
+	if first, _, _ := strings.Cut(rel, string(filepath.Separator)); first == ".bare" ||
+		config.SameDir(filepath.Join(realRoot, first), filepath.Join(realRoot, ".bare")) {
 		return "", false
 	}
 	wt := filepath.Join(root, rel)

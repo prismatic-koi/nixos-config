@@ -23,6 +23,7 @@ func TestOriginRemoteURL(t *testing.T) {
 	if out, err := exec.Command("git", "clone", "--bare", origin, barePath).CombinedOutput(); err != nil {
 		t.Fatalf("clone .bare: %v\n%s", err, out)
 	}
+	recordBareForTest(t, barePath)
 
 	got, err := OriginRemoteURL(bareRoot)
 	if err != nil {
@@ -68,6 +69,7 @@ func TestFetchGitLabMRBranch(t *testing.T) {
 	if out, err := exec.Command("git", "clone", "--bare", origin, barePath).CombinedOutput(); err != nil {
 		t.Fatalf("clone .bare: %v\n%s", err, out)
 	}
+	recordBareForTest(t, barePath)
 
 	branch, err := FetchGitLabMRBranch(bareRoot, "1", func(iid string) (string, error) {
 		if iid != "1" {

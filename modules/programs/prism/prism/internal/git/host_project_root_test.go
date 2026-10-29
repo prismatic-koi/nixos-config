@@ -187,8 +187,8 @@ func TestOpenBare_AcceptsConfiguredProjectRoots(t *testing.T) {
 
 // TestCloneWorktree_RefusesTargetOutsideProjectRoots: prism clone and the
 // clone entry of prism switch refuse a target that OpenBare refuses, before
-// the clone. A dir that the clone made is removed, and a dir that was there
-// is kept.
+// the clone. Each dir that the clone made is removed, the parents of the
+// target too (AC 5 of #3333). A dir that was there is kept.
 func TestCloneWorktree_RefusesTargetOutsideProjectRoots(t *testing.T) {
 	isolateHostGitConfig(t)
 	base := t.TempDir()
@@ -203,8 +203,13 @@ func TestCloneWorktree_RefusesTargetOutsideProjectRoots(t *testing.T) {
 	if err := CloneWorktree(origin, outside, func(string) {}); !errors.Is(err, ErrNotProjectRoot) {
 		t.Errorf("CloneWorktree(%s) = %v, want ErrNotProjectRoot", outside, err)
 	}
-	if _, err := os.Stat(outside); !os.IsNotExist(err) {
-		t.Errorf("the refused clone left %s: %v", outside, err)
+	for _, made := range []string{outside, filepath.Dir(outside)} {
+		if _, err := os.Stat(made); !os.IsNotExist(err) {
+			t.Errorf("the refused clone left %s: %v", made, err)
+		}
+	}
+	if _, err := os.Stat(base); err != nil {
+		t.Errorf("the refused clone removed %s, a dir that was there: %v", base, err)
 	}
 
 	existing := filepath.Join(base, "existing")

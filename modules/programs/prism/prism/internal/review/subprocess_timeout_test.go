@@ -70,6 +70,9 @@ func TestRunGH_Timeout(t *testing.T) {
 	// The stub sleeps longer than ghTimeout (30 s) so the context fires first.
 	writeSleepScript(t, dir, "gh", 60*time.Second)
 	t.Setenv("PATH", prependToPATH(dir))
+	// runGH opens the repo of the cwd. Outside a repo, the result does not
+	// depend on the checkout that runs the test.
+	t.Chdir(t.TempDir())
 
 	// Sanity check: the stub gh is actually found.
 	stubPath := filepath.Join(dir, "gh")

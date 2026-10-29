@@ -484,6 +484,9 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 
 		// Remove .bare.
 		if _, e := os.Stat(barePath); e == nil {
+			if re := forgetBare(barePath); re != nil {
+				errs = append(errs, fmt.Sprintf("forget .bare: %v", re))
+			}
 			if re := os.RemoveAll(barePath); re != nil {
 				errs = append(errs, fmt.Sprintf("remove .bare: %v", re))
 			}
@@ -515,6 +518,14 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 		return "", fmt.Errorf("bare clone failed: %w: %s", err, out)
 	}
 	progress("  bare clone done")
+
+	if err := recordBare(barePath); err != nil {
+		rollback("")
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
+		return "", err
+	}
 
 	bare, err := OpenBare(dir)
 	if err != nil {
@@ -1066,6 +1077,33 @@ func ShortHash(worktree string) (string, error) {
 	return repo.Output("rev-parse", "--short", "HEAD")
 }
 
+// mkdirAllMade runs os.MkdirAll for dir and returns the dirs that it made,
+// the innermost first.
+func mkdirAllMade(dir string) ([]string, error) {
+	var missing []string
+	for p := filepath.Clean(dir); ; p = filepath.Dir(p) {
+		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		missing = append(missing, p)
+		if filepath.Dir(p) == p {
+			break
+		}
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		removeEmptyDirs(missing)
+		return nil, err
+	}
+	return missing, nil
+}
+
+// removeEmptyDirs removes each dir in dirs, in order, if it is empty.
+func removeEmptyDirs(dirs []string) {
+	for _, d := range dirs {
+		_ = os.Remove(d)
+	}
+}
+
 // CloneWorktree clones repoURL into targetDir using the prism bare+worktree layout.
 // progress receives human-readable step messages.
 func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
@@ -1078,62 +1116,73 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	bareDir := filepath.Join(targetDir, ".bare")
 	gitFile := filepath.Join(targetDir, ".git")
 
-	_, statErr := os.Stat(targetDir)
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+	made, err := mkdirAllMade(targetDir)
+	if err != nil {
 		return fmt.Errorf("mkdir %s: %w", targetDir, err)
 	}
 	// OpenBare refuses the new root later, so refuse it before the clone. A
 	// project_specific root must exist for the check, so check after the
 	// mkdir.
 	if err := requireProjectRoot(targetDir); err != nil {
-		if statErr != nil {
-			_ = os.Remove(targetDir)
-		}
+		removeEmptyDirs(made)
 		return err
+	}
+	recorded := false
+	fail := func() {
+		if recorded {
+			_ = forgetBare(bareDir)
+		}
+		_ = os.RemoveAll(targetDir)
+		removeEmptyDirs(made)
 	}
 
 	// Clone bare.
 	progress("cloning " + repoURL + "...")
 	if out, err := CloneCommand("", "--bare", repoURL, bareDir).
 		CombinedOutput(); err != nil {
-		_ = os.RemoveAll(targetDir)
+		fail()
 		return fmt.Errorf("git clone --bare: %w: %s", err, out)
 	}
+	if err := recordBare(bareDir); err != nil {
+		fail()
+		return err
+	}
+	recorded = true
 
 	bare, err := OpenBare(targetDir)
 	if err != nil {
-		_ = os.RemoveAll(targetDir)
+		fail()
 		return err
 	}
 
 	// Configure fetch refspec.
 	if out, err := bare.CombinedOutput("config",
 		"remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
-		_ = os.RemoveAll(targetDir)
+		fail()
 		return fmt.Errorf("config fetch refspec: %w: %s", err, out)
 	}
 
 	if out, err := bare.CombinedOutput("fetch", "origin"); err != nil {
-		_ = os.RemoveAll(targetDir)
+		fail()
 		return fmt.Errorf("fetch origin: %w: %s", err, out)
 	}
 
 	// Write .git pointer.
 	if err := os.WriteFile(gitFile, []byte("gitdir: ./.bare\n"), 0o644); err != nil {
-		_ = os.RemoveAll(targetDir)
+		fail()
 		return fmt.Errorf("write .git: %w", err)
 	}
 
 	// Determine default branch from HEAD file.
 	headContent, err := os.ReadFile(filepath.Join(bareDir, "HEAD"))
 	if err != nil {
-		_ = os.RemoveAll(targetDir)
+		fail()
 		return fmt.Errorf("read HEAD: %w", err)
 	}
 	headStr := strings.TrimSpace(string(headContent))
 	const prefix = "ref: refs/heads/"
 	if !strings.HasPrefix(headStr, prefix) {
-		_ = os.RemoveAll(targetDir)
+		fail()
 		return fmt.Errorf("unexpected HEAD format: %s", headStr)
 	}
 	defaultBranch := strings.TrimPrefix(headStr, prefix)
@@ -1148,7 +1197,7 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	// fail loudly if the specific default branch ref is missing.
 	refsOut, err := bare.Output("for-each-ref", "--count=1", "refs/heads")
 	if err != nil {
-		_ = os.RemoveAll(targetDir)
+		fail()
 		return fmt.Errorf("for-each-ref: %w", err)
 	}
 	isEmpty := refsOut == ""
@@ -1159,7 +1208,7 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 		progress("remote repository is empty — creating orphan worktree for '" + defaultBranch + "'...")
 		if out, err := bare.CombinedOutput("worktree",
 			"add", "--orphan", "-b", defaultBranch, worktreeDir); err != nil {
-			_ = os.RemoveAll(targetDir)
+			fail()
 			return fmt.Errorf("worktree add --orphan: %w: %s", err, out)
 		}
 		progress("done — orphan worktree at " + worktreeDir)
@@ -1171,7 +1220,7 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	progress("setting up tracking for branch '" + defaultBranch + "'...")
 	if out, err := bare.CombinedOutput("branch",
 		"--set-upstream-to", "origin/"+defaultBranch, defaultBranch); err != nil {
-		_ = os.RemoveAll(targetDir)
+		fail()
 		return fmt.Errorf("set upstream: %w: %s", err, out)
 	}
 
@@ -1179,7 +1228,7 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	progress("creating worktree for branch '" + defaultBranch + "'...")
 	if out, err := bare.CombinedOutput("worktree",
 		"add", worktreeDir, defaultBranch); err != nil {
-		_ = os.RemoveAll(targetDir)
+		fail()
 		return fmt.Errorf("worktree add: %w: %s", err, out)
 	}
 
