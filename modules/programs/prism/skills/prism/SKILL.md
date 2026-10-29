@@ -79,6 +79,8 @@ prism convert ~/code/nixos-config
 
 This converts a regular git clone to the prism bare+worktree layout in-place. The working tree moves to `<repo>/<branch>/`, a bare clone is created at `<repo>/.bare`, and the index is populated immediately so `git status` is clean. This is the same operation as selecting `[convert to bare+worktree layout]` in the C-f picker.
 
+Before the conversion, `prism convert` stops the session of the clone, and no session can start in the clone until the conversion ends (#3361). If that session ran, prism then starts the session of the new worktree. prism refuses the command in a pane of the session of the clone, because the stop also stops the command. Run it in a shell outside that session, or use the C-f picker.
+
 `prism convert` and `prism clone` run on the host only. In a sandbox, they refuse and change nothing (`ErrBareInSandbox`). A sandbox cannot write the bare repo record, and host git refuses a `.bare` that is not in the record (#3333). If you are in a sandbox, ask the user to run the command in a shell on the host.
 
 ## Basic usage

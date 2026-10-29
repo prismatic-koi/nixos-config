@@ -358,6 +358,116 @@ func allocatePortForSession(sessionName, directory, harnessName string) (int, er
 	return d.AllocatePort(sessionName)
 }
 
+// switchSetup is the start input that each session start of prism switch
+// shares: the config, the profiles, the isolation capabilities of the
+// machine default, and the base session options.
+type switchSetup struct {
+	cfg     config.Config
+	pf      *config.ProfilesFile
+	isoCaps container.Capabilities
+	opts    session.Opts
+}
+
+// loadSwitchSetup reads the switchSetup of prism switch. prism convert uses
+// it to start the session of the new worktree.
+func loadSwitchSetup(fresh bool) (switchSetup, error) {
+	cfg := config.Load()
+
+	// Derive the effective isolation mode from config via registry.Resolve.
+	// switch has no --isolation flag — the machine default is used.
+	isoMode, isoErr := container.Resolve(container.ResolveInput{
+		ConfigDefault: cfg.DefaultIsolationMode,
+	})
+	if isoErr != nil {
+		return switchSetup{}, isoErr
+	}
+
+	// Look up the isolation capabilities for this mode. All per-mode branching
+	// below reads from isoCaps rather than comparing against raw mode constants.
+	isoCaps := container.CapabilitiesFor(isoMode)
+
+	// Load profiles.json for the per-role slot (model / provider / thinking,
+	// resolved at agent-run time) and for agent env var injection (host
+	// mode). Always attempt to load; treat a missing file as fatal when
+	// sandboxed (bwrap or sandbox-exec), since those paths require a slot.
+	var pf *config.ProfilesFile
+	{
+		var pfErr error
+		pf, pfErr = config.LoadProfiles()
+		if pfErr != nil {
+			if isoCaps.RequiresProfilesFile {
+				return switchSetup{}, pfErr
+			}
+			proglog.Warnf("[prism switch] warning: could not load profiles.json (agent env vars will not be injected): %v\n", pfErr)
+			pf = nil
+		}
+	}
+
+	// Pi is the sole harness. Use harness.Lookup("pi") as the single
+	// source of truth rather than a hardcoded string.
+	switchHarnessName := "pi"
+
+	// Validate the harness name. Pi is hardwired but guard against future
+	// misconfigurations via Lookup.
+	if _, ok := harness.Lookup(switchHarnessName); !ok {
+		return switchSetup{}, fmt.Errorf("prism switch: unknown harness %q: valid harnesses: %s",
+			switchHarnessName, strings.Join(harness.Names(), ", "))
+	}
+
+	// Validate the active profile before any session state is created.
+	//
+	// Both checks read only the profiles file and the active-profile state
+	// file, so neither depends on the path: they run once here.
+	//
+	// Without this gate a corrupt active-profile state file — or one
+	// naming a profile that profiles.json no longer defines, e.g. a stale
+	// "ox-alpha" — surfaces inside the agent pane at `prism agent-run`
+	// (populatePIConfig → RequireSlot), after the DB row, the harness port,
+	// the tmux session, and the sidecar all exist.
+	//
+	// This gate keys off the command-level mode, not the effective
+	// capabilities after the per-path isolation override. The override
+	// changes only whether the check runs, never its result, so any
+	// difference is confined to a path that overrides across the
+	// host/sandbox boundary. Slot presence is deliberately NOT checked
+	// here: the role is not known until the path is resolved.
+	if isoCaps.RequiresProfilesFile && pf != nil {
+		switchProfile, _, switchProfErr := config.ResolveActiveProfile(pf, "")
+		if switchProfErr != nil {
+			return switchSetup{}, switchProfErr
+		}
+		if switchProfile != "" {
+			if err := config.RequireProfile(pf, switchProfile); err != nil {
+				return switchSetup{}, err
+			}
+		}
+	}
+
+	// Populate harness-specific env var names from the adapter so that
+	// no harness-specific string literals appear in session.go.
+	// harnessFlag was validated above so the error is unreachable.
+	switchHarness, _ := harness.New(switchHarnessName, "", nil, "", "")
+	opts := session.Opts{
+		Fresh:          fresh,
+		IsolationMode:  string(isoMode),
+		PluginHostPath: cfg.SidecarPluginPath,
+		RuntimeEnvVars: switchHarness.RuntimeEnv(),
+		HarnessName:    switchHarnessName,
+		// PIExtensionDir for host-mode pi launches. The container
+		// path appends --extension via container.PIInvocation, so this is
+		// load-bearing only for isolation=host — buildDirectAgentCmd skips
+		// the flag when PIExtensionDir is empty.
+		PIExtensionDir: cfg.PIExtensionDir,
+	}
+	// AgentEnvVars only applies to host-mode sessions; sandboxed sessions
+	// receive env vars via their own injection paths (bwrap --setenv,
+	// sandbox-exec profile).
+	if pf != nil && !isoCaps.RequiresProfilesFile {
+		opts.AgentEnvVars = pf.AgentEnvVars
+	}
+	return switchSetup{cfg: cfg, pf: pf, isoCaps: isoCaps, opts: opts}, nil
+}
+
 // ── cobra command ─────────────────────────────────────────────────────────────
 
 var switchCmd = &cobra.Command{
@@ -375,100 +485,11 @@ var switchCmd = &cobra.Command{
 		}
 
 		fresh, _ := cmd.Flags().GetBool("fresh")
-		cfg := config.Load()
-
-		// Derive the effective isolation mode from config via registry.Resolve.
-		// switch has no --isolation flag — the machine default is used.
-		isoMode, isoErr := container.Resolve(container.ResolveInput{
-			ConfigDefault: cfg.DefaultIsolationMode,
-		})
-		if isoErr != nil {
-			return isoErr
+		setup, err := loadSwitchSetup(fresh)
+		if err != nil {
+			return err
 		}
-
-		// Look up the isolation capabilities for this mode. All per-mode branching
-		// below reads from isoCaps rather than comparing against raw mode constants.
-		isoCaps := container.CapabilitiesFor(isoMode)
-
-		// Load profiles.json for the per-role slot (model / provider / thinking,
-		// resolved at agent-run time) and for agent env var injection (host
-		// mode). Always attempt to load; treat a missing file as fatal when
-		// sandboxed (bwrap or sandbox-exec), since those paths require a slot.
-		var pf *config.ProfilesFile
-		{
-			var pfErr error
-			pf, pfErr = config.LoadProfiles()
-			if pfErr != nil {
-				if isoCaps.RequiresProfilesFile {
-					return pfErr
-				}
-				proglog.Warnf("[prism switch] warning: could not load profiles.json (agent env vars will not be injected): %v\n", pfErr)
-				pf = nil
-			}
-		}
-
-		// Pi is the sole harness. Use harness.Lookup("pi") as the single
-		// source of truth rather than a hardcoded string.
-		switchHarnessName := "pi"
-
-		// Validate the harness name. Pi is hardwired but guard against future
-		// misconfigurations via Lookup.
-		if _, ok := harness.Lookup(switchHarnessName); !ok {
-			return fmt.Errorf("prism switch: unknown harness %q: valid harnesses: %s",
-				switchHarnessName, strings.Join(harness.Names(), ", "))
-		}
-
-		// Validate the active profile before any session state is created.
-		//
-		// Both checks read only the profiles file and the active-profile state
-		// file, so neither depends on the path: they run once here.
-		//
-		// Without this gate a corrupt active-profile state file — or one
-		// naming a profile that profiles.json no longer defines, e.g. a stale
-		// "ox-alpha" — surfaces inside the agent pane at `prism agent-run`
-		// (populatePIConfig → RequireSlot), after the DB row, the harness port,
-		// the tmux session, and the sidecar all exist.
-		//
-		// This gate keys off the command-level mode, not the effective
-		// capabilities after the per-path isolation override. The override
-		// changes only whether the check runs, never its result, so any
-		// difference is confined to a path that overrides across the
-		// host/sandbox boundary. Slot presence is deliberately NOT checked
-		// here: the role is not known until the path is resolved.
-		if isoCaps.RequiresProfilesFile && pf != nil {
-			switchProfile, _, switchProfErr := config.ResolveActiveProfile(pf, "")
-			if switchProfErr != nil {
-				return switchProfErr
-			}
-			if switchProfile != "" {
-				if err := config.RequireProfile(pf, switchProfile); err != nil {
-					return err
-				}
-			}
-		}
-
-		// Populate harness-specific env var names from the adapter so that
-		// no harness-specific string literals appear in session.go.
-		// harnessFlag was validated above so the error is unreachable.
-		switchHarness, _ := harness.New(switchHarnessName, "", nil, "", "")
-		opts := session.Opts{
-			Fresh:          fresh,
-			IsolationMode:  string(isoMode),
-			PluginHostPath: cfg.SidecarPluginPath,
-			RuntimeEnvVars: switchHarness.RuntimeEnv(),
-			HarnessName:    switchHarnessName,
-			// PIExtensionDir for host-mode pi launches. The container
-			// path appends --extension via container.PIInvocation, so this is
-			// load-bearing only for isolation=host — buildDirectAgentCmd skips
-			// the flag when PIExtensionDir is empty.
-			PIExtensionDir: cfg.PIExtensionDir,
-		}
-		// AgentEnvVars only applies to host-mode sessions; sandboxed sessions
-		// receive env vars via their own injection paths (bwrap --setenv,
-		// sandbox-exec profile).
-		if pf != nil && !isoCaps.RequiresProfilesFile {
-			opts.AgentEnvVars = pf.AgentEnvVars
-		}
+		cfg, pf, isoCaps, opts := setup.cfg, setup.pf, setup.isoCaps, setup.opts
 
 		// --path: open a specific path directly.
 		if pathArg != "" {

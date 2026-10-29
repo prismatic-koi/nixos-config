@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
@@ -21,10 +22,14 @@ import (
 // command and no warning. A failure is a warning, never a cleanup error.
 // After a failed sweep the audit dir stays (removePrismContainerAuditDir),
 // so a later cleanup sweeps the incarnation again.
-func sweepPrismContainersForSession(session string) {
+//
+// It returns the error of the DB open or of the sweep. The stop before a
+// conversion (stopSessionForConvert) refuses the conversion on an error,
+// because a container with a read-write mount can write the clone.
+func sweepPrismContainersForSession(session string) error {
 	d, err := openDB()
 	if err != nil {
-		return
+		return fmt.Errorf("prism-container sweep for %q: open the DB: %w", session, err)
 	}
 	defer d.Close()
 	status, _ := d.CurrentStatus(session)
@@ -38,14 +43,16 @@ func sweepPrismContainersForSession(session string) {
 		}
 	}
 	if !used {
-		return
+		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), podmanSweepBudget)
 	defer cancel()
 	if err := prismcontainer.SweepSession(ctx, currentPrismContainerRunner(), currentPrismContainerBuildExecutor(), ids); err != nil {
 		proglog.Warnf("[prism] warning: cleanup: prism-container sweep for %q failed (%v) — continuing cleanup\n", session, err)
+		return fmt.Errorf("prism-container sweep for %q: %w", session, err)
 	}
+	return nil
 }
 
 // gatherPrismContainerAuditLogs moves the prism-container audit log of

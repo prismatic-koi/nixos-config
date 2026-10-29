@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -422,6 +423,21 @@ func KillSession(name string) error {
 		return err
 	}
 	return nil
+}
+
+// PanePIDs returns the PID of the process of each pane of the session name.
+func PanePIDs(name string) ([]int, error) {
+	out, err := run("list-panes", "-s", "-t", "="+name, "-F", "#{pane_pid}")
+	if err != nil {
+		return nil, err
+	}
+	var pids []int
+	for _, f := range strings.Fields(out) {
+		if pid, err := strconv.Atoi(f); err == nil && pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids, nil
 }
 
 // Run executes an arbitrary tmux command and returns trimmed stdout.
