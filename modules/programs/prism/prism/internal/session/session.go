@@ -901,7 +901,9 @@ func startupGuardKillOld(name string, d *db.DB, forceFresh bool) bool {
 //
 // A LayoutFull start holds the shared start lock of directory until Create
 // returns. While prism converts directory to the bare+worktree layout,
-// Create returns an error that wraps ErrConvertInProgress (convert_lock.go).
+// Create returns an error that wraps ErrConvertInProgress. When directory
+// holds a .bare, it returns an error that wraps ErrStartInBareRoot
+// (convert_lock.go).
 func Create(name, directory string, opts Opts) error {
 	// Fail-fast guard for the host-mode pi launch.
 	// Only applies to LayoutFull, which is the layout that actually launches

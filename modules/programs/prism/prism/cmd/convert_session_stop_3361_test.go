@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/config/configtest"
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -341,6 +342,19 @@ func TestConvertPlainClone_RootSessionCannotPlantInNewBare_3361(t *testing.T) {
 		name := mustNameFor(t, root, "")
 		dbFile := seedHookRows(t, name)
 		installFakeRunner(t)
+		d, err := db.Open(dbFile)
+		if err != nil {
+			t.Fatalf("open db: %v", err)
+		}
+		defer d.Close()
+		if err := d.RefreshWorktree(name, "", root); err != nil {
+			t.Fatalf("RefreshWorktree: %v", err)
+		}
+		if err := d.SetIsolationMode(name, "bwrap"); err != nil {
+			t.Fatalf("SetIsolationMode: %v", err)
+		}
+		// A `prism restore` that read its row list before the conversion.
+		staleRow := *readStatus(t, dbFile, name)
 
 		res, err := convertPlainClone(root, func(string) {})
 		if err != nil {
@@ -354,6 +368,19 @@ func TestConvertPlainClone_RootSessionCannotPlantInNewBare_3361(t *testing.T) {
 		}
 		if readStatus(t, dbFile, name).EndedAt == nil {
 			t.Error("the row of the root session is open after the conversion")
+		}
+
+		// After the conversion, a restore with the stale row and an "open
+		// directly" switch do not start the root session in the root.
+		if _, err := restoreProjectSession(d, staleRow, nil, 0); !errors.Is(err, session.ErrStartInBareRoot) {
+			t.Errorf("restore with a row read before the conversion = %v, want ErrStartInBareRoot", err)
+		}
+		openDirect := session.Opts{Headless: true, IsolationMode: "bwrap", HarnessName: "pi"}
+		if err := ensureAndSwitch(root, "", openDirect); !errors.Is(err, session.ErrStartInBareRoot) {
+			t.Errorf("open directly after the conversion = %v, want ErrStartInBareRoot", err)
+		}
+		if f.server.hasSession(name) {
+			t.Fatal("the root session runs in the root after the conversion")
 		}
 		time.Sleep(300 * time.Millisecond)
 		if hasPlant(root) || fileExists(planted) {

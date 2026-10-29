@@ -8,8 +8,9 @@ package session
 // the session first, and holds an exclusive lock on the dir until the
 // conversion ends. Create holds a shared lock on the dir for the whole
 // start. Thus a start that runs when the conversion asks for the lock ends
-// first, and the conversion then stops that session. A start that comes
-// later is refused.
+// first, and the conversion then stops that session. A start during the
+// conversion is refused. A start after the conversion is refused too,
+// because the dir then holds a .bare.
 
 import (
 	"errors"
@@ -25,6 +26,10 @@ import (
 // ErrConvertInProgress is in the error chain of Create when prism converts
 // the dir of the session to the bare+worktree layout.
 var ErrConvertInProgress = errors.New("prism converts this dir to the bare+worktree layout, so no session can start in it until the conversion ends")
+
+// ErrStartInBareRoot is in the error chain of Create when the dir of the
+// session holds a .bare. A session in that dir can write the .bare.
+var ErrStartInBareRoot = errors.New("the dir holds a .bare, so it is the root of a bare+worktree layout, and a session there can write the .bare. Start the session of a worktree of the project")
 
 const convertLockDirName = "convert-locks"
 
@@ -81,6 +86,12 @@ func (l *ConvertLock) Release() {
 // parents of directory, so a .bare that the conversion makes in directory
 // does not change this result. A dir that does not exist gets no lock,
 // because a conversion locks only a dir that exists.
+//
+// With the shared lock held, it returns ErrStartInBareRoot when directory
+// holds a .bare. A start that read its row before a conversion, for example
+// a `prism restore`, comes here after the conversion released the lock. The
+// conversion makes the .bare only while it holds the exclusive lock, so
+// this check sees the .bare of each conversion that ended.
 func holdStartLock(directory string) (release func(), err error) {
 	if git.BareRoot(directory) != "" {
 		return func() {}, nil
@@ -98,6 +109,10 @@ func holdStartLock(directory string) (release func(), err error) {
 			return nil, fmt.Errorf("start a session in %s: %w", directory, ErrConvertInProgress)
 		}
 		return nil, fmt.Errorf("lock %s for the session start: %w", directory, err)
+	}
+	if _, err := os.Lstat(filepath.Join(directory, ".bare")); err == nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("start a session in %s: %w", directory, ErrStartInBareRoot)
 	}
 	return func() { _ = f.Close() }, nil
 }

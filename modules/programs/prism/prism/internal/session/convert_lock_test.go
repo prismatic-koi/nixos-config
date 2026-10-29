@@ -68,6 +68,35 @@ func TestConvertLock_WaitsForRunningStart_3361(t *testing.T) {
 	lock.Release()
 }
 
+// AC (#3361): a start in a root that holds a .bare is refused after the
+// conversion releases the lock. A start that read its row before the
+// conversion, for example a `prism restore`, reaches Create at that time.
+func TestConvertLock_RefusesStartInBareRootAfterConversion_3361(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	lock, err := LockForConvert(root, time.Second)
+	if err != nil {
+		t.Fatalf("LockForConvert: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".bare"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock.Release()
+
+	if _, err := holdStartLock(root); !errors.Is(err, ErrStartInBareRoot) {
+		t.Errorf("holdStartLock = %v, want ErrStartInBareRoot", err)
+	}
+	opts := Opts{Layout: LayoutFull, IsolationMode: "bwrap", HarnessName: "pi", SessionName: "prism-test-bare-root"}
+	if err := Create("prism-test-bare-root", root, opts); !errors.Is(err, ErrStartInBareRoot) {
+		t.Errorf("Create = %v, want ErrStartInBareRoot", err)
+	}
+	if lock, err := LockForConvert(root, 0); err != nil {
+		t.Errorf("the refused start kept the lock: %v", err)
+	} else {
+		lock.Release()
+	}
+}
+
 // A worktree in a bare+worktree layout gets no start lock, and the .bare
 // that a conversion makes in a root does not take the root out of the lock.
 func TestConvertLock_ScopeOfTheStartLock_3361(t *testing.T) {
