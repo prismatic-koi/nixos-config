@@ -36,6 +36,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/rundir"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -165,7 +166,10 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		return proxyLogsFromHostAPI(apiURL, sessionName, tailN, tailSet, follow, agentRun, os.Stdout)
 	}
 
-	// Host path: resolve the appropriate log file.
+	// Host path: resolve the appropriate log file. The agent-run and the
+	// agent-startup logs are in the run dir, which the sandbox of the session
+	// can write, so each open below uses rundir.OpenRead and refuses a
+	// symlink (#3373).
 	var logPath string
 	switch {
 	case startup:
@@ -300,7 +304,7 @@ func sidecarLogIsStuckOnSSERetries(logPath string) bool {
 // or webhook sink receives the same content the operator would have seen
 // on stdout.
 func readLogForDelivery(logPath string, tailSet bool, tailN int) ([]byte, error) {
-	f, err := os.Open(logPath)
+	f, err := rundir.OpenRead(logPath)
 	if err != nil {
 		return nil, fmt.Errorf("open log: %w", err)
 	}
@@ -325,7 +329,7 @@ func readLogForDelivery(logPath string, tailSet bool, tailN int) ([]byte, error)
 
 // runLogsFull prints the full contents of the log file to stdout.
 func runLogsFull(logPath string) error {
-	f, err := os.Open(logPath)
+	f, err := rundir.OpenRead(logPath)
 	if err != nil {
 		return fmt.Errorf("open log: %w", err)
 	}
@@ -341,7 +345,7 @@ func runLogsTail(logPath string, n int) error {
 		return nil
 	}
 
-	f, err := os.Open(logPath)
+	f, err := rundir.OpenRead(logPath)
 	if err != nil {
 		return fmt.Errorf("open log: %w", err)
 	}
@@ -363,7 +367,7 @@ func runLogsTail(logPath string, n int) error {
 // the session reaches a terminal state and 5 seconds of silence elapse.
 // If the session is already in a terminal state, prints the full log and exits.
 func runLogsFollow(sessionName, logPath string) error {
-	f, err := os.Open(logPath)
+	f, err := rundir.OpenRead(logPath)
 	if err != nil {
 		return fmt.Errorf("open log: %w", err)
 	}

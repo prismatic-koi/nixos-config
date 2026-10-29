@@ -58,6 +58,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/mergequeue"
 	"github.com/prismatic-koi/prism/internal/payload"
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
+	"github.com/prismatic-koi/prism/internal/rundir"
 )
 
 // defaultNotifyHTTPClient is the HTTP client used for coordinator notification
@@ -910,6 +911,14 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// unusual state, but checking both is cheap (one fast dial each) and gives
 	// defence-in-depth.
 	logf := func(format string, args ...any) { s.logger().Printf(format, args...) }
+	// The sandbox of the session can write its run dir. Refuse a run dir that
+	// is a symlink, for example to the run dir of another session, before the
+	// duplicate-start dial: the dial follows the symlink, and the remove and
+	// the bind below then act on the hostapi.sock of the other session (#3373).
+	if err := s.checkRunDirs(); err != nil {
+		s.logger().Printf("%v", err)
+		return err
+	}
 	if err := checkNoLiveSidecar(s.cfg.HostAPISockPath, s.cfg.SessionName, "hostapi.sock", logf); err != nil {
 		s.logger().Printf("%v", err)
 		return err
@@ -949,8 +958,9 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		// For bwrap mode, the per-session socket directory may not yet exist —
 		// prepareVolumeDirs runs in agent-run (after the sidecar starts). Create it
 		// here so net.Listen succeeds.
-		if err := os.MkdirAll(filepath.Dir(s.cfg.HostAPISockPath), 0o700); err != nil {
+		if err := rundir.EnsureDir(filepath.Dir(s.cfg.HostAPISockPath)); err != nil {
 			s.logger().Printf("sidecar: host-API socket dir: %v", err)
+			return fmt.Errorf("sidecar: host-API socket dir: %w", err)
 		}
 		_ = os.Remove(s.cfg.HostAPISockPath)
 		ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
@@ -2130,8 +2140,8 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		s.logger().Printf("sidecar: runStartupSocketPipe: listening on TCP :%d", s.cfg.HarnessPipeTCPPort)
 	} else if s.cfg.HarnessPipeSockPath != "" {
 		// Linux: Unix socket.
-		if err := os.MkdirAll(filepath.Dir(s.cfg.HarnessPipeSockPath), 0o700); err != nil {
-			err2 := fmt.Errorf("sidecar: runStartupSocketPipe: mkdir socket dir: %w", err)
+		if err := rundir.EnsureDir(filepath.Dir(s.cfg.HarnessPipeSockPath)); err != nil {
+			err2 := fmt.Errorf("sidecar: runStartupSocketPipe: socket dir: %w", err)
 			s.writeStartupError(err2)
 			return err2
 		}

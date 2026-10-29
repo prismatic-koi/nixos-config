@@ -19,6 +19,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/projecttrust"
+	"github.com/prismatic-koi/prism/internal/rundir"
 	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -522,10 +523,10 @@ func logHostNoModelWarning(opts Opts) {
 		return
 	}
 	logPath, err := AgentRunLogPath(opts.SessionName)
-	if err != nil || os.MkdirAll(filepath.Dir(logPath), 0o700) != nil {
+	if err != nil {
 		return
 	}
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := rundir.OpenAppend(logPath)
 	if err != nil {
 		return
 	}

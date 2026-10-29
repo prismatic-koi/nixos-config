@@ -229,6 +229,9 @@ func ensureGoCacheDirs() {
 //     writes of the per-session TMPDIR node (section 21e), so the session
 //     cannot swap the dir for a symlink, open it to other users, or lock it
 //     against cleanup
+//   - The same final deny on the per-session run dir node (section 21m), so
+//     the session cannot swap its run dir for a symlink to the run dir of
+//     another session
 //
 // New top-level allow/deny clauses require an explanatory comment in the
 // generator.
@@ -862,7 +865,8 @@ func generateProfile(m *Manager) string {
 		// hostapi.sock, pipe.sock, and pipe.secret. pipe.secret is what
 		// stops another session from a handshake on the loopback pipe
 		// port of this session (#3356), so the rule must name only the
-		// run dir of this session. Section 6a covers ~/.pi/agent.
+		// run dir of this session. Section 21m takes back the replace of
+		// the run dir node. Section 6a covers ~/.pi/agent.
 		if m.cfg.HostAPISockPath != "" {
 			sockDir := filepath.Dir(m.cfg.HostAPISockPath)
 			sb.WriteString("  (subpath " + quoteSBPL(sockDir) + ")\n")
@@ -1363,7 +1367,7 @@ func generateProfile(m *Manager) string {
 	// order.
 	if len(sessionTmpForms) > 0 {
 		sb.WriteString("\n")
-		sb.WriteString(sessionTmpNodeDeny(sessionTmpForms))
+		sb.WriteString(dirNodeDeny(sessionTmpForms))
 	}
 
 	// ── 21f. FINAL DENY — the pi credential files cannot be replaced ─
@@ -1470,6 +1474,27 @@ func generateProfile(m *Manager) string {
 		sb.WriteString(piNotionLegacySBPLDeny(filepath.Join(home, ".pi", "agent")))
 	}
 
+	// ── 21m. FINAL DENY — the run dir node cannot be replaced ─
+	// Section 6 grants (subpath <run dir>), the dir of HostAPISockPath, and a
+	// subpath covers the run dir node too. Without this deny, the session can
+	// remove its run dir, or rename it away, and put a symlink at the path,
+	// for example to the run dir of another session. After a `prism restore`,
+	// the sidecar of the session then follows the symlink: it removes the
+	// hostapi.sock of the other session and listens at its path (#3373). The
+	// deny has the operations of section 21e, so the session also cannot open
+	// the node with chmod or an ACL entry, or lock it with chflags.
+	//
+	// The rules are literals, so they match the node only, and the files in
+	// the run dir keep the section-6 grant. The parent dir has no write
+	// grant. The host side also refuses a symlinked run dir
+	// (internal/rundir). The deny must follow every allow, because SBPL
+	// resolves a conflict in favour of the later rule.
+	// TestGenerateProfile_RunDirNodeDenyFollowsEveryAllow pins the order.
+	if m.cfg.HostAPISockPath != "" {
+		sb.WriteString("\n")
+		sb.WriteString(dirNodeDeny(symlinkForms(filepath.Dir(m.cfg.HostAPISockPath))))
+	}
+
 	// ── 22. FINAL DENIES — Go module cache is not executable ─
 	// The module cache holds downloaded dependency SOURCE. Section 5k grants
 	// it read-write because the toolchain must populate it. Without this deny,
@@ -1562,8 +1587,10 @@ func ancestorMetadataAllow(paths []string) string {
 	return "(allow file-read-metadata file-test-existence\n" + strings.Join(nodes, "\n") + ")\n"
 }
 
-// sessionTmpNodeDeny is the section-21e clause of generateProfile.
-func sessionTmpNodeDeny(forms []string) string {
+// dirNodeDeny is the clause of sections 21e and 21m of generateProfile: a
+// deny of unlink, create, mode writes, flag writes, and ACL writes on each
+// dir node in forms.
+func dirNodeDeny(forms []string) string {
 	clause := "(deny file-write-unlink file-write-create file-write-mode file-write-flags file-write-acl"
 	for _, p := range forms {
 		clause += "\n  (literal " + quoteSBPL(p) + ")"

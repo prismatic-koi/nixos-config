@@ -74,6 +74,7 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/projecttrust"
+	"github.com/prismatic-koi/prism/internal/rundir"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -711,17 +712,18 @@ func validateSandboxExecArgs(args []string) error {
 // The destination is normally `~/.local/state/prism/run/<session>/agent-run.log`
 // (see internal/session.AgentRunLogPath). The file is opened with O_APPEND so
 // repeated agent-run invocations across a single session preserve history.
+//
+// The sandbox tees its stderr into this file, and it can write the run dir.
+// rundir.OpenAppend refuses a symlink that the sandbox put at the path or at
+// the run dir, so the tee cannot write a file that the session chose, for
+// example a startup file of the shell (#3373).
 func openAgentRunLog(sessionName string) *os.File {
 	logPath, logPathErr := session.AgentRunLogPath(sessionName)
 	if logPathErr != nil {
 		fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot resolve agent-run log path: %v — continuing without log file\n", logPathErr)
 		return nil
 	}
-	if mkErr := os.MkdirAll(filepath.Dir(logPath), 0o700); mkErr != nil {
-		fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot create log directory %s: %v — continuing without log file\n", filepath.Dir(logPath), mkErr)
-		return nil
-	}
-	logFile, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	logFile, openErr := rundir.OpenAppend(logPath)
 	if openErr != nil {
 		fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot open agent-run log %s: %v — continuing without log file\n", logPath, openErr)
 		return nil

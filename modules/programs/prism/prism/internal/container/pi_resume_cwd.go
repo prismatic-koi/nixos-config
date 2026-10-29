@@ -21,6 +21,8 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+
+	"github.com/prismatic-koi/prism/internal/rundir"
 )
 
 // piHeaderLineLimit is the longest first line that the check accepts. pi
@@ -172,10 +174,7 @@ func piLogResumeRefusal(cfg Config, reason error) {
 	if err != nil {
 		return
 	}
-	if mkErr := os.MkdirAll(filepath.Dir(logPath), 0o700); mkErr != nil {
-		return
-	}
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := rundir.OpenAppend(logPath)
 	if err != nil {
 		return
 	}

@@ -525,7 +525,7 @@ func TestGenerateProfile_SessionTmpDirNodeDenyFollowsEveryAllow(t *testing.T) {
 	m, profile := newTmpDirProfile(t, "instance-a")
 	tmpDir, _ := m.sessionTmpDirPath()
 
-	denyIdx := strings.Index(profile, sessionTmpNodeDeny(symlinkForms(tmpDir)))
+	denyIdx := strings.Index(profile, dirNodeDeny(symlinkForms(tmpDir)))
 	lastAllow := strings.LastIndex(profile, "(allow ")
 	if denyIdx < 0 {
 		t.Fatalf("profile missing the section-21e node deny:\n%s", profile)

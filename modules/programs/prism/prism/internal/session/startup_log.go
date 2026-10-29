@@ -31,6 +31,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/rundir"
 )
 
 // AgentStartupLogPath returns the agent-startup.log file path for the named
@@ -63,19 +65,17 @@ type startupLogger struct {
 // openStartupLog returns a startupLogger writing to AgentStartupLogPath, or
 // nil when the file cannot be created. The directory is mkdir'd 0o700 so the
 // per-session run dir is in place before any later writers (agent-run, the
-// sidecar) attempt to create files inside it. All errors are reported to
-// stderr as warnings — the spawn never fails because the log is unwritable.
+// sidecar) attempt to create files inside it. rundir.OpenAppend refuses a
+// symlink at the path and a symlinked run dir, which the sandbox of the
+// session can plant. All errors are reported to stderr as warnings — the
+// spawn never fails because the log is unwritable.
 func openStartupLog(sessionName string) *startupLogger {
 	path, err := AgentStartupLogPath(sessionName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: agent-startup log path: %v — continuing without startup log\n", err)
 		return nil
 	}
-	if mkErr := os.MkdirAll(filepath.Dir(path), 0o700); mkErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: agent-startup log dir %s: %v — continuing without startup log\n", filepath.Dir(path), mkErr)
-		return nil
-	}
-	f, openErr := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, openErr := rundir.OpenAppend(path)
 	if openErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: agent-startup log %s: %v — continuing without startup log\n", path, openErr)
 		return nil

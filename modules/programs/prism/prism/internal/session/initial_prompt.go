@@ -38,6 +38,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/prismatic-koi/prism/internal/rundir"
 )
 
 // InitialPromptPath returns the initial-prompt.txt file path for the named
@@ -61,21 +63,20 @@ func InitialPromptPath(sessionName string) (string, error) {
 // session name.
 //
 // Returns the path that was written so the caller can plumb it through into
-// the constructed launch command. On error the path may be partially written;
-// callers that surface this to the operator must treat the spawn as failed. A
-// failure in the prompt-delivery path must not be swallowed.
+// the constructed launch command. On error the file at the path does not
+// change; callers that surface this to the operator must treat the spawn as
+// failed. A failure in the prompt-delivery path must not be swallowed.
 func WriteInitialPrompt(sessionName, prompt string) (string, error) {
 	path, err := InitialPromptPath(sessionName)
 	if err != nil {
 		return "", fmt.Errorf("resolve initial-prompt path: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", fmt.Errorf("create per-session run dir %s: %w", filepath.Dir(path), err)
-	}
 	// 0o600 keeps the prompt contents readable only by the operator, since
 	// prompts can contain credentials, branch context, or secret URLs.
-	if err := os.WriteFile(path, []byte(prompt), 0o600); err != nil {
-		return "", fmt.Errorf("write initial-prompt file %s: %w", path, err)
+	// rundir.WriteFile does not follow a symlink that the sandbox put at the
+	// path, so the write cannot truncate or change another file.
+	if err := rundir.WriteFile(path, []byte(prompt)); err != nil {
+		return "", fmt.Errorf("write initial-prompt file: %w", err)
 	}
 	return path, nil
 }

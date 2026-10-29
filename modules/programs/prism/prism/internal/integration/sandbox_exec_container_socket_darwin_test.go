@@ -55,6 +55,7 @@ import (
 //	probe --mkdir <path>              create a dir
 //	probe --chmod <path> <octal>      os.Chmod(path, mode)
 //	probe --chflags <path> <flags>    chflags(2); flags in Go integer syntax
+//	probe --symlink <target> <link>   os.Symlink(target, link)
 //
 // A connect that succeeds prints CONNECTED. A file operation that succeeds
 // prints OP-OK. A failed --move rename prints
@@ -98,6 +99,8 @@ func main() {
 		op(os.Remove(args[1]))
 	case len(args) >= 3 && args[0] == "--rename":
 		op(os.Rename(args[1], args[2]))
+	case len(args) >= 3 && args[0] == "--symlink":
+		op(os.Symlink(args[1], args[2]))
 	case len(args) >= 2 && args[0] == "--mkdir":
 		op(os.Mkdir(args[1], 0o700))
 	case len(args) >= 3 && args[0] == "--chmod":
