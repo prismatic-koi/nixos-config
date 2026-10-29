@@ -80,6 +80,7 @@ func newSocketPipeSidecar(t *testing.T, sockPath string) *Sidecar {
 		AgentRole:             "worker",
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   sockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(sockPath),
 		StartupConnectTimeout: 5 * time.Second,
 		// PipeReconnectTimeout is set to a short value so tests that close the
 		// connection without a session_shutdown do not block for 30s.
@@ -89,8 +90,42 @@ func newSocketPipeSidecar(t *testing.T, sockPath string) *Sidecar {
 	return New(cfg)
 }
 
-// dialAndHandshake dials the socket, waits for it to appear, sends hello, and
-// returns the conn and the hello_ack frame. Fails the test on any error.
+// pipeSecretPathFor returns the pipe secret file of the test sidecar that
+// listens on sockPath: pipe.secret in the dir of the socket, as in
+// production (session.SidecarHarnessPipeSecretPath).
+func pipeSecretPathFor(sockPath string) string {
+	return filepath.Join(filepath.Dir(sockPath), "pipe.secret")
+}
+
+// readPipeSecret returns the secret that the sidecar wrote to path. The
+// sidecar writes the file before it binds the listener, so call it after a
+// dial succeeds.
+func readPipeSecret(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read pipe secret %s: %v", path, err)
+	}
+	if len(b) == 0 {
+		t.Fatalf("pipe secret file %s is empty", path)
+	}
+	return string(b)
+}
+
+// helloWithSecret returns a valid hello frame that carries secret.
+func helloWithSecret(secret string) map[string]any {
+	return map[string]any{
+		"type":             "hello",
+		"protocol_version": 2,
+		"harness":          "pi",
+		"harness_version":  "0.1.0-test",
+		"secret":           secret,
+	}
+}
+
+// dialAndHandshake dials the socket, waits for it to appear, sends hello with
+// the pipe secret, and returns the conn and the hello_ack frame. Fails the
+// test on any error.
 func dialAndHandshake(t *testing.T, sockPath string) (net.Conn, map[string]any) {
 	t.Helper()
 
@@ -109,14 +144,7 @@ func dialAndHandshake(t *testing.T, sockPath string) (net.Conn, map[string]any) 
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// Send hello.
-	hello := map[string]any{
-		"type":             "hello",
-		"protocol_version": 2,
-		"harness":          "pi",
-		"harness_version":  "0.1.0-test",
-	}
-	sendJSON(t, conn, hello)
+	sendJSON(t, conn, helloWithSecret(readPipeSecret(t, pipeSecretPathFor(sockPath))))
 
 	// Read hello_ack and post-handshake reviewing_state through a single
 	// shared buffered reader to avoid the multi-bufio data-loss footgun
@@ -612,12 +640,9 @@ func TestSocketPipe_ProtocolVersionMismatch(t *testing.T) {
 	}
 
 	// Send hello with wrong protocol version.
-	sendJSON(t, conn, map[string]any{
-		"type":             "hello",
-		"protocol_version": 99,
-		"harness":          "pi",
-		"harness_version":  "0.1.0-test",
-	})
+	hello := helloWithSecret(readPipeSecret(t, pipeSecretPathFor(sockPath)))
+	hello["protocol_version"] = 99
+	sendJSON(t, conn, hello)
 
 	// Read the error frame.
 	errFrame := readJSON(t, conn)
@@ -660,12 +685,9 @@ func TestSocketPipe_ProtocolVersionTooOld(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	sendJSON(t, conn, map[string]any{
-		"type":             "hello",
-		"protocol_version": 0,
-		"harness":          "pi",
-		"harness_version":  "0.1.0-test",
-	})
+	hello := helloWithSecret(readPipeSecret(t, pipeSecretPathFor(sockPath)))
+	hello["protocol_version"] = 0
+	sendJSON(t, conn, hello)
 
 	errFrame := readJSON(t, conn)
 	code, _ := errFrame["code"].(string)
@@ -1582,6 +1604,7 @@ func TestSocketPipe_ReconnectTimeout(t *testing.T) {
 		AgentRole:             "worker",
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   sockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(sockPath),
 		StartupConnectTimeout: 150 * time.Millisecond,
 		Harness:               pih.New("", "", ""),
 	}
@@ -1637,6 +1660,7 @@ func TestSocketPipe_HostAPISockCreatedBeforeDispatch(t *testing.T) {
 		AgentRole:             "worker",
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   pipeSockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(pipeSockPath),
 		HostAPISockPath:       hostAPISockPath,
 		StartupConnectTimeout: 5 * time.Second,
 		Harness:               pih.New("", "", ""),
@@ -1705,6 +1729,7 @@ func newSocketPipeSidecarWithClock(t *testing.T, sockPath string) (*Sidecar, *te
 		AgentRole:             "worker",
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   sockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(sockPath),
 		StartupConnectTimeout: 5 * time.Second,
 		PipeReconnectTimeout:  200 * time.Millisecond,
 		Harness:               pih.New("", "", ""),
@@ -2442,12 +2467,9 @@ func TestSocketPipe_ProtocolVersion1_TooOld(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	sendJSON(t, conn, map[string]any{
-		"type":             "hello",
-		"protocol_version": 1, // v1 is now too old (sidecar requires v2)
-		"harness":          "pi",
-		"harness_version":  "0.1.0-test",
-	})
+	hello := helloWithSecret(readPipeSecret(t, pipeSecretPathFor(sockPath)))
+	hello["protocol_version"] = 1 // v1 is now too old (sidecar requires v2)
+	sendJSON(t, conn, hello)
 
 	errFrame := readJSON(t, conn)
 	code, _ := errFrame["code"].(string)
@@ -3483,6 +3505,7 @@ func newSocketPipeSidecarWithLineCap(t *testing.T, sockPath string, cap int) *Si
 		AgentRole:             "worker",
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   sockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(sockPath),
 		StartupConnectTimeout: 5 * time.Second,
 		PipeReconnectTimeout:  200 * time.Millisecond,
 		PipeMaxLineBytes:      cap,
@@ -3683,6 +3706,7 @@ func newZeroOutputWorkerSidecar(t *testing.T, sockPath string) (*Sidecar, *testC
 		AgentRole:             "worker",
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   sockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(sockPath),
 		StartupConnectTimeout: 5 * time.Second,
 		PipeReconnectTimeout:  200 * time.Millisecond,
 		Harness:               pih.New("", "", ""),

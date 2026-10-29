@@ -859,7 +859,10 @@ func generateProfile(m *Manager) string {
 		}
 		// Host-API socket directory — the sidecar's per-session socket dir.
 		// The run-dir (subpath ...) rule covers agent-run.log,
-		// hostapi.sock, and pipe.sock. Section 6a covers ~/.pi/agent.
+		// hostapi.sock, pipe.sock, and pipe.secret. pipe.secret is what
+		// stops another session from a handshake on the loopback pipe
+		// port of this session (#3356), so the rule must name only the
+		// run dir of this session. Section 6a covers ~/.pi/agent.
 		if m.cfg.HostAPISockPath != "" {
 			sockDir := filepath.Dir(m.cfg.HostAPISockPath)
 			sb.WriteString("  (subpath " + quoteSBPL(sockDir) + ")\n")

@@ -270,6 +270,11 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		if status.HarnessPort != nil {
 			ctrCfg.HarnessPipeTCPPort = *status.HarnessPort
 		}
+		secretPath, secretErr := session.SidecarHarnessPipeSecretPath(sessionName)
+		if secretErr != nil {
+			return fmt.Errorf("agent-run: resolve harness pipe secret path: %w", secretErr)
+		}
+		ctrCfg.HarnessPipeSecretPath = secretPath
 	}
 
 	// PI harness: populate PI-specific config fields (system-prompt, extension
@@ -372,18 +377,13 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	if ctrCfg.HostAPISockPath != "" {
 		env = append(env, "PRISM_HOST_API=unix://"+ctrCfg.HostAPISockPath)
 	}
-	// For socket-pipe harnesses (PI) on Darwin, the sidecar allocates a TCP
-	// port at startup and stores it in harness_port. Expose it here so the
-	// harness can connect back to the sidecar's pipe listener.
-	//
-	// sandbox-exec runs directly on the host — there is no VM, no gvproxy,
-	// and no synthetic hostname resolution. The sidecar listener and the
-	// sandboxed extension are both on the host loopback, so 127.0.0.1 is the
-	// correct address. host.containers.internal is a gvproxy container-VM
-	// convention that does NOT resolve on bare macOS.
-	if ctrCfg.HarnessPipeTCPPort != 0 {
-		env = append(env, fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://127.0.0.1:%d", ctrCfg.HarnessPipeTCPPort))
-	}
+	// For socket-pipe harnesses (PI) on Darwin, the spawn path records the
+	// TCP port of the pipe in harness_port. Expose it, and the path of the
+	// pipe secret file, so the harness can connect back to the sidecar's
+	// pipe listener (see container.SandboxExecHarnessPipeEnv). The agent gets
+	// the path, not the secret: the section-6 run-dir rule lets only this
+	// session read the file (#3356).
+	env = append(env, container.SandboxExecHarnessPipeEnv(ctrCfg)...)
 
 	// Durable give-up diagnostics: expose the host-side agent-run log
 	// path so the PI prism extension can append a diagnostic line if it

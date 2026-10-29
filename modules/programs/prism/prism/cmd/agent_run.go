@@ -316,12 +316,18 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	// --setenv PRISM_HARNESS_PIPE unix://<path>. Without it the PI binary starts
 	// inside the sandbox without knowing where the sidecar pipe socket is.
 	harnessPipeSockPath := ""
+	harnessPipeSecretPath := ""
 	if shape, ok := harness.ShapeOf(harnessName); ok && shape == harness.TransportSocketPipe {
 		pipePath, pipeErr := session.SidecarHarnessPipePath(sessionName)
 		if pipeErr != nil {
 			return fmt.Errorf("agent-run: resolve harness pipe path for %q: %w", harnessName, pipeErr)
 		}
 		harnessPipeSockPath = pipePath
+		secretPath, secretErr := session.SidecarHarnessPipeSecretPath(sessionName)
+		if secretErr != nil {
+			return fmt.Errorf("agent-run: resolve harness pipe secret path for %q: %w", harnessName, secretErr)
+		}
+		harnessPipeSecretPath = secretPath
 	}
 
 	// Resolve the host-side agent-run log path so bwrap can expose it as
@@ -360,28 +366,29 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	}
 
 	ctrCfg := container.Config{
-		SessionName:         sessionName,
-		Worktree:            worktree,
-		BareRoot:            bareRoot,
-		WorktreeGitDir:      worktreeGitDir,
-		AllocatedPort:       port,
-		AgentRole:           agentRole,
-		GitUserName:         cfg.GitUserName,
-		GitUserEmail:        cfg.GitUserEmail,
-		SshAccessKeyName:    cfg.SshAccessKeyName,
-		SshSigningKeyName:   cfg.SshSigningKeyName,
-		GitHubTokenPath:     cfg.GitHubTokenPath,
-		GitHubTokenPaths:    cfg.GitHubTokenPaths,
-		GitLabTokenPath:     cfg.GitLabTokenPath,
-		HostAPISockPath:     hostAPISockPath,
-		HarnessPipeSockPath: harnessPipeSockPath,
-		AgentRunLogPath:     agentRunLogPath,
-		InstanceID:          instanceID,
-		RuntimeEnv:          runtimeEnv,
-		AgentEnvVars:        agentEnvVars,
-		Harness:             harnessName,
-		HarnessSessionID:    harnessSessionID,
-		WorktreeReadOnly:    opts.WorktreeReadOnly,
+		SessionName:           sessionName,
+		Worktree:              worktree,
+		BareRoot:              bareRoot,
+		WorktreeGitDir:        worktreeGitDir,
+		AllocatedPort:         port,
+		AgentRole:             agentRole,
+		GitUserName:           cfg.GitUserName,
+		GitUserEmail:          cfg.GitUserEmail,
+		SshAccessKeyName:      cfg.SshAccessKeyName,
+		SshSigningKeyName:     cfg.SshSigningKeyName,
+		GitHubTokenPath:       cfg.GitHubTokenPath,
+		GitHubTokenPaths:      cfg.GitHubTokenPaths,
+		GitLabTokenPath:       cfg.GitLabTokenPath,
+		HostAPISockPath:       hostAPISockPath,
+		HarnessPipeSockPath:   harnessPipeSockPath,
+		HarnessPipeSecretPath: harnessPipeSecretPath,
+		AgentRunLogPath:       agentRunLogPath,
+		InstanceID:            instanceID,
+		RuntimeEnv:            runtimeEnv,
+		AgentEnvVars:          agentEnvVars,
+		Harness:               harnessName,
+		HarnessSessionID:      harnessSessionID,
+		WorktreeReadOnly:      opts.WorktreeReadOnly,
 	}
 
 	// PI-harness: populate PI-specific config fields from the active profile slot.

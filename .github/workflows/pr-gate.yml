@@ -250,7 +250,7 @@ jobs:
           authToken: ${{ secrets.CACHIX_TOKEN }}
           extraPullNames: nix-community
           name: lucidph3nx-nixos-config
-      - name: go test ./internal/integration -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope)' -race
+      - name: go test ./internal/integration -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret)' -race
         if: steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism
         # Run inside `nix shell` so bash, coreutils, and git resolve to
@@ -270,7 +270,7 @@ jobs:
         run: |
           set -o pipefail
           nix shell --print-build-logs nixpkgs#bash nixpkgs#coreutils nixpkgs#git \
-            --command bash -c 'TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"; export TMPDIR; go test -v ./internal/integration/ -run "^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope)" -race' 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
+            --command bash -c 'TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"; export TMPDIR; go test -v ./internal/integration/ -run "^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret)" -race' 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
       # A SKIP must never read as a PASS (this was a review blocker on the
       # parent issue). go test exits 0 even when every selected test
       # skips (e.g. the /var/folders TMPDIR guard tripping on a runner
@@ -290,10 +290,10 @@ jobs:
             exit 1
           fi
 
-          run_count=$(grep -cE '^=== RUN   TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope)' /tmp/go-test-macos-sandbox-exec.log || true)
-          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope)|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
+          run_count=$(grep -cE '^=== RUN   TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret)' /tmp/go-test-macos-sandbox-exec.log || true)
+          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret)|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
 
-          echo "TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope)* tests run: ${run_count:-0}"
+          echo "TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret)* tests run: ${run_count:-0}"
           if [ -n "$skip_lines" ]; then
             echo "::error::one or more selected tests reported SKIP - a skip must not read as a pass:"
             echo "$skip_lines"

@@ -48,6 +48,7 @@ var piEnvBlockList = []string{
 	"PI_CODING_AGENT",
 	"PI_CODING_AGENT_DIR",
 	"PRISM_HARNESS_PIPE",
+	container.HarnessPipeSecretFileEnvVar,
 }
 
 // filteredEnv returns os.Environ() with every variable named in

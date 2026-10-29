@@ -752,6 +752,31 @@ func TestAgentPaneEnvVars_HostMode_NoHostAPIURL(t *testing.T) {
 	}
 }
 
+// TestAgentPaneEnvVars_HostMode_PipeSecretFile: a host-mode pi pane gets the
+// path of the pipe secret file of its own session. Without it the sidecar
+// refuses the hello of the extension (#3356).
+func TestAgentPaneEnvVars_HostMode_PipeSecretFile(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	const sess = "prism-test@3356-host-env"
+	got := agentPaneEnvVars(Opts{
+		SessionName:         sess,
+		IsolationMode:       "host",
+		HarnessPipeSockPath: "/var/state/prism/run/abc/pipe.sock",
+	})
+	want, err := SidecarHarnessPipeSecretPath(sess)
+	if err != nil {
+		t.Fatalf("SidecarHarnessPipeSecretPath: %v", err)
+	}
+	if got[container.HarnessPipeSecretFileEnvVar] != want {
+		t.Errorf("agentPaneEnvVars(host)[%s] = %q, want %q; got %v", container.HarnessPipeSecretFileEnvVar, got[container.HarnessPipeSecretFileEnvVar], want, got)
+	}
+
+	// With no pipe there is no harness env at all.
+	if got := agentPaneEnvVars(Opts{SessionName: sess, IsolationMode: "host"}); got != nil {
+		t.Errorf("agentPaneEnvVars(host, no pipe) = %v, want nil", got)
+	}
+}
+
 // TestAgentPaneEnvVars_PromptFile_PreferredOverInline verifies the file-path
 // preference: when both opts.Prompt and opts.PromptFilePath are set in bwrap
 // or sandbox-exec mode, agentPaneEnvVars emits PRISM_INITIAL_PROMPT_FILE

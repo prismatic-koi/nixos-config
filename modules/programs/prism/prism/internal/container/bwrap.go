@@ -697,6 +697,11 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	} else if cfg.HarnessPipeSockPath != "" {
 		args = append(args, "--setenv", "PRISM_HARNESS_PIPE", "unix://"+cfg.HarnessPipeSockPath)
 	}
+	// The pipe secret file is in the same per-session run dir, so the
+	// PRISM_HOST_API bind above exposes it too.
+	if cfg.HarnessPipeSecretPath != "" && (cfg.HarnessPipeTCPPort != 0 || cfg.HarnessPipeSockPath != "") {
+		args = append(args, "--setenv", HarnessPipeSecretFileEnvVar, cfg.HarnessPipeSecretPath)
+	}
 
 	// Durable give-up diagnostics: expose the host-side agent-run log
 	// path so the PI prism extension can append a diagnostic line if it

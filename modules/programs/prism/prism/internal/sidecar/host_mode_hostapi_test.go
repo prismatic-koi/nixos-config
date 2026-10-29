@@ -81,18 +81,19 @@ func startModeSidecar(t *testing.T, mode config.IsolationMode, sessionName, repo
 	}
 
 	sc := New(Config{
-		SessionName:         sessionName,
-		Repo:                repo,
-		Worktree:            t.TempDir(),
-		DB:                  d,
-		Clock:               newTestClock(),
-		AgentRole:           role,
-		HarnessName:         "pi",
-		Harness:             pih.New("", role, ""),
-		IsolationMode:       mode,
-		HostAPISockPath:     hostAPISock,
-		HarnessPipeSockPath: pipeSock,
-		PrismBinaryPath:     stubPath,
+		SessionName:           sessionName,
+		Repo:                  repo,
+		Worktree:              t.TempDir(),
+		DB:                    d,
+		Clock:                 newTestClock(),
+		AgentRole:             role,
+		HarnessName:           "pi",
+		Harness:               pih.New("", role, ""),
+		IsolationMode:         mode,
+		HostAPISockPath:       hostAPISock,
+		HarnessPipeSockPath:   pipeSock,
+		HarnessPipeSecretPath: pipeSecretPathFor(pipeSock),
+		PrismBinaryPath:       stubPath,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

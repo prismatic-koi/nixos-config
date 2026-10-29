@@ -616,6 +616,32 @@ func TestSidecarHarnessPipePath_CustomXDG(t *testing.T) {
 	}
 }
 
+// TestSidecarHarnessPipeSecretPath_InRunDirOfPipe: the pipe secret file is in
+// the per-session run dir of the pipe socket and the host-API socket. The
+// sandbox of the session can read that dir, and no other sandbox can (#3356).
+func TestSidecarHarnessPipeSecretPath_InRunDirOfPipe(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	const sess = "myrepo@main"
+	got, err := SidecarHarnessPipeSecretPath(sess)
+	if err != nil {
+		t.Fatalf("SidecarHarnessPipeSecretPath: %v", err)
+	}
+	pipePath, _ := SidecarHarnessPipePath(sess)
+	hostAPIPath, _ := SidecarHostAPIPath(sess)
+	if want := filepath.Join(filepath.Dir(pipePath), "pipe.secret"); got != want {
+		t.Errorf("SidecarHarnessPipeSecretPath = %q, want %q", got, want)
+	}
+	if filepath.Dir(got) != filepath.Dir(hostAPIPath) {
+		t.Errorf("pipe secret dir %q differs from the host-API socket dir %q", filepath.Dir(got), filepath.Dir(hostAPIPath))
+	}
+
+	other, _ := SidecarHarnessPipeSecretPath("myrepo@other")
+	if filepath.Dir(other) == filepath.Dir(got) {
+		t.Errorf("two sessions share the pipe secret dir %q", filepath.Dir(got))
+	}
+}
+
 // realisticHarnessPipePath builds the pipe socket path a production system
 // with the given $HOME would produce, without depending on test-time XDG_STATE_HOME.
 func realisticHarnessPipePath(home, sessionName string) string {

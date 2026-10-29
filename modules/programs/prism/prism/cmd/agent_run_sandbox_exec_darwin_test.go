@@ -41,12 +41,10 @@ func TestSandboxExecEnv_HarnessPipeTCPPort_Uses127001(t *testing.T) {
 	env := container.MinimalIsolatedExecEnv(os.Environ())
 	env = container.AppendSandboxEnvVarsKV(env, ctrCfg)
 
-	// Inline the PRISM_HARNESS_PIPE injection from runAgentRunSandboxExec,
-	// because that function calls os.Getppid() and starts a child process —
-	// we exercise only the env-building logic here.
-	if ctrCfg.HarnessPipeTCPPort != 0 {
-		env = append(env, fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://127.0.0.1:%d", ctrCfg.HarnessPipeTCPPort))
-	}
+	// The PRISM_HARNESS_PIPE injection of runAgentRunSandboxExec. That
+	// function calls os.Getppid() and starts a child process, so the test
+	// calls the helper that it uses.
+	env = append(env, container.SandboxExecHarnessPipeEnv(ctrCfg)...)
 
 	wantVal := fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://127.0.0.1:%d", testPort)
 	found := false
@@ -77,9 +75,7 @@ func TestSandboxExecEnv_HarnessPipeTCPPort_Zero_NoHarnessPipeVar(t *testing.T) {
 	env = container.AppendSandboxEnvVarsKV(env, ctrCfg)
 
 	// TCP branch must NOT fire when port is zero.
-	if ctrCfg.HarnessPipeTCPPort != 0 {
-		env = append(env, fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://127.0.0.1:%d", ctrCfg.HarnessPipeTCPPort))
-	}
+	env = append(env, container.SandboxExecHarnessPipeEnv(ctrCfg)...)
 
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "PRISM_HARNESS_PIPE=tcp://") {

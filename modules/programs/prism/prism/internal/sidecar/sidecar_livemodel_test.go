@@ -47,6 +47,7 @@ func newPISidecar(t *testing.T, sockPath, sessionName, agentRole string, d *db.D
 		AgentRole:             agentRole,
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   sockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(sockPath),
 		StartupConnectTimeout: 5 * time.Second,
 		Harness:               pih.New("", "", ""),
 	}

@@ -16,7 +16,8 @@
 // On `session_start`:
 //   1. Parse PRISM_HARNESS_PIPE (unix:// or tcp:// per wire spec §2.4).
 //   2. Open the connection via node:net.
-//   3. Send `hello` frame (protocol_version=2).
+//   3. Send `hello` frame (protocol_version=2, and the pipe secret from the
+//      file at PRISM_HARNESS_PIPE_SECRET_FILE, #3356).
 //   4. Wait for `hello_ack`. Validate protocol_version. Disconnect on mismatch.
 //   5. Set up the buffered line reader and the synchronous writer.
 //
@@ -1290,6 +1291,12 @@ export const TRUNCATION_SENTINEL = "…[truncated]"
 /** Harness identifier sent in the `hello` frame. */
 export const HARNESS_NAME = "pi"
 
+/**
+ * Env var that holds the path of the harness pipe secret file (#3356). Same
+ * name as container.HarnessPipeSecretFileEnvVar in the prism Go source.
+ */
+export const PIPE_SECRET_FILE_ENV = "PRISM_HARNESS_PIPE_SECRET_FILE"
+
 // ---------------------------------------------------------------------------
 // Mid-tool heartbeat (#1761)
 // ---------------------------------------------------------------------------
@@ -1723,6 +1730,53 @@ export function writeDurableGiveUpLog(endpointStr: string, retries: number): voi
   } catch (err) {
     console.error("[prism-extension] failed to write give-up line to durable log:", err)
   }
+}
+
+/**
+ * Read the harness pipe secret from the file at `secretPath` (#3356).
+ *
+ * The sidecar writes a new secret to this file before it listens, and refuses
+ * a `hello` without it. Read the file at each connect, not once: a new
+ * sidecar writes a new secret. Returns undefined when the path is unset or
+ * the read fails. The hello then has no secret and the sidecar refuses it,
+ * so log the cause here. Never log the secret. Exported for unit testing.
+ */
+export function readPipeSecret(secretPath: string | undefined): string | undefined {
+  if (!secretPath) {
+    console.error(
+      `[prism-extension] ${PIPE_SECRET_FILE_ENV} is not set — the sidecar will refuse the hello`,
+    )
+    return undefined
+  }
+  try {
+    const secret = fs.readFileSync(secretPath, "utf8").trim()
+    if (secret.length > 0) return secret
+    console.error(`[prism-extension] pipe secret file ${secretPath} is empty — the sidecar will refuse the hello`)
+  } catch (err) {
+    console.error(
+      `[prism-extension] cannot read pipe secret file ${secretPath} — the sidecar will refuse the hello:`,
+      (err as NodeJS.ErrnoException).code ?? err,
+    )
+  }
+  return undefined
+}
+
+/**
+ * Build the `hello` frame (§4.1). `secret` is omitted when undefined.
+ * Exported for unit testing.
+ */
+export function buildHelloFrame(secret: string | undefined): Record<string, unknown> {
+  const frame: Record<string, unknown> = {
+    type: "hello",
+    protocol_version: PROTOCOL_VERSION,
+    harness: HARNESS_NAME,
+    // harness_version: best-effort; PI does not expose it on the API,
+    // so we send the package version from env if available, else a
+    // sentinel string. Sidecar does not branch on this in v1.
+    harness_version: process.env.PI_VERSION ?? "unknown",
+  }
+  if (secret !== undefined) frame.secret = secret
+  return frame
 }
 
 // ---------------------------------------------------------------------------
@@ -3523,16 +3577,10 @@ export default function prismExtension(pi: ExtensionAPI): void {
       connected = true
       writer = makeFrameWriter(socket!)
 
-      // Handshake (§4.1): hello frame, first thing on the wire.
-      writer.write({
-        type: "hello",
-        protocol_version: PROTOCOL_VERSION,
-        harness: HARNESS_NAME,
-        // harness_version: best-effort; PI does not expose it on the API,
-        // so we send the package version from env if available, else a
-        // sentinel string. Sidecar does not branch on this in v1.
-        harness_version: process.env.PI_VERSION ?? "unknown",
-      })
+      // Handshake (§4.1): hello frame, first thing on the wire. The sidecar
+      // wrote the secret file before it bound the listener, so the file is
+      // current once the connect succeeds.
+      writer.write(buildHelloFrame(readPipeSecret(process.env[PIPE_SECRET_FILE_ENV])))
     })
 
     attachJsonlReader(socket, (line) => {
@@ -3559,10 +3607,20 @@ export default function prismExtension(pi: ExtensionAPI): void {
       if (!handshakeComplete) {
         // Expect hello_ack as the first frame.
         if (f.type !== "hello_ack") {
-          console.error(
-            "[prism-extension] expected hello_ack, got:",
-            f.type,
-          )
+          if (f.type === "error") {
+            // For example code "unauthorized": the hello had no valid pipe
+            // secret (#3356).
+            console.error(
+              "[prism-extension] the sidecar refused the handshake:",
+              String(f.code),
+              String(f.message),
+            )
+          } else {
+            console.error(
+              "[prism-extension] expected hello_ack, got:",
+              f.type,
+            )
+          }
           // Per wire spec §7.4: log and disconnect, no retry.
           if (socket) socket.end()
           return

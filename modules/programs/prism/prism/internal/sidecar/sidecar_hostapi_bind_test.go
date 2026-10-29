@@ -17,7 +17,6 @@ package sidecar
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -53,6 +52,7 @@ func newPI1486Sidecar(t *testing.T, hostAPISockPath, pipeSockPath string) *Sidec
 		AgentRole:             "worker",
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   pipeSockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(pipeSockPath),
 		HostAPISockPath:       hostAPISockPath,
 		StartupConnectTimeout: 200 * time.Millisecond, // short for tests
 		PipeReconnectTimeout:  50 * time.Millisecond,
@@ -319,9 +319,12 @@ func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_NeverConnects(t *testing.T)
 	}
 }
 
-// TestHostAPI_SurvivesHarnessPipeHandshakeFailure_MalformedHello is a
-// second variant: the extension connects but sends a malformed hello.
-func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_MalformedHello(t *testing.T) {
+// TestHostAPI_SurvivesHarnessPipeHandshakeFailure_VersionMismatch is a
+// second variant: the extension connects with the pipe secret but sends a
+// protocol version that the sidecar does not support. A hello without the
+// secret does not end the pipe loop (#3356), so this variant sends the
+// secret.
+func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_VersionMismatch(t *testing.T) {
 	pipeSockPath := shortSockPath(t)
 	dir := filepath.Dir(pipeSockPath)
 	hostAPISockPath := filepath.Join(dir, "hostapi.sock")
@@ -355,28 +358,30 @@ func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_MalformedHello(t *testing.T
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// Connect to the harness pipe and send a malformed hello (not valid JSON).
+	// Connect to the harness pipe and send a hello with an unsupported
+	// protocol version.
 	conn, err := net.Dial("unix", pipeSockPath)
 	if err != nil {
 		t.Fatalf("dial harness pipe: %v", err)
 	}
-	// Send malformed JSON — the sidecar will reject it and call writeStartupError.
-	fmt.Fprintf(conn, "this is not json\n")
+	hello := helloWithSecret(readPipeSecret(t, pipeSecretPathFor(pipeSockPath)))
+	hello["protocol_version"] = 99
+	sendJSON(t, conn, hello)
 	conn.Close()
 
 	// Poll until the DB shows error state — the error write from
-	// runStartupSocketPipe can land any time after the malformed hello is
-	// rejected, so polling avoids a sleep-then-assert race.
+	// runStartupSocketPipe can land any time after the hello is rejected, so
+	// polling avoids a sleep-then-assert race.
 	// 5s ceiling chosen to absorb scheduler contention on race-detector
 	// CI runs.
 	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 5*time.Second); st != "error" {
-		t.Errorf("DB state after malformed hello = %q, want error", st)
+		t.Errorf("DB state after the version mismatch = %q, want error", st)
 	}
 
-	// The host-API must still be serving after the malformed hello.
+	// The host-API must still be serving after the version mismatch.
 	code, body := dialHostAPIHTTP(t, hostAPISockPath, "/list-sessions")
 	if code != http.StatusOK {
-		t.Errorf("host-API /list-sessions after malformed hello: status=%d body=%q, want 200", code, body)
+		t.Errorf("host-API /list-sessions after the version mismatch: status=%d body=%q, want 200", code, body)
 	}
 
 	cancel()

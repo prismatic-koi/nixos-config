@@ -370,6 +370,14 @@ type Config struct {
 	// convention), sandbox-exec runs directly on the host, so loopback-only is
 	// both correct and more secure.
 	HarnessPipeTCPPort int
+	// HarnessPipeSecretPath is the file to which runStartupSocketPipe writes
+	// a new random pipe secret before it binds the listener. The sidecar
+	// refuses a hello frame that does not carry this secret (#3356). It must
+	// be in the per-session run dir, which only the sandbox of this session
+	// can read. Required for a socket-pipe harness: when it is empty,
+	// runStartupSocketPipe fails and does not listen. Set by cmd/sidecar.go
+	// from session.SidecarHarnessPipeSecretPath.
+	HarnessPipeSecretPath string
 	// PipeMaxLineBytes overrides the per-frame byte cap enforced by the
 	// socket-pipe inbound reader. Zero means use socketPipeMaxLineBytes (16
 	// MiB). Set to a small value in tests to exercise boundary behaviour
@@ -1112,10 +1120,13 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			//
 			// runStartupSocketPipe does not return at a startup or reconnect
 			// timeout: it writes state error and keeps the listener open for a
-			// new agent (#3345). It returns an error after a handshake protocol
-			// failure (bad hello, version mismatch), a listener error, or ctx
-			// cancellation, and nil after a clean session_shutdown. It records
-			// the error state before it returns a protocol or listener error.
+			// new agent (#3345). It does not return when it refuses a peer with
+			// no valid pipe secret (#3356). It returns an error after a protocol
+			// failure of a peer with the secret (wrong first frame, version
+			// mismatch), a missing or unwritable pipe secret file, a listener
+			// error, or ctx cancellation, and nil after a clean
+			// session_shutdown. It records the error state before it returns
+			// a protocol or listener error.
 			//
 			// When it returns a non-nil error, absorb it: block on ctx.Done()
 			// so Run() outlives the failure and the host-API server keeps
@@ -2020,6 +2031,18 @@ const (
 // hello is received and hello_ack is sent, OnReady is called (if set) and the
 // sidecar enters the frame loop.
 //
+// # Pipe secret
+//
+// Before it binds the listener, the function writes a new random secret to
+// Config.HarnessPipeSecretPath, in the per-session run dir (#3356). The first
+// frame of a connection must carry that secret in hello.secret. The function
+// refuses a peer whose first frame does not: it sends an unauthorized error
+// frame, closes the connection, and waits for the next one. A refused peer
+// gets no frame of the session and changes no state. On Darwin every session
+// can reach the loopback port of the pipe, and only the sandbox of this
+// session can read the run dir, so the secret is what stops one session from
+// reading the held prompts of another or sending frames as it.
+//
 // # Duplex loop
 //
 // A reader goroutine consumes inbound frames; a writer goroutine drains the
@@ -2056,6 +2079,7 @@ const (
 //
 // # Error handling
 //
+//   - No valid pipe secret in the first frame: peer refused, loop continues
 //   - Protocol version mismatch: error frame sent to extension, session → error
 //   - Unexpected disconnect: flush accumulator, wait for reconnect; error after timeout
 //   - Malformed JSONL frame: logged and skipped, connection not torn down
@@ -2072,6 +2096,25 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 	reconnectTimeout := s.cfg.PipeReconnectTimeout
 	if reconnectTimeout == 0 {
 		reconnectTimeout = pipeDisconnectTimeout
+	}
+
+	// Write the pipe secret before the listener binds. The extension reads
+	// the file as soon as its connect succeeds, so a later write can give it
+	// the secret of the previous sidecar.
+	var pipeSecret string
+	if s.cfg.HarnessPipeTCPPort != 0 || s.cfg.HarnessPipeSockPath != "" {
+		if s.cfg.HarnessPipeSecretPath == "" {
+			err := fmt.Errorf("sidecar: runStartupSocketPipe: HarnessPipeSecretPath is not configured")
+			s.writeStartupError(err)
+			return err
+		}
+		secret, secretErr := writeHarnessPipeSecret(s.cfg.HarnessPipeSecretPath)
+		if secretErr != nil {
+			err := fmt.Errorf("sidecar: runStartupSocketPipe: %w", secretErr)
+			s.writeStartupError(err)
+			return err
+		}
+		pipeSecret = secret
 	}
 
 	if s.cfg.HarnessPipeTCPPort != 0 {
@@ -2356,10 +2399,10 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			}
 		}
 
+		// activeConn stays nil until hello_ack is written. Until then the
+		// writer must not send a frame of this session to the peer: the peer
+		// can be another session, and the agent expects hello_ack first.
 		s.logger().Printf("sidecar: runStartupSocketPipe: extension connected from %s", conn.RemoteAddr())
-		connMu.Lock()
-		activeConn = conn
-		connMu.Unlock()
 		s.mu.Lock()
 		s.harnessPipeConn = conn
 		s.mu.Unlock()
@@ -2377,9 +2420,6 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 				s.logger().Printf("sidecar: runStartupSocketPipe: reading hello: %v", err)
 			}
 			_ = conn.Close()
-			connMu.Lock()
-			activeConn = nil
-			connMu.Unlock()
 			// Treat a hello read failure like a premature disconnect: wait for
 			// reconnect within reconnectTimeout. A detached session (timeout
 			// 0) keeps waiting with no deadline.
@@ -2388,41 +2428,34 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			}
 			continue
 		}
-		if n := len(helloLine); n > 0 && helloLine[n-1] == '\n' {
-			s.archiveInboundFrame(helloLine[:n-1])
-		} else {
-			s.archiveInboundFrame(helloLine)
-		}
-
 		var helloFrame struct {
 			Type            string `json:"type"`
 			ProtocolVersion int    `json:"protocol_version"`
 			Harness         string `json:"harness"`
 			HarnessVersion  string `json:"harness_version"`
+			Secret          string `json:"secret"`
 		}
-		if err := json.Unmarshal(helloLine, &helloFrame); err != nil {
-			s.sendPipeError(conn, "protocol_violation", "malformed hello frame: "+err.Error())
-			startupErr := fmt.Errorf("sidecar: runStartupSocketPipe: malformed hello frame: %w", err)
-			s.writeStartupError(startupErr)
-			_ = conn.Close()
-			connMu.Lock()
-			activeConn = nil
-			connMu.Unlock()
-			s.mu.Lock()
-			s.harnessPipeOutCh = nil
-			s.mu.Unlock()
-			close(outCh)
-			<-writerDone
-			return startupErr
+		// Check the pipe secret before all else (#3356). On Darwin the pipe
+		// is a loopback TCP port, so a peer without the secret can be another
+		// session. Refuse it, and change nothing of this session: no frame,
+		// no archive row, no state write, no end of the loop. A frame that is
+		// not JSON cannot carry the secret, so it gets the same refusal.
+		if parseErr := json.Unmarshal(helloLine, &helloFrame); parseErr != nil || !pipeSecretMatches(helloFrame.Secret, pipeSecret) {
+			reason := "the first frame has no valid pipe secret for this session"
+			if parseErr != nil {
+				reason = "the first frame is not a JSON object"
+			}
+			s.logger().Printf("sidecar: runStartupSocketPipe: refused a connection from %s: %s", conn.RemoteAddr(), reason)
+			refusePipePeer(conn, reason)
+			continue
 		}
+		s.archiveInboundFrame(redactHelloSecret(helloLine))
+
 		if helloFrame.Type != "hello" {
 			s.sendPipeError(conn, "pre_handshake_frame", fmt.Sprintf("expected hello, got %q", helloFrame.Type))
 			startupErr := fmt.Errorf("sidecar: runStartupSocketPipe: expected hello frame, got %q", helloFrame.Type)
 			s.writeStartupError(startupErr)
 			_ = conn.Close()
-			connMu.Lock()
-			activeConn = nil
-			connMu.Unlock()
 			s.mu.Lock()
 			s.harnessPipeOutCh = nil
 			s.mu.Unlock()
@@ -2441,9 +2474,6 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			startupErr := fmt.Errorf("sidecar: runStartupSocketPipe: protocol version mismatch: extension=%d sidecar=%d", helloFrame.ProtocolVersion, piWireProtocolVersion)
 			s.writeStartupError(startupErr)
 			_ = conn.Close()
-			connMu.Lock()
-			activeConn = nil
-			connMu.Unlock()
 			s.mu.Lock()
 			s.harnessPipeOutCh = nil
 			s.mu.Unlock()
@@ -2473,9 +2503,6 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			startupErr := fmt.Errorf("sidecar: runStartupSocketPipe: write hello_ack: %w", err)
 			s.logger().Printf("%v", startupErr)
 			_ = conn.Close()
-			connMu.Lock()
-			activeConn = nil
-			connMu.Unlock()
 			if acceptTimeout != 0 {
 				acceptTimeout = reconnectTimeout
 			}
@@ -2486,6 +2513,9 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 
 		// Publish the outbound channel only now. The extension has its
 		// hello_ack, so no frame can reach it ahead of the hello_ack.
+		connMu.Lock()
+		activeConn = conn
+		connMu.Unlock()
 		s.mu.Lock()
 		s.harnessPipeOutCh = outCh
 		reattached := s.harnessPipeDetached
