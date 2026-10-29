@@ -392,8 +392,10 @@ you made later, for example a moved project, do the same steps.
 
 `prism confirm-bare` also refuses while a session that started in the
 root or in a dir above it runs, because that session can write the
-`.bare` after the confirmation. It uses two signals, and either one
-refuses:
+`.bare` after the confirmation. On Linux, this refusal stops each write
+after the confirmation. On Darwin, it does not stop a process that the
+session detached (see "Known limits", #3375). It uses two signals, and
+either one refuses:
 
 - The start record is open (`SessionStarts` in
   `internal/db/session_starts.go`). A `sessions` row is open when it has
@@ -407,8 +409,9 @@ refuses:
 - The tmux server of the host lists the session, or does not give a clear
   answer. A session can end its own `sessions` row and keep its sandbox:
   the sidecar ends the row when the session sends `session_shutdown` on
-  the harness pipe. A sandbox has no access to the tmux server, so this
-  signal is the one that a session cannot change.
+  the harness pipe. A sandbox has no access to the tmux server, so on
+  Linux this signal is the one that a session cannot change. On Darwin, a
+  detached process outlives the tmux session (see "Known limits", #3375).
 
 A session cannot set the `agent_status` values through the `/event` proxy
 ("The `/event` proxy" in `session-lifecycle.md`). `tmux-session-start`
@@ -664,6 +667,12 @@ table.
   update, and `db.Prune` removed the start record of the planting session.
   The host git command of that start ran the payload before the update,
   so the host was already exposed.
+- **`prism confirm-bare` on Darwin (#3375).** On Darwin, a process that a
+  session detaches (`setsid`, `nohup`) outlives the session, because
+  `sandbox-exec` has no PID namespace. After `prism confirm-bare` of a
+  root that such a session started in, that process can still write
+  `.bare/config` and `.bare/info/attributes`, and the record still accepts
+  the `.bare`. #3375 tracks the fix.
 - **A moved, copied, or restored project.** The `.bare` has another inode
   or another path, so `OpenBare` refuses it. Do the steps for
   `prism confirm-bare` in "How prism starts the record" above.
