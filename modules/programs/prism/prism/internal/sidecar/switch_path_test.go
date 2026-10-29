@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 )
 
@@ -87,6 +88,17 @@ func newSwitchLayout(t *testing.T) switchLayout {
 		t.Fatalf("copy the project: %v\n%s", err, out)
 	}
 	return l
+}
+
+// recordMainStart writes the start record of the session in the main
+// worktree of l to d, as prism does on the host. The sidecar of a test has a
+// new state dir with no bare repo record, and host git starts the record from
+// these rows (#3364).
+func (l switchLayout) recordMainStart(t *testing.T, d *db.DB) {
+	t.Helper()
+	if err := d.InsertSession(db.Session{InstanceID: "i-" + swRepo + "-main", SessionName: swRepo + "@main", Repo: swRepo, Worktree: l.main}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
 }
 
 func writeSwitchConfig(t *testing.T, locations, specific []string) {
@@ -245,7 +257,8 @@ func TestSwitchPathForSession_DirListedTwice(t *testing.T) {
 
 	argvLog := filepath.Join(t.TempDir(), "argv.log")
 	stub := "#!/bin/sh\necho \"$*\" >> '" + argvLog + "'\nexit 0\n"
-	sc, _ := nwrSidecar(t, swRepo+"@main", "coordinator", l.main, "coordinator", stub, nil)
+	sc, d := nwrSidecar(t, swRepo+"@main", "coordinator", l.main, "coordinator", stub, nil)
+	l.recordMainStart(t, d)
 	rr := doHostAPI(t, sc, http.MethodPost, "/switch", `{"session":"`+swRepo+`@dup"}`)
 	logged, _ := os.ReadFile(argvLog)
 	if argv := strings.TrimSpace(string(logged)); rr.Code != http.StatusOK || argv != "switch --path "+dup {
@@ -265,6 +278,7 @@ func TestHostAPI_Switch_IgnoresTheAgentStatusWorktree(t *testing.T) {
 	argvLog := filepath.Join(t.TempDir(), "argv.log")
 	stub := "#!/bin/sh\necho \"$*\" >> '" + argvLog + "'\nexit 0\n"
 	sc, d := nwrSidecar(t, swRepo+"@main", "coordinator", l.main, "coordinator", stub, nil)
+	l.recordMainStart(t, d)
 
 	cases := []struct {
 		session string

@@ -24,6 +24,10 @@ func TestMain(m *testing.M) {
 	// suite in its sandbox, where PRISM_HOST_API is set, so the suite unsets
 	// it, as in CI.
 	os.Unsetenv("PRISM_HOST_API")
+	// internal/db sets the reader of the session start records, and this
+	// package cannot import internal/db. With no records, the start of the
+	// bare repo record records no .bare.
+	SetSessionStartSource(func(string) ([]SessionStart, error) { return nil, nil })
 	code := m.Run()
 	restoreFileTransport()
 	restore()

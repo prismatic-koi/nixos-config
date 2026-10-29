@@ -24,8 +24,8 @@ func recordBareForTest(t *testing.T, gitDir string) {
 }
 
 // useBareRecord makes OpenBare use the bare repo record for the rest of t,
-// as on the host, with a new state dir. It returns the path of the record
-// file.
+// as on the host, with a new state dir and no session start records. It
+// returns the path of the record file.
 func useBareRecord(t *testing.T) string {
 	t.Helper()
 	t.Setenv("PRISM_HOST_API", "")
@@ -33,7 +33,39 @@ func useBareRecord(t *testing.T) string {
 	t.Setenv("XDG_STATE_HOME", state)
 	prev := allowUnrecordedBare.Swap(false)
 	t.Cleanup(func() { allowUnrecordedBare.Store(prev) })
+	setSessionStarts(t)
 	return filepath.Join(state, "prism", bareRecordName)
+}
+
+// setSessionStarts makes the session start records of prism.db be starts
+// for the rest of t. internal/db sets the real reader, and this package
+// cannot import internal/db.
+func setSessionStarts(t *testing.T, starts ...SessionStart) {
+	t.Helper()
+	prev := sessionStartSource.Load()
+	read := func(string) ([]SessionStart, error) { return starts, nil }
+	sessionStartSource.Store(&read)
+	t.Cleanup(func() { sessionStartSource.Store(prev) })
+}
+
+// prismLayout makes root in the prism layout with plain git: root/.bare and
+// a .git file that names it.
+func prismLayout(t *testing.T, origin, root string) {
+	t.Helper()
+	if out, err := exec.Command("git", "clone", "-q", "--bare", origin, filepath.Join(root, ".bare")).CombinedOutput(); err != nil {
+		t.Fatalf("clone %s: %v\n%s", root, err, out)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: ./.bare\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// plainClone makes root a plain clone of origin.
+func plainClone(t *testing.T, origin, root string) {
+	t.Helper()
+	if out, err := exec.Command("git", "clone", "-q", origin, root).CombinedOutput(); err != nil {
+		t.Fatalf("clone %s: %v\n%s", root, err, out)
+	}
 }
 
 // readRecordPaths returns the path of each entry in the record file.
@@ -52,6 +84,15 @@ func readRecordPaths(t *testing.T, file string) []string {
 		paths = append(paths, e.Path)
 	}
 	return paths
+}
+
+func mustResolve(t *testing.T, p string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
 
 func hasPath(paths []string, p string) bool {
@@ -179,12 +220,166 @@ func TestOpenBare_RefusesBareThatPrismDidNotMake(t *testing.T) {
 	}
 }
 
-// TestBareRecord_StartsFromProjectRoots: with no record file, prism records
-// each .bare in a project root one time, so a project that prism made before
-// the record existed stays usable. A root whose .git is a directory is a
-// plain clone, and the start skips its .bare. A .bare made after the start
-// is not in the record.
-func TestBareRecord_StartsFromProjectRoots(t *testing.T) {
+// TestBareRecord_StartsFromSessionStarts (#3364): with no record file, prism
+// starts the record from the session start records of prism.db, not from the
+// .bare dirs on disk. A .bare goes in the record only if a session started in
+// a worktree of its root, and no session other than a meta-session started
+// in the root or above it. A root whose .git is a directory is a plain
+// clone, and the start skips its .bare. A .bare made after the start is not
+// in the record.
+func TestBareRecord_StartsFromSessionStarts(t *testing.T) {
+	isolateHostGitConfig(t)
+	recordFile := useBareRecord(t)
+	base := t.TempDir()
+	code := filepath.Join(base, "code")
+	if err := os.MkdirAll(code, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeProjectConfig(t, []string{code}, nil)
+	origin := newOrigin(t)
+
+	// Projects in the prism layout, made with plain git.
+	used := filepath.Join(code, "used")
+	idle := filepath.Join(code, "idle")
+	converted := filepath.Join(code, "converted")
+	inBare := filepath.Join(code, "inbare")
+	for _, root := range []string{used, idle, converted, inBare} {
+		prismLayout(t, origin, root)
+	}
+	// A plain clone with a .bare next to its .git dir.
+	plain := filepath.Join(code, "plain")
+	plainClone(t, origin, plain)
+	if out, err := exec.Command("git", "clone", "-q", "--bare", origin, filepath.Join(plain, ".bare")).CombinedOutput(); err != nil {
+		t.Fatalf("plant plain/.bare: %v\n%s", err, out)
+	}
+	setSessionStarts(t,
+		SessionStart{Name: "used@main", Worktree: filepath.Join(used, "main")},
+		// A meta-session runs no agent, so its dir above the roots does
+		// not count.
+		SessionStart{Name: "scratchpad", Worktree: base, Open: true},
+		// The root session of a plain clone ran in converted. It could
+		// write the root, so the worktree session after it does not count.
+		SessionStart{Name: "converted", Worktree: converted},
+		SessionStart{Name: "converted@main", Worktree: filepath.Join(converted, "main")},
+		// A dir in .bare is not a worktree.
+		SessionStart{Name: "inbare@x", Worktree: filepath.Join(inBare, ".bare", "worktrees", "x")},
+		SessionStart{Name: "plain@main", Worktree: filepath.Join(plain, "main")},
+	)
+
+	if _, err := os.Stat(recordFile); !os.IsNotExist(err) {
+		t.Fatalf("the record exists before the first OpenBare: %v", err)
+	}
+	if _, err := OpenBare(used); err != nil {
+		t.Errorf("OpenBare(%s): %v", used, err)
+	}
+	paths := readRecordPaths(t, recordFile)
+	if !hasPath(paths, filepath.Join(used, ".bare")) || len(paths) != 1 {
+		t.Errorf("record = %v, want only %s/.bare", paths, used)
+	}
+	for _, root := range []string{idle, converted, inBare, plain} {
+		_, err := OpenBare(root)
+		if !errors.Is(err, ErrNotPrismBare) {
+			t.Errorf("OpenBare(%s) = %v, want ErrNotPrismBare", root, err)
+			continue
+		}
+		if want := "prism confirm-bare " + mustResolve(t, root); !strings.Contains(err.Error(), want) {
+			t.Errorf("OpenBare(%s) = %v, want the step %q", root, err, want)
+		}
+	}
+
+	late := filepath.Join(code, "late")
+	marker := filepath.Join(t.TempDir(), "marker")
+	plainClone(t, origin, late)
+	plantBare(t, origin, late, marker)
+	if _, err := OpenBare(late); !errors.Is(err, ErrNotPrismBare) {
+		t.Errorf("OpenBare(%s) = %v, want ErrNotPrismBare", late, err)
+	}
+	if got := takeMarker(marker); got != "" {
+		t.Errorf("OpenBare ran the payload: %q", got)
+	}
+}
+
+// TestBareRecord_StartRefusesBarePlantedBefore is AC 1 of #3364. The
+// sandboxed root session of a plain clone plants a .bare in its root before
+// the record exists, and replaces its .git dir with a .git file. The control
+// shows that a pinned worktree add in that .bare runs the payload. The start
+// of the record must not record the plant, so OpenBare and CreateWorktree,
+// the step of /spawn, refuse it and no payload runs.
+//
+// Each case has a start record of a worktree session in the root, as from a
+// /spawn before the update. In the first case the root session runs. In the
+// second case it ended. In the third case the root session started in the
+// project location, a dir above the root. In the fourth case prism.db has no
+// record of the root session, and no start record of a worktree session.
+func TestBareRecord_StartRefusesBarePlantedBefore(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		starts func(code, root string) []SessionStart
+	}{
+		{"root session runs", func(_, root string) []SessionStart {
+			return []SessionStart{
+				{Name: "plain", Worktree: root, Open: true},
+				{Name: "plain@spawned", Worktree: filepath.Join(root, "spawned")},
+			}
+		}},
+		{"root session ended", func(_, root string) []SessionStart {
+			return []SessionStart{
+				{Name: "plain", Worktree: root},
+				{Name: "plain@spawned", Worktree: filepath.Join(root, "spawned")},
+			}
+		}},
+		{"session above the root", func(code, root string) []SessionStart {
+			return []SessionStart{
+				{Name: "code", Worktree: code, Open: true},
+				{Name: "plain@spawned", Worktree: filepath.Join(root, "spawned")},
+			}
+		}},
+		{"no start record", func(string, string) []SessionStart { return nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateHostGitConfig(t)
+			recordFile := useBareRecord(t)
+			code := filepath.Join(t.TempDir(), "code")
+			if err := os.MkdirAll(code, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeProjectConfig(t, []string{code}, nil)
+			origin := newOrigin(t)
+			root := filepath.Join(code, "plain")
+			plainClone(t, origin, root)
+			marker := filepath.Join(t.TempDir(), "marker")
+			bareDir := plantBare(t, origin, root, marker)
+			setSessionStarts(t, tc.starts(code, root)...)
+
+			control := Repo{gitDir: bareDir, commonDir: bareDir, dir: bareDir}
+			_, _ = control.CombinedOutput("worktree", "add", filepath.Join(t.TempDir(), "control"), "main")
+			if got := takeMarker(marker); !strings.Contains(got, "smudge") {
+				t.Fatalf("control: a pinned worktree add in the plant ran %q, want the smudge filter; the plant does not work", got)
+			}
+
+			if _, err := os.Stat(recordFile); !os.IsNotExist(err) {
+				t.Fatalf("the record exists before the first OpenBare: %v", err)
+			}
+			if _, err := OpenBare(root); !errors.Is(err, ErrNotPrismBare) {
+				t.Errorf("OpenBare(%s) = %v, want ErrNotPrismBare", root, err)
+			}
+			if paths := readRecordPaths(t, recordFile); hasPath(paths, bareDir) {
+				t.Errorf("record = %v, want no entry for the plant %s", paths, bareDir)
+			}
+			if _, err := CreateWorktree(root, "spawned2"); !errors.Is(err, ErrNotPrismBare) {
+				t.Errorf("CreateWorktree = %v, want ErrNotPrismBare", err)
+			}
+			if got := takeMarker(marker); got != "" {
+				t.Errorf("a host git command for the planted root ran the payload: %q", got)
+			}
+		})
+	}
+}
+
+// TestBareRecord_StartNeedsTheReader: with no reader of the session start
+// records, prism does not start the record. It refuses, and it writes no
+// record file, so a later prism command with the reader starts the record.
+func TestBareRecord_StartNeedsTheReader(t *testing.T) {
 	isolateHostGitConfig(t)
 	recordFile := useBareRecord(t)
 	code := filepath.Join(t.TempDir(), "code")
@@ -192,50 +387,102 @@ func TestBareRecord_StartsFromProjectRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeProjectConfig(t, []string{code}, nil)
-	origin := newOrigin(t)
+	root := filepath.Join(code, "repo")
+	prismLayout(t, newOrigin(t), root)
 
-	// A project in the prism layout, made with plain git.
-	old := filepath.Join(code, "old")
-	if out, err := exec.Command("git", "clone", "-q", "--bare", origin, filepath.Join(old, ".bare")).CombinedOutput(); err != nil {
-		t.Fatalf("clone old: %v\n%s", err, out)
+	prev := sessionStartSource.Swap(nil)
+	_, err := OpenBare(root)
+	sessionStartSource.Store(prev)
+	if err == nil {
+		t.Fatal("OpenBare with no reader: want an error")
 	}
-	if err := os.WriteFile(filepath.Join(old, ".git"), []byte("gitdir: ./.bare\n"), 0o644); err != nil {
+	if _, err := os.Stat(recordFile); !os.IsNotExist(err) {
+		t.Errorf("OpenBare with no reader wrote the record: %v", err)
+	}
+
+	setSessionStarts(t, SessionStart{Name: "repo@main", Worktree: filepath.Join(root, "main")})
+	if _, err := OpenBare(root); err != nil {
+		t.Errorf("OpenBare with the reader: %v", err)
+	}
+}
+
+// TestConfirmBare: the owner adds a .bare that the start of the record did
+// not get. ConfirmBare refuses a plain clone, a root outside the project
+// roots, a root in which a session runs, and a sandbox.
+func TestConfirmBare(t *testing.T) {
+	isolateHostGitConfig(t)
+	recordFile := useBareRecord(t)
+	base := t.TempDir()
+	code := filepath.Join(base, "code")
+	if err := os.MkdirAll(code, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// A plain clone with a .bare next to its .git dir.
+	writeProjectConfig(t, []string{code}, nil)
+	origin := newOrigin(t)
+
+	idle := filepath.Join(code, "idle")
+	prismLayout(t, origin, idle)
+	busy := filepath.Join(code, "busy")
+	prismLayout(t, origin, busy)
 	plain := filepath.Join(code, "plain")
-	if out, err := exec.Command("git", "clone", "-q", origin, plain).CombinedOutput(); err != nil {
-		t.Fatalf("clone plain: %v\n%s", err, out)
-	}
+	plainClone(t, origin, plain)
 	if out, err := exec.Command("git", "clone", "-q", "--bare", origin, filepath.Join(plain, ".bare")).CombinedOutput(); err != nil {
 		t.Fatalf("plant plain/.bare: %v\n%s", err, out)
 	}
-
-	if _, err := os.Stat(recordFile); !os.IsNotExist(err) {
-		t.Fatalf("the record exists before the first OpenBare: %v", err)
+	outside := filepath.Join(base, "npm", "x")
+	prismLayout(t, origin, outside)
+	raw := filepath.Join(code, "raw.git")
+	if out, err := exec.Command("git", "init", "-q", "--bare", raw).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
 	}
-	if _, err := OpenBare(old); err != nil {
-		t.Errorf("OpenBare(%s): %v", old, err)
+	busyStart := SessionStart{Name: "busy", Worktree: busy, Open: true}
+	setSessionStarts(t, busyStart)
+
+	if _, err := OpenBare(idle); !errors.Is(err, ErrNotPrismBare) {
+		t.Fatalf("OpenBare(%s) before the confirmation = %v, want ErrNotPrismBare", idle, err)
+	}
+	gitDir, err := ConfirmBare(idle)
+	if err != nil {
+		t.Fatalf("ConfirmBare(%s): %v", idle, err)
+	}
+	if want := mustResolve(t, filepath.Join(idle, ".bare")); gitDir != want {
+		t.Errorf("ConfirmBare(%s) = %q, want %q", idle, gitDir, want)
+	}
+	if _, err := OpenBare(idle); err != nil {
+		t.Errorf("OpenBare(%s) after the confirmation: %v", idle, err)
+	}
+
+	if _, err := ConfirmBare(busy); err == nil || !strings.Contains(err.Error(), "the session busy runs in") {
+		t.Errorf("ConfirmBare(%s) while a session runs in the root = %v, want a refusal that names the session", busy, err)
+	}
+	if _, err := ConfirmBare(plain); err == nil || !strings.Contains(err.Error(), "plain clone") {
+		t.Errorf("ConfirmBare(%s), a plain clone = %v, want a refusal", plain, err)
+	}
+	if _, err := ConfirmBare(raw); err == nil || !strings.Contains(err.Error(), "bare git dir") {
+		t.Errorf("ConfirmBare(%s), a raw bare git dir = %v, want a refusal", raw, err)
+	}
+	if _, err := ConfirmBare(outside); !errors.Is(err, ErrNotProjectRoot) {
+		t.Errorf("ConfirmBare(%s) = %v, want ErrNotProjectRoot", outside, err)
 	}
 	paths := readRecordPaths(t, recordFile)
-	if !hasPath(paths, filepath.Join(old, ".bare")) || len(paths) != 1 {
-		t.Errorf("record = %v, want only %s/.bare", paths, old)
+	for _, root := range []string{busy, plain, outside} {
+		if hasPath(paths, filepath.Join(root, ".bare")) {
+			t.Errorf("record = %v, want no entry for %s", paths, root)
+		}
 	}
-	if _, err := OpenBare(plain); !errors.Is(err, ErrNotPrismBare) {
-		t.Errorf("OpenBare(%s) = %v, want ErrNotPrismBare", plain, err)
+	if hasPath(paths, raw) {
+		t.Errorf("record = %v, want no entry for %s", paths, raw)
 	}
 
-	late := filepath.Join(code, "late")
-	marker := filepath.Join(t.TempDir(), "marker")
-	if out, err := exec.Command("git", "clone", "-q", origin, late).CombinedOutput(); err != nil {
-		t.Fatalf("clone late: %v\n%s", err, out)
+	busyStart.Open = false
+	setSessionStarts(t, busyStart)
+	if _, err := ConfirmBare(busy); err != nil {
+		t.Errorf("ConfirmBare(%s) after the session ended: %v", busy, err)
 	}
-	plantBare(t, origin, late, marker)
-	if _, err := OpenBare(late); !errors.Is(err, ErrNotPrismBare) {
-		t.Errorf("OpenBare(%s) = %v, want ErrNotPrismBare", late, err)
-	}
-	if got := takeMarker(marker); got != "" {
-		t.Errorf("OpenBare ran the payload: %q", got)
+
+	t.Setenv("PRISM_HOST_API", "unix:///nonexistent/host-api.sock")
+	if _, err := ConfirmBare(idle); !errors.Is(err, ErrConfirmInSandbox) {
+		t.Errorf("ConfirmBare in a sandbox = %v, want ErrConfirmInSandbox", err)
 	}
 }
 

@@ -243,6 +243,12 @@ func (r Repo) Pinned() bool { return r.gitDir != "" }
 //
 // If root has no .bare and root itself is a bare git dir, OpenBare uses root.
 func OpenBare(root string) (Repo, error) {
+	return openBare(root, requirePrismBare)
+}
+
+// openBare is OpenBare with the record check inRecord. ConfirmBare gives a
+// check that accepts each bare repo, so that it can add one to the record.
+func openBare(root string, inRecord func(gitDir string, info os.FileInfo) error) (Repo, error) {
 	if root == "" {
 		return Repo{}, fmt.Errorf("host git: project root is empty")
 	}
@@ -272,7 +278,7 @@ func OpenBare(root string) (Repo, error) {
 	if err != nil {
 		return Repo{}, fmt.Errorf("host git: bare repo: %w", err)
 	}
-	if err := requirePrismBare(gitDir, info); err != nil {
+	if err := inRecord(gitDir, info); err != nil {
 		return Repo{}, err
 	}
 	// git reads refs through a commondir file even when GIT_COMMON_DIR is
