@@ -99,6 +99,13 @@ let
     # or log -p is a known limit, in
     # docs/invariants/user-git-overrides.md. The prompt and gitsigns use
     # --no-ext-diff, so they are not affected.
+    # interactive.diffFilter runs on git add -p, restore -p, checkout -p,
+    # and reset -p. An empty value breaks add -p, so pin it to cat, which
+    # passes the diff through unchanged.
+    {
+      key = "interactive.diffFilter";
+      value = "cat";
+    }
     # A repo config can name a global attributes file, which selects a
     # driver.
     {

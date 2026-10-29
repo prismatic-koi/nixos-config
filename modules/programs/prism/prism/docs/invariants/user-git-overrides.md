@@ -49,6 +49,7 @@ The PR of #3326 holds the full table of tests.
 | `core.alternateRefsCommand` | empty | No command. A fetch reads the alternate refs itself. |
 | `gpg.ssh.defaultKeyCommand` | empty | No command. `user.signingKey` is pinned, so git does not need it. |
 | `protocol.ext.allow` | `never` | git refuses an `ext::` URL. |
+| `interactive.diffFilter` | `cat` | No filter program on `git add -p`, `git restore -p`, `git checkout -p`, or `git reset -p`. An empty value breaks `add -p`; `cat` passes the diff through. |
 | `core.attributesFile` | `/dev/null` | A repo config cannot name a global attributes file that selects a driver. |
 | `core.sshCommand` | `ssh` | The git default. |
 | `credential.helper` | empty | Clears the list of helpers. git reads it last, so the planted helpers are also cleared, `credential.<url>.helper` included. |
