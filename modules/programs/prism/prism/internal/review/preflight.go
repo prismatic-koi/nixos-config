@@ -124,9 +124,18 @@ func (g realGit) sessionBranch() string {
 	if wt == "" || common == "" {
 		return ""
 	}
-	// common is <root>/.bare, so the project root is its parent.
-	root := filepath.Dir(common)
-	rel, err := filepath.Rel(root, wt)
+	// common is <root>/.bare, so the project root is its parent. OpenBare
+	// gives a resolved common dir, and the work tree keeps the path of the
+	// caller. Resolve both, or a symlink in the path gives a rel of "../..".
+	root, err := filepath.EvalSymlinks(filepath.Dir(common))
+	if err != nil {
+		return ""
+	}
+	realWT, err := filepath.EvalSymlinks(wt)
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(root, realWT)
 	if err != nil {
 		return ""
 	}

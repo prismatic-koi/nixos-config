@@ -224,6 +224,30 @@ func TestPreflight_HostGit_RebaseOnCleanLayout(t *testing.T) {
 	}
 }
 
+// TestPreflight_HostGit_RebaseThroughSymlinkedParent: the worktree path
+// goes through a symlinked parent, as with a symlinked project location.
+// OpenBare gives a resolved common dir, and the work tree keeps the path of
+// the caller. The --rebase pre-flight still finds the branch of the session.
+func TestPreflight_HostGit_RebaseThroughSymlinkedParent(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	l := newPreflightLayout(t)
+	l.advance(t)
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(filepath.Dir(l.root), alias); err != nil {
+		t.Fatal(err)
+	}
+	worker := filepath.Join(alias, filepath.Base(l.root), filepath.Base(l.worker))
+
+	if err := Preflight(PreflightOpts{Worktree: worker, Rebase: true}); err != nil {
+		t.Fatalf("Preflight --rebase through %s: %v", alias, err)
+	}
+	if err := exec.Command("git", "--git-dir", l.origin, "merge-base", "--is-ancestor", "main", "feat").Run(); err != nil {
+		t.Errorf("origin/feat is not rebased onto origin/main: %v", err)
+	}
+}
+
 // TestRunGH_HostGit_WorktreeGitFileRedirect runs runGH from the worker
 // worktree, as the /review handler does. A stub gh runs git in the cwd to find
 // the repo, as the real gh does.
