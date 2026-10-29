@@ -155,9 +155,13 @@ func TestMain(m *testing.M) {
 	restoreSandboxEnv := isolateSuiteFromSandboxEnv()
 	// The spawn, pr, and switch fixtures use a local-path origin.
 	restoreFileTransport := git.AllowFileTransportForTest()
+	// The cleanup and spawn fixtures make .bare with plain git, not with
+	// prism clone, so it is not in the bare repo record.
+	restoreUnrecordedBare := git.AllowUnrecordedBareForTest()
 
 	code := m.Run()
 
+	restoreUnrecordedBare()
 	restoreFileTransport()
 	restoreStateEnv()
 	restoreSandboxEnv()

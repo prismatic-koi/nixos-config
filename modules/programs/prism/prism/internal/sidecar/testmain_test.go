@@ -62,6 +62,10 @@ func TestMain(m *testing.M) {
 	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
 	// The /switch fixtures clone a local-path origin.
 	restoreFileTransport := git.AllowFileTransportForTest()
+	// CloneWorktree and ConvertToBare refuse in a sandbox. A worker runs the
+	// suite in its sandbox, where PRISM_HOST_API is set, so the suite unsets
+	// it, as in CI.
+	os.Unsetenv("PRISM_HOST_API")
 	code := m.Run()
 	restoreFileTransport()
 	restoreState()

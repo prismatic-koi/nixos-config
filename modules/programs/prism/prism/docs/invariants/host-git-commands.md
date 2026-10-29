@@ -10,9 +10,9 @@
   git and nvim names, not names in this source tree.
 -->
 
-Issues: #3322, #3315, #3293, #3347, #3337. Code: `internal/git/host.go`
+Issues: #3322, #3315, #3293, #3347, #3337, #3333. Code: `internal/git/host.go`
 (`OpenBare`, `OpenWorktree`, `OpenDir`, `OuterBareRoot`, `EnvForDir`,
-`CloneCommand`), the prefix+b keybind in the tmux config of prism
+`CloneCommand`), `internal/git/bare_record.go`, the prefix+b keybind in the tmux config of prism
 (modules/programs/prism/tmux.nix, outside the prism Go tree), and the nvim
 config of prism (modules/programs/prism/neovim, outside the prism Go tree).
 
@@ -95,8 +95,9 @@ config key or environment variable turns off this file. A driver that
 the sandbox stops the write: `sandbox-exec` denies a write in `.bare/info`,
 and bwrap binds `.bare/info` read-only as a directory. A rename of
 `.bare/config` does not detach that bind. A session that makes its own
-`.bare` at a project root also writes `info/attributes`. #3333 tracks that
-route.
+`.bare` at a project root also writes `info/attributes`. On the host,
+`OpenBare` refuses a `.bare` that prism did not make (see "The bare repo
+record" below).
 
 ### Open residual: a config hook with a friendly name (#3349)
 
@@ -160,11 +161,14 @@ covers a host mode session and a `.bare` in a subdir of a worktree.
 
 ## How prism computes the dirs
 
-- **Bare repo.** `OpenBare(root)` uses `<root>/.bare`. It refuses a
-  `.bare` that is a symlink or a file, and a `.bare/commondir`. A bare
-  repo has no `commondir` file. It also refuses a root inside another prism
-  project: that root is in a worktree, so a session can have made its
-  `.bare`.
+- **Bare repo.** `OpenBare(root)` resolves the symlinks in `root` one
+  time. Each check below and `GIT_DIR` use the resolved path, so a symlink
+  that changes after the checks does not move git to another dir. It uses
+  `<root>/.bare`. It refuses a `.bare` that is a symlink or a file, and a
+  `.bare/commondir`. A bare repo has no `commondir` file. It also refuses a
+  root inside another prism project: that root is in a worktree, so a
+  session can have made its `.bare`. On the host, it also refuses a `.bare`
+  that prism did not make (see "The bare repo record" below).
 - **Worktree.** `OpenWorktree(root, worktree)` does not read
   `<worktree>/.git`. The git dir is the entry in `.bare/worktrees` whose
   `gitdir` file points back at `<worktree>/.git`. A session can write the
@@ -209,15 +213,24 @@ and `switchPathForSession` in `internal/sidecar/switch_path.go`.
   defines a filter driver and an `info/attributes` that selects it. The
   environment of host git does not turn off that driver. So host git must
   not run in such a root.
-- `OpenBare` compares the root with each entry by file identity
-  (`SameDir`). So it accepts a root that a symlink reaches, and a root
-  with another letter case on a case-insensitive macOS volume.
+- `OpenBare` resolves the symlinks in the root first. Then it compares the
+  resolved root with each entry by file identity (`SameDir`). So it
+  accepts a root under a symlinked project location, and a root with
+  another letter case on a case-insensitive macOS volume. A root that is
+  itself a symlink passes only if the dir that it names is a project root.
   `projecttrust` uses the same reader.
 - `OpenWorktree`, `OpenDir`, and `EnvForDir` call `OpenBare`, so they
   refuse such a root too. `CloneWorktree` and `ConvertToBare` refuse it
-  before the clone.
+  before the clone. They check the resolved path, as `OpenBare` does, so a
+  target that is a symlink to a dir outside the project roots is refused
+  before the clone. A refused `CloneWorktree` removes each dir that it
+  made, also the parents of the target.
 - A sandbox cannot read config.json. So in a sandbox, `OpenBare` uses the
-  default project roots, `~/code` and `~/documents/obsidian`.
+  default project roots, `~/code` and `~/documents/obsidian`. If a repo is
+  under another root, each prism command that opens it in a sandbox stops
+  with `ErrNotProjectRoot`. Examples are `prism quick pr` and the
+  `--rebase` steps of `prism review`. A prism command on the host reads
+  config.json, so the host is not affected.
 
 `/switch` gives a dir to `prism switch --path`, which runs host git in it.
 The handler takes that dir from the project roots and from host git, not
@@ -228,23 +241,114 @@ the row of its own session, so a sandboxed session can set that value.
   `<repo>` that `session.NameFor` gives that name. For a name with no
   branch, the dir is a project root with that name and no `.bare`. A
   descendant gets the dir of its root session.
+- The reach of `/switch` is each project root with no `.bare`, and each
+  listed worktree that `OpenDir` gives as the work tree. The dir does not
+  need a row in the DB. `prism switch` makes the session when it does not
+  exist. So a coordinator can start a session in each of these dirs. Only
+  a caller with the coordinator role can call `/switch`.
 - A session can write the `gitdir` file of its own entry in
   `.bare/worktrees`. Then `git worktree list` lists a path that the
   session chose. `/switch` accepts a listed path only if it is in the
-  project root and `OpenDir` gives it as the work tree.
+  project root and `OpenDir` gives it as the work tree. It refuses a path
+  whose first part below the project root is `.bare`: the session can
+  write its own git dir there, and no prism worktree is in `.bare`.
 - If no dir has the name, `/switch` returns HTTP 404. If two dirs have
-  it, `/switch` returns HTTP 500 and names the two dirs.
+  it, `/switch` returns HTTP 500 and names the two dirs. A dir that git
+  lists two times counts one time. A session can point the `gitdir` file
+  of its own entry at another worktree, and git then lists that worktree
+  two times.
 
 Tests: `TestOpenBare_RefusesRootOutsideProjectRoots` plants a `.bare`
 with a smudge filter that `info/attributes` selects, outside the project
 roots. It makes sure that the plant runs with plain pinned git and does
 not run with prism.
 `TestOpenBare_AcceptsConfiguredProjectRoots` covers the symlink and the
-letter case. `TestSwitchPathForSession`,
-`TestSwitchPathForSession_RedirectedOwnEntry`, and
+letter case. `TestCloneWorktree_RefusesTargetOutsideProjectRoots` covers
+the dirs of a refused clone. `TestSwitchPathForSession`,
+`TestSwitchPathForSession_RedirectedOwnEntry`,
+`TestWorktreeRootIn_RefusesPathInBare`,
+`TestSwitchPathForSession_DirListedTwice`, and
 `TestHostAPI_Switch_IgnoresTheAgentStatusWorktree` cover `/switch`.
 `TestSwitch_TwoStepPathToAWritableDir_3330` runs the two steps of the
 issue from end to end.
+
+## The bare repo record
+
+Issue: #3333. Code: `internal/git/bare_record.go`, and the record step of
+`CloneWorktree` and `ConvertToBare` in `internal/git/git.go`.
+
+The sandboxed root session of a plain clone runs in its project root, and
+its sandbox can write that root. So the session can make `<root>/.bare`
+with a filter driver that `info/attributes` selects, and with a config
+hook (#3349). That root is a prism project root, so the project-root
+check accepts it. A later `prism spawn` runs `git worktree add` in it on
+the host. `GIT_ATTR_SOURCE` and the command-line config do not stop that
+driver or that hook.
+
+- On the host, `OpenBare` runs git only in a `.bare` that prism made.
+  For each other `.bare`, it returns an error that wraps
+  `ErrNotPrismBare`. Each command that opens the root through
+  `OpenBare` refuses it too.
+- `CloneWorktree` and `ConvertToBare` record each `.bare` that they
+  make. An entry holds the resolved path and the inode of the dir. The
+  record is the file `bare-repos.json` in the prism state dir, the dir
+  of `prism.db`. No sandbox can write that dir.
+- `OpenBare` accepts a `.bare` only if an entry names the same dir with
+  the same inode. A copy of a `.bare` has another inode. A new `.bare` at
+  the path of a removed project has another inode too.
+- If an entry names the dir with another inode, the entry is stale, and
+  `OpenBare` removes it. So a session cannot make one `.bare` after
+  another until one gets the recorded inode.
+- A failed `CloneWorktree` and a rollback of `ConvertToBare` remove the
+  entry before they remove the `.bare`, because a new dir can get the
+  inode of the removed dir.
+- prism never makes a raw bare git dir as a root (`IsRawBareGitDir`), so
+  no entry names one. On the host, `OpenBare` refuses such a root.
+- `CloneWorktree` and `ConvertToBare` refuse in a sandbox and change
+  nothing. The error wraps `ErrBareInSandbox`. A sandbox cannot write the
+  record, so the host refuses a `.bare` that a sandbox makes. Run
+  `prism convert` and `prism clone` in a shell on the host.
+
+If there is no record file, prism starts a new record. It records each
+`.bare` in a project root of config.json, so a project that prism made
+before the record existed stays usable. It skips a root whose `.git` is a
+directory, because that root is a plain clone. A `.bare` that a session
+makes after the start is not in the record.
+
+A sandbox cannot read the prism state dir. So in a sandbox, prism does
+not use the record, and `OpenBare` accepts a `.bare` that is not in it.
+In a sandbox, git runs with the rights of the session, so such a `.bare`
+gives the session nothing more. prism finds a sandbox with
+`sandboxenv.IsInsideSandbox`, which reads `PRISM_HOST_API`. The sidecar
+sets that variable only in a sandboxed session.
+
+If `OpenBare` refuses a `.bare` that you made, do these steps:
+
+1. Stop each session that runs in a plain clone.
+2. Remove `bare-repos.json` from the prism state dir.
+3. Run the prism command again. prism starts a new record.
+
+Host git also reads no `.gitattributes` file (`GIT_ATTR_SOURCE`, #3337).
+The record covers the two routes that `GIT_ATTR_SOURCE` does not cover:
+`info/attributes` and the config hook of #3349.
+
+Tests: `TestOpenBare_RefusesBareThatPrismDidNotMake` plants a `.bare` in
+a plain clone in a project location, with a smudge filter that
+`info/attributes` selects and a config hook. It makes sure that the plant
+runs with plain pinned git and does not run with prism.
+`TestBareRecord_StartsFromProjectRoots`,
+`TestBareRecord_ReplacedBareRefused`,
+`TestBareRecord_ConvertRecordsAndRollbackForgets`, and
+`TestBareRecord_NotUsedInSandbox`, and
+`TestBareRecord_NoBareMadeInSandbox` cover the start, the inode, the
+rollback, and the sandbox. `TestOpenBare_ChecksTheResolvedRoot` covers the
+one resolve of the root. `OpenBare` gives a resolved common dir, and a
+work tree keeps the path of the caller.
+`TestPreflight_HostGit_RebaseThroughSymlinkedParent` makes sure that the
+`--rebase` pre-flight still finds the branch of the session when the path
+goes through a symlink. The fixtures of `cmd` and `internal/container`
+make `.bare` with plain git, so their `TestMain` calls
+`git.AllowUnrecordedBareForTest`.
 
 ## The `/review` rebase pre-flight (#3323, #3335)
 
@@ -431,6 +535,24 @@ makes sure that the payload does not run. The PR of #3347 holds the full
 table.
 
 ## Known limits
+
+- **A `.bare` that prism made, in a root that a session can write.**
+  `prism convert`, and the convert entry of `prism switch`, run while the
+  sandboxed root session of the plain clone runs. That session can write
+  the new `.bare` until prism stops it. The record does not stop this,
+  because prism made that `.bare`. #3361 tracks this route.
+- **The start of the record (#3364).** The start records each `.bare` in
+  a project root, so it also records a `.bare` that a session planted
+  before the start. This route is in scope. The root session of a plain
+  clone can plant the `.bare` and replace its `.git` dir with a `.git`
+  file. It has the coordinator role, so it can then call `/spawn`, which
+  runs `git worktree add` on the host. The start skips a plain clone whose
+  `.git` dir is still there. #3364 tracks the fix: start the record from
+  the DB start records of the sessions, which a session cannot write, or
+  from a one-time confirmation of each `.bare` by the owner.
+- **A moved, copied, or restored project.** The `.bare` has another inode
+  or another path, so `OpenBare` refuses it. Do the steps in "The bare
+  repo record" above.
 
 - **A project that is not a prism project.** Outside a prism project,
   `OpenDir` does not pin the git dir: git finds it from the dir. A session

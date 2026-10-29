@@ -233,6 +233,14 @@ func (r Repo) Pinned() bool { return r.gitDir != "" }
 // OpenBare refuses a root inside another prism project. Such a root is in a
 // worktree, so a sandboxed session can have made its .bare.
 //
+// On the host, OpenBare refuses a bare repo that prism did not make
+// (ErrNotPrismBare, bare_record.go). A sandboxed session of a plain clone can
+// make a .bare in its own root.
+//
+// OpenBare resolves the symlinks in root one time. Each check and GIT_DIR use
+// the resolved path, so a symlink that changes after the checks does not
+// move git to another dir.
+//
 // If root has no .bare and root itself is a bare git dir, OpenBare uses root.
 func OpenBare(root string) (Repo, error) {
 	if root == "" {
@@ -242,18 +250,30 @@ func OpenBare(root string) (Repo, error) {
 	if err != nil {
 		return Repo{}, fmt.Errorf("host git: %w", err)
 	}
-	if outer := OuterBareRoot(abs); outer != "" && outer != abs {
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return Repo{}, fmt.Errorf("host git: project root: %w", err)
+	}
+	if outer := OuterBareRoot(resolved); outer != "" && outer != resolved {
 		return Repo{}, fmt.Errorf("host git: %s is inside the prism project %s, so prism does not run git in it", abs, outer)
 	}
-	if err := requireProjectRoot(abs); err != nil {
+	if err := requireResolvedProjectRoot(resolved, abs); err != nil {
 		return Repo{}, err
 	}
-	gitDir := filepath.Join(abs, ".bare")
-	if _, statErr := os.Lstat(gitDir); errors.Is(statErr, os.ErrNotExist) && IsRawBareGitDir(abs) {
-		gitDir = abs
+	gitDir := filepath.Join(resolved, ".bare")
+	info, err := os.Lstat(gitDir)
+	if errors.Is(err, os.ErrNotExist) && IsRawBareGitDir(resolved) {
+		gitDir = resolved
+		info, err = os.Lstat(gitDir)
 	}
-	if err := requireRealDir(gitDir); err != nil {
+	if err == nil {
+		err = realDir(gitDir, info)
+	}
+	if err != nil {
 		return Repo{}, fmt.Errorf("host git: bare repo: %w", err)
+	}
+	if err := requirePrismBare(gitDir, info); err != nil {
+		return Repo{}, err
 	}
 	// git reads refs through a commondir file even when GIT_COMMON_DIR is
 	// set. A bare repo has no such file, so one is a plant.
@@ -610,12 +630,25 @@ func isStrippedGitEnv(k string) bool {
 	return false
 }
 
-// requireProjectRoot returns ErrNotProjectRoot unless the absolute path root
-// is a prism project root in config.json. It reads config.json each time, so
-// a long-running process sees a config that a switch rewrote.
+// requireProjectRoot returns ErrNotProjectRoot unless root, with its
+// symlinks resolved, is a prism project root in config.json. OpenBare runs
+// the same check on the resolved root, so CloneWorktree and ConvertToBare
+// refuse before the clone each root that OpenBare refuses after it.
 func requireProjectRoot(root string) error {
-	if !config.LoadFresh().IsProjectRoot(root) {
-		return fmt.Errorf("host git: %s: %w", root, ErrNotProjectRoot)
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("host git: project root: %w", err)
+	}
+	return requireResolvedProjectRoot(resolved, root)
+}
+
+// requireResolvedProjectRoot returns ErrNotProjectRoot, with name in the
+// message, unless resolved is a prism project root in config.json. It reads
+// config.json each time, so a long-running process sees a config that a
+// switch rewrote.
+func requireResolvedProjectRoot(resolved, name string) error {
+	if !config.LoadFresh().IsProjectRoot(resolved) {
+		return fmt.Errorf("host git: %s: %w", name, ErrNotProjectRoot)
 	}
 	return nil
 }
@@ -627,6 +660,11 @@ func requireRealDir(p string) error {
 	if err != nil {
 		return err
 	}
+	return realDir(p, info)
+}
+
+// realDir is requireRealDir for the Lstat result info of p.
+func realDir(p string, info os.FileInfo) error {
 	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%s is a symlink", p)
 	}

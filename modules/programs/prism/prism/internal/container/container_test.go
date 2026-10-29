@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/config/configtest"
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
@@ -39,7 +40,11 @@ func TestMain(m *testing.M) {
 	sessionTmpRoot = dir
 	var restoreState func()
 	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
+	// The credential and write-scope fixtures make .bare with plain git, so
+	// it is not in the bare repo record.
+	restoreUnrecordedBare := git.AllowUnrecordedBareForTest()
 	code := m.Run()
+	restoreUnrecordedBare()
 	restoreState()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
