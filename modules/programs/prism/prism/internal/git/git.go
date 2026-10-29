@@ -1109,8 +1109,15 @@ func removeEmptyDirs(dirs []string) {
 	}
 }
 
+// ErrCloneTargetNotEmpty is returned when the target of CloneWorktree exists
+// and is not empty.
+var ErrCloneTargetNotEmpty = errors.New("target directory exists and is not empty")
+
 // CloneWorktree clones repoURL into targetDir using the prism bare+worktree layout.
 // progress receives human-readable step messages.
+//
+// targetDir must be missing or empty. On failure CloneWorktree removes only
+// the paths that it made, so a file that is in targetDir is never removed.
 func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	// The git commands below run in the bare dir, so the paths must be
 	// absolute.
@@ -1137,12 +1144,24 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 		removeEmptyDirs(made)
 		return err
 	}
+	if entries, err := os.ReadDir(targetDir); err != nil {
+		removeEmptyDirs(made)
+		return fmt.Errorf("clone into %s: %w", targetDir, err)
+	} else if len(entries) > 0 {
+		return fmt.Errorf("clone into %s: %w", targetDir, ErrCloneTargetNotEmpty)
+	}
+
+	// created holds each path in targetDir that the clone made. A failed git
+	// clone or git worktree add removes the paths that it made itself.
+	var created []string
 	recorded := false
 	fail := func() {
 		if recorded {
 			_ = forgetBare(bareDir)
 		}
-		_ = os.RemoveAll(targetDir)
+		for i := len(created) - 1; i >= 0; i-- {
+			_ = os.RemoveAll(created[i])
+		}
 		removeEmptyDirs(made)
 	}
 
@@ -1153,6 +1172,7 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 		fail()
 		return fmt.Errorf("git clone --bare: %w: %s", err, out)
 	}
+	created = append(created, bareDir)
 	if err := recordBare(bareDir); err != nil {
 		fail()
 		return err
@@ -1178,7 +1198,7 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	}
 
 	// Write .git pointer.
-	if err := os.WriteFile(gitFile, []byte("gitdir: ./.bare\n"), 0o644); err != nil {
+	if err := writeNewFile(gitFile, []byte("gitdir: ./.bare\n"), &created); err != nil {
 		fail()
 		return fmt.Errorf("write .git: %w", err)
 	}
@@ -1244,4 +1264,19 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 
 	progress("done — " + targetDir + "/" + defaultBranch)
 	return nil
+}
+
+// writeNewFile writes data to a new file at path, and adds path to created
+// when it makes the file. It does not open a file that is there.
+func writeNewFile(path string, data []byte, created *[]string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	*created = append(*created, path)
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
