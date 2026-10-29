@@ -1,8 +1,10 @@
 # Invariant: the git overrides of the user session
 
-<!-- doclint-ignore: core.alternateRefsCommand, core.askPass, core.attributesFile, core.gitProxy, diff.trustExitCode, gpg.openpgp.program, gpg.ssh.defaultKeyCommand, gpg.x509.program, log.showSignature, status.submoduleSummary -->
-<!-- doclint-ignore: EDITOR, VISUAL, SSH_ASKPASS, GIT_ATTR_SOURCE, GIT_NO_LAZY_FETCH, GIT_PROXY_COMMAND, vcs_info -->
-<!-- doclint-ignore: .bare/config, .bare/info, info/attributes, git.nix, tmux.nix, modules/programs/git.nix, modules/programs/git-builtin-external-diff.sh, systemd.user.sessionVariables -->
+<!-- doclint-ignore: core.alternateRefsCommand, core.askPass, core.attributesFile, core.gitProxy, gpg.openpgp.program, gpg.ssh.defaultKeyCommand, gpg.x509.program, log.showSignature, status.submoduleSummary -->
+<!-- doclint-ignore: diff.tool, merge.tool, man.viewer, web.browser, help.format -->
+<!-- doclint-ignore: EDITOR, VISUAL, SSH_ASKPASS, GIT_ATTR_SOURCE, GIT_EDITOR, GIT_NO_LAZY_FETCH, GIT_PROXY_COMMAND, vcs_info -->
+<!-- doclint-ignore: .bare/config, .bare/info, info/attributes, git.nix, tmux.nix, modules/programs/git.nix, systemd.user.sessionVariables -->
+<!-- doclint-ignore: attr.tree, AGENTS.md -->
 <!--
   These names are git config keys, environment variables that git and zsh
   read, paths in a git dir at run time, and Nix files and options outside
@@ -10,10 +12,10 @@
 -->
 
 Issues: #3326. Related: #3325 (a nested `.git`), #3322 (prism host git),
-#3337 (a detached bwrap pin), #3343 (a staged submodule with
-`ignore = none`). Threat model: `docs/invariants/threat-model.md`.
-Code: `modules/programs/git.nix` and
-`modules/programs/git-builtin-external-diff.sh` at the repo root.
+#3337 (config write-protection for the bwrap detach route), #3343 (a staged
+submodule with `ignore = none`). Threat model:
+`docs/invariants/threat-model.md`. Code: `modules/programs/git.nix` at the
+repo root.
 
 ## The rule
 
@@ -47,9 +49,7 @@ The PR of #3326 holds the full table of tests.
 | `core.alternateRefsCommand` | empty | No command. A fetch reads the alternate refs itself. |
 | `gpg.ssh.defaultKeyCommand` | empty | No command. `user.signingKey` is pinned, so git does not need it. |
 | `protocol.ext.allow` | `never` | git refuses an `ext::` URL. |
-| `diff.external` | the wrapper | See "diff.external" below. |
-| `diff.trustExitCode` | `true` | git reads the exit code of the wrapper: 0 for no difference, 1 for a difference. |
-| `core.attributesFile` | `/dev/null` | A repo config cannot name an attributes file. |
+| `core.attributesFile` | `/dev/null` | A repo config cannot name a global attributes file that selects a driver. |
 | `core.sshCommand` | `ssh` | The git default. |
 | `credential.helper` | empty | Clears the list of helpers. git reads it last, so the planted helpers are also cleared, `credential.<url>.helper` included. |
 | `gpg.format` | `ssh` | The value of `git.nix`. |
@@ -68,7 +68,6 @@ Environment variables:
 
 | Variable | Value | Effect |
 |---|---|---|
-| `GIT_ATTR_SOURCE` | the empty tree | git reads no `.gitattributes` file. A planted diff or filter driver does not run. |
 | `GIT_NO_LAZY_FETCH` | `1` | A partial-clone config cannot make `git status`, `git diff`, or `git blame` fetch, and run `remote.<name>.uploadpack`. |
 | `GIT_PAGER` | `cat` | `GIT_PAGER` has priority over `pager.<command>` and `core.pager`. |
 | `GIT_PROXY_COMMAND` | empty | git uses the first `core.gitProxy` that matches, so a later config value cannot replace a planted one. A set `GIT_PROXY_COMMAND` makes git skip the config. |
@@ -77,20 +76,34 @@ The global config sets `safe.bareRepository = explicit`. git then uses a
 bare repo only when `--git-dir` or `GIT_DIR` names it. git reads this key
 only from protected config, so a repo config cannot change it.
 
-## diff.external
+## Two keys that the list does not have
 
-No value turns `diff.external` off. git runs each value, and `git diff`
-stops with `external diff died` when the value is empty. So the list pins
-it to `git-builtin-external-diff`. The wrapper copies the two files to a
-temp dir, and runs `git diff --no-index --no-ext-diff` there. It prints the
-header and the metadata lines from the arguments that git gives it.
+### `GIT_ATTR_SOURCE`
 
-The output of `git diff`, `git diff --cached`, `git diff HEAD`,
-`git show --ext-diff`, and `git log -p --ext-diff` is the same text as the
-builtin diff. The test covers a change, an added file, a deleted file, a
-binary file, a mode change, a rename, and an unmerged path. Only one
-difference is known: an entry with no content change (a rename or a mode
-change) has no colour in its header.
+`GIT_ATTR_SOURCE` set to the empty tree makes git read no `.gitattributes`
+file, so a planted diff or filter driver does not run. The list does not
+use it, for two reasons found on git 2.56:
+
+- With `GIT_ATTR_SOURCE` set to any value (the empty tree, `HEAD`, or
+  `attr.tree`), `git apply`, `git apply --check`, and `git apply -R` stop
+  with a segmentation fault. That breaks `git restore -p`,
+  `git checkout -p`, and the patch-file WIP pattern in the repo `AGENTS.md`.
+  `git apply --cached`, `git add -p`, `git am`, rebase, and merge still
+  work.
+- It does not cover `$GIT_DIR/info/attributes`. A driver that
+  `info/attributes` selects runs even with `GIT_ATTR_SOURCE` set.
+
+So a planted `.gitattributes` or `info/attributes` driver is a known limit,
+below.
+
+### `diff.external`
+
+git has no config value that means "use the builtin diff". It runs each
+value, and an empty value makes each `git diff` that shows a patch stop with
+`external diff died`. So the list does not pin `diff.external`. A planted
+`diff.external` on a typed `git diff`, `git show`, or `git log -p` is a
+known limit, below. The shell prompt and gitsigns pass `--no-ext-diff`, so
+they do not run it.
 
 ## Where the overrides reach
 
@@ -138,39 +151,51 @@ them at the next login.
   keeps the todo list. To use an editor one time, set `GIT_EDITOR`, which
   has priority over `core.editor`.
 - git uses no pager. To use one, set `GIT_PAGER` for the command.
-- `GIT_ATTR_SOURCE` stops `git diff --no-index`, `git hash-object`, and
-  `git check-attr` outside a repo ("cannot use --attr-source or
-  GIT_ATTR_SOURCE without repo"). In a sha256 repo, each command that reads
-  attributes stops ("bad --attr-source or GIT_ATTR_SOURCE"). Remove the
-  variable for the command: `env -u GIT_ATTR_SOURCE git ...`.
 - A partial clone cannot fetch a missing object.
 - The security tests of prism host git check first that a plain git runs
-  the planted payload. In a shell with the overrides, these controls fail:
-  10 tests in `internal/git` and `internal/review`. CI and the agent
-  sandboxes do not have the overrides.
+  the planted payload. In a shell with the overrides, those controls fail,
+  because the overrides stop the payload. CI and the agent sandboxes do not
+  have the overrides, so the tests pass there.
 
 ## Known limits
 
-- **A nested git dir.** A `cd` into a subdir whose git dir uses a key that
-  is not on the list, for example a driver in `info/attributes`. The owner
-  accepted this on #3325.
-- **`$GIT_DIR/info/attributes`.** `GIT_ATTR_SOURCE` does not cover it. A
-  driver that the same git dir defines runs. The session can write it in a
-  nested git dir (#3325), in a staged submodule (#3343), or in
-  `.bare/info` after a detached bwrap pin (#3337).
+Each limit needs a planted config that defines the driver, the helper, or
+the command. At the worktree root, a session cannot write that config:
+`sandbox-exec` denies `.bare/config`, and #3337 closes the bwrap route that
+a host rename opens (`sandbox-git-write-scope.md`). A session can plant the
+config in a git dir that it fully controls — a nested `.git` (#3325) or a
+staged submodule (#3343).
+
+- **A planted `.gitattributes` or `info/attributes` driver.** The list
+  does not set `GIT_ATTR_SOURCE` (above), so a `diff=<name>` or
+  `filter=<name>` attribute selects a driver that a planted config defines,
+  and the driver runs on `git status` or `git diff`. Tracked by #3337 for
+  the config write-protection.
+- **A planted `diff.external`.** It runs on a typed `git diff`, `git show`,
+  or `git log -p`. The prompt and gitsigns pass `--no-ext-diff`. Tracked by
+  #3337.
+- **A planted tool selector.** A typed `git help` runs the program of
+  `man.viewer` and `man.<tool>.cmd`, or of `help.format=web`, `web.browser`,
+  and `browser.<tool>.cmd`. A typed `git difftool` runs `diff.tool` and
+  `difftool.<tool>.cmd`. A typed `git mergetool` runs `merge.tool` and
+  `mergetool.<tool>.cmd`. The tool name is repo-chosen, so the list cannot
+  pin the `<tool>.cmd` key. Tracked by #3337.
 - **A staged submodule with `ignore = none` in `.gitmodules`.** A typed
-  `git status` at the worktree root runs git in the submodule. The prompt
-  and gitsigns give `--ignore-submodules`, so they do not. Fix: #3343.
+  `git status` at the worktree root runs git in the submodule, and a driver
+  in the submodule git dir runs. The prompt and gitsigns give
+  `--ignore-submodules`, so they do not. Fix: #3343.
+- **A nested git dir.** A `cd` into a subdir whose git dir uses a key that
+  is not on the list. The owner accepted this on #3325.
 - **Keys with a name that the repo chooses.** For example
   `remote.<name>.uploadpack`, `remote.<name>.url`, and
-  `url.<base>.insteadOf`. They run only for a fetch, a pull, or a push. A
-  session can write them only in `.bare/config` after a detached bwrap pin
-  (#3337).
+  `url.<base>.insteadOf` run for a fetch, a pull, or a push; the tool
+  selectors above run for a typed `git help`, `git difftool`, or
+  `git mergetool`. The list cannot name them.
 - **The service list.** It does not have the five entries with an empty
   value. These entries act only on a credential prompt or a credential
-  helper, a fetch from a repo with alternates, a signature with no
-  signing key, and a `git://` fetch. The host git of prism adds its own
-  config (#3322), and #3337 tracks the keys that it does not pin.
+  helper, a fetch from a repo with alternates, a signature with no signing
+  key, and a `git://` fetch. The host git of prism adds its own config
+  (#3322), and #3337 tracks the keys that it does not pin.
 - **A key that a later git version adds.** The list is for git 2.56. Do
   the tests again when git changes.
 - **A language server in the host nvim.** It runs project code by design.

@@ -4,6 +4,7 @@
 <!-- doclint-ignore: .agents/skills, .pi/extensions, .pi/mcp.json, .pi/settings.json -->
 <!-- doclint-ignore: .bare/refs, .bare/HEAD, refs/heads/main, refs/stash, detach_mounts, branch.autoSetupMerge -->
 <!-- doclint-ignore: .bare/packed-refs.lock, refs/heads, .bare/refs/heads/main -->
+<!-- doclint-ignore: info/attributes, GIT_ATTR_SOURCE -->
 <!--
   The extra .bare/* and refs/* names are git paths in the common dir at run
   time, not files in this source tree. .bare/packed-refs.lock is the lock
@@ -19,9 +20,10 @@ Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap
 code-execution paths), #3334 (the permanent bwrap refs vector — a per-session
 common dir or reftable), #3337 (the config-detach host-git route — pin the
 keys in `hostGitConfig`), #3327 (the achievable bwrap narrowing —
-`FETCH_HEAD` only for a read-only session), #3326 (user git env hardening),
+`FETCH_HEAD` only for a read-only session),
 #3325 (a nested `.git`). Host-side git: #3322, in
-`docs/invariants/host-git-commands.md`. #3327 found that bwrap cannot bind
+`docs/invariants/host-git-commands.md`. User git on the host: #3326, in
+`docs/invariants/user-git-overrides.md`. #3327 found that bwrap cannot bind
 `.bare` read-only to match the sandbox-exec write scope — see the "bwrap"
 section.
 Code: `internal/container/git_write_scope.go`, sections 6, 6e, 17b, 21b,
@@ -230,10 +232,13 @@ that prism does not run.
   the project root — follows `<BareRoot>/.git` -> `.bare` -> the planted
   `.bare/commondir` and reads the `config` and `hooks` the worker wrote. So
   this stays a host code-execution route for a plain `git` that prism does
-  not run. #3326 (user git env hardening, OPEN) will turn off the
-  code-execution config keys for every user git process, so a planted
-  `config` runs no command even when a plain host `git` reads it; until it
-  lands the route is open. Binding `.bare` read-only — which would stop a
+  not run. #3326 (user git env hardening, merged) turns off the direct
+  code-execution config keys for every user git process (`core.hooksPath`,
+  `core.fsmonitor`, `core.sshCommand`, `core.pager`, and more), so a planted
+  `config` runs none of those even when a plain host `git` reads it. It does
+  NOT cover a filter or diff driver that a planted `.gitattributes` or
+  `info/attributes` selects — a known limit of #3326, tracked by #3337; see
+  `docs/invariants/user-git-overrides.md`. Binding `.bare` read-only — which would stop a
   worker writing any bare-dir file — is not an option; see "Why bwrap cannot
   match this scope" below for why.
 
@@ -315,13 +320,13 @@ open for it.
      and push — reads it through `GIT_COMMON_DIR` and runs the command. That
      is host code execution. It is fixable host-side (pin those keys in
      `hostGitConfig`) and is tracked by #3337.
-   - #3326 (OPEN) separately hardens every USER git process (the shell
+   - #3326 (merged) separately hardens every USER git process (the shell
      prompt and gitsigns in a worktree pane) against a planted `config`, by
-     turning off the code-execution config keys with env overrides. Until
-     #3326 lands a user git in a pane is also exposed; and even after it,
-     #3326's own known limits remain (URL-scoped credential helpers, a
-     remote-named transport key, and a filter driver reached through an
-     attributes file).
+     turning off the code-execution config keys with env overrides. Its own
+     known limits remain (a filter or diff driver reached through a planted
+     `.gitattributes` or `info/attributes`, the tool selectors of a typed
+     `git help`/`git difftool`/`git mergetool`, and URL- or remote-named
+     keys) — see `docs/invariants/user-git-overrides.md`.
 
 2. **A worker can move `.bare/refs/heads/main` or another worktree's branch
    ref — in scope, tracked by #3334.** This changes another session or the
@@ -349,10 +354,12 @@ isolators" limits above apply. See the `.bare` write scope (bwrap) section of
 Each git process of the user on the host gets config in its environment.
 git reads this config after each config file, so a planted `.bare/config`,
 a nested git dir, or a staged submodule cannot change the keys in the list.
-The list turns off the keys that run a program, ignores submodules and
-`.gitattributes`, and pins the keys of SSH commit signing. It applies to the
-shell prompt and gitsigns in a worktree pane, and to a plain `git` at the
-project root (the `.bare/commondir` route above).
+The list turns off the keys that run a program, ignores submodules, and
+pins the keys of SSH commit signing. It applies to the shell prompt and
+gitsigns in a worktree pane, and to a plain `git` at the project root (the
+`.bare/commondir` route above). It does not set `GIT_ATTR_SOURCE` and does
+not pin `diff.external`, so a planted driver or a planted `diff.external`
+stays a known limit (#3337).
 
 The list, the tests, where the variables reach, and the known limits are in
 `docs/invariants/user-git-overrides.md`.
