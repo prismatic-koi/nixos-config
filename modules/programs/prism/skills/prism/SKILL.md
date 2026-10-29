@@ -421,10 +421,13 @@ not to escalate.
 - **One-shot at the start, not continuous.** `main` can advance during a
   review run; we do not chase that. The gate is a snapshot at review-spawn
   time, consistent with how CI works.
-- **Same gate in host-direct and container-routed paths.** A container worker
-  routes through `/review` on the host sidecar; the gate runs on the host
-  side, and the refusal streams back to the container worker as a non-zero
-  review exit — same UX as a host-direct refusal.
+- **Where the gate runs.** The ancestor check runs on the host in both paths
+  (a container worker routes through `/review` on the host sidecar), and a
+  refusal streams back as a non-zero review exit — same UX either way. The
+  `--rebase` steps are the exception (#3335): a sandboxed session runs them in
+  its own sandbox, not on the host; the sidecar `/review` handler refuses a
+  rebase request, and the host-direct path refuses `--rebase` unless the
+  session is host-mode.
 
 ### Pre-flight formatter gate (`prism review` refuses on unformatted Go/Nix files)
 

@@ -581,6 +581,55 @@ func TestPreflight_HostGit_RebaseConflictRestores(t *testing.T) {
 	}
 }
 
+// TestPreflight_HostGit_SuccessPathChainReproducesOnHostRebase reproduces the
+// #3335 success-path escalation on a HOST git rebase. A worker plants
+// rebase-merge/head-name (pointing at main), orig-head, and an autostash while
+// the rebase runs; when the rebase finishes, git moves refs/heads/main to the
+// rebased commits AND applies the planted autostash — all on the host, as the
+// owner. The pre-existing-state refusal (#3323) does not catch this: the plant
+// lands mid-rebase, not before the rebase starts.
+//
+// This test is the control that proves the attack is real on a host rebase
+// (git 2.56.0). The fix for #3335 is that the host never runs this rebase for
+// a sandboxed session — the worker rebases in its own sandbox, the sidecar
+// /review handler refuses a rebase request, and the host-direct path refuses
+// --rebase for a non-host session. Those routing guards are the fix, and each
+// fails on revert: TestHostAPI_Review_RebaseRefusedOnHost,
+// TestRunReview_SandboxedRebaseRunsInSandboxNotHost, and
+// TestRunReview_HostDirectRebaseRefusesSandboxedSession.
+func TestPreflight_HostGit_SuccessPathChainReproducesOnHostRebase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	l := newPreflightLayout(t)
+	l.advance(t)
+
+	// A throwaway clone standing in for a host rebase in a worker worktree.
+	ctl := filepath.Join(t.TempDir(), "ctl")
+	mustGit(t, "", "clone", "-q", "-b", "feat", l.origin, ctl)
+	mustGit(t, ctl, "branch", "-f", "main", "origin/main")
+	mainBefore := gitOut(t, ctl, "rev-parse", "refs/heads/main")
+	featHead := gitOut(t, ctl, "rev-parse", "HEAD")
+
+	// A stash-shaped commit that adds stashed.txt when git applies it.
+	stash := stashShapedCommit(t, ctl, featHead)
+
+	// The -x step plants the full chain mid-rebase: head-name->main, orig-head,
+	// and the autostash. git re-reads all three when the rebase finishes.
+	plant := fmt.Sprintf(`gd=$(git rev-parse --git-dir); `+
+		`echo refs/heads/main > "$gd/rebase-merge/head-name"; `+
+		`git rev-parse refs/heads/main > "$gd/rebase-merge/orig-head"; `+
+		`echo %s > "$gd/rebase-merge/autostash"`, stash)
+	mustGit(t, ctl, "rebase", "-x", plant, "origin/main")
+
+	if mainAfter := gitOut(t, ctl, "rev-parse", "refs/heads/main"); mainAfter == mainBefore {
+		t.Fatal("control: the planted head-name did not move main; the #3335 branch-move attack did not reproduce")
+	}
+	if _, err := os.Stat(filepath.Join(ctl, "stashed.txt")); err != nil {
+		t.Fatalf("control: the planted autostash was not applied (stashed.txt absent: %v); the #3335 autostash attack did not reproduce", err)
+	}
+}
+
 // TestEnsurePrismWorktree_HostGit checks that EnsurePrismWorktree accepts a
 // prism worktree and refuses a plain clone. The control shows that a forge
 // read runs git in the plain clone's dir — the host git run that AC1 forbids

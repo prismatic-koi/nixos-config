@@ -145,12 +145,14 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// running inside a container where tmux is not available. Route the review
 	// through the host sidecar instead of calling review.RunAsync() directly.
 	//
-	// The pre-flight rebase gate runs on the host side, inside the subprocess
-	// spawned by the sidecar's /review handler (which sets cmd.Dir to the
-	// session's worktree). When the gate refuses, the host subprocess exits
-	// non-zero, the sidecar emits ReviewSentinelFailed, and proxyReviewAsync
-	// returns an error to the container worker — same UX as a host-direct
-	// refusal. See internal/review/preflight.go for the gate implementation.
+	// The non-rebase pre-flight (base-ref fetch + ancestor check) and the
+	// formatter gate run on the host side, inside the subprocess spawned by the
+	// sidecar's /review handler (which sets cmd.Dir to the session's worktree).
+	// When a gate refuses, the host subprocess exits non-zero, the sidecar emits
+	// ReviewSentinelFailed, and proxyReviewAsync returns an error to the
+	// container worker — same UX as a host-direct refusal. The --rebase steps
+	// are the exception: they run in the sandbox here, not on the host (#3335 —
+	// see the rebaseInSandbox block below). See internal/review/preflight.go.
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		// Agent list was already resolved and validated above (client-side,
 		// inside the container). This ensures that the --only flag is applied
@@ -184,7 +186,32 @@ func runReview(cmd *cobra.Command, args []string) error {
 		// the JSON terminal status is the only thing on stdout. The Ack is
 		// still buffered in ackOutput so we can parse the group_id from it.
 		quietStdout := waitFlag && jsonFlag
-		ackOutput, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr, rebaseFlag, quietStdout, reviewProxyExtras{
+		// #3335: a sandboxed session (PRISM_HOST_API is set) runs the --rebase
+		// steps — fetch, rebase, force-push — HERE, in its own sandbox, not on
+		// the host. The worker already has write rights to its worktree and the
+		// bare repo in the sandbox, so a planted rebase-merge/autostash,
+		// head-name, or orig-head applies at the worker's own trust level; it
+		// cannot make the host run a command or move a host-owned branch such as
+		// main. The host subprocess then runs the review WITHOUT --rebase: its
+		// ancestor check passes because the branch was just rebased. The sidecar
+		// /review handler refuses a rebase request as defence in depth.
+		if rebaseFlag {
+			// Keep stdout JSON-only under --wait --json by dropping the rebase
+			// progress lines in that mode (matching proxyReviewAsync, which
+			// muted the host subprocess's lines under quietStdout). Otherwise
+			// stream them, as host mode does.
+			rebaseProgress := progressLineEager
+			if quietStdout {
+				rebaseProgress = func(string) {}
+			}
+			if rbErr := rebaseInSandbox(prNumber, rebaseProgress); rbErr != nil {
+				return rbErr
+			}
+		}
+		// The rebase (if any) already ran in-sandbox above; the host must not
+		// rebase for a sandboxed session (#3335). proxyReviewAsync has no rebase
+		// parameter for that reason.
+		ackOutput, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr, quietStdout, reviewProxyExtras{
 			Models:        modelsByRole,
 			DiffInlineMax: diffInlineMaxFlag,
 			Harness:       extraHarness,
@@ -219,6 +246,30 @@ func runReview(cmd *cobra.Command, args []string) error {
 	worktree, wtErr := resolveReviewWorktree(parentSession)
 	if wtErr != nil {
 		return wtErr
+	}
+
+	// #3335: on the host-direct path, refuse --rebase unless the session is
+	// host-mode. A sandboxed session (bwrap, sandbox-exec) also has a host
+	// `term` window whose shell carries no PRISM_HOST_API, so
+	// `prism review --rebase` typed there reaches this host-direct branch and
+	// would run `git rebase` on the host in the worker's worktree — reopening
+	// the success-path race a worker can trigger (plant rebase-merge/autostash,
+	// head-name, or orig-head while the host rebase runs). A sandboxed session
+	// must rebase in its own sandbox (the container branch above). Refuse
+	// before any host git runs, and fail closed when the mode cannot be read.
+	if rebaseFlag {
+		if mode := resolveParentIsolationMode(parentSession); mode != string(config.IsolationHost) {
+			return fmt.Errorf(`prism review: --rebase is not allowed on the host for a %s.
+
+Only a host-mode session rebases on the host. The --rebase steps of a
+sandboxed session must run in its own sandbox. Run 'prism review %s --rebase'
+from the agent pane of the session, or prompt the worker to rebase and push
+and then re-run 'prism review %s' without --rebase. Do not rebase this
+worktree from the host term window: a host rebase there runs the worktree's
+git at the owner's trust level, which is the race #3335 closes for the
+sandboxed path.`,
+				isolationModeDescription(mode), prNumber, prNumber)
+		}
 	}
 
 	// Refuse a session that is not in a prism worktree BEFORE any forge or gh
@@ -580,6 +631,63 @@ func resolveReviewWorktree(parentSession string) (string, error) {
 		return "", fmt.Errorf("prism review: no worktree path for session %q", parentSession)
 	}
 	return status.Worktree, nil
+}
+
+// rebaseInSandbox runs the `prism review --rebase` steps — fetch, rebase, and
+// force-push — with the worker's own git, inside the session sandbox (#3335).
+//
+// A sandboxed worker already has write rights to its worktree and the bare
+// repo. Running the rebase here, not on the host, means a planted
+// rebase-merge/autostash, head-name, or orig-head applies at the worker's own
+// trust level: it cannot make the host run a command or move a host-owned
+// branch. The worktree comes from PRISM_SPAWN_PATH — the host worktree path the
+// container layer injects (internal/container/bwrap.go,
+// cmd/agent_run_sandbox_exec_darwin.go), visible at the same absolute path
+// inside the sandbox — and falls back to the current directory. It reuses
+// review.Preflight, the same code the host-mode path runs; only the process it
+// runs in differs. It is a package var so a test can replace it.
+var rebaseInSandbox = func(prNumber string, onProgress func(string)) error {
+	worktree := os.Getenv("PRISM_SPAWN_PATH")
+	if worktree == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("prism review: --rebase: cannot resolve the worktree: %w", err)
+		}
+		worktree = wd
+	}
+	if err := review.EnsurePrismWorktree(worktree); err != nil {
+		return err
+	}
+	reviewForge := forge.DetectFromDir(worktree)
+	repoURL := forge.OriginRemoteURL(worktree)
+	// Check PR existence/state before any rebase, so --rebase does not rebase
+	// and force-push onto a missing, closed, or merged PR — a merged PR's branch
+	// would be recreated after GitHub deleted it on merge. The host-direct path
+	// runs this gate first for the same reason (PR #2057, #2040); the host
+	// subprocess repeats it after the review is proxied.
+	if prStateErr := review.CheckPRState(prNumber, reviewForge, repoURL); prStateErr != nil {
+		return prStateErr
+	}
+	baseBranch := review.ResolvePRBaseRef(prNumber, reviewForge, repoURL)
+	if onProgress == nil {
+		onProgress = func(string) {}
+	}
+	return review.Preflight(review.PreflightOpts{
+		Worktree:   worktree,
+		Branch:     baseBranch,
+		Rebase:     true,
+		OnProgress: onProgress,
+	})
+}
+
+// isolationModeDescription renders a parent session's isolation mode for the
+// host-direct --rebase refusal (#3335). resolveParentIsolationMode returns ""
+// when the mode cannot be read; name that case so the refusal reads clearly.
+func isolationModeDescription(mode string) string {
+	if mode == "" {
+		return "session whose isolation mode could not be determined"
+	}
+	return mode + " session"
 }
 
 // resolveParentIsolationMode returns the effective isolation mode for
