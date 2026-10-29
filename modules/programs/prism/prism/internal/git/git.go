@@ -402,6 +402,11 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	gitFile := filepath.Join(dir, ".git")
 	origGit := filepath.Join(dir, ".git.orig")
 
+	// A sandbox cannot record the .bare, so the host would refuse it.
+	if inSandbox() {
+		return "", fmt.Errorf("convert %s: %w", dir, ErrBareInSandbox)
+	}
+
 	// OpenBare refuses the converted root later, so refuse it before the
 	// clone.
 	if err := requireProjectRoot(dir); err != nil {
@@ -1115,6 +1120,11 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	}
 	bareDir := filepath.Join(targetDir, ".bare")
 	gitFile := filepath.Join(targetDir, ".git")
+
+	// A sandbox cannot record the .bare, so the host would refuse it.
+	if inSandbox() {
+		return fmt.Errorf("clone into %s: %w", targetDir, ErrBareInSandbox)
+	}
 
 	made, err := mkdirAllMade(targetDir)
 	if err != nil {

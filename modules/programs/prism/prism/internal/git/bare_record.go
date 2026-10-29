@@ -69,11 +69,15 @@ func bareRecordDir() (string, error) {
 	return filepath.Join(home, ".local", "state", "prism"), nil
 }
 
-// skipBareRecord reports whether prism runs in a sandbox, where it does not
-// use the record. A sandbox cannot read the prism state dir. In a sandbox,
-// git runs with the rights of the session, so a .bare that the session made
-// gives it nothing more.
-func skipBareRecord() bool {
+// ErrBareInSandbox is returned when CloneWorktree or ConvertToBare runs in a
+// sandbox.
+var ErrBareInSandbox = errors.New("prism makes a bare repo only on the host. A sandbox cannot write the bare repo record, and host git refuses a .bare that is not in the record. Run the command in a shell on the host")
+
+// inSandbox reports whether prism runs in a sandbox. A sandbox cannot read
+// or write the prism state dir, so prism does not use the record there. In a
+// sandbox, git runs with the rights of the session, so a .bare that the
+// session made gives it nothing more.
+func inSandbox() bool {
 	return sandboxenv.IsInsideSandbox()
 }
 
@@ -84,7 +88,7 @@ func skipBareRecord() bool {
 // entry is stale, and requirePrismBare removes it. So a session cannot make
 // one .bare after another until one gets the recorded inode.
 func requirePrismBare(gitDir string, info os.FileInfo) error {
-	if allowUnrecordedBare.Load() || skipBareRecord() {
+	if allowUnrecordedBare.Load() || inSandbox() {
 		return nil
 	}
 	ino, ok := inodeOf(info)
@@ -120,9 +124,6 @@ func requirePrismBare(gitDir string, info os.FileInfo) error {
 
 // recordBare adds gitDir, a .bare that prism made, to the record.
 func recordBare(gitDir string) error {
-	if skipBareRecord() {
-		return nil
-	}
 	resolved, err := filepath.EvalSymlinks(gitDir)
 	if err != nil {
 		return fmt.Errorf("host git: record %s: %w", gitDir, err)
@@ -161,9 +162,6 @@ func recordBare(gitDir string) error {
 // forgetBare removes gitDir from the record. Call it before prism removes a
 // .bare that it made: a new dir can get the inode of the removed one.
 func forgetBare(gitDir string) error {
-	if skipBareRecord() {
-		return nil
-	}
 	resolved, err := filepath.EvalSymlinks(gitDir)
 	if err != nil {
 		return fmt.Errorf("host git: forget %s: %w", gitDir, err)

@@ -302,6 +302,10 @@ driver or that hook.
   inode of the removed dir.
 - prism never makes a raw bare git dir as a root (`IsRawBareGitDir`), so
   no entry names one. On the host, `OpenBare` refuses such a root.
+- `CloneWorktree` and `ConvertToBare` refuse in a sandbox and change
+  nothing. The error wraps `ErrBareInSandbox`. A sandbox cannot write the
+  record, so the host refuses a `.bare` that a sandbox makes. Run
+  `prism convert` and `prism clone` in a shell on the host.
 
 If there is no record file, prism starts a new record. It records each
 `.bare` in a project root of config.json, so a project that prism made
@@ -333,9 +337,14 @@ runs with plain pinned git and does not run with prism.
 `TestBareRecord_StartsFromProjectRoots`,
 `TestBareRecord_ReplacedBareRefused`,
 `TestBareRecord_ConvertRecordsAndRollbackForgets`, and
-`TestBareRecord_NotUsedInSandbox` cover the start, the inode, the
+`TestBareRecord_NotUsedInSandbox`, and
+`TestBareRecord_NoBareMadeInSandbox` cover the start, the inode, the
 rollback, and the sandbox. `TestOpenBare_ChecksTheResolvedRoot` covers the
-one resolve of the root. The fixtures of `cmd` and `internal/container`
+one resolve of the root. `OpenBare` gives a resolved common dir, and a
+work tree keeps the path of the caller.
+`TestPreflight_HostGit_RebaseThroughSymlinkedParent` makes sure that the
+`--rebase` pre-flight still finds the branch of the session when the path
+goes through a symlink. The fixtures of `cmd` and `internal/container`
 make `.bare` with plain git, so their `TestMain` calls
 `git.AllowUnrecordedBareForTest`.
 

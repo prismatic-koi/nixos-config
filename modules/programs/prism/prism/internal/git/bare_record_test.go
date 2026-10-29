@@ -355,6 +355,43 @@ func TestBareRecord_NotUsedInSandbox(t *testing.T) {
 	}
 }
 
+// TestBareRecord_NoBareMadeInSandbox: a sandbox cannot write the record, so
+// a .bare that CloneWorktree or ConvertToBare made there is refused on the
+// host. Both refuse in a sandbox and change nothing.
+func TestBareRecord_NoBareMadeInSandbox(t *testing.T) {
+	isolateHostGitConfig(t)
+	useBareRecord(t)
+	t.Setenv("PRISM_HOST_API", "unix:///nonexistent/host-api.sock")
+	code := filepath.Join(t.TempDir(), "code")
+	if err := os.MkdirAll(code, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeProjectConfig(t, []string{code}, nil)
+
+	target := filepath.Join(code, "cloned")
+	if err := CloneWorktree(newOrigin(t), target, func(string) {}); !errors.Is(err, ErrBareInSandbox) {
+		t.Errorf("CloneWorktree in a sandbox = %v, want ErrBareInSandbox", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("CloneWorktree in a sandbox made %s: %v", target, err)
+	}
+
+	plain := filepath.Join(code, "plain")
+	if err := os.MkdirAll(plain, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	initRepoWithRemote(t, plain, filepath.Join(t.TempDir(), "remote.git"), "main")
+	if _, err := ConvertToBare(plain, func(string) {}); !errors.Is(err, ErrBareInSandbox) {
+		t.Errorf("ConvertToBare in a sandbox = %v, want ErrBareInSandbox", err)
+	}
+	if info, err := os.Stat(filepath.Join(plain, ".git")); err != nil || !info.IsDir() {
+		t.Errorf("ConvertToBare in a sandbox changed .git: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(plain, ".bare")); !os.IsNotExist(err) {
+		t.Errorf("ConvertToBare in a sandbox made .bare: %v", err)
+	}
+}
+
 // TestOpenBare_ChecksTheResolvedRoot is AC 2 of #3333. OpenBare resolves the
 // root one time, and the checks and GIT_DIR use that path. A root in a
 // project location that is a symlink to a dir outside the project roots is

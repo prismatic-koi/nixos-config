@@ -20,6 +20,10 @@ func TestMain(m *testing.M) {
 	var restore func()
 	suiteStateRoot, restore = stateguardtest.IsolateSuite()
 	restoreFileTransport := AllowFileTransportForTest()
+	// CloneWorktree and ConvertToBare refuse in a sandbox. A worker runs the
+	// suite in its sandbox, where PRISM_HOST_API is set, so the suite unsets
+	// it, as in CI.
+	os.Unsetenv("PRISM_HOST_API")
 	code := m.Run()
 	restoreFileTransport()
 	restore()
