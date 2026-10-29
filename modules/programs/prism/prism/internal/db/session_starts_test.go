@@ -4,6 +4,7 @@ package db_test
 // the session start records (#3364).
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -17,8 +18,21 @@ import (
 
 // TestSessionStarts_ReadsTheSessionsTable: SessionStarts gives one record for
 // each pair of session name and start dir. Open is true when a row of the
-// pair has no end time. With no DB file, it gives no record and makes no
-// file.
+// pair has no end time, and the agent_status row of the name has no end time
+// and names the same instance or no instance. With no DB file, it gives no
+// record and makes no file.
+//
+// The cases:
+//   - repo@main: one ended row and one open row that agent_status names.
+//   - plain: an ended row.
+//   - orphan: an open row that agent_status no longer names (#3027).
+//   - pruned: an open row with no agent_status row.
+//   - agended: an open row whose agent_status row has an end time.
+//   - starting: an open row, and an agent_status row with no instance.
+//   - shutdown: agent_status names the row, and the sidecar stop of a
+//     session_shutdown frame ended the row. A session can send that frame
+//     and keep its sandbox, so Open is false while the session runs.
+//     ConfirmBare also asks tmux for this reason.
 func TestSessionStarts_ReadsTheSessionsTable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(path)
@@ -29,9 +43,30 @@ func TestSessionStarts_ReadsTheSessionsTable(t *testing.T) {
 		{InstanceID: "i1", SessionName: "repo@main", Repo: "repo", Worktree: "/x/repo/main"},
 		{InstanceID: "i2", SessionName: "repo@main", Repo: "repo", Worktree: "/x/repo/main"},
 		{InstanceID: "i3", SessionName: "plain", Repo: "plain", Worktree: "/x/plain"},
+		{InstanceID: "i4", SessionName: "orphan", Repo: "orphan", Worktree: "/x/orphan"},
+		{InstanceID: "i5", SessionName: "pruned", Repo: "pruned", Worktree: "/x/pruned"},
+		{InstanceID: "i6", SessionName: "agended", Repo: "agended", Worktree: "/x/agended"},
+		{InstanceID: "i7", SessionName: "starting", Repo: "starting", Worktree: "/x/starting"},
+		{InstanceID: "i8", SessionName: "shutdown", Repo: "shutdown", Worktree: "/x/shutdown"},
 	} {
 		if err := d.InsertSession(s); err != nil {
 			t.Fatalf("InsertSession: %v", err)
+		}
+	}
+	for name, instance := range map[string]string{
+		"repo@main": "i2",
+		"orphan":    "i4-next",
+		"agended":   "i6",
+		"starting":  "",
+		"shutdown":  "i8",
+	} {
+		if err := d.UpsertStatus(name, name, "/x/"+name, "idle", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus: %v", err)
+		}
+		if instance != "" {
+			if err := d.SetInstanceID(name, instance); err != nil {
+				t.Fatalf("SetInstanceID: %v", err)
+			}
 		}
 	}
 	for _, id := range []string{"i1", "i3"} {
@@ -39,7 +74,18 @@ func TestSessionStarts_ReadsTheSessionsTable(t *testing.T) {
 			t.Fatalf("UpdateSessionEnded: %v", err)
 		}
 	}
+	if err := d.EndIncarnation("i8", "finished"); err != nil {
+		t.Fatalf("EndIncarnation: %v", err)
+	}
 	d.Close()
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE agent_status SET ended_at = 1 WHERE session_name = 'agended'`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
 
 	starts, err := db.SessionStarts(path)
 	if err != nil {
@@ -52,6 +98,11 @@ func TestSessionStarts_ReadsTheSessionsTable(t *testing.T) {
 	want := []git.SessionStart{
 		{Name: "repo@main", Worktree: "/x/repo/main", Open: true},
 		{Name: "plain", Worktree: "/x/plain", Open: false},
+		{Name: "orphan", Worktree: "/x/orphan", Open: false},
+		{Name: "pruned", Worktree: "/x/pruned", Open: false},
+		{Name: "agended", Worktree: "/x/agended", Open: false},
+		{Name: "starting", Worktree: "/x/starting", Open: true},
+		{Name: "shutdown", Worktree: "/x/shutdown", Open: false},
 	}
 	if len(starts) != len(want) {
 		t.Errorf("SessionStarts = %v, want %v", starts, want)
