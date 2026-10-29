@@ -68,8 +68,8 @@ let
       key = "diff.trustExitCode";
       value = "true";
     }
-    # GIT_ATTR_SOURCE does not cover the global attributes file, and a repo
-    # config can name any file.
+    # A repo config can name a global attributes file, which selects a
+    # driver.
     {
       key = "core.attributesFile";
       value = "/dev/null";
@@ -135,8 +135,12 @@ let
   ];
 
   gitEnvOverrides = {
-    # The empty tree: git reads no .gitattributes file.
-    GIT_ATTR_SOURCE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    # GIT_ATTR_SOURCE, which would make git read no .gitattributes file, is
+    # not here. On git 2.56 it makes `git apply` (and so `git restore -p`
+    # and `git checkout -p`) stop with a segmentation fault, and it does not
+    # cover $GIT_DIR/info/attributes. A planted .gitattributes driver is a
+    # known limit, in docs/invariants/user-git-overrides.md.
+    #
     # A partial-clone config makes git status, diff, and blame fetch a
     # missing object, and the fetch runs remote.<name>.uploadpack.
     GIT_NO_LAZY_FETCH = "1";
