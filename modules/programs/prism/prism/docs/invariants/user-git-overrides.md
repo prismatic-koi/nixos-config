@@ -103,9 +103,10 @@ below.
 git has no config value that means "use the builtin diff". It runs each
 value, and an empty value makes each `git diff` that shows a patch stop with
 `external diff died`. So the list does not pin `diff.external`. A planted
-`diff.external` on a typed `git diff`, `git show`, or `git log -p` is a
-known limit, below. The shell prompt and gitsigns pass `--no-ext-diff`, so
-they do not run it.
+`diff.external` on a typed `git diff` (and on any `--ext-diff` variant, for
+example `git show --ext-diff`) is a known limit, below. Bare `git show` and
+`git log -p` do not trigger it. The shell prompt and gitsigns pass
+`--no-ext-diff`, so they do not run it.
 
 ## Where the overrides reach
 
@@ -177,9 +178,10 @@ staged submodule (#3343).
   `filter=<name>` attribute selects a driver that a planted config defines,
   and the driver runs on `git status` or `git diff`. Tracked by #3346 for
   the config write-protection.
-- **A planted `diff.external`.** It runs on a typed `git diff`, `git show`,
-  or `git log -p`. The prompt and gitsigns pass `--no-ext-diff`. Tracked by
-  #3346.
+- **A planted `diff.external`.** It runs on a typed `git diff` and on any
+  `--ext-diff` variant (for example `git show --ext-diff`). Bare `git show`
+  and `git log -p` do not trigger it. The prompt and gitsigns pass
+  `--no-ext-diff`. Tracked by #3346.
 - **The gitsigns current-line blame.** It runs `git blame --contents` on
   the working buffer. `--no-textconv` (set in `gitsigns.nix`) stops a diff
   textconv driver. A planted clean filter still runs when git normalises

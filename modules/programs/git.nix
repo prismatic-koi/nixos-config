@@ -95,10 +95,11 @@ let
     }
     # diff.external is not here. git has no value that means "use the builtin
     # diff": it runs any value, and an empty value makes each git diff that
-    # shows a patch fail. A planted diff.external on a typed git diff, show,
-    # or log -p is a known limit, in
-    # docs/invariants/user-git-overrides.md. The prompt and gitsigns use
-    # --no-ext-diff, so they are not affected.
+    # shows a patch fail. A planted diff.external on a typed git diff (and
+    # any --ext-diff variant) is a known limit, in
+    # docs/invariants/user-git-overrides.md. Bare git show and git log -p do
+    # not trigger it. The prompt and gitsigns use --no-ext-diff, so they are
+    # not affected.
     # interactive.diffFilter runs on git add -p, restore -p, checkout -p,
     # and reset -p. An empty value breaks add -p, so pin it to cat, which
     # passes the diff through unchanged.
