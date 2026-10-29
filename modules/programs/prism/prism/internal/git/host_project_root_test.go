@@ -46,10 +46,11 @@ func newOrigin(t *testing.T) string {
 
 // TestOpenBare_RefusesRootOutsideProjectRoots is the second step of the path
 // in issue #3330. A sandboxed session makes a .bare in a dir that it can write
-// and that is in no prism project, for example under ~/.npm. The .bare config
-// sets core.sshCommand, which the hostGitConfig does not turn off. The
-// control shows that a pinned host fetch in that root runs the payload. Then
-// OpenBare, and each host git command that opens the root, must refuse it.
+// and that is in no prism project, for example under ~/.npm. The .bare holds
+// a smudge filter that info/attributes selects, which the env of host git
+// does not turn off. The control shows that a pinned worktree add in that
+// root runs the payload. Then OpenBare, and each host git command that opens
+// the root, must refuse it.
 func TestOpenBare_RefusesRootOutsideProjectRoots(t *testing.T) {
 	isolateHostGitConfig(t)
 	base := t.TempDir()
@@ -69,13 +70,15 @@ func TestOpenBare_RefusesRootOutsideProjectRoots(t *testing.T) {
 		t.Fatalf("plant .bare: %v\n%s", err, out)
 	}
 	marker := filepath.Join(t.TempDir(), "marker")
-	for _, kv := range [][2]string{
-		{"core.sshCommand", fmt.Sprintf("echo ssh >> '%s'; false", marker)},
-		{"remote.origin.url", "ssh://prism-test.invalid/x.git"},
-	} {
-		if out, err := exec.Command("git", "config", "--file", filepath.Join(bareDir, "config"), kv[0], kv[1]).CombinedOutput(); err != nil {
-			t.Fatalf("plant %s: %v\n%s", kv[0], err, out)
-		}
+	if out, err := exec.Command("git", "config", "--file", filepath.Join(bareDir, "config"),
+		"filter.evil.smudge", fmt.Sprintf("echo smudge >> '%s'; cat", marker)).CombinedOutput(); err != nil {
+		t.Fatalf("plant filter: %v\n%s", err, out)
+	}
+	if err := os.MkdirAll(filepath.Join(bareDir, "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bareDir, "info", "attributes"), []byte("* filter=evil\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	takeMarker := func() string {
 		data, _ := os.ReadFile(marker)
@@ -84,9 +87,9 @@ func TestOpenBare_RefusesRootOutsideProjectRoots(t *testing.T) {
 	}
 
 	control := Repo{gitDir: bareDir, commonDir: bareDir, dir: bareDir}
-	_, _ = control.CombinedOutput("fetch", "origin")
+	_, _ = control.CombinedOutput("worktree", "add", filepath.Join(planted, "control"), "main")
 	if takeMarker() == "" {
-		t.Fatal("control: a pinned fetch in the planted root did not run core.sshCommand; the plant does not work")
+		t.Fatal("control: a pinned worktree add in the planted root did not run the smudge filter; the plant does not work")
 	}
 
 	// A raw bare git dir is the other form of root that OpenBare takes.

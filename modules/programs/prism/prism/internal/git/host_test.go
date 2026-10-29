@@ -8,6 +8,7 @@ package git
 // run. The payload only appends a line to a marker file in t.TempDir().
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -471,12 +472,16 @@ func TestRepoEnv(t *testing.T) {
 		got[k] = append(got[k], v)
 	}
 	want := map[string]string{
-		"GIT_DIR":        "/p/.bare/worktrees/w",
-		"GIT_COMMON_DIR": "/p/.bare",
-		"GIT_WORK_TREE":  "/p/w",
-		"PATH":           "/bin",
-		"SSH_AUTH_SOCK":  "/run/agent",
-		"GIT_PAGER":      "cat",
+		"GIT_DIR":            "/p/.bare/worktrees/w",
+		"GIT_COMMON_DIR":     "/p/.bare",
+		"GIT_WORK_TREE":      "/p/w",
+		"PATH":               "/bin",
+		"SSH_AUTH_SOCK":      "/run/agent",
+		"GIT_PAGER":          "cat",
+		"GIT_ATTR_SOURCE":    emptyTree,
+		"GIT_PROXY_COMMAND":  "",
+		"GIT_NO_LAZY_FETCH":  "1",
+		"GIT_ALLOW_PROTOCOL": allowedProtocols(),
 	}
 	for k, v := range want {
 		if len(got[k]) != 1 || got[k][0] != v {
@@ -490,29 +495,48 @@ func TestRepoEnv(t *testing.T) {
 	if len(params) != 1 || !strings.HasPrefix(params[0], "'user.name=x' ") {
 		t.Fatalf("GIT_CONFIG_PARAMETERS = %v, want the inherited entry first", params)
 	}
-	for _, kv := range hostGitConfig {
+	for _, kv := range hostGitConfigValues() {
 		if !strings.Contains(params[0], "'"+kv[0]+"="+kv[1]+"'") {
 			t.Errorf("GIT_CONFIG_PARAMETERS has no %s=%s", kv[0], kv[1])
 		}
 	}
+
+	// A Repo that is not pinned has no repository for GIT_ATTR_SOURCE, and
+	// git stops when the variable is set with no repository.
+	unpinned := map[string]int{}
+	for _, kv := range (Repo{dir: "/p"}).Env(append(base, "GIT_ATTR_SOURCE=HEAD", "GIT_PROXY_COMMAND=/evil")) {
+		k, v, _ := strings.Cut(kv, "=")
+		unpinned[k]++
+		if k == "GIT_PROXY_COMMAND" && v != "" {
+			t.Errorf("unpinned GIT_PROXY_COMMAND = %q, want empty", v)
+		}
+	}
+	if unpinned["GIT_ATTR_SOURCE"] != 0 {
+		t.Error("an unpinned Repo got GIT_ATTR_SOURCE")
+	}
+	if unpinned["GIT_PROXY_COMMAND"] != 1 {
+		t.Errorf("unpinned env has %d GIT_PROXY_COMMAND entries, want 1", unpinned["GIT_PROXY_COMMAND"])
+	}
 }
 
-// TestRepoEnv_GitReadsHardening checks that git reads the hardening config
-// from the env, with priority over the repo config.
+// TestRepoEnv_GitReadsHardening plants another value for each key in the
+// repo config, and checks that git reads the hardening value from the env.
 func TestRepoEnv_GitReadsHardening(t *testing.T) {
 	f := newHostFixture(t)
 	bareDir := filepath.Join(f.root, ".bare")
-	if out, err := exec.Command("git", "--git-dir", bareDir, "config", "core.hooksPath", "/evil/hooks").CombinedOutput(); err != nil {
-		t.Fatalf("set hooksPath: %v\n%s", err, out)
+	for _, kv := range hostGitConfig {
+		if out, err := exec.Command("git", "--git-dir", bareDir, "config", kv[0], "/evil/planted").CombinedOutput(); err != nil {
+			t.Fatalf("plant %s: %v\n%s", kv[0], err, out)
+		}
 	}
 	bare, err := OpenBare(f.root)
 	if err != nil {
 		t.Fatalf("OpenBare: %v", err)
 	}
-	for _, kv := range hostGitConfig {
-		got, err := bare.Output("config", "--get", kv[0])
-		if err != nil || got != kv[1] {
-			t.Errorf("git config --get %s = %q, %v; want %q", kv[0], got, err, kv[1])
+	for _, kv := range hostGitConfigValues() {
+		out, err := bare.Command(context.Background(), "config", "--get", kv[0]).Output()
+		if got := string(out); err != nil || got != kv[1]+"\n" {
+			t.Errorf("git config --get %s = %q, %v; want %q", kv[0], got, err, kv[1]+"\n")
 		}
 	}
 }

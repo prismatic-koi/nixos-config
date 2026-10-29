@@ -13,10 +13,15 @@ var suiteStateRoot string
 // TestMain keeps the suite away from the real prism config of the host:
 // git.OpenBare reads config.json under XDG_CONFIG_HOME, and a host-mode
 // session inherits the real value (issue #3146).
+//
+// The fixtures use a local-path origin, so the suite allows the file
+// transport. TestHostGit_FileTransportRefused turns it off again.
 func TestMain(m *testing.M) {
 	var restore func()
 	suiteStateRoot, restore = stateguardtest.IsolateSuite()
+	restoreFileTransport := AllowFileTransportForTest()
 	code := m.Run()
+	restoreFileTransport()
 	restore()
 	os.Exit(code)
 }
