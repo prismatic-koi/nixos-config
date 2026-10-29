@@ -595,7 +595,7 @@ func TestConfirmBare(t *testing.T) {
 		t.Errorf("OpenBare(%s) after the confirmation: %v", idle, err)
 	}
 
-	if _, err := ConfirmBare(busy, noSessionRuns); err == nil || !strings.Contains(err.Error(), "the session busy runs in") {
+	if _, err := ConfirmBare(busy, noSessionRuns); err == nil || !strings.Contains(err.Error(), "a session record with no end time names the session busy") || !strings.Contains(err.Error(), "prism cleanup --yes --session busy") {
 		t.Errorf("ConfirmBare(%s) while a session runs in the root = %v, want a refusal that names the session", busy, err)
 	}
 	if _, err := ConfirmBare(plain, noSessionRuns); err == nil || !strings.Contains(err.Error(), "plain clone") {

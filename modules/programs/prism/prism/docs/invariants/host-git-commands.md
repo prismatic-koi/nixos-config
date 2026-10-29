@@ -385,12 +385,38 @@ it one time:
 
 `prism confirm-bare` does the checks of `OpenBare`, except the record
 check, and records the `.bare`. It refuses a root whose `.git` is a
-directory, and a raw bare git dir. It refuses while a start record of the
-root or of a dir above it has no end time, because that session can write
-the `.bare` after the confirmation. In a sandbox, it refuses with
+directory, and a raw bare git dir. In a sandbox, it refuses with
 `ErrConfirmInSandbox`. The error of `OpenBare` for a `.bare` that is not
 in the record names this command. If `OpenBare` refuses a `.bare` that
 you made later, for example a moved project, do the same steps.
+
+`prism confirm-bare` also refuses while a session that started in the
+root or in a dir above it runs, because that session can write the
+`.bare` after the confirmation. It uses two signals, and either one
+refuses:
+
+- The start record is open (`SessionStarts` in
+  `internal/db/session_starts.go`). A `sessions` row is open when it has
+  no end time, and the `agent_status` row of the name has no end time and
+  names the same instance, or no instance. prism can leave a `sessions` row
+  open after its session stops (#3027). Then `agent_status` names another
+  instance, has an end time, or is gone, and the row does not refuse. If a
+  record refuses and the session does not run, end it with
+  `prism cleanup --yes --session <name>`, then run `prism confirm-bare`
+  again. The error gives this step.
+- The tmux server of the host lists the session, or does not give a clear
+  answer. A session can end its own `sessions` row and keep its sandbox:
+  the sidecar ends the row when the session sends `session_shutdown` on
+  the harness pipe. A sandbox has no access to the tmux server, so this
+  signal is the one that a session cannot change.
+
+A session cannot set the `agent_status` values through the `/event` proxy
+("The `/event` proxy" in `session-lifecycle.md`). `tmux-session-start`
+changes `instance_id` only when `agent_status` names no instance, or the
+`sessions` row of that instance has an end time. It then writes a new
+open row, which refuses. It sets no end time. On the host,
+`tmux-session-end` writes nothing while tmux lists the session or does not
+answer.
 
 ### The record in a sandbox
 
@@ -424,7 +450,8 @@ start, and `TestBareRecord_StartNeedsTheReader` covers a missing reader.
 `TestBareRecord_RestartsAnUnmarkedRecord` writes a record with no start
 mark that holds a plant, as the start of #3363 did. It makes sure that
 prism starts the record again and refuses the plant.
-`TestConfirmBare` covers `prism confirm-bare`.
+`TestConfirmBare` covers `prism confirm-bare`, and
+`TestConfirmBare_AsksTheHost` covers the tmux signal.
 `TestSessionStarts_ReadsTheSessionsTable` reads the real schema, and
 `TestSessionStarts_StartTheBareRecord` makes sure that `internal/db` gives
 the reader to `OpenBare`.

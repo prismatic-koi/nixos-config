@@ -193,7 +193,7 @@ func ConfirmBare(root string, runs SessionRuns) (string, error) {
 	pr := projectRoot{path: filepath.Clean(abs), resolved: resolvedRoot}
 	for _, s := range sessionsAtOrAbove(starts, statSessionDirs(starts), pr) {
 		if s.Open {
-			return "", fmt.Errorf("host git: confirm %s: the session %s runs in %s, so it can write this root. Stop the session first", r.gitDir, s.Name, s.Worktree)
+			return "", fmt.Errorf("host git: confirm %s: a session record with no end time names the session %s in %s. A session there can write this root. If the session does not run, end it with \"prism cleanup --yes --session %s\", then run this command again", r.gitDir, s.Name, s.Worktree, s.Name)
 		}
 		if runs == nil {
 			return "", fmt.Errorf("host git: confirm %s: no check of the running sessions is set", r.gitDir)

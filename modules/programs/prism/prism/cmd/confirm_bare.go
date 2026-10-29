@@ -30,7 +30,9 @@ runs in a plain clone can write the project root, so it can make a .bare
 with a filter driver or a hook that host git runs.
 
 The command refuses while a session runs in the project root or in a dir
-above it.`,
+above it: when its session record has no end time, or when tmux lists it.
+If a session record refuses and the session does not run, end the record
+with "prism cleanup --yes --session <name>", then run this command again.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		gitDir, err := git.ConfirmBare(args[0], sessionRunsInTmux)
