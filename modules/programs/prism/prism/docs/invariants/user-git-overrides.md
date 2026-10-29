@@ -4,7 +4,7 @@
 <!-- doclint-ignore: diff.tool, merge.tool, man.viewer, web.browser, help.format -->
 <!-- doclint-ignore: EDITOR, VISUAL, SSH_ASKPASS, GIT_ATTR_SOURCE, GIT_EDITOR, GIT_NO_LAZY_FETCH, GIT_PROXY_COMMAND, vcs_info -->
 <!-- doclint-ignore: .bare/config, .bare/info, info/attributes, git.nix, tmux.nix, modules/programs/git.nix, systemd.user.sessionVariables -->
-<!-- doclint-ignore: attr.tree, AGENTS.md -->
+<!-- doclint-ignore: attr.tree, AGENTS.md, gitsigns.nix -->
 <!--
   These names are git config keys, environment variables that git and zsh
   read, paths in a git dir at run time, and Nix files and options outside
@@ -12,8 +12,8 @@
 -->
 
 Issues: #3326. Related: #3325 (a nested `.git`), #3322 (prism host git),
-#3337 (config write-protection for the bwrap detach route), #3343 (a staged
-submodule with `ignore = none`). Threat model:
+#3337 (prism host git on the bwrap detach route), #3346 (user git on the
+bwrap detach route), #3343 (a staged submodule with `ignore = none`). Threat model:
 `docs/invariants/threat-model.md`. Code: `modules/programs/git.nix` at the
 repo root.
 
@@ -28,7 +28,7 @@ A sandboxed session can write config that git on the host reads:
 
 - a `.git` file or dir in a subdir of its worktree (#3325)
 - a submodule that it stages in its own index, with its own git dir
-- `.bare/config`, after a host rename detaches a bwrap pin (#3337)
+- `.bare/config`, after a host rename detaches a bwrap pin (#3346)
 
 On the host, git runs in a worktree for the shell prompt, for gitsigns in
 nvim, and for each command that the owner types.
@@ -63,6 +63,7 @@ The PR of #3326 holds the full table of tests.
 | `submodule.recurse` | `false` | No recursion. |
 | `fetch.recurseSubmodules` | `false` | No fetch in a submodule. |
 | `push.recurseSubmodules` | `no` | No push in a submodule. |
+| `hook.<event>.enabled` (every githooks(5) event) | `false` | No config-defined hook. git 2.56 runs `hook.<name>.command` even with `core.hooksPath = /dev/null`; this stops it per event. |
 
 Environment variables:
 
@@ -161,25 +162,32 @@ them at the next login.
 
 Each limit needs a planted config that defines the driver, the helper, or
 the command. At the worktree root, a session cannot write that config:
-`sandbox-exec` denies `.bare/config`, and #3337 closes the bwrap route that
-a host rename opens (`sandbox-git-write-scope.md`). A session can plant the
+`sandbox-exec` denies `.bare/config`, and #3346 tracks the bwrap route that
+a host rename opens (the real fix is bwrap `.bare` write-protection, the
+#3334 / #3337 family — `sandbox-git-write-scope.md`). A session can plant the
 config in a git dir that it fully controls — a nested `.git` (#3325) or a
 staged submodule (#3343).
 
 - **A planted `.gitattributes` or `info/attributes` driver.** The list
   does not set `GIT_ATTR_SOURCE` (above), so a `diff=<name>` or
   `filter=<name>` attribute selects a driver that a planted config defines,
-  and the driver runs on `git status` or `git diff`. Tracked by #3337 for
+  and the driver runs on `git status` or `git diff`. Tracked by #3346 for
   the config write-protection.
 - **A planted `diff.external`.** It runs on a typed `git diff`, `git show`,
   or `git log -p`. The prompt and gitsigns pass `--no-ext-diff`. Tracked by
-  #3337.
+  #3346.
+- **The gitsigns current-line blame.** It runs `git blame --contents` on
+  the working buffer. `--no-textconv` (set in `gitsigns.nix`) stops a diff
+  textconv driver. A planted clean filter still runs when git normalises
+  the buffer, and `git blame` has no flag for it. Same vector as the first
+  limit, tracked by #3346. The gitsigns signs path runs its own diff and
+  invokes no driver (verified on git 2.56).
 - **A planted tool selector.** A typed `git help` runs the program of
   `man.viewer` and `man.<tool>.cmd`, or of `help.format=web`, `web.browser`,
   and `browser.<tool>.cmd`. A typed `git difftool` runs `diff.tool` and
   `difftool.<tool>.cmd`. A typed `git mergetool` runs `merge.tool` and
   `mergetool.<tool>.cmd`. The tool name is repo-chosen, so the list cannot
-  pin the `<tool>.cmd` key. Tracked by #3337.
+  pin the `<tool>.cmd` key. Tracked by #3346.
 - **A staged submodule with `ignore = none` in `.gitmodules`.** A typed
   `git status` at the worktree root runs git in the submodule, and a driver
   in the submodule git dir runs. The prompt and gitsigns give
