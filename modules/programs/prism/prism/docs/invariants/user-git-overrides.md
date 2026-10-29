@@ -4,7 +4,7 @@
 <!-- doclint-ignore: diff.tool, merge.tool, man.viewer, web.browser, help.format -->
 <!-- doclint-ignore: EDITOR, VISUAL, SSH_ASKPASS, GIT_ATTR_SOURCE, GIT_EDITOR, GIT_NO_LAZY_FETCH, GIT_PROXY_COMMAND, vcs_info -->
 <!-- doclint-ignore: .bare/config, .bare/info, .bare/commondir, info/attributes, git.nix, tmux.nix, modules/programs/git.nix, systemd.user.sessionVariables -->
-<!-- doclint-ignore: attr.tree, AGENTS.md, gitsigns.nix, on_attach, git_commits -->
+<!-- doclint-ignore: attr.tree, AGENTS.md, gitsigns.nix, on_attach, git_commits, BufEnter, BufWritePost -->
 <!--
   These names are git config keys, environment variables that git and zsh
   read, paths in a git dir at run time, and Nix files and options outside
@@ -230,14 +230,20 @@ or a staged submodule (#3343).
 ## Known open vulnerability (#3347)
 
 This is an in-scope vulnerability, not an accepted limit. The nvim panes of
-a session run git in a nested or submodule `.git` with no `cd`: gitsigns
-attaches to the git dir of the file that the owner opens, and the Telescope
-pickers (for example `git_commits`) run git in the dir of the buffer. A
-worker fully controls a nested or submodule git dir that it writes, so it
+a session run git in a nested or submodule `.git` with no `cd`. Three
+instances:
+
+- gitsigns attaches to the git dir of the file that the owner opens, and
+  its current-line blame runs `git blame --contents` there, after 200 ms.
+- the Telescope pickers (for example `git_commits`) run `git diff` in the
+  dir of the buffer.
+- lualine runs `git diff` in the dir of the buffer on `BufEnter` and
+  `BufWritePost`, with no delay.
+
+A worker fully controls a nested or submodule git dir that it writes, so it
 can plant a filter driver, a diff driver, or `diff.external` in that git
 dir, with an `info/attributes` or a `.gitattributes` that selects it. The
-driver then runs on the host when the owner opens the file (gitsigns blame,
-after 200 ms) or opens the picker (the Telescope preview runs `git diff`).
+driver then runs on the host when the owner opens the file or the picker.
 No `.bare/config` detach is needed, because the config is in a git dir that
 the worker controls.
 
@@ -245,5 +251,6 @@ The env overrides of this doc cannot close this: git reads the driver config
 from the nested git dir, and `--no-textconv` stops only the blame textconv,
 not a clean filter or `diff.external`. The fix is nvim plugin config — a
 gitsigns `on_attach` that refuses a git dir that is not the nvim working
-dir, and a Telescope previewer that passes `--no-ext-diff` — a different
-domain from `git.nix`. Tracked by #3347.
+dir, a Telescope previewer that passes `--no-ext-diff`, and a lualine `diff`
+component that reads the gitsigns state instead of running git — a
+different domain from `git.nix`. Tracked by #3347.
