@@ -71,6 +71,11 @@ func isolateHostGitConfig(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_PARAMETERS", "")
+	// A host shell carries the user git overrides (modules/programs/git.nix)
+	// in GIT_CONFIG_COUNT and the GIT_CONFIG_KEY_<n>/VALUE_<n> pairs. Count 0
+	// makes git read none of them, so the control checks that plant
+	// core.fsmonitor and core.hooksPath still see a plain git.
+	t.Setenv("GIT_CONFIG_COUNT", "0")
 }
 
 // evilGitDir makes a git dir that the worker controls: a bare clone of the

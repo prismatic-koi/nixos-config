@@ -15,6 +15,13 @@
           		virt_text_pos = "eol",
           		delay = 200,
           		ignore_whitespace = false,
+          		-- Current-line blame runs `git blame --contents` on the working
+          		-- buffer. Without this, a planted diff textconv driver that a
+          		-- .gitattributes selects runs on the host. --no-textconv stops
+          		-- it. A planted clean filter still runs when git normalises the
+          		-- buffer; that needs a planted config and is a known limit
+          		-- (#3346). See user-git-overrides.md.
+          		extra_opts = { "--no-textconv" },
           	},
           })
           vim.keymap.set("n", "<leader>gph", require("gitsigns").prev_hunk, { buffer = bufnr, desc = "[G]it [P]revious [H]unk" })
