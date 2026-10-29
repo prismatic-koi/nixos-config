@@ -10,7 +10,7 @@
 // Each test uses its own temp dir for auth.json and for the lock dir, so no
 // test reads or writes the real home dir.
 
-import { describe, it, beforeEach, afterEach } from "node:test"
+import { describe, it, beforeEach, afterEach, mock } from "node:test"
 import assert from "node:assert/strict"
 import { execFileSync, spawn } from "node:child_process"
 import {
@@ -132,12 +132,43 @@ describe("acquireRefreshLock", () => {
     lock.release()
   })
 
+  // Fake timers: the heartbeat, the waiter poll, and Date.now() move only
+  // when the test ticks, so a slow runner cannot change the result.
+  async function waiterAgainstHolder(heartbeatMs: number) {
+    mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: Date.now() })
+    let holder: Awaited<ReturnType<typeof acquireRefreshLock>> | undefined
+    try {
+      holder = await acquireRefreshLock({ dir: lockDir, heartbeatMs })
+      assert.ok(holder)
+      let result: Awaited<ReturnType<typeof acquireRefreshLock>> | undefined
+      let done = false
+      void acquireRefreshLock({ dir: lockDir, staleMs: 30_000, waitMs: 45_000, pollMs: 1_000 }).then((l) => {
+        result = l
+        done = true
+      })
+      for (let i = 0; i < 1_000 && !done; i++) {
+        await new Promise((resolve) => setImmediate(resolve))
+        mock.timers.tick(100)
+      }
+      assert.ok(done, "the waiter did not finish")
+      return result
+    } finally {
+      // Always release: a lock left held makes later sync tests in this
+      // process return null at once (heldInProcess).
+      holder?.release()
+      mock.timers.reset()
+    }
+  }
+
   it("a live holder touches its lock, so a waiter does not judge it stale", async () => {
-    const holder = await acquireRefreshLock({ dir: lockDir, heartbeatMs: 20 })
-    assert.ok(holder)
-    const waiter = await acquireRefreshLock({ dir: lockDir, staleMs: 150, waitMs: 400, pollMs: 5 })
+    const waiter = await waiterAgainstHolder(5_000)
     assert.equal(waiter, null, "a waiter removed the lock of a live holder")
-    holder.release()
+  })
+
+  it("a holder that does not touch its lock is judged stale", async () => {
+    const waiter = await waiterAgainstHolder(10 * 60 * 60 * 1_000)
+    assert.ok(waiter, "a waiter did not remove the lock of a holder that never touches it")
+    waiter.release()
   })
 
   it("release does not remove the lock of a new holder", async () => {
@@ -216,7 +247,8 @@ describe("acquireRefreshLockSync", () => {
     assert.ok(held)
     const started = Date.now()
     assert.equal(acquireRefreshLockSync({ dir: lockDir }), null)
-    assert.ok(Date.now() - started < 1_000, "the sync path blocked on its own process")
+    // Blocking would take syncWaitMs (20 s); this bound is far above any runner delay.
+    assert.ok(Date.now() - started < LOCK_TIMINGS.syncWaitMs / 2, "the sync path blocked on its own process")
     held.release()
   })
 
