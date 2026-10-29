@@ -246,11 +246,35 @@ letter case. `TestSwitchPathForSession`,
 `TestSwitch_TwoStepPathToAWritableDir_3330` runs the two steps of the
 issue from end to end.
 
-## The `/review` rebase pre-flight (#3323)
+## The `/review` rebase pre-flight (#3323, #3335)
 
-`prism review` runs a pre-flight on the host: it fetches the base ref, and
-with `--rebase` it also rebases the worktree and pushes. These rules bound
-what that pre-flight does on the host:
+`prism review` runs a pre-flight that fetches the base ref and checks that it
+is an ancestor of `HEAD`. With `--rebase` it also rebases the worktree onto
+the base and force-pushes.
+
+**Where the rebase steps run (#3335).** The base-ref fetch and the
+ancestor check always run on the host, through a pinned `git.Repo`. The
+`--rebase` steps — fetch, rebase, and force-push — run where the session has
+write rights:
+
+- **A sandboxed session (bwrap, sandbox-exec).** The steps run in the session
+  sandbox, not on the host. The in-sandbox `prism review` runs them with the
+  worker's own git (`cmd/review.go` calls `review.Preflight` with
+  `Rebase: true` in the container), then proxies the review to the host with
+  no rebase, so the host subprocess runs only the non-rebase pre-flight. The
+  host-API `/review` handler refuses a rebase request — every `/review`
+  caller is sandboxed, because the sidecar injects `PRISM_HOST_API` only into
+  a sandboxed session. So a planted `rebase-merge/autostash`, `head-name`, or
+  `orig-head` applies at the worker's own trust level: it cannot make the
+  host run a command or move a host-owned local branch such as `main`. This
+  closes the success-path and abort-path races that #3323 left open on the
+  host.
+- **A host-mode session.** There is no separate sandbox, so the steps run in
+  the session's own environment, which is the host. A host-mode session is
+  not isolated from the host, so this is not a trust boundary.
+
+The rules below bound the host-mode `--rebase` steps, and the non-rebase
+pre-flight that runs on the host for every session:
 
 - It runs only in a prism worktree. For a session that is not in a prism
   worktree (a plain clone, a bare session dir), `git.OpenDir` does not pin
@@ -260,37 +284,30 @@ what that pre-flight does on the host:
   `rebase-apply`, `sequencer`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, or
   `REVERT_HEAD`. A session can plant a `rebase-merge` dir with an `autostash`
   file, and `git rebase --abort` applies that stash.
-- It does not run `git rebase --abort`. On a conflict it removes the rebase
-  state dir, re-attaches `HEAD` to the branch, and runs `reset --hard`. It
-  applies no stash on this abort path, so a planted `autostash` file does not
-  run through it.
-- It pushes the branch of the session record — the path of the worktree
-  below the project root — not the branch that `HEAD` names. A session can
-  write `HEAD` in its own git dir, so the push names the branch with an
-  explicit `refs/heads/<branch>` refspec.
+- With `--rebase` it does not run `git rebase --abort`. On a conflict it
+  removes the rebase state dir, re-attaches `HEAD` to the branch, and runs
+  `reset --hard`. It applies no stash on this abort path, so a planted
+  `autostash` file does not run through it.
+- With `--rebase` it pushes the branch of the session record — the path of
+  the worktree below the project root — not the branch that `HEAD` names. A
+  session can write `HEAD` in its own git dir, so the push names the branch
+  with an explicit `refs/heads/<branch>` refspec.
 - With `--rebase`, it refuses when it cannot derive that branch from the
   worktree path, and when `HEAD` is not on that branch. The rebase acts on
-  `HEAD`, so this keeps the rebase, the push, and the restore on one branch.
-  prism never falls back to a bare `git push` that follows `HEAD`.
+  `HEAD`, so this keeps the rebase, the push, and the restore on one branch;
+  prism never falls back to a bare `git push` that follows `HEAD`. This guard
+  holds against a host-mode session only, which is not a trust boundary. The
+  old race in the window between the `HEAD` check and the start of
+  `git rebase` no longer reaches a host rebase, because a sandboxed session
+  runs no rebase on the host.
 
-**Open vulnerability: the success-path autostash (#3335).** A `git rebase`
-that **succeeds** still applies a `rebase-merge/autostash` file if one is
-present when it finishes, whatever its config (`--no-autostash` does not stop
-this; git applies a file it did not write). A sandboxed session can write
-`rebase-merge/` in its own git dir while the host `git rebase` runs
-(`docs/invariants/sandbox-git-write-scope.md`; bwrap binds all of `.bare`).
-So a session can plant the `autostash` file after `preflight.go` starts the
-rebase and before it ends, and git then applies that commit on the host, as
-the user — the same submodule-filter chain as #3323, through a successful
-rebase rather than the abort path. The pre-existing-state refusal and the
-stash-free restore do not close this: both act before the rebase starts or
-after it fails, not during a rebase that succeeds. This is a worker-triggered
-host code-execution path that is still **open**. The structural fix is to run
-the `--rebase` steps in the session sandbox, not on the host — tracked in
-#3335 (high priority).
-
-Code: `internal/review/preflight.go`. Tests:
-`internal/review/preflight_host_git_test.go`.
+Code: `internal/review/preflight.go`, `cmd/review.go` (the sandboxed
+container branch runs the rebase in the sandbox and proxies with no rebase),
+and the sidecar `/review` handler in `internal/sidecar/host_api.go` (it
+refuses a rebase request). Tests:
+`internal/review/preflight_host_git_test.go`,
+`cmd/review_rebase_sandbox_3335_test.go`, and
+`TestHostAPI_Review_RebaseRefusedOnHost`.
 
 ## What prism does not change
 
@@ -418,9 +435,10 @@ table.
   acts on those refs. For example, a session can change a remote-tracking
   ref, and a later `git rebase origin/<base>` with no fetch first uses the
   changed value. This rule is about commands that run, not about ref values.
-  The `--rebase` pre-flight is an exception for the branch it moves: it
-  pushes the branch of the session record, not the branch that `HEAD` names
-  (#3323, in the `/review` pre-flight section above).
+  The `--rebase` pre-flight runs on the host only for a host-mode session;
+  there it pushes the branch of the session record, not the branch that
+  `HEAD` names (#3323, #3335, in the `/review` pre-flight section above). A
+  sandboxed session runs its `--rebase` steps in its own sandbox.
 - **A remote that is not SSH or HTTPS.** prism host git fetches and
   pushes `origin` only. `origin` comes from the URL of `prism clone` or the
   clone prompt of `prism switch`, or from the `origin` of a repo that
@@ -451,7 +469,15 @@ table.
   covers #3323: the refusal of a non-worktree session, the refusal of a
   pre-existing rebase or merge state, the autostash chain (control: `git
   rebase --abort` runs the planted filter; fix: the pre-flight refuses it),
-  and the stash-free conflict restore.
+  and the stash-free conflict restore. It also covers #3335: the success-path
+  branch-move control (a host git rebase reads a planted `head-name` and moves
+  `main`) and the closed state (the non-rebase host pre-flight moves no
+  branch and runs no payload).
+- `cmd/review_rebase_sandbox_3335_test.go` and
+  `TestHostAPI_Review_RebaseRefusedOnHost` (#3335): the sandboxed
+  `prism review --rebase` runs the rebase in the sandbox and proxies with no
+  rebase, and the host-API `/review` handler refuses a rebase request and
+  spawns no `prism review` subprocess for it.
 - `TestHostAPI_Spawn_RepoMustBeAPlainName` and
   `TestResolveRepo_RefusesRootInsideProject`: the `/spawn` handler refuses
   a `repo` value that is a path, and `resolveRepo` refuses a root inside

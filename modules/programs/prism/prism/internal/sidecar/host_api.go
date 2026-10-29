@@ -2007,6 +2007,22 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			}
 		}
 
+		// #3335: the host must not run the `prism review --rebase` steps for a
+		// sandboxed session. Every /review caller is sandboxed — the sidecar
+		// injects PRISM_HOST_API only into sandboxed sessions — so running the
+		// fetch/rebase/force-push on the host would let a planted
+		// rebase-merge/autostash, head-name, or orig-head apply at the owner's
+		// trust level (a worker can plant it mid-rebase, which git re-reads on a
+		// successful rebase and on an abort). The in-sandbox `prism review`
+		// rebases in its own sandbox and proxies with no rebase, so a
+		// well-behaved client never sets this. Refuse it as defence in depth
+		// against a compromised in-container client. The refusal runs before the
+		// pre-emptive reviewing write, so no rollback is needed.
+		if req.Rebase {
+			writeError(w, http.StatusBadRequest, "review: --rebase is not accepted over the host API; a sandboxed session rebases in its own sandbox, not on the host (#3335)")
+			return
+		}
+
 		// Pre-emptive: mark the calling session as `reviewing` immediately,
 		// before spawning the `prism review` subprocess. The subprocess's
 		// RunAsync also writes `reviewing` to the DB, but it does so several
@@ -2137,12 +2153,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.Timeout != "" {
 			args = append(args, "--timeout", req.Timeout)
 		}
-		if req.Rebase {
-			// Forward the inline-rebase request from the container worker so
-			// the host-side subprocess runs the gate with --rebase. The gate
-			// itself runs in the host subprocess.
-			args = append(args, "--rebase")
-		}
+		// req.Rebase was refused above (#3335): the host never runs the rebase
+		// for a sandboxed session, so --rebase is never forwarded to the
+		// subprocess.
 		roles := make([]string, 0, len(req.ModelOverrides))
 		for role := range req.ModelOverrides {
 			roles = append(roles, role)

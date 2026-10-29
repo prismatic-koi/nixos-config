@@ -7257,14 +7257,17 @@ exit 0
 	}
 }
 
-// TestHostAPI_Review_RebaseForwarded verifies that when {"rebase": true} is
-// supplied in the /review request body, --rebase is appended to the prism
-// review subprocess argv. This is the container-routed path of the rebase
-// gate: the gate itself runs in the host subprocess, but the
-// rebase opt-in must thread through from the container worker.
-func TestHostAPI_Review_RebaseForwarded(t *testing.T) {
+// TestHostAPI_Review_RebaseRefusedOnHost verifies that {"rebase": true} in the
+// /review request body is REFUSED, and no `prism review` subprocess is spawned
+// (#3335). Every /review caller is a sandboxed session, so the host must not
+// run the rebase: the in-sandbox `prism review` rebases in its own sandbox and
+// proxies with rebase=false. A planted rebase-merge/autostash, head-name, or
+// orig-head therefore never reaches a host git command through this endpoint.
+func TestHostAPI_Review_RebaseRefusedOnHost(t *testing.T) {
 	d := openTestDB(t)
 
+	// The stub writes its argv to argsFile IF it runs. The refusal happens
+	// before the subprocess is spawned, so argsFile must stay absent.
 	argsFile := filepath.Join(t.TempDir(), "captured-args")
 	stubPath := filepath.Join(t.TempDir(), "prism-stub")
 	stubScript := `#!/bin/sh
@@ -7291,16 +7294,16 @@ exit 0
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/review",
 		`{"pr_number":"123","rebase":true}`)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
 	}
-
-	capturedArgs, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatalf("read captured args: %v", err)
+	if body := rr.Body.String(); !strings.Contains(body, "sandbox") || !strings.Contains(body, "3335") {
+		t.Errorf("refusal body %q should explain the rebase runs in the sandbox (#3335)", body)
 	}
-	if !strings.Contains(string(capturedArgs), "--rebase") {
-		t.Errorf("captured args %q do not contain '--rebase'", string(capturedArgs))
+	// No `prism review` subprocess must have been spawned: the host runs no
+	// rebase for a sandboxed session.
+	if _, err := os.Stat(argsFile); !os.IsNotExist(err) {
+		t.Fatalf("a `prism review` subprocess was spawned for a rebase request; the host must spawn none (stat err = %v)", err)
 	}
 }
 

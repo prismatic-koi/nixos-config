@@ -17,7 +17,8 @@
 -->
 
 Issues: #3293, #3216. Follow-ups: #3317 (the object store), #3315 (bwrap
-code-execution paths), #3334 (the permanent bwrap refs vector — a per-session
+code-execution paths), #3335 (the `--rebase` pre-flight steps now run in the
+session sandbox, not on the host), #3334 (the permanent bwrap refs vector — a per-session
 common dir or reftable), #3337 (the config-detach host-git route — pin the
 keys in `hostGitConfig`), #3327 (the achievable bwrap narrowing —
 `FETCH_HEAD` only for a read-only session),

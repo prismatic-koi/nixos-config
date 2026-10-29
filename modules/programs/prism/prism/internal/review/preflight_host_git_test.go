@@ -581,6 +581,66 @@ func TestPreflight_HostGit_RebaseConflictRestores(t *testing.T) {
 	}
 }
 
+// TestPreflight_HostGit_SuccessPathBranchMovePlantClosed is the #3335
+// regression test for the success-path branch-move and autostash races. A
+// worker can plant rebase-merge/head-name, orig-head, or autostash while a
+// host git rebase runs; git re-reads head-name/orig-head when the rebase
+// finishes and moves an arbitrary local branch (for example main), and it
+// applies autostash on both the success and the abort path. The fix runs the
+// --rebase steps in the session sandbox, so the host runs no rebase for a
+// sandboxed session (see TestHostAPI_Review_RebaseRefusedOnHost and
+// TestRunReview_SandboxedRebaseRunsInSandboxNotHost for that routing).
+//
+// Control: a real host git rebase that reads a planted head-name pointing at
+// main moves the local main branch — the escalation this issue removes.
+// Fix: the non-rebase host pre-flight (what a sandboxed session's host
+// subprocess runs) performs no rebase, so the same planted head-name,
+// orig-head, and autostash move no local branch and run no payload.
+func TestPreflight_HostGit_SuccessPathBranchMovePlantClosed(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	l := newPreflightLayout(t)
+	l.advance(t)
+	bare := filepath.Join(l.root, ".bare")
+
+	// The local main branch that a planted head-name would hijack.
+	mainBefore := gitOut(t, "", "--git-dir", bare, "rev-parse", "refs/heads/main")
+
+	// Control: a host git rebase whose step rewrites head-name->main and
+	// orig-head mid-rebase makes git move refs/heads/main when the rebase
+	// finishes. Run it in a throwaway clone so it does not disturb the worker
+	// worktree the fix leg uses.
+	ctl := filepath.Join(t.TempDir(), "ctl")
+	mustGit(t, "", "clone", "-q", "-b", "feat", l.origin, ctl)
+	mustGit(t, ctl, "branch", "-f", "main", "origin/main")
+	ctlMainBefore := gitOut(t, ctl, "rev-parse", "refs/heads/main")
+	plant := `gd=$(git rev-parse --git-dir); echo refs/heads/main > "$gd/rebase-merge/head-name"; git rev-parse refs/heads/main > "$gd/rebase-merge/orig-head"`
+	mustGit(t, ctl, "rebase", "-x", plant, "origin/main")
+	if ctlMainAfter := gitOut(t, ctl, "rev-parse", "refs/heads/main"); ctlMainAfter == ctlMainBefore {
+		t.Fatal("control: the head-name plant did not move main; the control does not reproduce the #3335 escalation")
+	}
+
+	// Fix: plant the full chain (autostash + head-name->main + orig-head) in
+	// the worker git dir, then run the pre-flight WITHOUT --rebase — what a
+	// sandboxed session's host subprocess runs. The host runs no rebase, so
+	// main does not move and no payload runs.
+	gitDir, _ := plantAutostashChain(t, l)
+	writeFile(t, filepath.Join(gitDir, "rebase-merge", "head-name"), "refs/heads/main\n")
+	writeFile(t, filepath.Join(gitDir, "rebase-merge", "orig-head"), mainBefore+"\n")
+
+	err := Preflight(PreflightOpts{Worktree: l.worker, Rebase: false})
+	if err == nil {
+		t.Fatal("Preflight(Rebase:false) with a planted rebase-merge = nil, want a refusal that runs no rebase")
+	}
+	if mainAfter := gitOut(t, "", "--git-dir", bare, "rev-parse", "refs/heads/main"); mainAfter != mainBefore {
+		t.Errorf("host moved refs/heads/main from %q to %q with Rebase:false", mainBefore, mainAfter)
+	}
+	if lines := l.takeMarker(t); len(lines) != 0 {
+		t.Fatalf("host ran a planted payload with Rebase:false: %v", lines)
+	}
+}
+
 // TestEnsurePrismWorktree_HostGit checks that EnsurePrismWorktree accepts a
 // prism worktree and refuses a plain clone. The control shows that a forge
 // read runs git in the plain clone's dir — the host git run that AC1 forbids

@@ -672,6 +672,8 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, 
 		body["timeout"] = timeout
 	}
 	if rebase {
+		// #3335: the host /review handler refuses this; the in-sandbox
+		// `prism review` rebases locally and calls this with rebase=false.
 		body["rebase"] = true
 	}
 	if len(extras.Models) > 0 {

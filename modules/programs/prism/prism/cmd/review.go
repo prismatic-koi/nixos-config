@@ -184,7 +184,24 @@ func runReview(cmd *cobra.Command, args []string) error {
 		// the JSON terminal status is the only thing on stdout. The Ack is
 		// still buffered in ackOutput so we can parse the group_id from it.
 		quietStdout := waitFlag && jsonFlag
-		ackOutput, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr, rebaseFlag, quietStdout, reviewProxyExtras{
+		// #3335: a sandboxed session (PRISM_HOST_API is set) runs the --rebase
+		// steps — fetch, rebase, force-push — HERE, in its own sandbox, not on
+		// the host. The worker already has write rights to its worktree and the
+		// bare repo in the sandbox, so a planted rebase-merge/autostash,
+		// head-name, or orig-head applies at the worker's own trust level; it
+		// cannot make the host run a command or move a host-owned branch such as
+		// main. The host subprocess then runs the review WITHOUT --rebase: its
+		// ancestor check passes because the branch was just rebased. The sidecar
+		// /review handler refuses rebase=true as defence in depth.
+		if rebaseFlag {
+			if rbErr := rebaseInSandbox(prNumber); rbErr != nil {
+				return rbErr
+			}
+		}
+		// Pass rebase=false: the rebase already ran in-sandbox above, and the
+		// host must not rebase for a sandboxed session (#3335). Do not restore
+		// rebaseFlag here — the sidecar refuses rebase=true.
+		ackOutput, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr, false, quietStdout, reviewProxyExtras{
 			Models:        modelsByRole,
 			DiffInlineMax: diffInlineMaxFlag,
 			Harness:       extraHarness,
@@ -580,6 +597,41 @@ func resolveReviewWorktree(parentSession string) (string, error) {
 		return "", fmt.Errorf("prism review: no worktree path for session %q", parentSession)
 	}
 	return status.Worktree, nil
+}
+
+// rebaseInSandbox runs the `prism review --rebase` steps — fetch, rebase, and
+// force-push — with the worker's own git, inside the session sandbox (#3335).
+//
+// A sandboxed worker already has write rights to its worktree and the bare
+// repo. Running the rebase here, not on the host, means a planted
+// rebase-merge/autostash, head-name, or orig-head applies at the worker's own
+// trust level: it cannot make the host run a command or move a host-owned
+// branch. The worktree comes from PRISM_SPAWN_PATH — the host worktree path the
+// sidecar injects, visible at the same absolute path inside the sandbox — and
+// falls back to the current directory. It reuses review.Preflight, the same
+// code the host-mode path runs; only the process it runs in differs. It is a
+// package var so a test can replace it.
+var rebaseInSandbox = func(prNumber string) error {
+	worktree := os.Getenv("PRISM_SPAWN_PATH")
+	if worktree == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("prism review: --rebase: cannot resolve the worktree: %w", err)
+		}
+		worktree = wd
+	}
+	if err := review.EnsurePrismWorktree(worktree); err != nil {
+		return err
+	}
+	reviewForge := forge.DetectFromDir(worktree)
+	repoURL := forge.OriginRemoteURL(worktree)
+	baseBranch := review.ResolvePRBaseRef(prNumber, reviewForge, repoURL)
+	return review.Preflight(review.PreflightOpts{
+		Worktree:   worktree,
+		Branch:     baseBranch,
+		Rebase:     true,
+		OnProgress: progressLineEager,
+	})
 }
 
 // resolveParentIsolationMode returns the effective isolation mode for
