@@ -33,8 +33,12 @@ package container
 // between it and the host file (pi_auth_session.go, #3295).
 //
 // The Notion MCP store and the shared OAuth refresh lock are not in the
-// agent dir. They are in dedicated dirs that every session shares
-// (pi_shared_state.go, #3289, #3290).
+// agent dir. They are in dedicated dirs that the sessions share
+// (pi_shared_state.go, #3289, #3290). The old Notion store files can still
+// be in the agent dir until prism moves them. A session that does not get
+// the Notion store dir (Config.PINotionHostDir is empty, #3319) cannot read
+// them: bwrap does not bind them, and section 21l of the sandbox-exec
+// profile denies a read of them.
 //
 // bwrap cannot give "create only these names" in a shared dir. The agent
 // dir in a bwrap sandbox is therefore a private dir: bwrap makes it in its
@@ -78,8 +82,19 @@ const piAuthSessionSandboxDir = "/run/prism/pi-auth"
 
 // The Notion MCP extension store (pi/extensions/notion/auth.ts). The store
 // is in its own dir (pi_shared_state.go). An old store in the agent dir is
-// read by the one-time move, and by the extension until the move is done.
+// read by the one-time move, and by the extension of a session that gets
+// the store until the move is done.
 var piNotionStoreFiles = []string{"notion-mcp-oauth.json", "notion-mcp-client.json"}
+
+// piNotionStoreFile reports whether name is a Notion store file.
+func piNotionStoreFile(name string) bool {
+	for _, f := range piNotionStoreFiles {
+		if name == f {
+			return true
+		}
+	}
+	return false
+}
 
 const (
 	piNotionLockDirName = "notion-mcp-oauth.json.lock"
@@ -142,7 +157,8 @@ func piAgentBwrapRWFile(name string) bool {
 //  2. --ro-bind-try for each entry of hostDir, except sessions/, auth.json,
 //     the credential files, *.lock, and the temp files of the auth sync. A
 //     host lock dir is not bound: pi in the sandbox cannot remove a stale one
-//     from a read-only bind.
+//     from a read-only bind. When notion is false, the old Notion store
+//     files are not bound either (#3319).
 //  3. --bind for each credential file that is a regular file on the host.
 //  4. --bind of authDir, the per-session dir of auth.json, at
 //     piAuthSessionSandboxDir, and a symlink sandboxDir/auth.json to the
@@ -155,7 +171,7 @@ func piAgentBwrapRWFile(name string) bool {
 // The entries are read when the sandbox starts. A host entry that appears
 // later is not visible in the sandbox, and a read-only bind keeps the file
 // that it had at the start.
-func appendPIAgentDirBwrapMounts(args []string, hostDir, sandboxDir, worktree, authDir string) ([]string, error) {
+func appendPIAgentDirBwrapMounts(args []string, hostDir, sandboxDir, worktree, authDir string, notion bool) ([]string, error) {
 	preparePIAgentDir(hostDir, worktree)
 
 	entries, err := os.ReadDir(hostDir)
@@ -167,7 +183,8 @@ func appendPIAgentDirBwrapMounts(args []string, hostDir, sandboxDir, worktree, a
 	for _, e := range entries {
 		name := e.Name()
 		if name == piAgentSessionsDirName || name == piAuthFileName || piAgentBwrapRWFile(name) ||
-			strings.HasSuffix(name, ".lock") || strings.HasPrefix(name, piAuthTmpPrefix) {
+			strings.HasSuffix(name, ".lock") || strings.HasPrefix(name, piAuthTmpPrefix) ||
+			(!notion && piNotionStoreFile(name)) {
 			continue
 		}
 		args = append(args, "--ro-bind-try", filepath.Join(hostDir, name), filepath.Join(sandboxDir, name))
@@ -244,7 +261,8 @@ func piAuthSessionSBPLDeny(authDir string) string {
 
 // piSharedStateSBPLAllow returns the section-6c clause: a read and a write
 // of the whole lock dir and of the whole Notion store dir
-// (pi_shared_state.go). An empty dir is left out. It returns "" when both
+// (pi_shared_state.go). An empty dir is left out: a session that is not in
+// NOTION_MCP_REPOS has an empty notionDir (#3319). It returns "" when both
 // are empty.
 func piSharedStateSBPLAllow(lockDir, notionDir string) string {
 	var rules []string
@@ -278,6 +296,18 @@ func piSharedStateSBPLDeny(lockDir, notionDir string) string {
 	}
 	return "(deny file-write-unlink file-write-create file-write-mode file-write-flags file-write-acl\n  " +
 		strings.Join(rules, "\n  ") + ")\n"
+}
+
+// piNotionLegacySBPLDeny returns the section-21l clause: no read of the old
+// Notion store files in the host agent dir. Section 6a grants a read of the
+// whole agent dir, so without this deny a session that does not get the
+// Notion store dir (#3319) can read the old store before prism moves it.
+func piNotionLegacySBPLDeny(agentDir string) string {
+	clause := "(deny file-read*"
+	for _, name := range piNotionStoreFiles {
+		clause += "\n  (literal " + quoteSBPL(filepath.Join(agentDir, name)) + ")"
+	}
+	return clause + ")\n"
 }
 
 // piAgentDirSBPLDeny returns the section-21f clause: no create and no

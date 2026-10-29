@@ -439,6 +439,19 @@ integration test coverage exists for:
     section 21f. The session can remove `atlassian-mcp-oauth.json` and put
     a symlink at its path.
 
+  A session that is not in `NOTION_MCP_REPOS` has an empty
+  `PINotionHostDir` (#3319). Its profile has no section-6c grant of the
+  Notion store dir. Section 21l denies a read of the old store files in
+  `~/.pi/agent`. `TestSandboxExecPIAgentDir_NotionStoreDeniedWithoutGrant`
+  shows that each read and each write of the store fails with "Operation
+  not permitted". A read through the symlink in the per-session agent dir
+  fails too. The rest of the agent dir stays readable. The paired
+  negatives:
+  - `TestSandboxExecPIAgentDir_NotionStoreReadableWithGrant` uses the
+    profile of a session in the list. The same reads work.
+  - `TestSandboxExecPIAgentDir_NotionLegacyReadableWithoutDeny` strips
+    section 21l. The session reads the old store file.
+
   See `sandbox_exec_pi_agent_dir_darwin_test.go`.
 
 Each positive case has a paired negative case that mutates the profile to

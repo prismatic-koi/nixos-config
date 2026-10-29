@@ -402,8 +402,8 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// of the SBPL profile grants that dir. Section 6a allows a read of
 	// ~/.pi/agent and a write of atlassian-mcp-oauth.json and of the sessions
 	// dir of the worktree (internal/container/pi_agent_dir.go, #3284).
-	// Section 6c grants the shared lock dir and the Notion store dir
-	// (pi_shared_state.go). PRISM_PI_AUTH_SYNC makes the anthropic-oauth
+	// Section 6c grants the shared lock dir, and the Notion store dir for a
+	// session in NOTION_MCP_REPOS (pi_shared_state.go). PRISM_PI_AUTH_SYNC makes the anthropic-oauth
 	// extension ask the sidecar for a sync of the session auth.json around
 	// each token refresh.
 	if ctrCfg.Harness == "pi" && ctrCfg.PIAgentConfigSandboxDir != "" {

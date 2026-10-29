@@ -24,8 +24,13 @@
 //
 // SCOPE NOTE: this is a scoping and least-privilege control, not a security
 // boundary against a hostile agent — an agent that can run arbitrary code in
-// its own process can obviously read the token file directly. Its job is to
-// keep the honest case narrow.
+// its own process can read the token file directly when it can reach the
+// store. Its job is to keep the honest case narrow. The boundary for a bwrap
+// or sandbox-exec session is on the host: prism gives the store dir only to
+// a session in NOTION_MCP_REPOS (InPINotionRepos in
+// internal/container/pi_shared_state.go, #3319). That function does the
+// match of matchesAllowlist below. Keep the two in step, or a session that
+// this gate enables gets no store.
 
 import { realpathSync } from "node:fs"
 import { homedir } from "node:os"

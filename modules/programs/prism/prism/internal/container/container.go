@@ -332,11 +332,14 @@ type Config struct {
 	PIAgentConfigSandboxDir string
 
 	// PILockHostDir and PINotionHostDir are the host paths of the lock dir
-	// and of the Notion MCP store dir that every pi session shares
+	// and of the Notion MCP store dir that the pi sessions share
 	// (pi_shared_state.go, #3289, #3290). prism agent-run sets them
-	// (EnsurePISharedStateDirs). When Harness == "pi", bwrap binds each
+	// (EnsurePISharedStateDirs), and sets PINotionHostDir only for a session
+	// in NOTION_MCP_REPOS (#3319). When Harness == "pi", bwrap binds each
 	// non-empty dir read-write at the same path, and the sandbox-exec profile
-	// grants it (section 6c). Empty means no bind and no grant.
+	// grants it (section 6c). Empty means no bind and no grant. An empty
+	// PINotionHostDir also hides the old Notion store files in the agent dir
+	// (no bwrap bind, section 21l of sandbox-exec).
 	PILockHostDir   string
 	PINotionHostDir string
 

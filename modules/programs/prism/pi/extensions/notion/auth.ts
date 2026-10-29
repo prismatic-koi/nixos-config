@@ -41,8 +41,10 @@
 //      surfaced as terminal. retry.ts refuses to retry it.
 //
 // Token storage: <home>/.local/state/prism/pi-notion/notion-mcp-oauth.json,
-// mode 0600, a dir that every pi session on the host shares (#3290). An old
-// store in the pi agent dir moves there once: see migrateLegacyStore.
+// mode 0600, a dir that the pi sessions on the host share (#3290). A bwrap
+// or sandbox-exec session gets the dir only when its repo is in
+// NOTION_MCP_REPOS (#3319). An old store in the pi agent dir moves there
+// once: see migrateLegacyStore.
 //
 // See UPSTREAM.md for endpoint provenance and the auth-method rationale.
 
@@ -203,10 +205,12 @@ function debug(msg: string, ...args: unknown[]): void {
 /**
  * The store dir: <home>/.local/state/prism/pi-notion/ (#3290).
  *
- * Every pi session on the host must use the same store, because Notion
- * rotates the refresh token on each refresh. prism makes this dir, binds it
- * read-write into bwrap, and grants it in the sandbox-exec profile
- * (internal/container/pi_shared_state.go). The path comes from HOME: every
+ * Every pi session on the host that uses Notion must use the same store,
+ * because Notion rotates the refresh token on each refresh. prism makes this
+ * dir. For a session in NOTION_MCP_REPOS, prism binds it read-write into
+ * bwrap and grants it in the sandbox-exec profile
+ * (internal/container/pi_shared_state.go, #3319). Another sandboxed session
+ * cannot read or write it. The path comes from HOME: every
  * isolator runs pi with the host HOME. It is a dir bind, not a file bind,
  * so a read observes the rename(2) of a peer, and our own rename works.
  */
@@ -351,7 +355,7 @@ export function writeJsonAtomic(path: string, value: unknown): void {
 //
 // mkdir(2) is atomic on every POSIX filesystem we run on and needs no
 // dependency, which is why `proper-lockfile` uses it too. The lock directory
-// lives beside the token file, in the store dir that every session shares,
+// lives beside the token file, in the store dir that the sessions share,
 // so it serialises sessions of every isolation mode (#3290).
 // ---------------------------------------------------------------------------
 

@@ -11,8 +11,9 @@ package container
 //     auth.json to the per-session auth.json (pi_auth_session.go, #3295),
 //     and a read-write bind of the sessions dir of the worktree. See
 //     pi_agent_dir.go for the write list and the reasons (#3284). Bind the
-//     shared lock dir and the Notion store dir read-write at their host
-//     paths (pi_shared_state.go, #3289, #3290).
+//     shared lock dir read-write at its host path, and the Notion store dir
+//     too for a session in NOTION_MCP_REPOS (pi_shared_state.go, #3289,
+//     #3290, #3319).
 //     The role system-prompt is injected at runtime by the prism PI extension
 //     (pi/extensions/prism.ts, before_agent_start), which reads
 //     ~/.config/prism/agents/<role>.md.
@@ -622,7 +623,9 @@ func PIExtensionHostPath(hostDir string) string {
 //     of the sessions dir of cfg.Worktree (appendPIAgentDirBwrapMounts,
 //     pi_agent_dir.go). Sets PI_CODING_AGENT_DIR to the sandbox path.
 //   - Shared state dirs: cfg.PILockHostDir and cfg.PINotionHostDir,
-//     read-write, at the same path (pi_shared_state.go).
+//     read-write, at the same path (pi_shared_state.go). An empty
+//     cfg.PINotionHostDir gives no bind of the Notion store dir and no bind
+//     of the old store files in the agent dir (#3319).
 //   - Extension directory: cfg.PIExtensionHostDir → cfg.PIExtensionSandboxDir
 //     (read-only).
 //
@@ -654,7 +657,7 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 	}
 	if agentConfigHostDir != "" {
 		var err error
-		args, err = appendPIAgentDirBwrapMounts(args, agentConfigHostDir, agentConfigSandboxDir, cfg.Worktree, cfg.PIAuthSessionDir)
+		args, err = appendPIAgentDirBwrapMounts(args, agentConfigHostDir, agentConfigSandboxDir, cfg.Worktree, cfg.PIAuthSessionDir, cfg.PINotionHostDir != "")
 		if err != nil {
 			return nil, err
 		}
@@ -690,7 +693,9 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 
 	// ── Shared state dirs (read-write, Dst==Src) ─────────────────────────
 	// The lock dir and the Notion store dir are the same for every session
-	// on the host (pi_shared_state.go). A dir bind, not a file bind: the
+	// on the host that gets them (pi_shared_state.go). prism agent-run
+	// leaves cfg.PINotionHostDir empty for a session that is not in
+	// NOTION_MCP_REPOS (#3319). A dir bind, not a file bind: the
 	// Notion extension renames a temp file onto its store file, and a
 	// rename onto a bind mount fails. Dst==Src, because the sandbox HOME is
 	// the host HOME and the extensions compute both paths from HOME.

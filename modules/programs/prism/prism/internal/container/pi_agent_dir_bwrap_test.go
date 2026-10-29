@@ -74,7 +74,7 @@ func hostTree(t *testing.T, dir string) []string {
 
 func piAgentLiveArgs(t *testing.T, hostDir, worktree string) []string {
 	t.Helper()
-	args, err := appendPIAgentDirBwrapMounts(nil, hostDir, piAgentLiveSandboxDir, worktree, piAuthLiveDir(t, hostDir))
+	args, err := appendPIAgentDirBwrapMounts(nil, hostDir, piAgentLiveSandboxDir, worktree, piAuthLiveDir(t, hostDir), true)
 	if err != nil {
 		t.Fatalf("appendPIAgentDirBwrapMounts: %v", err)
 	}
@@ -385,4 +385,83 @@ func TestBwrapPIAgentDir_NotionRenameFailsOnFileBind(t *testing.T) {
 	if got, _ := os.ReadFile(token); string(got) != "old" {
 		t.Errorf("host token file = %q, want %q", got, "old")
 	}
+}
+
+// piNotionGrantLiveArgs makes a fake home with the Notion store in its dir
+// and an old store file in the agent dir, and returns the args that the
+// production emitter (appendPIBwrapMounts) makes for a session that gets
+// the Notion store dir (granted) or not (#3319).
+func piNotionGrantLiveArgs(t *testing.T, granted bool) (notionDir string, args []string) {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	t.Setenv("HOME", home)
+	lockDir, notionDir := PISharedStateDirs(home)
+	agentDir := filepath.Join(home, ".pi", "agent")
+	for _, d := range []string{lockDir, notionDir, agentDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, content := range map[string]string{
+		filepath.Join(notionDir, "notion-mcp-oauth.json"): "store",
+		filepath.Join(agentDir, "notion-mcp-oauth.json"):  "legacy",
+		filepath.Join(agentDir, "settings.json"):          "{}",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := piBwrapMountsCfg(t)
+	cfg.PIAgentConfigHostDir = agentDir
+	cfg.PILockHostDir = lockDir
+	if granted {
+		cfg.PINotionHostDir = notionDir
+	}
+	args, err = appendPIBwrapMounts(nil, cfg)
+	if err != nil {
+		t.Fatalf("appendPIBwrapMounts: %v", err)
+	}
+	return notionDir, args
+}
+
+// A session that is not in NOTION_MCP_REPOS (an empty PINotionHostDir,
+// #3319) cannot read the Notion store dir or the old store file in the agent
+// dir, and a write at the store path does not reach the host. The granted
+// case is the no-op proof: with the dir, the same reads work.
+func TestBwrapPIAgentDir_NotionStoreOnlyWithGrant(t *testing.T) {
+	bwrapBin := requireUsableBwrapForUsageTest(t)
+	A := piAgentLiveSandboxDir
+
+	t.Run("granted", func(t *testing.T) {
+		notionDir, args := piNotionGrantLiveArgs(t, true)
+		script := `cat '` + notionDir + `/notion-mcp-oauth.json' && echo && cat ` + A + `/notion-mcp-oauth.json`
+		out, err := runInBwrap(t, bwrapBin, args, script)
+		if err != nil || out != "store\nlegacy" {
+			t.Fatalf("a session with the grant cannot read the store: (%q, %v), so the test without the grant proves nothing", out, err)
+		}
+	})
+
+	t.Run("not granted", func(t *testing.T) {
+		notionDir, args := piNotionGrantLiveArgs(t, false)
+		if out, err := runInBwrap(t, bwrapBin, args, `cat `+A+`/settings.json`); err != nil || out != "{}" {
+			t.Fatalf("the agent dir is not in the sandbox: (%q, %v)", out, err)
+		}
+		for _, script := range []string{
+			`cat '` + notionDir + `/notion-mcp-oauth.json'`,
+			`cat ` + A + `/notion-mcp-oauth.json`,
+		} {
+			if out, err := runInBwrap(t, bwrapBin, args, script); err == nil {
+				t.Errorf("%q worked in a session without the grant: %q", script, out)
+			}
+		}
+		write := `mkdir -p '` + notionDir + `' && printf forged > '` + notionDir + `/notion-mcp-oauth.json'`
+		_, _ = runInBwrap(t, bwrapBin, args, write)
+		if got, err := os.ReadFile(filepath.Join(notionDir, "notion-mcp-oauth.json")); err != nil || string(got) != "store" {
+			t.Errorf("host store file = (%q, %v), want %q", got, err, "store")
+		}
+	})
 }
