@@ -57,17 +57,12 @@ let
       key = "protocol.ext.allow";
       value = "never";
     }
-    # No value turns diff.external off: git runs any value, and an empty
-    # value makes each git diff fail. So pin it to a program that prints the
-    # builtin diff.
-    {
-      key = "diff.external";
-      value = "${builtinExternalDiff}";
-    }
-    {
-      key = "diff.trustExitCode";
-      value = "true";
-    }
+    # diff.external is not here. git has no value that means "use the builtin
+    # diff": it runs any value, and an empty value makes each git diff that
+    # shows a patch fail. A planted diff.external on a typed git diff, show,
+    # or log -p is a known limit, in
+    # docs/invariants/user-git-overrides.md. The prompt and gitsigns use
+    # --no-ext-diff, so they are not affected.
     # A repo config can name a global attributes file, which selects a
     # driver.
     {
@@ -166,19 +161,6 @@ let
         ]) overrides
       )
     );
-
-  builtinExternalDiff = lib.getExe (
-    pkgs.writeShellApplication {
-      name = "git-builtin-external-diff";
-      runtimeInputs = [
-        pkgs.coreutils
-        pkgs.gawk
-        pkgs.git
-        pkgs.gnugrep
-      ];
-      text = builtins.readFile ./git-builtin-external-diff.sh;
-    }
-  );
 
   shellGitEnv = toGitConfigEnv gitConfigOverrides // gitEnvOverrides;
   serviceGitEnv =
