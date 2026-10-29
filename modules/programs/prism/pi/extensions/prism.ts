@@ -3200,6 +3200,42 @@ export function shouldAttemptConnect(
 // Extension entry point.
 // ---------------------------------------------------------------------------
 
+export const TRUST_NOTICE =
+  "prism decides project trust on the host (--approve / --no-approve). /trust is disabled in prism sessions."
+
+/** True when an editor submit of `text` is the built-in /trust command. */
+export function isTrustCommand(text: string): boolean {
+  return text.trim() === "/trust"
+}
+
+// pi handles /trust in the editor submit path, before the extension "input"
+// event, and writes trust.json (read-only in a sandbox: EROFS). Swap the
+// editor for one that swallows a submitted /trust and shows a notice.
+async function installTrustCommandGuard(ctx: ExtensionContext): Promise<void> {
+  try {
+    if (!ctx.hasUI) return
+    const codingAgent: any = await import("@earendil-works/pi-coding-agent")
+    const tui: any = await import("@earendil-works/pi-tui")
+    const Base = codingAgent.CustomEditor
+    if (!Base || !tui.matchesKey) return
+    class TrustGuardEditor extends Base {
+      handleInput(data: string): void {
+        if (tui.matchesKey(data, "enter") && isTrustCommand(this.getText())) {
+          this.setText("")
+          ctx.ui.notify(TRUST_NOTICE, "info")
+          return
+        }
+        super.handleInput(data)
+      }
+    }
+    ctx.ui.setEditorComponent(
+      (t: any, theme: any, kb: any) => new TrustGuardEditor(t, theme, kb),
+    )
+  } catch (err) {
+    console.error("[prism-extension] trust guard install failed:", err)
+  }
+}
+
 export default function prismExtension(pi: ExtensionAPI): void {
   // Activation guard. When PI runs outside prism, leave it untouched.
   if (!shouldActivate()) {
@@ -3692,6 +3728,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     lastCtx = ctx
+    void installTrustCommandGuard(ctx)
 
     // Connect on session_start. The wire spec requires the extension to dial
     // out; the sidecar has already bound the listener.

@@ -7655,3 +7655,13 @@ describe("#3088: extension wiring", () => {
     }
   })
 })
+
+import { isTrustCommand } from "./prism.ts"
+describe("isTrustCommand", () => {
+  it("matches only the bare /trust command", () => {
+    assert.equal(isTrustCommand("/trust"), true)
+    assert.equal(isTrustCommand("  /trust "), true)
+    assert.equal(isTrustCommand("/trust now"), false)
+    assert.equal(isTrustCommand("hello"), false)
+  })
+})
