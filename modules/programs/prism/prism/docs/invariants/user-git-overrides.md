@@ -4,7 +4,7 @@
 <!-- doclint-ignore: diff.tool, merge.tool, man.viewer, web.browser, help.format -->
 <!-- doclint-ignore: EDITOR, VISUAL, SSH_ASKPASS, GIT_ATTR_SOURCE, GIT_EDITOR, GIT_NO_LAZY_FETCH, GIT_PROXY_COMMAND, vcs_info -->
 <!-- doclint-ignore: .bare/config, .bare/info, .bare/commondir, info/attributes, git.nix, tmux.nix, modules/programs/git.nix, systemd.user.sessionVariables -->
-<!-- doclint-ignore: attr.tree, AGENTS.md, gitsigns.nix, on_attach, git_commits, BufEnter, BufWritePost -->
+<!-- doclint-ignore: attr.tree, AGENTS.md, gitsigns.nix -->
 <!--
   These names are git config keys, environment variables that git and zsh
   read, paths in a git dir at run time, and Nix files and options outside
@@ -26,8 +26,9 @@ repo config included. So a repo config cannot change a key in the list.
 
 A sandboxed session can write config that git on the host reads:
 
-- a `.git` file or dir in a subdir of its worktree (#3347 with no `cd`,
-  #3325 with a `cd`)
+- a `.git` file or dir in a subdir of its worktree (git reads it after a
+  `cd` into the subdir, #3325. The git plugins of nvim do not read it,
+  #3347)
 - a submodule that it stages in its own index, with its own git dir
 - `.bare/config`, after a host rename detaches a bwrap pin (#3346)
 - `.bare/commondir` at the project root, with no detach; a plain git at the
@@ -177,8 +178,8 @@ a host rename opens (the real fix is bwrap `.bare` write-protection, the
 project root reads config from a planted `.bare/commondir`, which a bwrap
 worker can write with no detach — a known OPEN in-scope route tracked by
 #3348 (real fix in the #3327 / #3334 family). A session can also plant the
-config in a git dir that it fully controls — a nested `.git` (#3347 / #3325)
-or a staged submodule (#3343).
+config in a git dir that it fully controls — a nested `.git` (#3325) or a
+staged submodule (#3343).
 
 - **A planted `.gitattributes` or `info/attributes` driver.** The list
   does not set `GIT_ATTR_SOURCE` (above), so a `diff=<name>` or
@@ -193,11 +194,10 @@ or a staged submodule (#3343).
   the working buffer. `--no-textconv` (set in `gitsigns.nix`) stops a diff
   textconv driver. A planted clean filter still runs when git normalises
   the buffer, and `git blame` has no flag for it. At the worktree root the
-  filter config needs a planted `.bare/config` (#3346). In a nested or
-  submodule git dir that gitsigns attaches to with no `cd`, no planted
-  `.bare/config` is needed: that is the open vulnerability #3347 below. The
-  gitsigns signs path runs its own diff and invokes no driver (verified on
-  git 2.56).
+  filter config needs a planted `.bare/config` (#3346). gitsigns attaches
+  only to the repo of the dir where nvim starts, so it does not reach a
+  nested or submodule git dir (#3347). The gitsigns signs path runs its own
+  diff and invokes no driver (verified on git 2.56).
 - **A planted tool selector.** A typed `git help` runs the program of
   `man.viewer` and `man.<tool>.cmd`, or of `help.format=web`, `web.browser`,
   and `browser.<tool>.cmd`. A typed `git difftool` runs `diff.tool` and
@@ -206,12 +206,12 @@ or a staged submodule (#3343).
   pin the `<tool>.cmd` key. Tracked by #3346.
 - **A staged submodule with `ignore = none` in `.gitmodules`.** A typed
   `git status` at the worktree root runs git in the submodule, and a driver
-  in the submodule git dir runs. The prompt and gitsigns give
-  `--ignore-submodules`, so they do not. Fix: #3343.
+  in the submodule git dir runs. The prompt, gitsigns, the Telescope git
+  pickers, and nvim-tree give `--ignore-submodules`, so they do not. The
+  `:Git` status of fugitive does not give it. Fix: #3343.
 - **A nested git dir, by `cd`.** A `cd` into a subdir whose git dir uses a
-  key that is not on the list. The owner accepted this on #3325. A nested
-  git dir that a host-pane tool reaches with no `cd` is a different case:
-  the open vulnerability #3347 below.
+  key that is not on the list. The owner accepted this on #3325. The git
+  plugins of nvim do not reach a nested git dir with no `cd` (#3347).
 - **Keys with a name that the repo chooses.** For example
   `remote.<name>.uploadpack`, `remote.<name>.url`, and
   `url.<base>.insteadOf` run for a fetch, a pull, or a push; the tool
@@ -227,30 +227,10 @@ or a staged submodule (#3343).
 - **A language server in the host nvim.** It runs project code by design.
   The threat model puts it out of scope.
 
-## Known open vulnerability (#3347)
+## The nvim panes (#3347)
 
-This is an in-scope vulnerability, not an accepted limit. The nvim panes of
-a session run git in a nested or submodule `.git` with no `cd`. Three
-instances:
-
-- gitsigns attaches to the git dir of the file that the owner opens, and
-  its current-line blame runs `git blame --contents` there, after 200 ms.
-- the Telescope pickers (for example `git_commits`) run `git diff` in the
-  dir of the buffer.
-- lualine runs `git diff` in the dir of the buffer on `BufEnter` and
-  `BufWritePost`, with no delay.
-
-A worker fully controls a nested or submodule git dir that it writes, so it
-can plant a filter driver, a diff driver, or `diff.external` in that git
-dir, with an `info/attributes` or a `.gitattributes` that selects it. The
-driver then runs on the host when the owner opens the file or the picker.
-No `.bare/config` detach is needed, because the config is in a git dir that
-the worker controls.
-
-The env overrides of this doc cannot close this: git reads the driver config
-from the nested git dir, and `--no-textconv` stops only the blame textconv,
-not a clean filter or `diff.external`. The fix is nvim plugin config — a
-gitsigns `on_attach` that refuses a git dir that is not the nvim working
-dir, a Telescope previewer that passes `--no-ext-diff`, and a lualine `diff`
-component that reads the gitsigns state instead of running git — a
-different domain from `git.nix`. Tracked by #3347.
+A worker fully controls a nested or submodule git dir that it writes. The
+overrides of this doc cannot stop a driver that the config of that git dir
+defines. So the control for the nvim panes is in the nvim config: the git
+plugins of the prism nvim run git only in the repo of the dir where nvim
+starts. See the nvim-pane rule in `host-git-commands.md`.

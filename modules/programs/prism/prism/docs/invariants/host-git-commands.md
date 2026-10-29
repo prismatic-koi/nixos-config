@@ -1,15 +1,17 @@
 # Invariant: host git commands
 
-<!-- doclint-ignore: .bare/commondir, .bare/config, .bare/hooks, .bare/worktrees, core.hooksPath, core.fsmonitor, core.sshCommand, credential.helper, extensions.worktreeConfig, config.worktree, submodule.recurse, fetch.recurseSubmodules, push.recurseSubmodules, diff.ignoreSubmodules, protocol.ext.allow, GIT_CONFIG_PARAMETERS, GIT_PAGER, gitdir, commondir, rebase-merge/autostash -->
+<!-- doclint-ignore: .bare/commondir, .bare/config, .bare/hooks, .bare/worktrees, core.hooksPath, core.fsmonitor, core.sshCommand, credential.helper, extensions.worktreeConfig, config.worktree, submodule.recurse, fetch.recurseSubmodules, push.recurseSubmodules, diff.ignoreSubmodules, protocol.ext.allow, GIT_CONFIG_PARAMETERS, GIT_PAGER, gitdir, commondir, rebase-merge/autostash, info/attributes, b:git_dir -->
 <!--
-  These names are git config keys, git environment variables, and file
-  names in a git dir. They are git names, not names in this source tree.
+  These names are git config keys, git environment variables, file names
+  in a git dir, and a buffer variable of the nvim plugin fugitive. They are
+  git and nvim names, not names in this source tree.
 -->
 
-Issues: #3322, #3315, #3293, #3325. Code: `internal/git/host.go`
+Issues: #3322, #3315, #3293, #3347. Code: `internal/git/host.go`
 (`OpenBare`, `OpenWorktree`, `OpenDir`, `OuterBareRoot`, `EnvForDir`,
-`CloneCommand`), and the prefix+b keybind in the tmux config of prism
-(modules/programs/prism/tmux.nix, outside the prism Go tree).
+`CloneCommand`), the prefix+b keybind in the tmux config of prism
+(modules/programs/prism/tmux.nix, outside the prism Go tree), and the nvim
+config of prism (modules/programs/prism/neovim, outside the prism Go tree).
 
 ## The rule
 
@@ -224,6 +226,97 @@ Code: `internal/review/preflight.go`. Tests:
 - `git clone` makes a new repo, so it has no git dir to pin.
   `CloneCommand` gives it the command-line config only.
 
+## The nvim panes (#3347)
+
+prism starts nvim on the host, in the worktree of each session. This
+section is about the git plugins of that nvim. The root of the plugins is
+in git-root.nix, and the plugin configs are in plugins/, both in
+modules/programs/prism/neovim.
+
+### The nvim-pane rule
+
+The git plugins of the prism nvim run a git command that can start a
+filter, a diff driver, or an external diff in one repo only: the repo of
+the dir where nvim starts. This repo is the root. In a prism session, the
+root is the worktree.
+
+- In a subdir of the root, no plugin runs such a command with the git dir
+  of a `.git` dir or a `.git` file. A nested repo and a staged submodule
+  both have such a `.git`.
+- At the root, the `git status` and `git diff` of gitsigns, Telescope, and
+  nvim-tree give `--ignore-submodules`. So git does not run in a submodule.
+- No Telescope git command runs a diff driver or `diff.external`, at the
+  root too.
+
+### Why the nvim-pane rule exists
+
+A worker can write a `.git` dir or a `.git` file in any subdir of its
+worktree. It can also stage a submodule, with its own git dir, in its own
+index. The worker controls the config of these git dirs. That config can
+define a filter driver, a diff driver, or `diff.external`. An
+`info/attributes` file in the same git dir selects the driver. The
+overrides of `user-git-overrides.md` do not turn off these keys.
+
+By default, gitsigns, lualine, and fugitive find the git dir from the dir
+of the buffer. Telescope finds it from the nvim cwd. nvim-tree finds it
+from each dir that it shows. So a planted driver runs on the host when the
+owner opens a file in the subdir, opens the file tree, or opens a git
+picker. The owner does no `cd`. This route works on `bwrap` and
+`sandbox-exec`, because the worker writes in its own worktree.
+
+### How the plugins use the root
+
+At startup, git-root.nix walks up from the startup dir to the first dir
+that holds a `.git` entry. That dir is the root. The module reads the git
+dir of the root from its `.git` entry. A later `:cd`, or a cwd change by
+nvim-tree, does not change the root.
+
+| Plugin | Control |
+|---|---|
+| gitsigns | The automatic attach is off. An autocmd attaches each buffer with the git dir and the work tree of the root, on the git command line. So git does no discovery. A file in a nested repo or a submodule is not in the index of the root, so gitsigns does not attach to it. |
+| lualine | The `diff` component reads the counts from gitsigns. It runs no git. |
+| Telescope | Each git picker gets the root as its cwd, and the git dir and the work tree of the root. `diff`, `show`, `log`, and `stash show` get `--no-ext-diff` and `--no-textconv`. `diff` and `status` get `--ignore-submodules=all`. |
+| nvim-tree | It runs `git status` only when the toplevel is the root. Its `git status` gets `--ignore-submodules=all`. |
+| fugitive | Each buffer has `b:git_dir` set to the git dir of the root. So `:Git` acts on the root. |
+
+If nvim starts outside a git repo, there is no root. Then gitsigns attaches
+to no buffer, the Telescope git pickers refuse, nvim-tree shows no git
+status, and fugitive is off.
+
+The Telescope and nvim-tree controls replace a private function of the
+plugin. If a plugin update removes that function, the control fails
+closed. The Telescope git pickers refuse and show an error. nvim-tree
+turns off its git integration and shows an error at startup.
+
+### Limits of the nvim-pane rule
+
+- **Read-only git outside the root.** lualine `branch` reads the `HEAD`
+  file of the nearest git dir of the buffer. For a reftable repo, it runs
+  `git symbolic-ref` and `git rev-parse` in that git dir. nvim-tree runs
+  `git rev-parse` in each dir that it shows, to find the toplevel. These
+  commands run no hook, filter, diff driver, or external diff.
+- **The root repo.** The rule does not change what git reads in the root.
+  A planted driver at the root needs a planted `.bare/config`, the route of
+  #3346. The `:Git` status of fugitive runs `git status` with no
+  `--ignore-submodules` option. So a staged submodule with `ignore = none`
+  makes it run git in the submodule. That is the route of #3343.
+- **A typed command.** A `:cd`, a `:Gitsigns attach`, and a git command in
+  `:!` or `:terminal` use git discovery. Each is a step by the owner, the
+  same as a `cd` in the shell (see `user-git-overrides.md`).
+- **A language server in the host nvim.** It runs project code by design.
+  The threat model puts it out of scope.
+
+### Tests of the nvim-pane rule
+
+The tests are manual. They use a scratch bare+worktree layout, git 2.56,
+nvim 0.12, and the plugin versions of this branch. A nested repo, a staged
+submodule with `ignore = none`, and a symlink to a repo outside the
+worktree each hold a planted clean filter, textconv driver, and
+`diff.external`. Each step first runs the nvim config of `main` and makes
+sure that the payload runs. Then it runs the config with this rule and
+makes sure that the payload does not run. The PR of #3347 holds the full
+table.
+
 ## Known limits
 
 - **A project that is not a prism project.** Outside a prism project,
@@ -231,15 +324,14 @@ Code: `internal/review/preflight.go`. Tests:
   that runs in a plain clone can write its `.git`, so a host git command
   in that clone reads config that the session wrote.
 - **Tools in the host panes.** prism starts nvim and a shell in the edit
-  and term windows of a session, on the host, in the worktree. Their git
-  plugins and prompts run git there, and this rule does not cover them.
-  #3326 hardens the git environment of these panes: it turns off the
-  code-execution config keys for every user git process (see
-  `user-git-overrides.md`). A planted driver that a `.gitattributes` at the
-  worktree root selects is a known limit (#3346). A nested or submodule
-  `.git` that a host-pane tool (gitsigns on file-open, a Telescope picker)
-  reaches with no `cd` is an open in-scope vulnerability tracked by #3347;
-  an explicit `cd` into such a subdir is the owner-accepted case of #3325.
+  and term windows of a session, on the host, in the worktree. The
+  `git.Repo` rule does not cover them. #3326 hardens the git environment of
+  these panes: it turns off the code-execution config keys for every user
+  git process (see `user-git-overrides.md`). A planted driver that a
+  `.gitattributes` at the worktree root selects is a known limit (#3346).
+  The git plugins of nvim obey the nvim-pane rule above (#3347). A `cd`
+  into a subdir that holds a nested git dir, and then a git command, is a
+  step by the owner and an accepted limit (see `user-git-overrides.md`).
 - **Refs.** A session can write the refs of `.bare`, and a host command
   acts on those refs. For example, a session can change a remote-tracking
   ref, and a later `git rebase origin/<base>` with no fetch first uses the

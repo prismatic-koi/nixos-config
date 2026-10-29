@@ -13,6 +13,7 @@
   imports = [
     ./abbreviations.nix
     ./autocmd.nix
+    ./git-root.nix
     ./keymaps.nix
     ./options.nix
     ./plugins

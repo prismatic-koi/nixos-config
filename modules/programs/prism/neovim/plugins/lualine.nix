@@ -53,22 +53,37 @@ in
           			tabline = 100,
           			winbar = 100,
           		},
-          		sections = {
-          			lualine_a = { "mode" },
-          			lualine_b = { "branch", "diff", "diagnostics" },
-          			lualine_c = { "filename" },
-          			lualine_x = { "filetype" },
-          			lualine_y = { "progress" },
-          			lualine_z = { "location" },
+          	},
+          	sections = {
+          		lualine_a = { "mode" },
+          		lualine_b = {
+          			"branch",
+          			{
+          				"diff",
+          				-- With no source, the diff component runs `git diff` in the
+          				-- dir of the buffer, which can be a nested repo (#3347).
+          				-- gitsigns attaches only to the repo of the startup dir.
+          				source = function()
+          					local status = vim.b.gitsigns_status_dict
+          					if status then
+          						return { added = status.added, modified = status.changed, removed = status.removed }
+          					end
+          				end,
+          			},
+          			"diagnostics",
           		},
-          		inactive_sections = {
-          			lualine_a = {},
-          			lualine_b = {},
-          			lualine_c = { "filename" },
-          			lualine_x = { "location" },
-          			lualine_y = {},
-          			lualine_z = {},
-          		},
+          		lualine_c = { "filename" },
+          		lualine_x = { "encoding", "fileformat", "filetype" },
+          		lualine_y = { "progress" },
+          		lualine_z = { "location" },
+          	},
+          	inactive_sections = {
+          		lualine_a = {},
+          		lualine_b = {},
+          		lualine_c = { "filename" },
+          		lualine_x = { "location" },
+          		lualine_y = {},
+          		lualine_z = {},
           	},
           })
         '';
