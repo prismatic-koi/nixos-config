@@ -207,8 +207,8 @@ staged submodule (#3343).
 - **A staged submodule with `ignore = none` in `.gitmodules`.** A typed
   `git status` at the worktree root runs git in the submodule, and a driver
   in the submodule git dir runs. The prompt, gitsigns, the Telescope git
-  pickers, and nvim-tree give `--ignore-submodules`, so they do not. The
-  `:Git` status of fugitive does not give it. Fix: #3343.
+  pickers, and nvim-tree give `--ignore-submodules`, so they do not. Fix:
+  #3343. The `:Git` status of fugitive does not give it. Fix: #3353.
 - **A nested git dir, by `cd`.** A `cd` into a subdir whose git dir uses a
   key that is not on the list. The owner accepted this on #3325. The git
   plugins of nvim do not reach a nested git dir with no `cd` (#3347).

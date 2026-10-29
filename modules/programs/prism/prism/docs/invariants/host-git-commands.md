@@ -299,7 +299,8 @@ turns off its git integration and shows an error at startup.
   A planted driver at the root needs a planted `.bare/config`, the route of
   #3346. The `:Git` status of fugitive runs `git status` with no
   `--ignore-submodules` option. So a staged submodule with `ignore = none`
-  makes it run git in the submodule. That is the route of #3343.
+  makes it run git in the submodule. #3353 tracks this route. It is the
+  route of #3343, through fugitive.
 - **A typed command.** A `:cd`, a `:Gitsigns attach`, and a git command in
   `:!` or `:terminal` use git discovery. Each is a step by the owner, the
   same as a `cd` in the shell (see `user-git-overrides.md`).
