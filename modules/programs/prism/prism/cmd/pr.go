@@ -17,6 +17,7 @@ package cmd
 //	--variant <name>                model variant override (overrides all agents' variant)
 //	--model-override role=model     per-role model override (repeatable)
 //	--harness <name>                agent harness to use (default: from profile slot, or "pi")
+//	--over-budget <reason>          start a worker at or over the 7-day spawn budget
 //	--isolation <mode>              isolation mode: bwrap, sandbox-exec, or host
 
 import (
@@ -114,6 +115,11 @@ var prCmd = &cobra.Command{
 		ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
 		modelOverrideFlag, _ := cmd.Flags().GetStringArray("model-override")
 
+		overBudgetReason, err := overBudgetFlag(cmd)
+		if err != nil {
+			return err
+		}
+
 		promptFlag, err := resolvePrompt(cmd)
 		if err != nil {
 			return err
@@ -162,6 +168,9 @@ var prCmd = &cobra.Command{
 			if cmd.Flags().Changed("isolation") {
 				body["isolation"] = isolationFlag
 			}
+			if overBudgetReason != "" {
+				body["over_budget"] = overBudgetReason
+			}
 			if len(modelOverrideFlag) > 0 {
 				modelsByRole, parseErr := parseModelOverrides(modelOverrideFlag)
 				if parseErr != nil {
@@ -206,6 +215,10 @@ var prCmd = &cobra.Command{
 
 		branch, err := resolveBranch(bareRoot, "", prNumber)
 		if err != nil {
+			return err
+		}
+
+		if err := enforceWorkerSpawnBudget(cmd, plannedSpawnRole(agentFlag, branch), cfg, bareRoot, branch); err != nil {
 			return err
 		}
 
@@ -513,6 +526,7 @@ func init() {
 	prCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	prCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
 	prCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
+	prCmd.Flags().String("over-budget", "", overBudgetHelp)
 	prCmd.Flags().String("harness", "", "Agent harness to use (default: from profile slot, or 'pi')")
 	prCmd.Flags().String("isolation", "", "Isolation mode: bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	rootCmd.AddCommand(prCmd)

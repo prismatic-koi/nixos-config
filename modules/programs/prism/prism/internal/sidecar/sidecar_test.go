@@ -5310,6 +5310,18 @@ func TestHostAPI_Spawn_WorkerForbidden(t *testing.T) {
 	}
 }
 
+// A worker cannot self-override the spawn budget: the role gate on /spawn
+// refuses it before over_budget is read (#3360).
+func TestHostAPI_Spawn_WorkerOverBudgetForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"repo":"myrepo","branch":"new-branch","over_budget":"self-granted"}`)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+}
+
 func TestHostAPI_Cleanup_WorkerForbidden(t *testing.T) {
 	d := openTestDB(t)
 	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
