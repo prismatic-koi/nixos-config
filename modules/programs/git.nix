@@ -19,6 +19,42 @@ let
   # environment.d cannot hold an empty value, and git stops with "missing
   # config value" when one GIT_CONFIG_VALUE_<n> is absent. So the systemd and
   # launchd environments get only the entries that have a value.
+  # Every hook event of githooks(5) on git 2.56. git 2.56 can define a hook
+  # in config (hook.<name>.command with hook.<name>.event), which
+  # core.hooksPath = /dev/null does not stop. hook.<event>.enabled = false
+  # stops the config hooks of that event, even when the repo config sets it
+  # to true. The owner uses no git hooks, so this breaks nothing.
+  hookEvents = [
+    "applypatch-msg"
+    "pre-applypatch"
+    "post-applypatch"
+    "pre-commit"
+    "pre-merge-commit"
+    "prepare-commit-msg"
+    "commit-msg"
+    "post-commit"
+    "pre-rebase"
+    "post-checkout"
+    "post-merge"
+    "pre-push"
+    "pre-receive"
+    "update"
+    "proc-receive"
+    "post-receive"
+    "post-update"
+    "reference-transaction"
+    "push-to-checkout"
+    "pre-auto-gc"
+    "post-rewrite"
+    "sendemail-validate"
+    "fsmonitor-watchman"
+    "p4-changelist"
+    "p4-prepare-changelist"
+    "p4-post-changelist"
+    "p4-pre-submit"
+    "post-index-change"
+  ];
+
   gitConfigOverrides = [
     # Keys that run a program: turn them off.
     {
@@ -127,7 +163,11 @@ let
       key = "push.recurseSubmodules";
       value = "no";
     }
-  ];
+  ]
+  ++ map (event: {
+    key = "hook.${event}.enabled";
+    value = "false";
+  }) hookEvents;
 
   gitEnvOverrides = {
     # GIT_ATTR_SOURCE, which would make git read no .gitattributes file, is
