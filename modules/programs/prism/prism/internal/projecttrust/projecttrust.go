@@ -23,6 +23,10 @@
 // #3287). The record of such a session is in pr_branch_sessions in prism.db.
 // Only `prism pr` and `prism spawn` write it, on the host, and no sandbox can
 // reach prism.db.
+//
+// SessionProject is the repo identity part of the decision. Another host
+// decision that must not use a value that a sandbox can write uses it too:
+// the grant of the Notion store (issue #3319).
 package projecttrust
 
 import (
@@ -79,6 +83,27 @@ func Load(prBranches func() ([]PRBranch, error)) Policy {
 // Approve reports whether pi that prism starts for sessionName in dir gets
 // --approve. All of these must be true:
 //
+//   - SessionProject(sessionName, dir) gives a project root.
+//   - The basename of that project root is in TrustedRepos.
+//   - No PR-branch record names the root session of sessionName
+//     (sessionname.Root), and no record names dir as its worktree.
+//
+// Any other case gives false.
+func (p Policy) Approve(sessionName, dir string) bool {
+	if len(p.TrustedRepos) == 0 {
+		return false
+	}
+	root, ok := p.SessionProject(sessionName, dir)
+	if !ok || !slices.Contains(p.TrustedRepos, filepath.Base(root)) {
+		return false
+	}
+	return !p.onPRBranch(sessionName, filepath.Clean(dir))
+}
+
+// SessionProject returns the project root of the repo that sessionName
+// names, and reports whether dir is a start directory of that repo. All of
+// these must be true:
+//
 //   - dir is a worktree root of a bare+worktree layout, and the session name
 //     has a branch ("<repo>@<branch>", or a descendant of one). Or dir is a
 //     project directory outside every bare+worktree layout, and the session
@@ -87,31 +112,29 @@ func Load(prBranches func() ([]PRBranch, error)) Policy {
 //     prism project root in config.json.
 //   - The repo part of the session name matches the basename of the project
 //     root.
-//   - That basename is in TrustedRepos.
-//   - No PR-branch record names the root session of sessionName
-//     (sessionname.Root), and no record names dir as its worktree.
 //
-// Any other case gives false, an empty or relative dir included. The name
-// alone and the directory alone cannot give true: a project root under a
-// writable directory such as ~/.npm is not a prism project root.
-func (p Policy) Approve(sessionName, dir string) bool {
-	if len(p.TrustedRepos) == 0 || !filepath.IsAbs(dir) || sessionname.IsMeta(sessionName) {
-		return false
+// Any other case gives false, an empty or relative dir and a meta-session
+// name included. The name alone and the directory alone cannot give true: a
+// project root under a writable directory such as ~/.npm is not a prism
+// project root. SessionProject reads no TrustedRepos and no PR-branch
+// record.
+func (p Policy) SessionProject(sessionName, dir string) (string, bool) {
+	if !filepath.IsAbs(dir) || sessionname.IsMeta(sessionName) {
+		return "", false
 	}
 	dir = filepath.Clean(dir)
 	repo := sessionname.Repo(sessionName)
 	if repo == "" {
-		return false
+		return "", false
 	}
 	root, ok := projectRoot(sessionName, dir)
 	if !ok || !p.isProjectRoot(root) {
-		return false
+		return "", false
 	}
-	name := filepath.Base(root)
-	if sessionname.RepoComponent(name) != repo || !slices.Contains(p.TrustedRepos, name) {
-		return false
+	if sessionname.RepoComponent(filepath.Base(root)) != repo {
+		return "", false
 	}
-	return !p.onPRBranch(sessionName, dir)
+	return root, true
 }
 
 // onPRBranch reports whether a PR-branch record covers sessionName or dir. It

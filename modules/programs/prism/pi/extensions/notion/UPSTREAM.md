@@ -262,16 +262,17 @@ peer's lock is always broken before we give up on it.
 Both env vars exist for tests. Do not set them in production config.
 
 The lock lives beside the token file, in the store dir
-`~/.local/state/prism/pi-notion/` (#3290). Every pi session on the host shares
-that dir: prism binds it read-write into each bwrap sandbox and grants it in the
-sandbox-exec profile (`pi_shared_state.go`, `sandbox_exec.go` §6c). So the lock
-serialises host-mode, bwrap, and sandbox-exec sessions. It is a dir bind, not a
+`~/.local/state/prism/pi-notion/` (#3290). Every pi session on the host that
+uses Notion shares that dir: prism binds it read-write into the bwrap sandbox
+and grants it in the sandbox-exec profile (`pi_shared_state.go`,
+`sandbox_exec.go` §6c) of each session in `NOTION_MCP_REPOS` (#3319). So the
+lock serialises host-mode, bwrap, and sandbox-exec sessions. It is a dir bind, not a
 file bind: a `rename(2)` onto a bind mount fails with `EBUSY`, and a refresh
 that cannot save its rotated token strands the store on a rotated-away token
 (see the rotation hazard above).
 
-Every sandbox can write the store dir, and a pi that is not sandboxed uses
-it too. So `writeLockOwner` creates the `owner` file with
+Every sandbox that gets the store dir can write it, and a pi that is not
+sandboxed uses it too. So `writeLockOwner` creates the `owner` file with
 `O_CREAT|O_EXCL|O_NOFOLLOW`, and `readRegularFileSync` reads the owner file
 and the store files with `O_NONBLOCK`, as a regular file only. A sandbox that
 swaps in a dir with an `owner` symlink after our `mkdir` cannot make a host pi
@@ -361,7 +362,15 @@ host mode both start in the worktree) but cannot be pointed elsewhere by an
 environment variable.
 
 This is a scoping and least-privilege control, not a security boundary against
-a hostile agent.
+a hostile agent. For a bwrap or sandbox-exec session, prism enforces the same
+scope on the host (#3319): the session gets the store dir only when its repo
+is in `NOTION_MCP_REPOS`. prism takes the repo from the session name and the
+worktree that it holds on the host, not from a value that the sandbox can
+write. A session that does not get the store dir cannot read or write the
+store, and cannot read the old store files in the pi agent dir. An empty
+`NOTION_MCP_REPOS` gives the store to no sandboxed session. A `/login-notion`
+in such a session does not reach the store on the host. See
+`prism/docs/invariants/sandbox-pi-agent-dir.md`.
 
 ## Deferred registration (issue #2532)
 

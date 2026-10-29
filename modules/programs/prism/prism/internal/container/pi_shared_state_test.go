@@ -518,3 +518,152 @@ func TestPISharedStateSBPLAllow_Empty(t *testing.T) {
 		t.Errorf("piSharedStateSBPLAllow(\"\", \"\") = %q, want empty", got)
 	}
 }
+
+// InPINotionRepos matches dir with the NOTION_MCP_REPOS entries as the
+// extension does (scope.ts): dir is an entry or is below one (#3319).
+func TestInPINotionRepos(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	vault := filepath.Join(home, "documents", "obsidian")
+	code := filepath.Join(home, "code", "repo")
+	worktree := filepath.Join(code, "main")
+	other := filepath.Join(home, "code", "other")
+	prefix := filepath.Join(home, "documents", "obsidian-old")
+	for _, d := range []string{vault, worktree, other, prefix} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(home, "vault-link")
+	if err := os.Symlink(vault, link); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name  string
+		repos string
+		dir   string
+		want  bool
+	}{
+		{"tilde entry", "~/documents/obsidian", vault, true},
+		{"$HOME entry", "$HOME/documents/obsidian", vault, true},
+		{"${HOME} entry", "${HOME}/documents/obsidian", vault, true},
+		{"absolute entry", vault, vault, true},
+		{"second entry", "~/x:~/documents/obsidian", vault, true},
+		{"spaces around an entry", " ~/documents/obsidian ", vault, true},
+		{"trailing slash on the entry", "~/documents/obsidian/", vault, true},
+		{"worktree below an entry", "~/code/repo", worktree, true},
+		{"symlink entry", "~/vault-link", vault, true},
+		{"symlink dir", "~/documents/obsidian", link, true},
+
+		{"empty list", "", vault, false},
+		{"only separators", "::", vault, false},
+		{"other repo", "~/documents/obsidian", other, false},
+		{"name prefix is not a parent", "~/documents/obsidian", prefix, false},
+		{"entry below the dir", "~/code/repo/main", code, false},
+		{"relative entry", "documents/obsidian", vault, false},
+		{"tilde user entry", "~user/documents/obsidian", vault, false},
+		{"missing entry", "~/gone", vault, false},
+		{"relative dir", "~/documents/obsidian", "documents/obsidian", false},
+		{"empty dir", "~/documents/obsidian", "", false},
+		{"missing dir", "~/documents", filepath.Join(home, "documents", "gone"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := InPINotionRepos(tc.repos, tc.dir); got != tc.want {
+				t.Errorf("InPINotionRepos(%q, %q) = %v, want %v", tc.repos, tc.dir, got, tc.want)
+			}
+		})
+	}
+}
+
+// A home entry with no home dir matches nothing.
+func TestInPINotionRepos_NoHome(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", "")
+	for _, repos := range []string{"~", "~/x", "$HOME", "${HOME}/x"} {
+		if InPINotionRepos(repos, dir) {
+			t.Errorf("InPINotionRepos(%q, %q) = true with no HOME, want false", repos, dir)
+		}
+	}
+}
+
+// bwrap binds the Notion store dir and the old store files in the agent dir
+// only when PINotionHostDir is set (#3319). The lock dir is bound in both
+// cases.
+func TestAppendPIBwrapMounts_NotionStoreOnlyWithNotionDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	lockDir, notionDir := PISharedStateDirs(t.TempDir())
+	for _, d := range []string{lockDir, notionDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, granted := range []bool{true, false} {
+		cfg := piBwrapMountsCfg(t)
+		legacy := filepath.Join(cfg.PIAgentConfigHostDir, "notion-mcp-oauth.json")
+		writeTestFile(t, legacy, "{}")
+		cfg.PILockHostDir = lockDir
+		if granted {
+			cfg.PINotionHostDir = notionDir
+		}
+		args, err := appendPIBwrapMounts(nil, cfg)
+		if err != nil {
+			t.Fatalf("appendPIBwrapMounts: %v", err)
+		}
+		if !hasTriple(args, "--bind", lockDir, lockDir) {
+			t.Errorf("granted=%v: no --bind of the lock dir in %v", granted, redactedArgs(args))
+		}
+		if got := slices.Contains(args, notionDir); got != granted {
+			t.Errorf("granted=%v: args name the Notion store dir = %v, want %v: %v", granted, got, granted, redactedArgs(args))
+		}
+		if got := slices.Contains(args, legacy); got != granted {
+			t.Errorf("granted=%v: args name the old store file = %v, want %v: %v", granted, got, granted, redactedArgs(args))
+		}
+	}
+}
+
+// Section 21l denies a read of the old Notion store files in the agent dir
+// for a pi session with no Notion store dir (#3319), and must follow every
+// allow, or SBPL lets the section-6a read grant outrank it. A session with
+// the store dir, and a session that is not pi, get no such deny.
+func TestGenerateProfile_PINotionLegacyDenyFollowsEveryAllow(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	lockDir, notionDir := PISharedStateDirs(fakeHome)
+	agentDir := filepath.Join(fakeHome, ".pi", "agent")
+	deny := piNotionLegacySBPLDeny(agentDir)
+	for _, name := range piNotionStoreFiles {
+		if !strings.Contains(deny, "(literal "+quoteSBPL(filepath.Join(agentDir, name))+")") {
+			t.Errorf("section-21l deny does not name %s: %s", name, deny)
+		}
+	}
+	if !strings.HasPrefix(deny, "(deny file-read*\n") {
+		t.Errorf("section-21l deny is not a read deny: %s", deny)
+	}
+
+	m := newSandboxExecManager(Config{SessionName: "repo@feature", Harness: "pi", Worktree: filepath.Join(fakeHome, "w"), PILockHostDir: lockDir})
+	profile := generateProfile(m)
+	denyIdx := strings.Index(profile, deny)
+	if denyIdx < 0 {
+		t.Fatalf("profile of a session with no Notion store dir has no section-21l deny:\n%s", profile)
+	}
+	if last := strings.LastIndex(profile, "(allow "); denyIdx < last {
+		t.Errorf("section-21l deny (idx %d) precedes an allow (idx %d)", denyIdx, last)
+	}
+	if strings.Contains(profile, "pi-notion") {
+		t.Errorf("profile of a session with no Notion store dir names the store dir:\n%s", profile)
+	}
+
+	m = newSandboxExecManager(Config{SessionName: "repo@feature", Harness: "pi", Worktree: filepath.Join(fakeHome, "w"), PILockHostDir: lockDir, PINotionHostDir: notionDir})
+	if profile := generateProfile(m); strings.Contains(profile, deny) {
+		t.Errorf("profile of a session with the Notion store dir has the section-21l deny:\n%s", profile)
+	}
+	m = newSandboxExecManager(Config{SessionName: "repo@feature", Worktree: filepath.Join(fakeHome, "w")})
+	if profile := generateProfile(m); strings.Contains(profile, "notion-mcp") {
+		t.Errorf("profile of a non-pi session names a Notion store file:\n%s", profile)
+	}
+}

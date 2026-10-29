@@ -50,6 +50,15 @@ type piAgentDirEnv struct {
 
 func newPIAgentDirEnv(t *testing.T) piAgentDirEnv {
 	t.Helper()
+	return newPIAgentDirEnvWith(t, true)
+}
+
+// newPIAgentDirEnvWith is newPIAgentDirEnv. With notion false, the session
+// does not get the Notion store dir: PINotionHostDir is empty, as prism
+// agent-run leaves it for a session that is not in NOTION_MCP_REPOS
+// (#3319). prism agent-run still makes the dir on the host.
+func newPIAgentDirEnvWith(t *testing.T, notion bool) piAgentDirEnv {
+	t.Helper()
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
@@ -99,6 +108,10 @@ func newPIAgentDirEnv(t *testing.T) piAgentDirEnv {
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatalf("mkdir worktree: %v", err)
 	}
+	cfgNotionDir := ""
+	if notion {
+		cfgNotionDir = notionDir
+	}
 	m := container.New(container.Config{
 		SessionName:      "integ-pi-agent-dir",
 		InstanceID:       instanceID,
@@ -108,7 +121,7 @@ func newPIAgentDirEnv(t *testing.T) piAgentDirEnv {
 		GitUserName:      "test-user",
 		GitUserEmail:     "test@example.com",
 		PILockHostDir:    lockDir,
-		PINotionHostDir:  notionDir,
+		PINotionHostDir:  cfgNotionDir,
 		PIAuthSessionDir: sessionDir,
 	})
 	return piAgentDirEnv{
@@ -422,6 +435,111 @@ func TestSandboxExecPIAgentDir_CredentialReplaceWorksWithoutDeny(t *testing.T) {
 	}
 	if fi, err := os.Lstat(filepath.Join(e.agentDir, name)); err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Errorf("%s on the host = (%v, %v), want a symlink", name, fi, err)
+	}
+}
+
+// writeNotionStoreFixture writes a Notion token file in the store dir and an
+// old one in the agent dir. Call it before Prepare, which links the agent dir
+// entries into the per-session agent dir.
+func writeNotionStoreFixture(t *testing.T, e piAgentDirEnv) {
+	t.Helper()
+	for path, content := range map[string]string{
+		filepath.Join(e.notionDir, "notion-mcp-oauth.json"): "store",
+		filepath.Join(e.agentDir, "notion-mcp-oauth.json"):  "legacy",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+}
+
+// piNotionReadScript reads the Notion store, the old store in the agent
+// dir, and the old store through the symlink in the per-session agent dir.
+// Each step has its own exit code.
+const piNotionReadScript = `cat "$N/notion-mcp-oauth.json" >/dev/null || exit 50
+cat "$A/notion-mcp-oauth.json" >/dev/null || exit 51
+cat "$P/notion-mcp-oauth.json" >/dev/null || exit 52
+exit 0`
+
+// TestSandboxExecPIAgentDir_NotionStoreDeniedWithoutGrant: a session that
+// is not in NOTION_MCP_REPOS (#3319) has no section-6c grant of the Notion
+// store dir, and section 21l denies a read of the old store files in the
+// agent dir. Each read and each write of the store fails with "Operation not
+// permitted", and the host store does not change. The agent dir is still
+// readable, so the deny is specific to the store files.
+func TestSandboxExecPIAgentDir_NotionStoreDeniedWithoutGrant(t *testing.T) {
+	e := newPIAgentDirEnvWith(t, false)
+	writeNotionStoreFixture(t, e)
+	prepared, _ := preparePositiveProfile(t, e.m)
+	profilePath := writeAugmentedPositiveProfile(t, prepared)
+
+	if out, err := e.run(t, profilePath, `cat "$A/settings.json" >/dev/null && cat "$P/settings.json" >/dev/null`); err != nil {
+		t.Fatalf("the agent dir is not readable under the profile of a session without the store.\nExit: %v\nOutput: %s\nProfile: %s", err, out, profilePath)
+	}
+	for _, script := range []string{
+		`cat "$N/notion-mcp-oauth.json"`,
+		`ls "$N"`,
+		`printf x > "$N/notion-mcp-oauth.json"`,
+		`touch "$N/.notion-mcp.tmp.1"`,
+		`mkdir "$N/notion-mcp-oauth.json.lock"`,
+		`cat "$A/notion-mcp-oauth.json"`,
+		`cat "$P/notion-mcp-oauth.json"`,
+	} {
+		out, err := e.run(t, profilePath, script)
+		if err == nil {
+			t.Errorf("%q succeeded in a session without the store.\nOutput: %s\nProfile: %s", script, out, profilePath)
+			continue
+		}
+		if !strings.Contains(string(out), "Operation not permitted") {
+			t.Errorf("%q failed for a reason other than the sandbox: %v\nOutput: %s", script, err, out)
+		}
+	}
+	if got := treeOf(t, e.notionDir); !slices.Equal(got, []string{"notion-mcp-oauth.json"}) {
+		t.Errorf("host store dir = %v, want only the token file", got)
+	}
+	for path, want := range map[string]string{
+		filepath.Join(e.notionDir, "notion-mcp-oauth.json"): "store",
+		filepath.Join(e.agentDir, "notion-mcp-oauth.json"):  "legacy",
+	} {
+		if got, err := os.ReadFile(path); err != nil || string(got) != want {
+			t.Errorf("host %s = (%q, %v), want %q", path, got, err, want)
+		}
+	}
+}
+
+// TestSandboxExecPIAgentDir_NotionStoreReadableWithGrant is the paired
+// negative test of NotionStoreDeniedWithoutGrant: under the profile of a
+// session in NOTION_MCP_REPOS, the same reads work.
+func TestSandboxExecPIAgentDir_NotionStoreReadableWithGrant(t *testing.T) {
+	e := newPIAgentDirEnvWith(t, true)
+	writeNotionStoreFixture(t, e)
+	prepared, _ := preparePositiveProfile(t, e.m)
+	profilePath := writeAugmentedPositiveProfile(t, prepared)
+
+	if out, err := e.run(t, profilePath, piNotionReadScript); err != nil {
+		t.Fatalf("a Notion store read failed in a session with the store, so NotionStoreDeniedWithoutGrant proves nothing (see the exit codes in piNotionReadScript).\nExit: %v\nOutput: %s\nProfile: %s",
+			err, out, profilePath)
+	}
+}
+
+// TestSandboxExecPIAgentDir_NotionLegacyReadableWithoutDeny is the paired
+// negative test of the section-21l part of NotionStoreDeniedWithoutGrant:
+// without the deny, a session without the store reads the old store file
+// in the agent dir.
+func TestSandboxExecPIAgentDir_NotionLegacyReadableWithoutDeny(t *testing.T) {
+	e := newPIAgentDirEnvWith(t, false)
+	writeNotionStoreFixture(t, e)
+	deny := regexp.MustCompile(`\(deny file-read\*\n  \(literal ` +
+		regexp.QuoteMeta(sbplQuoteForTest(filepath.Join(e.agentDir, "notion-mcp-oauth.json"))) + `\)\n  \(literal ` +
+		regexp.QuoteMeta(sbplQuoteForTest(filepath.Join(e.agentDir, "notion-mcp-client.json"))) + `\)\)\n`)
+	profilePath := withMutatedProfile(t, e.m, func(p string) string { return deny.ReplaceAllString(p, "") })
+
+	out, err := e.run(t, profilePath, `cat "$A/notion-mcp-oauth.json" && cat "$P/notion-mcp-oauth.json"`)
+	if err != nil {
+		t.Fatalf("without section 21l the read of the old store still failed, so NotionStoreDeniedWithoutGrant proves nothing for it.\nExit: %v\nOutput: %s", err, out)
+	}
+	if string(out) != "legacylegacy" {
+		t.Errorf("output = %q, want the old store file two times", out)
 	}
 }
 

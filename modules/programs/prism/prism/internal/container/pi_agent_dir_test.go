@@ -78,7 +78,7 @@ func TestAppendPIAgentDirBwrapMounts_ReadOnlyExceptWriteList(t *testing.T) {
 	authDir := piAuthDirFixture(t)
 	const sandboxDir = "/run/prism/pi-agent"
 
-	args, err := appendPIAgentDirBwrapMounts(nil, hostDir, sandboxDir, worktree, authDir)
+	args, err := appendPIAgentDirBwrapMounts(nil, hostDir, sandboxDir, worktree, authDir, true)
 	if err != nil {
 		t.Fatalf("appendPIAgentDirBwrapMounts: %v", err)
 	}
@@ -136,6 +136,39 @@ func TestAppendPIAgentDirBwrapMounts_ReadOnlyExceptWriteList(t *testing.T) {
 	}
 }
 
+// A session that does not get the Notion store dir (#3319) gets no bind of
+// the old Notion store files in the agent dir. Every other entry is as for a
+// session that gets the store.
+func TestAppendPIAgentDirBwrapMounts_NoNotionStoreFilesWithoutNotion(t *testing.T) {
+	hostDir, worktree := piAgentDirFixture(t)
+	const sandboxDir = "/run/prism/pi-agent"
+
+	withNotion, err := appendPIAgentDirBwrapMounts(nil, hostDir, sandboxDir, worktree, "", true)
+	if err != nil {
+		t.Fatalf("appendPIAgentDirBwrapMounts(notion): %v", err)
+	}
+	without, err := appendPIAgentDirBwrapMounts(nil, hostDir, sandboxDir, worktree, "", false)
+	if err != nil {
+		t.Fatalf("appendPIAgentDirBwrapMounts(no notion): %v", err)
+	}
+
+	want := bindsAt(withNotion, sandboxDir)
+	for _, name := range piNotionStoreFiles {
+		if want[name] != "--ro-bind-try" {
+			t.Fatalf("a session with the store has no read-only bind of %s: %v", name, want)
+		}
+		delete(want, name)
+	}
+	if got := bindsAt(without, sandboxDir); !mapsEqual(got, want) {
+		t.Errorf("mounts in the sandbox agent dir without the store:\ngot:  %v\nwant: %v", got, want)
+	}
+	for _, name := range piNotionStoreFiles {
+		if host := filepath.Join(hostDir, name); slices.Contains(without, host) {
+			t.Errorf("the old store file %s is in the args of a session without the store: %v", host, without)
+		}
+	}
+}
+
 func mapsEqual(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false
@@ -160,7 +193,7 @@ func TestAppendPIAgentDirBwrapMounts_SymlinkCredentialNotBound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	args, err := appendPIAgentDirBwrapMounts(nil, hostDir, "/run/prism/pi-agent", worktree, "")
+	args, err := appendPIAgentDirBwrapMounts(nil, hostDir, "/run/prism/pi-agent", worktree, "", true)
 	if err != nil {
 		t.Fatalf("appendPIAgentDirBwrapMounts: %v", err)
 	}
@@ -173,7 +206,7 @@ func TestAppendPIAgentDirBwrapMounts_SymlinkCredentialNotBound(t *testing.T) {
 // host: not a bind of the host file, and not a symlink.
 func TestAppendPIAgentDirBwrapMounts_NoAuthDirNoAuthFile(t *testing.T) {
 	hostDir, worktree := piAgentDirFixture(t)
-	args, err := appendPIAgentDirBwrapMounts(nil, hostDir, "/run/prism/pi-agent", worktree, "")
+	args, err := appendPIAgentDirBwrapMounts(nil, hostDir, "/run/prism/pi-agent", worktree, "", true)
 	if err != nil {
 		t.Fatalf("appendPIAgentDirBwrapMounts: %v", err)
 	}
@@ -189,7 +222,7 @@ func TestAppendPIAgentDirBwrapMounts_UnreadableHostDirIsAnError(t *testing.T) {
 	if err := os.WriteFile(notADir, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := appendPIAgentDirBwrapMounts(nil, notADir, "/run/prism/pi-agent", "/w", ""); err == nil {
+	if _, err := appendPIAgentDirBwrapMounts(nil, notADir, "/run/prism/pi-agent", "/w", "", true); err == nil {
 		t.Fatal("appendPIAgentDirBwrapMounts = nil error for a host dir that is not a dir")
 	}
 }
@@ -199,7 +232,7 @@ func TestAppendPIAgentDirBwrapMounts_UnreadableHostDirIsAnError(t *testing.T) {
 // private dir.
 func TestAppendPIAgentDirBwrapMounts_ReadWriteDestinations(t *testing.T) {
 	hostDir, worktree := piAgentDirFixture(t)
-	args, err := appendPIAgentDirBwrapMounts(nil, hostDir, "/run/prism/pi-agent", worktree, piAuthDirFixture(t))
+	args, err := appendPIAgentDirBwrapMounts(nil, hostDir, "/run/prism/pi-agent", worktree, piAuthDirFixture(t), true)
 	if err != nil {
 		t.Fatalf("appendPIAgentDirBwrapMounts: %v", err)
 	}

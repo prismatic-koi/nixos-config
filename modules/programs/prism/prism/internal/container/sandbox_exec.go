@@ -902,13 +902,14 @@ func generateProfile(m *Manager) string {
 	}
 
 	// ── 6c. pi shared state dirs: lock dir and Notion store (pi sessions only) ─
-	// Every pi session on the host shares these two dirs: the lock dir of the
+	// The pi sessions on the host share these two dirs: the lock dir of the
 	// OAuth token refresh, and the Notion MCP store (pi_shared_state.go,
 	// #3289, #3290). A read and a write of each whole dir: the extensions
 	// make and remove lock dirs in them, and the Notion extension renames
 	// temp files onto its store files. No pi session loads code or prompts
 	// from them. prism agent-run makes both dirs on the host and sets the
-	// two Config fields. An empty field gives no rule.
+	// two Config fields. It sets PINotionHostDir only for a session in
+	// NOTION_MCP_REPOS (#3319). An empty field gives no rule.
 	if m.cfg.Harness == "pi" {
 		if clause := piSharedStateSBPLAllow(m.cfg.PILockHostDir, m.cfg.PINotionHostDir); clause != "" {
 			sb.WriteString(clause)
@@ -1452,6 +1453,18 @@ func generateProfile(m *Manager) string {
 			sb.WriteString("\n")
 			sb.WriteString(clause)
 		}
+	}
+
+	// ── 21l. FINAL DENY — no Notion store read for a session without the store ─
+	// Section 6a grants a read of the whole agent dir, and the old Notion
+	// store files can be there until prism moves them (pi_shared_state.go).
+	// A session that does not get the Notion store dir (an empty
+	// PINotionHostDir, #3319) must not read them. The deny must follow every
+	// allow. TestGenerateProfile_PINotionLegacyDenyFollowsEveryAllow pins the
+	// order.
+	if m.cfg.Harness == "pi" && home != "" && m.cfg.PINotionHostDir == "" {
+		sb.WriteString("\n")
+		sb.WriteString(piNotionLegacySBPLDeny(filepath.Join(home, ".pi", "agent")))
 	}
 
 	// ── 22. FINAL DENIES — Go module cache is not executable ─

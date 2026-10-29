@@ -111,7 +111,8 @@
         https://mcp.notion.com).
 
         The tokens are in ~/.local/state/prism/pi-notion/, a store that
-        host-mode, bwrap, and sandbox-exec sessions share (#3290). See
+        host-mode sessions and the bwrap and sandbox-exec sessions in
+        nx.programs.prism.pi.notion.repos share (#3290, #3319). See
         prism/docs/invariants/sandbox-pi-agent-dir.md.
 
         There is no Notion analogue of pi.atlassian.defaultCloudId: a Notion
@@ -243,6 +244,13 @@
         need of it; and every session that skips the connection is one fewer
         participant in the refresh-token rotation race that the extension's
         cross-process lock exists to serialise.
+
+        prism also uses this list on the host (#3319). A bwrap or
+        sandbox-exec session gets the Notion token store only when its repo
+        dir is, or lives beneath, one of these paths. prism takes the repo
+        from the session name and the worktree that it holds on the host.
+        With an empty list, no sandboxed session gets the store, so only a
+        host-mode session can use Notion.
 
         Only meaningful when nx.programs.prism.pi.notion.enable is true.
       '';

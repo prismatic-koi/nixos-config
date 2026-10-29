@@ -73,6 +73,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
+	"github.com/prismatic-koi/prism/internal/projecttrust"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -793,6 +794,33 @@ func piApproveProject(approvedDir, worktree string) bool {
 	return approvedDir != "" && worktree != "" && filepath.Clean(approvedDir) == filepath.Clean(worktree)
 }
 
+// piNotionStore reports whether a bwrap or sandbox-exec session gets the
+// Notion store dir (#3319). The repo comes from the identity that prism holds
+// on the host, as for the project-trust decision (#3216): the session name
+// from the pane command line, the worktree from agent_status, and the
+// project roots in config.json (projecttrust.Policy.SessionProject). The
+// worktree must be a start directory of the repo that the session name
+// names, so a worktree value cannot point the decision at another repo. The
+// worktree must then be, or be below, a dir in NOTION_MCP_REPOS of
+// profiles.json, as the extension checks its cwd
+// (container.InPINotionRepos). No sandbox can write config.json or
+// profiles.json.
+//
+// A review agent and an investigator run in the worktree of their parent
+// session, and their name is "<parent>~<label>", which names the same repo.
+// So they get the same answer as the parent.
+func piNotionStore(sessionName, worktree string, cfg config.Config, envVars map[string]string) bool {
+	repos := envVars[container.PINotionReposEnvVar]
+	if repos == "" {
+		return false
+	}
+	policy := projecttrust.Policy{ProjectLocations: cfg.ProjectLocations, ProjectSpecific: cfg.ProjectSpecific}
+	if _, ok := policy.SessionProject(sessionName, worktree); !ok {
+		return false
+	}
+	return container.InPINotionRepos(repos, worktree)
+}
+
 // agentRunRole returns the agent role that `prism agent-run` gives the
 // session of status: root_agent_name, else session.DefaultAgent for the
 // worktree. The bwrap path and the sandbox-exec path both call it. The result
@@ -845,7 +873,10 @@ func profileSlotRole(agentRole string) string {
 //     PI_CODING_AGENT_DIR. The role system-prompt is injected at runtime by
 //     the prism PI extension, not staged here. Calls
 //     EnsurePISharedStateDirs to make the shared lock dir and Notion store
-//     dir, move the Notion store into its dir once, and record both paths.
+//     dir, move the Notion store into its dir once, and record the lock dir.
+//     Records the Notion store dir only for a session in NOTION_MCP_REPOS
+//     (piNotionStore, #3319). piNotionStore reads ctrCfg.Worktree, so the
+//     caller must set it first.
 //     Calls PreparePIAuthSession to write the per-session auth.json from
 //     the host file, and records its dir (#3295).
 //  5. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
@@ -920,10 +951,16 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	ctrCfg.PIAgentConfigSandboxDir = sandboxDir
 
 	// The OAuth refresh lock and the Notion store must be the same for every
-	// session on the host (#3289, #3290), so they are in dirs that bwrap
-	// binds and the sandbox-exec profile grants. This call makes the dirs on
-	// the host and moves the Notion store out of the agent dir once.
-	ctrCfg.PILockHostDir, ctrCfg.PINotionHostDir = container.EnsurePISharedStateDirs(hostDir)
+	// session on the host that uses them (#3289, #3290), so they are in dirs
+	// that bwrap binds and the sandbox-exec profile grants. This call makes
+	// the dirs on the host and moves the Notion store out of the agent dir
+	// once. The Notion store is a full workspace grant, so only a session in
+	// NOTION_MCP_REPOS gets its dir (#3319).
+	lockDir, notionDir := container.EnsurePISharedStateDirs(hostDir)
+	ctrCfg.PILockHostDir = lockDir
+	if piNotionStore(sessionName, ctrCfg.Worktree, cfg, config.AgentEnvVarsForRole(agentRole)) {
+		ctrCfg.PINotionHostDir = notionDir
+	}
 
 	// pi runs an api_key value in auth.json that starts with "!" as a shell
 	// command. Refuse the start when the host file holds such a value: a

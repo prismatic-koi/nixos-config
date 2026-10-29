@@ -22,9 +22,16 @@ package container
 // does not know them. The two extensions read only lock dirs and the JSON
 // store from them.
 //
-// Every sandbox can write these dirs, and this code runs on the host. So
-// it does not follow a symlink when it writes a lock owner file, and it
-// does not block on a read: a planted symlink or FIFO must not let a
+// Every bwrap and sandbox-exec pi session gets the lock dir. Only a session
+// in NOTION_MCP_REPOS gets the Notion store dir (#3319): the store is a
+// full workspace grant. prism agent-run decides on the host, from the repo
+// identity of the session (projecttrust.Policy.SessionProject) and from
+// InPINotionRepos. A session that does not get the store dir also cannot
+// read the old store files in the agent dir (pi_agent_dir.go).
+//
+// Every sandbox that gets a dir can write it, and this code runs on the
+// host. So it does not follow a symlink when it writes a lock owner file,
+// and it does not block on a read: a planted symlink or FIFO must not let a
 // sandbox change a host file or stop prism agent-run.
 //
 // The paths come from $HOME, not from $XDG_STATE_HOME. All three isolators
@@ -45,9 +52,17 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/config"
 )
+
+// PINotionReposEnvVar is the agent env var that lists the dirs of the
+// sessions that use Notion (nx.programs.prism.pi.notion.repos). The Notion
+// extension reads it too (pi/extensions/notion/scope.ts).
+const PINotionReposEnvVar = "NOTION_MCP_REPOS"
 
 const (
 	piLocksDirName  = "pi-locks"
@@ -77,8 +92,11 @@ func PISharedStateDirs(home string) (lockDir, notionDir string) {
 
 // EnsurePISharedStateDirs makes the two shared dirs on the host with mode
 // 0700, moves the Notion store from the host pi agent dir agentDir into its
-// dir, and returns the two paths. prism agent-run calls it before a bwrap
-// or sandbox-exec pi session starts (populatePIConfig).
+// dir, and returns the two paths. prism agent-run calls it before each bwrap
+// or sandbox-exec pi session starts (populatePIConfig), also for a session
+// that does not get the Notion store, so that the old store leaves the agent
+// dir at the first start that can move it. prism agent-run then gives
+// notionDir only to a session in NOTION_MCP_REPOS (#3319).
 //
 // It returns "" for a dir that it cannot make. The sandbox then gets no
 // bind or grant for that dir. A failure is logged, and the session still
@@ -102,6 +120,74 @@ func EnsurePISharedStateDirs(agentDir string) (lockDir, notionDir string) {
 		migratePINotionStore(agentDir, notionDir)
 	}
 	return lockDir, notionDir
+}
+
+// InPINotionRepos reports whether dir is a dir in repos, or is below one.
+// repos is a value of NOTION_MCP_REPOS: dirs with ":" between them. An
+// entry can start with "~", "$HOME", or "${HOME}", because prism gives the
+// value to a sandbox with no shell expansion. prism ignores an entry that is
+// not an absolute path after the expansion.
+//
+// The match is the same as the match of the extension (scope.ts): prism
+// resolves the symlinks in dir, and then compares dir and each parent of
+// dir with each entry. The compare is by file identity (config.SameDir), so
+// a case-insensitive macOS volume and a symlink in an entry also match.
+//
+// An empty repos, an empty or relative dir, and a dir that does not exist
+// give false. For an empty repos the extension does not limit Notion to a
+// set of dirs, but prism gives the store to no sandbox (#3319).
+func InPINotionRepos(repos, dir string) bool {
+	if !filepath.IsAbs(dir) {
+		return false
+	}
+	home, _ := os.UserHomeDir()
+	var entries []string
+	for _, entry := range strings.Split(repos, ":") {
+		if path := expandPINotionRepo(strings.TrimSpace(entry), home); path != "" {
+			entries = append(entries, path)
+		}
+	}
+	if len(entries) == 0 {
+		return false
+	}
+	d, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+	for {
+		for _, entry := range entries {
+			if config.SameDir(d, entry) {
+				return true
+			}
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return false
+		}
+		d = parent
+	}
+}
+
+// expandPINotionRepo expands a leading "~", "$HOME", or "${HOME}" of entry
+// to home, as expandPath in scope.ts does. It returns "" for an empty entry,
+// for an entry that names home when home is "", and for a relative path.
+func expandPINotionRepo(entry, home string) string {
+	if entry == "" {
+		return ""
+	}
+	for _, prefix := range []string{"~", "$HOME", "${HOME}"} {
+		if entry == prefix || strings.HasPrefix(entry, prefix+"/") {
+			if home == "" {
+				return ""
+			}
+			entry = home + entry[len(prefix):]
+			break
+		}
+	}
+	if !filepath.IsAbs(entry) {
+		return ""
+	}
+	return filepath.Clean(entry)
 }
 
 // migratePINotionStore moves the Notion store files from agentDir, their

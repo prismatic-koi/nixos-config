@@ -1,6 +1,6 @@
 # Invariant: the pi agent dir in a sandbox
 
-<!-- doclint-ignore: settings.json, bin/git, dist/utils/shell.js, dist/core/resolve-config-value.js, mcp.json, AGENTS.md, APPEND_SYSTEM.md, SYSTEM.md, models.json, trust.json, auth.json, crashes.json, notion/auth.ts, refreshIfNeeded, migrateLegacyStore, sync.lock, sync-state.json, agent/auth.json, session-sync.ts, refreshAnthropicToken, syncSessionAuth, syncSessionAuthSync -->
+<!-- doclint-ignore: settings.json, bin/git, dist/utils/shell.js, dist/core/resolve-config-value.js, mcp.json, AGENTS.md, APPEND_SYSTEM.md, SYSTEM.md, models.json, trust.json, auth.json, crashes.json, notion/auth.ts, refreshIfNeeded, migrateLegacyStore, sync.lock, sync-state.json, agent/auth.json, session-sync.ts, refreshAnthropicToken, syncSessionAuth, syncSessionAuthSync, config.json, profiles.json -->
 <!--
   These names are files in the pi agent dir ~/.pi/agent or in the
   per-session auth dir at run time, or a file in the external pi
@@ -9,14 +9,18 @@
   refreshAnthropicToken, syncSessionAuth, syncSessionAuthSync, and
   migrateLegacyStore are TypeScript files and functions in
   modules/programs/prism/pi/extensions/, outside the prism Go tree.
+  config.json and profiles.json are files in ~/.config/prism that Nix
+  renders at run time.
 -->
 
-Issues: #3284, #3289, #3290, #3295, #3314. Code:
+Issues: #3284, #3289, #3290, #3295, #3314, #3319. Code:
 `internal/container/pi_agent_dir.go`,
 `internal/container/pi_shared_state.go`,
 `internal/container/pi_auth_session.go`, `appendPIBwrapMounts` in
-`internal/container/pi_invocation.go`, sections 6a, 6c, 6d, 21f, and 21h
-of `generateProfile` in `internal/container/sandbox_exec.go`,
+`internal/container/pi_invocation.go`, sections 6a, 6c, 6d, 21f, 21g, 21h,
+and 21l of `generateProfile` in `internal/container/sandbox_exec.go`,
+`piNotionStore` in `cmd/agent_run.go`, `SessionProject` in
+`internal/projecttrust/projecttrust.go`,
 `internal/sidecar/pi_auth_sync.go`, and
 `internal/container/pi_resume_cwd.go`.
 
@@ -91,16 +95,22 @@ fail in a sandbox with no effect on a normal session:
   host lock dir is not bound, because pi cannot remove a stale lock from a
   read-only bind. `auth.json` is a symlink to `/run/prism/pi-auth/auth.json`,
   and `/run/prism/pi-auth` is a read-write bind of the per-session agent dir.
-  The host `auth.json` is not in the sandbox. The two shared state dirs are
-  read-write dir binds at their host paths.
+  The host `auth.json` is not in the sandbox. The shared lock dir is a
+  read-write dir bind at its host path. The Notion store dir is a
+  read-write dir bind at its host path only in a session in
+  `NOTION_MCP_REPOS`. In another session, the old Notion store files in
+  `~/.pi/agent` are not bound either. See "Which sessions get the Notion
+  store".
 - sandbox-exec: `PI_CODING_AGENT_DIR` is the per-session agent dir. It holds
   the `auth.json` of the session, the lock dirs of pi, and a symlink to each
   other entry of `~/.pi/agent` (`LinkPIAgentDirEntries`). Section 6d allows a
   read and a write of that dir. Section 6a allows a read of `~/.pi/agent` and
   a write of the Atlassian file and of the sessions dir of the worktree, so
   a write through a symlink to another host entry fails. Section 6c allows
-  a read and a write of the two shared state dirs. Section 21f denies a
-  create and an unlink of `auth.json` and of the Atlassian file in
+  a read and a write of the shared lock dir, and of the Notion store dir
+  only in a session in `NOTION_MCP_REPOS`. In another session, section 21l
+  denies a read of the old Notion store files in `~/.pi/agent`. Section 21f
+  denies a create and an unlink of `auth.json` and of the Atlassian file in
   `~/.pi/agent`. Without it, a session can put a symlink at that path, and a
   host pi then writes its tokens to the target. Section 21g denies the same
   for the two shared dir nodes, and a mode change of them. Section 21h
@@ -224,22 +234,24 @@ No pi session loads configuration, code, or prompts from these dirs. pi does
 not know them. The two extensions read only lock dirs and the JSON store in
 them. The rule of the agent dir does not apply to them.
 
-prism agent-run makes both dirs on the host with mode 0700 before a bwrap or
-sandbox-exec session starts (`EnsurePISharedStateDirs`). bwrap binds each dir
-read-write at its host path. A dir bind, not a file bind: the Notion
-extension renames a temp file onto its store file, and a rename onto a bind
-mount fails with EBUSY.
+prism agent-run makes both dirs on the host with mode 0700 before each bwrap
+or sandbox-exec session starts (`EnsurePISharedStateDirs`). Every sandboxed
+session gets the lock dir. Only a session in `NOTION_MCP_REPOS` gets the
+Notion store dir: see "Which sessions get the Notion store". bwrap binds each
+dir that the session gets read-write at its host path. A dir bind, not a
+file bind: the Notion extension renames a temp file onto its store file, and
+a rename onto a bind mount fails with EBUSY.
 
 The paths come from `$HOME`, not from `$XDG_STATE_HOME`. All three isolators
 run pi with `HOME` set to the host home dir. bwrap clears `XDG_STATE_HOME`,
 and sandbox-exec sets it to `<home>/.local/state`, so a path from
 `XDG_STATE_HOME` can differ between the isolators.
 
-Every sandbox can write these dirs, and processes that are not sandboxed
-use them too: a host-mode pi, a pi in a terminal, and prism agent-run. So
-these processes create a lock `owner` file with `O_CREAT|O_EXCL|O_NOFOLLOW`,
-and read an `owner` file or a store file with `O_NONBLOCK`, as a regular
-file only. A sandbox can swap a dir with an `owner` symlink in after the
+Every sandbox that gets a dir can write it, and processes that are not
+sandboxed use the dirs too: a host-mode pi, a pi in a terminal, and prism
+agent-run. So these processes create a lock `owner` file with
+`O_CREAT|O_EXCL|O_NOFOLLOW`, and read an `owner` file or a store file with
+`O_NONBLOCK`, as a regular file only. A sandbox can swap a dir with an `owner` symlink in after the
 `mkdir` of a holder. The create then fails with EEXIST, and no host file
 changes. A FIFO at a read name does not stop the reader. In bwrap each dir
 is a mount point, and section 21g of sandbox-exec denies a replace of each
@@ -271,14 +283,16 @@ after the write. See "The per-session auth.json".
 ### The Notion store (#3290)
 
 Notion rotates the refresh token on each refresh, and a replay of a rotated
-token can make Notion revoke the whole grant. So every session must use the
-same store. Host-mode, bwrap, and sandbox-exec sessions all read and write
+token can make Notion revoke the whole grant. So every session that uses
+Notion must use the same store. Host-mode sessions, and the bwrap and
+sandbox-exec sessions that get the store, all read and write
 `~/.local/state/prism/pi-notion/`, under its lock dir.
 
 The store was in the agent dir before #3290. It moves once:
 
 - prism moves it on the host before each bwrap or sandbox-exec session
-  starts (`migratePINotionStore`).
+  starts (`migratePINotionStore`), also before a session that does not get
+  the store.
 - The extension moves it at `session_start` in a session in
   `NOTION_MCP_REPOS` that is not sandboxed: a host-mode session, or a pi that
   a person starts in a terminal (`migrateLegacyStore`).
@@ -290,6 +304,55 @@ such a pi is about to rotate. If the store dir already has a file, the move
 removes the old file. If a lock is held, the move waits for the next session
 start. Until the move is done, the extension reads the old path, and does
 not refresh from it.
+
+### Which sessions get the Notion store (#3319)
+
+The Notion store is a grant of the full Notion workspace. So a bwrap or
+sandbox-exec session gets the store dir only when its repo is in
+`NOTION_MCP_REPOS`. On the hosts of this repo, that is the obsidian vault.
+
+prism agent-run decides on the host before pi starts (`piNotionStore`). The
+session gets the store dir only when both of these conditions are true:
+
+- `SessionProject` gives a project root for the session name and the
+  worktree. This is the repo identity of the project-trust decision
+  (#3216). The session name comes from the pane command line that prism
+  wrote. The worktree comes from `agent_status`. The project roots come from
+  `config.json`. The worktree must be a worktree root, or the project dir,
+  of the repo that the session name names. So a worktree value cannot point
+  the decision at another repo.
+- The worktree is a dir in `NOTION_MCP_REPOS`, or is below one
+  (`InPINotionRepos`). prism reads the value from `agent_env_vars` in
+  `profiles.json`, with the role filter that the session env gets. The
+  match is the match of the extension gate: prism resolves the symlinks and
+  compares dirs by file identity.
+
+No sandbox can write the pane command line, `prism.db`, `config.json`, or
+`profiles.json`. The decision does not read the environment of the sandbox.
+
+| Session | Notion store dir |
+|---|---|
+| The obsidian root session, in the vault dir. | Yes. |
+| An investigator or a review agent of that session, in the same dir. | Yes, the same as its parent. Its name is the parent name with a `~` suffix, so it names the same repo. |
+| A session of a repo that is not in `NOTION_MCP_REPOS`. | No. |
+| Each session, when `NOTION_MCP_REPOS` is empty or not set. | No. |
+| A host-mode session. | Not sandboxed. It uses the host dir, as before. |
+
+A bwrap or sandbox-exec session that does not get the store dir cannot read
+or write the store:
+
+- bwrap: the sandbox has no bind of the store dir, and no bind of the old
+  store files in the agent dir. A write at the store path stays in the
+  sandbox and goes away with it.
+- sandbox-exec: the profile has no section-6c grant of the store dir.
+  Section 21l denies a read of the old store files in `~/.pi/agent`, which
+  section 6a allows for the rest of the dir.
+
+The extension has its own gate on `NOTION_MCP_REPOS`, on the working dir of
+the session. With an empty list the extension does not limit Notion to a set
+of dirs, but prism gives the store to no sandboxed session. A Notion login
+in a sandboxed session that does not get the store does not reach the host
+store.
 
 ## The cwd check on resume
 
@@ -358,10 +421,11 @@ change when a limit goes away. Limits 1, 2, and 3 are resolved: #3289,
   session files of each other. Earlier sessions on the same worktree path
   are in the same dir. Follow-up: #3291.
 - **Limit 5.** Both isolators: a session can make or keep a lock dir in the
-  shared lock dir or in the Notion store dir, or put a file at a lock-dir
-  name. This is a denial of service, not code execution. A lock dir that its
-  holder does not keep fresh is stale after 30 s, and the next session
-  removes it. A session that keeps a lock dir fresh stops the refresh of
+  shared lock dir, or put a file at a lock-dir name. A session in
+  `NOTION_MCP_REPOS` can do the same in the Notion store dir. This is a
+  denial of service, not code execution. A lock dir that its holder does
+  not keep fresh is stale after 30 s, and the next session removes it. A
+  session that keeps a lock dir fresh stops the refresh of
   other sessions: after the wait time they do not refresh, and a token that
   expires is not replaced.
 
@@ -399,7 +463,7 @@ Other limits:
   in on the host again for that provider.
 - Both isolators: a session can write the Atlassian file. It can put the
   tokens of another account in it, and later sessions then use that account.
-- Both isolators: a session can read and replace the Notion store files. It
-  can put the tokens or the client registration of another workspace in
-  them. Every pi session gets the store, not only the sessions in
-  `NOTION_MCP_REPOS`.
+- Both isolators: a session in `NOTION_MCP_REPOS` can read and replace the
+  Notion store files. It can put the tokens or the client registration of
+  another workspace in them. A session that is not in the list cannot read
+  or write the store (#3319).
