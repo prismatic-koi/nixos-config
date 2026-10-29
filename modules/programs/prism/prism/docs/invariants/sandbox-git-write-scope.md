@@ -21,7 +21,8 @@ code-execution paths), #3334 (the permanent bwrap refs vector — a per-session
 common dir or reftable), #3337 (the config-detach host-git route — pin the
 keys in `hostGitConfig`), #3327 (the achievable bwrap narrowing —
 `FETCH_HEAD` only for a read-only session),
-#3325 (a nested `.git`). Host-side git: #3322, in
+#3347 (a nested `.git` that a host-pane tool reaches with no `cd`; the
+closed #3325 is the accepted `cd` case). Host-side git: #3322, in
 `docs/invariants/host-git-commands.md`. User git on the host: #3326, in
 `docs/invariants/user-git-overrides.md`. #3327 found that bwrap cannot bind
 `.bare` read-only to match the sandbox-exec write scope — see the "bwrap"
@@ -188,7 +189,9 @@ binds it read-write (#3315).
   names. The nvim and the shell that prism starts on the host run git in
   the dir of the open file or of the shell. A deny of `.git` at any depth
   does not close this: a rename of a dir that already holds `.git` into
-  the worktree makes no new path named `.git`. Follow-up: #3325.
+  the worktree makes no new path named `.git`. The nvim panes reach this
+  with no `cd` — an open route tracked by #3347; #3326 is the user git env
+  control; an explicit `cd` is the accepted case of the closed #3325.
 - **Host-side git in a worktree (both isolators).** sandbox-exec denies the
   `.git` file and the redirect files of its git dir (sections 21j and 21k);
   bwrap pins them read-only over the read-write binds (#3315). And #3322
