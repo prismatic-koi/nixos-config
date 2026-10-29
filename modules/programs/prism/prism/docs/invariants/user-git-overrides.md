@@ -155,9 +155,12 @@ them at the next login.
 - git uses no pager. To use one, set `GIT_PAGER` for the command.
 - A partial clone cannot fetch a missing object.
 - The security tests of prism host git check first that a plain git runs
-  the planted payload. In a shell with the overrides, those controls fail,
-  because the overrides stop the payload. CI and the agent sandboxes do not
-  have the overrides, so the tests pass there.
+  the planted payload. A host shell carries the overrides in
+  `GIT_CONFIG_COUNT`, which would stop the payload and fail that control
+  step. The three isolation helpers set `GIT_CONFIG_COUNT=0`, so git reads
+  none of the inherited entries and `go test ./...` passes in a host shell.
+  A new test that checks a planted payload against a plain git must do the
+  same. See the "Tests" section of `host-git-commands.md`.
 
 ## Known limits
 
