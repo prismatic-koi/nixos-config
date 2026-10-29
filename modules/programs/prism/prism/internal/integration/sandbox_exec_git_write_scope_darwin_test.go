@@ -15,6 +15,7 @@ package integration_test
 // tests change one rule and expect the opposite result.
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,6 +103,11 @@ func newGitScopeFixture(t *testing.T, branch, role string, readOnly bool) *gitSc
 	hostGit(t, nixGit, wrap, "--git-dir", bare, "branch", "-q", "--set-upstream-to", "origin/main", "main")
 	hostGit(t, nixGit, wrap, "--git-dir", bare, "worktree", "add", "-q", filepath.Join(bareRoot, "main"), "main")
 	hostGit(t, nixGit, wrap, "--git-dir", bare, "worktree", "add", "-q", "-b", "feature", filepath.Join(bareRoot, "feature"), "main")
+	// Host git runs only in a .bare in the bare repo record. The state dir is
+	// new, so the record starts with no entry.
+	if _, err := git.ConfirmBare(bareRoot); err != nil && !errors.Is(err, git.ErrConfirmInSandbox) {
+		t.Fatalf("ConfirmBare: %v", err)
+	}
 
 	worktree := filepath.Join(bareRoot, branch)
 	gitDir, err := git.ResolveWorktreeGitDir(worktree)
