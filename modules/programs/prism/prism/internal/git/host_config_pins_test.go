@@ -144,12 +144,13 @@ func TestHostGit_PlantedSSHCommand(t *testing.T) {
 	}
 }
 
-// TestHostGit_PlantedCredentialHelperAndAskPass: a host fetch from a remote
-// that asks for credentials runs no planted credential helper and no
-// planted askpass program.
+// TestHostGit_PlantedCredentialHelperAndAskPass: a host fetch from an HTTPS
+// remote that asks for credentials runs no planted credential helper and no
+// planted askpass program. Host git allows HTTPS, so the fetch reaches the
+// credential step.
 func TestHostGit_PlantedCredentialHelperAndAskPass(t *testing.T) {
 	f := newHostFixture(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="prism-test"`)
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
@@ -160,6 +161,7 @@ func TestHostGit_PlantedCredentialHelperAndAskPass(t *testing.T) {
 	t.Setenv("GIT_TERMINAL_PROMPT", "0")
 	plantConfig(t, f.bare(),
 		[2]string{"remote.origin.url", srv.URL + "/x.git"},
+		[2]string{"http.sslVerify", "false"},
 		[2]string{"credential.helper", "!" + f.payload("helper") + "; true"},
 		[2]string{"credential." + srv.URL + ".helper", "!" + f.payload("urlhelper") + "; true"},
 		[2]string{"core.askPass", askPass},
@@ -167,8 +169,9 @@ func TestHostGit_PlantedCredentialHelperAndAskPass(t *testing.T) {
 
 	f.requireControlFires(t, f.root, "--git-dir", ".bare", "fetch", "origin")
 
-	if err := FetchRemote(f.root); err == nil {
-		t.Error("FetchRemote: want an error from the 401 server")
+	err := FetchRemote(f.root)
+	if err == nil || strings.Contains(err.Error(), "not allowed") {
+		t.Errorf("FetchRemote = %v, want an error from the 401 server, not a transport refusal", err)
 	}
 	f.requireNoPayload(t, "a host fetch that needs credentials")
 }
@@ -457,7 +460,8 @@ func TestHostGit_PlantedAlternateRefsCommand(t *testing.T) {
 }
 
 // TestHostGit_PlantedGitProxy: a planted core.gitProxy does not run on a
-// host fetch from a git:// remote.
+// host fetch from a git:// remote. Host git refuses the git transport, and
+// GIT_PROXY_COMMAND also turns off core.gitProxy.
 func TestHostGit_PlantedGitProxy(t *testing.T) {
 	f := newHostFixture(t)
 	unsetEnv(t, "GIT_PROXY_COMMAND")
@@ -468,10 +472,66 @@ func TestHostGit_PlantedGitProxy(t *testing.T) {
 
 	f.requireControlFires(t, f.root, "--git-dir", ".bare", "fetch", "origin")
 
-	if err := FetchRemote(f.root); err == nil {
-		t.Error("FetchRemote: want an error, nothing listens on port 1")
+	if err := FetchRemote(f.root); err == nil || !strings.Contains(err.Error(), "transport 'git' not allowed") {
+		t.Errorf("FetchRemote = %v, want a refusal of the git transport", err)
 	}
 	f.requireNoPayload(t, "a host fetch from a git:// remote")
+}
+
+// TestHostGit_PlantedRemoteHelper: a planted remote.<name>.vcs or
+// <name>:: URL makes git run the helper git-remote-<name>. A name with a
+// slash is a path relative to the cwd of git, which is the worktree or
+// .bare, and a worker writes both. A name with no slash is a program on
+// PATH. The plant also allows the transport in config, which beats
+// protocol.allow = never. Host git allows only the transports in
+// GIT_ALLOW_PROTOCOL.
+func TestHostGit_PlantedRemoteHelper(t *testing.T) {
+	f := newHostFixture(t)
+	helper := fmt.Sprintf("#!/bin/sh\n%s\nexit 1\n", f.payload("remotehelper"))
+	for _, dir := range []string{f.worker, f.bare()} {
+		if err := os.MkdirAll(filepath.Join(dir, "git-remote-x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "git-remote-x", "evil"), []byte(helper), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plantConfig(t, f.bare(),
+		[2]string{"remote.origin.vcs", "x/evil"},
+		[2]string{"protocol.x/evil.allow", "always"},
+	)
+
+	f.requireControlFires(t, f.worker, "fetch", "origin")
+	f.requireControlFires(t, f.bare(), "--git-dir", ".", "fetch", "origin")
+
+	if out, err := f.workerRepo(t).CombinedOutput("fetch", "origin"); err == nil || !strings.Contains(string(out), "transport 'x/evil' not allowed") {
+		t.Errorf("fetch in the worktree = %v, %q; want a transport refusal", err, out)
+	}
+	if err := FetchRemote(f.root); err == nil || !strings.Contains(err.Error(), "transport 'x/evil' not allowed") {
+		t.Errorf("FetchRemote = %v, want a transport refusal", err)
+	}
+	f.requireNoPayload(t, "a host fetch with a planted helper path")
+
+	// A helper on PATH, named by a <name>:: URL.
+	pathLog := fakeProgramsOnPath(t, "git-remote-pathhelper")
+	if out, err := exec.Command("git", "config", "--file", filepath.Join(f.bare(), "config"), "--unset", "remote.origin.vcs").CombinedOutput(); err != nil {
+		t.Fatalf("unset vcs: %v\n%s", err, out)
+	}
+	plantConfig(t, f.bare(),
+		[2]string{"remote.origin.url", "pathhelper::x"},
+		[2]string{"protocol.pathhelper.allow", "always"},
+	)
+	_, _ = plainGit(t, f.root, "--git-dir", ".bare", "fetch", "origin")
+	if readLog(t, pathLog) == "" {
+		t.Fatal("control: a plain fetch did not run the helper on PATH; the plant does not work")
+	}
+	_ = os.Remove(pathLog)
+	if err := FetchRemote(f.root); err == nil || !strings.Contains(err.Error(), "transport 'pathhelper' not allowed") {
+		t.Errorf("FetchRemote = %v, want a transport refusal", err)
+	}
+	if got := readLog(t, pathLog); got != "" {
+		t.Errorf("a host fetch ran the helper on PATH: %q", got)
+	}
 }
 
 // TestHostGit_PlantedEditor: a host commit that opens an editor runs no
@@ -563,7 +623,7 @@ func TestHostGitConfig_DocListsEveryKey(t *testing.T) {
 			t.Errorf("host-git-commands.md does not list %s", key)
 		}
 	}
-	for _, env := range []string{"GIT_ATTR_SOURCE", "GIT_PROXY_COMMAND", "GIT_NO_LAZY_FETCH", "GIT_PAGER"} {
+	for _, env := range []string{"GIT_ATTR_SOURCE", "GIT_PROXY_COMMAND", "GIT_NO_LAZY_FETCH", "GIT_PAGER", "GIT_ALLOW_PROTOCOL"} {
 		if !strings.Contains(doc, "`"+env+"`") {
 			t.Errorf("host-git-commands.md does not list %s", env)
 		}

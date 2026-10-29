@@ -472,15 +472,16 @@ func TestRepoEnv(t *testing.T) {
 		got[k] = append(got[k], v)
 	}
 	want := map[string]string{
-		"GIT_DIR":           "/p/.bare/worktrees/w",
-		"GIT_COMMON_DIR":    "/p/.bare",
-		"GIT_WORK_TREE":     "/p/w",
-		"PATH":              "/bin",
-		"SSH_AUTH_SOCK":     "/run/agent",
-		"GIT_PAGER":         "cat",
-		"GIT_ATTR_SOURCE":   emptyTree,
-		"GIT_PROXY_COMMAND": "",
-		"GIT_NO_LAZY_FETCH": "1",
+		"GIT_DIR":            "/p/.bare/worktrees/w",
+		"GIT_COMMON_DIR":     "/p/.bare",
+		"GIT_WORK_TREE":      "/p/w",
+		"PATH":               "/bin",
+		"SSH_AUTH_SOCK":      "/run/agent",
+		"GIT_PAGER":          "cat",
+		"GIT_ATTR_SOURCE":    emptyTree,
+		"GIT_PROXY_COMMAND":  "",
+		"GIT_NO_LAZY_FETCH":  "1",
+		"GIT_ALLOW_PROTOCOL": allowedProtocols(),
 	}
 	for k, v := range want {
 		if len(got[k]) != 1 || got[k][0] != v {

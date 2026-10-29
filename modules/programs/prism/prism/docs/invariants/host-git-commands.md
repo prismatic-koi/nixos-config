@@ -2,7 +2,7 @@
 
 <!-- doclint-ignore: .bare/commondir, .bare/config, .bare/hooks, .bare/worktrees, core.hooksPath, core.fsmonitor, core.sshCommand, credential.helper, extensions.worktreeConfig, config.worktree, submodule.recurse, fetch.recurseSubmodules, push.recurseSubmodules, diff.ignoreSubmodules, protocol.ext.allow, GIT_CONFIG_PARAMETERS, GIT_PAGER, gitdir, commondir, rebase-merge/autostash, info/attributes, b:git_dir -->
 <!-- doclint-ignore: status.submoduleSummary, protocol.file.allow, core.askPass, core.editor, sequence.editor, core.alternateRefsCommand, core.attributesFile, gpg.program, gpg.openpgp.program, gpg.x509.program, gpg.ssh.program, gpg.ssh.defaultKeyCommand, interactive.diffFilter, maintenance.auto, core.gitProxy, core.pager, diff.external, gc.recentObjectsHook, uploadpack.packObjectsHook -->
-<!-- doclint-ignore: merge.default -->
+<!-- doclint-ignore: merge.default, GIT_ALLOW_PROTOCOL, protocol.allow -->
 <!-- doclint-ignore: GIT_ATTR_SOURCE, GIT_PROXY_COMMAND, GIT_NO_LAZY_FETCH, GIT_SSH_COMMAND, GIT_ASKPASS, GIT_EDITOR, SSH_ASKPASS, info/attributes, .bare/info, .bare/info/attributes, objects/info/alternates, .gitattributes, imap.tunnel, man.viewer, web.browser, modules/programs/git.nix -->
 <!--
   These names are git config keys, git environment variables, file names
@@ -39,8 +39,7 @@ planted value in `.bare/config` and a payload that writes a marker file.
 | `submodule.recurse`, `fetch.recurseSubmodules`, `push.recurseSubmodules` | `false`, `false`, `no` | A submodule has its own git dir in the worktree, with its own config. |
 | `diff.ignoreSubmodules` | `all` | A submodule status runs git in the submodule. This is the default only: an `ignore=` entry in `.gitmodules` overrides it. `git.Stat` adds `--ignore-submodules=all` on the command line for that reason. |
 | `status.submoduleSummary` | `false` | No summary runs git in a submodule. |
-| `protocol.ext.allow` | `never` | No `ext::` remote helper runs. |
-| `protocol.file.allow` | `never` | git refuses a remote that is a local path or a `file://` URL. Without this pin, a planted remote URL, push URL, or `url.<base>.insteadOf` that names a local repo makes git run `remote.<name>.uploadpack` and `remote.<name>.receivepack` on the host, and the hooks of that repo. |
+| `protocol.ext.allow`, `protocol.file.allow` | `never` | A second layer under `GIT_ALLOW_PROTOCOL` (below). When `GIT_ALLOW_PROTOCOL` is set, git reads no `protocol.*.allow` config. |
 | `core.sshCommand` | `ssh` | The git default. git runs `ssh` from `PATH`, so SSH auth works as before. An empty value makes git run an empty command, and each SSH fetch fails. An inherited `GIT_SSH_COMMAND` still has priority, as before. |
 | `credential.helper` | empty | An empty value clears the list of helpers. git reads command-line config last, so the list is empty, `credential.<url>.helper` included. A `gh` child adds its own helper after this entry, so `gh` auth works. |
 | `core.askPass` | empty | No askpass program runs. git does not use `SSH_ASKPASS`. An inherited `GIT_ASKPASS` still has priority. |
@@ -63,6 +62,7 @@ Every host git command also gets these environment variables:
 | `GIT_ATTR_SOURCE` | the empty tree | git reads no `.gitattributes` file from the worktree, the index, or the tree, so a planted filter, diff, or merge driver does not run. A pinned `Repo` only: git stops with an error when `GIT_ATTR_SOURCE` is set and there is no repository. |
 | `GIT_PROXY_COMMAND` | empty | git uses the first `core.gitProxy` that matches, so command-line config cannot replace a planted value. A set `GIT_PROXY_COMMAND` makes git skip `core.gitProxy`, and an empty value means no proxy. |
 | `GIT_NO_LAZY_FETCH` | `1` | A planted partial-clone config cannot make git fetch a missing object from a remote that the config names. |
+| `GIT_ALLOW_PROTOCOL` | `ssh:https` | git allows only the SSH and HTTPS transports, and reads no `protocol.*.allow` config. A planted `protocol.<name>.allow` beats `protocol.allow = never`, so config cannot do this. Each other transport runs a program that a planted config can choose. The `file` transport runs `remote.<name>.uploadpack`, `remote.<name>.receivepack`, and the hooks of a local repo that a planted URL, push URL, or `url.<base>.insteadOf` names. A planted `remote.<name>.vcs` or `<name>::` URL runs the helper `git-remote-<name>`. If the name has a slash, git runs the helper as a path relative to its cwd, the worktree or `.bare`, and a worker writes both. The `git` transport runs `core.gitProxy`. |
 
 Command-line config cannot stop a submodule status that a `.gitmodules`
 `ignore=` entry turns on. The `.gitmodules` file is in the worktree, so the
@@ -79,10 +79,10 @@ reason given.
 | `filter.<driver>.*`, `diff.<driver>.textconv`, `diff.<driver>.command`, `merge.<driver>.driver`, `merge.<driver>.recursive` | The repo chooses the name, so the list cannot pin it. A filter or diff driver runs only when an attribute selects it. A merge driver runs when an attribute or `merge.default` selects it, and `merge.default` is in the list. `GIT_ATTR_SOURCE` and `core.attributesFile` remove each source of attributes that a worker can write on the config-detach route. `info/attributes` is the other source: see "`info/attributes`" below. |
 | `diff.external` | git has no value that turns it off. An empty value makes each diff that writes a patch fail. prism host git writes one patch: `git diff --cached` in `prism quick pr`, and it passes `--no-ext-diff`. The other host diffs write names or numbers only, and git runs no external diff for them. |
 | `core.pager`, `pager.<command>` | `GIT_PAGER` has priority. |
-| `core.gitProxy` | `GIT_PROXY_COMMAND` (above). |
+| `core.gitProxy` | `GIT_ALLOW_PROTOCOL` refuses the `git` transport, and `GIT_PROXY_COMMAND` (above) also turns the key off. |
 | `gc.recentObjectsHook` | `maintenance.auto = false` (above). prism host git runs no `git gc`. |
-| `remote.<name>.uploadpack`, `remote.<name>.receivepack`, `remote.<name>.url`, `url.<base>.insteadOf` | For an SSH remote, the remote server runs the upload-pack and receive-pack command, not the host. `protocol.file.allow = never` refuses a local remote. |
-| `remote.<name>.vcs`, a `<transport>::<address>` URL | git runs `git-remote-<transport>` from `PATH` or from the exec path of git. A worker cannot put a program there. `protocol.ext.allow = never` refuses the `ext` helper. |
+| `remote.<name>.uploadpack`, `remote.<name>.receivepack`, `remote.<name>.url`, `url.<base>.insteadOf` | For an SSH remote, the remote server runs the upload-pack and receive-pack command, not the host. `GIT_ALLOW_PROTOCOL` refuses a local remote. |
+| `remote.<name>.vcs`, a `<transport>::<address>` URL | `GIT_ALLOW_PROTOCOL` refuses each transport except SSH and HTTPS, so git runs no `git-remote-<name>` helper for a planted name. The HTTPS transport runs `git-remote-https` from the exec path of git. |
 | `uploadpack.packObjectsHook` | git reads it only from the system, global, and command-line config. |
 | `alias.*` | prism host git runs built-in commands only. An alias cannot replace a built-in command. |
 | `diff.tool`, `merge.tool`, `man.viewer`, `web.browser`, `trailer.<token>.cmd`, `submodule.<name>.update`, `sendemail.*`, `imap.tunnel`, `tar.<format>.command` | Only `git difftool`, `git mergetool`, `git help`, `git interpret-trailers` (or `--trailer`), `git submodule update`, `git send-email`, `git imap-send`, and `git archive` run them. prism host git runs none of these commands. |
@@ -115,7 +115,9 @@ worker can then write `.bare/config` (#3337, `sandbox-git-write-scope.md`).
 The list and the environment above close this route for prism host git: a
 planted `.bare/config` runs no command on a host fetch, push, worktree add,
 checkout, commit, rebase, or config command. The one exception is the
-config hook of #3349 above.
+config hook of #3349 above. A planted `.bare/config` can still name
+another SSH or HTTPS URL for a remote. That runs no program on the host,
+and the refs of `.bare` are outside this rule ("Known limits").
 
 ## Why
 
@@ -419,11 +421,12 @@ table.
   The `--rebase` pre-flight is an exception for the branch it moves: it
   pushes the branch of the session record, not the branch that `HEAD` names
   (#3323, in the `/review` pre-flight section above).
-- **A local remote.** prism host git fetches and pushes `origin` only.
-  `origin` comes from the URL of `prism clone` or the clone prompt of
-  `prism switch`, or from the `origin` of a repo that `prism convert`
-  converts. If that URL is a local path, the clone or the fetch stops with
-  `transport 'file' not allowed`.
+- **A remote that is not SSH or HTTPS.** prism host git fetches and
+  pushes `origin` only. `origin` comes from the URL of `prism clone` or the
+  clone prompt of `prism switch`, or from the `origin` of a repo that
+  `prism convert` converts. If that URL is a local path, an `http://` URL,
+  or a `git://` URL, the clone or the fetch stops with
+  `transport '<name>' not allowed`.
 - **No auto maintenance.** prism host git starts no `git gc`. User git and
   bwrap sessions still start it. A `sandbox-exec` session cannot start it,
   so loose objects collect until a user git command on the host starts it.
@@ -466,7 +469,8 @@ table.
   `merge.default` with no attribute, and also the driver names `text` and
   `""`. `TestHostGitConfig_DocListsEveryKey` makes sure that this doc lists
   each key. `TestStagedDiff_NoExternalDiff` covers the `--no-ext-diff` of
-  `prism quick pr`.
+  `prism quick pr`. `TestHostGit_PlantedRemoteHelper` plants a helper by a
+  relative path and on `PATH`, and allows its transport in config.
 - The test fixtures of `cmd`, `internal/git`, `internal/review`, and
   `internal/sidecar` use a local origin. Their `TestMain` calls
   `git.AllowFileTransportForTest`. `TestHostGit_FileTransportRefused`

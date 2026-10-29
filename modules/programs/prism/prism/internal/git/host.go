@@ -109,9 +109,17 @@ func hookEventsOff() [][2]string {
 	return out
 }
 
-// emptyTree is the SHA-1 object name of the empty tree. git knows this object
-// without a read of the object store.
+// emptyTree is the SHA-1 object name of the empty tree. git serves this
+// object from memory before it reads the object store, so a worker cannot
+// replace it with a planted object.
 const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+// hostGitProtocols is the value of GIT_ALLOW_PROTOCOL. When the variable is
+// set, git allows only the transports in it and reads no protocol.*.allow
+// config. A planted protocol.<name>.allow beats protocol.allow = never, so
+// config cannot do this. A planted remote.<name>.vcs or <name>:: URL with a
+// slash in the name makes git run a helper by a path relative to its cwd.
+const hostGitProtocols = "ssh:https"
 
 // allowFileTransport makes Env allow the file transport. Only tests set it,
 // through AllowFileTransportForTest.
@@ -119,7 +127,7 @@ var allowFileTransport atomic.Bool
 
 // AllowFileTransportForTest makes host git allow a remote that is a local
 // path, which test fixtures use as origin. Production host git refuses such a
-// remote (protocol.file.allow = never). Call restore when the test ends.
+// remote. Call restore when the test ends.
 func AllowFileTransportForTest() (restore func()) {
 	prev := allowFileTransport.Swap(true)
 	return func() { allowFileTransport.Store(prev) }
@@ -137,6 +145,14 @@ func hostGitConfigValues() [][2]string {
 		}
 	}
 	return out
+}
+
+// allowedProtocols returns the value of GIT_ALLOW_PROTOCOL that Env uses.
+func allowedProtocols() string {
+	if allowFileTransport.Load() {
+		return hostGitProtocols + ":file"
+	}
+	return hostGitProtocols
 }
 
 // hostGitStrippedEnv names the inherited variables that Env removes. Some
@@ -161,6 +177,7 @@ var hostGitStrippedEnv = []string{
 	"GIT_ATTR_SOURCE",
 	"GIT_PROXY_COMMAND",
 	"GIT_NO_LAZY_FETCH",
+	"GIT_ALLOW_PROTOCOL",
 }
 
 // ErrWorktreeConfig is returned when the common config of a project turns
@@ -573,6 +590,7 @@ func hostEnv(base []string, gitDir, commonDir, workTree string) []string {
 		"GIT_PAGER=cat",
 		"GIT_PROXY_COMMAND=",
 		"GIT_NO_LAZY_FETCH=1",
+		"GIT_ALLOW_PROTOCOL="+allowedProtocols(),
 	)
 	if gitDir != "" {
 		out = append(out, "GIT_DIR="+gitDir, "GIT_COMMON_DIR="+commonDir, "GIT_ATTR_SOURCE="+emptyTree)

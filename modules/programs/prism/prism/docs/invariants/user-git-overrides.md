@@ -1,5 +1,6 @@
 # Invariant: the git overrides of the user session
 
+<!-- doclint-ignore: merge.default, maintenance.auto, gc.recentObjectsHook -->
 <!-- doclint-ignore: core.alternateRefsCommand, core.askPass, core.attributesFile, core.gitProxy, gpg.openpgp.program, gpg.ssh.defaultKeyCommand, gpg.x509.program, log.showSignature, status.submoduleSummary, interactive.diffFilter -->
 <!-- doclint-ignore: diff.tool, merge.tool, man.viewer, web.browser, help.format -->
 <!-- doclint-ignore: EDITOR, VISUAL, SSH_ASKPASS, GIT_ATTR_SOURCE, GIT_EDITOR, GIT_NO_LAZY_FETCH, GIT_PROXY_COMMAND, vcs_info -->
@@ -190,6 +191,13 @@ staged submodule (#3343).
   `--ext-diff` variant (for example `git show --ext-diff`). Bare `git show`
   and `git log -p` do not trigger it. The prompt and gitsigns pass
   `--no-ext-diff`. Tracked by #3346.
+- **A planted merge driver or `gc.recentObjectsHook`.** A `merge=<name>`
+  attribute, or a planted `merge.default` with no attribute, selects a
+  merge driver that a planted config defines. The driver runs on a typed
+  `git pull`, `git merge`, or `git rebase` with a conflict. A planted
+  `gc.recentObjectsHook` runs when auto maintenance starts `git gc` after a
+  typed commit, fetch, or pull. The list sets neither `merge.default` nor
+  `maintenance.auto`. Tracked by #3346. Prism host git pins both (#3337).
 - **The gitsigns current-line blame.** It runs `git blame --contents` on
   the working buffer. `--no-textconv` (set in `gitsigns.nix`) stops a diff
   textconv driver. A planted clean filter still runs when git normalises
@@ -213,8 +221,10 @@ staged submodule (#3343).
   key that is not on the list. The owner accepted this on #3325. The git
   plugins of nvim do not reach a nested git dir with no `cd` (#3347).
 - **Keys with a name that the repo chooses.** For example
-  `remote.<name>.uploadpack`, `remote.<name>.url`, and
-  `url.<base>.insteadOf` run for a fetch, a pull, or a push; the tool
+  `remote.<name>.uploadpack`, `remote.<name>.url`, `remote.<name>.vcs`,
+  and `url.<base>.insteadOf` run for a fetch, a pull, or a push. A
+  `remote.<name>.vcs` with a slash runs a helper by a path relative to the
+  cwd of git; the tool
   selectors above run for a typed `git help`, `git difftool`, or
   `git mergetool`. The list cannot name them.
 - **The service list.** It does not have the five entries with an empty
