@@ -136,8 +136,9 @@ describe("acquireRefreshLock", () => {
   // when the test ticks, so a slow runner cannot change the result.
   async function waiterAgainstHolder(heartbeatMs: number) {
     mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: Date.now() })
+    let holder: Awaited<ReturnType<typeof acquireRefreshLock>> | undefined
     try {
-      const holder = await acquireRefreshLock({ dir: lockDir, heartbeatMs })
+      holder = await acquireRefreshLock({ dir: lockDir, heartbeatMs })
       assert.ok(holder)
       let result: Awaited<ReturnType<typeof acquireRefreshLock>> | undefined
       let done = false
@@ -150,9 +151,11 @@ describe("acquireRefreshLock", () => {
         mock.timers.tick(100)
       }
       assert.ok(done, "the waiter did not finish")
-      holder.release()
       return result
     } finally {
+      // Always release: a lock left held makes later sync tests in this
+      // process return null at once (heldInProcess).
+      holder?.release()
       mock.timers.reset()
     }
   }
