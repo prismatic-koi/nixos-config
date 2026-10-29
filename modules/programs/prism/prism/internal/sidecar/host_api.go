@@ -1228,13 +1228,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					// Source is propagated so flushPendingReplay can clear
 					// reviewingInFlight after the replayed frame is enqueued on
 					// the new connection.
-					s.bufferPendingReplay(pendingReplayDelivery{
+					s.holdPrompt(pendingReplayDelivery{
 						DeliveryID: req.DeliveryID,
 						Text:       req.Prompt,
 						DeliverAs:  deliverAs,
 						Source:     req.Source,
 					})
 					s.logger().Printf("sidecar: host-API /prompt: PI disconnected, buffered for replay (session=%s deliver_as=%s delivery_id=%s source=%s)", req.Session, deliverAs, req.DeliveryID, req.Source)
+					// After the reconnect timeout no agent will take the
+					// prompt soon: keep the state error and tell the
+					// coordinator about a held review result (#3345).
+					s.reassertDetachedError()
 					writeJSON(w, http.StatusOK, map[string]bool{"buffered": true})
 					return
 				}

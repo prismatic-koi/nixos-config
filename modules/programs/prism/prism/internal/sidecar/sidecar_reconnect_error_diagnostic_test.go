@@ -20,9 +20,10 @@ package sidecar
 //     timeout duration and that the state_change note is "reconnect
 //     timeout".
 //
-// Both tests also verify that the state=error write lands in the DB before
-// the function returns — the state-write-before-ctx invariant, preserved on
-// both paths.
+// Both tests also verify the state=error write in the DB. On the
+// listener-error path it lands before the function returns — the
+// state-write-before-ctx invariant. On the timeout path the function does
+// not return: the listener stays open for a new agent (#3345).
 //
 // Isolation follows the isolation convention: the sidecars are constructed via
 // newSocketPipeSidecarWithClock, which sets $XDG_STATE_HOME to a t.TempDir()
@@ -233,7 +234,8 @@ func TestSocketPipe_ListenerError_LogAndNote(t *testing.T) {
 // starting the sidecar with a short StartupConnectTimeout and never dialling.
 // It asserts the genuine-timeout behaviour: log names the
 // configured timeout duration, and the state_change note remains
-// "reconnect timeout".
+// "reconnect timeout". The function keeps running after the timeout, with
+// the listener open, until its context is cancelled (#3345).
 func TestSocketPipe_GenuineTimeout_LogAndNote(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, _ := newSocketPipeSidecarWithClock(t, sockPath)
@@ -245,33 +247,35 @@ func TestSocketPipe_GenuineTimeout_LogAndNote(t *testing.T) {
 
 	getLogs := captureLogInto(sc)
 
-	var (
-		mu     sync.Mutex
-		runErr error
-		done   = make(chan struct{})
-	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e := sc.runStartupSocketPipe(context.Background())
-		mu.Lock()
-		runErr = e
-		mu.Unlock()
+		_ = sc.runStartupSocketPipe(ctx)
 	}()
 
+	// The "reconnect timeout" note is used, and the
+	// listener-error note MUST NOT appear on this path.
+	waitForStateChangeNote(t, sc.cfg.DB, sc.cfg.SessionName, "reconnect timeout")
+
+	// The function does not return at the timeout: the listener stays open.
+	select {
+	case <-done:
+		t.Fatal("runStartupSocketPipe returned at the timeout, want it to keep the listener open")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if c, err := net.Dial("unix", sc.cfg.HarnessPipeSockPath); err != nil {
+		t.Errorf("dial the pipe after the timeout: %v, want the listener to stay open", err)
+	} else {
+		_ = c.Close()
+	}
+
+	cancel()
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		t.Fatal("runStartupSocketPipe did not return within 3s of the 150ms startup timeout")
-	}
-
-	mu.Lock()
-	gotErr := runErr
-	mu.Unlock()
-	if gotErr == nil {
-		t.Fatal("runStartupSocketPipe returned nil on genuine timeout, want non-nil")
-	}
-	if !strings.Contains(gotErr.Error(), "timed out waiting for extension") {
-		t.Errorf("returned error = %q, want it to contain \"timed out waiting for extension\"", gotErr.Error())
+		t.Fatal("runStartupSocketPipe did not return after its context was cancelled")
 	}
 
 	logs := getLogs()
@@ -285,13 +289,9 @@ func TestSocketPipe_GenuineTimeout_LogAndNote(t *testing.T) {
 		t.Errorf("log carried a \"pipe listener error:\" line on a genuine-timeout path; got:\n%s", logs)
 	}
 
-	// The "reconnect timeout" note is used, and the
-	// listener-error note MUST NOT appear on this path.
-	waitForStateChangeNote(t, sc.cfg.DB, sc.cfg.SessionName, "reconnect timeout")
 	assertNoStateChangeNote(t, sc.cfg.DB, sc.cfg.SessionName, "pipe listener error")
 
-	// The state=error write lands in agent_status by the
-	// time the function returns.
+	// The state=error write lands in agent_status.
 	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateError) {
 		t.Errorf("agent_status.state = %q after genuine timeout, want %q", state, agent.StateError)
 	}

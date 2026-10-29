@@ -413,18 +413,37 @@ func MonitorFunc(opts MonitorOpts) error {
 	// drops whichever copy arrives second. See recovery.go and
 	// RecoveryDeliveryID for the shared-dedup-ID contract.
 	monitorDeliveryID := RecoveryDeliveryID(opts.GroupID)
-	deliverErr := deliverWithRetry(opts.WorkerSession, deliveryText, maxRetries, retryBackoff, dbPath, monitorDeliveryID)
+	outcome, deliverErr := deliverWithRetry(opts.WorkerSession, deliveryText, maxRetries, retryBackoff, dbPath, monitorDeliveryID)
 	if deliverErr != nil {
 		// Delivery failed after all retries — write fallback file.
 		fallbackPath := fallbackFilePath(opts.PRNumber, opts.Round)
 		proglog.Errorf("[prism monitor-review] delivery failed after %d retries — writing fallback to %s\n", maxRetries, fallbackPath)
 		writeErr := os.WriteFile(fallbackPath, []byte(deliveryText), 0o644)
+		writtenPath := fallbackPath
 		if writeErr != nil {
 			proglog.Errorf("[prism monitor-review] error: could not write fallback file %s: %v\n", fallbackPath, writeErr)
+			writtenPath = ""
 		} else {
 			proglog.Infof("[prism monitor-review] fallback file written to %s\n", fallbackPath)
 		}
+		// The fallback file alone is a silent loss: tell the worker
+		// session and its coordinator (#3345).
+		reportUndeliveredReview(d, undeliveredReview{
+			workerSession: opts.WorkerSession,
+			deliveryID:    monitorDeliveryID,
+			text:          deliveryText,
+			prNumber:      opts.PRNumber,
+			round:         opts.Round,
+			fallbackPath:  writtenPath,
+			cause:         deliverErr,
+		})
 		return fmt.Errorf("monitor-review: delivery failed and fallback written to %s", fallbackPath)
+	}
+	if outcome.Buffered {
+		// The worker sidecar holds the prompt until an agent connects. If
+		// none connects before its reconnect timeout, the sidecar sets the
+		// session to error and tells the coordinator.
+		proglog.Infof("[prism monitor-review] no agent of %s is connected: its sidecar holds the results and sends them when an agent connects\n", opts.WorkerSession)
 	}
 
 	// Write the authoritative end-of-life signal for this review group.
@@ -1253,7 +1272,7 @@ func buildRerunAdvice(status RoundStatus, prNumber string) string {
 // dbPath is passed through to deliverPrompt for DB access.
 // deliveryID is forwarded to the host-API /prompt handler for dedup; all retry
 // attempts use the same ID so the sidecar treats them as one delivery.
-func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff time.Duration, dbPath, deliveryID string) error {
+func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff time.Duration, dbPath, deliveryID string) (promptdelivery.DeliveryOutcome, error) {
 	var lastErr error
 	backoff := baseBackoff
 
@@ -1268,14 +1287,14 @@ func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff ti
 			}
 		}
 
-		err := deliverPrompt(workerSession, text, dbPath, deliveryID)
+		outcome, err := deliverPrompt(workerSession, text, dbPath, deliveryID)
 		if err == nil {
-			return nil
+			return outcome, nil
 		}
 		lastErr = err
 	}
 
-	return fmt.Errorf("delivery failed after %d attempts: %w", maxRetries+1, lastErr)
+	return promptdelivery.DeliveryOutcome{}, fmt.Errorf("delivery failed after %d attempts: %w", maxRetries+1, lastErr)
 }
 
 // deliverPrompt sends text to workerSession via the harness-aware delivery
@@ -1285,28 +1304,28 @@ func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff ti
 // deliveryID is forwarded to the host-API /prompt handler; pass
 // RecoveryDeliveryID(groupID) so the sidecar's dedup set can
 // collapse a concurrent recovery-watcher delivery to exactly one prompt.
-func deliverPrompt(workerSession, text, dbPath, deliveryID string) error {
+func deliverPrompt(workerSession, text, dbPath, deliveryID string) (promptdelivery.DeliveryOutcome, error) {
 	if dbPath == "" {
 		dbPath = defaultDBPath()
 	}
 	d, err := db.Open(dbPath)
 	if err != nil {
-		return fmt.Errorf("open db: %w", err)
+		return promptdelivery.DeliveryOutcome{}, fmt.Errorf("open db: %w", err)
 	}
 	defer d.Close()
 
 	status, err := d.CurrentStatus(workerSession)
 	if err != nil {
-		return fmt.Errorf("check session status for %q: %w", workerSession, err)
+		return promptdelivery.DeliveryOutcome{}, fmt.Errorf("check session status for %q: %w", workerSession, err)
 	}
 	if status == nil {
-		return fmt.Errorf("session %q not found in DB — worker may have ended", workerSession)
+		return promptdelivery.DeliveryOutcome{}, fmt.Errorf("session %q not found in DB — worker may have ended", workerSession)
 	}
 	if status.EndedAt != nil {
-		return fmt.Errorf("session %q has ended — cannot deliver review results", workerSession)
+		return promptdelivery.DeliveryOutcome{}, fmt.Errorf("session %q has ended — cannot deliver review results", workerSession)
 	}
 
-	return promptdelivery.DeliverToSessionWithID(workerSession, status, text, buildPromptBodyForMonitor, "review-complete", "", deliveryID)
+	return promptdelivery.DeliverToSessionExWithID(workerSession, status, text, buildPromptBodyForMonitor, "review-complete", "", deliveryID)
 }
 
 // buildPromptBodyForMonitor constructs the HTTP request body for prompt_async.

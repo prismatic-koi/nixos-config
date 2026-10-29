@@ -34,6 +34,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sessionname"
+	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // restoreOutcome describes what restoreSession did for a given session.
@@ -59,17 +60,97 @@ var loadRestoreConfig = func() config.Config { return config.Load() }
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
 	Short: "Recreate tmux sessions from prism.db",
-	RunE:  runRestore,
+	Long: `Recreate tmux sessions from prism.db.
+
+With no flag, restore recreates each live session that has no tmux session.
+It does not touch a session whose tmux session exists.
+
+With --session <name>, restore restarts that one session, also when its tmux
+session exists: it closes the tmux session, stops the sidecar, and starts the
+sidecar and the agent again, as after prism restart. The conversation of the
+agent continues. Use it to recover a dead agent pane: a bare
+'tmux respawn-pane' restarts the agent and not its sidecar. Run it in a host
+shell, not in the session that it restarts.`,
+	RunE: runRestore,
 }
 
 func init() {
 	restoreCmd.Flags().Bool("dry-run", false, "Print what would be restored without creating sessions")
+	restoreCmd.Flags().String("session", "", "Restart this one session: its tmux session, its sidecar, and its agent")
 	rootCmd.AddCommand(restoreCmd)
 }
 
 func runRestore(cmd *cobra.Command, _ []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	if sessionName, _ := cmd.Flags().GetString("session"); sessionName != "" {
+		return RestoreOneSession(sessionName, dryRun)
+	}
 	return Restore(dryRun)
+}
+
+// RestoreOneSession restarts the live session sessionName: the tmux session,
+// the sidecar, and the agent (#3345). It is the recovery for a dead agent
+// pane. A respawn of the pane alone can start an agent with no working
+// sidecar.
+func RestoreOneSession(sessionName string, dryRun bool) error {
+	// A sandbox has no tmux server of the host and no prism.db.
+	if os.Getenv("PRISM_HOST_API") != "" {
+		return errors.New("prism restore --session: run this command in a host shell, not in a sandbox")
+	}
+	if err := sessionname.ValidateName(sessionName); err != nil {
+		return fmt.Errorf("prism restore --session: %w", err)
+	}
+	// The restart closes the tmux session, and with it the shell of a
+	// caller in that session, before the new session exists.
+	if pane := os.Getenv("TMUX_PANE"); pane != "" && os.Getenv("TMUX") != "" {
+		if own, err := tmux.Run("display-message", "-p", "-t", pane, "#{session_name}"); err == nil && own == sessionName {
+			return fmt.Errorf("prism restore --session: this shell is in session %q, and the restart closes it. Run the command from another session or from a shell outside tmux", sessionName)
+		}
+	}
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("prism restore --session: cannot open DB: %w", err)
+	}
+	defer d.Close()
+	return restoreOneSession(d, sessionName, dryRun)
+}
+
+// restoreOneSession is RestoreOneSession after the checks of the caller.
+func restoreOneSession(d *db.DB, sessionName string, dryRun bool) error {
+	st, err := d.CurrentStatus(sessionName)
+	if err != nil {
+		return fmt.Errorf("prism restore --session: read session %q: %w", sessionName, err)
+	}
+	if st == nil || st.EndedAt != nil {
+		return fmt.Errorf("prism restore --session: prism.db has no live session %q. Start it with prism switch or prism spawn", sessionName)
+	}
+	if session.IsMetaSession(sessionName) {
+		return fmt.Errorf("prism restore --session: %q is not a project session", sessionName)
+	}
+	if dryRun {
+		fmt.Printf("would restart: %s (worktree=%s)\n", sessionName, st.Worktree)
+		return nil
+	}
+
+	// Close the tmux session first, as prism restart closes the tmux server
+	// first. tmux.KillSession renames the session before the kill, so the
+	// session-closed hook does not end the row. restoreSession then stops
+	// the old sidecar, keeps the merge queue and the incarnation, and starts
+	// the new sidecar and the agent.
+	if session.HasExactSession(sessionName) {
+		if err := tmux.KillSession(sessionName); err != nil {
+			return fmt.Errorf("prism restore --session: close tmux session %q: %w", sessionName, err)
+		}
+	}
+	pendingStagger := false
+	outcome, err := restoreSession(d, *st, &pendingStagger, 0)
+	if err != nil {
+		return fmt.Errorf("prism restore --session %q: %w", sessionName, err)
+	}
+	if outcome != restoreOutcomeCreated {
+		return fmt.Errorf("prism restore --session: session %q was not restarted (see the message above)", sessionName)
+	}
+	return nil
 }
 
 func Restore(dryRun bool) error {

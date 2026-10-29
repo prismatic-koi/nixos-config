@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -195,20 +196,40 @@ func readJSON(t *testing.T, conn net.Conn) map[string]any {
 
 // runSocketPipeSidecar starts runStartupSocketPipe in a goroutine and returns
 // a function that waits for it to finish and returns its error.
+//
+// The function does not return at the reconnect timeout: it keeps the
+// listener open for a new agent (#3345). So wait also stops when the timeout
+// detaches the session: it cancels the context, and the function then
+// returns context.Canceled.
 func runSocketPipeSidecar(sc *Sidecar) (wait func() error) {
 	var (
 		mu   sync.Mutex
 		err  error
 		done = make(chan struct{})
 	)
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		defer close(done)
-		e := sc.runStartupSocketPipe(context.Background())
+		e := sc.runStartupSocketPipe(ctx)
 		mu.Lock()
 		err = e
 		mu.Unlock()
 	}()
 	return func() error {
+		defer cancel()
+		for detached := false; !detached; {
+			select {
+			case <-done:
+				mu.Lock()
+				defer mu.Unlock()
+				return err
+			case <-time.After(10 * time.Millisecond):
+			}
+			sc.mu.Lock()
+			detached = sc.harnessPipeDetached
+			sc.mu.Unlock()
+		}
+		cancel()
 		<-done
 		mu.Lock()
 		defer mu.Unlock()
@@ -1531,7 +1552,8 @@ func TestSocketPipe_ReconnectAfterDrop(t *testing.T) {
 }
 
 // TestSocketPipe_ReconnectTimeout verifies that if no reconnect arrives within
-// pipeDisconnectTimeout, the sidecar transitions to error state and exits.
+// pipeDisconnectTimeout, the sidecar transitions to error state and keeps
+// running until its context is cancelled (#3345).
 func TestSocketPipe_ReconnectTimeout(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
@@ -1566,10 +1588,11 @@ func TestSocketPipe_ReconnectTimeout(t *testing.T) {
 	sc := New(cfg)
 	wait := runSocketPipeSidecar(sc)
 
-	// Never connect — just wait for the sidecar to time out.
+	// Never connect — just wait for the sidecar to time out. wait cancels
+	// the context at the detach, so only a cancelled run is correct here.
 	err := wait()
-	if err == nil {
-		t.Error("expected runStartupSocketPipe to return error on connect timeout")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("runStartupSocketPipe returned %v, want context.Canceled: it must keep running after the timeout", err)
 	}
 
 	s := getState(t, sc.cfg.DB, sc.cfg.SessionName)

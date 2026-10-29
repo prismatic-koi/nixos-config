@@ -365,6 +365,15 @@ func (s *Sidecar) notifyCoordinatorError(finalText string) {
 // suppression guards, audit-row writes, and the notifyCoordinatorDeliverFn
 // test seam — is identical and lives here so the two paths cannot drift.
 func (s *Sidecar) notifyCoordinatorWithText(notifyText string) {
+	s.sendCoordinatorNotification(notifyText, true)
+}
+
+// sendCoordinatorNotification delivers notifyText to the coordinator of the
+// repo of this session. When attachDisagreement is true, it appends a pending
+// review disagreement of this worker to the text and clears it (#2977). Only
+// a finish notification attaches it: a notification that is not a finish
+// must leave the disagreement for the finish.
+func (s *Sidecar) sendCoordinatorNotification(notifyText string, attachDisagreement bool) {
 	// Self-notification guard: if this session IS the coordinator, skip.
 	// DB-backed: check root_agent_name == "coordinator" for self.
 	// Fallback to name heuristic for pre-migration rows.
@@ -459,12 +468,14 @@ func (s *Sidecar) notifyCoordinatorWithText(notifyText string) {
 	// so a later finish for the same session never re-delivers it, and the
 	// content is buildDisagreementSection's verbatim output — this path never
 	// re-renders it.
-	if disagreement, ok, dErr := s.cfg.DB.ConsumePendingDisagreement(s.cfg.SessionName); dErr != nil {
-		s.logger().Printf("sidecar: notifyCoordinator: ConsumePendingDisagreement: %v", dErr)
-	} else if ok {
-		notifyText += "\n\n**This worker finished without escalating an unresolved review disagreement.** " +
-			"The round below was PASS_WITH_DISAGREEMENT-terminated; the worker did not run `prism escalate` before finishing.\n\n" +
-			disagreement
+	if attachDisagreement {
+		if disagreement, ok, dErr := s.cfg.DB.ConsumePendingDisagreement(s.cfg.SessionName); dErr != nil {
+			s.logger().Printf("sidecar: notifyCoordinator: ConsumePendingDisagreement: %v", dErr)
+		} else if ok {
+			notifyText += "\n\n**This worker finished without escalating an unresolved review disagreement.** " +
+				"The round below was PASS_WITH_DISAGREEMENT-terminated; the worker did not run `prism escalate` before finishing.\n\n" +
+				disagreement
+		}
 	}
 
 	coordinatorName := coordStatus.SessionName

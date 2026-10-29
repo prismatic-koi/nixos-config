@@ -4271,9 +4271,9 @@ export default function prismExtension(pi: ExtensionAPI): void {
     // in ECONNRESET when the extension re-dials (#1440 / regression of #1432).
     //
     // Only close the writer (issues a TCP FIN / half-close). The sidecar reads
-    // EOF, leaves the listener open, and waits for a reconnect. Process-exit
-    // cleanup of pipe.sock is handled by the sidecar's own Shutdown() path and
-    // by the reconnect-timeout path.
+    // EOF, leaves the listener open, and waits for a reconnect. Only the
+    // sidecar's own Shutdown() path removes pipe.sock: after the reconnect
+    // timeout the listener stays open for a new agent process (#3345).
     //
     // Cancel any pending first-connect retry so it does not race the
     // session_start-triggered connect() on the next session.

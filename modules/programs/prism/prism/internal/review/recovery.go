@@ -28,6 +28,7 @@ package review
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
@@ -242,7 +243,16 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 // recovery-path /prompt request for groupID. Exported so the watcher and
 // integration tests use the same value.
 func RecoveryDeliveryID(groupID string) string {
-	return "review-recovery:" + groupID
+	return recoveryDeliveryIDPrefix + groupID
+}
+
+const recoveryDeliveryIDPrefix = "review-recovery:"
+
+// GroupIDFromRecoveryDeliveryID returns the group ID in a delivery ID that
+// RecoveryDeliveryID made. It returns false for any other delivery ID.
+func GroupIDFromRecoveryDeliveryID(deliveryID string) (string, bool) {
+	groupID, ok := strings.CutPrefix(deliveryID, recoveryDeliveryIDPrefix)
+	return groupID, ok && groupID != ""
 }
 
 // StartRecoveryFallbacks starts the fallback session of each agent in the
