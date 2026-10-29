@@ -915,7 +915,7 @@ func Create(name, directory string, opts Opts) error {
 		return nil
 	}
 
-	if err := tmux.NewSessionDetached(name, directory); err != nil {
+	if err := newSessionRetryingServerExit(name, directory); err != nil {
 		return fmt.Errorf("new-session: %w", err)
 	}
 
@@ -934,6 +934,45 @@ func Create(name, directory string, opts Opts) error {
 	}
 
 	return nil
+}
+
+// startLayoutSidecar starts the sidecar of a LayoutFull session. Tests
+// replace it to count the starts.
+var startLayoutSidecar = StartSidecarWithOpts
+
+// tmuxServerExitedMsg is the tmux client error when the server that it
+// connects to exits before it answers.
+const tmuxServerExitedMsg = "server exited unexpectedly"
+
+// newSessionAttempts is the number of times Create runs tmux new-session
+// when tmux reports tmuxServerExitedMsg.
+const newSessionAttempts = 5
+
+// newSessionRetryDelay is the wait before the second attempt. The wait
+// doubles before each next attempt. Tests set it.
+var newSessionRetryDelay = 100 * time.Millisecond
+
+// newSessionRetryingServerExit runs tmux new-session and tries again when
+// tmux reports tmuxServerExitedMsg. After `prism restart` runs kill-server,
+// the old server can still run its session-closed hooks. A client that
+// connects to it in that time gets this error, and no session is made
+// (#3309). Only new-session is tried again: the layout, and with it the
+// sidecar, starts only after new-session succeeds, so one Create starts at
+// most one sidecar.
+func newSessionRetryingServerExit(name, directory string) error {
+	delay := newSessionRetryDelay
+	var err error
+	for attempt := 1; attempt <= newSessionAttempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(delay)
+			delay *= 2
+		}
+		err = tmux.NewSessionDetached(name, directory)
+		if err == nil || !strings.Contains(err.Error(), tmuxServerExitedMsg) {
+			return err
+		}
+	}
+	return fmt.Errorf("%w (tried %d times)", err, newSessionAttempts)
 }
 
 // hostHarnessEnvVars returns the host-mode harness env vars for an agent
@@ -1112,7 +1151,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 			HarnessName:    opts.HarnessName,
 			ModelsByRole:   opts.ModelsByRole,
 		}
-		if err := StartSidecarWithOpts(name, sidecarOpts); err != nil {
+		if err := startLayoutSidecar(name, sidecarOpts); err != nil {
 			// Non-fatal: log and continue. The session is created regardless.
 			fmt.Fprintf(os.Stderr, "warning: could not start sidecar for %q: %v\n", name, err)
 		}
