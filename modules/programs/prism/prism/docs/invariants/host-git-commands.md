@@ -273,6 +273,19 @@ write rights:
   the session's own environment, which is the host. A host-mode session is
   not isolated from the host, so this is not a trust boundary.
 
+The host-direct path enforces this split: when `--rebase` is set it reads the
+parent session's isolation mode and refuses unless the mode is `host` (it
+fails closed when the mode cannot be read). This covers the host `term`
+window of a sandboxed session, a shell on the host with no `PRISM_HOST_API`,
+from which `prism review --rebase` would otherwise reach the host-direct path.
+
+The in-sandbox rebase resolves the project root with the default project
+locations (`~/code`, `~/documents/obsidian`), because a sandbox cannot read
+config.json (see "Project roots" above). A repo under a non-default
+`project_locations` entry would make the in-sandbox `--rebase` refuse with a
+"not a prism project root" error. No host in this repo sets a non-default
+location, so nothing breaks today.
+
 The rules below bound the host-mode `--rebase` steps, and the non-rebase
 pre-flight that runs on the host for every session:
 
@@ -302,9 +315,10 @@ pre-flight that runs on the host for every session:
   runs no rebase on the host.
 
 Code: `internal/review/preflight.go`, `cmd/review.go` (the sandboxed
-container branch runs the rebase in the sandbox and proxies with no rebase),
-and the sidecar `/review` handler in `internal/sidecar/host_api.go` (it
-refuses a rebase request). Tests:
+container branch runs the rebase in the sandbox and proxies with no rebase;
+the host-direct path refuses `--rebase` for a non-host session), and the
+sidecar `/review` handler in `internal/sidecar/host_api.go` (it refuses a
+rebase request). Tests:
 `internal/review/preflight_host_git_test.go`,
 `cmd/review_rebase_sandbox_3335_test.go`, and
 `TestHostAPI_Review_RebaseRefusedOnHost`.
@@ -469,15 +483,18 @@ table.
   covers #3323: the refusal of a non-worktree session, the refusal of a
   pre-existing rebase or merge state, the autostash chain (control: `git
   rebase --abort` runs the planted filter; fix: the pre-flight refuses it),
-  and the stash-free conflict restore. It also covers #3335: the success-path
-  branch-move control (a host git rebase reads a planted `head-name` and moves
-  `main`) and the closed state (the non-rebase host pre-flight moves no
-  branch and runs no payload).
+  and the stash-free conflict restore. It also carries the #3335
+  control (`TestPreflight_HostGit_SuccessPathChainReproducesOnHostRebase`): a
+  host git rebase reads a planted `head-name`, `orig-head`, and `autostash`
+  mid-rebase and moves `main` and applies the stash — the escalation the
+  routing guards keep off the host.
 - `cmd/review_rebase_sandbox_3335_test.go` and
   `TestHostAPI_Review_RebaseRefusedOnHost` (#3335): the sandboxed
   `prism review --rebase` runs the rebase in the sandbox and proxies with no
-  rebase, and the host-API `/review` handler refuses a rebase request and
-  spawns no `prism review` subprocess for it.
+  rebase; the host-API `/review` handler refuses a rebase request and spawns
+  no `prism review` subprocess for it; the host-direct path refuses
+  `--rebase` for a sandboxed (non-host) session; and `rebaseInSandbox` runs
+  the PR-state check before the rebase.
 - `TestHostAPI_Spawn_RepoMustBeAPlainName` and
   `TestResolveRepo_RefusesRootInsideProject`: the `/spawn` handler refuses
   a `repo` value that is a path, and `resolveRepo` refuses a root inside

@@ -643,8 +643,9 @@ type reviewProxyExtras struct {
 //
 // prNumber is the PR number to review (e.g. "123"). agents is an optional
 // list of agent names for --only filtering. timeout is an optional duration
-// string (e.g. "10m"). rebase requests an inline rebase onto origin/main
-// before the review. Returns an error if the host-side
+// string (e.g. "10m"). There is no rebase parameter: a sandboxed session
+// rebases in its own sandbox before this call (#3335), and the host /review
+// handler refuses a rebase request. Returns an error if the host-side
 // subprocess failed or the connection was lost mid-stream.
 //
 // The response from the sidecar /review endpoint is a plain-text chunked stream
@@ -660,7 +661,7 @@ type reviewProxyExtras struct {
 // the in-sandbox `prism review --wait --json` path to honour the
 // JSON-exclusive contract: otherwise the streamed Ack lines would
 // land on stdout before waitForReviewTerminal emits its JSON object.
-func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, rebase bool, quietStdout bool, extras reviewProxyExtras) (string, error) {
+func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, quietStdout bool, extras reviewProxyExtras) (string, error) {
 	// Build request body.
 	body := map[string]any{
 		"pr_number": prNumber,
@@ -670,11 +671,6 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, 
 	}
 	if timeout != "" {
 		body["timeout"] = timeout
-	}
-	if rebase {
-		// #3335: the host /review handler refuses this; the in-sandbox
-		// `prism review` rebases locally and calls this with rebase=false.
-		body["rebase"] = true
 	}
 	if len(extras.Models) > 0 {
 		body["model_overrides"] = extras.Models

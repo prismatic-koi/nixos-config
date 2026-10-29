@@ -2019,7 +2019,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// against a compromised in-container client. The refusal runs before the
 		// pre-emptive reviewing write, so no rollback is needed.
 		if req.Rebase {
-			writeError(w, http.StatusBadRequest, "review: --rebase is not accepted over the host API; a sandboxed session rebases in its own sandbox, not on the host (#3335)")
+			writeError(w, http.StatusBadRequest, "review: --rebase is not accepted over the host API; a sandboxed session rebases in its own sandbox, not on the host (#3335). Rebase and push the branch in the sandbox, then re-run 'prism review' without --rebase.")
 			return
 		}
 

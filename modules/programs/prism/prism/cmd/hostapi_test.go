@@ -1234,7 +1234,7 @@ func TestProxyReviewAsync_LinesArrivedProgressively(t *testing.T) {
 	var stdout string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "123", nil, "", false, false, reviewProxyExtras{})
+		_, callErr = proxyReviewAsync(srv.apiURL(), "123", nil, "", false, reviewProxyExtras{})
 	})
 
 	if callErr != nil {
@@ -1275,7 +1275,7 @@ func TestProxyReviewAsync_QuietStdoutSuppressesStreaming(t *testing.T) {
 	var stdout, ack string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		ack, callErr = proxyReviewAsync(srv.apiURL(), "1", nil, "", false, true /* quietStdout */, reviewProxyExtras{})
+		ack, callErr = proxyReviewAsync(srv.apiURL(), "1", nil, "", true /* quietStdout */, reviewProxyExtras{})
 	})
 	if callErr != nil {
 		t.Fatalf("proxyReviewAsync: %v", callErr)
@@ -1300,7 +1300,7 @@ func TestProxyReviewAsync_SentinelConsumedNotEchoed(t *testing.T) {
 	var stdout string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "42", nil, "", false, false, reviewProxyExtras{})
+		_, callErr = proxyReviewAsync(srv.apiURL(), "42", nil, "", false, reviewProxyExtras{})
 	})
 
 	if callErr != nil {
@@ -1333,7 +1333,7 @@ func TestProxyReviewAsync_FailedSentinelProducesError(t *testing.T) {
 	var stdout string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "99", nil, "", false, false, reviewProxyExtras{})
+		_, callErr = proxyReviewAsync(srv.apiURL(), "99", nil, "", false, reviewProxyExtras{})
 	})
 
 	// proxyReviewAsync must return a non-nil error when sentinel says failed.
@@ -1368,7 +1368,7 @@ func TestProxyReviewAsync_MidStreamDisconnectReportsError(t *testing.T) {
 
 	var callErr error
 	_ = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "77", nil, "", false, false, reviewProxyExtras{})
+		_, callErr = proxyReviewAsync(srv.apiURL(), "77", nil, "", false, reviewProxyExtras{})
 	})
 
 	if callErr == nil {
@@ -1391,7 +1391,7 @@ func TestProxyReviewAsync_HTTP500BeforeStreamReturnsError(t *testing.T) {
 
 	var callErr error
 	_ = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "55", nil, "", false, false, reviewProxyExtras{})
+		_, callErr = proxyReviewAsync(srv.apiURL(), "55", nil, "", false, reviewProxyExtras{})
 	})
 
 	if callErr == nil {
@@ -1670,7 +1670,7 @@ func TestProxyReviewAsync_FailureSurfacesCause(t *testing.T) {
 	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(sidecar.ReviewCauseMarker + "the host review process hit the 30s deadline\n" + sidecar.ReviewSentinelFailed + "\n"))
 	})
-	_, err := proxyReviewAsync(srv.apiURL(), "1", nil, "", false, true, reviewProxyExtras{})
+	_, err := proxyReviewAsync(srv.apiURL(), "1", nil, "", true, reviewProxyExtras{})
 	if err == nil || !strings.Contains(err.Error(), "30s deadline") || strings.Contains(err.Error(), "check host logs") {
 		t.Fatalf("error %v should name the cause", err)
 	}
