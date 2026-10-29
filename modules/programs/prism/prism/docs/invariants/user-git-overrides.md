@@ -3,7 +3,7 @@
 <!-- doclint-ignore: core.alternateRefsCommand, core.askPass, core.attributesFile, core.gitProxy, gpg.openpgp.program, gpg.ssh.defaultKeyCommand, gpg.x509.program, log.showSignature, status.submoduleSummary, interactive.diffFilter -->
 <!-- doclint-ignore: diff.tool, merge.tool, man.viewer, web.browser, help.format -->
 <!-- doclint-ignore: EDITOR, VISUAL, SSH_ASKPASS, GIT_ATTR_SOURCE, GIT_EDITOR, GIT_NO_LAZY_FETCH, GIT_PROXY_COMMAND, vcs_info -->
-<!-- doclint-ignore: .bare/config, .bare/info, info/attributes, git.nix, tmux.nix, modules/programs/git.nix, systemd.user.sessionVariables -->
+<!-- doclint-ignore: .bare/config, .bare/info, .bare/commondir, info/attributes, git.nix, tmux.nix, modules/programs/git.nix, systemd.user.sessionVariables -->
 <!-- doclint-ignore: attr.tree, AGENTS.md, gitsigns.nix, on_attach, git_commits -->
 <!--
   These names are git config keys, environment variables that git and zsh
@@ -26,9 +26,13 @@ repo config included. So a repo config cannot change a key in the list.
 
 A sandboxed session can write config that git on the host reads:
 
-- a `.git` file or dir in a subdir of its worktree (#3325)
+- a `.git` file or dir in a subdir of its worktree (#3347 with no `cd`,
+  #3325 with a `cd`)
 - a submodule that it stages in its own index, with its own git dir
 - `.bare/config`, after a host rename detaches a bwrap pin (#3346)
+- `.bare/commondir` at the project root, with no detach; a plain git at the
+  project root then reads config and `info/attributes` from a dir that the
+  worker controls (#3348)
 
 On the host, git runs in a worktree for the shell prompt, for gitsigns in
 nvim, and for each command that the owner types.
@@ -169,9 +173,12 @@ Each limit needs a planted config that defines the driver, the helper, or
 the command. At the worktree root, a session cannot write that config:
 `sandbox-exec` denies `.bare/config`, and #3346 tracks the bwrap route that
 a host rename opens (the real fix is bwrap `.bare` write-protection, the
-#3334 / #3337 family — `sandbox-git-write-scope.md`). A session can plant the
-config in a git dir that it fully controls — a nested `.git` (#3325) or a
-staged submodule (#3343).
+#3334 / #3337 family — `sandbox-git-write-scope.md`). A plain git at the
+project root reads config from a planted `.bare/commondir`, which a bwrap
+worker can write with no detach — a known OPEN in-scope route tracked by
+#3348 (real fix in the #3327 / #3334 family). A session can also plant the
+config in a git dir that it fully controls — a nested `.git` (#3347 / #3325)
+or a staged submodule (#3343).
 
 - **A planted `.gitattributes` or `info/attributes` driver.** The list
   does not set `GIT_ATTR_SOURCE` (above), so a `diff=<name>` or

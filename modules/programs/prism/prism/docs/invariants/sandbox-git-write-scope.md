@@ -237,7 +237,9 @@ that prism does not run.
   `core.fsmonitor`, `core.sshCommand`, `core.pager`, and more), so a planted
   `config` runs none of those even when a plain host `git` reads it. It does
   NOT cover a filter or diff driver that a planted `.gitattributes` or
-  `info/attributes` selects — a known limit of #3326, tracked by #3346; see
+  `info/attributes` selects. That is a known OPEN in-scope route, tracked by
+  #3348 (the `.bare/commondir` project-root route; the real fix is the
+  #3327 / #3334 family of bwrap `.bare` write-protection); see
   `docs/invariants/user-git-overrides.md`. Binding `.bare` read-only — which would stop a
   worker writing any bare-dir file — is not an option; see "Why bwrap cannot
   match this scope" below for why.
@@ -359,7 +361,8 @@ pins the keys of SSH commit signing. It applies to the shell prompt and
 gitsigns in a worktree pane, and to a plain `git` at the project root (the
 `.bare/commondir` route above). It does not set `GIT_ATTR_SOURCE` and does
 not pin `diff.external`, so a planted driver or a planted `diff.external`
-stays a known limit (#3346).
+stays a known OPEN route: at the worktree root via a planted `.bare/config`
+(#3346), and at the project root via a planted `.bare/commondir` (#3348).
 
 The list, the tests, where the variables reach, and the known limits are in
 `docs/invariants/user-git-overrides.md`.
