@@ -72,6 +72,34 @@
             	end,
             })
 
+            -- fugitive finds the git dir of a buffer from the path of the buffer.
+            -- For a file in a nested repo or a submodule, that is a git dir that
+            -- a worker wrote (#3347). Pin each buffer to the git dir of the
+            -- startup dir. fugitive clears b:git_dir on a read and on a rename,
+            -- so these autocmds must come after the autocmds of fugitive.
+            vim.api.nvim_create_autocmd("VimEnter", {
+            	group = augroup,
+            	once = true,
+            	callback = function()
+            		local git_root = require("prism.git_root")
+            		local git_dir = git_root.root and vim.fn.FugitiveExtractGitDir(git_root.root) or ""
+            		local function pin(bufnr)
+            			if not vim.startswith(vim.api.nvim_buf_get_name(bufnr), "fugitive://") then
+            				vim.b[bufnr].git_dir = git_dir
+            			end
+            		end
+            		for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+            			pin(bufnr)
+            		end
+            		vim.api.nvim_create_autocmd({ "BufNew", "BufReadPost", "BufNewFile", "BufFilePost" }, {
+            			group = augroup,
+            			callback = function(args)
+            				pin(args.buf)
+            			end,
+            		})
+            	end,
+            })
+
             vim.keymap.set("n", "<leader>gs", vim.cmd.Git, { desc = "[G]it [S]tatus in Fugitive" })
             vim.keymap.set("n", "<leader>gmd", vim.cmd.Gvdiffsplit, { desc = "[G]it [M]erge [D]iff" })
             vim.keymap.set("n", "<leader>gh", "<cmd>diffget //2<CR>", { desc = "[G]it, left side of merge diff" })
