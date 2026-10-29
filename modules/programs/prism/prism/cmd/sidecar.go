@@ -269,7 +269,13 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// unix:// URL for host mode while a GOOS-gated sidecar binds TCP.
 	var harnessPipeSockPath string
 	var harnessPipeTCPPort int
+	var harnessPipeSecretPath string
 	if isSocketPipe, useTCP := selectHarnessPipeTransport(harnessName, isolationMode); isSocketPipe {
+		secretPath, secretErr := prismSession.SidecarHarnessPipeSecretPath(sessionName)
+		if secretErr != nil {
+			return fmt.Errorf("sidecar: resolve harness pipe secret path: %w", secretErr)
+		}
+		harnessPipeSecretPath = secretPath
 		if useTCP {
 			// sandbox-exec: bind the TCP port already recorded in
 			// agent_status.harness_port (written by the spawn/restore path
@@ -396,6 +402,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		HostAPISockPath:        hostAPISockPath,
 		HarnessPipeSockPath:    harnessPipeSockPath,
 		HarnessPipeTCPPort:     harnessPipeTCPPort,
+		HarnessPipeSecretPath:  harnessPipeSecretPath,
 		CheckinPrivilegedRepos: checkinPrivilegedRepos,
 		PIExtensionDir:         prismCfg.PIExtensionDir,
 		OnReady:                onReady,

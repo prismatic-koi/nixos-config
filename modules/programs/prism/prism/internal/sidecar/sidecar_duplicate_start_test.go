@@ -46,6 +46,7 @@ func newDuplicateStartSidecar(t *testing.T, hostAPISockPath, pipeSockPath string
 		AgentRole:             "worker",
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   pipeSockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(pipeSockPath),
 		HostAPISockPath:       hostAPISockPath,
 		StartupConnectTimeout: 200 * time.Millisecond,
 		PipeReconnectTimeout:  50 * time.Millisecond,

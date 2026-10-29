@@ -17,9 +17,12 @@ import * as fs from "node:fs"
 
 import {
   attachJsonlReader,
+  buildHelloFrame,
   coerceToolOutput,
   dispatchInboundFrame,
   parseEndpoint,
+  PIPE_SECRET_FILE_ENV,
+  readPipeSecret,
   redactLine,
   shouldActivate,
   TRUNCATION_LIMIT_BYTES,
@@ -4215,6 +4218,148 @@ describe("#3065: the tool_call handler scopes the podman block by hello_ack isol
 
   it("does not block 'podman ps' after a host hello_ack", async () => {
     assert.equal(await toolCallResultAfterHandshake3065("host", "podman ps"), undefined)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #3356: the hello frame carries the pipe secret
+// ---------------------------------------------------------------------------
+//
+// The sidecar refuses a hello without the secret that it wrote to the file
+// at PRISM_HARNESS_PIPE_SECRET_FILE. The extension reads the file at each
+// connect, so a new sidecar with a new secret works.
+
+describe("#3356: readPipeSecret", () => {
+  it("returns the content of the file without whitespace at the ends", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-3356-"))
+    try {
+      const p = path.join(dir, "pipe.secret")
+      fs.writeFileSync(p, "abc123\n")
+      assert.equal(readPipeSecret(p), "abc123")
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("returns undefined when the path is not set, the file is missing, or the file is empty", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-3356-"))
+    try {
+      const empty = path.join(dir, "empty")
+      fs.writeFileSync(empty, " \n")
+      assert.equal(readPipeSecret(undefined), undefined)
+      assert.equal(readPipeSecret(""), undefined)
+      assert.equal(readPipeSecret(path.join(dir, "missing")), undefined)
+      assert.equal(readPipeSecret(empty), undefined)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("#3356: buildHelloFrame", () => {
+  it("carries the secret", () => {
+    const f = buildHelloFrame("s3cr3t")
+    assert.equal(f.type, "hello")
+    assert.equal(f.protocol_version, 2)
+    assert.equal(f.harness, "pi")
+    assert.equal(f.secret, "s3cr3t")
+  })
+
+  it("has no secret field when there is no secret", () => {
+    assert.equal("secret" in buildHelloFrame(undefined), false)
+  })
+})
+
+/**
+ * Connect the extension to a mock sidecar. `onHello` gets the hello frame and
+ * the server side of the connection. Returns once the server has the hello.
+ */
+async function helloFromExtension3356(
+  writeSecret: (secretPath: string) => void,
+  onHello: (hello: Record<string, unknown>, conn: net.Socket) => void,
+): Promise<{ hello: Record<string, unknown>; frames: string[]; statusSet: boolean }> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-3356-"))
+  const sockPath = path.join(dir, "pipe.sock")
+  const secretPath = path.join(dir, "pipe.secret")
+  const saved = {
+    name: process.env.PRISM_SESSION_NAME,
+    pipe: process.env.PRISM_HARNESS_PIPE,
+    secret: process.env[PIPE_SECRET_FILE_ENV],
+  }
+  process.env.PRISM_SESSION_NAME = "test@main"
+  process.env.PRISM_HARNESS_PIPE = `unix://${sockPath}`
+  process.env[PIPE_SECRET_FILE_ENV] = secretPath
+
+  const frames: string[] = []
+  let gotHello: (h: Record<string, unknown>) => void = () => {}
+  const helloPromise = new Promise<Record<string, unknown>>((res) => { gotHello = res })
+  const acceptedConn: AcceptedConnRef = { current: null }
+  const server = net.createServer(trackConn(acceptedConn, (conn) => {
+    attachJsonlReader(conn, (line) => {
+      frames.push(line)
+      let f: Record<string, unknown>
+      try { f = JSON.parse(line) as Record<string, unknown> } catch { return }
+      if (f.type === "hello") {
+        onHello(f, conn)
+        gotHello(f)
+      }
+    })
+  }))
+
+  const { pi, trigger } = makeMockPI1554({ flagValues: { agent: "worker" } })
+  prismExtension(pi as never)
+  registerExtensionWiring({ trigger, server, acceptedConn })
+  let statusSet = false
+  const ctx = { ui: { setStatus: () => { statusSet = true } } }
+  try {
+    // The secret is written after the extension loads: the extension must
+    // read it at connect time, as a new sidecar writes a new secret.
+    writeSecret(secretPath)
+    await new Promise<void>((res) => server.listen(sockPath, () => res()))
+    await trigger("session_start", {}, ctx)
+    const hello = await helloPromise
+    // Give the extension time to process the reply to its hello.
+    await new Promise((res) => setTimeout(res, 50))
+    return { hello, frames: [...frames], statusSet }
+  } finally {
+    process.env.PRISM_SESSION_NAME = saved.name
+    process.env.PRISM_HARNESS_PIPE = saved.pipe
+    if (saved.secret === undefined) delete process.env[PIPE_SECRET_FILE_ENV]
+    else process.env[PIPE_SECRET_FILE_ENV] = saved.secret
+    await teardownExtensionWiring({ trigger, server, acceptedConn })
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+describe("#3356: the extension sends the pipe secret in hello", () => {
+  it("sends the secret that the file holds at connect time, and completes the handshake", async () => {
+    const { hello, frames, statusSet } = await helloFromExtension3356(
+      (p) => fs.writeFileSync(p, "secret-at-connect"),
+      (_hello, conn) => {
+        conn.write(JSON.stringify({
+          type: "hello_ack", protocol_version: 2, session_name: "test@main",
+          session_role: "worker", isolation_mode: "sandbox-exec",
+        }) + "\n")
+      },
+    )
+    assert.equal(hello.secret, "secret-at-connect")
+    assert.ok(frames.some((l) => l.includes('"type":"session_status"')), `no session_status after hello_ack: ${frames}`)
+    assert.equal(statusSet, true)
+  })
+
+  it("does not complete the handshake when the sidecar refuses the hello", async () => {
+    const { hello, frames, statusSet } = await helloFromExtension3356(
+      () => {},
+      (_hello, conn) => {
+        conn.end(JSON.stringify({
+          type: "error", code: "unauthorized",
+          message: "the first frame has no valid pipe secret for this session",
+        }) + "\n")
+      },
+    )
+    assert.equal("secret" in hello, false)
+    assert.deepEqual(frames.map((l) => (JSON.parse(l) as { type: string }).type), ["hello"])
+    assert.equal(statusSet, false)
   })
 })
 

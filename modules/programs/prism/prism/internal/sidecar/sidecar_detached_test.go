@@ -73,18 +73,23 @@ type pipeClient struct {
 	rd   *bufio.Reader
 }
 
-// dialHello connects to the pipe and sends hello. It does not read: the
-// caller reads hello_ack and the frames after it with next.
+// dialHello connects to the pipe and sends hello with the pipe secret. It
+// does not read: the caller reads hello_ack and the frames after it with
+// next.
 func dialHello(t *testing.T, sockPath string) *pipeClient {
+	t.Helper()
+	return dialHelloWithSecret(t, sockPath, readPipeSecret(t, pipeSecretPathFor(sockPath)))
+}
+
+// dialHelloWithSecret is dialHello with the given secret in hello.
+func dialHelloWithSecret(t *testing.T, sockPath, secret string) *pipeClient {
 	t.Helper()
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		t.Fatalf("dial the pipe: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	sendJSON(t, conn, map[string]any{
-		"type": "hello", "protocol_version": 2, "harness": "pi", "harness_version": "0.1.0-test",
-	})
+	sendJSON(t, conn, helloWithSecret(secret))
 	return &pipeClient{conn: conn, rd: bufio.NewReader(conn)}
 }
 
@@ -276,6 +281,7 @@ func newDetachedWorkerSidecar(t *testing.T, worker string, reconnectTimeout time
 		AgentRole:             "worker",
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   sockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(sockPath),
 		StartupConnectTimeout: 5 * time.Second,
 		PipeReconnectTimeout:  reconnectTimeout,
 		IsolationMode:         config.IsolationMode("host"),

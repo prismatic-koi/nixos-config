@@ -335,6 +335,7 @@ func nwrWatcherStarted(t *testing.T, sessionName, agentRole, worktree string) bo
 		AgentRole:             agentRole,
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   sockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(sockPath),
 		StartupConnectTimeout: 5 * time.Second,
 		Harness:               pih.New("", agentRole, ""),
 	})

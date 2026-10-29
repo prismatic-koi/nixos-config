@@ -151,6 +151,26 @@ func SidecarHarnessPipePath(sessionName string) (string, error) {
 	return filepath.Join(base, "run", SessionDirName(sessionName), "pipe.sock"), nil
 }
 
+// SidecarHarnessPipeSecretPath returns the path of the file that holds the
+// harness pipe secret of the session. The sidecar writes a new random secret
+// to this file each time it starts, and refuses a hello frame without it
+// (#3356). The PI extension reads the file and sends the secret in hello.
+//
+// The file is in the per-session run dir. The sandbox of the session can
+// read that dir (bwrap bind, sandbox-exec subpath rule), and the sandbox of
+// another session cannot. On Darwin the pipe is a loopback TCP port that
+// every session can reach, so this file is what stops a session from
+// handshaking as another session.
+//
+// Path: $XDG_STATE_HOME/prism/run/<12-hex-of-sha256(session)>/pipe.secret
+func SidecarHarnessPipeSecretPath(sessionName string) (string, error) {
+	base, err := sidecarStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "run", SessionDirName(sessionName), "pipe.secret"), nil
+}
+
 // The log captures the stdout and stderr of the bwrap sandbox (and the agent
 // harness running inside it) for the lifetime of the session. It lives alongside
 // hostapi.sock in the per-session run directory so that the directory is already

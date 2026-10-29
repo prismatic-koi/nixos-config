@@ -34,6 +34,7 @@ func newSocketPipeCoordinatorSidecar(t *testing.T, sockPath string) *Sidecar {
 		AgentRole:             "coordinator",
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   sockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(sockPath),
 		StartupConnectTimeout: 5 * time.Second,
 		Harness:               pih.New("", "coordinator", ""),
 	}
@@ -57,6 +58,7 @@ func newSocketPipeWorkerSidecar(t *testing.T, sockPath string) *Sidecar {
 		AgentRole:             "worker",
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   sockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(sockPath),
 		StartupConnectTimeout: 5 * time.Second,
 		Harness:               pih.New("", "worker", ""),
 	}

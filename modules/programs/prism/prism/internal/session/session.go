@@ -976,7 +976,8 @@ func newSessionRetryingServerExit(name, directory string) error {
 }
 
 // hostHarnessEnvVars returns the host-mode harness env vars for an agent
-// pane: PRISM_HARNESS_PIPE and PRISM_AGENT_RUN_LOG. LayoutFull
+// pane: PRISM_HARNESS_PIPE, the pipe secret file path, and
+// PRISM_AGENT_RUN_LOG. LayoutFull
 // (agentPaneEnvVars) and LayoutAgentOnly (spawnAgentOnlyLayout) both call it.
 // Returns nil when sockPath is empty.
 func hostHarnessEnvVars(sockPath, sessionName string) map[string]string {
@@ -984,6 +985,11 @@ func hostHarnessEnvVars(sockPath, sessionName string) map[string]string {
 		return nil
 	}
 	envs := map[string]string{"PRISM_HARNESS_PIPE": "unix://" + sockPath}
+	// Without this var the extension sends no secret, and the sidecar
+	// refuses the handshake (#3356).
+	if secretPath, err := SidecarHarnessPipeSecretPath(sessionName); err == nil {
+		envs[container.HarnessPipeSecretFileEnvVar] = secretPath
+	}
 	// The per-session run dir is the durable home for the PI extension's
 	// first-connect give-up line; on resolve failure it logs to the pane only.
 	if logPath, err := AgentRunLogPath(sessionName); err == nil {

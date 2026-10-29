@@ -139,6 +139,29 @@ extension rules (§8), and cross-references to existing prism subsystems
 - **Linux non-bwrap (host mode):** the extension dials the absolute socket
   path directly. No sandbox plumbing.
 
+### 2.3.1 Pipe secret (#3356)
+
+On Darwin, each sandbox-exec session can connect to the loopback TCP port
+of each other session. The transport alone does not identify the peer. So
+the sidecar of each session requires a per-session secret in `hello`
+(§4.1), on every transport.
+
+- Before the sidecar binds the listener, it writes a new random secret to
+  `~/.local/state/prism/run/<hash>/pipe.secret`, mode 0600
+  (`session.SidecarHarnessPipeSecretPath`). It writes a temp file and
+  renames it, so it replaces a symlink at that path and does not follow it.
+  Each start of the sidecar writes a new secret.
+- The sidecar keeps the secret in memory. It never reads the file back. A
+  change to the file in the sandbox cannot change the secret that the
+  sidecar expects.
+- The file is in the per-session run dir. The sandbox of the session can
+  read that dir: the bwrap bind and the sandbox-exec `(subpath ...)` rule of
+  §2.3. The sandbox of another session cannot.
+- The agent gets the path of the file in an env var (§2.4), not the secret.
+  The env of a process can be visible to other processes of the same user.
+  The extension reads the file each time its connect succeeds. The sidecar
+  writes the file before it listens, so the file is current at that time.
+
 ### 2.4 Environment variable injection
 
 The sandbox process environment must contain:
@@ -158,6 +181,13 @@ PRISM_HARNESS_PIPE=tcp://127.0.0.1:54321
 > resolves only inside a container VM where gvproxy injects the hostname. It
 > does **not** resolve on bare macOS. The sandbox-exec path always uses
 > `127.0.0.1` instead.
+
+The sandbox process environment also contains the path of the pipe secret
+file (§2.3.1), on every transport:
+
+```
+PRISM_HARNESS_PIPE_SECRET_FILE=/home/ben/.local/state/prism/run/abc123def456/pipe.secret
+```
 
 The URI scheme is the discriminator: `unix://` for a filesystem path,
 `tcp://` for a host:port. Extensions that handle both schemes are required
@@ -238,10 +268,15 @@ metadata.
 ### 4.1 First frame: extension → sidecar
 
 ```json
-{"type":"hello","protocol_version":2,"harness":"pi","harness_version":"0.66.1"}
+{"type":"hello","protocol_version":2,"harness":"pi","harness_version":"0.66.1","secret":"<64 hex chars>"}
 ```
 
 - `type` (string, required) — literal `"hello"`.
+- `secret` (string, required) — the content of the pipe secret file of the
+  session (§2.3.1). The sidecar checks it before all other fields. The
+  sidecar archives the frame with the value replaced by `[redacted]`.
+  The field is additive: a sidecar that does not check it ignores it, so
+  `protocol_version` stays 2.
 - `protocol_version` (integer, required) — the wire protocol version the
   extension speaks. Current version is **2** (bumped from 1 in #1434. The
   extension now emits `state_change{finished}` directly at turn
@@ -300,6 +335,14 @@ a clear error and disconnects.
 
 ### 4.3 Mismatch handling
 
+- If the first frame does not carry the secret of the session in
+  `secret`, the sidecar refuses the peer. This includes a first frame that
+  is not JSON and a first frame that is not `hello`. The sidecar sends
+  `{"type":"error","code":"unauthorized","message":"..."}`, closes the
+  connection, and waits for the next connection. It does not archive the
+  exchange, change the session state, or end the accept loop: the peer can
+  be another session (§2.3.1). The sidecar log records the refusal.
+- The checks below apply only to a peer that has the secret.
 - If `hello.protocol_version` is **higher** than the sidecar's max
   supported version: the sidecar logs the version skew, sends a clear
   rejection (`{"type":"error","code":"protocol_version_unsupported",
@@ -345,7 +388,7 @@ For each frame:
 See §4.1.
 
 ```json
-{"type":"hello","protocol_version":2,"harness":"pi","harness_version":"0.66.1"}
+{"type":"hello","protocol_version":2,"harness":"pi","harness_version":"0.66.1","secret":"<64 hex chars>"}
 ```
 
 ### 5.2 `state_change`
@@ -1004,7 +1047,7 @@ where opencode's `mgr.Create` runs today
 
 The order is:
 
-1. Sidecar binds `pipe.sock`.
+1. Sidecar writes the pipe secret file (§2.3.1), then binds `pipe.sock`.
 2. Sidecar writes `PRISM_HARNESS_PIPE` into the sandbox env via
    `cmd/agent_run.go` (Linux bwrap) or
    `internal/container/sandbox_exec.go` (Darwin sandbox-exec).
@@ -1097,6 +1140,12 @@ syntactically valid but semantically wrong. For example, the extension
 sent a `state_change` before `hello`, or `hello.protocol_version` is not
 1, and other similar cases.
 
+The steps below apply only to a peer whose first frame carries the secret
+of the session (§2.3.1). The sidecar refuses a peer without the secret
+with the code `unauthorized`, and changes nothing of the session (§4.3).
+Thus a first frame that is not JSON, or that is not `hello` and has no
+secret, gets that refusal, not the steps below.
+
 Sidecar behaviour:
 
 1. Send a single `error` frame to the extension:
@@ -1111,6 +1160,7 @@ Sidecar behaviour:
 
 The extension's response to receiving an `error` frame: log and disconnect.
 There is no recovery path. The extension does **not** retry the handshake.
+This also applies to `unauthorized`.
 
 ### 7.5 Backpressure
 

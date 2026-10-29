@@ -90,6 +90,31 @@ func sandboxHome(_ *Manager, mode isolationMode) string {
 	}
 }
 
+// HarnessPipeSecretFileEnvVar names the env var that gives the PI extension
+// the path of the harness pipe secret file (Config.HarnessPipeSecretPath).
+// The prism PI extension (pi/extensions/prism.ts) reads the same name.
+const HarnessPipeSecretFileEnvVar = "PRISM_HARNESS_PIPE_SECRET_FILE"
+
+// SandboxExecHarnessPipeEnv returns the harness pipe env (K=V) of a
+// sandbox-exec agent: PRISM_HARNESS_PIPE=tcp://127.0.0.1:<port>, and the
+// path of the pipe secret file when cfg has one. It returns nil when cfg has
+// no harness pipe TCP port.
+//
+// The sidecar and the sandboxed extension share the host loopback, so the
+// address is 127.0.0.1. host.containers.internal is a gvproxy convention and
+// does not resolve on macOS. Every session can reach the loopback port, so
+// the sidecar refuses a hello without the secret from the file (#3356).
+func SandboxExecHarnessPipeEnv(cfg Config) []string {
+	if cfg.HarnessPipeTCPPort == 0 {
+		return nil
+	}
+	env := []string{fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://127.0.0.1:%d", cfg.HarnessPipeTCPPort)}
+	if cfg.HarnessPipeSecretPath != "" {
+		env = append(env, HarnessPipeSecretFileEnvVar+"="+cfg.HarnessPipeSecretPath)
+	}
+	return env
+}
+
 // Config holds the parameters for creating and managing a container.
 type Config struct {
 	// SessionName is the prism session name (e.g. "nixos-config@feature").
@@ -174,6 +199,14 @@ type Config struct {
 	// host.containers.internal — a gvproxy container-VM convention — must not
 	// be used here). On Linux this is zero.
 	HarnessPipeTCPPort int
+
+	// HarnessPipeSecretPath is the host-side path of the harness pipe secret
+	// file (run/<sessionDirName>/pipe.secret, #3356). When non-empty and a
+	// harness pipe is set, the sandboxed agent gets it as
+	// HarnessPipeSecretFileEnvVar. The agent gets the path, not the secret:
+	// the env of a process can be visible to other processes of the user, and
+	// the file is in the per-session run dir, which no other session can read.
+	HarnessPipeSecretPath string
 
 	// AgentRunLogPath is the host-side path to the per-session agent-run log
 	// (run/<sessionDirName>/agent-run.log). When non-empty it is exposed to

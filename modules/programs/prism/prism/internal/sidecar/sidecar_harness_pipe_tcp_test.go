@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +65,7 @@ func newTCPPortSidecar(t *testing.T, port int) *Sidecar {
 		AgentRole:             "worker",
 		HarnessName:           "pi",
 		HarnessPipeTCPPort:    port,
+		HarnessPipeSecretPath: filepath.Join(t.TempDir(), "pipe.secret"),
 		StartupConnectTimeout: 5 * time.Second,
 		PipeReconnectTimeout:  200 * time.Millisecond,
 		Harness:               pih.New("", "", ""),
@@ -167,7 +169,7 @@ func TestHarnessPipeTCP_ListenerBinds127001(t *testing.T) {
 	if err == nil {
 		// Complete the PI handshake and send shutdown.
 		_ = shutdownConn.SetDeadline(time.Now().Add(2 * time.Second))
-		fmt.Fprintf(shutdownConn, `{"type":"hello","protocol_version":2,"harness":"pi","harness_version":"0.0.0"}`+"\n")
+		sendJSON(t, shutdownConn, helloWithSecret(readPipeSecret(t, sc.cfg.HarnessPipeSecretPath)))
 		buf := make([]byte, 4096)
 		n, _ := shutdownConn.Read(buf)
 		_ = n // hello_ack — ignore content
