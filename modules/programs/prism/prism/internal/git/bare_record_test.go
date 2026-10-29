@@ -309,32 +309,44 @@ func TestBareRecord_StartsFromSessionStarts(t *testing.T) {
 // Each case has a start record of a worktree session in the root, as from a
 // /spawn before the update. In the first case the root session runs. In the
 // second case it ended. In the third case the root session started in the
-// project location, a dir above the root. In the fourth case prism.db has no
-// record of the root session, and no start record of a worktree session.
+// project location, a dir above the root. In the fourth case its start dir
+// is a symlink to the root, so only the compare by file identity finds it. In
+// the fifth case prism.db has no record of the root session, and no start
+// record of a worktree session.
 func TestBareRecord_StartRefusesBarePlantedBefore(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		starts func(code, root string) []SessionStart
+		starts func(t *testing.T, code, root string) []SessionStart
 	}{
-		{"root session runs", func(_, root string) []SessionStart {
+		{"root session runs", func(_ *testing.T, _, root string) []SessionStart {
 			return []SessionStart{
 				{Name: "plain", Worktree: root, Open: true},
 				{Name: "plain@spawned", Worktree: filepath.Join(root, "spawned")},
 			}
 		}},
-		{"root session ended", func(_, root string) []SessionStart {
+		{"root session ended", func(_ *testing.T, _, root string) []SessionStart {
 			return []SessionStart{
 				{Name: "plain", Worktree: root},
 				{Name: "plain@spawned", Worktree: filepath.Join(root, "spawned")},
 			}
 		}},
-		{"session above the root", func(code, root string) []SessionStart {
+		{"session above the root", func(_ *testing.T, code, root string) []SessionStart {
 			return []SessionStart{
 				{Name: "code", Worktree: code, Open: true},
 				{Name: "plain@spawned", Worktree: filepath.Join(root, "spawned")},
 			}
 		}},
-		{"no start record", func(string, string) []SessionStart { return nil }},
+		{"root session through a symlink", func(t *testing.T, _, root string) []SessionStart {
+			alias := filepath.Join(t.TempDir(), "alias")
+			if err := os.Symlink(root, alias); err != nil {
+				t.Fatal(err)
+			}
+			return []SessionStart{
+				{Name: "plain", Worktree: alias, Open: true},
+				{Name: "plain@spawned", Worktree: filepath.Join(root, "spawned")},
+			}
+		}},
+		{"no start record", func(*testing.T, string, string) []SessionStart { return nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateHostGitConfig(t)
@@ -349,7 +361,7 @@ func TestBareRecord_StartRefusesBarePlantedBefore(t *testing.T) {
 			plainClone(t, origin, root)
 			marker := filepath.Join(t.TempDir(), "marker")
 			bareDir := plantBare(t, origin, root, marker)
-			setSessionStarts(t, tc.starts(code, root)...)
+			setSessionStarts(t, tc.starts(t, code, root)...)
 
 			control := Repo{gitDir: bareDir, commonDir: bareDir, dir: bareDir}
 			_, _ = control.CombinedOutput("worktree", "add", filepath.Join(t.TempDir(), "control"), "main")
@@ -373,6 +385,87 @@ func TestBareRecord_StartRefusesBarePlantedBefore(t *testing.T) {
 				t.Errorf("a host git command for the planted root ran the payload: %q", got)
 			}
 		})
+	}
+}
+
+// TestBareRecord_RestartsAnUnmarkedRecord (#3364): the start of #3363 wrote
+// a record from the .bare dirs on disk, with no start mark. Such a record
+// can hold a plant. prism treats it as no record and starts the record again
+// from the session start records. The control shows that the old record
+// accepts the plant.
+func TestBareRecord_RestartsAnUnmarkedRecord(t *testing.T) {
+	isolateHostGitConfig(t)
+	recordFile := useBareRecord(t)
+	code := filepath.Join(t.TempDir(), "code")
+	if err := os.MkdirAll(code, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeProjectConfig(t, []string{code}, nil)
+	origin := newOrigin(t)
+	used := filepath.Join(code, "used")
+	prismLayout(t, origin, used)
+	planted := filepath.Join(code, "plain")
+	plainClone(t, origin, planted)
+	marker := filepath.Join(t.TempDir(), "marker")
+	bareDir := plantBare(t, origin, planted, marker)
+	setSessionStarts(t,
+		SessionStart{Name: "used@main", Worktree: filepath.Join(used, "main")},
+		SessionStart{Name: "plain", Worktree: planted, Open: true},
+	)
+
+	var old bareRecordFile
+	for _, gitDir := range []string{filepath.Join(used, ".bare"), bareDir} {
+		resolved := mustResolve(t, gitDir)
+		info, err := os.Lstat(resolved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ino, _ := inodeOf(info)
+		old.Repos = append(old.Repos, bareRecordEntry{Path: resolved, Ino: ino})
+	}
+	data, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(recordFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recordFile, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(mustResolve(t, bareDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ino, _ := inodeOf(info); !old.matches(info, ino) {
+		t.Fatal("control: the old record does not accept the plant")
+	}
+
+	if _, err := OpenBare(planted); !errors.Is(err, ErrNotPrismBare) {
+		t.Errorf("OpenBare(%s) with an unmarked record that holds it = %v, want ErrNotPrismBare", planted, err)
+	}
+	if _, err := CreateWorktree(planted, "spawned"); !errors.Is(err, ErrNotPrismBare) {
+		t.Errorf("CreateWorktree = %v, want ErrNotPrismBare", err)
+	}
+	if got := takeMarker(marker); got != "" {
+		t.Errorf("a host git command for the planted root ran the payload: %q", got)
+	}
+	if _, err := OpenBare(used); err != nil {
+		t.Errorf("OpenBare(%s): %v", used, err)
+	}
+	raw, err := os.ReadFile(recordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec bareRecordFile
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Start != bareRecordStart {
+		t.Errorf("record start = %q, want %q", rec.Start, bareRecordStart)
+	}
+	if paths := readRecordPaths(t, recordFile); hasPath(paths, bareDir) || !hasPath(paths, filepath.Join(used, ".bare")) {
+		t.Errorf("record = %v, want %s/.bare and no entry for the plant", paths, used)
 	}
 }
 

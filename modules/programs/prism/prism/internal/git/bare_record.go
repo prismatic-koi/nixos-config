@@ -49,8 +49,15 @@ type bareRecordEntry struct {
 }
 
 type bareRecordFile struct {
+	// Start is bareRecordStart in a record that startBareRecord began.
+	Start string            `json:"start,omitempty"`
 	Repos []bareRecordEntry `json:"repos"`
 }
+
+// bareRecordStart marks a record that began from the session start records.
+// A record with no mark began from the .bare dirs on disk (#3363), so it can
+// hold a plant (#3364). readBareRecord treats it as no record.
+const bareRecordStart = "session-starts"
 
 // allowUnrecordedBare makes requirePrismBare accept each bare repo. Only
 // tests set it, through AllowUnrecordedBareForTest.
@@ -252,8 +259,8 @@ func forgetBare(gitDir string) error {
 	})
 }
 
-// loadBareRecord reads the record. If there is no record, it starts one
-// (startBareRecord).
+// loadBareRecord reads the record. If there is no record, or the record has
+// no start mark, it starts one (startBareRecord).
 func loadBareRecord(dir string) (bareRecordFile, error) {
 	rec, err := readBareRecord(dir)
 	if !errors.Is(err, os.ErrNotExist) {
@@ -317,8 +324,8 @@ func readSessionStarts(dir string) ([]SessionStart, error) {
 }
 
 // startBareRecord returns the first record. prism uses it one time, when
-// there is no record file, so a .bare that prism made before the record
-// existed stays usable.
+// there is no record file with the start mark, so a .bare that prism made
+// before the record existed stays usable.
 //
 // A session that can write a project root can plant a .bare in it, and the
 // files of a plant can be the same as the files of a .bare that prism made
@@ -342,7 +349,7 @@ func startBareRecord(dir string) (bareRecordFile, error) {
 		return bareRecordFile{}, err
 	}
 	infos := statSessionDirs(starts)
-	var rec bareRecordFile
+	rec := bareRecordFile{Start: bareRecordStart}
 	seen := map[string]bool{}
 	for _, root := range configuredProjectRoots(config.LoadFresh()) {
 		gitDir := filepath.Join(root.resolved, ".bare")
@@ -518,6 +525,9 @@ func readBareRecord(dir string) (bareRecordFile, error) {
 	var rec bareRecordFile
 	if err := json.Unmarshal(data, &rec); err != nil {
 		return bareRecordFile{}, fmt.Errorf("host git: parse %s: %w", path, err)
+	}
+	if rec.Start != bareRecordStart {
+		return bareRecordFile{}, fmt.Errorf("host git: %s has no start mark %q: %w", path, bareRecordStart, os.ErrNotExist)
 	}
 	return rec, nil
 }

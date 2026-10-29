@@ -315,9 +315,9 @@ Code: `startBareRecord` and `ConfirmBare` in `internal/git/bare_record.go`,
 `SessionStarts` in `internal/db/session_starts.go`, and
 `cmd/confirm_bare.go`.
 
-If there is no record file, prism starts the record one time, so a
-project that prism made before the record existed stays usable. A session
-can plant a `.bare` before that time. The files of a plant can be the same
+If there is no record file with the start mark, prism starts the record
+one time, so a project that prism made before the record existed stays
+usable. A session can plant a `.bare` before that time. The files of a plant can be the same
 as the files of a `.bare` that prism made. So prism does not start the
 record from the `.bare` dirs on disk. It starts the record from the session
 start records, the rows of the `sessions` table in `prism.db`:
@@ -344,6 +344,13 @@ start records, the rows of the `sessions` table in `prism.db`:
   refuses the `.bare`. The next prism command tries again. `internal/db`
   gives the reader to `internal/git`, because `internal/db` imports
   `internal/git`.
+- A record that this start makes has the start mark `"start":
+  "session-starts"`. prism treats a record file with no start mark as no
+  record, and starts the record again. The start of #3363 wrote such a
+  file from the `.bare` dirs on disk, so it can hold a plant. prism keeps
+  no entry of that file. A `.bare` that `prism clone` or `prism convert`
+  made after #3363 goes in the new record through check 1, or through
+  `prism confirm-bare` (below).
 
 A plant cannot enter the record for these reasons:
 
@@ -355,9 +362,9 @@ A plant cannot enter the record for these reasons:
   (`db.Prune`). If that start record is gone, check 1 refuses the root,
   unless a worktree session started in the plant.
 - After the update, a worktree session cannot start in the plant before
-  the record exists. To start one, prism runs host git in the root first,
-  through `OpenBare`, and `OpenBare` starts the record. The start record
-  of the new session comes after that.
+  the record with the start mark exists. To start one, prism runs host git
+  in the root first, through `OpenBare`, and `OpenBare` starts the record.
+  The start record of the new session comes after that.
 
 A `.bare` that a session makes after the start is not in the record.
 
@@ -412,6 +419,9 @@ plant runs with plain pinned git, and that the start of the record does
 not record it. `OpenBare` and `CreateWorktree` refuse it, and no payload
 runs. `TestBareRecord_StartsFromSessionStarts` covers each check of the
 start, and `TestBareRecord_StartNeedsTheReader` covers a missing reader.
+`TestBareRecord_RestartsAnUnmarkedRecord` writes a record with no start
+mark that holds a plant, as the start of #3363 did. It makes sure that
+prism starts the record again and refuses the plant.
 `TestConfirmBare` covers `prism confirm-bare`.
 `TestSessionStarts_ReadsTheSessionsTable` reads the real schema, and
 `TestSessionStarts_StartTheBareRecord` makes sure that `internal/db` gives
