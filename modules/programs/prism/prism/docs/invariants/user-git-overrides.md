@@ -74,8 +74,8 @@ The PR of #3326 holds the full table of tests.
 | `push.recurseSubmodules` | `no` | No push in a submodule. |
 | `maintenance.auto` | `false` | No auto maintenance runs after a command. Auto maintenance runs `git gc`, which runs each value of `gc.recentObjectsHook`. No config key turns that hook off (#3355). |
 | `protocol.file.allow` | `never` | git refuses a local-path remote URL or `url.<base>.insteadOf`. A local remote runs the hooks and the upload-pack or receive-pack of that repo (#3355). |
-| `http.cookieFile` | `/dev/null` | A planted `http.cookieFile` with `http.saveCookies` makes curl write a file at a path the config chooses, on an HTTPS fetch. `/dev/null` plus `http.saveCookies = false` writes no file (#3355). |
-| `http.saveCookies` | `false` | git writes no cookie file. See `http.cookieFile` (#3355). |
+| `http.cookieFile` | `/dev/null` | A planted `http.cookieFile` with `http.saveCookies` makes curl write a file at a path the config chooses, on an HTTPS fetch. These pins close the form with no URL. A URL-scoped `http.<url>.cookieFile` wins by urlmatch and is a known limit below (#3355). |
+| `http.saveCookies` | `false` | git writes no cookie file for the form with no URL. See `http.cookieFile` (#3355). |
 | `hook.<event>.enabled` (every githooks(5) event) | `false` | Stops a config-defined hook for the event. git 2.56 runs `hook.<name>.command` even with `core.hooksPath = /dev/null`. A planted `hook.<event>.command` defeats this pin, and a config hook with another name then runs (#3349). |
 
 Environment variables:
@@ -198,13 +198,20 @@ them at the next login.
 - A partial clone cannot fetch a missing object.
 - git runs no auto maintenance (`maintenance.auto = false`). Loose objects
   collect until you run `git gc`.
+- git refuses a clone, fetch, or push of a local path or a `file://` URL
+  (`protocol.file.allow = never`). This reaches every shell, systemd unit,
+  and launchd agent. For a one-off, add `-c protocol.file.allow=always`.
 - The security tests of prism host git check first that a plain git runs
   the planted payload. A host shell carries the overrides in
   `GIT_CONFIG_COUNT`, which would stop the payload and fail that control
-  step. The three isolation helpers set `GIT_CONFIG_COUNT=0`, so git reads
+  step. The same `GIT_CONFIG_COUNT` also makes a plain fixture clone of a
+  local-path origin fail, because `protocol.file.allow = never` refuses the
+  file transport. The host-git test helpers, and the TestMain of the
+  `internal/git` and `cmd` suites, set `GIT_CONFIG_COUNT=0`, so git reads
   none of the inherited entries and `go test ./...` passes in a host shell.
-  A new test that checks a planted payload against a plain git must do the
-  same. See the "Tests" section of `host-git-commands.md`.
+  A new test that checks a planted payload, or runs a plain git against a
+  local-path origin, must do the same. See the "Tests" section of
+  `host-git-commands.md`.
 
 ## Known limits
 
@@ -232,9 +239,11 @@ staged submodule (#3343).
   `merge.default` with no attribute, selects a merge driver that a planted
   config defines. The driver runs on a typed `git pull`, `git merge`, or
   `git rebase` with a conflict. The list does not set `merge.default`.
-  Tracked by #3346. Prism host git pins it (#3337). A planted
-  `gc.recentObjectsHook` is closed: the list sets `maintenance.auto = false`
-  (#3355), so no auto maintenance starts `git gc` after a command.
+  Tracked by #3346. Prism host git pins it (#3337).
+- **A planted `gc.recentObjectsHook`.** The list sets `maintenance.auto =
+  false` (#3355), so no auto maintenance starts `git gc` after a command. A
+  typed `git gc` or `git maintenance run` still runs each value of the hook,
+  and it needs a planted config (#3334).
 - **The gitsigns current-line blame.** It runs `git blame --contents` on
   the working buffer. `--no-textconv` (set in `gitsigns.nix`) stops a diff
   textconv driver. A planted clean filter still runs when git normalises
