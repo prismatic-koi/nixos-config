@@ -155,6 +155,11 @@ func TestMain(m *testing.M) {
 	restoreSandboxEnv := isolateSuiteFromSandboxEnv()
 	// The spawn, pr, and switch fixtures use a local-path origin.
 	restoreFileTransport := git.AllowFileTransportForTest()
+	// A host shell carries the user-git env pins (modules/programs/git.nix),
+	// protocol.file.allow=never included. The fixtures run plain git against a
+	// local-path origin, which would then fail with "transport 'file' not
+	// allowed". GIT_CONFIG_COUNT=0 makes git read none of the inherited pins.
+	os.Setenv("GIT_CONFIG_COUNT", "0")
 	// The cleanup and spawn fixtures make .bare with plain git, not with
 	// prism clone, so it is not in the bare repo record.
 	restoreUnrecordedBare := git.AllowUnrecordedBareForTest()
