@@ -65,18 +65,20 @@ func TestGenerateProfile_RunDirNodeDenyBothVarForms(t *testing.T) {
 }
 
 // TestGenerateProfile_NoRunDirNodeDenyWithoutHostAPISock: a profile with no
-// host-API socket has no run dir grant, so its only node deny of this shape
-// is the section-21e deny of the TMPDIR.
+// host-API socket has no run dir grant, so its only node denies of this shape
+// are the section-21e deny of the TMPDIR and the section-21n deny of the
+// session work dir.
 func TestGenerateProfile_NoRunDirNodeDenyWithoutHostAPISock(t *testing.T) {
 	useProductionSessionTmpRoot(t)
+	t.Setenv("XDG_STATE_HOME", "/Users/prism-test/.local/state")
 	m := newSandboxExecManager(Config{
 		SessionName: "repo@main",
 		InstanceID:  "instance-a",
 		Worktree:    "/Users/prism-test/code/repo/main",
 	})
 	const head = "(deny file-write-unlink file-write-create file-write-mode file-write-flags file-write-acl\n"
-	if n := strings.Count(generateProfile(m), head); n != 1 {
-		t.Errorf("profile without HostAPISockPath has %d node denies, want 1 (the TMPDIR)", n)
+	if n := strings.Count(generateProfile(m), head); n != 2 {
+		t.Errorf("profile without HostAPISockPath has %d node denies, want 2 (the TMPDIR and the work dir)", n)
 	}
 }
 

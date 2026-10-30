@@ -423,6 +423,10 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = AppendBwrapBind(args, spec)
 	}
 
+	// ── Review diff dir of the parent (read-only, review agents only) ──────
+	// See review_diff_dir.go (#3377).
+	args = append(args, bwrapReviewDiffDirBind(cfg.ReviewDiffDir)...)
+
 	// Do NOT bind ~/.local/share/pi here. PI does not use that XDG path — its
 	// state lives at ~/.pi/agent/ (see internal/harness/pi/archive.go). The
 	// path may not exist on fresh installs, and bwrap aborts on a missing

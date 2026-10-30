@@ -232,6 +232,10 @@ func ensureGoCacheDirs() {
 //   - The same final deny on the per-session run dir node (section 21m), so
 //     the session cannot swap its run dir for a symlink to the run dir of
 //     another session
+//   - The same final deny on the session work dir node (section 21n), so
+//     the session cannot swap its work dir for a symlink
+//   - For a review agent, an RO subpath grant on the review diff dir of
+//     its parent session (section 5l)
 //
 // New top-level allow/deny clauses require an explanatory comment in the
 // generator.
@@ -834,6 +838,16 @@ func generateProfile(m *Manager) string {
 	for _, dir := range goCacheDirs(home) {
 		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
 		sb.WriteString("  (subpath " + quoteSBPL(dir.path) + "))\n")
+		sb.WriteString("\n")
+	}
+
+	// ── 5l. Review diff dir of the parent RO (review agents only) ───────────
+	// A read of the one dir that holds the diff files of the parent session
+	// (review_diff_dir.go, #3377). No write: the host writes the files, and
+	// no rule grants a write of the dir or of its parent. The dir of another
+	// session has no rule. An empty ReviewDiffDir gives no rule.
+	if clause := reviewDiffDirSBPLAllow(m.cfg.ReviewDiffDir); clause != "" {
+		sb.WriteString(clause)
 		sb.WriteString("\n")
 	}
 
@@ -1495,6 +1509,22 @@ func generateProfile(m *Manager) string {
 		sb.WriteString(dirNodeDeny(symlinkForms(filepath.Dir(m.cfg.HostAPISockPath))))
 	}
 
+	// ── 21n. FINAL DENY — the session work dir node cannot be replaced ─
+	// Section 6 grants (subpath <sessionDir>), and a subpath covers the work
+	// dir node too. Without this deny, the session can rename its work dir
+	// away and put a symlink at the path. Prepare on a restore then writes
+	// ssh-config, gitconfig, and allowed_signers where the session chose
+	// (#3377). The host side also refuses a symlinked work dir
+	// (internal/rundir). The deny has the operations of section 21e. The
+	// files below the work dir keep the section-6 grant. The parent dir has
+	// no write grant. The deny must follow every allow.
+	// TestGenerateProfile_SessionWorkDirNodeDenyFollowsEveryAllow pins the
+	// order.
+	if sessionDirErr == nil {
+		sb.WriteString("\n")
+		sb.WriteString(dirNodeDeny(symlinkForms(sessionDir)))
+	}
+
 	// ── 22. FINAL DENIES — Go module cache is not executable ─
 	// The module cache holds downloaded dependency SOURCE. Section 5k grants
 	// it read-write because the toolchain must populate it. Without this deny,
@@ -1587,7 +1617,7 @@ func ancestorMetadataAllow(paths []string) string {
 	return "(allow file-read-metadata file-test-existence\n" + strings.Join(nodes, "\n") + ")\n"
 }
 
-// dirNodeDeny is the clause of sections 21e and 21m of generateProfile: a
+// dirNodeDeny is the clause of sections 21e, 21m, and 21n of generateProfile: a
 // deny of unlink, create, mode writes, flag writes, and ACL writes on each
 // dir node in forms.
 func dirNodeDeny(forms []string) string {

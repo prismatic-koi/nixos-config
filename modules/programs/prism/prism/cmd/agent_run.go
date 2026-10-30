@@ -74,6 +74,7 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/projecttrust"
+	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/rundir"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -187,6 +188,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	// A failed read stops the launch: the sandbox must not start with a
 	// writable worktree for a session that the spawner made read-only.
 	worktreeReadOnly, err := d.WorktreeReadOnly(sessionName)
+	reviewDiffDir := reviewDiffDirFor(d, sessionName)
 	d.Close()
 	if err != nil {
 		return fmt.Errorf("agent-run: session %q: %w", sessionName, err)
@@ -244,7 +246,32 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		StartTime:        agentRunStart,
 		LogFile:          logFile,
 		WorktreeReadOnly: worktreeReadOnly,
+		ReviewDiffDir:    reviewDiffDir,
 	})
+}
+
+// reviewDiffDirFor returns the review diff dir of the parent session of
+// sessionName, or "" when sessionName is not a review agent (#3377). The
+// parent comes from the session_groups row of the group of the session, not
+// from the session name: only `prism review` writes those rows, and a name
+// is not proof of the parent. An error gives "" and a warning: the agent
+// then gets no read of the diff file, and the prompt also names the git
+// commands that give the diff.
+func reviewDiffDirFor(d *db.DB, sessionName string) string {
+	parent, ok, err := d.GroupParentForMember(sessionName)
+	if err != nil {
+		proglog.Warnf("[prism agent-run] warning: session %q: %v — no read of the review diff dir\n", sessionName, err)
+		return ""
+	}
+	if !ok {
+		return ""
+	}
+	dir, err := review.DiffDirForParent(parent)
+	if err != nil {
+		proglog.Warnf("[prism agent-run] warning: session %q: %v — no read of the review diff dir\n", sessionName, err)
+		return ""
+	}
+	return dir
 }
 
 // runAgentRunBwrapHandler is the registered AgentRun handler for the bwrap
@@ -390,6 +417,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		Harness:               harnessName,
 		HarnessSessionID:      harnessSessionID,
 		WorktreeReadOnly:      opts.WorktreeReadOnly,
+		ReviewDiffDir:         opts.ReviewDiffDir,
 	}
 
 	// PI-harness: populate PI-specific config fields from the active profile slot.
