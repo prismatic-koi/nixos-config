@@ -412,6 +412,31 @@ integration test coverage exists for:
 
   The paired negative points the run-dir rule at a missing dir. The read of
   the own secret then fails. See `sandbox_exec_pipe_secret_darwin_test.go`.
+- **The run dir node** — the section-6 grant on the per-session run dir,
+  `$XDG_STATE_HOME/prism/run/<hash>/`, and the section-21m deny on unlink,
+  create, mode writes, flag writes, and ACL writes of its node (#3373). The
+  run dir holds `hostapi.sock`, `pipe.secret`, and `agent-run.log`. Under
+  the production profile:
+  - The session creates, reads, renames, removes, and changes the mode of a
+    file in its run dir, and connects to the `hostapi.sock` there.
+  - The session cannot remove or rename its run dir node. When the node is
+    absent, the session cannot put a symlink to the run dir of another
+    session, or a new dir, at the path.
+  - The session cannot `chmod 777`, `chflags uchg`, or `chmod +a` the node.
+    The mode, the flags, and the ACL of the node do not change.
+
+  The paired negatives make these changes to the profile:
+  - Point the run-dir rules at a missing path. The create and the connect
+    fail.
+  - Strip the section-21m deny. The session moves its run dir away and puts
+    a symlink to the run dir of another session at the path. A sidecar for
+    the session, as after a `prism restore`, then refuses to start
+    (`internal/rundir`), and the `hostapi.sock` of the other session stays
+    live and does not change.
+  - Take `file-write-mode`, `file-write-flags`, or `file-write-acl` out of
+    the section-21m deny. The matching change of the node works.
+
+  See `sandbox_exec_run_dir_darwin_test.go`.
 - **The pi agent dir** — the section-6a grant on `~/.pi/agent`, for pi
   sessions only: a read of the whole dir, and a write of an exact list
   (`atlassian-mcp-oauth.json` and the sessions dir of the worktree). The
@@ -522,7 +547,7 @@ workflow already uses that same action. The job then runs the tests inside
 
 ```
 nix shell nixpkgs#bash nixpkgs#coreutils nixpkgs#git \
-  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret)' -race
+  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir)' -race
 ```
 
 The tests in `sandbox_exec_gitlab_token_darwin_test.go` and
@@ -532,7 +557,7 @@ The production secrets.d deny regexes key off that path. A bare `macos-15`
 runner starts with `TMPDIR` under `/private/tmp`, so the job exports
 `TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"` before it runs `go test`.
 
-**Selector scope: ten named families, not the whole `TestSandboxExec*`
+**Selector scope: eleven named families, not the whole `TestSandboxExec*`
 family.** Issue #2749's problem statement names exactly two affected files:
 `sandbox_exec_gitlab_token_darwin_test.go` and
 `sandbox_exec_grafana_config_darwin_test.go`. Issue #3061 adds a third file,
@@ -567,12 +592,17 @@ the job sets up. It runs a real sidecar in the test process, with a TCP pipe
 on `127.0.0.1` and no host-API socket. It puts the state dir and `BareRoot`
 under the real home, so the run dirs are outside the user `$TMPDIR`, which
 section 2 grants read.
+Issue #3373 adds an eleventh file, `sandbox_exec_run_dir_darwin_test.go`,
+for the section-21m deny on the run dir node. It needs no Nix tool. It uses
+the connect probe of #3066. It runs a real sidecar in the test process with
+no listener. It puts the state dir under the real home, as the PipeSecret
+file does.
 The `-run` selector matches only the `TestSandboxExecGitLabToken_*`,
 `TestSandboxExecGrafanaConfig_*`, `TestSandboxExecPIAgentDir_*`,
 `TestSandboxExecWorktreeEntry_*`, `TestSandboxExecWorktreeReadOnly_*`,
 `TestSandboxExecContainerCLI_*`, `TestSandboxExecContainerSocket_*`,
-`TestSandboxExecSessionTmp_*`, `TestSandboxExecGitWriteScope_*`, and
-`TestSandboxExecPipeSecret_*` functions. A wider `^TestSandboxExec`
+`TestSandboxExecSessionTmp_*`, `TestSandboxExecGitWriteScope_*`,
+`TestSandboxExecPipeSecret_*`, and `TestSandboxExecRunDir_*` functions. A wider `^TestSandboxExec`
 selector was tried first. PR #2785 (round-2 review) found that this
 selector skips several other sandbox-exec suites on a bare `macos-15`
 runner. For example, the playwright suite

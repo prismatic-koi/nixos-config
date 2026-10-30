@@ -74,6 +74,7 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/projecttrust"
+	"github.com/prismatic-koi/prism/internal/rundir"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -652,7 +653,7 @@ func minimalBwrapExecEnv(hostEnv []string) []string {
 // outcome — the agent starts with no prompt.
 func applyInitialPromptEnvVar(cfg *container.Config) {
 	if path := os.Getenv("PRISM_INITIAL_PROMPT_FILE"); path != "" {
-		body, err := os.ReadFile(path)
+		body, err := readInitialPromptFile(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr,
 				"[agent-run] warning: read PRISM_INITIAL_PROMPT_FILE %q: %v — starting agent without an initial prompt\n",
@@ -665,6 +666,18 @@ func applyInitialPromptEnvVar(cfg *container.Config) {
 	if initialPrompt := os.Getenv("PRISM_INITIAL_PROMPT"); initialPrompt != "" {
 		cfg.InitialPrompt = initialPrompt
 	}
+}
+
+// readInitialPromptFile reads the initial-prompt file. The file is in the run
+// dir, which the sandbox of the session can write, so rundir.OpenRead
+// refuses a symlink there (#3373).
+func readInitialPromptFile(path string) ([]byte, error) {
+	f, err := rundir.OpenRead(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
 }
 
 // validateSandboxExecArgs checks that the args returned by
@@ -711,17 +724,18 @@ func validateSandboxExecArgs(args []string) error {
 // The destination is normally `~/.local/state/prism/run/<session>/agent-run.log`
 // (see internal/session.AgentRunLogPath). The file is opened with O_APPEND so
 // repeated agent-run invocations across a single session preserve history.
+//
+// The sandbox tees its stderr into this file, and it can write the run dir.
+// rundir.OpenAppend refuses a symlink that the sandbox put at the path or at
+// the run dir, so the tee cannot write a file that the session chose, for
+// example a startup file of the shell (#3373).
 func openAgentRunLog(sessionName string) *os.File {
 	logPath, logPathErr := session.AgentRunLogPath(sessionName)
 	if logPathErr != nil {
 		fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot resolve agent-run log path: %v — continuing without log file\n", logPathErr)
 		return nil
 	}
-	if mkErr := os.MkdirAll(filepath.Dir(logPath), 0o700); mkErr != nil {
-		fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot create log directory %s: %v — continuing without log file\n", filepath.Dir(logPath), mkErr)
-		return nil
-	}
-	logFile, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	logFile, openErr := rundir.OpenAppend(logPath)
 	if openErr != nil {
 		fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot open agent-run log %s: %v — continuing without log file\n", logPath, openErr)
 		return nil

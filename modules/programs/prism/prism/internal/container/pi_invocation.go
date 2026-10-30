@@ -37,6 +37,7 @@ import (
 	"strings"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/rundir"
 )
 
 const (
@@ -467,10 +468,7 @@ func piLogResumeWarning(cfg Config, lookupPath, detail string) {
 	if err != nil {
 		return
 	}
-	if mkErr := os.MkdirAll(filepath.Dir(logPath), 0o700); mkErr != nil {
-		return
-	}
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := rundir.OpenAppend(logPath)
 	if err != nil {
 		return
 	}

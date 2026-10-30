@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/proglog"
+	"github.com/prismatic-koi/prism/internal/rundir"
 )
 
 // ErrAlreadyExists is returned by Run when the final archive directory already
@@ -223,9 +224,13 @@ func Run(p Params) (archivePath string, err error) {
 
 	// Copy the agent-run log (harness stdout/stderr) when it exists.
 	// Missing files are silently skipped — sessions that never reached
-	// agent-run will not have this file.
+	// agent-run will not have this file. A path that is not a regular file,
+	// for example a symlink that the sandbox put in its run dir, is skipped
+	// with a warning, so that it does not fail the archive of the session.
 	if p.AgentRunLogPath != "" {
-		if _, statErr := os.Stat(p.AgentRunLogPath); statErr == nil {
+		if info, statErr := os.Lstat(p.AgentRunLogPath); statErr == nil && !info.Mode().IsRegular() {
+			proglog.Warnf("[prism] archive: agent-run log %s is not a regular file (mode %v) — continuing without it\n", p.AgentRunLogPath, info.Mode())
+		} else if statErr == nil {
 			dst := filepath.Join(tmpDir, "agent-run.log")
 			if copyErr := copyFile(p.AgentRunLogPath, dst); copyErr != nil {
 				return "", fmt.Errorf("archive: copy agent-run log: %w", copyErr)
@@ -287,9 +292,12 @@ func resolveArchiveRoot(p Params) (string, error) {
 }
 
 // copyFile copies the file at src to dst with mode 0600.
-// The destination directory must already exist.
+// The destination directory must already exist. It refuses a src that is a
+// symlink: the agent-run log is in the run dir, which the sandbox of the
+// session can write, and the archive must not copy a file that the session
+// chose (#3373).
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	in, err := rundir.OpenRead(src)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", src, err)
 	}

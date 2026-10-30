@@ -28,6 +28,7 @@ import (
 	investigatepkg "github.com/prismatic-koi/prism/internal/investigate"
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
 	"github.com/prismatic-koi/prism/internal/review"
+	"github.com/prismatic-koi/prism/internal/rundir"
 	prismsession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/usage"
@@ -89,7 +90,7 @@ func hostAPIServeLogsTail(w http.ResponseWriter, logPath string, n int) {
 		return
 	}
 
-	f, err := os.Open(logPath)
+	f, err := rundir.OpenRead(logPath)
 	if err != nil {
 		http.Error(w, `{"error":"cannot open log"}`, http.StatusInternalServerError)
 		return
@@ -123,7 +124,7 @@ func hostAPIServeLogsTail(w http.ResponseWriter, logPath string, n int) {
 // open until the session reaches a terminal state and 5 seconds of silence
 // elapse, or the client disconnects.
 func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSession, logPath string, s *Sidecar) {
-	f, err := os.Open(logPath)
+	f, err := rundir.OpenRead(logPath)
 	if err != nil {
 		http.Error(w, `{"error":"cannot open log"}`, http.StatusInternalServerError)
 		return
@@ -1028,6 +1029,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		// Resolve log file path. source=agent-run selects the bwrap harness log;
 		// the default (source absent or "sidecar") selects the sidecar log.
+		// The agent-run log is in the run dir of the target, which its sandbox
+		// can write, so each open below uses rundir.OpenRead and refuses a
+		// symlink (#3373).
 		logSource := q.Get("source")
 		var logPath string
 		var pathErr error
@@ -1079,7 +1083,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// Full log: stream the whole file.
-		f, openErr := os.Open(logPath)
+		f, openErr := rundir.OpenRead(logPath)
 		if openErr != nil {
 			writeError(w, http.StatusInternalServerError, "cannot open log: "+openErr.Error())
 			return

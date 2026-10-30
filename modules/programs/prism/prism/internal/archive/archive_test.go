@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -503,6 +504,60 @@ func TestRunAgentRunLogMissing(t *testing.T) {
 	// No agent-run.log should be present.
 	if _, statErr := os.Stat(filepath.Join(archivePath, "agent-run.log")); !os.IsNotExist(statErr) {
 		t.Errorf("agent-run.log should not exist when source is missing, but stat returned: %v", statErr)
+	}
+}
+
+// TestRunAgentRunLogSymlinkSkipped: the agent-run log is in the run dir,
+// which the sandbox of the session can write. A symlink there, for example to
+// a credential, is not copied into the archive, and the rest of the archive
+// is written (#3373).
+func TestRunAgentRunLogSymlinkSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveRoot := filepath.Join(tmpDir, "archive")
+
+	secret := filepath.Join(tmpDir, "github_token")
+	if err := os.WriteFile(secret, []byte("ghp_secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(tmpDir, "agent-run.log")
+	if err := os.Symlink(secret, logPath); err != nil {
+		t.Fatal(err)
+	}
+
+	p := baseParams(archiveRoot)
+	p.InstanceID = "bbbbcccc-dddd-eeee-ffff-000000000000"
+	p.AgentRunLogPath = logPath
+
+	archivePath, err := Run(p)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(archivePath, "agent-run.log")); !os.IsNotExist(statErr) {
+		t.Errorf("the archive has an agent-run.log for a symlinked source: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(archivePath, "manifest.json")); statErr != nil {
+		t.Errorf("the archive has no manifest.json: %v", statErr)
+	}
+}
+
+// TestCopyFile_RefusesSymlinkedSource: copyFile does not copy the target of
+// a symlink.
+func TestCopyFile_RefusesSymlinkedSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	target := filepath.Join(tmpDir, "target")
+	if err := os.WriteFile(target, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(tmpDir, "src")
+	if err := os.Symlink(target, src); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(tmpDir, "dst")
+	if err := copyFile(src, dst); !errors.Is(err, syscall.ELOOP) {
+		t.Errorf("copyFile of a symlink: %v, want an error that wraps ELOOP", err)
+	}
+	if _, statErr := os.Lstat(dst); !os.IsNotExist(statErr) {
+		t.Errorf("copyFile made %s for a symlinked source: %v", dst, statErr)
 	}
 }
 

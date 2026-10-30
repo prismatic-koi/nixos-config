@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/rundir"
 	"github.com/prismatic-koi/prism/internal/usage"
 )
 
@@ -951,10 +952,12 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 	// after.
 	// Using 0o700 (owner-only) so other users on the host cannot list or
 	// access this session's socket directory.
+	// rundir.EnsureDir refuses a run dir that is a symlink: the sandbox
+	// would then get the run dir of another session.
 	if m.cfg.HostAPISockPath != "" {
 		sockDir := filepath.Dir(m.cfg.HostAPISockPath)
-		if err := os.MkdirAll(sockDir, 0o700); err != nil {
-			return fmt.Errorf("container: failed to create host-API socket dir %q: %w", sockDir, err)
+		if err := rundir.EnsureDir(sockDir); err != nil {
+			return fmt.Errorf("container: host-API socket dir: %w", err)
 		}
 	}
 

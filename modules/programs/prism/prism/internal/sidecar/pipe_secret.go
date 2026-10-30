@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/rundir"
 )
 
 // pipeSecretBytes is the length of the random harness pipe secret, before
@@ -27,12 +27,10 @@ const pipeRefusedCode = "unauthorized"
 // writeHarnessPipeSecret makes a new random secret, writes it hex-encoded to
 // path with mode 0600, and returns it.
 //
-// The sandbox of the session can write the dir of path. So the secret goes
-// to a new temp file in that dir (random name, O_EXCL), and a rename puts it
-// at path. The rename replaces a symlink or a file that the sandbox put at
-// path. It does not follow it. The function also refuses a dir that is a
-// symlink: through it, the write can replace the secret file of another
-// session.
+// The sandbox of the session can write the dir of path. rundir.WriteFile
+// replaces a symlink or a file that the sandbox put at path, and does not
+// follow it. It also refuses a dir that is a symlink: through it, the write
+// can replace the secret file of another session.
 //
 // The sidecar keeps the returned value and never reads the file back. Thus a
 // change to the file in the sandbox cannot change the secret that the
@@ -43,32 +41,8 @@ func writeHarnessPipeSecret(path string) (string, error) {
 		return "", fmt.Errorf("generate harness pipe secret: %w", err)
 	}
 	secret := hex.EncodeToString(raw)
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("harness pipe secret dir: %w", err)
-	}
-	if info, err := os.Lstat(dir); err != nil {
-		return "", fmt.Errorf("harness pipe secret dir: %w", err)
-	} else if !info.IsDir() {
-		return "", fmt.Errorf("harness pipe secret dir %s is not a directory (mode %v)", dir, info.Mode())
-	}
-	tmp, err := os.CreateTemp(dir, ".pipe.secret-*")
-	if err != nil {
-		return "", fmt.Errorf("harness pipe secret temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	_, writeErr := tmp.WriteString(secret)
-	closeErr := tmp.Close()
-	if writeErr == nil {
-		writeErr = closeErr
-	}
-	if writeErr == nil {
-		writeErr = os.Rename(tmpPath, path)
-	}
-	if writeErr != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("write harness pipe secret %s: %w", path, writeErr)
+	if err := rundir.WriteFile(path, []byte(secret)); err != nil {
+		return "", fmt.Errorf("write harness pipe secret: %w", err)
 	}
 	return secret, nil
 }
