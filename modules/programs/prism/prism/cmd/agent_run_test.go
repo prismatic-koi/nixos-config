@@ -94,6 +94,30 @@ func TestApplyInitialPromptEnvVar_FilePath(t *testing.T) {
 	}
 }
 
+// TestApplyInitialPromptEnvVar_FilePathSymlinkRefused: the initial-prompt
+// file is in the run dir, which the sandbox can write. A symlink there, for
+// example to a credential, must not become the prompt of the agent (#3373).
+func TestApplyInitialPromptEnvVar_FilePathSymlinkRefused(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "github_token")
+	if err := os.WriteFile(target, []byte("ghp_secret"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	path := filepath.Join(tmp, "initial-prompt.txt")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	t.Setenv("PRISM_INITIAL_PROMPT_FILE", path)
+	t.Setenv("PRISM_INITIAL_PROMPT", "")
+
+	cfg := container.Config{}
+	applyInitialPromptEnvVar(&cfg)
+
+	if cfg.InitialPrompt != "" {
+		t.Errorf("InitialPrompt = %q from a symlinked prompt file, want empty", cfg.InitialPrompt)
+	}
+}
+
 // TestApplyInitialPromptEnvVar_FilePathPreferredOverInline verifies that
 // when both PRISM_INITIAL_PROMPT_FILE and PRISM_INITIAL_PROMPT are set, the
 // file path wins. This protects against a stale inline value from a

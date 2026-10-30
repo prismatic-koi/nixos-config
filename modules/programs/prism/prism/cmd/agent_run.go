@@ -653,7 +653,7 @@ func minimalBwrapExecEnv(hostEnv []string) []string {
 // outcome — the agent starts with no prompt.
 func applyInitialPromptEnvVar(cfg *container.Config) {
 	if path := os.Getenv("PRISM_INITIAL_PROMPT_FILE"); path != "" {
-		body, err := os.ReadFile(path)
+		body, err := readInitialPromptFile(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr,
 				"[agent-run] warning: read PRISM_INITIAL_PROMPT_FILE %q: %v — starting agent without an initial prompt\n",
@@ -666,6 +666,18 @@ func applyInitialPromptEnvVar(cfg *container.Config) {
 	if initialPrompt := os.Getenv("PRISM_INITIAL_PROMPT"); initialPrompt != "" {
 		cfg.InitialPrompt = initialPrompt
 	}
+}
+
+// readInitialPromptFile reads the initial-prompt file. The file is in the run
+// dir, which the sandbox of the session can write, so rundir.OpenRead
+// refuses a symlink there (#3373).
+func readInitialPromptFile(path string) ([]byte, error) {
+	f, err := rundir.OpenRead(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
 }
 
 // validateSandboxExecArgs checks that the args returned by
