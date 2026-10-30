@@ -712,9 +712,14 @@ table.
   `prism convert` converts. If that URL is a local path, an `http://` URL,
   or a `git://` URL, the clone or the fetch stops with
   `transport '<name>' not allowed`.
-- **No auto maintenance.** prism host git starts no `git gc`. User git and
-  bwrap sessions still start it. A `sandbox-exec` session cannot start it,
-  so loose objects collect until a user git command on the host starts it.
+- **No auto maintenance.** prism host git starts no `git gc`. User git on
+  the host starts none either: `modules/programs/git.nix` pins
+  `maintenance.auto = false` for every shell, systemd unit, and launchd
+  agent (#3355). A `sandbox-exec` session cannot start it. Only a bwrap
+  session (Linux) still starts it, because bwrap clears the env and the
+  worker git has no pin. So in a prism repo, loose objects collect until the
+  owner runs `git gc` or `git maintenance run` by hand (see the matching
+  owner effect in `user-git-overrides.md`).
 - **A SHA-256 repo.** `GIT_ATTR_SOURCE` names the SHA-1 empty tree. In a
   SHA-256 repo, a host git command that reads attributes stops with
   `bad --attr-source or GIT_ATTR_SOURCE`. It runs no driver.
