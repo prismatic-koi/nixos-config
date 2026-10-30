@@ -6,6 +6,7 @@
 <!-- doclint-ignore: EDITOR, VISUAL, SSH_ASKPASS, GIT_ATTR_SOURCE, GIT_EDITOR, GIT_NO_LAZY_FETCH, GIT_PROXY_COMMAND, vcs_info -->
 <!-- doclint-ignore: .bare/config, .bare/info, .bare/commondir, info/attributes, git.nix, tmux.nix, modules/programs/git.nix, systemd.user.sessionVariables -->
 <!-- doclint-ignore: attr.tree, AGENTS.md, gitsigns.nix -->
+<!-- doclint-ignore: http.cookieFile, http.saveCookies, g:fugitive_git_executable, vim-fugitive.nix -->
 <!--
   These names are git config keys, environment variables that git and zsh
   read, paths in a git dir at run time, and Nix files and options outside
@@ -14,7 +15,8 @@
 
 Issues: #3326. Related: #3325 (a nested `.git`), #3322 (prism host git),
 #3337 (prism host git on the bwrap detach route), #3346 (user git on the
-bwrap detach route), #3343 (a staged submodule with `ignore = none`). Threat model:
+bwrap detach route), #3343 (a staged submodule with `ignore = none`),
+#3355 (the remaining env pins). Threat model:
 `docs/invariants/threat-model.md`. Code: `modules/programs/git.nix` at the
 repo root.
 
@@ -65,11 +67,15 @@ The PR of #3326 holds the full table of tests.
 | `gpg.ssh.allowedSignersFile` | the file in `git.nix` | The value of `git.nix`. |
 | `gpg.program`, `gpg.openpgp.program` | `gpg` | The git default. These run to verify a signature, for example with `log.showSignature`. |
 | `gpg.x509.program` | `gpgsm` | The git default. |
-| `diff.ignoreSubmodules` | `all` | `git status` and `git diff` do not run git in a submodule, unless `.gitmodules` sets `ignore` (#3343). |
+| `diff.ignoreSubmodules` | `all` | `git status` and `git diff` do not run git in a submodule. A `.gitmodules` `ignore` entry overrides it; the submodule guard adds `--ignore-submodules=all` on a typed status or diff, which wins (#3343). |
 | `status.submoduleSummary` | `false` | No summary of a submodule. |
 | `submodule.recurse` | `false` | No recursion. |
 | `fetch.recurseSubmodules` | `false` | No fetch in a submodule. |
 | `push.recurseSubmodules` | `no` | No push in a submodule. |
+| `maintenance.auto` | `false` | No auto maintenance runs after a command. Auto maintenance runs `git gc`, which runs each value of `gc.recentObjectsHook`. No config key turns that hook off (#3355). |
+| `protocol.file.allow` | `never` | git refuses a local-path remote URL or `url.<base>.insteadOf`. A local remote runs the hooks and the upload-pack or receive-pack of that repo (#3355). |
+| `http.cookieFile` | `/dev/null` | A planted `http.cookieFile` with `http.saveCookies` makes curl write a file at a path the config chooses, on an HTTPS fetch. These pins close the form with no URL. A URL-scoped `http.<url>.cookieFile` wins by urlmatch and is a known limit below (#3355). |
+| `http.saveCookies` | `false` | git writes no cookie file for the form with no URL. See `http.cookieFile` (#3355). |
 | `hook.<event>.enabled` (every githooks(5) event) | `false` | Stops a config-defined hook for the event. git 2.56 runs `hook.<name>.command` even with `core.hooksPath = /dev/null`. A planted `hook.<event>.command` defeats this pin, and a config hook with another name then runs (#3349). |
 
 Environment variables:
@@ -113,6 +119,35 @@ value, and an empty value makes each `git diff` that shows a patch stop with
 example `git show --ext-diff`) is a known limit, below. Bare `git show` and
 `git log -p` do not trigger it. The shell prompt and gitsigns pass
 `--no-ext-diff`, so they do not run it.
+
+## The submodule guard (#3343)
+
+A session can stage a submodule in its own index and set `ignore` for it in
+`.gitmodules`. git reads `submodule.<name>.ignore` from `.gitmodules` after
+`diff.ignoreSubmodules`, so it overrides the `all` value in the list. The
+name of the submodule comes from `.gitmodules`, so the list cannot pin
+`submodule.<name>.ignore`. Only `--ignore-submodules` on the command line has
+priority over it.
+
+A typed `git status` or `git diff` at the worktree root then runs git in the
+submodule. The worker controls the submodule git dir, so a filter driver that
+its config defines and its `info/attributes` selects runs on the host. The
+guard closes this for a typed command and for fugitive:
+
+- **A typed command.** A zsh `git` function (`git.nix`) runs an interactive
+  git through the guard. The guard adds `--ignore-submodules=all` to a
+  `git status` or a `git diff`, and runs the real git for every other
+  command. The function reaches an interactive shell only, where the owner
+  types a command. A script and an nvim job do not use it.
+- **fugitive.** `g:fugitive_git_executable` points fugitive at the same
+  guard (`vim-fugitive.nix`), so `:Git` and the diffs of its status buffer
+  get `--ignore-submodules=all`. A VimEnter probe fails closed: it turns
+  `:Git` and `<leader>gs` into a warning if fugitive does not route through
+  the guard.
+
+The shell prompt, gitsigns, the Telescope git pickers, and nvim-tree already
+pass `--ignore-submodules` (#3347), so they do not descend into the
+submodule.
 
 ## Where the overrides reach
 
@@ -161,13 +196,22 @@ them at the next login.
   has priority over `core.editor`.
 - git uses no pager. To use one, set `GIT_PAGER` for the command.
 - A partial clone cannot fetch a missing object.
+- git runs no auto maintenance (`maintenance.auto = false`). Loose objects
+  collect until you run `git gc`.
+- git refuses a clone, fetch, or push of a local path or a `file://` URL
+  (`protocol.file.allow = never`). This reaches every shell, systemd unit,
+  and launchd agent. For a one-off, add `-c protocol.file.allow=always`.
 - The security tests of prism host git check first that a plain git runs
   the planted payload. A host shell carries the overrides in
   `GIT_CONFIG_COUNT`, which would stop the payload and fail that control
-  step. The three isolation helpers set `GIT_CONFIG_COUNT=0`, so git reads
+  step. The same `GIT_CONFIG_COUNT` also makes a plain fixture clone of a
+  local-path origin fail, because `protocol.file.allow = never` refuses the
+  file transport. The host-git test helpers, and the TestMain of the
+  `internal/git` and `cmd` suites, set `GIT_CONFIG_COUNT=0`, so git reads
   none of the inherited entries and `go test ./...` passes in a host shell.
-  A new test that checks a planted payload against a plain git must do the
-  same. See the "Tests" section of `host-git-commands.md`.
+  A new test that checks a planted payload, or runs a plain git against a
+  local-path origin, must do the same. See the "Tests" section of
+  `host-git-commands.md`.
 
 ## Known limits
 
@@ -191,13 +235,15 @@ staged submodule (#3343).
   `--ext-diff` variant (for example `git show --ext-diff`). Bare `git show`
   and `git log -p` do not trigger it. The prompt and gitsigns pass
   `--no-ext-diff`. Tracked by #3346.
-- **A planted merge driver or `gc.recentObjectsHook`.** A `merge=<name>`
-  attribute, or a planted `merge.default` with no attribute, selects a
-  merge driver that a planted config defines. The driver runs on a typed
-  `git pull`, `git merge`, or `git rebase` with a conflict. A planted
-  `gc.recentObjectsHook` runs when auto maintenance starts `git gc` after a
-  typed commit, fetch, or pull. The list sets neither `merge.default` nor
-  `maintenance.auto`. Tracked by #3346. Prism host git pins both (#3337).
+- **A planted merge driver.** A `merge=<name>` attribute, or a planted
+  `merge.default` with no attribute, selects a merge driver that a planted
+  config defines. The driver runs on a typed `git pull`, `git merge`, or
+  `git rebase` with a conflict. The list does not set `merge.default`.
+  Tracked by #3346. Prism host git pins it (#3337).
+- **A planted `gc.recentObjectsHook`.** The list sets `maintenance.auto =
+  false` (#3355), so no auto maintenance starts `git gc` after a command. A
+  typed `git gc` or `git maintenance run` still runs each value of the hook,
+  and it needs a planted config (#3334).
 - **The gitsigns current-line blame.** It runs `git blame --contents` on
   the working buffer. `--no-textconv` (set in `gitsigns.nix`) stops a diff
   textconv driver. A planted clean filter still runs when git normalises
@@ -212,21 +258,38 @@ staged submodule (#3343).
   `difftool.<tool>.cmd`. A typed `git mergetool` runs `merge.tool` and
   `mergetool.<tool>.cmd`. The tool name is repo-chosen, so the list cannot
   pin the `<tool>.cmd` key. Tracked by #3346.
-- **A staged submodule with `ignore = none` in `.gitmodules`.** A typed
-  `git status` at the worktree root runs git in the submodule, and a driver
-  in the submodule git dir runs. The prompt, gitsigns, the Telescope git
-  pickers, and nvim-tree give `--ignore-submodules`, so they do not. Fix:
-  #3343. The `:Git` status of fugitive does not give it. Fix: #3353.
+- **A typed `git add`, `git stash`, or `git commit` in a worker worktree
+  (#3343).** The submodule guard above closes a typed `git status` and
+  `git diff`. It does not reach `git add` (`add`, `add -u`, `add -A`),
+  `git stash` when `.gitmodules` has an entry for the submodule, or the
+  template status of a bare `git commit`. Each runs git in the staged
+  submodule and runs a planted filter. `git add` and the stash diff do not
+  read `diff.ignoreSubmodules` and take no `--ignore-submodules` option, so
+  no config pin and no guard reaches them. This needs the owner to hand-run
+  the command in a worker worktree, the same owner action as a `cd` into a
+  worker subdir below. Out of scope under `docs/invariants/threat-model.md`.
 - **A nested git dir, by `cd`.** A `cd` into a subdir whose git dir uses a
   key that is not on the list. The owner accepted this on #3325. The git
   plugins of nvim do not reach a nested git dir with no `cd` (#3347).
 - **Keys with a name that the repo chooses.** For example
   `remote.<name>.uploadpack`, `remote.<name>.url`, `remote.<name>.vcs`,
-  and `url.<base>.insteadOf` run for a fetch, a pull, or a push. A
-  `remote.<name>.vcs` with a slash runs a helper by a path relative to the
-  cwd of git; the tool
-  selectors above run for a typed `git help`, `git difftool`, or
-  `git mergetool`. The list cannot name them.
+  and `url.<base>.insteadOf` run for a fetch, a pull, or a push. The list
+  sets `protocol.file.allow = never` (#3355), so a local-path remote URL or
+  `url.<base>.insteadOf` is refused; an SSH or HTTPS remote runs its command on the
+  remote side, not the host. A `remote.<name>.vcs` with a slash runs a
+  helper by a path relative to the cwd of git; the tool selectors above run
+  for a typed `git help`, `git difftool`, or `git mergetool`. The list
+  cannot name them.
+- **A URL-scoped `http.<url>.cookieFile` with `http.<url>.saveCookies`
+  (#3355).** git reads the `http.*` keys by urlmatch, and a key for a more
+  specific URL wins over the no-URL `http.cookieFile` pin, in any order. So a
+  planted `http.<url>.cookieFile` with `http.<url>.saveCookies = true` makes
+  curl write a cookie file at a path the config chooses, on a typed
+  `git fetch` or `git pull` over HTTPS. The URL is repo-chosen, so the list
+  cannot pin it. The no-URL form is closed. A URL-scoped pin cannot close
+  this, because a planted key can always name a more specific URL. Tracked by
+  #3346/#3334. (`protocol.https.allow = never` would close it, but it also
+  breaks a usual `git clone` over HTTPS, so the list does not set it.)
 - **The service list.** It does not have the five entries with an empty
   value. These entries act only on a credential prompt or a credential
   helper, a fetch from a repo with alternates, a signature with no signing

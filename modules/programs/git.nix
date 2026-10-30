@@ -10,6 +10,41 @@ let
   signingKey = "${homeDir}/.ssh/prismatic-koi-ed25519-signingkey.pub";
   allowedSignersFile = "${homeDir}/.ssh/allowed_signers";
 
+  # A git wrapper for a typed `git status` or `git diff`. A worker can stage a
+  # submodule and set `ignore` in .gitmodules, which overrides
+  # diff.ignoreSubmodules = all from the env. Only --ignore-submodules on the
+  # command line has priority over that key. The wrapper adds it to those two
+  # subcommands, so git does not descend into the submodule git dir and run a
+  # planted filter (#3343). It steps over the global options of git to find
+  # the subcommand, and passes every other subcommand through unchanged. A
+  # help or version request passes through too, so `git status --help` and
+  # `git diff --help` still open the man page. The zsh git function and
+  # fugitive's g:fugitive_git_executable both use it.
+  submoduleGuard = pkgs.writeShellScript "git-submodule-guard" ''
+    args=("$@")
+    n=''${#args[@]}
+    i=0
+    while [ "$i" -lt "$n" ]; do
+      case "''${args[i]}" in
+        -h | --help | -v | --version)
+          exec ${pkgs.git}/bin/git "''${args[@]}" ;;
+        -C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source)
+          i=$((i + 2)) ;;
+        -*)
+          i=$((i + 1)) ;;
+        *)
+          break ;;
+      esac
+    done
+    if [ "$i" -lt "$n" ] &&
+      { [ "''${args[i]}" = status ] || [ "''${args[i]}" = diff ]; } &&
+      [ "''${args[i + 1]:-}" != --help ] &&
+      [ "''${args[i + 1]:-}" != -h ]; then
+      exec ${pkgs.git}/bin/git "''${args[@]:0:i+1}" --ignore-submodules=all "''${args[@]:i+1}"
+    fi
+    exec ${pkgs.git}/bin/git "''${args[@]}"
+  '';
+
   # Config that every git process of the user gets in its environment. A
   # sandboxed prism session can write a repo config that git on the host
   # reads, and environment config has priority over every config file. The
@@ -22,8 +57,11 @@ let
   # Every hook event of githooks(5) on git 2.56. git 2.56 can define a hook
   # in config (hook.<name>.command with hook.<name>.event), which
   # core.hooksPath = /dev/null does not stop. hook.<event>.enabled = false
-  # stops the config hooks of that event, even when the repo config sets it
-  # to true. The owner uses no git hooks, so this breaks nothing.
+  # turns off the hooks that config defines with that event name. It does not
+  # stop a config hook with a friendly name: a planted hook.<event>.command
+  # makes the event name a friendly name, and a hook with another name for
+  # the same event still runs (hook.c, git 2.56). The write-protection fix is
+  # tracked by #3334. The owner uses no git hooks, so this breaks nothing.
   hookEvents = [
     "applypatch-msg"
     "pre-applypatch"
@@ -112,6 +150,32 @@ let
     {
       key = "core.attributesFile";
       value = "/dev/null";
+    }
+    # Auto maintenance runs git gc, which runs each value of
+    # gc.recentObjectsHook. No config key turns that hook off, so turn off
+    # auto maintenance itself (#3355).
+    {
+      key = "maintenance.auto";
+      value = "false";
+    }
+    # A local-path remote URL or insteadOf runs the hooks and the
+    # uploadpack/receivepack of that repo on a fetch or push. The owner uses
+    # only SSH remotes, so refuse the file transport (#3355).
+    {
+      key = "protocol.file.allow";
+      value = "never";
+    }
+    # A planted http.cookieFile with http.saveCookies makes curl write a file
+    # at a path the config chooses, on an HTTPS fetch. These pins close the
+    # form with no URL. A URL-scoped http.<url>.cookieFile wins by urlmatch
+    # and stays a known limit (user-git-overrides.md) (#3355).
+    {
+      key = "http.cookieFile";
+      value = "/dev/null";
+    }
+    {
+      key = "http.saveCookies";
+      value = "false";
     }
     # Keys that the owner uses: pin them to the values of this module, or to
     # the git default.
@@ -220,6 +284,15 @@ in
     nx.programs.git.enable = lib.mkEnableOption "enables git" // {
       default = true;
     };
+    # The git submodule guard, so the prism nvim config (vim-fugitive.nix) can
+    # use the same wrapper that the shell git function uses (#3343).
+    nx.programs.git.submoduleGuard = lib.mkOption {
+      type = lib.types.path;
+      internal = true;
+      readOnly = true;
+      default = submoduleGuard;
+      description = "Wrapper that adds --ignore-submodules=all to a typed git status or git diff (#3343).";
+    };
   };
   config = lib.mkIf config.nx.programs.git.enable (
     let
@@ -300,6 +373,18 @@ in
           # shells. tmux removes the source-once guard from its server
           # environment, so each new pane sources it again.
           home.sessionVariables = shellGitEnv;
+
+          # A typed `git status` or `git diff` at the root of a worker
+          # worktree can descend into a staged submodule and run a planted
+          # filter, because `ignore` in .gitmodules overrides
+          # diff.ignoreSubmodules = all (#3343). Route the interactive git
+          # through the guard, which adds --ignore-submodules=all to those two
+          # subcommands. The guard runs the real git for every other command.
+          # nvim and the shell prompt have their own controls
+          # (user-git-overrides.md).
+          programs.zsh.initContent = lib.mkAfter ''
+            git() { "${submoduleGuard}" "$@"; }
+          '';
         };
       }
 

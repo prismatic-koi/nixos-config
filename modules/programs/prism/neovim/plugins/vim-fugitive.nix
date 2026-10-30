@@ -4,6 +4,9 @@
   pkgs,
   ...
 }:
+let
+  submoduleGuard = config.nx.programs.git.submoduleGuard;
+in
 {
   home-manager.users.${config.nx.username}.programs.neovim.plugins = [
     pkgs.vimPlugins.vim-rhubarb
@@ -13,6 +16,15 @@
       config =
         # lua
         ''
+            -- fugitive reads g:fugitive_git_executable to locate git. A worker
+            -- can stage a submodule and set ignore = none in .gitmodules,
+            -- which overrides diff.ignoreSubmodules = all; a typed :Git status
+            -- then runs git in the submodule git dir and runs a planted filter
+            -- (#3343). The guard adds --ignore-submodules=all to the status
+            -- and diff commands fugitive runs, so :Git runs no such command.
+            -- Set it before any :Git runs.
+            vim.g.fugitive_git_executable = { "${submoduleGuard}" }
+
             -- autocommand to set keybindings only in fugitive buffers
             local augroup = vim.api.nvim_create_augroup("prismatic-koi_fugitive", {})
             vim.api.nvim_create_autocmd("FileType", {
@@ -97,6 +109,34 @@
             				pin(args.buf)
             			end,
             		})
+            	end,
+            })
+
+            -- Fail closed: a VimEnter probe confirms fugitive routes through
+            -- the guard. fugitive#PrepareJob builds the argv for a status
+            -- command; its first element must be the guard. If it is not (a
+            -- fugitive update drops g:fugitive_git_executable), turn the two
+            -- status commands fugitive defines (:Git and :G) and <leader>gs
+            -- into a warning, so an unguarded status cannot run.
+            vim.api.nvim_create_autocmd("VimEnter", {
+            	group = augroup,
+            	once = true,
+            	callback = function()
+            		local guard = "${submoduleGuard}"
+            		local ok, job = pcall(vim.fn["fugitive#PrepareJob"], { "status" })
+            		local argv0 = (ok and type(job) == "table" and type(job[1]) == "table") and job[1][1] or nil
+            		if argv0 ~= guard then
+            			local msg = "fugitive: git is not guarded against a staged submodule; :Git and :G are off (#3343)."
+            			for _, name in ipairs({ "Git", "G" }) do
+            				vim.api.nvim_create_user_command(name, function()
+            					vim.notify(msg, vim.log.levels.ERROR)
+            				end, { bang = true, nargs = "*", range = true })
+            			end
+            			vim.keymap.set("n", "<leader>gs", function()
+            				vim.notify(msg, vim.log.levels.ERROR)
+            			end, { desc = "[G]it [S]tatus (disabled, #3343)" })
+            			vim.notify(msg, vim.log.levels.ERROR)
+            		end
             	end,
             })
 

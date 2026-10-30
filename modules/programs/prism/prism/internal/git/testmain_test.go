@@ -20,6 +20,11 @@ func TestMain(m *testing.M) {
 	var restore func()
 	suiteStateRoot, restore = stateguardtest.IsolateSuite()
 	restoreFileTransport := AllowFileTransportForTest()
+	// A host shell carries the user-git env pins (modules/programs/git.nix),
+	// protocol.file.allow=never included. The fixtures run plain git against a
+	// local-path origin, which would then fail with "transport 'file' not
+	// allowed". GIT_CONFIG_COUNT=0 makes git read none of the inherited pins.
+	os.Setenv("GIT_CONFIG_COUNT", "0")
 	// CloneWorktree and ConvertToBare refuse in a sandbox. A worker runs the
 	// suite in its sandbox, where PRISM_HOST_API is set, so the suite unsets
 	// it, as in CI.
