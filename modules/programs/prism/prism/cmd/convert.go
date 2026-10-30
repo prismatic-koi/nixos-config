@@ -183,19 +183,29 @@ func canonicalDir(dir string) (string, error) {
 	return resolved, nil
 }
 
-// sessionsInDir returns name and each other session that runs in dir: a
-// session with an open row or a tmux session whose dir is dir by file
+// sessionsInDir returns name and each other prism session that runs in dir:
+// a session with an open row or a tmux session whose dir is dir by file
 // identity. Such a session started through a symlink or another letter
-// case, so its name is not name. A descendant has a read-only worktree, so
-// it is not in the list.
+// case, so its name is not name.
+//
+// A tmux session counts only when it has a prism row or a sidecar PID file.
+// tmux gives a session with no start dir the cwd of the command that made
+// it, so a host shell session can have dir as its path. The meta sessions
+// (scratchpad, the dashboard) are host shells too, and the stop moves the
+// clients to scratchpad. A descendant has a read-only worktree. None of
+// these is in the list.
 func sessionsInDir(dir, name string) []string {
 	names := []string{name}
 	add := func(n string) {
-		if n != "" && !sessionname.IsDescendant(n) && !slices.Contains(names, n) {
+		if n != "" && !sessionname.IsMeta(n) && !sessionname.IsDescendant(n) && !slices.Contains(names, n) {
 			names = append(names, n)
 		}
 	}
-	if d, err := openDB(); err == nil {
+	d, err := openDB()
+	if err != nil {
+		d = nil
+	} else {
+		defer d.Close()
 		if rows, err := d.AllActiveStatus(); err == nil {
 			for _, r := range rows {
 				if r.Worktree != "" && config.SameDir(r.Worktree, dir) {
@@ -203,16 +213,29 @@ func sessionsInDir(dir, name string) []string {
 				}
 			}
 		}
-		d.Close()
+	}
+	isPrismSession := func(n string) bool {
+		if d != nil {
+			if st, err := d.CurrentStatus(n); err == nil && st != nil {
+				return true
+			}
+		}
+		pidPath, err := session.SidecarPIDPath(n)
+		return err == nil && fileExistsAt(pidPath)
 	}
 	if out, err := tmux.Run("list-sessions", "-F", "#{session_name}\t#{session_path}"); err == nil {
 		for _, line := range strings.Split(out, "\n") {
-			if n, p, ok := strings.Cut(line, "\t"); ok && p != "" && config.SameDir(p, dir) {
+			if n, p, ok := strings.Cut(line, "\t"); ok && p != "" && config.SameDir(p, dir) && isPrismSession(n) {
 				add(n)
 			}
 		}
 	}
 	return names
+}
+
+func fileExistsAt(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
 }
 
 // restartAfterConvert starts a session again after a prism convert, if the

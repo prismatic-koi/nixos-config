@@ -19,6 +19,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/sessionname"
+	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // withConvertToBare replaces the conversion with fn and returns the number
@@ -275,6 +277,73 @@ func TestConvertPlainClone_FindsSessionsByFileIdentity_3361(t *testing.T) {
 		if readStatus(t, dbFile, n).EndedAt == nil {
 			t.Errorf("row of %q open, want ended", n)
 		}
+	}
+}
+
+// The stop by file identity takes a tmux session in the clone only when it
+// is a prism session: a row or a sidecar PID file. It never takes a meta
+// session. tmux gives scratchpad and the dashboard the cwd of the command
+// that made them, so their path can be the clone, and the stop moves the
+// clients to scratchpad.
+func TestConvertPlainClone_KeepsHostShellSessionsInTheClone_3361(t *testing.T) {
+	dir, name := newPlainCloneDir(t, "cv3361meta")
+	const stray, withPID = "cv3361stray", "cv3361pid"
+	seedHookRows(t, name)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	pidPath, err := session.SidecarPIDPath(withPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(pidPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pidPath, []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A spy tmux that lists each session with the clone as its path.
+	spyDir := t.TempDir()
+	sessions := []string{name, sessionname.Scratchpad, sessionname.Dashboard, stray, withPID}
+	var withPath strings.Builder
+	for _, s := range sessions {
+		withPath.WriteString(s + "\t" + dir + "\n")
+	}
+	if err := os.WriteFile(filepath.Join(spyDir, "sessions-with-path"), []byte(withPath.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = list-sessions ]; then\n" +
+		"  case \"$3\" in\n" +
+		"    *session_path*) cat " + filepath.Join(spyDir, "sessions-with-path") + " ;;\n" +
+		"    *) printf '" + strings.Join(sessions, "\\n") + "\\n' ;;\n" +
+		"  esac\n" +
+		"fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(spyDir, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prevTmux := tmux.TmuxBin
+	tmux.TmuxBin = filepath.Join(spyDir, "tmux")
+	t.Cleanup(func() { tmux.TmuxBin = prevTmux })
+
+	installFakeRunner(t)
+	withChildCleanup(t)
+	var stops []string
+	prevStop := switchProjectStopSidecar
+	switchProjectStopSidecar = func(n string) bool {
+		stops = append(stops, n)
+		return true
+	}
+	t.Cleanup(func() { switchProjectStopSidecar = prevStop })
+	withConvertToBare(t, func(d string, _ func(string)) (string, error) { return filepath.Join(d, "main"), nil })
+
+	var convErr error
+	captureStderrDuringFn(t, func() { _, convErr = convertPlainClone(dir, func(string) {}) })
+	if convErr != nil {
+		t.Fatalf("convertPlainClone: %v", convErr)
+	}
+	if !slices.Equal(stops, []string{name, withPID}) {
+		t.Errorf("stops = %v, want [%s %s]: no meta session and no tmux session without a row or a PID file", stops, name, withPID)
 	}
 }
 
