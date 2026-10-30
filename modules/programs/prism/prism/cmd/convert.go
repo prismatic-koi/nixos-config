@@ -7,14 +7,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -61,11 +65,11 @@ select "[convert to bare+worktree layout]" on a regular repo.`,
 			fmt.Println(msg)
 		})
 		if err != nil {
-			return errors.Join(fmt.Errorf("conversion failed: %w", err), restartAfterConvert(res, path, false))
+			return errors.Join(fmt.Errorf("conversion failed: %w", err), restartAfterConvert(res, false))
 		}
 
 		fmt.Printf("done — worktree at %s\n", res.worktreePath)
-		return restartAfterConvert(res, path, true)
+		return restartAfterConvert(res, true)
 	},
 }
 
@@ -75,11 +79,14 @@ func init() {
 
 // convertResult is the result of convertPlainClone.
 type convertResult struct {
+	// dir is the real path of the clone (canonicalDir).
+	dir string
 	// worktreePath is the default-branch worktree after a conversion.
 	worktreePath string
-	// sessionName is the name of the root session of the clone.
+	// sessionName is the name of the root session of dir.
 	sessionName string
-	// ran is true when the tmux session of sessionName ran before the stop.
+	// ran is true when a tmux session that convertPlainClone stopped ran
+	// before the stop.
 	ran bool
 }
 
@@ -105,36 +112,107 @@ func convertPlainClone(path string, progress func(string)) (convertResult, error
 	if sandboxenv.IsInsideSandbox() {
 		return convertResult{}, fmt.Errorf("convert %s: %w", path, git.ErrBareInSandbox)
 	}
-	name, err := session.NameFor(path, "")
+	// The session of the clone has the name of the real dir entry, and the
+	// conversion accepts the clone through a symlink or another letter case.
+	dir, err := canonicalDir(path)
+	if err != nil {
+		return convertResult{}, fmt.Errorf("convert %s: %w", path, err)
+	}
+	name, err := session.NameFor(dir, "")
 	if err != nil {
 		return convertResult{}, err
 	}
-	res := convertResult{sessionName: name}
-	if !git.IsRegularRepo(path) {
-		return res, fmt.Errorf("convert %s: the dir is not a plain git clone", path)
-	}
-	// The stop kills each pane of the session, so it also kills this
-	// process if it runs in one of them.
-	if convertCallerSession() == name {
-		return res, fmt.Errorf("convert %s: this command runs in a pane of session %q, and the conversion stops that session. Run the command in a shell outside that session, or use the C-f switcher", path, name)
-	}
+	res := convertResult{dir: dir, sessionName: name}
 
-	lock, err := session.LockForConvert(path, convertLockWait)
+	lock, err := session.LockForConvert(dir, convertLockWait)
 	if err != nil {
 		return res, err
 	}
 	defer lock.Release()
 
-	res.ran = session.HasExactSession(name)
-	if res.ran {
-		progress("  stopping session " + name + "...")
+	// Check the layout with the lock held. A conversion that ended while
+	// this one waited for the lock leaves a .bare, and the rollback of a
+	// second ConvertToBare removes that .bare.
+	if !git.IsRegularRepo(dir) {
+		return res, fmt.Errorf("convert %s: the dir is not a plain git clone", dir)
 	}
-	if err := stopSessionForConvert(name); err != nil {
-		return res, fmt.Errorf("convert %s: %w", path, err)
+	sessions := sessionsInDir(dir, name)
+	// The stop kills each pane of the session, so it also kills this
+	// process if it runs in one of them.
+	if caller := convertCallerSession(); slices.Contains(sessions, caller) {
+		return res, fmt.Errorf("convert %s: this command runs in a pane of session %q, and the conversion stops that session. Run the command in a shell outside that session, or use the C-f switcher", dir, caller)
 	}
 
-	res.worktreePath, err = convertToBare(path, progress)
+	for _, s := range sessions {
+		if session.HasExactSession(s) {
+			res.ran = true
+			progress("  stopping session " + s + "...")
+		}
+		if err := stopSessionForConvert(s); err != nil {
+			return res, fmt.Errorf("convert %s: %w", dir, err)
+		}
+	}
+
+	res.worktreePath, err = convertToBare(dir, progress)
 	return res, err
+}
+
+// canonicalDir returns the real path of dir: the symlinks resolved, and the
+// last element spelled as its entry in the parent dir. On a case-insensitive
+// volume, a path with another letter case names the same dir.
+func canonicalDir(dir string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	parent := filepath.Dir(resolved)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		p := filepath.Join(parent, e.Name())
+		if ei, err := os.Lstat(p); err == nil && ei.IsDir() && os.SameFile(ei, info) {
+			return p, nil
+		}
+	}
+	return resolved, nil
+}
+
+// sessionsInDir returns name and each other session that runs in dir: a
+// session with an open row or a tmux session whose dir is dir by file
+// identity. Such a session started through a symlink or another letter
+// case, so its name is not name. A descendant has a read-only worktree, so
+// it is not in the list.
+func sessionsInDir(dir, name string) []string {
+	names := []string{name}
+	add := func(n string) {
+		if n != "" && !sessionname.IsDescendant(n) && !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	if d, err := openDB(); err == nil {
+		if rows, err := d.AllActiveStatus(); err == nil {
+			for _, r := range rows {
+				if r.Worktree != "" && config.SameDir(r.Worktree, dir) {
+					add(r.SessionName)
+				}
+			}
+		}
+		d.Close()
+	}
+	if out, err := tmux.Run("list-sessions", "-F", "#{session_name}\t#{session_path}"); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			if n, p, ok := strings.Cut(line, "\t"); ok && p != "" && config.SameDir(p, dir) {
+				add(n)
+			}
+		}
+	}
+	return names
 }
 
 // restartAfterConvert starts a session again after a prism convert, if the
@@ -142,17 +220,17 @@ func convertPlainClone(path string, progress func(string)) (convertResult, error
 // in the new worktree. After a failed conversion, the session starts in
 // the clone. If the stop failed and the session still runs,
 // ensureAndSwitch leaves it as it is.
-func restartAfterConvert(res convertResult, path string, converted bool) error {
+func restartAfterConvert(res convertResult, converted bool) error {
 	if !res.ran {
 		return nil
 	}
 	if converted {
-		return convertStartSession(res.worktreePath, path)
+		return convertStartSession(res.worktreePath, res.dir)
 	}
-	if err := refuseStartBesideBare(path); err != nil {
+	if err := refuseStartBesideBare(res.dir); err != nil {
 		return err
 	}
-	return convertStartSession(path, "")
+	return convertStartSession(res.dir, "")
 }
 
 // convertStartSession starts the session of dir with no client, as prism

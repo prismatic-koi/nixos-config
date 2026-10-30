@@ -176,6 +176,108 @@ func TestConvertPlainClone_RefusesWithoutAProvenStop_3361(t *testing.T) {
 	}
 }
 
+// A second conversion of the same clone waits for the lock of the first.
+// When it gets the lock, the clone is converted, so it refuses and leaves
+// the .bare of the first conversion in place.
+func TestConvertPlainClone_SecondConversionRefusesAfterTheLock_3361(t *testing.T) {
+	dir, name := newPlainCloneDir(t, "cv3361twice")
+	dbFile := seedHookRows(t, name)
+	tmuxLog := withListingSpyTmux(t)
+	installFakeRunner(t)
+	withChildCleanup(t)
+	withCleanupStops(t, dbFile, tmuxLog, func(string) bool { return true })
+	calls := withConvertToBare(t, func(string, func(string)) (string, error) { return "", nil })
+
+	first, err := session.LockForConvert(dir, time.Second)
+	if err != nil {
+		t.Fatalf("LockForConvert: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := convertPlainClone(dir, func(string) {})
+		done <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	// The first conversion ends: .git is a file, and .bare exists.
+	if err := os.RemoveAll(filepath.Join(dir, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: ./.bare\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".bare"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first.Release()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "not a plain git clone") {
+			t.Errorf("second conversion = %v, want a refusal of the converted clone", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second conversion did not end")
+	}
+	if *calls != 0 {
+		t.Errorf("conversions = %d, want 0", *calls)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".bare")); err != nil {
+		t.Errorf(".bare of the first conversion: %v, want kept", err)
+	}
+}
+
+// AC (#3361): the conversion stops each session in the clone by file
+// identity. The path of the command goes through a symlink, and a second
+// session started through that symlink has another name. Both stop, and
+// the conversion acts on the real dir.
+func TestConvertPlainClone_FindsSessionsByFileIdentity_3361(t *testing.T) {
+	real, realName := newPlainCloneDir(t, "cv3361real")
+	link := filepath.Join(t.TempDir(), "cv3361link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	realDir, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const aliasName = "cv3361alias"
+	dbFile := seedHookRows(t, realName, aliasName)
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := d.RefreshWorktree(aliasName, "", link); err != nil {
+		t.Fatalf("RefreshWorktree: %v", err)
+	}
+	d.Close()
+	tmuxLog := withListingSpyTmux(t, realName, aliasName)
+	installFakeRunner(t)
+	withChildCleanup(t)
+	stops := withCleanupStops(t, dbFile, tmuxLog, func(string) bool { return true })
+	calls := withConvertToBare(t, func(dir string, _ func(string)) (string, error) {
+		if dir != realDir {
+			t.Errorf("conversion of %q, want the real dir %q", dir, realDir)
+		}
+		return filepath.Join(dir, "main"), nil
+	})
+
+	res, err := convertPlainClone(link, func(string) {})
+	if err != nil {
+		t.Fatalf("convertPlainClone: %v", err)
+	}
+	if !slices.Equal(*stops, []string{realName, aliasName}) {
+		t.Errorf("stops = %v, want [%s %s]", *stops, realName, aliasName)
+	}
+	if *calls != 1 || res.dir != realDir || res.sessionName != realName {
+		t.Errorf("conversions = %d, result = %+v, want one conversion of %q for %q", *calls, res, realDir, realName)
+	}
+	for _, n := range []string{realName, aliasName} {
+		if readStatus(t, dbFile, n).EndedAt == nil {
+			t.Errorf("row of %q open, want ended", n)
+		}
+	}
+}
+
 // AC (#3361): prism convert starts the session again when it ran before the
 // stop: in the new worktree after a conversion, and in the clone after a
 // failed conversion. It does not start a session beside a .bare that a
@@ -192,23 +294,23 @@ func TestRestartAfterConvert_3361(t *testing.T) {
 
 	clone := t.TempDir()
 	worktree := filepath.Join(clone, "main")
-	ran := convertResult{worktreePath: worktree, sessionName: "x", ran: true}
+	ran := convertResult{dir: clone, worktreePath: worktree, sessionName: "x", ran: true}
 
-	if err := restartAfterConvert(convertResult{worktreePath: worktree}, clone, true); err != nil || len(starts) != 0 {
+	if err := restartAfterConvert(convertResult{dir: clone, worktreePath: worktree}, true); err != nil || len(starts) != 0 {
 		t.Fatalf("no session ran: starts = %v, err = %v, want no start", starts, err)
 	}
-	if err := restartAfterConvert(ran, clone, true); err != nil || !slices.Equal(starts, []start{{worktree, clone}}) {
+	if err := restartAfterConvert(ran, true); err != nil || !slices.Equal(starts, []start{{worktree, clone}}) {
 		t.Fatalf("after a conversion: starts = %v, err = %v, want the worktree", starts, err)
 	}
 	starts = nil
-	if err := restartAfterConvert(ran, clone, false); err != nil || !slices.Equal(starts, []start{{clone, ""}}) {
+	if err := restartAfterConvert(ran, false); err != nil || !slices.Equal(starts, []start{{clone, ""}}) {
 		t.Fatalf("after a failed conversion: starts = %v, err = %v, want the clone", starts, err)
 	}
 	starts = nil
 	if err := os.Mkdir(filepath.Join(clone, ".bare"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := restartAfterConvert(ran, clone, false); err == nil || len(starts) != 0 {
+	if err := restartAfterConvert(ran, false); err == nil || len(starts) != 0 {
 		t.Fatalf("with a .bare left: starts = %v, err = %v, want a refusal", starts, err)
 	}
 }
