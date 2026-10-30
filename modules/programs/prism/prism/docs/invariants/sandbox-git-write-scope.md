@@ -227,6 +227,10 @@ that prism does not run.
   sandbox-exec. It does not run `prepareGitWriteDirs`: under bwrap the ref
   and reflog parent dirs are inside the read-write `.bare` bind, so git
   creates them itself.
+- Before the sandbox starts, the bwrap `Prepare` creates an absent
+  `.bare/config` and the own `config.worktree`, so each pin has a target
+  (`ensureFileExists`). The create uses `O_CREATE|O_EXCL`, so it does not
+  follow a symlink that a session put at the path (#3377).
 - The top-level `.bare/commondir` is NOT pinned. A benign commondir file is
   not a no-op: any commondir file makes git treat the project root (which
   holds a `.git` gitfile pointing at `.bare`) as a work tree, so a git

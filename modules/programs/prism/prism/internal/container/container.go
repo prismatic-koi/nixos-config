@@ -131,6 +131,14 @@ type Config struct {
 	// that they cannot change the branch that they review or research.
 	WorktreeReadOnly bool
 
+	// ReviewDiffDir is the host path of the review diff dir of the parent
+	// session of a review agent (review.DiffDirForParent, #3377). The review
+	// prompt names a file in it when the diff is above the inline limit.
+	// bwrap binds it read-only at the same path, and the sandbox-exec profile
+	// grants a read of it (section 5l). No sandbox gets a write of it. Empty
+	// for a session that is not a review agent: no bind and no grant.
+	ReviewDiffDir string
+
 	// AllocatedPort is the host port to bind to ContainerPort inside the container.
 	AllocatedPort int
 
@@ -818,7 +826,9 @@ func (m *Manager) writeGitconfigArtefacts(embedSigningKeyPub, embedAllowedSigner
 			log.Printf("container: failed to read signing public key %q: %v; skipping allowed_signers", signingKeyPub, err)
 		} else {
 			allowedSignersContent := m.cfg.GitUserEmail + " " + strings.TrimSpace(string(pubKeyContent)) + "\n"
-			if err := os.WriteFile(allowedSignersDst, []byte(allowedSignersContent), 0o644); err != nil {
+			// rundir.WriteFile: for sandbox-exec the dst is in the session
+			// work dir, which the session can write (#3377).
+			if err := rundir.WriteFile(allowedSignersDst, []byte(allowedSignersContent)); err != nil {
 				log.Printf("container: failed to write allowed_signers file: %v", err)
 			} else {
 				m.allowedSignersReady = true
@@ -843,7 +853,7 @@ func (m *Manager) writeGitconfigArtefacts(embedSigningKeyPub, embedAllowedSigner
 	sb.WriteString("\n[init]\n")
 	sb.WriteString("    defaultBranch = main\n")
 
-	if err := os.WriteFile(gitconfigDst, []byte(sb.String()), 0o644); err != nil {
+	if err := rundir.WriteFile(gitconfigDst, []byte(sb.String())); err != nil {
 		return err
 	}
 	return nil
@@ -1089,15 +1099,27 @@ func (m *Manager) ensureBareReadOnlyTargets() error {
 	return nil
 }
 
-// ensureFileExists creates path with the given content (0o644) only when it
-// does not already exist. An existing file is left untouched.
+// ensureFileExists creates path with the given content (0o644) only when
+// nothing is at path. An existing entry is left untouched.
+//
+// O_EXCL makes the create fail on any entry at path, a dangling symlink
+// included, so the create does not follow a symlink. The own worktree git
+// dir is writable by the session, so a symlink there can name a file of the
+// user (#3377).
 func ensureFileExists(path string, content []byte) error {
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		if wErr := os.WriteFile(path, content, 0o644); wErr != nil {
-			return fmt.Errorf("container: create read-only bind target %q: %w", path, wErr)
-		}
-	} else if err != nil {
-		return fmt.Errorf("container: stat read-only bind target %q: %w", path, err)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("container: create read-only bind target %q: %w", path, err)
+	}
+	_, wErr := f.Write(content)
+	if cErr := f.Close(); wErr == nil {
+		wErr = cErr
+	}
+	if wErr != nil {
+		return fmt.Errorf("container: create read-only bind target %q: %w", path, wErr)
 	}
 	return nil
 }

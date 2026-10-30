@@ -53,6 +53,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+
+	"github.com/prismatic-koi/prism/internal/rundir"
 )
 
 // SessionWorkDirPath returns the per-session work directory path for the
@@ -269,12 +272,18 @@ func SessionWorkDirGitEnv(sessionDir, sshBin string) []string {
 //
 // Calling PrepareSessionWorkDir a second time is idempotent: the directory
 // creation is a no-op and the generated files are overwritten.
+//
+// The session can write its work dir (section 6 of the profile). Each write
+// here goes through internal/rundir, so a symlink that the session put in
+// the work dir does not redirect a write: a symlinked work dir or skeleton
+// dir is refused, and a file is replaced by a rename, not opened (#3377).
+// Section 21n stops the session from a replace of the work dir node.
 func (m *Manager) PrepareSessionWorkDir() (string, error) {
 	sessionDir, err := m.sessionWorkDirPath()
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+	if err := rundir.EnsureDir(sessionDir); err != nil {
 		return "", fmt.Errorf("container: session work dir: create %s: %w", sessionDir, err)
 	}
 
@@ -287,7 +296,7 @@ func (m *Manager) PrepareSessionWorkDir() (string, error) {
 	// preserved.
 	if runtime.GOOS == "darwin" {
 		for _, d := range SessionWorkDirChromiumDirs(sessionDir) {
-			if err := os.MkdirAll(d, 0o700); err != nil {
+			if err := ensureDirBelow(sessionDir, d); err != nil {
 				log.Printf("container: session work dir: create chromium skeleton dir %s: %v", d, err)
 			}
 		}
@@ -339,9 +348,30 @@ func (m *Manager) writeSshConfigToDir(sessionDir string) error {
 	identityFile := filepath.Join(home, ".ssh", accessKeyName)
 	sshConfig := sandboxSshConfig(identityFile)
 	dst := SessionWorkDirSshConfigPath(sessionDir)
-	_ = os.Remove(dst) // idempotent: replace any prior file
-	if err := os.WriteFile(dst, []byte(sshConfig), 0o600); err != nil {
+	if err := rundir.WriteFile(dst, []byte(sshConfig)); err != nil {
 		return fmt.Errorf("write %s: %w", dst, err)
+	}
+	return nil
+}
+
+// ensureDirBelow makes dir, which must be below root, one path component at
+// a time with rundir.EnsureDir. Each component that is a symlink is refused,
+// so a symlink that the session put below root does not make the host
+// create a dir elsewhere. os.MkdirAll follows such a symlink.
+func ensureDirBelow(root, dir string) error {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || !filepath.IsLocal(rel) {
+		return fmt.Errorf("%s is not below %s", dir, root)
+	}
+	if err := rundir.RefuseSymlinkDir(root); err != nil {
+		return err
+	}
+	p := root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		p = filepath.Join(p, part)
+		if err := rundir.EnsureDir(p); err != nil {
+			return err
+		}
 	}
 	return nil
 }

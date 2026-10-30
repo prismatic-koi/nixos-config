@@ -24,7 +24,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -477,18 +476,15 @@ sandboxed path.`,
 		dRound.Close()
 	}
 
-	// Derive the diff file storage directory from the worktree.
-	//
-	// All sandbox isolation modes (bwrap, sandbox-exec) mount the worktree at
-	// its host path (Dst==Src), so any file written under the worktree on the
-	// host is reachable at the same absolute path inside the sandbox — no
-	// namespace translation required. Host-mode agents share the host filesystem
-	// directly.
-	//
-	// We use a hidden subdirectory (<worktree>/.prism-review/) to keep the diff
-	// file out of git status. The directory is cleaned up automatically when the
-	// worktree is removed by `prism cleanup`.
-	diffStateDir := filepath.Join(worktree, ".prism-review")
+	// The diff file of a large diff goes to the diff dir of this session in
+	// the state dir, never into the worktree: the sandbox of the session can
+	// write its worktree (#3377). Each review agent gets a read-only grant on
+	// this dir. With no dir, a large diff is inlined, truncated.
+	diffStateDir, diffDirErr := review.DiffDirForParent(parentSession)
+	if diffDirErr != nil {
+		proglog.Warnf("[prism review] warning: %v — a large diff is inlined, truncated\n", diffDirErr)
+		diffStateDir = ""
+	}
 
 	prCtx := review.FetchPRContextWithOpts(review.FetchPRContextOpts{
 		PRNumber:       prNumber,

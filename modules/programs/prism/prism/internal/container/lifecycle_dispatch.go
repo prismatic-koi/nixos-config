@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/rundir"
 )
 
 // AgentRunOpts carries the per-call inputs that a registered AgentRun handler
@@ -58,6 +59,10 @@ type AgentRunOpts struct {
 	// WorktreeReadOnly is agent_status.worktree_readonly. Handlers copy it
 	// to Config.WorktreeReadOnly.
 	WorktreeReadOnly bool
+
+	// ReviewDiffDir is the review diff dir of the parent of a review agent,
+	// from the DB. Handlers copy it to Config.ReviewDiffDir.
+	ReviewDiffDir string
 }
 
 // AgentRunHandler is the function signature that cmd/agent_run.go registers
@@ -241,7 +246,7 @@ func (s *sandboxExecIsolator) WriteGitconfig(m *Manager) error {
 	if err != nil {
 		return fmt.Errorf("container: sandbox-exec: %w", err)
 	}
-	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+	if err := rundir.EnsureDir(sessionDir); err != nil {
 		return fmt.Errorf("container: sandbox-exec: create session work dir %s: %w", sessionDir, err)
 	}
 	return m.writeGitconfigToDir(sessionDir)

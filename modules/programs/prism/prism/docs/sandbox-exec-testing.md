@@ -437,6 +437,40 @@ integration test coverage exists for:
     the section-21m deny. The matching change of the node works.
 
   See `sandbox_exec_run_dir_darwin_test.go`.
+- **The review diff dir** — the section-5l read grant on the review diff
+  dir of the parent of a review agent,
+  `$XDG_STATE_HOME/prism/review-diff/<hash>/` (#3377). `prism review`
+  writes a diff above the inline limit there. Under the production profile:
+  - The review agent reads the diff file of its parent.
+  - It cannot overwrite, remove, or rename the diff file, and it cannot put
+    a file or a symlink in the dir. The file does not change.
+  - It cannot read the diff file of another parent.
+
+  The paired negatives make these changes to the profile:
+  - Point the section-5l rule at a missing path. The read fails.
+  - Add `file-write*` to the section-5l rule. The create in the dir works.
+  - Point the section-5l rule at the whole `review-diff` dir. The read of
+    the diff file of the other parent works.
+
+  See `sandbox_exec_review_diff_darwin_test.go`.
+- **The session work dir node** — the section-21n deny on unlink, create,
+  mode writes, flag writes, and ACL writes of the session work dir node,
+  `$XDG_STATE_HOME/prism/sessions/<instance ID>/` (#3377). Prepare writes
+  `ssh-config`, `gitconfig`, and `allowed_signers` there. Under the
+  production profile:
+  - The session writes a file in its work dir.
+  - The session cannot rename its work dir node. When the node is absent,
+    the session cannot put a symlink or a new dir at the path.
+  - The session cannot `chmod 777` the node, and the mode does not change.
+
+  The paired negatives make these changes to the profile:
+  - Strip the section-21n deny. The session moves its work dir away and
+    puts a symlink at the path. Prepare, as on a restore, then refuses the
+    symlinked work dir (`internal/rundir`) and writes no file in the
+    target.
+  - Take `file-write-mode` out of the section-21n deny. The chmod works.
+
+  See `sandbox_exec_session_work_dir_node_darwin_test.go`.
 - **The pi agent dir** — the section-6a grant on `~/.pi/agent`, for pi
   sessions only: a read of the whole dir, and a write of an exact list
   (`atlassian-mcp-oauth.json` and the sessions dir of the worktree). The
@@ -547,7 +581,7 @@ workflow already uses that same action. The job then runs the tests inside
 
 ```
 nix shell nixpkgs#bash nixpkgs#coreutils nixpkgs#git \
-  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir)' -race
+  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode)' -race
 ```
 
 The tests in `sandbox_exec_gitlab_token_darwin_test.go` and
@@ -597,12 +631,20 @@ for the section-21m deny on the run dir node. It needs no Nix tool. It uses
 the connect probe of #3066. It runs a real sidecar in the test process with
 no listener. It puts the state dir under the real home, as the PipeSecret
 file does.
+Issue #3377 adds a twelfth file, `sandbox_exec_review_diff_darwin_test.go`,
+for the section-5l read of the review diff dir. It also adds a thirteenth
+file, `sandbox_exec_session_work_dir_node_darwin_test.go`, for the
+section-21n deny on the session work dir node. Neither needs a Nix tool.
+Both use the connect probe of #3066 and put the state dir under the real
+home.
 The `-run` selector matches only the `TestSandboxExecGitLabToken_*`,
 `TestSandboxExecGrafanaConfig_*`, `TestSandboxExecPIAgentDir_*`,
 `TestSandboxExecWorktreeEntry_*`, `TestSandboxExecWorktreeReadOnly_*`,
 `TestSandboxExecContainerCLI_*`, `TestSandboxExecContainerSocket_*`,
 `TestSandboxExecSessionTmp_*`, `TestSandboxExecGitWriteScope_*`,
-`TestSandboxExecPipeSecret_*`, and `TestSandboxExecRunDir_*` functions. A wider `^TestSandboxExec`
+`TestSandboxExecPipeSecret_*`, `TestSandboxExecRunDir_*`,
+`TestSandboxExecReviewDiff_*`, and `TestSandboxExecSessionWorkDirNode_*`
+functions. A wider `^TestSandboxExec`
 selector was tried first. PR #2785 (round-2 review) found that this
 selector skips several other sandbox-exec suites on a bare `macos-15`
 runner. For example, the playwright suite

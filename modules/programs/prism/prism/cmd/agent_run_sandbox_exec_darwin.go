@@ -143,7 +143,7 @@ func buildSandboxExecHomeEnv(env []string, sessionDir, realHome string) []string
 // agentRunStart and logFile are passed through from runAgentRun so that the
 // sandbox-exec path can emit `[timing]` markers symmetric to the bwrap path.
 // All durations are relative to agentRunStart.
-func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart time.Time, logFile *os.File, worktreeReadOnly bool) error {
+func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart time.Time, logFile *os.File, worktreeReadOnly bool, reviewDiffDir string) error {
 	// Capture the parent PID immediately — this is the tmux pane process.
 	// os.Getppid() returns the real parent PID of this process (agent-run),
 	// which is the shell/tmux process managing the pane. We capture it here,
@@ -262,6 +262,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		HarnessSessionID:  sandboxHarnessSessionID,
 		AgentRunLogPath:   agentRunLogPath,
 		WorktreeReadOnly:  worktreeReadOnly,
+		ReviewDiffDir:     reviewDiffDir,
 	}
 
 	// For socket-pipe harnesses (PI), the sidecar stores the TCP port it

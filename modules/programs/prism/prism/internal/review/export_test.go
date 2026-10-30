@@ -67,6 +67,14 @@ func ParseLinkedIssuesForTest(body string) []string {
 	return parseLinkedIssues(body)
 }
 
+// PlaceDiffForTest runs placeDiff on an empty PRContext, with diff as both
+// the full and the truncated diff, and returns the PRContext.
+func PlaceDiffForTest(stateDir, prNumber string, round int, diff string, inlineMaxBytes, inlineMaxLines int) PRContext {
+	var p PRContext
+	placeDiff(&p, stateDir, prNumber, round, diff, diff, inlineMaxBytes, inlineMaxLines)
+	return p
+}
+
 // DiffFilePathForTest is an exported wrapper around diffFilePath for tests.
 // stateDir mirrors the StateDir field of FetchPRContextOpts: when non-empty the
 // diff file lands in the provided directory; when empty it falls back to /tmp

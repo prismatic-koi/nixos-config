@@ -160,7 +160,8 @@ type PRContext struct {
 	// DiffTruncated is true when the diff was truncated due to size limits.
 	DiffTruncated bool
 	// DiffFilePath is the path to the diff file when the diff is above the
-	// inline threshold. When empty, the diff is inlined in Diff.
+	// inline threshold (see FetchPRContextOpts.StateDir). When empty, the
+	// diff is inlined in Diff.
 	DiffFilePath string
 	// DiffLines is the total number of lines in the diff (for reporting).
 	DiffLines int
@@ -203,22 +204,13 @@ type FetchPRContextOpts struct {
 	// When empty, git commands run in the current directory.
 	Worktree string
 	// StateDir is the directory to write the diff file into when the diff
-	// exceeds the inline threshold. It must be a directory that is already
-	// bind-mounted into every review agent's sandbox at the same host path
-	// so that the path in the prompt is reachable inside the sandbox without
-	// any additional mount configuration.
+	// exceeds the inline threshold: DiffDirForParent of the parent session.
+	// A review agent of the parent gets a read of this dir at its host path
+	// (container.Config.ReviewDiffDir). It must be an absolute path that no
+	// sandbox can write. Do not give a dir in a worktree.
 	//
-	// Typically this is the `.prism-review/` subdirectory inside the worktree:
-	//
-	//   <worktree>/.prism-review/
-	//
-	// All sandbox isolation modes (bwrap, sandbox-exec) bind-mount the worktree
-	// at its host path (Dst==Src), so files written here are reachable at the
-	// same absolute path inside the sandbox. The directory is cleaned up
-	// automatically when the worktree is removed by `prism cleanup`.
-	//
-	// When empty, the diff file falls back to /tmp (host-mode and Darwin
-	// sandbox-exec agents, where the host filesystem is shared directly).
+	// When empty, or when the file cannot be written, a large diff is
+	// inlined, truncated.
 	StateDir string
 	// Forge selects the read path used to fetch MR/PR metadata and diff. The
 	// zero value (forge.GitHub) preserves the byte-for-byte GitHub `gh` path;

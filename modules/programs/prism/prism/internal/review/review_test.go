@@ -2179,8 +2179,8 @@ func TestTruncateProgressMsg_ShortPassthrough(t *testing.T) {
 
 // ── DiffFilePath / StateDir tests ───────────────────────────────
 
-// TestDiffFilePathForTest_StateDirUsed verifies that when a StateDir is provided
-// the returned path is under that directory (not the /tmp fallback).
+// TestDiffFilePathForTest_StateDirUsed verifies that the returned path is
+// under the StateDir.
 func TestDiffFilePathForTest_StateDirUsed(t *testing.T) {
 	// Use an explicit non-/tmp directory to confirm the stateDir path is chosen.
 	dir := filepath.Join(t.TempDir(), "prism", "run", "abc123")
@@ -2198,12 +2198,16 @@ func TestDiffFilePathForTest_StateDirUsed(t *testing.T) {
 	}
 }
 
-// TestDiffFilePathForTest_EmptyStateDirFallsBackToTmp verifies that when
-// StateDir is empty the function falls back to /tmp.
-func TestDiffFilePathForTest_EmptyStateDirFallsBackToTmp(t *testing.T) {
-	got := review.DiffFilePathForTest("", "1234", 1)
-	if !strings.HasPrefix(got, "/tmp/") {
-		t.Errorf("DiffFilePathForTest(stateDir=\"\"): path %q does not begin with /tmp/ — fallback must be /tmp", got)
+// TestDiffFilePathForTest_PRNumberCannotLeaveStateDir: the PR number comes
+// from the caller of `prism review`, so a path separator or ".." in it must
+// not move the file out of the StateDir.
+func TestDiffFilePathForTest_PRNumberCannotLeaveStateDir(t *testing.T) {
+	dir := t.TempDir()
+	for _, pr := range []string{"../../x", "1/../../y", "/etc/z"} {
+		got := review.DiffFilePathForTest(dir, pr, 1)
+		if filepath.Dir(got) != dir {
+			t.Errorf("DiffFilePathForTest(%q) = %q, want a file directly in %s", pr, got, dir)
+		}
 	}
 }
 
@@ -2218,23 +2222,11 @@ func TestDiffFilePathForTest_RoundSuffixDisambiguates(t *testing.T) {
 	}
 }
 
-// TestDiffFilePathForTest_DifferentPRsInTmpDisambiguate verifies that different
-// PRs produce different /tmp fallback paths (preserving the existing collision
-// avoidance guarantee for host-mode sessions).
-func TestDiffFilePathForTest_DifferentPRsInTmpDisambiguate(t *testing.T) {
-	pathA := review.DiffFilePathForTest("", "111", 1)
-	pathB := review.DiffFilePathForTest("", "222", 1)
-	if pathA == pathB {
-		t.Errorf("DiffFilePathForTest /tmp fallback: PR 111 and PR 222 share the same path %q — /tmp paths must embed the PR number", pathA)
-	}
-}
-
 // TestDiffFilePathForTest_DifferentPRsInStateDirDisambiguate verifies that when
-// two concurrent reviews run against different PRs sharing the same worktree
-// (stateDir), the resulting paths are distinct so the agents read the correct
-// diff (security / edge-case).
+// two concurrent reviews of one session run against different PRs, the
+// resulting paths are distinct so the agents read the correct diff.
 func TestDiffFilePathForTest_DifferentPRsInStateDirDisambiguate(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), ".prism-review")
+	dir := filepath.Join(t.TempDir(), "review-diff", "abc")
 	pathA := review.DiffFilePathForTest(dir, "111", 1)
 	pathB := review.DiffFilePathForTest(dir, "222", 1)
 	if pathA == pathB {
