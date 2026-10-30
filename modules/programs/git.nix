@@ -16,14 +16,18 @@ let
   # command line has priority over that key. The wrapper adds it to those two
   # subcommands, so git does not descend into the submodule git dir and run a
   # planted filter (#3343). It steps over the global options of git to find
-  # the subcommand, and passes every other subcommand through unchanged. The
-  # zsh git function and fugitive's g:fugitive_git_executable both use it.
+  # the subcommand, and passes every other subcommand through unchanged. A
+  # help or version request passes through too, so `git status --help` and
+  # `git diff --help` still open the man page. The zsh git function and
+  # fugitive's g:fugitive_git_executable both use it.
   submoduleGuard = pkgs.writeShellScript "git-submodule-guard" ''
     args=("$@")
     n=''${#args[@]}
     i=0
     while [ "$i" -lt "$n" ]; do
       case "''${args[i]}" in
+        -h | --help | -v | --version)
+          exec ${pkgs.git}/bin/git "''${args[@]}" ;;
         -C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source)
           i=$((i + 2)) ;;
         -*)
@@ -33,7 +37,9 @@ let
       esac
     done
     if [ "$i" -lt "$n" ] &&
-      { [ "''${args[i]}" = status ] || [ "''${args[i]}" = diff ]; }; then
+      { [ "''${args[i]}" = status ] || [ "''${args[i]}" = diff ]; } &&
+      [ "''${args[i + 1]:-}" != --help ] &&
+      [ "''${args[i + 1]:-}" != -h ]; then
       exec ${pkgs.git}/bin/git "''${args[@]:0:i+1}" --ignore-submodules=all "''${args[@]:i+1}"
     fi
     exec ${pkgs.git}/bin/git "''${args[@]}"
@@ -159,9 +165,10 @@ let
       key = "protocol.file.allow";
       value = "never";
     }
-    # http.cookieFile with http.saveCookies makes curl write a file at a path
-    # the config chooses, on an HTTPS fetch. /dev/null plus saveCookies =
-    # false writes no file (#3355).
+    # A planted http.cookieFile with http.saveCookies makes curl write a file
+    # at a path the config chooses, on an HTTPS fetch. These pins close the
+    # form with no URL. A URL-scoped http.<url>.cookieFile wins by urlmatch
+    # and stays a known limit (user-git-overrides.md) (#3355).
     {
       key = "http.cookieFile";
       value = "/dev/null";
