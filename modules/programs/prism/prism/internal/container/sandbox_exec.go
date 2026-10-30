@@ -236,6 +236,9 @@ func ensureGoCacheDirs() {
 //     the session cannot swap its work dir for a symlink
 //   - For a review agent, an RO subpath grant on the review diff dir of
 //     its parent session (section 5l)
+//   - A final deny on each write of the hostapi.sock path (section 21o), so
+//     the session cannot swap its socket for a symlink to the socket of
+//     another session
 //
 // New top-level allow/deny clauses require an explanatory comment in the
 // generator.
@@ -876,11 +879,13 @@ func generateProfile(m *Manager) string {
 		}
 		// Host-API socket directory — the sidecar's per-session socket dir.
 		// The run-dir (subpath ...) rule covers agent-run.log,
-		// hostapi.sock, pipe.sock, and pipe.secret. pipe.secret is what
-		// stops another session from a handshake on the loopback pipe
-		// port of this session (#3356), so the rule must name only the
-		// run dir of this session. Section 21m takes back the replace of
-		// the run dir node. Section 6a covers ~/.pi/agent.
+		// hostapi.sock, hostapi.secret, pipe.sock, and pipe.secret.
+		// pipe.secret stops another session from a handshake on the
+		// loopback pipe port of this session (#3356), and hostapi.secret
+		// stops a host-API request as this session (#3379). So the rule
+		// must name only the run dir of this session. Section 21m takes
+		// back the replace of the run dir node, and section 21o each write
+		// of hostapi.sock. Section 6a covers ~/.pi/agent.
 		if m.cfg.HostAPISockPath != "" {
 			sockDir := filepath.Dir(m.cfg.HostAPISockPath)
 			sb.WriteString("  (subpath " + quoteSBPL(sockDir) + ")\n")
@@ -1525,6 +1530,25 @@ func generateProfile(m *Manager) string {
 		sb.WriteString(dirNodeDeny(symlinkForms(sessionDir)))
 	}
 
+	// ── 21o. FINAL DENY — the hostapi.sock path cannot be written ─
+	// Section 6 grants (subpath <run dir>), which covers hostapi.sock too.
+	// Without this deny, the session can remove its hostapi.sock and put a
+	// symlink to the hostapi.sock of another session at the path. A connect
+	// follows the symlink (#3379). The host-API credential stops such a
+	// request at the other sidecar, and the host refuses a symlinked socket
+	// (internal/rundir). This deny stops the plant itself.
+	//
+	// The sidecar makes and removes the socket on the host. The session only
+	// connects to it, and a connect is network-outbound (section 17b), not a
+	// file write. The rule is a literal, so the other files in the run dir
+	// keep the section-6 grant. The deny must follow every allow, because
+	// SBPL resolves a conflict in favour of the later rule.
+	// TestGenerateProfile_HostAPISockDenyFollowsEveryAllow pins the order.
+	if m.cfg.HostAPISockPath != "" {
+		sb.WriteString("\n")
+		sb.WriteString(hostAPISockDeny(m.cfg.HostAPISockPath))
+	}
+
 	// ── 22. FINAL DENIES — Go module cache is not executable ─
 	// The module cache holds downloaded dependency SOURCE. Section 5k grants
 	// it read-write because the toolchain must populate it. Without this deny,
@@ -1615,6 +1639,16 @@ func ancestorMetadataAllow(paths []string) string {
 		return ""
 	}
 	return "(allow file-read-metadata file-test-existence\n" + strings.Join(nodes, "\n") + ")\n"
+}
+
+// hostAPISockDeny is the section-21o clause of generateProfile: a deny of
+// each write of the hostapi.sock path, in both /var symlink forms.
+func hostAPISockDeny(sockPath string) string {
+	clause := "(deny file-write*"
+	for _, p := range symlinkForms(sockPath) {
+		clause += "\n  (literal " + quoteSBPL(p) + ")"
+	}
+	return clause + ")\n"
 }
 
 // dirNodeDeny is the clause of sections 21e, 21m, and 21n of generateProfile: a

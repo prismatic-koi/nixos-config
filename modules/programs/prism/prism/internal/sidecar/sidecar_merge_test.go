@@ -3,7 +3,7 @@ package sidecar
 // Tests for the host-API /merge, /merges, and /merges/cancel endpoints
 // for the bwrap shadow-DB issue.
 //
-// These tests exercise the hostAPIHandler() method directly without spinning
+// These tests exercise the hostAPIRoutes() method directly without spinning
 // up a real Unix socket server. The shape mirrors the existing /spawn,
 // /cleanup, /prompt tests in sidecar_test.go.
 

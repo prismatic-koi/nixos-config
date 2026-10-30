@@ -471,6 +471,27 @@ integration test coverage exists for:
   - Take `file-write-mode` out of the section-21n deny. The chmod works.
 
   See `sandbox_exec_session_work_dir_node_darwin_test.go`.
+- **The hostapi.sock path** — the section-21o deny on each write of the
+  `hostapi.sock` path in the run dir (#3379). Under the production profile,
+  the session cannot remove or rename its `hostapi.sock`. When the socket
+  is absent, the session cannot put a symlink to the socket of another
+  session, or a file, at the path. The session still connects to its own
+  socket and writes the other files of the run dir.
+
+  The paired negatives strip the section-21o deny. The session then removes
+  its `hostapi.sock` and puts a symlink to the socket of a coordinator at the
+  path, and sends `GET /merges` through it:
+  - To the routes of a coordinator without the host-API credential check
+    (the handler before #3379). The connect fails with `EPERM`: section 17b
+    checks the path after the symlink, and the run dir of another session
+    is not on its allowlist. With that run dir added to section 17b, the
+    same request gets 200 from the routes, as the coordinator.
+  - To a real coordinator sidecar, with the check. With the run dir of the
+    coordinator added to section 17b, a request with the secret of the
+    session, or with no secret, gets 401, and the secret of the coordinator
+    gets 200.
+
+  See `sandbox_exec_run_dir_hostapi_darwin_test.go`.
 - **The pi agent dir** — the section-6a grant on `~/.pi/agent`, for pi
   sessions only: a read of the whole dir, and a write of an exact list
   (`atlassian-mcp-oauth.json` and the sessions dir of the worktree). The
@@ -637,6 +658,13 @@ file, `sandbox_exec_session_work_dir_node_darwin_test.go`, for the
 section-21n deny on the session work dir node. Neither needs a Nix tool.
 Both use the connect probe of #3066 and put the state dir under the real
 home.
+Issue #3379 adds `sandbox_exec_run_dir_hostapi_darwin_test.go`, for the
+section-21o deny on the `hostapi.sock` path and the host-API credential.
+Its functions are `TestSandboxExecRunDir_HostAPISock*`, so the RunDir
+family of the selector runs them. It needs no Nix tool. It builds a
+CGO-disabled HTTP probe and uses the connect probe of #3066. It runs a real
+coordinator sidecar in the test process, and puts the state dir under the
+real home, as the RunDir file does.
 The `-run` selector matches only the `TestSandboxExecGitLabToken_*`,
 `TestSandboxExecGrafanaConfig_*`, `TestSandboxExecPIAgentDir_*`,
 `TestSandboxExecWorktreeEntry_*`, `TestSandboxExecWorktreeReadOnly_*`,

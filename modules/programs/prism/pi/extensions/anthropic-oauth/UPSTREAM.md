@@ -58,6 +58,7 @@ it is more actively maintained and is the source of the PR #193 fix.
 | `ratelimit.ts` | *(none — local addition, see divergence 14)* | *(no equivalent)* | *(no equivalent)* |
 | `refresh-lock.ts` | *(none — local addition, see divergence 21)* | `src/refresh-lock.ts` (reference only, not ported) | *(no equivalent)* |
 | `session-sync.ts` | *(none — local addition, see divergence 22)* | *(no equivalent)* | *(no equivalent)* |
+| `host-api-auth.ts` | *(none — local addition, see divergence 23)* | *(no equivalent)* | *(no equivalent)* |
 | `anthropic-prompt.txt` | griffinmartin | `src/anthropic-prompt.txt` | *(no equivalent)* |
 
 **`oauth-headers.ts` is the exception to "skip `src/index.ts`"** (divergence
@@ -68,14 +69,15 @@ Check them on every port — they carry the WAF fingerprint.
 
 ### Mirrors outside this directory
 
-Three Go files outside this extension mirror it and must change in the same
-commit. Go cannot import TypeScript, so all three are hand-maintained:
+Four Go files outside this extension mirror it and must change in the same
+commit. Go cannot import TypeScript, so all four are hand-maintained:
 
 | Mirror | Mirrors | Checked by |
 |---|---|---|
 | `modules/programs/prism/prism/internal/usage/refresh.go` | `model-config.ts` (`ccVersion`, `baseBetas`, `modelOverrides`), `betas.ts::getModelBetas`, `oauth-headers.ts` (user-agent, stainless headers, session id), `stream.ts::CLAUDE_CODE_IDENTITY`, `ratelimit.ts` | `internal/usage/refresh_mirror_test.go` |
 | `modules/programs/prism/prism/internal/account/login.go` | `auth.ts` — `CLIENT_ID`, `AUTHORIZE_URL`, `TOKEN_URL`, `REDIRECT_URI`, `SCOPES`, `USER_AGENT`, `CALLBACK_PORT`, `CALLBACK_HOST`, and the retry constants | *(no mechanical check — read both)* |
 | `modules/programs/prism/prism/internal/container/pi_auth_session.go` | `refresh-lock.ts` (`REFRESH_LOCK_NAME`, `LOCK_TIMINGS.staleMs`, the owner file) and `session-sync.ts` (`SESSION_SYNC_PATH`, `SESSION_SYNC_ENV`) | `internal/container/pi_auth_mirror_test.go` |
+| `modules/programs/prism/prism/internal/hostapiauth/hostapiauth.go` | `host-api-auth.ts` (`HOST_API_SECRET_HEADER`, `HOST_API_SECRET_FILE`) | `internal/hostapiauth/extension_mirror_test.go` |
 
 `refresh.go` builds the same signed request for `prism account usage` that the
 extension builds for a pi session. If the two disagree, the account probe
@@ -690,6 +692,29 @@ request — both are declared only, because the token endpoint rejects a
     verified: with the two calls before the read removed, the three
     one-request tests fail with two requests. With no sync, the paired test
     shows two requests with the same old refresh token.
+
+23. **The host-API credential on each sidecar request (issue #3379)** — a
+    LOCAL ADDITION in `host-api-auth.ts`, with calls in `ratelimit.ts` and
+    `session-sync.ts`. Do NOT remove the calls during a port.
+
+    **Why it exists.** The prism sidecar of a session refuses each host-API
+    request that does not carry the secret of the session. The sidecar
+    writes the secret to `hostapi.secret`, next to `hostapi.sock`. Without
+    the check, a session that reaches the socket of another sidecar gets the
+    role of that session.
+
+    **Where it hooks.** `buildSnapshotRequestOptions` (`POST
+    /usage/snapshot`) and `sessionSyncRequestOptions` (`POST /pi-auth/sync`)
+    add the header of `hostApiAuthHeaders` to each `unix://` request. The
+    function reads the file at each call, so a request after a sidecar
+    restart gets the new secret. If the file cannot be read, the request has
+    no header, the sidecar answers 401, and the caller logs the status, as
+    for each other failure. The secret is not logged, and the sync child
+    gets it on stdin, not in argv.
+
+    Tests: `host-api-auth.test.ts`, the #3379 cases in `ratelimit.test.ts`
+    and `session-sync.test.ts`. The child sidecar of `session-sync.test.ts`
+    answers 401 to a wrong secret, as the prism sidecar does.
 
 ## Port procedure for future upstream fixes
 

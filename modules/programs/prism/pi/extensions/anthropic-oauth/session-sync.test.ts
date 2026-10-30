@@ -14,12 +14,13 @@
 import { describe, it, beforeEach, afterEach } from "node:test"
 import assert from "node:assert/strict"
 import { spawn, type ChildProcess } from "node:child_process"
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
+import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
+import { HOST_API_SECRET_FILE, HOST_API_SECRET_HEADER } from "./host-api-auth.ts"
 import {
   SESSION_SYNC_ENV,
   SESSION_SYNC_PATH,
@@ -44,7 +45,7 @@ afterEach(() => {
 interface FakeSidecar {
   server: Server
   socket: string
-  requests: { method: string; url: string; body: string }[]
+  requests: { method: string; url: string; body: string; secret?: string }[]
   close(): Promise<void>
 }
 
@@ -56,7 +57,13 @@ function fakeSidecar(name: string, handle: (res: ServerResponse) => void): Promi
     let body = ""
     req.on("data", (c) => (body += c))
     req.on("end", () => {
-      requests.push({ method: req.method ?? "", url: req.url ?? "", body })
+      const secret = req.headers[HOST_API_SECRET_HEADER]
+      requests.push({
+        method: req.method ?? "",
+        url: req.url ?? "",
+        body,
+        ...(typeof secret === "string" ? { secret } : {}),
+      })
       handle(res)
     })
   })
@@ -97,6 +104,7 @@ describe("sessionSyncURL", () => {
       host: "prism-hostapi",
       method: "POST",
       path: SESSION_SYNC_PATH,
+      headers: {},
     })
     const tcp = sessionSyncRequestOptions("http://127.0.0.1:4321")
     assert.equal(tcp?.hostname, "127.0.0.1")
@@ -113,6 +121,17 @@ describe("syncSessionAuth", () => {
     try {
       assert.equal(await syncSessionAuth("pull", { apiURL: `unix://${sidecar.socket}` }), true)
       assert.deepEqual(sidecar.requests, [{ method: "POST", url: SESSION_SYNC_PATH, body: "" }])
+    } finally {
+      await sidecar.close()
+    }
+  })
+
+  it("sends the host-API secret from hostapi.secret next to the socket (#3379)", async () => {
+    const sidecar = await fakeSidecar("auth", (res) => res.end('{"ok":true}'))
+    try {
+      writeFileSync(join(tempDir, HOST_API_SECRET_FILE), "0123abcd\n")
+      assert.equal(await syncSessionAuth("pull", { apiURL: `unix://${sidecar.socket}` }), true)
+      assert.equal(sidecar.requests[0]?.secret, "0123abcd")
     } finally {
       await sidecar.close()
     }
@@ -140,11 +159,19 @@ describe("syncSessionAuth", () => {
 })
 
 // The sync form blocks the event loop, so its sidecar runs in a child.
+// When the secret file next to the socket exists, the child answers 401 to a
+// request without that secret, as the prism sidecar does.
 const SIDECAR_CHILD = `
 const http = require("node:http")
+const fs = require("node:fs")
+const path = require("node:path")
 const [socket, status, ready] = process.argv.slice(1)
-http.createServer((req, res) => { res.statusCode = Number(status); res.end("{}") })
-  .listen(socket, () => require("node:fs").writeFileSync(ready, ""))
+const secretFile = path.join(path.dirname(socket), ${JSON.stringify(HOST_API_SECRET_FILE)})
+http.createServer((req, res) => {
+  const want = fs.existsSync(secretFile) ? fs.readFileSync(secretFile, "utf8").trim() : ""
+  res.statusCode = want !== "" && req.headers[${JSON.stringify(HOST_API_SECRET_HEADER)}] !== want ? 401 : Number(status)
+  res.end("{}")
+}).listen(socket, () => fs.writeFileSync(ready, ""))
 `
 
 async function childSidecar(status: number): Promise<{ socket: string; child: ChildProcess }> {
@@ -171,6 +198,30 @@ describe("syncSessionAuthSync", () => {
     } finally {
       ok.child.kill()
       failing.child.kill()
+    }
+  })
+
+  it("sends the host-API secret from the child process (#3379)", async () => {
+    const ok = await childSidecar(200)
+    const secretPath = join(tempDir, HOST_API_SECRET_FILE)
+    try {
+      writeFileSync(secretPath, "0123abcd\n")
+      assert.equal(syncSessionAuthSync("pull", { apiURL: `unix://${ok.socket}` }), true)
+      // The paired negative: the child refuses a wrong secret, so the pass
+      // above is the header.
+      const options = sessionSyncRequestOptions(`unix://${ok.socket}`)
+      writeFileSync(secretPath, "another\n")
+      const refused = await new Promise<number>((resolve) => {
+        const req = httpRequest({ ...options!, headers: { [HOST_API_SECRET_HEADER]: "0123abcd" } }, (res) => {
+          res.resume()
+          resolve(res.statusCode ?? 0)
+        })
+        req.on("error", () => resolve(-1))
+        req.end()
+      })
+      assert.equal(refused, 401)
+    } finally {
+      ok.child.kill()
     }
   })
 })

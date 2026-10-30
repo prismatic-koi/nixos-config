@@ -89,7 +89,7 @@ func startWorkerSidecarWithSocket(t *testing.T, workerSession string, d *db.DB, 
 	if err != nil {
 		t.Fatalf("listen unix %s: %v", sockPath, err)
 	}
-	srv := &http.Server{Handler: sc.hostAPIHandler()}
+	srv := &http.Server{Handler: sc.hostAPIRoutes()}
 	go func() { _ = srv.Serve(ln) }()
 
 	cleanup := func() {

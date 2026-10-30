@@ -38,6 +38,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/harness"
 	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/hostapiauth"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/review"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
@@ -2017,6 +2018,7 @@ func removeContainerIfExists(sessionName string) {
 	// here prevents accumulated empty dirs.
 	if sockPath, err := prismSession.SidecarHostAPIPath(sessionName); err == nil {
 		_ = os.Remove(sockPath)
+		_ = os.Remove(hostapiauth.SecretPath(sockPath))
 		// Also remove the agent-run log from the same per-session directory so
 		// the directory can be cleaned up without leaving orphaned files.
 		if agentRunLogPath, arErr := prismSession.AgentRunLogPath(sessionName); arErr == nil {

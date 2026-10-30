@@ -82,6 +82,52 @@ func TestGenerateProfile_NoRunDirNodeDenyWithoutHostAPISock(t *testing.T) {
 	}
 }
 
+// TestGenerateProfile_HostAPISockDeny asserts the section-21o deny of each
+// write of the hostapi.sock path, as a literal, so the session cannot put a
+// symlink to the socket of another session there (#3379). The other files of
+// the run dir keep the section-6 grant.
+func TestGenerateProfile_HostAPISockDeny(t *testing.T) {
+	m, profile := newTmpDirProfile(t, "instance-a")
+	want := "(deny file-write*\n  (literal " + quoteSBPL(m.cfg.HostAPISockPath) + "))\n"
+	if n := strings.Count(profile, want); n != 1 {
+		t.Errorf("profile holds the section-21o hostapi.sock deny %d times, want 1:\n%s\nprofile:\n%s", n, want, profile)
+	}
+	if strings.Contains(profile, "(deny file-write*\n  (subpath "+quoteSBPL(runDirOf(m))+")") {
+		t.Errorf("profile denies each write in the run dir, not only the hostapi.sock path:\n%s", profile)
+	}
+}
+
+// TestGenerateProfile_HostAPISockDenyFollowsEveryAllow pins the order: SBPL
+// resolves a conflict in favour of the later rule, so the section-21o deny
+// must follow the section-6 grant and every other allow.
+func TestGenerateProfile_HostAPISockDenyFollowsEveryAllow(t *testing.T) {
+	m, profile := newTmpDirProfile(t, "instance-a")
+	denyIdx := strings.Index(profile, hostAPISockDeny(m.cfg.HostAPISockPath))
+	lastAllow := strings.LastIndex(profile, "(allow ")
+	if denyIdx < 0 {
+		t.Fatalf("profile missing the section-21o hostapi.sock deny:\n%s", profile)
+	}
+	if denyIdx < lastAllow {
+		t.Errorf("section-21o hostapi.sock deny (idx %d) precedes an allow (idx %d); SBPL would outrank the deny", denyIdx, lastAllow)
+	}
+}
+
+// TestGenerateProfile_HostAPISockDenyBothVarForms: a hostapi.sock under /var
+// gets the deny in both /var symlink forms.
+func TestGenerateProfile_HostAPISockDenyBothVarForms(t *testing.T) {
+	sock := "/var/folders/zz/abcdef/T/state/prism/run/abc/hostapi.sock"
+	m := newSandboxExecManager(Config{
+		SessionName:     "repo@main",
+		InstanceID:      "instance-a",
+		Worktree:        "/Users/prism-test/code/repo/main",
+		HostAPISockPath: sock,
+	})
+	want := "(deny file-write*\n  (literal " + quoteSBPL("/private"+sock) + ")\n  (literal " + quoteSBPL(sock) + "))\n"
+	if profile := generateProfile(m); !strings.Contains(profile, want) {
+		t.Errorf("profile missing the section-21o deny in both /var forms:\n%s\nprofile:\n%s", want, profile)
+	}
+}
+
 // TestPrepareVolumeDirs_RefusesSymlinkedRunDir: a run dir that is a symlink,
 // for example to the run dir of another session, fails the prepare, and no
 // file is made in the other run dir. A missing run dir is made.

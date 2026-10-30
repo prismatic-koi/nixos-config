@@ -258,7 +258,7 @@ func TestHostAPI_ExecContext_KillsChildOnCancel(t *testing.T) {
 			// pid file before triggering cancellation. A direct
 			// runWithCancelledContext call cancels on a timer, which races
 			// with stub startup on a loaded test runner.
-			handler := sc.hostAPIHandler()
+			handler := sc.hostAPIRoutes()
 			req := newHostAPIRequest(t, tc.method, tc.path, tc.body)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()

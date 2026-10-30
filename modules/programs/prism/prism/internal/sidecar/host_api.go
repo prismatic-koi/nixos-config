@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -25,6 +24,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/feedback"
 	"github.com/prismatic-koi/prism/internal/harness"
+	"github.com/prismatic-koi/prism/internal/hostapiauth"
 	investigatepkg "github.com/prismatic-koi/prism/internal/investigate"
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
 	"github.com/prismatic-koi/prism/internal/review"
@@ -200,14 +200,24 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 	}
 }
 
-// HostAPIHandlerForTest returns the host-API handler of s, so a test in
-// another package can drive it with a real CLI client. Production code
-// serves the handler through the host-API listener only.
+// HostAPIHandlerForTest returns the host-API routes of s without the
+// credential check (hostAPIRoutes), so a test in another package can drive
+// them with a real CLI client. Production code serves hostAPIHandler, which
+// has the check, through the host-API listener only.
 func (s *Sidecar) HostAPIHandlerForTest() http.Handler {
-	return s.hostAPIHandler()
+	return s.hostAPIRoutes()
 }
 
-// hostAPIHandler returns an http.Handler that exposes host-side tmux operations
+// hostAPIHandler returns the handler that each host-API listener serves: the
+// routes of hostAPIRoutes behind the credential check of
+// requireHostAPICredential (#3379). Do not serve hostAPIRoutes directly: the
+// role gates in it assume that the caller is the session of this sidecar,
+// and only the credential check proves that.
+func (s *Sidecar) hostAPIHandler() http.Handler {
+	return s.requireHostAPICredential(s.hostAPIRoutes())
+}
+
+// hostAPIRoutes returns an http.Handler that exposes host-side tmux operations
 // to agents running inside the container via a Unix socket. Routes:
 //
 //	POST /spawn         — spawn a new worktree session (coordinator only)
@@ -269,7 +279,9 @@ func (s *Sidecar) HostAPIHandlerForTest() http.Handler {
 // Role-based permissions are enforced based on s.cfg.AgentRole and
 // s.cfg.SessionName. Workers have restricted access; coordinators have broader
 // access. All denied requests return HTTP 403 with a structured JSON error.
-func (s *Sidecar) hostAPIHandler() http.Handler {
+// These gates are correct only behind requireHostAPICredential: see
+// hostAPIHandler.
+func (s *Sidecar) hostAPIRoutes() http.Handler {
 	mux := http.NewServeMux()
 
 	// writeJSON writes a JSON response with the given status code.
@@ -310,9 +322,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	}
 
 	// requireCoordinator checks that the calling sidecar is a coordinator
-	// session. Returns false and writes HTTP 403 if not. It delegates to
-	// callerHasCoordinatorRole (helpers.go), which reads the start config of
-	// this sidecar first:
+	// session. Returns false and writes HTTP 403 if not. The caller is the
+	// session of this sidecar because requireHostAPICredential admitted it
+	// (#3379). It delegates to callerHasCoordinatorRole (helpers.go), which
+	// reads the start config of this sidecar first:
 	//
 	//   - Config.AgentRole "coordinator" admits the caller.
 	//   - Any other non-empty Config.AgentRole denies the caller, whatever
@@ -2864,8 +2877,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//   - session must be non-empty (400).
 	//   - Caller check: session must be the session of this sidecar,
 	//     s.cfg.SessionName (403). This applies to every role, the
-	//     coordinator included. The per-session socket is the identity of the
-	//     caller, so a caller can write lifecycle rows only for itself.
+	//     coordinator included. requireHostAPICredential makes the caller
+	//     the session of this sidecar, so a caller can write lifecycle rows
+	//     only for itself.
 	//   - Arg allowlist: each args key must be in eventArgAllowlist for the
 	//     kind (400):
 	//       state-change        state, worktree
@@ -4549,13 +4563,11 @@ func dialUnixAndPost(sockPath, path string, body any) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
+	// The transport sends the host-API secret of the target session, which
+	// this host-side process reads next to sockPath (#3379).
 	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", sockPath)
-			},
-		},
-		Timeout: 5 * time.Second,
+		Transport: hostapiauth.UnixTransport(sockPath, nil),
+		Timeout:   5 * time.Second,
 	}
 	resp, err := client.Post("http://prism-sidecar"+path, "application/json", bytes.NewReader(b))
 	if err != nil {

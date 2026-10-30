@@ -23,11 +23,14 @@
 // The sync does nothing unless PRISM_PI_AUTH_SYNC is "1" and PRISM_HOST_API
 // is set. prism sets both in a sandbox that has a per-session auth.json. A
 // failed sync is logged and does not stop the refresh: the refresh then
-// runs as before #3295. No call sends or logs a credential: the request has
-// no body, and the sidecar reads the files itself.
+// runs as before #3295. The request has no body, and the sidecar reads the
+// files itself. The only secret that a call sends is the host-API credential
+// of the session, in a header (host-api-auth.ts). No call logs it. The sync
+// form gives it to its child on stdin, not in argv.
 
 import { execFileSync } from "node:child_process"
 import { request as httpRequest, type RequestOptions } from "node:http"
+import { hostApiAuthHeaders } from "./host-api-auth.ts"
 import { log } from "./logger.ts"
 
 // Go copy: PIAuthSyncPath and PIAuthSyncEnvVar in
@@ -59,13 +62,21 @@ export function sessionSyncURL(opts: SessionSyncOptions = {}): string | null {
 /**
  * node:http options for POST /pi-auth/sync, or null for a PRISM_HOST_API
  * value of another shape. The same shapes as ratelimit.ts: unix:///path on
- * Linux and Darwin, and http://host:port.
+ * Linux and Darwin, and http://host:port. A unix:// request carries the
+ * host-API credential (host-api-auth.ts). An http:// request has none, and
+ * the sidecar refuses it.
  */
 export function sessionSyncRequestOptions(apiURL: string): RequestOptions | null {
   if (apiURL.startsWith("unix://")) {
     const socketPath = apiURL.slice("unix://".length)
     if (socketPath === "") return null
-    return { socketPath, host: "prism-hostapi", method: "POST", path: SESSION_SYNC_PATH }
+    return {
+      socketPath,
+      host: "prism-hostapi",
+      method: "POST",
+      path: SESSION_SYNC_PATH,
+      headers: hostApiAuthHeaders(socketPath),
+    }
   }
   if (apiURL.startsWith("http://")) {
     let url: URL

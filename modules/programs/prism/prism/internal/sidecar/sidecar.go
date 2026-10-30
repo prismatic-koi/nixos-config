@@ -46,6 +46,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -55,6 +56,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/hostapiauth"
 	"github.com/prismatic-koi/prism/internal/mergequeue"
 	"github.com/prismatic-koi/prism/internal/payload"
 	"github.com/prismatic-koi/prism/internal/prismcontainer"
@@ -489,6 +491,9 @@ type Sidecar struct {
 	// hostAPITCPSrv is the HTTP server for the host-API TCP listener (Darwin only).
 	// Stored so Shutdown() can drain in-flight requests gracefully. Protected by mu.
 	hostAPITCPSrv *http.Server
+	// hostAPISecret is the host-API credential of this sidecar
+	// (host_api_auth.go). Run stores it before it binds the socket.
+	hostAPISecret atomic.Pointer[string]
 	// binaryStaleOnce and binaryStaleDiag hold the prism-binary
 	// staleness check's process-scoped result. Deliberately fields on
 	// *Sidecar rather than a closure-local var inside hostAPIHandler():
@@ -911,10 +916,11 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// unusual state, but checking both is cheap (one fast dial each) and gives
 	// defence-in-depth.
 	logf := func(format string, args ...any) { s.logger().Printf(format, args...) }
-	// The sandbox of the session can write its run dir. Refuse a run dir that
-	// is a symlink, for example to the run dir of another session, before the
-	// duplicate-start dial: the dial follows the symlink, and the remove and
-	// the bind below then act on the hostapi.sock of the other session (#3373).
+	// The sandbox of the session can write its run dir. Refuse a run dir or a
+	// hostapi.sock that is a symlink, for example to the run dir or the socket
+	// of another session, before the duplicate-start dial: the dial follows
+	// the symlink, and the remove and the bind below then act on the
+	// hostapi.sock of the other session (#3373, #3379).
 	if err := s.checkRunDirs(); err != nil {
 		s.logger().Printf("%v", err)
 		return err
@@ -961,6 +967,13 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		if err := rundir.EnsureDir(filepath.Dir(s.cfg.HostAPISockPath)); err != nil {
 			s.logger().Printf("sidecar: host-API socket dir: %v", err)
 			return fmt.Errorf("sidecar: host-API socket dir: %w", err)
+		}
+		// Each request must carry this secret (requireHostAPICredential).
+		// Without a secret the sidecar refuses every request, so a failed
+		// write is fatal, the same as a failed bind.
+		if err := s.writeHostAPISecret(); err != nil {
+			s.logger().Printf("%v", err)
+			return err
 		}
 		_ = os.Remove(s.cfg.HostAPISockPath)
 		ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
@@ -1401,6 +1414,7 @@ func (s *Sidecar) Shutdown() {
 	}
 	if ln != nil {
 		_ = os.Remove(s.cfg.HostAPISockPath)
+		_ = os.Remove(hostapiauth.SecretPath(s.cfg.HostAPISockPath))
 		// Also remove the per-session socket directory. os.Remove only succeeds
 		// when the directory is empty (which it is after the socket file is
 		// removed), so this is safe.

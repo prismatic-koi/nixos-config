@@ -31,6 +31,7 @@
 
 import { request as httpRequest } from "node:http"
 import type { ClientRequest, RequestOptions } from "node:http"
+import { hostApiAuthHeaders } from "./host-api-auth.ts"
 import { log } from "./logger.ts"
 
 /**
@@ -317,7 +318,9 @@ export function parseUnifiedRateLimitHeaders(
  * Mirrors `cmd/hostapi.go::proxyToHostAPI`: `unix:///path/to/sock` on Linux
  * (dialled through `socketPath`, with a placeholder Host header) and
  * `http://host:port` on the Darwin TCP path (where the endpoint path is
- * appended to the base URL).
+ * appended to the base URL). A unix:// request carries the host-API
+ * credential (host-api-auth.ts). An http:// request has none, and the
+ * sidecar refuses it.
  */
 export function buildSnapshotRequestOptions(
   apiURL: string,
@@ -334,7 +337,7 @@ export function buildSnapshotRequestOptions(
       host: "prism-hostapi",
       method: "POST",
       path: USAGE_SNAPSHOT_PATH,
-      headers,
+      headers: { ...headers, ...hostApiAuthHeaders(socketPath) },
     }
   }
 
@@ -364,8 +367,9 @@ export function buildSnapshotRequestOptions(
  * because a failed usage capture must not disturb the request that produced
  * it.
  *
- * The body carries only the parsed header fields. No credential material is
- * read, sent, or logged: the failure logs record a status code or an error
+ * The body carries only the parsed header fields. The only secret that the
+ * request carries is the host-API credential of the session, in a header
+ * (host-api-auth.ts). The failure logs record a status code or an error
  * message, never the request headers.
  */
 export function sendSnapshot(

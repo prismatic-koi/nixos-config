@@ -4813,10 +4813,10 @@ func TestTtft_NoTimeStart(t *testing.T) {
 
 // ── Host-API handler tests ────────────────────────────────────────────────────
 //
-// These tests exercise the hostAPIHandler() method directly, without starting
+// These tests exercise the hostAPIRoutes() method directly, without starting
 // a real Unix socket server. They use httptest.NewRecorder to capture responses.
 
-// newHostAPIRequest builds an http.Request for the hostAPIHandler tests.
+// newHostAPIRequest builds an http.Request for the hostAPIRoutes tests.
 func newHostAPIRequest(t *testing.T, method, path, body string) *http.Request {
 	t.Helper()
 	var bodyReader io.Reader
@@ -4833,10 +4833,10 @@ func newHostAPIRequest(t *testing.T, method, path, body string) *http.Request {
 	return req
 }
 
-// doHostAPI sends a request to the hostAPIHandler and returns the response recorder.
+// doHostAPI sends a request to the hostAPIRoutes handler and returns the response recorder.
 func doHostAPI(t *testing.T, sc *Sidecar, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	req := newHostAPIRequest(t, method, path, body)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)

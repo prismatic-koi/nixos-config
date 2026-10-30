@@ -33,6 +33,28 @@ var ErrSymlinkDir = errors.New("the dir is a symlink")
 // file.
 var ErrNotRegular = errors.New("not a regular file")
 
+// ErrSymlink is wrapped by the error for a path that is a symlink.
+var ErrSymlink = errors.New("the path is a symlink")
+
+// RefuseSymlink returns an error that wraps ErrSymlink when path is a
+// symlink, and an error that wraps ErrSymlinkDir when the dir of path is a
+// symlink. The error names the path. It returns nil for a missing path.
+//
+// A connect to a Unix socket follows a symlink, and no flag stops that. So a
+// host-side bind or connect at a path in the run dir calls this first
+// (#3379). The check and the connect are two steps: a sandbox that can
+// write the dir can put a symlink between them. It is a second layer, and
+// the host-API credential is the first.
+func RefuseSymlink(path string) error {
+	if err := RefuseSymlinkDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("refusing %s: %w", path, ErrSymlink)
+	}
+	return nil
+}
+
 // RefuseSymlinkDir returns an error that wraps ErrSymlinkDir when dir is a
 // symlink. It makes nothing, and it returns nil for a missing dir.
 func RefuseSymlinkDir(dir string) error {

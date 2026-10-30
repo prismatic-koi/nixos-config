@@ -4,7 +4,7 @@ package sidecar
 //
 // The endpoint accepts a feedback.Entry JSON body, appends it to the host
 // feedback.jsonl, and returns the resolved path. These tests exercise the
-// handler directly via hostAPIHandler() without a real Unix socket.
+// handler directly via hostAPIRoutes() without a real Unix socket.
 //
 // The store path is redirected to a t.TempDir() via XDG_STATE_HOME so the
 // tests pass inside the nix-build sandbox where HOME=/homeless-shelter is

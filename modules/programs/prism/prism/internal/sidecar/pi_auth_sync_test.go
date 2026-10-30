@@ -119,7 +119,7 @@ func readAccess(t *testing.T, path string) string {
 func (e piAuthSidecarEnv) post(t *testing.T, method string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	e.s.hostAPIHandler().ServeHTTP(rec, httptest.NewRequest(method, "/pi-auth/sync", nil))
+	e.s.hostAPIRoutes().ServeHTTP(rec, httptest.NewRequest(method, "/pi-auth/sync", nil))
 	return rec
 }
 

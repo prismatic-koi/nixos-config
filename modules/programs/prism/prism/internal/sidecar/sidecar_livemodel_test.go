@@ -164,7 +164,7 @@ func TestHostAPI_SetModel_OwnSession(t *testing.T) {
 	rd := bufio.NewReader(conn)
 
 	// POST /set-model via the handler directly.
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/set-model", map[string]any{
 		"session":  sc.cfg.SessionName,
 		"provider": "anthropic",
@@ -208,7 +208,7 @@ func TestHostAPI_SetModel_WorkerRejectedForOtherSession(t *testing.T) {
 	sc.cfg.HarnessName = "pi"
 	// Do NOT start runSocketPipeSidecar — we only need the handler.
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/set-model", map[string]any{
 		"session":  "otherrepo@other-branch",
 		"provider": "anthropic",
@@ -245,7 +245,7 @@ func TestHostAPI_SetModel_DisconnectedSession(t *testing.T) {
 	sc := New(cfg)
 	// harnessPipeOutCh is nil — pipe not connected.
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/set-model", map[string]any{
 		"session":  sc.cfg.SessionName,
 		"provider": "anthropic",
@@ -288,7 +288,7 @@ func TestHostAPI_ApplyProfile_SessionScope(t *testing.T) {
 	}
 	defer func() { hostAPILoadProfiles = origLoader }()
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/apply-profile", map[string]any{
 		"profile": "alt",
 		"scope":   "session",
@@ -375,7 +375,7 @@ func TestHostAPI_ApplyProfile_SkipsNoMatchingSlot(t *testing.T) {
 	}
 	defer func() { hostAPISocketPath = origSocketPath }()
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/apply-profile", map[string]any{
 		"profile": "sparse",
 		"scope":   "session",
@@ -419,7 +419,7 @@ func TestHostAPI_ApplyProfile_GlobalScopeRejectedByWorker(t *testing.T) {
 	}
 	sc := New(cfg)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/apply-profile", map[string]any{
 		"profile": "alt",
 		"scope":   "global",
@@ -449,7 +449,7 @@ func TestHostAPI_ApplyProfile_CoordinatorScopeRejectedByWorker(t *testing.T) {
 	}
 	sc := New(cfg)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/apply-profile", map[string]any{
 		"profile": "alt",
 		"scope":   "coordinator",
@@ -473,7 +473,7 @@ func TestHostAPI_RegisterProvider_OwnSession(t *testing.T) {
 	conn, _ := dialAndHandshake(t, sockPath)
 	rd := bufio.NewReader(conn)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/register-provider", map[string]any{
 		"name":    "my-proxy",
 		"config":  map[string]any{"base_url": "http://localhost:9000", "api_key": "test"},
@@ -642,7 +642,7 @@ func TestHostAPI_ApplyProfile_FanOut(t *testing.T) {
 	}
 	sc := New(cfg)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/apply-profile", map[string]any{
 		"profile": "alt",
 		"scope":   "coordinator",

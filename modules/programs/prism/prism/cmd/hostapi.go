@@ -28,12 +28,24 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/hostapiauth"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
 	"github.com/prismatic-koi/prism/internal/sidecar"
 )
 
 // newHostAPIClient returns an *http.Client that dials sockPath over a Unix
 // socket. Used when PRISM_HOST_API begins with "unix://".
+func newHostAPIClient(sockPath string) *http.Client {
+	return &http.Client{
+		Transport: hostAPIUnixTransport(sockPath),
+		Timeout:   60 * time.Second,
+	}
+}
+
+// hostAPIUnixTransport is the transport of each host-API client of the CLI.
+// Each request carries the secret in hostapi.secret next to sockPath, and
+// the sidecar refuses a request without it (hostapiauth, #3379). The dial
+// refuses a sockPath that is a symlink.
 //
 // Tombstone hygiene: when the dial returns ECONNREFUSED and the socket file
 // still exists on disk, the sidecar process has exited abnormally without
@@ -41,28 +53,18 @@ import (
 // user sees "sidecar has exited" rather than the raw "connection refused" with
 // no additional context. This is the client-side branch of the tombstone
 // hygiene.
-func newHostAPIClient(sockPath string) *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				d := &net.Dialer{Timeout: 5 * time.Second}
-				conn, dialErr := d.DialContext(ctx, "unix", sockPath)
-				if dialErr != nil {
-					// Check for the tombstone case: socket file exists on disk
-					// but connect() returned ECONNREFUSED — the sidecar has
-					// exited abnormally without cleaning up the socket file.
-					// Surface a more informative error than the raw syscall
-					// message so diagnostics are immediately actionable.
-					if isStaleTombstoneSocket(sockPath, dialErr) {
-						return nil, fmt.Errorf("host-API socket at %s is a stale tombstone — sidecar has exited without cleanup (ECONNREFUSED on existing socket file): %w", sockPath, dialErr)
-					}
-					return nil, fmt.Errorf("host-API socket not available at %s: %w", sockPath, dialErr)
-				}
-				return conn, nil
-			},
-		},
-		Timeout: 60 * time.Second,
-	}
+func hostAPIUnixTransport(sockPath string) http.RoundTripper {
+	return hostapiauth.UnixTransport(sockPath, func(ctx context.Context) (net.Conn, error) {
+		d := &net.Dialer{Timeout: 5 * time.Second}
+		conn, dialErr := hostapiauth.DialUnix(ctx, d, sockPath)
+		if dialErr != nil {
+			if isStaleTombstoneSocket(sockPath, dialErr) {
+				return nil, fmt.Errorf("host-API socket at %s is a stale tombstone — sidecar has exited without cleanup (ECONNREFUSED on existing socket file): %w", sockPath, dialErr)
+			}
+			return nil, fmt.Errorf("host-API socket not available at %s: %w", sockPath, dialErr)
+		}
+		return conn, nil
+	})
 }
 
 // isStaleTombstoneSocket returns true when the dial error is ECONNREFUSED and
@@ -79,6 +81,11 @@ func isStaleTombstoneSocket(sockPath string, dialErr error) bool {
 // newTCPHostAPIClient returns a standard *http.Client that dials over TCP.
 // Used when PRISM_HOST_API begins with "http://". No custom DialContext is
 // needed — the default transport resolves and dials the host:port from the URL.
+//
+// This route has no socket path, so it sends no host-API credential, and the
+// sidecar refuses each request. No current isolation mode sets an http://
+// PRISM_HOST_API (container.Capabilities.OwnsContainerLifecycle is false for
+// each mode).
 func newTCPHostAPIClient() *http.Client {
 	return &http.Client{
 		Timeout: 60 * time.Second,
@@ -713,20 +720,8 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, 
 			return "", fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, parseErr)
 		}
 		client = &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					d := &net.Dialer{Timeout: 5 * time.Second}
-					conn, dialErr := d.DialContext(ctx, "unix", sockPath)
-					if dialErr != nil {
-						if isStaleTombstoneSocket(sockPath, dialErr) {
-							return nil, fmt.Errorf("host-API socket at %s is a stale tombstone — sidecar has exited without cleanup (ECONNREFUSED on existing socket file): %w", sockPath, dialErr)
-						}
-						return nil, fmt.Errorf("host-API socket not available at %s: %w", sockPath, dialErr)
-					}
-					return conn, nil
-				},
-			},
-			Timeout: 0, // no global timeout; context deadline governs
+			Transport: hostAPIUnixTransport(sockPath),
+			Timeout:   0, // no global timeout; context deadline governs
 		}
 		reqURL = "http://prism-hostapi/review"
 	}

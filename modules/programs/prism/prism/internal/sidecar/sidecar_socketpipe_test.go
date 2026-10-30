@@ -3212,7 +3212,7 @@ func TestControlPlane_QueueFull_SetModel(t *testing.T) {
 	sc := newQueueFullSidecar(t)
 	getLogs := captureLog(sc)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/set-model", map[string]any{
 		"session":  sc.cfg.SessionName,
 		"provider": "anthropic",
@@ -3239,7 +3239,7 @@ func TestControlPlane_HappyPath_SetModel(t *testing.T) {
 	conn, _ := dialAndHandshake(t, sockPath)
 	rd := bufio.NewReader(conn)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/set-model", map[string]any{
 		"session":  sc.cfg.SessionName,
 		"provider": "anthropic",
@@ -3266,7 +3266,7 @@ func TestControlPlane_QueueFull_RegisterProvider(t *testing.T) {
 	sc := newQueueFullSidecar(t)
 	getLogs := captureLog(sc)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/register-provider", map[string]any{
 		"session": sc.cfg.SessionName,
 		"name":    "my-provider",
@@ -3294,7 +3294,7 @@ func TestControlPlane_HappyPath_RegisterProvider(t *testing.T) {
 	conn, _ := dialAndHandshake(t, sockPath)
 	rd := bufio.NewReader(conn)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/register-provider", map[string]any{
 		"session": sc.cfg.SessionName,
 		"name":    "my-provider",
@@ -3321,7 +3321,7 @@ func TestControlPlane_QueueFull_SetActiveTools(t *testing.T) {
 	sc := newQueueFullSidecar(t)
 	getLogs := captureLog(sc)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/set-active-tools", map[string]any{
 		"session": sc.cfg.SessionName,
 		"tools":   []string{"bash", "read"},
@@ -3347,7 +3347,7 @@ func TestControlPlane_HappyPath_SetActiveTools(t *testing.T) {
 	conn, _ := dialAndHandshake(t, sockPath)
 	rd := bufio.NewReader(conn)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/set-active-tools", map[string]any{
 		"session": sc.cfg.SessionName,
 		"tools":   []string{"bash", "read"},
@@ -3372,7 +3372,7 @@ func TestControlPlane_QueueFull_Abort(t *testing.T) {
 	sc := newQueueFullSidecar(t)
 	getLogs := captureLog(sc)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/abort", map[string]any{
 		"session": sc.cfg.SessionName,
 	})
@@ -3397,7 +3397,7 @@ func TestControlPlane_HappyPath_Abort(t *testing.T) {
 	conn, _ := dialAndHandshake(t, sockPath)
 	rd := bufio.NewReader(conn)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/abort", map[string]any{
 		"session": sc.cfg.SessionName,
 	})
@@ -3443,7 +3443,7 @@ func TestControlPlane_QueueFull_ApplyProfile(t *testing.T) {
 	}
 	defer func() { hostAPILoadProfiles = origLoader }()
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/apply-profile", map[string]any{
 		"profile": "base",
 		"scope":   "session",
@@ -3464,7 +3464,7 @@ func TestControlPlane_QueueFull_RegisterProviderDirect(t *testing.T) {
 	sc := newQueueFullSidecar(t)
 	getLogs := captureLog(sc)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/register-provider-direct", map[string]any{
 		"session": sc.cfg.SessionName,
 		"name":    "my-provider",

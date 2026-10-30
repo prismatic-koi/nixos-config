@@ -206,8 +206,8 @@ func TestCheckBinaryStale_DedupesAcrossHostAPIHandlerBuilds(t *testing.T) {
 	// Build the host-API handler twice, as Run() does on Darwin in container
 	// mode (Unix listener + TCP listener), and drive one /spawn request
 	// through each.
-	handlerA := sc.hostAPIHandler()
-	handlerB := sc.hostAPIHandler()
+	handlerA := sc.hostAPIRoutes()
+	handlerB := sc.hostAPIRoutes()
 
 	for _, h := range []http.Handler{handlerA, handlerB} {
 		req := newHostAPIRequest(t, http.MethodPost, "/spawn", `{"branch":"feature","prompt":"go"}`)
@@ -242,7 +242,7 @@ func TestHostAPI_Spawn_StaleBinary_LogsOnce(t *testing.T) {
 	// called exactly once per sidecar process, so reuse a single handler
 	// here to exercise "once per process" rather than "once per
 	// hostAPIHandler() call".
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	for i := 0; i < 2; i++ {
 		req := newHostAPIRequest(t, http.MethodPost, "/spawn", `{"branch":"feature","prompt":"go"}`)
 		rr := httptest.NewRecorder()

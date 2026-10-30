@@ -719,7 +719,7 @@ func TestCheckin_PrivilegedAudit_ConcurrentWithSSESessionUpdate(t *testing.T) {
 		Logger:                 log.New(os.Stderr, "", 0),
 		DashboardSink:          NoopDashboardSink(),
 	})
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 
 	// ckAltWorker is a cross-repo non-coordinator, so tier 2 refuses it and only
 	// the tier-3 privilege admits it. Every iteration therefore takes the audit

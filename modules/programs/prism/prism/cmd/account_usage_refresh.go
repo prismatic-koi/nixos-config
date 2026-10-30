@@ -51,6 +51,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/account"
+	"github.com/prismatic-koi/prism/internal/hostapiauth"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
 	"github.com/prismatic-koi/prism/internal/usage"
 )
@@ -397,7 +398,11 @@ func discoverSidecarAPI() (string, error) {
 	sort.Strings(matches)
 
 	for _, sock := range matches {
-		conn, dialErr := net.DialTimeout("unix", sock, sidecarDialTimeout)
+		// hostapiauth.DialUnix also skips a socket path that is a symlink:
+		// the POST below refuses it.
+		ctx, cancel := context.WithTimeout(context.Background(), sidecarDialTimeout)
+		conn, dialErr := hostapiauth.DialUnix(ctx, &net.Dialer{}, sock)
+		cancel()
 		if dialErr != nil {
 			// An absent listener on an existing socket file is a tombstone
 			// from a sidecar that exited without cleanup. Skip it.
