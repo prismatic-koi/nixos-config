@@ -23,6 +23,7 @@ import (
 	pih "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/hostapiauth"
 	"github.com/prismatic-koi/prism/internal/rundir"
+	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sidecar"
 	"github.com/prismatic-koi/prism/internal/sidecar/sidecartest"
 	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
@@ -35,7 +36,9 @@ const (
 
 // startAuthCoordinator runs a coordinator sidecar whose host-API socket is
 // in a short run dir, and returns the socket path. The pipe of the sidecar
-// waits for an agent that never comes, so only the host API serves.
+// waits for an agent that never comes, so only the host API serves. The
+// sidecar gets its instance ID at start: Run sets a missing ID after it
+// binds the socket, and /merges refuses a request before that.
 func startAuthCoordinator(t *testing.T) string {
 	t.Helper()
 	bus := sidecartest.NewIsolated(t, "")
@@ -50,6 +53,7 @@ func startAuthCoordinator(t *testing.T) string {
 	pipe := filepath.Join(runDir, "pipe.sock")
 	sc := sidecar.New(sidecar.Config{
 		SessionName:           haCoord,
+		InstanceID:            "prism-test-3379-" + session.SessionDirName(t.Name()),
 		Repo:                  haRepo,
 		Worktree:              t.TempDir(),
 		DB:                    bus.DB,

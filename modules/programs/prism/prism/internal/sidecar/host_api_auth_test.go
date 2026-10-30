@@ -101,8 +101,8 @@ func newAuthFixture(t *testing.T, mode config.IsolationMode) authFixture {
 	}
 	stub, marker := markerStub(t)
 	return authFixture{
-		coord:  startModeSidecarWith(t, mode, authCoordinator, authRepo, "coordinator", bus.DB, stub, nil),
-		worker: startModeSidecarWith(t, mode, authWorker, authRepo, "worker", bus.DB, stub, nil),
+		coord:  startModeSidecarWith(t, mode, authCoordinator, authRepo, "coordinator", bus.DB, stub, nil, "prism-test-3379-coord-"+prismsession.SessionDirName(t.Name())),
+		worker: startModeSidecarWith(t, mode, authWorker, authRepo, "worker", bus.DB, stub, nil, "prism-test-3379-worker-"+prismsession.SessionDirName(t.Name())),
 		marker: marker,
 		db:     bus.DB,
 	}
@@ -340,7 +340,7 @@ func TestHostAPIAuth_NewSecretAtEachStart(t *testing.T) {
 	}
 	var logBuf syncBuffer
 	logger := log.New(&logBuf, "", 0)
-	first := startModeSidecarWith(t, config.IsolationSandboxExec, authWorker, authRepo, "worker", bus.DB, failingStub, logger)
+	first := startModeSidecarWith(t, config.IsolationSandboxExec, authWorker, authRepo, "worker", bus.DB, failingStub, logger, "")
 	secretPath := hostapiauth.SecretPath(first.hostAPISock)
 	info, err := os.Stat(secretPath)
 	if err != nil {
@@ -359,7 +359,7 @@ func TestHostAPIAuth_NewSecretAtEachStart(t *testing.T) {
 		t.Errorf("the secret file is still there after the stop: %v", err)
 	}
 
-	second := startModeSidecarWith(t, config.IsolationSandboxExec, authWorker, authRepo, "worker", bus.DB, failingStub, logger)
+	second := startModeSidecarWith(t, config.IsolationSandboxExec, authWorker, authRepo, "worker", bus.DB, failingStub, logger, "")
 	newSecret := readHostAPISecret(t, second.hostAPISock)
 	if newSecret == oldSecret {
 		t.Fatal("the restarted sidecar wrote the same secret")

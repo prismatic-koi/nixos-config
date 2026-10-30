@@ -63,12 +63,15 @@ type modeSidecar struct {
 // t.Cleanup, before the DB of the caller closes.
 func startModeSidecar(t *testing.T, mode config.IsolationMode, sessionName, repo, role string, d *db.DB) *modeSidecar {
 	t.Helper()
-	return startModeSidecarWith(t, mode, sessionName, repo, role, d, failingStub, nil)
+	return startModeSidecarWith(t, mode, sessionName, repo, role, d, failingStub, nil, "")
 }
 
 // startModeSidecarWith is startModeSidecar with the script of the prism
-// binary stub and the logger of the sidecar (nil for the default logger).
-func startModeSidecarWith(t *testing.T, mode config.IsolationMode, sessionName, repo, role string, d *db.DB, stub string, logger *log.Logger) *modeSidecar {
+// binary stub, the logger of the sidecar (nil for the default logger), and
+// the instance ID ("" to let Run load or mint one). Run sets a missing ID
+// after it binds the socket, so a test that sends /merges at once must give
+// one.
+func startModeSidecarWith(t *testing.T, mode config.IsolationMode, sessionName, repo, role string, d *db.DB, stub string, logger *log.Logger, instanceID string) *modeSidecar {
 	t.Helper()
 
 	hostAPISock, err := prismsession.SidecarHostAPIPath(sessionName)
@@ -90,6 +93,7 @@ func startModeSidecarWith(t *testing.T, mode config.IsolationMode, sessionName, 
 
 	sc := New(Config{
 		SessionName:           sessionName,
+		InstanceID:            instanceID,
 		Repo:                  repo,
 		Worktree:              t.TempDir(),
 		DB:                    d,
