@@ -82,15 +82,15 @@ func TestGenerateProfile_NoRunDirNodeDenyWithoutHostAPISock(t *testing.T) {
 	}
 }
 
-// TestGenerateProfile_HostAPISockDeny asserts the section-21n deny of each
+// TestGenerateProfile_HostAPISockDeny asserts the section-21o deny of each
 // write of the hostapi.sock path, as a literal, so the session cannot put a
 // symlink to the socket of another session there (#3379). The other files of
 // the run dir keep the section-6 grant.
 func TestGenerateProfile_HostAPISockDeny(t *testing.T) {
 	m, profile := newTmpDirProfile(t, "instance-a")
 	want := "(deny file-write*\n  (literal " + quoteSBPL(m.cfg.HostAPISockPath) + "))\n"
-	if !strings.Contains(profile, want) {
-		t.Errorf("profile missing the section-21n hostapi.sock deny:\n%s\nprofile:\n%s", want, profile)
+	if n := strings.Count(profile, want); n != 1 {
+		t.Errorf("profile holds the section-21o hostapi.sock deny %d times, want 1:\n%s\nprofile:\n%s", n, want, profile)
 	}
 	if strings.Contains(profile, "(deny file-write*\n  (subpath "+quoteSBPL(runDirOf(m))+")") {
 		t.Errorf("profile denies each write in the run dir, not only the hostapi.sock path:\n%s", profile)
@@ -98,17 +98,17 @@ func TestGenerateProfile_HostAPISockDeny(t *testing.T) {
 }
 
 // TestGenerateProfile_HostAPISockDenyFollowsEveryAllow pins the order: SBPL
-// resolves a conflict in favour of the later rule, so the section-21n deny
+// resolves a conflict in favour of the later rule, so the section-21o deny
 // must follow the section-6 grant and every other allow.
 func TestGenerateProfile_HostAPISockDenyFollowsEveryAllow(t *testing.T) {
 	m, profile := newTmpDirProfile(t, "instance-a")
 	denyIdx := strings.Index(profile, hostAPISockDeny(m.cfg.HostAPISockPath))
 	lastAllow := strings.LastIndex(profile, "(allow ")
 	if denyIdx < 0 {
-		t.Fatalf("profile missing the section-21n hostapi.sock deny:\n%s", profile)
+		t.Fatalf("profile missing the section-21o hostapi.sock deny:\n%s", profile)
 	}
 	if denyIdx < lastAllow {
-		t.Errorf("section-21n hostapi.sock deny (idx %d) precedes an allow (idx %d); SBPL would outrank the deny", denyIdx, lastAllow)
+		t.Errorf("section-21o hostapi.sock deny (idx %d) precedes an allow (idx %d); SBPL would outrank the deny", denyIdx, lastAllow)
 	}
 }
 
@@ -124,7 +124,7 @@ func TestGenerateProfile_HostAPISockDenyBothVarForms(t *testing.T) {
 	})
 	want := "(deny file-write*\n  (literal " + quoteSBPL("/private"+sock) + ")\n  (literal " + quoteSBPL(sock) + "))\n"
 	if profile := generateProfile(m); !strings.Contains(profile, want) {
-		t.Errorf("profile missing the section-21n deny in both /var forms:\n%s\nprofile:\n%s", want, profile)
+		t.Errorf("profile missing the section-21o deny in both /var forms:\n%s\nprofile:\n%s", want, profile)
 	}
 }
 

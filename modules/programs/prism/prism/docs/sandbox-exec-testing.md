@@ -471,14 +471,14 @@ integration test coverage exists for:
   - Take `file-write-mode` out of the section-21n deny. The chmod works.
 
   See `sandbox_exec_session_work_dir_node_darwin_test.go`.
-- **The hostapi.sock path** — the section-21n deny on each write of the
+- **The hostapi.sock path** — the section-21o deny on each write of the
   `hostapi.sock` path in the run dir (#3379). Under the production profile,
   the session cannot remove or rename its `hostapi.sock`. When the socket
   is absent, the session cannot put a symlink to the socket of another
   session, or a file, at the path. The session still connects to its own
   socket and writes the other files of the run dir.
 
-  The paired negatives strip the section-21n deny. The session then removes
+  The paired negatives strip the section-21o deny. The session then removes
   its `hostapi.sock` and puts a symlink to the socket of a coordinator at the
   path, and sends `GET /merges` through it:
   - To the routes of a coordinator without the host-API credential check
@@ -659,7 +659,7 @@ section-21n deny on the session work dir node. Neither needs a Nix tool.
 Both use the connect probe of #3066 and put the state dir under the real
 home.
 Issue #3379 adds `sandbox_exec_run_dir_hostapi_darwin_test.go`, for the
-section-21n deny on the `hostapi.sock` path and the host-API credential.
+section-21o deny on the `hostapi.sock` path and the host-API credential.
 Its functions are `TestSandboxExecRunDir_HostAPISock*`, so the RunDir
 family of the selector runs them. It needs no Nix tool. It builds a
 CGO-disabled HTTP probe and uses the connect probe of #3066. It runs a real

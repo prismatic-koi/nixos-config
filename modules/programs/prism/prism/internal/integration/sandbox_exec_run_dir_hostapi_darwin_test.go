@@ -6,7 +6,7 @@ package integration_test
 // sandbox-exec session, and the host-API credential (#3379).
 //
 // The session can write its run dir (section 6 of generateProfile). Without
-// section 21n it can remove its hostapi.sock and put a symlink to the
+// section 21o it can remove its hostapi.sock and put a symlink to the
 // hostapi.sock of another session at the path. A Unix-socket connect
 // follows a symlink. If the connect reaches the other sidecar, the other
 // sidecar takes the request as a request of its own session, unless the
@@ -15,7 +15,7 @@ package integration_test
 //   - Under the production profile the session cannot remove, rename, or
 //     make the hostapi.sock path, so it cannot plant the symlink. It can
 //     still connect to its own socket.
-//   - The paired negative takes section 21n out. The plant then works. A
+//   - The paired negative takes section 21o out. The plant then works. A
 //     request through the symlink to the routes of a coordinator without
 //     the credential check (the handler before #3379) does not connect:
 //     the section-17b connect allowlist is checked against the path after
@@ -128,7 +128,7 @@ func buildHostAPIProbe(t *testing.T) string {
 	return bin
 }
 
-// hostAPISockDenyBlock is the section-21n clause for sock. A copy that
+// hostAPISockDenyBlock is the section-21o clause for sock. A copy that
 // drifts from the generator fails the negative tests (mutatedProbeProfiles).
 func hostAPISockDenyBlock(sock string) string {
 	return "(deny file-write*\n  (literal " + sbplQuoteForTest(sock) + "))\n"
@@ -271,21 +271,21 @@ func mutatedProbeProfiles(t *testing.T, m *container.Manager, mutates ...func(st
 	return paths
 }
 
-// without21n removes the section-21n deny of the own hostapi.sock.
-func (fx hostAPISockFixture) without21n(p string) string {
+// without21o removes the section-21o deny of the own hostapi.sock.
+func (fx hostAPISockFixture) without21o(p string) string {
 	return strings.Replace(p, hostAPISockDenyBlock(fx.ownSock), "", 1)
 }
 
-// without21nWith17bCoord removes the section-21n deny, and adds the run dir
+// without21oWith17bCoord removes the section-21o deny, and adds the run dir
 // of the coordinator to the section-17b connect allowlist.
-func (fx hostAPISockFixture) without21nWith17bCoord(p string) string {
+func (fx hostAPISockFixture) without21oWith17bCoord(p string) string {
 	own := "    (require-not (subpath " + sbplQuoteForTest(filepath.Dir(fx.ownSock)) + "))\n"
 	coord := "    (require-not (subpath " + sbplQuoteForTest(filepath.Dir(fx.coordSock)) + "))\n"
 	if !strings.Contains(p, own) {
 		// mutatedProbeProfiles then fails on the unchanged profile.
 		return p
 	}
-	return strings.Replace(fx.without21n(p), own, own+coord, 1)
+	return strings.Replace(fx.without21o(p), own, own+coord, 1)
 }
 
 // connectDenied reports whether the probe output is a connect that the
@@ -296,11 +296,11 @@ func connectDenied(out string) bool {
 
 // plantRedirect runs the session under profilePath: it removes its
 // hostapi.sock and puts a symlink to the coordinator socket at the path.
-// The profile must not hold section 21n.
+// The profile must not hold section 21o.
 func plantRedirect(t *testing.T, profilePath, connectProbe string, fx hostAPISockFixture) {
 	t.Helper()
-	expectOp(t, profilePath, connectProbe, true, "the remove of hostapi.sock still fails without section 21n, so the positive test proves nothing", "--remove", fx.ownSock)
-	expectOp(t, profilePath, connectProbe, true, "the symlink at hostapi.sock still fails without section 21n, so the positive test proves nothing", "--symlink", fx.coordSock, fx.ownSock)
+	expectOp(t, profilePath, connectProbe, true, "the remove of hostapi.sock still fails without section 21o, so the positive test proves nothing", "--remove", fx.ownSock)
+	expectOp(t, profilePath, connectProbe, true, "the symlink at hostapi.sock still fails without section 21o, so the positive test proves nothing", "--symlink", fx.coordSock, fx.ownSock)
 	if target, err := os.Readlink(fx.ownSock); err != nil || target != fx.coordSock {
 		t.Fatalf("hostapi.sock is not a symlink to the coordinator socket after the plant: %q %v", target, err)
 	}
@@ -308,7 +308,7 @@ func plantRedirect(t *testing.T, profilePath, connectProbe string, fx hostAPISoc
 
 // TestSandboxExecRunDir_HostAPISockCannotBeReplaced: under the production
 // profile, the session cannot remove or rename its hostapi.sock (section
-// 21n). When the socket is absent, the session cannot put a symlink to the
+// 21o). When the socket is absent, the session cannot put a symlink to the
 // socket of another session, or a file, at the path. The session can still
 // connect to the socket of its sidecar.
 func TestSandboxExecRunDir_HostAPISockCannotBeReplaced(t *testing.T) {
@@ -329,7 +329,7 @@ func TestSandboxExecRunDir_HostAPISockCannotBeReplaced(t *testing.T) {
 	if after, err := os.Lstat(fx.ownSock); err != nil || !os.SameFile(before, after) {
 		t.Fatalf("hostapi.sock changed after the denied operations: %v", err)
 	}
-	expectConnected(t, profilePath, probe, fx.ownSock, "the section-21n deny stops a connect to the own hostapi.sock")
+	expectConnected(t, profilePath, probe, fx.ownSock, "the section-21o deny stops a connect to the own hostapi.sock")
 
 	// The host removes the socket, as when the sidecar is down. The session
 	// must not make the path.
@@ -341,12 +341,12 @@ func TestSandboxExecRunDir_HostAPISockCannotBeReplaced(t *testing.T) {
 	if _, err := os.Lstat(fx.ownSock); !os.IsNotExist(err) {
 		t.Errorf("the hostapi.sock path exists after the denied operations: %v", err)
 	}
-	expectOp(t, profilePath, probe, true, "the section-21n deny stops a write of another file in the run dir", "--create", filepath.Join(filepath.Dir(fx.ownSock), "agent-run.log"))
+	expectOp(t, profilePath, probe, true, "the section-21o deny stops a write of another file in the run dir", "--create", filepath.Join(filepath.Dir(fx.ownSock), "agent-run.log"))
 }
 
 // TestSandboxExecRunDir_HostAPISockRedirectWithoutDeny is the paired
 // negative of the test above, and the measurement of #3379. With section
-// 21n taken out, the session plants the symlink. It then sends GET /merges,
+// 21o taken out, the session plants the symlink. It then sends GET /merges,
 // a coordinator-only verb, with its own secret through its hostapi.sock, to
 // the routes of a coordinator without the credential check: the handler
 // before #3379.
@@ -363,14 +363,14 @@ func TestSandboxExecRunDir_HostAPISockRedirectWithoutDeny(t *testing.T) {
 	httpProbe := buildHostAPIProbe(t)
 	fx := newHostAPISockFixture(t)
 	serveUnchecked(t, fx.coordSock)
-	profiles := mutatedProbeProfiles(t, fx.m, fx.without21n, fx.without21nWith17bCoord)
+	profiles := mutatedProbeProfiles(t, fx.m, fx.without21o, fx.without21oWith17bCoord)
 	preFix, widened := profiles[0], profiles[1]
 
 	plantRedirect(t, preFix, connectProbe, fx)
 	out, err := runProbe(t, preFix, httpProbe, fx.ownSock, fx.ownSecret, http.MethodGet, "/merges")
 	t.Logf("#3379 pre-fix result: GET /merges through the symlinked hostapi.sock to the coordinator routes without the credential check: exit=%v output=%q", err, strings.TrimSpace(out))
 	if !connectDenied(out) {
-		t.Errorf("GET /merges through the symlink under the profile without section 21n: %q, want a connect that the sandbox refuses", strings.TrimSpace(out))
+		t.Errorf("GET /merges through the symlink under the profile without section 21o: %q, want a connect that the sandbox refuses", strings.TrimSpace(out))
 	}
 
 	out, err = runProbe(t, widened, httpProbe, fx.ownSock, fx.ownSecret, http.MethodGet, "/merges")
@@ -381,7 +381,7 @@ func TestSandboxExecRunDir_HostAPISockRedirectWithoutDeny(t *testing.T) {
 }
 
 // TestSandboxExecRunDir_HostAPISockRedirectRefusedByCredential: with section
-// 21n taken out, the session plants the symlink, as above, but a real
+// 21o taken out, the session plants the symlink, as above, but a real
 // coordinator sidecar, with the credential check, owns the other socket.
 // Under section 17b as it is, no request connects. With the run dir of the
 // coordinator added to section 17b, a request with the secret of the
@@ -394,7 +394,7 @@ func TestSandboxExecRunDir_HostAPISockRedirectRefusedByCredential(t *testing.T) 
 	httpProbe := buildHostAPIProbe(t)
 	fx := newHostAPISockFixture(t)
 	runCoordinator(t, fx.coordSock)
-	profiles := mutatedProbeProfiles(t, fx.m, fx.without21n, fx.without21nWith17bCoord)
+	profiles := mutatedProbeProfiles(t, fx.m, fx.without21o, fx.without21oWith17bCoord)
 	preFix, widened := profiles[0], profiles[1]
 
 	expectOp(t, widened, connectProbe, false, "the session read the host-API secret of the coordinator", "--read", fx.coordSecret)
