@@ -336,11 +336,13 @@ open for it.
      known limits remain (a filter or diff driver reached through a planted
      `.gitattributes` or `info/attributes`, a merge driver that
      `merge=<name>` or a planted `merge.default` selects on a typed pull,
-     merge, or rebase with a conflict, a planted `gc.recentObjectsHook`
-     that auto maintenance runs after a typed commit or fetch, the tool
-     selectors of a typed `git help`/`git difftool`/`git mergetool`, and
-     URL- or remote-named keys, `remote.<name>.vcs` included). #3346 tracks
-     them — see `docs/invariants/user-git-overrides.md`.
+     merge, or rebase with a conflict, the tool selectors of a typed
+     `git help`/`git difftool`/`git mergetool`, and URL- or remote-named
+     keys, `remote.<name>.vcs` included). #3346 tracks them — see
+     `docs/invariants/user-git-overrides.md`. #3355 pins
+     `maintenance.auto = false`, so a planted `gc.recentObjectsHook` no
+     longer runs through auto maintenance, and `protocol.file.allow = never`
+     refuses a local-path remote.
 
 2. **A worker can move `.bare/refs/heads/main` or another worktree's branch
    ref — in scope, tracked by #3334.** This changes another session or the

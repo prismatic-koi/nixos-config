@@ -1,6 +1,6 @@
 # Invariant: host git commands
 
-<!-- doclint-ignore: .bare/commondir, .bare/config, .bare/hooks, .bare/worktrees, core.hooksPath, core.fsmonitor, core.sshCommand, credential.helper, extensions.worktreeConfig, config.worktree, submodule.recurse, fetch.recurseSubmodules, push.recurseSubmodules, diff.ignoreSubmodules, protocol.ext.allow, GIT_CONFIG_PARAMETERS, GIT_PAGER, gitdir, commondir, rebase-merge/autostash, info/attributes, b:git_dir -->
+<!-- doclint-ignore: .bare/commondir, .bare/config, .bare/hooks, .bare/worktrees, core.hooksPath, core.fsmonitor, core.sshCommand, credential.helper, extensions.worktreeConfig, config.worktree, submodule.recurse, fetch.recurseSubmodules, push.recurseSubmodules, diff.ignoreSubmodules, protocol.ext.allow, GIT_CONFIG_PARAMETERS, GIT_PAGER, gitdir, commondir, rebase-merge/autostash, info/attributes, b:git_dir, g:fugitive_git_executable -->
 <!-- doclint-ignore: status.submoduleSummary, protocol.file.allow, core.askPass, core.editor, sequence.editor, core.alternateRefsCommand, core.attributesFile, gpg.program, gpg.openpgp.program, gpg.x509.program, gpg.ssh.program, gpg.ssh.defaultKeyCommand, interactive.diffFilter, maintenance.auto, core.gitProxy, core.pager, diff.external, gc.recentObjectsHook, uploadpack.packObjectsHook -->
 <!-- doclint-ignore: merge.default, GIT_ALLOW_PROTOCOL, protocol.allow -->
 <!-- doclint-ignore: GIT_ATTR_SOURCE, GIT_PROXY_COMMAND, GIT_NO_LAZY_FETCH, GIT_SSH_COMMAND, GIT_ASKPASS, GIT_EDITOR, SSH_ASKPASS, info/attributes, .bare/info, .bare/info/attributes, objects/info/alternates, .gitattributes, imap.tunnel, man.viewer, web.browser, modules/programs/git.nix -->
@@ -614,7 +614,7 @@ nvim-tree, does not change the root.
 | lualine | The `diff` component reads the counts from gitsigns. It runs no git. |
 | Telescope | Each git picker gets the root as its cwd, and the git dir and the work tree of the root. `diff`, `show`, `log`, and `stash show` get `--no-ext-diff` and `--no-textconv`. `diff` and `status` get `--ignore-submodules=all`. |
 | nvim-tree | It runs `git status` only when the toplevel is the root. Its `git status` gets `--ignore-submodules=all`. |
-| fugitive | Each buffer has `b:git_dir` set to the git dir of the root. So `:Git` acts on the root. |
+| fugitive | Each buffer has `b:git_dir` set to the git dir of the root, so `:Git` acts on the root. `g:fugitive_git_executable` points fugitive at a guard that adds `--ignore-submodules=all` to its status and diff commands, so a staged submodule with an `ignore` entry does not make `:Git` descend into it (#3343). |
 
 If nvim starts outside a git repo, there is no root. Then gitsigns attaches
 to no buffer, the Telescope git pickers refuse, nvim-tree shows no git
@@ -634,10 +634,12 @@ turns off its git integration and shows an error at startup.
   commands run no hook, filter, diff driver, or external diff.
 - **The root repo.** The rule does not change what git reads in the root.
   A planted driver at the root needs a planted `.bare/config`, the route of
-  #3346. The `:Git` status of fugitive runs `git status` with no
-  `--ignore-submodules` option. So a staged submodule with `ignore = none`
-  makes it run git in the submodule. #3353 tracks this route. It is the
-  route of #3343, through fugitive.
+  #3346. A staged submodule with an `ignore` entry in `.gitmodules` can make
+  a root git command descend into the submodule, where a planted filter
+  runs. gitsigns, Telescope, nvim-tree, and fugitive (through its guard) all
+  give `--ignore-submodules` on their status and diff, so they do not
+  (#3343). A typed `git add`, `git stash`, or a bare `git commit` in the
+  root is a residual owner action (see `user-git-overrides.md`).
 - **A typed command.** A `:cd`, a `:Gitsigns attach`, and a git command in
   `:!` or `:terminal` use git discovery. Each is a step by the owner, the
   same as a `cd` in the shell (see `user-git-overrides.md`).
