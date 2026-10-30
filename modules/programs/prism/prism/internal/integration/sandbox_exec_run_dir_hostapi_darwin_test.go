@@ -180,11 +180,14 @@ func newHostAPISockFixture(t *testing.T) hostAPISockFixture {
 }
 
 // coordinatorSidecar returns a coordinator sidecar of hostAPICoordSession.
+// /merges needs an instance ID, which Run otherwise loads or mints, so the
+// sidecar gets one at start.
 func coordinatorSidecar(t *testing.T, sock string) *sidecar.Sidecar {
 	t.Helper()
 	runDir := filepath.Dir(sock)
 	return sidecar.New(sidecar.Config{
 		SessionName:           hostAPICoordSession,
+		InstanceID:            "integ-3379-" + session.SessionDirName(t.Name()),
 		Repo:                  "prism-test",
 		Worktree:              t.TempDir(),
 		DB:                    openTestDB(t),
