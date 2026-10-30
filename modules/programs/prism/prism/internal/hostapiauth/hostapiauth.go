@@ -8,9 +8,10 @@
 // profile), so a session that reaches the socket of another sidecar does
 // not have the secret of that sidecar.
 //
-// Without the check, the socket that a client reached decided its identity:
-// a session that put a symlink to the hostapi.sock of a coordinator at its
-// own hostapi.sock got the coordinator role.
+// If a sidecar serves a request without this check, the socket that a client
+// reaches decides its identity: a session that puts a symlink to the
+// hostapi.sock of a coordinator at its own hostapi.sock gets the coordinator
+// role.
 //
 // The package is a leaf: the sidecar, the prism CLI, and promptdelivery all
 // import it.

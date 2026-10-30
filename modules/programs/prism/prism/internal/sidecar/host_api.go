@@ -2877,8 +2877,9 @@ func (s *Sidecar) hostAPIRoutes() http.Handler {
 	//   - session must be non-empty (400).
 	//   - Caller check: session must be the session of this sidecar,
 	//     s.cfg.SessionName (403). This applies to every role, the
-	//     coordinator included. The per-session socket is the identity of the
-	//     caller, so a caller can write lifecycle rows only for itself.
+	//     coordinator included. requireHostAPICredential makes the caller
+	//     the session of this sidecar, so a caller can write lifecycle rows
+	//     only for itself.
 	//   - Arg allowlist: each args key must be in eventArgAllowlist for the
 	//     kind (400):
 	//       state-change        state, worktree
