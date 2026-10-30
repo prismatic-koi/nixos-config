@@ -482,11 +482,14 @@ integration test coverage exists for:
   its `hostapi.sock` and puts a symlink to the socket of a coordinator at the
   path, and sends `GET /merges` through it:
   - To the routes of a coordinator without the host-API credential check
-    (the handler before #3379). The log line `#3379 pre-fix result` records
-    the answer.
-  - To a real coordinator sidecar, with the check. A request with the secret
-    of the session, or with no secret, gets no coordinator answer. The log
-    line `#3379 post-fix result` records each answer.
+    (the handler before #3379). The connect fails with `EPERM`: section 17b
+    checks the path after the symlink, and the run dir of another session
+    is not on its allowlist. With that run dir added to section 17b, the
+    same request gets 200 from the routes, as the coordinator.
+  - To a real coordinator sidecar, with the check. With the run dir of the
+    coordinator added to section 17b, a request with the secret of the
+    session, or with no secret, gets 401, and the secret of the coordinator
+    gets 200.
 
   See `sandbox_exec_run_dir_hostapi_darwin_test.go`.
 - **The pi agent dir** — the section-6a grant on `~/.pi/agent`, for pi

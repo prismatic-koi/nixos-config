@@ -15,13 +15,18 @@ package integration_test
 //   - Under the production profile the session cannot remove, rename, or
 //     make the hostapi.sock path, so it cannot plant the symlink. It can
 //     still connect to its own socket.
-//   - The paired negative takes section 21n out. The plant then works. The
-//     test sends a request through the symlink to the routes of a
-//     coordinator without the credential check (the handler before #3379)
-//     and records whether the request reached them.
+//   - The paired negative takes section 21n out. The plant then works. A
+//     request through the symlink to the routes of a coordinator without
+//     the credential check (the handler before #3379) does not connect:
+//     the section-17b connect allowlist is checked against the path after
+//     the symlink, and it does not hold the run dir of another session. So
+//     on Darwin the redirect did not reach another sidecar before #3379.
+//     With that run dir added to section 17b, the same request connects and
+//     gets the coordinator answer, so section 17b is what stops it.
 //   - The same plant against a real coordinator sidecar, which has the
-//     check: a request with the secret of the session, or with no secret,
-//     never gets a coordinator answer.
+//     check. With section 17b widened as above, a request with the secret
+//     of the session, or with no secret, gets 401, and the secret of the
+//     coordinator gets 200.
 //
 // The tests use the connect probe of
 // sandbox_exec_container_socket_darwin_test.go for the file operations, and
@@ -37,6 +42,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -123,7 +129,7 @@ func buildHostAPIProbe(t *testing.T) string {
 }
 
 // hostAPISockDenyBlock is the section-21n clause for sock. A copy that
-// drifts from the generator fails the negative tests (withMutatedProbeProfile).
+// drifts from the generator fails the negative tests (mutatedProbeProfiles).
 func hostAPISockDenyBlock(sock string) string {
 	return "(deny file-write*\n  (literal " + sbplQuoteForTest(sock) + "))\n"
 }
@@ -241,6 +247,50 @@ func runCoordinator(t *testing.T, sock string) {
 	}
 }
 
+// mutatedProbeProfiles prepares the profile of m once and writes one probe
+// profile for each mutate function, at its own path. Each mutate function
+// must change the profile.
+func mutatedProbeProfiles(t *testing.T, m *container.Manager, mutates ...func(string) string) []string {
+	t.Helper()
+	prepared, _ := preparePositiveProfile(t, m)
+	paths := make([]string, len(mutates))
+	for i, mutate := range mutates {
+		mutated := mutate(prepared.content)
+		if mutated == prepared.content {
+			t.Fatalf("mutate %d returned identical content, so the substitution did not match the profile", i)
+		}
+		paths[i] = prepared.path + ".integ-probe-mutated-" + strconv.Itoa(i)
+		if err := os.WriteFile(paths[i], []byte(augmentProfileForProbe(mutated)), 0o600); err != nil {
+			t.Fatalf("write mutated probe profile: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Remove(paths[i]) })
+	}
+	return paths
+}
+
+// without21n removes the section-21n deny of the own hostapi.sock.
+func (fx hostAPISockFixture) without21n(p string) string {
+	return strings.Replace(p, hostAPISockDenyBlock(fx.ownSock), "", 1)
+}
+
+// without21nWith17bCoord removes the section-21n deny, and adds the run dir
+// of the coordinator to the section-17b connect allowlist.
+func (fx hostAPISockFixture) without21nWith17bCoord(p string) string {
+	own := "    (require-not (subpath " + sbplQuoteForTest(filepath.Dir(fx.ownSock)) + "))\n"
+	coord := "    (require-not (subpath " + sbplQuoteForTest(filepath.Dir(fx.coordSock)) + "))\n"
+	if !strings.Contains(p, own) {
+		// mutatedProbeProfiles then fails on the unchanged profile.
+		return p
+	}
+	return strings.Replace(fx.without21n(p), own, own+coord, 1)
+}
+
+// connectDenied reports whether the probe output is a connect that the
+// sandbox refused (EPERM).
+func connectDenied(out string) bool {
+	return strings.Contains(out, "CONNECT-FAILED") && strings.Contains(out, "operation not permitted")
+}
+
 // plantRedirect runs the session under profilePath: it removes its
 // hostapi.sock and puts a symlink to the coordinator socket at the path.
 // The profile must not hold section 21n.
@@ -296,64 +346,82 @@ func TestSandboxExecRunDir_HostAPISockCannotBeReplaced(t *testing.T) {
 // 21n taken out, the session plants the symlink. It then sends GET /merges,
 // a coordinator-only verb, with its own secret through its hostapi.sock, to
 // the routes of a coordinator without the credential check: the handler
-// before #3379. The log line "#3379 pre-fix result" records whether the
-// request reached them.
+// before #3379.
+//
+// The connect fails with EPERM: section 17b checks the path after the
+// symlink, the run dir of the coordinator. So the redirect did not reach
+// the other sidecar on Darwin before #3379. With that run dir added to
+// section 17b, the same request gets 200 from the routes, as the
+// coordinator. That shows that section 17b is what stops the redirect, and
+// that the handler before #3379 gave the coordinator role to the request.
 func TestSandboxExecRunDir_HostAPISockRedirectWithoutDeny(t *testing.T) {
 	requireSandboxExec(t)
 	connectProbe := buildConnectProbe(t)
 	httpProbe := buildHostAPIProbe(t)
 	fx := newHostAPISockFixture(t)
 	serveUnchecked(t, fx.coordSock)
-	mutatedPath := withMutatedProbeProfile(t, fx.m, func(p string) string {
-		return strings.Replace(p, hostAPISockDenyBlock(fx.ownSock), "", 1)
-	})
+	profiles := mutatedProbeProfiles(t, fx.m, fx.without21n, fx.without21nWith17bCoord)
+	preFix, widened := profiles[0], profiles[1]
 
-	plantRedirect(t, mutatedPath, connectProbe, fx)
-	out, err := runProbe(t, mutatedPath, httpProbe, fx.ownSock, fx.ownSecret, http.MethodGet, "/merges")
+	plantRedirect(t, preFix, connectProbe, fx)
+	out, err := runProbe(t, preFix, httpProbe, fx.ownSock, fx.ownSecret, http.MethodGet, "/merges")
 	t.Logf("#3379 pre-fix result: GET /merges through the symlinked hostapi.sock to the coordinator routes without the credential check: exit=%v output=%q", err, strings.TrimSpace(out))
-	if strings.Contains(out, "READ-DENIED") {
-		t.Errorf("the session cannot read its own secret, so the request proves nothing: %s", out)
+	if !connectDenied(out) {
+		t.Errorf("GET /merges through the symlink under the profile without section 21n: %q, want a connect that the sandbox refuses", strings.TrimSpace(out))
+	}
+
+	out, err = runProbe(t, widened, httpProbe, fx.ownSock, fx.ownSecret, http.MethodGet, "/merges")
+	t.Logf("#3379 control: the same request with the coordinator run dir in section 17b: exit=%v output=%q", err, strings.TrimSpace(out))
+	if !strings.Contains(out, "STATUS 200") {
+		t.Errorf("GET /merges through the symlink with the coordinator run dir in section 17b: %q, want 200 from the routes without the check, so the refusal above can come from another rule", strings.TrimSpace(out))
 	}
 }
 
 // TestSandboxExecRunDir_HostAPISockRedirectRefusedByCredential: with section
 // 21n taken out, the session plants the symlink, as above, but a real
-// coordinator sidecar, with the credential check, owns the other socket. A
-// request through the symlink with the secret of the session, or with no
-// secret, never gets a coordinator answer. The log line "#3379 post-fix
-// result" records each answer, and the answer to the secret of the
-// coordinator, which shows whether the path reaches the coordinator.
+// coordinator sidecar, with the credential check, owns the other socket.
+// Under section 17b as it is, no request connects. With the run dir of the
+// coordinator added to section 17b, a request with the secret of the
+// session, or with no secret, gets 401, and the secret of the coordinator
+// gets 200. So the credential refuses the redirect on Darwin also when the
+// connect reaches the other sidecar.
 func TestSandboxExecRunDir_HostAPISockRedirectRefusedByCredential(t *testing.T) {
 	requireSandboxExec(t)
 	connectProbe := buildConnectProbe(t)
 	httpProbe := buildHostAPIProbe(t)
 	fx := newHostAPISockFixture(t)
 	runCoordinator(t, fx.coordSock)
-	mutatedPath := withMutatedProbeProfile(t, fx.m, func(p string) string {
-		return strings.Replace(p, hostAPISockDenyBlock(fx.ownSock), "", 1)
-	})
+	profiles := mutatedProbeProfiles(t, fx.m, fx.without21n, fx.without21nWith17bCoord)
+	preFix, widened := profiles[0], profiles[1]
 
-	expectOp(t, mutatedPath, connectProbe, false, "the session read the host-API secret of the coordinator", "--read", fx.coordSecret)
-	plantRedirect(t, mutatedPath, connectProbe, fx)
-
-	for _, tc := range []struct{ name, secretFile string }{
-		{"the secret of the session", fx.ownSecret},
-		{"no secret", "-"},
-	} {
-		out, err := runProbe(t, mutatedPath, httpProbe, fx.ownSock, tc.secretFile, http.MethodGet, "/merges")
-		t.Logf("#3379 post-fix result: GET /merges through the symlink with %s: exit=%v output=%q", tc.name, err, strings.TrimSpace(out))
-		if strings.Contains(out, "STATUS 200") {
-			t.Errorf("GET /merges through the symlink with %s got a coordinator answer: %s", tc.name, out)
-		}
-		if strings.Contains(out, "STATUS") && !strings.Contains(out, "STATUS 401") {
-			t.Errorf("GET /merges through the symlink with %s: %s, want 401 or no connect", tc.name, out)
-		}
-	}
+	expectOp(t, widened, connectProbe, false, "the session read the host-API secret of the coordinator", "--read", fx.coordSecret)
+	plantRedirect(t, preFix, connectProbe, fx)
 
 	raw, err := os.ReadFile(fx.coordSecret)
 	if err != nil {
 		t.Fatalf("read the secret of the coordinator outside the sandbox: %v", err)
 	}
-	out, err := runProbe(t, mutatedPath, httpProbe, fx.ownSock, "-", http.MethodGet, "/merges", strings.TrimSpace(string(raw)))
-	t.Logf("#3379 post-fix result: GET /merges through the symlink with the secret of the coordinator: exit=%v output=%q", err, strings.TrimSpace(out))
+	coordSecret := strings.TrimSpace(string(raw))
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"the secret of the session", []string{fx.ownSecret, http.MethodGet, "/merges"}, "STATUS 401"},
+		{"no secret", []string{"-", http.MethodGet, "/merges"}, "STATUS 401"},
+		{"the secret of the coordinator", []string{"-", http.MethodGet, "/merges", coordSecret}, "STATUS 200"},
+	}
+	for _, tc := range cases {
+		args := append([]string{fx.ownSock}, tc.args...)
+		out, err := runProbe(t, preFix, httpProbe, args...)
+		t.Logf("#3379 post-fix result: GET /merges through the symlink with %s: exit=%v output=%q", tc.name, err, strings.TrimSpace(out))
+		if !connectDenied(out) {
+			t.Errorf("GET /merges through the symlink with %s under section 17b as it is: %q, want a connect that the sandbox refuses", tc.name, strings.TrimSpace(out))
+		}
+		out, err = runProbe(t, widened, httpProbe, args...)
+		t.Logf("#3379 post-fix result, coordinator run dir in section 17b: GET /merges through the symlink with %s: exit=%v output=%q", tc.name, err, strings.TrimSpace(out))
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("GET /merges through the symlink with %s and the coordinator run dir in section 17b: %q, want %s", tc.name, strings.TrimSpace(out), tc.want)
+		}
+	}
 }
