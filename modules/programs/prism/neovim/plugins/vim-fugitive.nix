@@ -115,8 +115,9 @@ in
             -- Fail closed: a VimEnter probe confirms fugitive routes through
             -- the guard. fugitive#PrepareJob builds the argv for a status
             -- command; its first element must be the guard. If it is not (a
-            -- fugitive update drops g:fugitive_git_executable), turn :Git and
-            -- <leader>gs into a warning, so an unguarded status cannot run.
+            -- fugitive update drops g:fugitive_git_executable), turn the two
+            -- status commands fugitive defines (:Git and :G) and <leader>gs
+            -- into a warning, so an unguarded status cannot run.
             vim.api.nvim_create_autocmd("VimEnter", {
             	group = augroup,
             	once = true,
@@ -125,10 +126,12 @@ in
             		local ok, job = pcall(vim.fn["fugitive#PrepareJob"], { "status" })
             		local argv0 = (ok and type(job) == "table" and type(job[1]) == "table") and job[1][1] or nil
             		if argv0 ~= guard then
-            			local msg = "fugitive: git is not guarded against a staged submodule; :Git is off (#3343)."
-            			vim.api.nvim_create_user_command("Git", function()
-            				vim.notify(msg, vim.log.levels.ERROR)
-            			end, { bang = true, nargs = "*", range = true })
+            			local msg = "fugitive: git is not guarded against a staged submodule; :Git and :G are off (#3343)."
+            			for _, name in ipairs({ "Git", "G" }) do
+            				vim.api.nvim_create_user_command(name, function()
+            					vim.notify(msg, vim.log.levels.ERROR)
+            				end, { bang = true, nargs = "*", range = true })
+            			end
             			vim.keymap.set("n", "<leader>gs", function()
             				vim.notify(msg, vim.log.levels.ERROR)
             			end, { desc = "[G]it [S]tatus (disabled, #3343)" })
