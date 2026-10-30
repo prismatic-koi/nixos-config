@@ -1010,7 +1010,7 @@ func finishKeptSessionCleanup(session string, result *cleanupResult, jsonMode bo
 // Errors inside the sweep are non-fatal and logged at warning level by
 // the sweep itself. The helper has no error path of its own.
 func applySessionResourceSweep(session string, result *cleanupResult, scope sweepScope) {
-	sweepPrismContainersForSession(session)
+	_ = sweepPrismContainersForSession(session)
 	counts, ran := sweepSessionResourcesForSession(session, scope)
 	if !ran {
 		return

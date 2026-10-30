@@ -898,6 +898,12 @@ func startupGuardKillOld(name string, d *db.DB, forceFresh bool) bool {
 //     subsequent Attach() reconnects to it. A stale or zombie session is killed
 //     and recreated. When opts.DB is nil, any existing session is treated as
 //     live (no-op behaviour).
+//
+// A LayoutFull start holds the shared start lock of directory until Create
+// returns. While prism converts directory to the bare+worktree layout,
+// Create returns an error that wraps ErrConvertInProgress. When directory
+// holds a .bare, it returns an error that wraps ErrStartInBareRoot
+// (convert_lock.go).
 func Create(name, directory string, opts Opts) error {
 	// Fail-fast guard for the host-mode pi launch.
 	// Only applies to LayoutFull, which is the layout that actually launches
@@ -910,6 +916,11 @@ func Create(name, directory string, opts Opts) error {
 		if err := ValidatePILaunchOpts(opts); err != nil {
 			return fmt.Errorf("session.Create %q: %w", name, err)
 		}
+		release, err := holdStartLock(directory)
+		if err != nil {
+			return fmt.Errorf("session.Create %q: %w", name, err)
+		}
+		defer release()
 	}
 
 	if !startupGuardKillOld(name, opts.DB, opts.ForceFresh) {

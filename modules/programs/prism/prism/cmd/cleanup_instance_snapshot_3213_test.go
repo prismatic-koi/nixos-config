@@ -168,7 +168,7 @@ func TestCleanupPaths_SnapshotBeforeTmuxKill_3213(t *testing.T) {
 // cleaned up as before, with no error.
 func TestCleanupPaths_NoInstanceIDBeforeTmuxKill_3213(t *testing.T) {
 	for _, c := range cleanupCallers {
-		if c.name == "teardownConvertedSession" {
+		if c.name == "stopSessionForConvert" {
 			continue
 		}
 		t.Run(c.name, func(t *testing.T) {

@@ -435,6 +435,20 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	}
 	progress("  remote: " + remoteURL)
 
+	// The root session of the clone can write the root, and it sets the
+	// branch through .git/HEAD. An entry that it plants at the worktree
+	// path, for example a symlink to .bare, makes the move below write into
+	// the target of that entry (#3361). So the worktree path must be new.
+	if !filepath.IsLocal(defaultBranch) {
+		return "", fmt.Errorf("convert %s: the branch %q is not a path inside the root", dir, defaultBranch)
+	}
+	topLevelPath := filepath.Join(dir, strings.SplitN(defaultBranch, "/", 2)[0])
+	if _, err := os.Lstat(topLevelPath); err == nil {
+		return "", fmt.Errorf("convert %s: %s exists, and the conversion moves the working tree there. Move it out of the root, then convert again", dir, topLevelPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("convert %s: %w", dir, err)
+	}
+
 	// Back up .git.
 	if err := os.Rename(gitFile, origGit); err != nil {
 		return "", fmt.Errorf("rename .git: %w", err)
@@ -572,15 +586,27 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	_ = bare.Run("branch", "--set-upstream-to", "origin/"+defaultBranch, defaultBranch)
 
 	// Move working tree contents into <defaultBranch>/.
-	// MkdirAll is used because the branch name may contain slashes (e.g. "feat/foo").
+	// Make each dir of the worktree path with os.Mkdir, so that an entry
+	// that appears at the path after the check above, a symlink included,
+	// stops the conversion. Do not let rollback read such an entry: it moves
+	// the entries of the worktree path into the root.
 	progress("  moving working tree into " + defaultBranch + "/...")
 	worktreePath := filepath.Join(dir, defaultBranch)
-	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
-		rollback("")
-		if rollbackErr != nil {
-			progress("  WARNING: " + rollbackErr.Error())
+	var madeDirs []string
+	p := dir
+	for _, part := range strings.Split(filepath.Clean(defaultBranch), string(filepath.Separator)) {
+		p = filepath.Join(p, part)
+		if err := os.Mkdir(p, 0o755); err != nil {
+			for i := len(madeDirs) - 1; i >= 0; i-- {
+				_ = os.Remove(madeDirs[i])
+			}
+			rollback("")
+			if rollbackErr != nil {
+				progress("  WARNING: " + rollbackErr.Error())
+			}
+			return "", fmt.Errorf("mkdir worktree: %w", err)
 		}
-		return "", fmt.Errorf("mkdir worktree: %w", err)
+		madeDirs = append(madeDirs, p)
 	}
 
 	entries, err := os.ReadDir(dir)

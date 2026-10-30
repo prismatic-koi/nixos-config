@@ -166,11 +166,11 @@ var cleanupCallers = []cleanupCaller{
 		reportsError: true,
 	},
 	{
-		name: "teardownConvertedSession",
+		name: "stopSessionForConvert",
 		run: func(_ *testing.T, session, _ string) error {
-			teardownConvertedSession(session)
-			return nil
+			return stopSessionForConvert(session)
 		},
+		reportsError: true,
 	},
 }
 

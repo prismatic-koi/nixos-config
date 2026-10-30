@@ -658,10 +658,16 @@ table.
 ## Known limits
 
 - **A `.bare` that prism made, in a root that a session can write.**
-  `prism convert`, and the convert entry of `prism switch`, run while the
-  sandboxed root session of the plain clone runs. That session can write
-  the new `.bare` until prism stops it. The record does not stop this,
-  because prism made that `.bare`. #3361 tracks this route.
+  The record does not stop a plant in this `.bare`, because prism made it.
+  So `prism convert`, and the convert entry of `prism switch`, stop the
+  sandboxed root session of the plain clone first, and refuse its restart
+  until the conversion ends (#3361). See "The conversion of a plain clone"
+  in `session-lifecycle.md`. Three in-scope routes remain, one line each:
+  - A detached process on Darwin `sandbox-exec` survives the stop (#3375).
+  - On Linux, an orphaned `podman` client of the killed sidecar can create
+    a container with a read-write mount after the sweep (#3380).
+  - A session at or above the root can write each `.bare` below it at any
+    time, on Linux and Darwin (#3381).
 - **A plant that host git used before the update.** The start of the
   record records a plant if a worktree session started in it before the
   update, and `db.Prune` removed the start record of the planting session.
