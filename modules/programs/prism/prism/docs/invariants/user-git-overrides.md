@@ -271,6 +271,16 @@ staged submodule (#3343).
   helper by a path relative to the cwd of git; the tool selectors above run
   for a typed `git help`, `git difftool`, or `git mergetool`. The list
   cannot name them.
+- **A URL-scoped `http.<url>.cookieFile` with `http.<url>.saveCookies`
+  (#3355).** git reads the `http.*` keys by urlmatch, and a key for a more
+  specific URL wins over the no-URL `http.cookieFile` pin, in any order. So a
+  planted `http.<url>.cookieFile` with `http.<url>.saveCookies = true` makes
+  curl write a cookie file at a path the config chooses, on a typed
+  `git fetch` or `git pull` over HTTPS. The URL is repo-chosen, so the list
+  cannot pin it. The no-URL form is closed. A URL-scoped pin cannot close
+  this, because a planted key can always name a more specific URL. Tracked by
+  #3346/#3334. (`protocol.https.allow = never` would close it, but it also
+  breaks a usual `git clone` over HTTPS, so the list does not set it.)
 - **The service list.** It does not have the five entries with an empty
   value. These entries act only on a credential prompt or a credential
   helper, a fetch from a repo with alternates, a signature with no signing
