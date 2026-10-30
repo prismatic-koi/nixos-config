@@ -29,6 +29,7 @@ import (
 	"time"
 
 	pih "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/hostapiauth"
 	prismsession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
@@ -62,16 +63,13 @@ func newPI1486Sidecar(t *testing.T, hostAPISockPath, pipeSockPath string) *Sidec
 }
 
 // dialHostAPIHTTP dials hostAPISockPath as a Unix socket and sends a GET
-// request to the host-API server, returning the HTTP status code and body.
+// request, with the host-API secret of the socket, to the host-API server,
+// returning the HTTP status code and body.
 func dialHostAPIHTTP(t *testing.T, hostAPISockPath, endpoint string) (int, string) {
 	t.Helper()
 	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", hostAPISockPath)
-			},
-		},
-		Timeout: 3 * time.Second,
+		Transport: hostapiauth.UnixTransport(hostAPISockPath, nil),
+		Timeout:   3 * time.Second,
 	}
 	resp, err := client.Get("http://prism-hostapi" + endpoint)
 	if err != nil {
@@ -104,12 +102,8 @@ func waitForHostAPIReady(t *testing.T, sockPath string) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		client := &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					return net.Dial("unix", sockPath)
-				},
-			},
-			Timeout: 500 * time.Millisecond,
+			Transport: hostapiauth.UnixTransport(sockPath, nil),
+			Timeout:   500 * time.Millisecond,
 		}
 		resp, err := client.Get("http://prism-hostapi/list-sessions")
 		if err == nil && resp.StatusCode == http.StatusOK {

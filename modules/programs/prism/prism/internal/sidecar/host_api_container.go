@@ -42,7 +42,7 @@ func (s *Sidecar) runContainer(ctx context.Context, req prismcontainer.RunReques
 
 // containerRoute returns the handler of a service-container endpoint: POST
 // only, a strict JSON body of type Req, and HTTP 200 with the result for
-// every decision. writeJSON is the response writer of hostAPIHandler.
+// every decision. writeJSON is the response writer of hostAPIRoutes.
 func containerRoute[Req any](writeJSON func(http.ResponseWriter, int, any), serve func(context.Context, Req) any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

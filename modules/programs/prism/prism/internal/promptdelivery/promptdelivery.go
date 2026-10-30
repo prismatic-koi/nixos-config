@@ -55,6 +55,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
+	"github.com/prismatic-koi/prism/internal/hostapiauth"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -335,25 +336,26 @@ func hasPathPrefix(p, prefix string) bool {
 }
 
 // newUnixClient returns an *http.Client that dials sockPath over a Unix socket.
+// Each request carries the host-API secret of the target session, which the
+// host reads from hostapi.secret next to sockPath (hostapiauth, #3379). The
+// dial refuses a sockPath that is a symlink.
 //
 // Tombstone hygiene: when the dial returns ECONNREFUSED and the socket file
 // exists on disk, the sidecar has exited abnormally without removing the
 // socket. A clearer diagnostic is surfaced in that case.
 func newUnixClient(sockPath string) *http.Client {
 	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				d := &net.Dialer{Timeout: 5 * time.Second}
-				conn, err := d.DialContext(ctx, "unix", sockPath)
-				if err != nil {
-					if isStaleTombstoneSocket(sockPath, err) {
-						return nil, fmt.Errorf("host-API socket at %s is a stale tombstone — sidecar has exited without cleanup (ECONNREFUSED on existing socket file): %w", sockPath, err)
-					}
-					return nil, fmt.Errorf("host-API socket not available at %s: %w", sockPath, err)
+		Transport: hostapiauth.UnixTransport(sockPath, func(ctx context.Context) (net.Conn, error) {
+			d := &net.Dialer{Timeout: 5 * time.Second}
+			conn, err := hostapiauth.DialUnix(ctx, d, sockPath)
+			if err != nil {
+				if isStaleTombstoneSocket(sockPath, err) {
+					return nil, fmt.Errorf("host-API socket at %s is a stale tombstone — sidecar has exited without cleanup (ECONNREFUSED on existing socket file): %w", sockPath, err)
 				}
-				return conn, nil
-			},
-		},
+				return nil, fmt.Errorf("host-API socket not available at %s: %w", sockPath, err)
+			}
+			return conn, nil
+		}),
 		Timeout: 10 * time.Second,
 	}
 }

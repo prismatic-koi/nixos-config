@@ -32,7 +32,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,6 +43,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	pih "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/hostapiauth"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
 	prismsession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sidecar/sidecartest"
@@ -62,6 +63,13 @@ type modeSidecar struct {
 // t.Cleanup, before the DB of the caller closes.
 func startModeSidecar(t *testing.T, mode config.IsolationMode, sessionName, repo, role string, d *db.DB) *modeSidecar {
 	t.Helper()
+	return startModeSidecarWith(t, mode, sessionName, repo, role, d, failingStub, nil)
+}
+
+// startModeSidecarWith is startModeSidecar with the script of the prism
+// binary stub and the logger of the sidecar (nil for the default logger).
+func startModeSidecarWith(t *testing.T, mode config.IsolationMode, sessionName, repo, role string, d *db.DB, stub string, logger *log.Logger) *modeSidecar {
+	t.Helper()
 
 	hostAPISock, err := prismsession.SidecarHostAPIPath(sessionName)
 	if err != nil {
@@ -76,7 +84,7 @@ func startModeSidecar(t *testing.T, mode config.IsolationMode, sessionName, repo
 	}
 
 	stubPath := filepath.Join(t.TempDir(), "prism-stub")
-	if err := os.WriteFile(stubPath, []byte(failingStub), 0o755); err != nil {
+	if err := os.WriteFile(stubPath, []byte(stub), 0o755); err != nil {
 		t.Fatalf("write stub binary: %v", err)
 	}
 
@@ -94,6 +102,7 @@ func startModeSidecar(t *testing.T, mode config.IsolationMode, sessionName, repo
 		HarnessPipeSockPath:   pipeSock,
 		HarnessPipeSecretPath: pipeSecretPathFor(pipeSock),
 		PrismBinaryPath:       stubPath,
+		Logger:                logger,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -114,17 +123,13 @@ func startModeSidecar(t *testing.T, mode config.IsolationMode, sessionName, repo
 }
 
 // callHostAPISocket sends one request to the host API through the Unix
-// socket at sockPath and returns the status code and the body.
+// socket at sockPath, with the host-API secret of that socket, and returns
+// the status code and the body.
 func callHostAPISocket(t *testing.T, sockPath, method, path, body string) (int, string) {
 	t.Helper()
 	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", sockPath)
-			},
-		},
-		Timeout: 5 * time.Second,
+		Transport: hostapiauth.UnixTransport(sockPath, nil),
+		Timeout:   5 * time.Second,
 	}
 	var reqBody io.Reader
 	if body != "" {

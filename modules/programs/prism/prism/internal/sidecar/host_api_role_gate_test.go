@@ -11,7 +11,7 @@ package sidecar
 //   - /investigate refuses a worker with 403 and serves a coordinator
 //     unchanged. Without the gate, the handler would decode the body and
 //     spawn an investigator for any caller.
-//   - Every endpoint documented "coordinator only" in the hostAPIHandler
+//   - Every endpoint documented "coordinator only" in the hostAPIRoutes
 //     route list refuses a worker with 403.
 //   - A caller whose role cannot be determined — no agent_status row, a
 //     pre-migration row with NULL root_agent_name, or no DB handle at all —
@@ -202,7 +202,7 @@ func TestHostAPI_Investigate_DeniesUndeterminableRole(t *testing.T) {
 // ── the whole coordinator-only surface ───────────────────────────────────────
 
 // TestHostAPI_CoordinatorOnly_DeniesWorker pins the "coordinator only" half of
-// the route list in the hostAPIHandler doc comment: every endpoint labelled
+// the route list in the hostAPIRoutes doc comment: every endpoint labelled
 // that way must refuse a worker with 403. An endpoint added to the list
 // without a requireCoordinator call fails here.
 //

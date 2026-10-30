@@ -3,7 +3,7 @@ package sidecar
 // Tests for the host-API /event endpoint added to fix the shadow-DB issue for
 // prism event subcommands running inside containers.
 //
-// These tests exercise the hostAPIHandler() method directly without spinning
+// These tests exercise the hostAPIRoutes() method directly without spinning
 // up a real Unix socket server. The shape mirrors sidecar_merge_test.go.
 //
 // Note: the success path (kind + session both valid, event written to host DB)

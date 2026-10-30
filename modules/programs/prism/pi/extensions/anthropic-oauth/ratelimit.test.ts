@@ -10,10 +10,11 @@
 import { describe, it, before, after } from "node:test"
 import assert from "node:assert/strict"
 import { createServer, type Server } from "node:http"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { HOST_API_SECRET_FILE, HOST_API_SECRET_HEADER } from "./host-api-auth.ts"
 import { initLogger, closeLogger } from "./logger.ts"
 import {
   parseUnifiedRateLimitHeaders,
@@ -329,7 +330,7 @@ describe("sendSnapshot", () => {
   let dir: string
   let sockPath: string
   let server: Server
-  let received: { path?: string; body: string; contentType?: string }[] = []
+  let received: { path?: string; body: string; contentType?: string; secret?: string }[] = []
   let respondWith = 200
 
   before(async () => {
@@ -341,10 +342,12 @@ describe("sendSnapshot", () => {
         body += String(chunk)
       })
       req.on("end", () => {
+        const secret = req.headers[HOST_API_SECRET_HEADER]
         received.push({
           path: req.url,
           body,
           contentType: req.headers["content-type"],
+          secret: typeof secret === "string" ? secret : undefined,
         })
         res.writeHead(respondWith, { "content-type": "application/json" })
         res.end("{}")
@@ -371,6 +374,25 @@ describe("sendSnapshot", () => {
     assert.equal(received[0].path, USAGE_SNAPSHOT_PATH)
     assert.equal(received[0].contentType, "application/json")
     assert.deepEqual(JSON.parse(received[0].body), snapshot)
+  })
+
+  it("sends the host-API secret from hostapi.secret next to the socket (#3379)", async () => {
+    const secretPath = join(dir, HOST_API_SECRET_FILE)
+    try {
+      received = []
+      respondWith = 200
+      writeFileSync(secretPath, "0123abcd\n")
+      await sendSnapshot(`unix://${sockPath}`, { unified_status: "allowed" })
+      assert.equal(received[0].secret, "0123abcd")
+
+      rmSync(secretPath)
+      received = []
+      await sendSnapshot(`unix://${sockPath}`, { unified_status: "allowed" })
+      assert.equal(received.length, 1)
+      assert.equal(received[0].secret, undefined)
+    } finally {
+      rmSync(secretPath, { force: true })
+    }
   })
 
   it("sends no account or captured_at field — the sidecar owns both", async () => {

@@ -162,7 +162,7 @@ func TestHostAPI_SetModel_StripsProviderPrefix_OwnSession(t *testing.T) {
 	conn, _ := dialAndHandshake(t, sockPath)
 	rd := bufio.NewReader(conn)
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/set-model", map[string]any{
 		"session":  sc.cfg.SessionName,
 		"provider": "anthropic",
@@ -228,7 +228,7 @@ func TestHostAPI_ApplyProfile_StripsProviderPrefix_SessionScope(t *testing.T) {
 	}
 	defer func() { hostAPILoadProfiles = origLoader }()
 
-	handler := sc.hostAPIHandler()
+	handler := sc.hostAPIRoutes()
 	rr := postJSON(t, handler, "/apply-profile", map[string]any{
 		"profile": "fable",
 		"scope":   "session",

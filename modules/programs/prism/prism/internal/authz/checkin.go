@@ -50,9 +50,11 @@ package authz
 //
 // # Trust basis on each route
 //
-// Host-API route: caller identity rests on socket isolation. The sidecar knows
-// its own Config.SessionName, and each session has its own socket directory,
-// so a worker cannot reach another session's sidecar to impersonate it.
+// Host-API route: caller identity rests on the host-API credential (#3379).
+// The sidecar knows its own Config.SessionName, and it refuses a request that
+// does not carry the secret that it wrote to the run dir of its session. A
+// sandbox can read only its own run dir, so a worker that reaches the sidecar
+// of another session cannot act as that session.
 //
 // Direct CLI route: caller identity comes from PRISM_SESSION_NAME, else the
 // current tmux session — the same resolution `requireMergesCoordinator` uses.

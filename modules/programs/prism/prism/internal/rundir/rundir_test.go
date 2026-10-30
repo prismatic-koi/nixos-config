@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -283,5 +284,41 @@ func TestWriteFile_RefusesDirAtPath(t *testing.T) {
 	entries, _ := os.ReadDir(runDir)
 	if len(entries) != 1 {
 		t.Errorf("the run dir holds %d entries after the refused write, want only the dir (no temp file left)", len(entries))
+	}
+}
+
+func TestRefuseSymlink_RefusesSymlinkAndNamesPath(t *testing.T) {
+	runDir, target := plantFixture(t)
+	sock := filepath.Join(runDir, "hostapi.sock")
+	if err := os.Symlink(target, sock); err != nil {
+		t.Fatal(err)
+	}
+	err := RefuseSymlink(sock)
+	if !errors.Is(err, ErrSymlink) {
+		t.Fatalf("RefuseSymlink of a symlink: %v, want ErrSymlink", err)
+	}
+	if !strings.Contains(err.Error(), sock) {
+		t.Errorf("the error %q does not name the path %s", err, sock)
+	}
+}
+
+func TestRefuseSymlink_RefusesSymlinkedDir(t *testing.T) {
+	runDir, _ := symlinkedRunDir(t)
+	if err := RefuseSymlink(filepath.Join(runDir, "hostapi.sock")); !errors.Is(err, ErrSymlinkDir) {
+		t.Errorf("RefuseSymlink in a symlinked dir: %v, want ErrSymlinkDir", err)
+	}
+}
+
+func TestRefuseSymlink_AcceptsFileAndMissingPath(t *testing.T) {
+	runDir, _ := plantFixture(t)
+	file := filepath.Join(runDir, "hostapi.sock")
+	if err := RefuseSymlink(file); err != nil {
+		t.Errorf("RefuseSymlink of a missing path: %v", err)
+	}
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RefuseSymlink(file); err != nil {
+		t.Errorf("RefuseSymlink of a regular file: %v", err)
 	}
 }

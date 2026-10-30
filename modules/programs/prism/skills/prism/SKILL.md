@@ -620,7 +620,7 @@ Who can read which logs:
 - A coordinator can also read the logs of the review rounds of a session in its own repo.
 - Prism refuses all other reads. A worker cannot read the logs of another session. A coordinator cannot read the logs of a session in another repo.
 
-The command works the same in a `bwrap`, `sandbox-exec`, or `host` session. In a sandbox, the host decides who you are from the host-API socket of your session. `PRISM_SESSION_NAME` and `--session` cannot widen the access.
+The command works the same in a `bwrap`, `sandbox-exec`, or `host` session. In a sandbox, the host decides who you are from the host-API credential of your session: the secret in `hostapi.secret`, next to the `hostapi.sock` of the session. A request that reaches the socket of another session without its secret gets HTTP 401. `PRISM_SESSION_NAME` and `--session` cannot widen the access.
 
 If the round has no log, the command exits non-zero with an error that names the round. A round that ran on a prism version older than this command has no log that the command can read. `prism cleanup` and `prism close --yes` of a session remove the logs of its review rounds. An interactive `prism close` that keeps the worktree keeps the logs.
 

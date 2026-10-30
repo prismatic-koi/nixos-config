@@ -8,7 +8,7 @@ package sidecar
 //  2. The /prompt same-session socket-pipe path succeeds when the session is
 //     in an active state.
 //
-// The tests use the hostAPIHandler() directly (no real Unix socket needed).
+// The tests use the hostAPIRoutes() directly (no real Unix socket needed).
 
 import (
 	"encoding/json"
@@ -38,7 +38,7 @@ func containsAll(s string, subs ...string) bool {
 }
 
 // newPiSidecarForHostAPITest creates a Sidecar configured for the pi harness
-// and suitable for hostAPIHandler tests.
+// and suitable for hostAPIRoutes tests.
 func newPiSidecarForHostAPITest(t *testing.T, sessionName, repo, role string, d *db.DB) *Sidecar {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

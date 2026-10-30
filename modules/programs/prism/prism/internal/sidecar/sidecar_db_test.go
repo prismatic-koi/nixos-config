@@ -2,7 +2,7 @@ package sidecar
 
 // Tests for the host-API GET /db/query, /db/schema, /db/tables endpoints.
 //
-// These exercise the hostAPIHandler() method directly (no live socket),
+// These exercise the hostAPIRoutes() method directly (no live socket),
 // matching the shape of sidecar_stats_test.go. The fixtures use openTestDB(t)
 // from sidecar_test.go which provides a real on-disk SQLite file — required
 // because the new endpoints re-open the DB in read-only mode (?mode=ro)
