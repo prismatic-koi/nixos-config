@@ -133,7 +133,7 @@ func TestCleanupSites_OrphanScanRunsAfterChildStop_3206(t *testing.T) {
 			withSpyTmux(t)
 			installFakeRunner(t)
 			prevStop := cleanupStopSidecar
-			cleanupStopSidecar = func(string) bool { return true }
+			cleanupStopSidecar = func(string) error { return nil }
 			t.Cleanup(func() { cleanupStopSidecar = prevStop })
 
 			scan := withFakeOrphanScan(t)

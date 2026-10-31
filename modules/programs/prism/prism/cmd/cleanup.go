@@ -251,8 +251,8 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		defer sweepEndedSessionsAfterCleanup()
 		// Stop the sidecar before the worktree, the tmux session, or the row
 		// goes. A sidecar that does not stop can still use all of them.
-		if !cleanupStopSidecar(m.session) {
-			return cleanupDoneMsg{sidecarsNotStoppedError(cleanupChildrenOfKeptSession(m.session))}
+		if err := cleanupStopSidecar(m.session); err != nil {
+			return cleanupDoneMsg{keptSessionError(err, cleanupChildrenOfKeptSession(m.session))}
 		}
 		// Resolve the actual branch name BEFORE the worktree is removed —
 		// git.RemoveWorktree deletes worktreePath's .git file, after which
@@ -784,8 +784,8 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 
 	// Stop the sidecar before the worktree, the tmux session, or the row
 	// goes. A sidecar that does not stop can still use all of them.
-	if !cleanupStopSidecar(session) {
-		return finishKeptSessionCleanup(session, &result, jsonMode, stdout)
+	if err := cleanupStopSidecar(session); err != nil {
+		return finishKeptSessionCleanup(session, err, &result, jsonMode, stdout)
 	}
 
 	// Resolve the actual branch name from worktreePath's HEAD BEFORE the
@@ -980,18 +980,18 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 }
 
 // finishKeptSessionCleanup ends a headless cleanup of session after its
-// sidecar did not stop. It cleans up the review children, writes the JSON
-// envelope in jsonMode, and returns an error that names each session whose
-// sidecar did not stop. The envelope reports the lifecycle fields as
-// skipped and session_killed as false, because the row, the port, and the
-// tmux session stay.
-func finishKeptSessionCleanup(session string, result *cleanupResult, jsonMode bool, stdout io.Writer) error {
+// sidecar stop failed with stopErr. It cleans up the review children,
+// writes the JSON envelope in jsonMode, and returns an error that holds
+// stopErr and names each session whose sidecar did not stop. The envelope
+// reports the lifecycle fields as skipped and session_killed as false,
+// because the row, the port, and the tmux session stay.
+func finishKeptSessionCleanup(session string, stopErr error, result *cleanupResult, jsonMode bool, stdout io.Writer) error {
 	failed := cleanupChildrenOfKeptSession(session)
 	markDBLifecycleSkipped(result, "skipped: sidecar did not stop")
 	if jsonMode {
 		emitCleanupJSONTo(stdout, *result)
 	}
-	return sidecarsNotStoppedError(failed)
+	return keptSessionError(stopErr, failed)
 }
 
 // applySessionResourceSweep runs the orphan-resource sweep for session
@@ -1035,9 +1035,9 @@ func closeSession(session string) error {
 	defer sweepEndedSessionsAfterCleanup()
 	// Stop the sidecar before the tmux session or the row goes. A sidecar
 	// that does not stop can still use them.
-	if !cleanupStopSidecar(session) {
+	if err := cleanupStopSidecar(session); err != nil {
 		proglog.Warnf("[prism] warning: sidecar of %q did not stop — keeping its tmux session, row, and port\n", session)
-		return sidecarsNotStoppedError([]string{session})
+		return keptSessionError(err, []string{session})
 	}
 	// Ensure scratchpad exists.
 	if !tmux.HasSession("scratchpad") {
@@ -1155,8 +1155,8 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 
 	// Stop the sidecar before the tmux session or the row goes. A sidecar
 	// that does not stop can still use them.
-	if !cleanupStopSidecar(session) {
-		return finishKeptSessionCleanup(session, &result, jsonMode, stdout)
+	if err := cleanupStopSidecar(session); err != nil {
+		return finishKeptSessionCleanup(session, err, &result, jsonMode, stdout)
 	}
 
 	printLine("closing session %s...\n", session)

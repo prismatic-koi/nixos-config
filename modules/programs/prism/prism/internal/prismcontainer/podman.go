@@ -37,7 +37,7 @@ func (ExecRunner) Run(ctx context.Context, stdout, stderr io.Writer, args ...str
 	cmd.Stderr = stderr
 	// A podman descendant can keep the output pipes open after podman exits.
 	cmd.WaitDelay = 5 * time.Second
-	err := cmd.Run()
+	err := runPodman(cmd)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return -1, ctxErr
 	}
@@ -147,9 +147,34 @@ func ownedSet(instanceIDs []string) map[string]bool {
 func SweepSession(ctx context.Context, r Runner, e BuildExecutor, instanceIDs []string) error {
 	_, buildErr := StopBuilds(ctx, e, instanceIDs)
 	removeStaleBuildCopies()
-	_, ctrErr := SweepInstances(ctx, r, instanceIDs)
+	ctrErr := sweepInstancesUntilClear(ctx, r, instanceIDs)
 	_, imgErr := SweepImages(ctx, r, instanceIDs)
 	return errors.Join(buildErr, ctrErr, imgErr)
+}
+
+// maxContainerSweeps is the number of container sweeps that
+// sweepInstancesUntilClear runs at most.
+const maxContainerSweeps = 3
+
+// sweepInstancesUntilClear runs SweepInstances until a sweep after the
+// first one finds no container of instanceIDs. podman can register a
+// container after the list of the first sweep: `podman run -d` hands the
+// container to conmon, and conmon is not in the process group of the
+// podman client. It returns an error when the last of maxContainerSweeps
+// sweeps still found a container.
+func sweepInstancesUntilClear(ctx context.Context, r Runner, instanceIDs []string) error {
+	for sweep := 1; ; sweep++ {
+		n, err := SweepInstances(ctx, r, instanceIDs)
+		if err != nil {
+			return err
+		}
+		if n == 0 && sweep > 1 {
+			return nil
+		}
+		if sweep == maxContainerSweeps {
+			return fmt.Errorf("sweep %d of %d still removed %d container(s) of the session, so a process can still create them", sweep, maxContainerSweeps, n)
+		}
+	}
 }
 
 // StopBuilds stops every running build of the session incarnations

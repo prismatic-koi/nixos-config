@@ -330,9 +330,9 @@ func TestConvertPlainClone_KeepsHostShellSessionsInTheClone_3361(t *testing.T) {
 	withChildCleanup(t)
 	var stops []string
 	prevStop := switchProjectStopSidecar
-	switchProjectStopSidecar = func(n string) bool {
+	switchProjectStopSidecar = func(n string) error {
 		stops = append(stops, n)
-		return true
+		return nil
 	}
 	t.Cleanup(func() { switchProjectStopSidecar = prevStop })
 	withConvertToBare(t, func(d string, _ func(string)) (string, error) { return filepath.Join(d, "main"), nil })

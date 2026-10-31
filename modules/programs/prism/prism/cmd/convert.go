@@ -281,16 +281,17 @@ func refuseStartBesideBare(path string) error {
 
 // switchProjectStopSidecar is the sidecar stop of stopSessionForConvert.
 // Tests replace it, so that a test signals no process.
-var switchProjectStopSidecar = func(sessionName string) bool {
-	return session.EnsureSidecarStopped(sessionName, session.SidecarStopTimeout)
+var switchProjectStopSidecar = func(sessionName string) error {
+	return session.EnsureSidecarStoppedErr(sessionName, session.SidecarStopTimeout)
 }
 
 // stopSessionForConvert ends the root session name of a plain clone before
 // the conversion. It returns an error when it cannot prove that the session
 // stopped, and the caller must then not convert:
 //
-//   - The sidecar did not stop. The tmux session, the row, and the port
-//     stay, because the sidecar can still use them.
+//   - The sidecar did not stop, or a process that it started still runs.
+//     The tmux session, the row, and the port stay, because the sidecar
+//     can still use them.
 //   - A pane process still runs after the tmux kill. The agent sandbox
 //     stops after the tmux kill, not at the kill.
 //   - The sweep of the `prism container` containers failed. A container
@@ -302,9 +303,9 @@ var switchProjectStopSidecar = func(sessionName string) bool {
 func stopSessionForConvert(name string) error {
 	moveClientsToScratchpad(name)
 	panes, _ := convertPanePIDs(name)
-	if !switchProjectStopSidecar(name) {
+	if err := switchProjectStopSidecar(name); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: sidecar of session %q did not stop — keeping its tmux session, row, and port\n", name)
-		return sidecarsNotStoppedError([]string{name})
+		return keptSessionError(err, []string{name})
 	}
 	_ = tmux.KillSession(name)
 	if err := waitProcessesGone(panes, convertPaneWait); err != nil {
