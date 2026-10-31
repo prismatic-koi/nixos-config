@@ -413,6 +413,12 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 		return "", err
 	}
 
+	// A session in the root or above it can write the .bare that this makes
+	// (#3381). convertPlainClone stops each session in the root first.
+	if err := refuseSessionsAtOrAboveDir("convert "+dir, dir); err != nil {
+		return "", err
+	}
+
 	progress("converting " + filepath.Base(dir) + " to bare+worktree layout...")
 
 	src, err := OpenDir(dir)
@@ -1175,6 +1181,12 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 		return fmt.Errorf("clone into %s: %w", targetDir, err)
 	} else if len(entries) > 0 {
 		return fmt.Errorf("clone into %s: %w", targetDir, ErrCloneTargetNotEmpty)
+	}
+	// A session in an empty target, or above it, can write the .bare that
+	// this makes (#3381).
+	if err := refuseSessionsAtOrAboveDir("clone into "+targetDir, targetDir); err != nil {
+		removeEmptyDirs(made)
+		return err
 	}
 
 	// created holds each path in targetDir that the clone made. A failed git

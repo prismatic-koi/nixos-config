@@ -143,6 +143,74 @@ func requirePrismBare(gitDir string, info os.FileInfo) error {
 // returns an error when it cannot tell.
 type SessionRuns func(name string) (bool, error)
 
+var sessionRunsSource atomic.Pointer[SessionRuns]
+
+// SetSessionRunsSource sets the SessionRuns that CloneWorktree and
+// ConvertToBare use. internal/session sets it in its init, because
+// internal/git cannot import internal/session.
+func SetSessionRunsSource(runs SessionRuns) {
+	sessionRunsSource.Store(&runs)
+}
+
+// registeredSessionRuns returns the SessionRuns of SetSessionRunsSource, or
+// nil.
+func registeredSessionRuns() SessionRuns {
+	if runs := sessionRunsSource.Load(); runs != nil {
+		return *runs
+	}
+	return nil
+}
+
+// refuseSessionsAtOrAbove returns an error when a session that started in
+// root, or in a dir above root, runs. Such a session can write a .bare that
+// prism makes or records in root. action starts each error.
+//
+// A session runs if its start record is open (SessionStart.Open), or if runs
+// says so. runs must ask a source that the host controls, such as tmux. A
+// session can end its own start record and keep its sandbox: the sidecar
+// ends the record when the session sends session_shutdown. If runs is nil or
+// cannot tell, refuseSessionsAtOrAbove refuses.
+func refuseSessionsAtOrAbove(action string, root projectRoot, runs SessionRuns) error {
+	dir, err := bareRecordDir()
+	if err != nil {
+		return err
+	}
+	starts, err := readSessionStarts(dir)
+	if err != nil {
+		return err
+	}
+	for _, s := range sessionsAtOrAbove(starts, statSessionDirs(starts), root) {
+		if s.Open {
+			return fmt.Errorf("%s: a session record with no end time names the session %s in %s. A session there can write this root. If the session does not run, end it with \"prism cleanup --yes --session %s\", then run this command again", action, s.Name, s.Worktree, s.Name)
+		}
+		if runs == nil {
+			return fmt.Errorf("%s: no check of the running sessions is set", action)
+		}
+		running, err := runs(s.Name)
+		if err != nil {
+			return fmt.Errorf("%s: prism cannot tell if the session %s runs: %v. A session that runs in %s can write this root", action, s.Name, err, s.Worktree)
+		}
+		if running {
+			return fmt.Errorf("%s: the session %s runs, and it started in %s, so it can write this root. Stop the session first", action, s.Name, s.Worktree)
+		}
+	}
+	return nil
+}
+
+// refuseSessionsAtOrAboveDir is refuseSessionsAtOrAbove for the dir root,
+// with the SessionRuns of SetSessionRunsSource. root must exist.
+func refuseSessionsAtOrAboveDir(action, root string) error {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	return refuseSessionsAtOrAbove(action, projectRoot{path: filepath.Clean(abs), resolved: resolved}, registeredSessionRuns())
+}
+
 // ErrConfirmInSandbox is returned when ConfirmBare runs in a sandbox.
 var ErrConfirmInSandbox = errors.New("prism confirm-bare runs only on the host. A sandbox cannot write the bare repo record. Run the command in a shell on the host")
 
@@ -153,13 +221,8 @@ var ErrConfirmInSandbox = errors.New("prism confirm-bare runs only on the host. 
 // ConfirmBare does the checks of OpenBare, except the record check. It
 // refuses a root whose .git is a directory, and a raw bare git dir: prism
 // makes neither. It refuses while a session runs in the root or in a dir
-// above it, because that session can write the .bare after the confirmation.
-//
-// A session runs if its start record is open (SessionStart.Open), or if runs
-// says so. runs must ask a source that the host controls, such as tmux. A
-// session can end its own start record and keep its sandbox: the sidecar
-// ends the record when the session sends session_shutdown. If runs cannot
-// tell, ConfirmBare refuses.
+// above it, because that session can write the .bare after the confirmation
+// (refuseSessionsAtOrAbove).
 func ConfirmBare(root string, runs SessionRuns) (string, error) {
 	if inSandbox() {
 		return "", ErrConfirmInSandbox
@@ -182,29 +245,9 @@ func ConfirmBare(root string, runs SessionRuns) (string, error) {
 	if g, err := os.Lstat(filepath.Join(resolvedRoot, ".git")); err == nil && g.IsDir() {
 		return "", fmt.Errorf("host git: confirm %s: %s/.git is a directory. The root is a plain clone, and prism does not make a .bare next to the .git dir of a plain clone", r.gitDir, resolvedRoot)
 	}
-	dir, err := bareRecordDir()
-	if err != nil {
-		return "", err
-	}
-	starts, err := readSessionStarts(dir)
-	if err != nil {
-		return "", err
-	}
 	pr := projectRoot{path: filepath.Clean(abs), resolved: resolvedRoot}
-	for _, s := range sessionsAtOrAbove(starts, statSessionDirs(starts), pr) {
-		if s.Open {
-			return "", fmt.Errorf("host git: confirm %s: a session record with no end time names the session %s in %s. A session there can write this root. If the session does not run, end it with \"prism cleanup --yes --session %s\", then run this command again", r.gitDir, s.Name, s.Worktree, s.Name)
-		}
-		if runs == nil {
-			return "", fmt.Errorf("host git: confirm %s: no check of the running sessions is set", r.gitDir)
-		}
-		running, err := runs(s.Name)
-		if err != nil {
-			return "", fmt.Errorf("host git: confirm %s: prism cannot tell if the session %s runs: %v. A session that runs in %s can write this root", r.gitDir, s.Name, err, s.Worktree)
-		}
-		if running {
-			return "", fmt.Errorf("host git: confirm %s: the session %s runs, and it started in %s, so it can write this root. Stop the session first", r.gitDir, s.Name, s.Worktree)
-		}
+	if err := refuseSessionsAtOrAbove("host git: confirm "+r.gitDir, pr, runs); err != nil {
+		return "", err
 	}
 	if err := recordBare(r.gitDir); err != nil {
 		return "", err

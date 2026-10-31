@@ -10,7 +10,7 @@
   git and nvim names, not names in this source tree.
 -->
 
-Issues: #3322, #3315, #3293, #3347, #3337, #3333, #3364. Code: `internal/git/host.go`
+Issues: #3322, #3315, #3293, #3347, #3337, #3333, #3364, #3381. Code: `internal/git/host.go`
 (`OpenBare`, `OpenWorktree`, `OpenDir`, `OuterBareRoot`, `EnvForDir`,
 `CloneCommand`), `internal/git/bare_record.go`, `internal/db/session_starts.go`, `cmd/confirm_bare.go`, the prefix+b keybind in the tmux config of prism
 (modules/programs/prism/tmux.nix, outside the prism Go tree), and the nvim
@@ -471,6 +471,118 @@ goes through a symlink. The fixtures of `cmd` and `internal/container`
 make `.bare` with plain git, so their `TestMain` calls
 `git.AllowUnrecordedBareForTest`.
 
+## A session in a dir that holds project roots (#3381)
+
+Code: `HoldsProjectRoots` in `internal/config/project_roots.go`,
+`CheckSandboxSessionDir` in `internal/container/session_dir_scope.go`,
+`Create` in `internal/session/session.go`, the `Prepare` of each isolator
+in `internal/container/lifecycle_dispatch.go`, and
+`refuseSessionsAtOrAbove` in `internal/git/bare_record.go`.
+
+### The session-dir rule
+
+prism does not start a sandboxed session (`bwrap` or `sandbox-exec`) in a
+dir that holds project roots. These dirs hold project roots:
+
+- a project location (`project_locations` in config.json)
+- a dir above a project location, `~` and `/` included
+- a dir above a `project_specific` root
+
+Two places refuse the start, and the error of each wraps
+`ErrSessionDirHoldsProjectRoots`. The error names the dir, the entry of
+config.json, and the reason.
+
+- `session.Create` refuses it before tmux, the sidecar, and the start
+  record exist. So `prism switch --path`, the picker, `prism restore`, and
+  `/switch` refuse it.
+- The `Prepare` of the bwrap isolator and of the sandbox-exec isolator
+  refuse it before they write a file for the session. Each sandbox start
+  runs `Prepare`, also a start that does not come through `session.Create`.
+
+The compare is by path and by file identity. So prism also refuses a
+symlink to such a dir, and the dir with another letter case on a
+case-insensitive macOS volume. prism reads config.json at each start.
+
+A `host` session is not refused, because it has no sandbox. A sandboxed
+session in a project root, in a worktree, or in a dir outside each project
+location starts as before.
+
+`CloneWorktree` and `ConvertToBare` refuse while a session that started in
+the target root, or in a dir above it, runs. They use the two signals of
+`prism confirm-bare`: an open start record, or a tmux session with the
+name of the session. If tmux gives no clear answer, they refuse. The error
+names the session and its start dir.
+
+### Why prism refuses the session
+
+The sandbox of a session can write the dir of the session. bwrap binds the
+dir read-write (`bwrapWorktreeBind`), with no bind on a `.bare` below it.
+Section 6 of the sandbox-exec profile grants a write of the dir, with no
+deny of a `.bare` below it.
+
+So a session in `~/code` can write `.bare/config`, `.bare/hooks`, and
+`.bare/info/attributes` of each project in `~/code`. The bare repo record
+accepts each of these `.bare` dirs, because prism made them. The next host
+git command in the project runs a driver or a hook that the session wrote.
+
+A read-only bind of each `.bare` at the start does not close this route:
+
+1. A `.bare` that a later `prism clone` or `prism convert` makes is not in
+   the binds of a session that runs.
+2. A host-side rename of `.bare/config` detaches a bwrap file pin
+   (`sandbox-git-write-scope.md`).
+3. The session also writes each worktree of each project below it: the
+   `.git` file, the `.pi` files of `main`, and the files of other
+   branches. A bind on `.bare` does not stop these writes.
+
+### A `.bare` that appears after the start
+
+Host git runs only in a `.bare` in a project root ("Project roots" above).
+Each project root is a `project_specific` entry or a dir in a project
+location. So below a dir in which a sandboxed session starts, such a
+`.bare` can appear only at the dir itself, when that dir is a project root.
+
+- `prism convert` stops each session in the root first (#3361, "The
+  conversion of a plain clone" in `session-lifecycle.md`). Then
+  `ConvertToBare` refuses while a session in the root, or above it, runs.
+- `prism clone` into an empty project root refuses while a session in that
+  root runs.
+- The check of `CloneWorktree` and `ConvertToBare` also covers a session
+  that started before this rule, and a session in a dir that a later change
+  of config.json makes a project location.
+
+### Limits of the session-dir rule
+
+- **A `.bare` outside the project roots.** A session can write it. Host
+  git refuses it with `ErrNotProjectRoot`, so it is not a prism repo.
+- **A start during a clone (#3388).** The check of `CloneWorktree` reads
+  the start records one time, before the bare clone. A session start in the
+  target that passes `holdStartLock` before the `.bare` exists can write
+  the new `.bare`.
+- **A detached process on Darwin (#3375).** It outlives its session, so
+  the check of `CloneWorktree` and `ConvertToBare` does not see it.
+
+### Tests of the session-dir rule
+
+`TestHoldsProjectRoots` covers each kind of dir, a symlink, and a project
+location that does not exist.
+`TestPrepare_RefusesSessionDirThatHoldsProjectRoots_3381` makes sure that
+the `Prepare` of bwrap and of sandbox-exec refuse the dir before they write
+a file. Its control, `TestPrepare_SessionDirAboveARepoCanWriteItsBare_3381`,
+starts the same session with no project location in config.json, and shows
+the read-write bind and the profile grant with no rule for the `.bare`.
+`TestPrepare_AllowsSessionDirBelowProjectRoots_3381` and
+`TestCreate_RefusesSandboxedSessionAboveProjectRoots_3381` cover the
+sessions that still start, and the host session.
+`TestSandboxExecSessionAboveRoot_*` (`internal/integration`, Darwin) runs
+`sandbox-exec`: the control session writes the `.bare`, prism refuses the
+session with the project location in config.json, and a worktree session
+starts and cannot write the `.bare`.
+`TestCloneWorktree_RefusesWhileSessionAtOrAboveRuns_3381`,
+`TestConvertToBare_RefusesWhileSessionAtOrAboveRuns_3381`, and
+`TestCloneWorktree_AsksTmuxForSessionsAbove_3381` cover the check of the
+clone and the conversion.
+
 ## The `/review` rebase pre-flight (#3323, #3335)
 
 `prism review` runs a pre-flight that fetches the base ref and checks that it
@@ -664,12 +776,13 @@ table.
   So `prism convert`, and the convert entry of `prism switch`, stop the
   sandboxed root session of the plain clone first, and refuse its restart
   until the conversion ends (#3361). See "The conversion of a plain clone"
-  in `session-lifecycle.md`. Three in-scope routes remain, one line each:
+  in `session-lifecycle.md`. Two in-scope routes remain, one line each:
   - A detached process on Darwin `sandbox-exec` survives the stop (#3375).
   - On Linux, an orphaned `podman` client of the killed sidecar can create
     a container with a read-write mount after the sweep (#3380).
-  - A session at or above the root can write each `.bare` below it at any
-    time, on Linux and Darwin (#3381).
+
+  A session in a dir above the root is refused (#3381, "A session in a dir
+  that holds project roots" above).
 - **A plant that host git used before the update.** The start of the
   record records a plant if a worktree session started in it before the
   update, and `db.Prune` removed the start record of the planting session.

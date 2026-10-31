@@ -3,7 +3,6 @@ package cmd
 // prism confirm-bare — add the .bare of a project to the bare repo record.
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -39,27 +38,13 @@ restart the host before you run this command. A restart ends a process
 that the session detached (#3375).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		gitDir, err := git.ConfirmBare(args[0], sessionRunsInTmux)
+		gitDir, err := git.ConfirmBare(args[0], prismSession.SessionRunsInTmux)
 		if err != nil {
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "recorded %s\n", gitDir)
 		return nil
 	},
-}
-
-// sessionRunsInTmux asks the tmux server of the host for the session. A
-// sandbox has no access to that server, so a session cannot change the
-// answer.
-func sessionRunsInTmux(name string) (bool, error) {
-	switch prismSession.TmuxSessionPresence(name) {
-	case prismSession.TmuxPresent:
-		return true, nil
-	case prismSession.TmuxGone:
-		return false, nil
-	default:
-		return false, errors.New("tmux gave no clear answer")
-	}
 }
 
 func init() {
