@@ -31,6 +31,14 @@ const sidecarWithClient = clientScript + `trap 'exit 0' TERM
 while :; do sleep 0.05; done
 `
 
+// sidecarRemovingPIDFile is sidecarWithClient, but at SIGTERM it removes
+// its own PID file ($STUB_PIDFILE) before it exits, as the real sidecar
+// does.
+const sidecarRemovingPIDFile = clientScript + `trap 'rm -f "$STUB_PIDFILE"; exit 0' TERM
+: > "$STUB_DIR/ready"
+while :; do sleep 0.05; done
+`
+
 // startGroupStub starts script under /bin/sh with the command line
 // `sh sidecar --session name`, so that the owner check accepts it as the
 // sidecar of name, and writes its PID to the PID file of name. attr sets
@@ -142,8 +150,9 @@ func TestEnsureSidecarStoppedErr_KillsProcessThatTheSidecarStarted_3380(t *testi
 }
 
 // AC: the stop is refused when a process that the sidecar started still
-// runs after the wait. The error names the PID and the session, and the
-// PID file stays, so that the next stop waits for the group again.
+// runs after the wait. The error names the PID and the session. The PID
+// file stays, also when the sidecar removed it at SIGTERM, so that the next
+// stop waits for the group again.
 func TestEnsureSidecarStoppedErr_RefusesWhenAProcessOfTheGroupStillRuns_3380(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	const name = "prism-test@group-survivor"
@@ -159,12 +168,17 @@ func TestEnsureSidecarStoppedErr_RefusesWhenAProcessOfTheGroupStillRuns_3380(t *
 		return prev(pgid, sig)
 	}
 	t.Cleanup(func() { signalGroup = prev })
+	pidPath, err := SidecarPIDPath(name)
+	if err != nil {
+		t.Fatalf("SidecarPIDPath: %v", err)
+	}
+	t.Setenv("STUB_PIDFILE", pidPath)
 	dir := t.TempDir()
-	pid, exited := startGroupStub(t, name, dir, sidecarWithClient, &syscall.SysProcAttr{Setsid: true}, true)
+	pid, exited := startGroupStub(t, name, dir, sidecarRemovingPIDFile, &syscall.SysProcAttr{Setsid: true}, true)
 	waitStubFile(t, filepath.Join(dir, "ready"))
 	client := waitClientPID(t, dir)
 
-	err := EnsureSidecarStoppedErr(name, 300*time.Millisecond)
+	err = EnsureSidecarStoppedErr(name, 300*time.Millisecond)
 	var groupErr *SidecarGroupError
 	if !errors.As(err, &groupErr) {
 		t.Fatalf("EnsureSidecarStoppedErr = %v, want a *SidecarGroupError", err)
@@ -178,13 +192,13 @@ func TestEnsureSidecarStoppedErr_RefusesWhenAProcessOfTheGroupStillRuns_3380(t *
 	if len(kills) == 0 || kills[0] != pid {
 		t.Errorf("SIGKILL went to groups %v, want the group %d of the sidecar", kills, pid)
 	}
-	if !pidFilePresent(t, name) {
-		t.Error("PID file removed, want kept for the next stop")
+	waitExited(t, exited)
+	if got := readSidecarPID(name); got != pid {
+		t.Errorf("PID file holds %d, want %d: the sidecar removed its PID file, and the next stop must still find the group", got, pid)
 	}
 	if EnsureSidecarStopped(name, 100*time.Millisecond) {
 		t.Error("EnsureSidecarStopped = true, want false while the client runs")
 	}
-	waitExited(t, exited)
 }
 
 // AC: when the sidecar has already exited and its process group is empty,

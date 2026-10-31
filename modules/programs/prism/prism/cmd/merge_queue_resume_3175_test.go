@@ -5,6 +5,7 @@ package cmd
 // prism switch.
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -109,7 +110,12 @@ func TestRestoreSession_AfterHostShutdown_ResumesMergeQueue(t *testing.T) {
 func stubSwitchStop(t *testing.T, gone bool) {
 	t.Helper()
 	prev := switchStopSidecar
-	switchStopSidecar = func(string, time.Duration) bool { return gone }
+	switchStopSidecar = func(string, time.Duration) error {
+		if gone {
+			return nil
+		}
+		return errors.New("fake stop: the old sidecar still runs")
+	}
 	t.Cleanup(func() { switchStopSidecar = prev })
 }
 

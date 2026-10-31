@@ -221,3 +221,69 @@ func TestSessionEndingPaths_GroupProcessStillRunsRefuses_3380(t *testing.T) {
 		})
 	}
 }
+
+// assertGroupRunsError checks the restore or switch error for a process of
+// the group of the old sidecar. It names the process and the session. It
+// does not tell the owner to remove the PID file, because the next stop
+// finds the group only through that file.
+func assertGroupRunsError(t *testing.T, err error, sessionName string, member int) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("no error, want a refusal while a process of the group of the old sidecar runs")
+	}
+	for _, want := range []string{strconv.Itoa(member), strconv.Quote(sessionName), "Stop each process that the error names"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want %q", err, want)
+		}
+	}
+	pidPath, pathErr := prismSession.SidecarPIDPath(sessionName)
+	if pathErr != nil {
+		t.Fatalf("SidecarPIDPath: %v", pathErr)
+	}
+	if strings.Contains(err.Error(), pidPath) || strings.Contains(err.Error(), "remove its PID file") {
+		t.Errorf("error = %q, want no advice to remove the PID file %s", err, pidPath)
+	}
+}
+
+// prism restore refuses a session while a process of the group of the old
+// sidecar runs, and its error gives the advice for that process.
+func TestRestoreSession_GroupProcessRuns_Refused_3380(t *testing.T) {
+	d := startRestoreServer(t)
+	const sessionName = "testrepo@group-runs-3380"
+	const oldPID, member = 424242, 424243
+	status, iid := seedRestoreCoordinator(t, d, sessionName, 4)
+	prev := restoreStopSidecar
+	restoreStopSidecar = func(string, time.Duration) (int, bool, error) {
+		return oldPID, true, &prismSession.SidecarGroupError{Session: sessionName, PGID: oldPID, PIDs: []int{member}, Signalled: true}
+	}
+	t.Cleanup(func() { restoreStopSidecar = prev })
+
+	t.Setenv("PRISM_CMD_TEST_STUB", "1")
+	err := callRestoreSession(d, status)
+	t.Cleanup(func() { prismSession.KillSidecar(sessionName) })
+	assertGroupRunsError(t, err, sessionName, member)
+	if err != nil && !strings.Contains(err.Error(), "merge queue is not resumed: PR #4") {
+		t.Errorf("error = %q, want the merge queue that is not resumed", err)
+	}
+	assertNotRestored(t, d, sessionName, iid, 4)
+}
+
+// prism switch does not restart a stale session while a process of the
+// group of the old sidecar runs, and its error gives the advice for that
+// process.
+func TestEnsureAndSwitch_StaleSidecarGroupRuns_KeepsSession_3380(t *testing.T) {
+	f := newStaleSwitchFixture(t, 62)
+	const member = 424243
+	prev := switchStopSidecar
+	switchStopSidecar = func(string, time.Duration) error {
+		return &prismSession.SidecarGroupError{Session: f.sessionName, PGID: 424242, PIDs: []int{member}, Signalled: true}
+	}
+	t.Cleanup(func() { switchStopSidecar = prev })
+
+	err := ensureAndSwitch(f.dir, "", switchTestOpts())
+	assertGroupRunsError(t, err, f.sessionName, member)
+	if got := f.sessionID(t); got != f.tmuxID {
+		t.Errorf("tmux session_id = %s, want %s: the session must not be recreated", got, f.tmuxID)
+	}
+	assertQueue(t, f.d, f.sessionName, f.iid, 62)
+}

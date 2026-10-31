@@ -424,9 +424,16 @@ func StopSidecar(sessionName string, timeout time.Duration) bool {
 // caller that then does not start a new sidecar needs the file: the next
 // stop finds the same process, and does not report it as gone (#3303).
 func StopSidecarReport(sessionName string, timeout time.Duration) (pid int, exited, gone bool) {
-	pid = readSidecarPID(sessionName)
-	exited, err := stopSidecarPID(sessionName, pid, timeout, false)
+	pid, exited, err := StopSidecarReportErr(sessionName, timeout)
 	return pid, exited, err == nil
+}
+
+// StopSidecarReportErr is StopSidecarReport, but it returns the reason in
+// place of gone=false, as EnsureSidecarStoppedErr does.
+func StopSidecarReportErr(sessionName string, timeout time.Duration) (pid int, exited bool, err error) {
+	pid = readSidecarPID(sessionName)
+	exited, err = stopSidecarPID(sessionName, pid, timeout, false)
+	return pid, exited, err
 }
 
 // SidecarStopTimeout is the SIGTERM wait, and then the SIGKILL wait, that
@@ -541,13 +548,33 @@ func stopSidecarPID(sessionName string, pid int, timeout time.Duration, dropUnkn
 
 // sidecarGroupStopped runs stopSidecarGroup, and writes a warning when a
 // process of the group still runs. The PID file of pid then stays, so that
-// a later stop waits for the group again.
+// a later stop waits for the group again. A sidecar that exits on SIGTERM
+// removes its own PID file, so sidecarGroupStopped writes the file again.
 func sidecarGroupStopped(sessionName string, pid int, kill bool, timeout time.Duration) error {
 	err := stopSidecarGroup(sessionName, pid, kill, timeout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		restoreSidecarPIDFile(sessionName, pid)
 	}
 	return err
+}
+
+// restoreSidecarPIDFile writes pid to the PID file of sessionName when the
+// file is absent. It does not replace a file that a new sidecar of the
+// session wrote.
+func restoreSidecarPIDFile(sessionName string, pid int) {
+	pidPath, err := SidecarPIDPath(sessionName)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(pidPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if _, err := f.WriteString(strconv.Itoa(pid) + "\n"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: write the sidecar PID file %s again: %v\n", pidPath, err)
+	}
 }
 
 // waitSidecarExit polls until pid no longer runs or deadline passes. It

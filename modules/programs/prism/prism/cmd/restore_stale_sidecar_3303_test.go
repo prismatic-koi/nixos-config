@@ -5,6 +5,7 @@ package cmd
 // not restore that session, and it still restores the other sessions.
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -25,11 +26,11 @@ import (
 func stubRestoreStop(t *testing.T, notGone map[string]int) {
 	t.Helper()
 	prev := restoreStopSidecar
-	restoreStopSidecar = func(sessionName string, _ time.Duration) (int, bool, bool) {
+	restoreStopSidecar = func(sessionName string, _ time.Duration) (int, bool, error) {
 		if pid, ok := notGone[sessionName]; ok {
-			return pid, false, false
+			return pid, false, fmt.Errorf("fake stop: sidecar pid %d still runs", pid)
 		}
-		return 0, true, true
+		return 0, true, nil
 	}
 	t.Cleanup(func() { restoreStopSidecar = prev })
 }

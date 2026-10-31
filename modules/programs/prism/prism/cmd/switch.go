@@ -250,7 +250,7 @@ var switchSidecarStopTimeout = killSidecarTimeout
 
 // switchStopSidecar stops the old sidecar of a stale session, and reports
 // whether no process that can be that sidecar runs. Tests replace it.
-var switchStopSidecar = session.EnsureSidecarStopped
+var switchStopSidecar = session.EnsureSidecarStoppedErr
 
 // stopStaleSidecar stops the old sidecar of the stale session sessionName,
 // and returns the merge queue that the new sidecar must watch (#3175). st
@@ -269,8 +269,8 @@ func stopStaleSidecar(d *db.DB, sessionName string, st *db.Status) ([]db.Pending
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: prism switch %q: read merge queue: %v\n", sessionName, err)
 	}
-	if !switchStopSidecar(sessionName, switchSidecarStopTimeout) {
-		return nil, staleSidecarRunsError(sessionName, queued)
+	if stopErr := switchStopSidecar(sessionName, switchSidecarStopTimeout); stopErr != nil {
+		return nil, staleSidecarRunsError(sessionName, stopErr, queued)
 	}
 	if st != nil && st.EndedAt == nil && st.InstanceID != nil {
 		if queued, err = withMergesAbandonedByStop(d, sessionName, *st.InstanceID, queued); err != nil {
@@ -282,10 +282,16 @@ func stopStaleSidecar(d *db.DB, sessionName string, st *db.Status) ([]db.Pending
 
 // staleSidecarRunsError is the error of prism switch when the stop of the
 // old sidecar of sessionName cannot prove that it is gone. The stop already
-// wrote a warning that names the PID. queued is the merge queue that the
-// switch read before the stop.
-func staleSidecarRunsError(sessionName string, queued []db.PendingMerge) error {
+// wrote a warning that names the PID. stopErr is the error of the stop.
+// queued is the merge queue that the switch read before the stop.
+func staleSidecarRunsError(sessionName string, stopErr error, queued []db.PendingMerge) error {
 	var b strings.Builder
+	if groupErr := (*session.SidecarGroupError)(nil); errors.As(stopErr, &groupErr) {
+		fmt.Fprintf(&b, "prism switch %q: the session is not restarted, because a process of the process group of the old sidecar still runs: %v.", sessionName, groupErr)
+		b.WriteString(sidecarGroupRunsAdvice(queued))
+		b.WriteString(" Stop each process that the error names, then run prism switch again.")
+		return errors.New(b.String())
+	}
 	fmt.Fprintf(&b, "prism switch %q: the session is not restarted, because a process that can be the old sidecar still runs (see the warning above). "+
 		"A new sidecar next to that process can start a second merge-queue watcher.", sessionName)
 	if len(queued) > 0 {
@@ -571,4 +577,17 @@ func init() {
 	switchCmd.Flags().String("path", "", "Open a specific path directly (skip picker)")
 	switchCmd.Flags().Bool("fresh", false, "Start a fresh harness session, ignoring any stored session ID")
 	rootCmd.AddCommand(switchCmd)
+}
+
+// sidecarGroupRunsAdvice is the part of the restore and switch errors for
+// a process of the process group of the old sidecar that still runs. Do not
+// tell the owner to remove the PID file here: the next stop finds the group
+// only through that file.
+func sidecarGroupRunsAdvice(queued []db.PendingMerge) string {
+	var b strings.Builder
+	b.WriteString(" A podman client of the old sidecar can still create a container of the session. A new sidecar replaces the PID file of the old sidecar, and a later stop then cannot wait for that process.")
+	if len(queued) > 0 {
+		fmt.Fprintf(&b, " The merge queue is not resumed: %s.", formatMergePRs(queued))
+	}
+	return b.String()
 }

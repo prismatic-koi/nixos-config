@@ -39,9 +39,9 @@ func TestRestoreOneSession_RestartsLiveSession(t *testing.T) {
 
 	var stopped []string
 	prev := restoreStopSidecar
-	restoreStopSidecar = func(name string, _ time.Duration) (int, bool, bool) {
+	restoreStopSidecar = func(name string, _ time.Duration) (int, bool, error) {
 		stopped = append(stopped, name)
-		return 0, true, true
+		return 0, true, nil
 	}
 	t.Cleanup(func() { restoreStopSidecar = prev })
 
