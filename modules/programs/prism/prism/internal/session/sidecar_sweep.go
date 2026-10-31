@@ -199,7 +199,7 @@ func SweepEndedSidecars(d *db.DB, opts SweepOpts) (SweepResult, error) {
 		default:
 			continue
 		}
-		if _, gone := stopSidecarPID(f.Session, f.PID, timeout, false); !gone {
+		if _, err := stopSidecarPID(f.Session, f.PID, timeout, false); err != nil {
 			res.Failed = append(res.Failed, f.Session)
 			continue
 		}

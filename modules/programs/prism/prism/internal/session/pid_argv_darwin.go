@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -58,4 +59,35 @@ const szomb = 5
 func pidIsZombie(pid int) bool {
 	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	return err == nil && kp.Proc.P_stat == szomb
+}
+
+// liveGroupMembers returns each process in the process group pgid that has
+// not exited, from the kern.proc.pgrp sysctl.
+func liveGroupMembers(pgid int) ([]groupMember, error) {
+	procs, err := unix.SysctlKinfoProcSlice("kern.proc.pgrp", pgid)
+	if err != nil {
+		return nil, fmt.Errorf("sysctl kern.proc.pgrp %d: %w", pgid, err)
+	}
+	var members []groupMember
+	for _, p := range procs {
+		if p.Proc.P_stat == szomb {
+			continue
+		}
+		m := groupMember{pid: int(p.Proc.P_pid)}
+		if sid, err := unix.Getsid(m.pid); err == nil {
+			m.sid = sid
+		}
+		members = append(members, m)
+	}
+	return members, nil
+}
+
+// bootTime returns the time of the system boot, from the kern.boottime
+// sysctl.
+func bootTime() (time.Time, error) {
+	tv, err := unix.SysctlTimeval("kern.boottime")
+	if err != nil {
+		return time.Time{}, fmt.Errorf("sysctl kern.boottime: %w", err)
+	}
+	return time.Unix(tv.Unix()), nil
 }

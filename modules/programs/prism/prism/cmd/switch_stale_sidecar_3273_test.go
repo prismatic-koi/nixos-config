@@ -207,9 +207,9 @@ func TestEnsureAndSwitch_StaleSidecarNotGone_KeepsSession(t *testing.T) {
 func TestEnsureAndSwitch_StaleSidecarGone_ResumesQueue(t *testing.T) {
 	f := newStaleSwitchFixture(t, 72, 71)
 	prev := switchStopSidecar
-	switchStopSidecar = func(string, time.Duration) bool {
+	switchStopSidecar = func(string, time.Duration) error {
 		shutDownSidecar(t, f.d, f.iid)
-		return true
+		return nil
 	}
 	t.Cleanup(func() { switchStopSidecar = prev })
 

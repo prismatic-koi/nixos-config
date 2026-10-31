@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -71,7 +72,7 @@ func tmuxKilled(t *testing.T, logFile, name string) bool {
 func withCleanupStops(t *testing.T, dbFile, tmuxLog string, ok func(string) bool) *[]string {
 	t.Helper()
 	var calls []string
-	fake := func(name string) bool {
+	fake := func(name string) error {
 		calls = append(calls, name)
 		if readStatus(t, dbFile, name).EndedAt != nil {
 			t.Errorf("row of %q ended before its sidecar stop", name)
@@ -79,7 +80,10 @@ func withCleanupStops(t *testing.T, dbFile, tmuxLog string, ok func(string) bool
 		if tmuxKilled(t, tmuxLog, name) {
 			t.Errorf("tmux session %q killed before its sidecar stop", name)
 		}
-		return ok(name)
+		if ok(name) {
+			return nil
+		}
+		return fmt.Errorf("fake stop of %q failed", name)
 	}
 	prevCleanup, prevSwitch := cleanupStopSidecar, switchProjectStopSidecar
 	cleanupStopSidecar, switchProjectStopSidecar = fake, fake

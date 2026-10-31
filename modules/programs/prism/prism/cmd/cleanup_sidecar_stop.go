@@ -16,8 +16,8 @@ import (
 // Seams for the sidecar stops of the cleanup paths. Tests replace them, so
 // that a test signals no process.
 var (
-	cleanupStopSidecar = func(session string) bool {
-		return prismSession.EnsureSidecarStopped(session, prismSession.SidecarStopTimeout)
+	cleanupStopSidecar = func(session string) error {
+		return prismSession.EnsureSidecarStoppedErr(session, prismSession.SidecarStopTimeout)
 	}
 	cleanupReviewChildren = review.CleanupReviewSessionsForParent
 )
@@ -38,6 +38,13 @@ func sidecarsNotStoppedError(sessions []string) error {
 		quoted[i] = strconv.Quote(s)
 	}
 	return fmt.Errorf("%w for %s: prism kept the tmux session, the row, and the port of each one", errSidecarNotStopped, strings.Join(quoted, ", "))
+}
+
+// keptSessionError returns the error of a path that kept a session because
+// its sidecar stop failed with stopErr. stopErr names the PID and the
+// session. failed names each kept session (sidecarsNotStoppedError).
+func keptSessionError(stopErr error, failed []string) error {
+	return errors.Join(stopErr, sidecarsNotStoppedError(failed))
 }
 
 // cleanupChildrenOfKeptSession runs when the sidecar of session did not

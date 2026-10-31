@@ -776,10 +776,8 @@ table.
   So `prism convert`, and the convert entry of `prism switch`, stop the
   sandboxed root session of the plain clone first, and refuse its restart
   until the conversion ends (#3361). See "The conversion of a plain clone"
-  in `session-lifecycle.md`. Two in-scope routes remain, one line each:
+  in `session-lifecycle.md`. One in-scope route remains:
   - A detached process on Darwin `sandbox-exec` survives the stop (#3375).
-  - On Linux, an orphaned `podman` client of the killed sidecar can create
-    a container with a read-write mount after the sweep (#3380).
 
   A session in a dir above the root is refused (#3381, "A session in a dir
   that holds project roots" above).
