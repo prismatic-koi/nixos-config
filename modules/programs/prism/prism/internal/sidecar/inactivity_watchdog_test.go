@@ -794,3 +794,109 @@ func TestInactivityWatchdog_AfterFrames_ClassifiedAsMidRunStall(t *testing.T) {
 	conn.Close()
 	_ = wait()
 }
+
+// TestInactivityWatchdog_FinishedAgentSendsNoAlert_3382 finishes a review
+// agent, advances time past the watchdog limit, and shows that no stall
+// alert is written or sent. The timer of the finished run is disarmed, and a
+// stale callback that still runs is a no-op.
+func TestInactivityWatchdog_FinishedAgentSendsNoAlert_3382(t *testing.T) {
+	workerSession := "prism-test@worker-3382"
+	reviewSession := workerSession + "~review-1-review-goal"
+	bus := sidecartest.NewIsolated(t, workerSession)
+
+	sockPath := shortSockPath(t)
+	clk := newTestClock()
+	sc := New(Config{
+		SessionName:           reviewSession,
+		Repo:                  "prism-test",
+		Worktree:              t.TempDir(),
+		DB:                    bus.DB,
+		Clock:                 clk,
+		AgentRole:             "review-goal",
+		HarnessName:           "pi",
+		HarnessPipeSockPath:   sockPath,
+		HarnessPipeSecretPath: pipeSecretPathFor(sockPath),
+		StartupConnectTimeout: 5 * time.Second,
+		PipeReconnectTimeout:  time.Minute,
+		ActivityTimeout:       30 * time.Second,
+		IsolationMode:         config.IsolationMode("host"),
+		Harness:               pih.New("", "", ""),
+	})
+	wait := runSocketPipeSidecar(sc)
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "done"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
+	debounce := clk.WaitForTimerCount(5, 5*time.Second)
+	if debounce == nil {
+		t.Fatal("no finished-debounce timer registered")
+	}
+	debounce.Fire()
+	if got := waitForState(t, bus.DB, reviewSession, string(agent.StateFinished), 2*time.Second); got != string(agent.StateFinished) {
+		t.Fatalf("state: got %q, want finished", got)
+	}
+	sc.WaitNotifies()
+	before := len(bus.CopyBodies())
+
+	// Advance past the limit. A fired timer that is still armed would run.
+	clk.Advance(2 * time.Minute)
+	sc.mu.Lock()
+	armed := sc.activityTimer != nil
+	sc.mu.Unlock()
+	if armed {
+		t.Error("watchdog still armed after the agent finished")
+	}
+	// A stale callback from an earlier arm must also do nothing.
+	sc.fireActivityTimeout(30*time.Second, 1)
+	// A callback of the current generation on a finished row is a no-op.
+	sc.handleActivityTimeout(30 * time.Second)
+	sc.WaitNotifies()
+
+	for _, ev := range getEvents(t, bus.DB, reviewSession) {
+		if ev.Type == "stall_error" || ev.Type == "startup_error" {
+			t.Errorf("finished agent got a %s event: %s", ev.Type, ev.Payload)
+		}
+	}
+	for _, b := range bus.CopyBodies()[before:] {
+		t.Errorf("late notification after finish: %q", b)
+	}
+	if got := getState(t, bus.DB, reviewSession); got != string(agent.StateFinished) {
+		t.Errorf("state: got %q, want finished", got)
+	}
+	conn.Close()
+	_ = wait()
+}
+
+// TestInactivityWatchdog_ReleasedRowSendsNoAlert_3382: the row is closed (the
+// 15-minute release, #2649) while the state still reads non-terminal.
+func TestInactivityWatchdog_ReleasedRowSendsNoAlert_3382(t *testing.T) {
+	workerSession := "prism-test@worker-3382r"
+	reviewSession := workerSession + "~review-1-review-goal"
+	bus := sidecartest.NewIsolated(t, workerSession)
+	sockPath := shortSockPath(t)
+	sc := New(Config{
+		SessionName: reviewSession, Repo: "prism-test", Worktree: t.TempDir(),
+		DB: bus.DB, Clock: newTestClock(), AgentRole: "review-goal", HarnessName: "pi",
+		HarnessPipeSockPath: sockPath, HarnessPipeSecretPath: pipeSecretPathFor(sockPath),
+		ActivityTimeout: 30 * time.Second, IsolationMode: config.IsolationMode("host"),
+		Harness: pih.New("", "", ""),
+	})
+	sc.mu.Lock()
+	sc.upsertState(agent.StateActive, nil, nil)
+	sc.recordInboundFrame()
+	sc.mu.Unlock()
+	if err := bus.DB.SetEnded(reviewSession); err != nil {
+		t.Fatal(err)
+	}
+	sc.handleActivityTimeout(30 * time.Second)
+	sc.WaitNotifies()
+	for _, ev := range getEvents(t, bus.DB, reviewSession) {
+		if ev.Type == "stall_error" {
+			t.Errorf("released agent got a stall_error: %s", ev.Payload)
+		}
+	}
+	if n := len(bus.CopyBodies()); n != 0 {
+		t.Errorf("released agent sent %d notification(s)", n)
+	}
+}
