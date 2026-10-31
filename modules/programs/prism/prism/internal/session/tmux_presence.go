@@ -1,10 +1,33 @@
 package session
 
 import (
+	"errors"
 	"strings"
 
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
+
+// git.CloneWorktree and git.ConvertToBare refuse while a session in the
+// target root, or above it, runs (#3381). internal/git cannot import this
+// package, so this package gives it the check.
+func init() {
+	git.SetSessionRunsSource(SessionRunsInTmux)
+}
+
+// SessionRunsInTmux asks the tmux server of the host for the session. A
+// sandbox has no access to that server, so a session cannot change the
+// answer.
+func SessionRunsInTmux(name string) (bool, error) {
+	switch TmuxSessionPresence(name) {
+	case TmuxPresent:
+		return true, nil
+	case TmuxGone:
+		return false, nil
+	default:
+		return false, errors.New("tmux gave no clear answer")
+	}
+}
 
 // TmuxPresence is the answer of TmuxSessionPresence.
 type TmuxPresence int

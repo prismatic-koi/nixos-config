@@ -903,7 +903,9 @@ func startupGuardKillOld(name string, d *db.DB, forceFresh bool) bool {
 // returns. While prism converts directory to the bare+worktree layout,
 // Create returns an error that wraps ErrConvertInProgress. When directory
 // holds a .bare, it returns an error that wraps ErrStartInBareRoot
-// (convert_lock.go).
+// (convert_lock.go). A sandboxed LayoutFull start in a dir that holds
+// project roots returns an error that wraps
+// container.ErrSessionDirHoldsProjectRoots.
 func Create(name, directory string, opts Opts) error {
 	// Fail-fast guard for the host-mode pi launch.
 	// Only applies to LayoutFull, which is the layout that actually launches
@@ -915,6 +917,13 @@ func Create(name, directory string, opts Opts) error {
 	if opts.Layout == LayoutFull {
 		if err := ValidatePILaunchOpts(opts); err != nil {
 			return fmt.Errorf("session.Create %q: %w", name, err)
+		}
+		// The sandbox launch refuses this dir too. Refuse here, before the
+		// tmux session, the sidecar, and the start record exist (#3381).
+		if effectiveIsolationMode(opts) != string(config.IsolationHost) {
+			if err := container.CheckSandboxSessionDir(directory); err != nil {
+				return fmt.Errorf("session.Create %q: %w", name, err)
+			}
 		}
 		release, err := holdStartLock(directory)
 		if err != nil {

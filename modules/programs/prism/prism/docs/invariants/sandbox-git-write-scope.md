@@ -44,6 +44,11 @@ configuration.
 The project root is the directory that holds `.bare` and the worktrees
 (`Config.BareRoot`). The common dir is `.bare` in it.
 
+This scope holds for a session in a worktree. prism does not start a
+sandboxed session in a dir above a project root, because the sandbox can
+write the whole dir of the session (#3381, "A session in a dir that holds
+project roots" in `host-git-commands.md`).
+
 A session can write these paths in its repo, and no other path:
 
 | Path | Session | Writer and reason |

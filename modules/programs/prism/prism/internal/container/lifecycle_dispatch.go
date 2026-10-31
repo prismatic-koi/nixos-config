@@ -130,6 +130,12 @@ func (b *bwrapIsolator) Reset(ctx context.Context) error {
 // This also pre-creates bind-mount source directories so bwrap (which
 // silently fails on missing sources) can find them.
 func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, error) {
+	// bwrapWorktreeBind binds the dir of the session read-write, with no
+	// overlay on a .bare below it (#3381).
+	if err := CheckSandboxSessionDir(m.cfg.Worktree); err != nil {
+		return nil, fmt.Errorf("container: bwrap: %w", err)
+	}
+
 	// Write a minimal SSH config for bwrap.
 	if err := m.writeSshConfig(isolationBwrap); err != nil {
 		return nil, fmt.Errorf("container: bwrap: %w", err)
@@ -268,6 +274,12 @@ func (s *sandboxExecIsolator) Reset(ctx context.Context) error {
 // Prepare time. A PrepareSessionTmpDir failure is a hard fail too: the
 // session has no other writable temp tree.
 func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string, error) {
+	// Section 6 of the profile grants a write of the whole dir of the
+	// session, with no deny of a .bare below it (#3381).
+	if err := CheckSandboxSessionDir(m.cfg.Worktree); err != nil {
+		return nil, fmt.Errorf("container: sandbox-exec: %w", err)
+	}
+
 	// Prepare the per-session work dir: the
 	// generated ssh-config / gitconfig / allowed_signers the dispatcher wires
 	// in via GIT_SSH_COMMAND / GIT_CONFIG_GLOBAL, plus the chromium Library
