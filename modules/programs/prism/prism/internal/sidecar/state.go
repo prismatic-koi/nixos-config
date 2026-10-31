@@ -31,6 +31,7 @@ func (s *Sidecar) cancelRecoveryTimer() {
 // cancelActivityTimer cancels the inactivity watchdog. Must be called
 // with s.mu held.
 func (s *Sidecar) cancelActivityTimer() {
+	s.activityGen++
 	if s.activityTimer != nil {
 		s.activityTimer.Stop()
 		s.activityTimer = nil
@@ -61,8 +62,10 @@ func (s *Sidecar) touchActivity() {
 		s.activityTimer = nil
 	}
 	timeout := s.cfg.ActivityTimeout
+	s.activityGen++
+	gen := s.activityGen
 	s.activityTimer = s.cfg.Clock.AfterFunc(timeout, func() {
-		s.handleActivityTimeout(timeout)
+		s.fireActivityTimeout(timeout, gen)
 	})
 }
 
@@ -109,6 +112,25 @@ func (s *Sidecar) recordInboundFrame() {
 // verdict-producing.
 func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 	s.mu.Lock()
+	s.handleActivityTimeoutLocked(timeout)
+}
+
+// fireActivityTimeout is the timer callback. gen is the arm generation of
+// the timer. A timer that a later touchActivity or cancelActivityTimer
+// replaced can still run: Stop does not recall a callback that already
+// started and waits for s.mu. Such a stale callback must do nothing, or it
+// reports a stall for an agent that sent a frame or finished after the arm.
+func (s *Sidecar) fireActivityTimeout(timeout interface{}, gen uint64) {
+	s.mu.Lock()
+	if gen != s.activityGen {
+		s.mu.Unlock()
+		return
+	}
+	s.handleActivityTimeoutLocked(timeout)
+}
+
+// handleActivityTimeoutLocked runs with s.mu held and always releases it.
+func (s *Sidecar) handleActivityTimeoutLocked(timeout interface{}) {
 	s.activityTimer = nil
 
 	if s.shuttingDown {
@@ -116,13 +138,28 @@ func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 		return
 	}
 
+	// A finished-frame debounce is pending: the agent has already ended its
+	// run, and the debounce writes the one outcome. Do not race it.
+	if s.idleTimer != nil {
+		s.logger().Printf("sidecar: inactivity watchdog fired but a finish is pending — no-op")
+		s.mu.Unlock()
+		return
+	}
+
 	// Re-check current state under the lock. If the session has already
 	// reached a terminal state via a normal path (state_change{finished},
-	// session_shutdown, and others), the watchdog is a no-op.
-	current := s.currentDBState()
-	if current == agent.StateFinished || current == agent.StateError ||
-		current == agent.StateInterrupted {
-		s.logger().Printf("sidecar: inactivity watchdog fired but session already terminal (state=%s) — no-op", current)
+	// session_shutdown, and others), the watchdog is a no-op. So is a
+	// session whose row is gone or closed (the release of #2649), and an
+	// agent whose round already delivered its result.
+	st, _ := s.cfg.DB.CurrentStatus(s.cfg.SessionName)
+	current := agent.AgentState("")
+	if st != nil {
+		current = agent.AgentState(st.State)
+	}
+	if (st != nil && st.EndedAt != nil) || current == agent.StateFinished ||
+		current == agent.StateError || current == agent.StateInterrupted ||
+		s.roundDelivered(st) {
+		s.logger().Printf("sidecar: inactivity watchdog fired but session already done (state=%s) — no-op", current)
 		s.mu.Unlock()
 		return
 	}
@@ -189,6 +226,16 @@ func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 	})
 }
 
+// roundDelivered reports whether the review round of st already delivered its
+// result to the worker. A read error gives false.
+func (s *Sidecar) roundDelivered(st *db.Status) bool {
+	if st == nil || st.GroupID == nil {
+		return false
+	}
+	g, err := s.cfg.DB.GetGroup(*st.GroupID)
+	return err == nil && g != nil && g.DeliveredAt != nil
+}
+
 func (s *Sidecar) currentDBState() agent.AgentState {
 	st, err := s.cfg.DB.CurrentStatus(s.cfg.SessionName)
 	if err != nil || st == nil {
@@ -204,6 +251,11 @@ func (s *Sidecar) currentDBState() agent.AgentState {
 // non-empty). All other persistence happens via s.cfg.DB and is not
 // s.mu-protected struct state.
 func (s *Sidecar) upsertState(state agent.AgentState, title *string, harnessSessionID *string) {
+	// A run that reaches a terminal state has nothing left for the
+	// inactivity watchdog to watch. The next inbound frame re-arms it.
+	if state == agent.StateFinished || state == agent.StateError || state == agent.StateInterrupted {
+		s.cancelActivityTimer()
+	}
 	// Track the most recently seen title for dashboard push events.
 	if title != nil && *title != "" {
 		s.lastTitle = *title

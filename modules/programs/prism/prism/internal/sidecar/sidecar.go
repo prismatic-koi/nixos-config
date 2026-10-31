@@ -737,6 +737,10 @@ type Sidecar struct {
 	// Protected by s.mu.
 	activityTimer Timer
 
+	// activityGen counts the arms and cancels of activityTimer. A callback
+	// that carries an older value is stale and does nothing.
+	activityGen uint64
+
 	// inboundFrameCount counts inbound frames received from the agent
 	// harness — every frame processed by handlePipeFrame (PI socket-pipe
 	// path) or HandleEvent (SSE path). The post-handshake watchdog arm does
