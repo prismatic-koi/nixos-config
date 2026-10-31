@@ -360,3 +360,122 @@ func TestStopOwnSessionHelperProcess_3380(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+// A PID file that is older than the system boot names a process of an
+// earlier boot. A group with that ID is not the group of the sidecar, so
+// the stop does not wait for it and sends it no signal.
+func TestEnsureSidecarStoppedErr_PIDFileOfAnEarlierBootIgnored_3380(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	const name = "prism-test@group-earlier-boot"
+	dir := t.TempDir()
+	_, exited := startGroupStub(t, name, dir, clientScript+"exit 0\n", &syscall.SysProcAttr{Setsid: true}, true)
+	client := waitClientPID(t, dir)
+	waitExited(t, exited)
+	boot := time.Now().Add(-time.Hour)
+	prev := currentBootTime
+	currentBootTime = func() (time.Time, error) { return boot, nil }
+	t.Cleanup(func() { currentBootTime = prev })
+	pidPath, err := SidecarPIDPath(name)
+	if err != nil {
+		t.Fatalf("SidecarPIDPath: %v", err)
+	}
+	old := boot.Add(-time.Hour)
+	if err := os.Chtimes(pidPath, old, old); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	const timeout = 5 * time.Second
+	start := time.Now()
+	if err := EnsureSidecarStoppedErr(name, timeout); err != nil {
+		t.Fatalf("EnsureSidecarStoppedErr = %v, want nil for a PID file of an earlier boot", err)
+	}
+	if elapsed := time.Since(start); elapsed > timeout/2 {
+		t.Errorf("the stop took %v, want much less than the timeout %v", elapsed, timeout)
+	}
+	if !sidecarProcessExists(client) {
+		t.Error("the stop signalled a process of a group from an earlier boot")
+	}
+	if pidFilePresent(t, name) {
+		t.Error("PID file still present after the stop")
+	}
+}
+
+// The boot time is in the past. The selector of the macOS CI job matches
+// this name, so it also runs with the kern.boottime sysctl.
+func TestStopSidecarGroup_BootTimeIsInThePast_3380(t *testing.T) {
+	boot, err := bootTime()
+	if err != nil {
+		t.Fatalf("bootTime: %v", err)
+	}
+	if !boot.Before(time.Now()) || boot.Before(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("bootTime = %v, want a time in the past", boot)
+	}
+}
+
+// A sidecar that exits on its own keeps its PID file while a process of its
+// group runs, so that a later stop still finds the group. A helper process
+// in a session of its own plays the sidecar. With busy, it starts a child
+// in its group first.
+func TestRemoveOwnSidecarPIDFile_KeepsFileWhileTheGroupRuns_3380(t *testing.T) {
+	for _, busy := range []bool{true, false} {
+		t.Run("busy="+strconv.FormatBool(busy), func(t *testing.T) {
+			state := t.TempDir()
+			t.Setenv("XDG_STATE_HOME", state)
+			const name = "prism-test@group-own-exit"
+			self, err := os.Executable()
+			if err != nil {
+				t.Fatalf("os.Executable: %v", err)
+			}
+			start := filepath.Join(t.TempDir(), "start")
+			cmd := exec.Command(self, "-test.run=^TestOwnExitHelperProcess_3380$")
+			cmd.Env = append(os.Environ(), "PRISM_OWN_EXIT_STATE="+state, "PRISM_OWN_EXIT_SESSION="+name,
+				"PRISM_OWN_EXIT_START="+start, "PRISM_OWN_EXIT_BUSY="+strconv.FormatBool(busy))
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("start the helper: %v", err)
+			}
+			t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+			pidPath, err := SidecarPIDPath(name)
+			if err != nil {
+				t.Fatalf("SidecarPIDPath: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Dir(pidPath), 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if err := os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o644); err != nil {
+				t.Fatalf("write PID file: %v", err)
+			}
+			if err := os.WriteFile(start, nil, 0o644); err != nil {
+				t.Fatalf("start the helper: %v", err)
+			}
+			if err := cmd.Wait(); err != nil {
+				t.Fatalf("helper: %v", err)
+			}
+			if got := pidFilePresent(t, name); got != busy {
+				t.Errorf("PID file present = %v, want %v", got, busy)
+			}
+		})
+	}
+}
+
+// TestOwnExitHelperProcess_3380 is the helper process of
+// TestRemoveOwnSidecarPIDFile_KeepsFileWhileTheGroupRuns_3380. It does
+// nothing in a normal test run.
+func TestOwnExitHelperProcess_3380(t *testing.T) {
+	start := os.Getenv("PRISM_OWN_EXIT_START")
+	if start == "" {
+		return
+	}
+	t.Setenv("XDG_STATE_HOME", os.Getenv("PRISM_OWN_EXIT_STATE"))
+	for !fileExists(start) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if os.Getenv("PRISM_OWN_EXIT_BUSY") == "true" {
+		child := exec.Command("sleep", "30")
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+	}
+	RemoveOwnSidecarPIDFile(os.Getenv("PRISM_OWN_EXIT_SESSION"))
+	os.Exit(0)
+}

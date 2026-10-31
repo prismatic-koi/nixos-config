@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"syscall"
@@ -120,6 +121,30 @@ func leaveGroup(pgid int) error {
 		return nil
 	}
 	return syscall.Setpgid(0, 0)
+}
+
+// currentBootTime returns the time of the system boot. Tests replace it.
+var currentBootTime = bootTime
+
+// pidFileBeforeBoot reports whether the PID file of sessionName is older
+// than the system boot. Its PID then names a process of an earlier boot,
+// and a group with that ID is not the group of the sidecar. A double-fork
+// daemon, for example, can leave a group and a session with the ID of a
+// PID that is gone. If prism cannot read a time, it returns false.
+func pidFileBeforeBoot(sessionName string) bool {
+	pidPath, err := SidecarPIDPath(sessionName)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(pidPath)
+	if err != nil {
+		return false
+	}
+	boot, err := currentBootTime()
+	if err != nil {
+		return false
+	}
+	return info.ModTime().Before(boot)
 }
 
 // allInSession reports whether each member is in session sid. A member

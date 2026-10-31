@@ -1,10 +1,12 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // procRoot is the procfs mount that readPIDArgv reads. Tests point it at a
@@ -73,4 +75,23 @@ func parseProcStat(data []byte) (state byte, pgrp, sid int, ok bool) {
 		return 0, 0, 0, false
 	}
 	return f[0][0], pgrp, sid, true
+}
+
+// bootTime returns the time of the system boot, from the btime line of
+// <procRoot>/stat.
+func bootTime() (time.Time, error) {
+	data, err := os.ReadFile(filepath.Join(procRoot, "stat"))
+	if err != nil {
+		return time.Time{}, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(line, "btime "); ok {
+			sec, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+			if err != nil {
+				return time.Time{}, fmt.Errorf("parse btime %q: %w", v, err)
+			}
+			return time.Unix(sec, 0), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("%s has no btime line", filepath.Join(procRoot, "stat"))
 }

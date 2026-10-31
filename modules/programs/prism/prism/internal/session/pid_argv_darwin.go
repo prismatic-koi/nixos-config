@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -79,4 +80,14 @@ func liveGroupMembers(pgid int) ([]groupMember, error) {
 		members = append(members, m)
 	}
 	return members, nil
+}
+
+// bootTime returns the time of the system boot, from the kern.boottime
+// sysctl.
+func bootTime() (time.Time, error) {
+	tv, err := unix.SysctlTimeval("kern.boottime")
+	if err != nil {
+		return time.Time{}, fmt.Errorf("sysctl kern.boottime: %w", err)
+	}
+	return time.Unix(tv.Unix()), nil
 }

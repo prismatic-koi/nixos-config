@@ -390,8 +390,8 @@ func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 // StopSidecar stops the sidecar of sessionName and reports whether it exited
 // inside timeout after SIGTERM. It also returns true when no sidecar of the
 // session runs: the PID file is absent, or its PID is gone or belongs to
-// another process. A process of the process group of the sidecar that
-// still runs makes it return false (EnsureSidecarStoppedErr).
+// another process. The result does not report the process group of the
+// sidecar: StopSidecarReportErr gives the full result.
 //
 // If the sidecar is still alive at the timeout, StopSidecar sends SIGKILL
 // and returns false. A sidecar that is slow to stop still writes to the
@@ -490,7 +490,7 @@ func stopSidecarPID(sessionName string, pid int, timeout time.Duration, dropUnkn
 	if pid > 0 && sidecarProcessExists(pid) {
 		owner = sidecarPIDOwner(pid, sessionName)
 	}
-	if owner == pidOwnerGone && pid > 0 {
+	if owner == pidOwnerGone && pid > 0 && !pidFileBeforeBoot(sessionName) {
 		if err := sidecarGroupStopped(sessionName, pid, false, timeout); err != nil {
 			return false, err
 		}
@@ -595,8 +595,38 @@ func waitSidecarExit(pid int, deadline time.Time) bool {
 // it holds the PID of this process. A sidecar calls it as it exits. A file
 // that holds another PID belongs to a newer sidecar of the session, so it
 // stays.
+//
+// The file also stays while another process of the process group of this
+// sidecar runs, for example a podman client of a request in progress. A
+// later stop finds the group only through the file, and it waits for the
+// group before the container sweep (stopSidecarGroup).
 func RemoveOwnSidecarPIDFile(sessionName string) {
-	removeSidecarPIDFileIf(sessionName, os.Getpid())
+	self := os.Getpid()
+	if pid := ownGroupProcess(self); pid != 0 {
+		fmt.Fprintf(os.Stderr, "warning: sidecar of session %q: process %d of its process group still runs, so the PID file stays\n", sessionName, pid)
+		return
+	}
+	removeSidecarPIDFileIf(sessionName, self)
+}
+
+// ownGroupProcess returns the PID of a process other than self that runs in
+// the process group of self, or 0. It returns 0 when self does not lead a
+// process group, as a sidecar that StartSidecarWithOpts started does. If
+// prism cannot list the group, it returns self, so that the file stays.
+func ownGroupProcess(self int) int {
+	if syscall.Getpgrp() != self {
+		return 0
+	}
+	members, err := liveGroupMembers(self)
+	if err != nil {
+		return self
+	}
+	for _, m := range members {
+		if m.pid != self {
+			return m.pid
+		}
+	}
+	return 0
 }
 
 // readSidecarPID returns the PID in the sidecar PID file of sessionName, or

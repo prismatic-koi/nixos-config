@@ -425,9 +425,10 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	}
 
 	// Stop any sidecar left over from a previous lifecycle (e.g. `prism
-	// restart` kills tmux but not the sidecars). StopSidecarReport is a no-op
-	// when no PID file is present or the process is already gone, so it is
-	// safe to call unconditionally for both host-mode and container-mode
+	// restart` kills tmux but not the sidecars). StopSidecarReportErr is a
+	// no-op when no PID file is present. When the process is already gone,
+	// it only waits for the process group of the old sidecar, so it is safe
+	// to call unconditionally for both host-mode and container-mode
 	// sessions. When it proves the old sidecar gone, it removes the PID file,
 	// so StartSidecarWithOpts can write a fresh one below. restoredInstanceID
 	// needs to know whether the old sidecar stopped.

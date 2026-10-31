@@ -15,7 +15,10 @@ import (
 // not the process. The goroutine holds its thread until podman exits, so
 // that no other goroutine can end that thread first.
 func runPodman(cmd *exec.Cmd) error {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Pdeathsig = syscall.SIGKILL
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	return cmd.Run()
