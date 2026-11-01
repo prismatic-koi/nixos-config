@@ -659,6 +659,11 @@ that session in tmux.
   `prism reset`, and the `session-closed` hook end it (#3375). If the
   session ended by another path, for example the cleanup of a failed
   spawn, the check of the clone does not see the process.
+- **A symlink to the clone target.** `holdStartLock` reads only the path
+  that it gets. A symlink in a worktree that points at a clone target
+  outside the layout is in a bare+worktree layout, so a start there takes
+  no lock. Only an owner `prism switch --path` on that symlink starts such
+  a session. Out of scope: this is an unusual owner step.
 
 ### Tests of the clone-lock rule
 

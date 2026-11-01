@@ -7,6 +7,7 @@
 <!-- doclint-ignore: .bare/config, .bare/info, .bare/commondir, info/attributes, git.nix, tmux.nix, modules/programs/git.nix, systemd.user.sessionVariables -->
 <!-- doclint-ignore: attr.tree, AGENTS.md, gitsigns.nix -->
 <!-- doclint-ignore: http.cookieFile, http.saveCookies, g:fugitive_git_executable, vim-fugitive.nix -->
+<!-- doclint-ignore: rebase-merge/autostash -->
 <!--
   These names are git config keys, environment variables that git and zsh
   read, paths in a git dir at run time, and Nix files and options outside
@@ -271,6 +272,12 @@ staged submodule (#3343).
 - **A nested git dir, by `cd`.** A `cd` into a subdir whose git dir uses a
   key that is not on the list. The owner accepted this on #3325. The git
   plugins of nvim do not reach a nested git dir with no `cd` (#3347).
+- **A manual `git rebase` in a worker worktree.** A planted
+  `rebase-merge/autostash` or `head-name` acts on a `git rebase` that the
+  owner types in a worker worktree from a host pane. prism runs the
+  `--rebase` of a sandboxed session in its sandbox (#3335). This is the same
+  owner action as a `cd` into a worker subdir, above. Out of scope under
+  `docs/invariants/threat-model.md`.
 - **Keys with a name that the repo chooses.** For example
   `remote.<name>.uploadpack`, `remote.<name>.url`, `remote.<name>.vcs`,
   and `url.<base>.insteadOf` run for a fetch, a pull, or a push. The list
