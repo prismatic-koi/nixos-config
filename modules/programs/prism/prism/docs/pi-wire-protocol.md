@@ -42,7 +42,7 @@ binds pipe.sock                                pi --mode rpc + extension
        │                                              │
        │  ◀── state_change, tool_call, tool_result, ──│ (PI hooks
        │      msg_assistant, turn_*, provider_error,  │  → frames)
-       │      auto_retry_*, session_shutdown          │
+       │      auto_retry_*                            │
        │                                              │
        │  ─── prompt, set_model, register_provider, ─▶│ (prism intent
        │      set_active_tools, abort                 │  → PI runtime)
@@ -692,10 +692,13 @@ The sidecar persists both as new event types on `agent_events`.
 
 ### 5.10 `session_shutdown`
 
-Process-exit signal. Emitted by the extension on PI's `session_shutdown`
-hook (fired when the PI process is about to exit). This is a **process-exit
-only** signal — it is never emitted at turn boundaries (#1432).
-Per-turn completion is signalled via `state_change{finished}` (§5.2).
+Process-exit signal. The extension does not send this frame. PI fires its
+`session_shutdown` hook on `/new`, `/resume`, and `/fork` too, not only when
+the process exits. So on that hook the extension only closes its writer
+(`prism.ts`). When PI exits, the sidecar thus sees a connection drop with no
+preceding `session_shutdown` (§7.2). A peer that is not the extension can
+still send the frame. Per-turn completion is signalled via
+`state_change{finished}` (§5.2).
 
 ```json
 {"type":"session_shutdown"}
