@@ -544,6 +544,9 @@ var (
 	// hookTmuxPresence is the first presence check of the hook. Tests
 	// replace it, so that a test does not depend on a tmux server.
 	hookTmuxPresence = prismSession.TmuxSessionPresence
+	// hookTmuxRecheck is the presence check just before each stop of the
+	// hook. Tests replace it.
+	hookTmuxRecheck = prismSession.TmuxSessionPresence
 )
 
 var eventTmuxSessionEndCmd = &cobra.Command{
@@ -612,11 +615,26 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		// Ask tmux again just before the stop: if `prism switch` recreated
 		// the session after the check above, the sidecar in the PID file
 		// belongs to the new session.
-		if prismSession.TmuxSessionPresence(session) == prismSession.TmuxPresent {
+		if hookTmuxRecheck(session) == prismSession.TmuxPresent {
 			return nil
 		}
 		if !hookStopSidecar(session) {
 			fmt.Fprintf(os.Stderr, "prism event tmux-session-end: sidecar of %q did not stop — keeping its row and port\n", session)
+			return nil
+		}
+		// A process that the agent detached outlives the tmux session on
+		// sandbox-exec (#3375). If it still runs, keep the row open:
+		// prism confirm-bare and the stop before a conversion then still
+		// see the session, and a later prism cleanup ends the process.
+		//
+		// The stop finds the processes by the session name, and the sidecar
+		// stop can take seconds. So ask tmux again: if `prism switch` made
+		// the session again in that time, the processes belong to it.
+		if hookTmuxRecheck(session) == prismSession.TmuxPresent {
+			return nil
+		}
+		if err := stopSessionSandboxProcs(session); err != nil {
+			fmt.Fprintf(os.Stderr, "prism event tmux-session-end: %v — keeping the row and port of %q\n", err, session)
 			return nil
 		}
 		// SetEnded also ends the open review children of this session, so

@@ -33,9 +33,13 @@ above it: when its session record has no end time, or when tmux lists it.
 If a session record refuses and the session does not run, end the record
 with "prism cleanup --yes --session <name>", then run this command again.
 
-On Darwin, if a sandboxed session ran in a plain clone of the project,
-restart the host before you run this command. A restart ends a process
-that the session detached (#3375).`,
+On Darwin, prism cleanup, prism close, prism reset, and a tmux kill of a
+session end each process that the session detached (#3375). If one of
+them gave an error that names a process in the sandbox of the session,
+that process can still run. If a sandboxed session ran in a plain clone
+of the project and had such an error, or ended in another way, restart
+the host before you run this command. A restart ends such a process
+(#3392).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		gitDir, err := git.ConfirmBare(args[0], prismSession.SessionRunsInTmux)

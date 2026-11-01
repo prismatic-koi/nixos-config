@@ -17,10 +17,10 @@ import (
 )
 
 // TestSessionStarts_ReadsTheSessionsTable: SessionStarts gives one record for
-// each pair of session name and start dir. Open is true when a row of the
-// pair has no end time, and the agent_status row of the name has no end time
-// and names the same instance or no instance. With no DB file, it gives no
-// record and makes no file.
+// each pair of session name and start dir. Open is true when the
+// agent_status row of the name has no end time and names the instance of a
+// row of the pair, or names no instance while a row of the pair has no end
+// time. With no DB file, it gives no record and makes no file.
 //
 // The cases:
 //   - repo@main: one ended row and one open row that agent_status names.
@@ -29,10 +29,10 @@ import (
 //   - pruned: an open row with no agent_status row.
 //   - agended: an open row whose agent_status row has an end time.
 //   - starting: an open row, and an agent_status row with no instance.
-//   - shutdown: agent_status names the row, and the sidecar stop of a
-//     session_shutdown frame ended the row. A session can send that frame
-//     and keep its sandbox, so Open is false while the session runs.
-//     ConfirmBare also asks tmux for this reason.
+//   - shutdown: agent_status names the row, and a sidecar stop ended the
+//     row (EndIncarnation): the stop of a session_shutdown frame, or a
+//     session stop that failed after the sidecar stop (#3375). The
+//     agent_status row has no end time, so Open is true.
 func TestSessionStarts_ReadsTheSessionsTable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(path)
@@ -102,7 +102,7 @@ func TestSessionStarts_ReadsTheSessionsTable(t *testing.T) {
 		{Name: "pruned", Worktree: "/x/pruned", Open: false},
 		{Name: "agended", Worktree: "/x/agended", Open: false},
 		{Name: "starting", Worktree: "/x/starting", Open: true},
-		{Name: "shutdown", Worktree: "/x/shutdown", Open: false},
+		{Name: "shutdown", Worktree: "/x/shutdown", Open: true},
 	}
 	if len(starts) != len(want) {
 		t.Errorf("SessionStarts = %v, want %v", starts, want)

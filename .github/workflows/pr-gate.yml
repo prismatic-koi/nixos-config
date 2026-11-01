@@ -192,9 +192,10 @@ jobs:
   # (#3293, the section-6e git write scope and the section-21i, 21j, and
   # 21k denies), and TestSandboxExecRunDir_* (#3373, the section-21m deny
   # on the run dir node), and TestSandboxExecSessionAboveRoot_* (#3381, the
-  # refusal of a session in a dir that holds project roots), not the full
-  # TestSandboxExec* family. The
-  # ContainerSocket, SessionTmp, and RunDir suites need no extra
+  # refusal of a session in a dir that holds project roots), and
+  # TestSandboxExecDetachedProcess_* (#3375, the stop of a process that the
+  # agent detaches), not the full TestSandboxExec* family. The
+  # ContainerSocket, SessionTmp, RunDir, and DetachedProcess suites need no extra
   # provisioning beyond the Go toolchain already set up above: they build
   # their own CGO-disabled probe and bind their listeners themselves.
   # review-context (PR #2785, round 2) found that a wider '^TestSandboxExec'
@@ -253,7 +254,7 @@ jobs:
           authToken: ${{ secrets.CACHIX_TOKEN }}
           extraPullNames: nix-community
           name: lucidph3nx-nixos-config
-      - name: go test ./internal/integration -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot)' -race
+      - name: go test ./internal/integration -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)' -race
         if: steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism
         # Run inside `nix shell` so bash, coreutils, and git resolve to
@@ -273,7 +274,7 @@ jobs:
         run: |
           set -o pipefail
           nix shell --print-build-logs nixpkgs#bash nixpkgs#coreutils nixpkgs#git \
-            --command bash -c 'TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"; export TMPDIR; go test -v ./internal/integration/ -run "^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot)" -race' 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
+            --command bash -c 'TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"; export TMPDIR; go test -v ./internal/integration/ -run "^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)" -race' 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
       # A SKIP must never read as a PASS (this was a review blocker on the
       # parent issue). go test exits 0 even when every selected test
       # skips (e.g. the /var/folders TMPDIR guard tripping on a runner
@@ -293,10 +294,10 @@ jobs:
             exit 1
           fi
 
-          run_count=$(grep -cE '^=== RUN   TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot)' /tmp/go-test-macos-sandbox-exec.log || true)
-          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot)|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
+          run_count=$(grep -cE '^=== RUN   TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)' /tmp/go-test-macos-sandbox-exec.log || true)
+          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
 
-          echo "TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot)* tests run: ${run_count:-0}"
+          echo "TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)* tests run: ${run_count:-0}"
           if [ -n "$skip_lines" ]; then
             echo "::error::one or more selected tests reported SKIP - a skip must not read as a pass:"
             echo "$skip_lines"
@@ -315,13 +316,14 @@ jobs:
       # leak was measured, so they run here as well (#3160). The selector
       # excludes TestKillSidecarAndWait*, which skip on Darwin. The tests of
       # the clone lock (#3388) run here too, so that a Darwin result exists
-      # for the flock, the dir identity check, and the killed clone.
-      - name: go test ./internal/session -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile|Test.*_3388$)' -race
+      # for the flock, the dir identity check, and the killed clone. The
+      # stop of the sandbox processes sends real signals on Darwin (#3375).
+      - name: go test ./internal/session -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile|TestStopSandboxProcesses|Test.*_3388$)' -race
         if: always() && steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism
         run: |
           set -o pipefail
-          go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile|Test.*_3388$)' -race -count=1 2>&1 | tee /tmp/go-test-macos-sidecar-owner.log
+          go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile|TestStopSandboxProcesses|Test.*_3388$)' -race -count=1 2>&1 | tee /tmp/go-test-macos-sidecar-owner.log
       - name: Guard against SKIP-as-PASS and a zero-test run (sidecar owner check)
         if: always() && steps.changes.outputs.go == 'true'
         run: |

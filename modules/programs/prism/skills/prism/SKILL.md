@@ -965,6 +965,8 @@ Each of `ended_at_stamped`, `harness_port_released`, `harness_session_id_cleared
 
 If `prism cleanup` exits non-zero with `sidecar did not stop for "<session>"`, prism kept the tmux session, the row, and the port of each named session, and the worktree and branch of a named worker. Prism cleans up the other sessions of the cleanup. Run the cleanup again later. If the error stays, report it to the user.
 
+If `prism cleanup` or `prism close` exits non-zero with `a process in the sandbox of the session still runs`, a process that the session started on Darwin still runs after the tmux kill (#3375). The error names each process and the session. The tmux session is gone. Prism kept the row, the port, and the review children of the session. A hard cleanup already removed the worktree and the branch. Run the same command again later. If the error stays, report it to the user with the process IDs. Do not stop the process yourself, and do not run `prism confirm-bare` or `prism convert` for the project of that session until the error is gone.
+
 Only call this after you have confirmed the PR is merged. The `--yes` path always force-deletes the branch — it does not check whether the branch is reachable from main, because squash-merges produce a different SHA on main than the branch tip.
 
 Pi sessions block `git worktree prune` and `git worktree remove` at the extension layer. When recovering from a failed spawn, use `prism cleanup` — do not reach for git plumbing.
