@@ -150,7 +150,7 @@ func TestMain(m *testing.M) {
 
 	// Tmux isolation.
 	restoreTmuxEnv := isolateSuiteFromHostTmux()
-	// Sandbox-env isolation: unset the sidecar-injected PRISM_* vars
+	// Sandbox-env isolation: unset the container-injected PRISM_* vars
 	// so the suite controls its full environment surface.
 	restoreSandboxEnv := isolateSuiteFromSandboxEnv()
 	// The spawn, pr, and switch fixtures use a local-path origin.

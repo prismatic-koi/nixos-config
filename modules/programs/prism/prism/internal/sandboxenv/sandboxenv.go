@@ -11,8 +11,8 @@
 //   - PRISM_SPAWN_PATH is also set in sandboxed sessions but serves as a
 //     working-directory hint only — it is NOT a sandbox sentinel and NOT a
 //     keybind discriminator. The dedicated tmux-keybind sentinel is
-//     PRISM_KEYBIND_SPAWN, which the sidecar never injects into a sandboxed
-//     session.
+//     PRISM_KEYBIND_SPAWN, which the container layer never injects into a
+//     sandboxed session.
 //
 // Callers that need to know "am I sandboxed?" should use IsInsideSandbox()
 // rather than repeating the inline os.Getenv check.

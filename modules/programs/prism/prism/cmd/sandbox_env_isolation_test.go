@@ -41,8 +41,8 @@ import (
 	"testing"
 )
 
-// sandboxInjectedPrismEnvVars is the set of PRISM_* variables the sidecar
-// injects into agent sessions. Source of truth: the env assembly in
+// sandboxInjectedPrismEnvVars is the set of PRISM_* variables the container
+// layer injects into agent sessions. Source of truth: the env assembly in
 // cmd/agent_run_sandbox_exec_darwin.go (sandbox-exec path) and
 // internal/container/container.go (bwrap path).
 var sandboxInjectedPrismEnvVars = []string{
@@ -53,7 +53,7 @@ var sandboxInjectedPrismEnvVars = []string{
 	"PRISM_HARNESS_PIPE",
 }
 
-// isolateSuiteFromSandboxEnv unsets the sidecar-injected PRISM_* variables
+// isolateSuiteFromSandboxEnv unsets the container-injected PRISM_* variables
 // (matching CI, where they are unset) and returns a restore function that
 // puts the original environment back. TestMain calls restore after m.Run()
 // for symmetry with the tmux isolation.
@@ -81,19 +81,19 @@ func isolateSuiteFromSandboxEnv() (restore func()) {
 
 // TestSuiteSandboxEnvIsolation_NotInherited is the regression guard for the
 // env-inheritance class. Under the TestMain-level neutralisation, none
-// of the sidecar-injected PRISM_* variables may be visible to tests that do
+// of the container-injected PRISM_* variables may be visible to tests that do
 // not set them explicitly.
 //
 // On CI and developer hosts (variables unset) this passes trivially. Inside
-// a prism worker sandbox (variables set by the sidecar) it fails if — and
-// only if — the suite isolation is removed, which is precisely the
+// a prism worker sandbox (variables set by the container layer) it fails
+// if — and only if — the suite isolation is removed, which is precisely the
 // regression it exists to catch. Verified non-vacuous by disabling the
 // isolateSuiteFromSandboxEnv call in TestMain and observing this test fail
 // inside a worker sandbox.
 func TestSuiteSandboxEnvIsolation_NotInherited(t *testing.T) {
 	for _, k := range sandboxInjectedPrismEnvVars {
 		if v, ok := os.LookupEnv(k); ok {
-			t.Errorf("%s=%q leaked into the cmd test suite — sidecar-injected env must be neutralised suite-wide (#2217); check TestMain's isolateSuiteFromSandboxEnv", k, v)
+			t.Errorf("%s=%q leaked into the cmd test suite — container-injected env must be neutralised suite-wide (#2217); check TestMain's isolateSuiteFromSandboxEnv", k, v)
 		}
 	}
 }
