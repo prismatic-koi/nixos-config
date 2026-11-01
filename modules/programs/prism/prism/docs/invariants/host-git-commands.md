@@ -435,8 +435,8 @@ A sandbox cannot read the prism state dir. So in a sandbox, prism does
 not use the record, and `OpenBare` accepts a `.bare` that is not in it.
 In a sandbox, git runs with the rights of the session, so such a `.bare`
 gives the session nothing more. prism finds a sandbox with
-`sandboxenv.IsInsideSandbox`, which reads `PRISM_HOST_API`. The sidecar
-sets that variable only in a sandboxed session.
+`sandboxenv.IsInsideSandbox`, which reads `PRISM_HOST_API`. The container
+layer sets that variable only in a sandboxed session.
 
 ### The routes that the record covers
 

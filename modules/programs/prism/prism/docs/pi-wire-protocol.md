@@ -1051,9 +1051,9 @@ where opencode's `mgr.Create` runs today
 The order is:
 
 1. Sidecar writes the pipe secret file (§2.3.1), then binds `pipe.sock`.
-2. Sidecar writes `PRISM_HARNESS_PIPE` into the sandbox env via
-   `cmd/agent_run.go` (Linux bwrap) or
-   `internal/container/sandbox_exec.go` (Darwin sandbox-exec).
+2. The container layer writes `PRISM_HARNESS_PIPE` into the sandbox env:
+   `internal/container/bwrap.go` (Linux bwrap) or
+   `internal/container/container.go` (Darwin sandbox-exec).
 3. Sidecar launches PI inside the sandbox (P2.AGENTRUN issue).
 4. PI loads the prism extension. The extension dials the socket on its
    `session_start` hook.
