@@ -2034,9 +2034,9 @@ func (s *Sidecar) hostAPIRoutes() http.Handler {
 		}
 
 		// #3335: the host must not run the `prism review --rebase` steps for a
-		// sandboxed session. Every /review caller is sandboxed — the sidecar
-		// injects PRISM_HOST_API only into sandboxed sessions — so running the
-		// fetch/rebase/force-push on the host would let a planted
+		// sandboxed session. Every /review caller is sandboxed — the container
+		// layer injects PRISM_HOST_API only into sandboxed sessions — so running
+		// the fetch/rebase/force-push on the host would let a planted
 		// rebase-merge/autostash, head-name, or orig-head apply at the owner's
 		// trust level (a worker can plant it mid-rebase, which git re-reads on a
 		// successful rebase and on an abort). The in-sandbox `prism review`
@@ -2179,9 +2179,6 @@ func (s *Sidecar) hostAPIRoutes() http.Handler {
 		if req.Timeout != "" {
 			args = append(args, "--timeout", req.Timeout)
 		}
-		// req.Rebase was refused above (#3335): the host never runs the rebase
-		// for a sandboxed session, so --rebase is never forwarded to the
-		// subprocess.
 		roles := make([]string, 0, len(req.ModelOverrides))
 		for role := range req.ModelOverrides {
 			roles = append(roles, role)

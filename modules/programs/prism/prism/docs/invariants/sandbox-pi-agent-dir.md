@@ -161,7 +161,8 @@ The sidecar of the session copies changes between the two files
   request to the `proxy-ep=` host in the token. A copy of such a value lets
   a session send the conversations of a host pi to a host of its choice. So
   a `/login` in a sandbox for a provider other than `anthropic` does not
-  reach the host file. Log in on the host for those providers.
+  reach the host file, and the next sync removes it from the session file.
+  Log in on the host for those providers.
 - Limits on the host file: a token of more than 16 KiB is refused. A
   session adds a new provider to the host file at most two times in its
   life. Only `anthropic` can be new, so the count applies when a session
