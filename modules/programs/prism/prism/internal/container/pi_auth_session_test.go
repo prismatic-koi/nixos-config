@@ -282,10 +282,10 @@ func jsonEqual(a, b any) bool {
 	return string(x) == string(y)
 }
 
-// A value that a session writes reaches the host only as an OAuth entry
-// with a string access, a string refresh, and a finite number expires.
-// Each other value is refused with a reason, and the session file gets the
-// host value again.
+// A value that a session writes reaches the host only as the entry of the
+// anthropic provider, as an OAuth entry with a string access, a string
+// refresh, and a finite number expires. Each other value is refused with a
+// reason, and the session file gets the host value again.
 func TestSyncPIAuthSession_RefusesEveryOtherValue(t *testing.T) {
 	apiKeyHost := strings.Replace(piAuthTestHost, `"anthropic": {"type": "oauth", "access": "access-0", "refresh": "refresh-0", "expires": 1000}`,
 		`"anthropic": {"type": "api_key", "key": "sk-ant-1"}`, 1)
@@ -634,7 +634,66 @@ func TestSyncPIAuthSession_HostChangeReachesSession(t *testing.T) {
 	assertNoCommandValue(t, e.sessionAuth())
 }
 
-// A login in the session reaches the host, as before #3295.
+// replaceHostFile replaces the host file with a rename, as prism account use
+// does.
+func (e piAuthEnv) replaceHostFile(t *testing.T, content string) {
+	t.Helper()
+	tmp := e.hostAuth + ".new"
+	writeFile(t, tmp, content)
+	if err := os.Rename(tmp, e.hostAuth); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A change on the host of an entry that is not an OAuth entry, of a
+// provider that is not anthropic, reaches the session with no refusal. The
+// old host value in the session file came from the host, not from the
+// session (#3338).
+func TestSyncPIAuthSession_HostChangeOfOtherEntryIsNotRefused(t *testing.T) {
+	e := newPIAuthEnv(t, piAuthTestHost)
+	for _, key := range []string{"sk-or-2", "sk-or-3"} {
+		e.replaceHostFile(t, strings.Replace(piAuthTestHost, `"sk-or-1"`, `"`+key+`"`, 1))
+		res := e.sync(t)
+		if len(res.Refused) != 0 || len(res.ToHost) != 0 || !res.ToSession {
+			t.Errorf("host key %s: result = %+v, want a write of the session file only, with no refusal", key, res)
+		}
+		if got := readJSONFile(t, e.sessionAuth())["openrouter"]["key"]; got != key {
+			t.Errorf("session openrouter key = %v, want %s", got, key)
+		}
+	}
+}
+
+// A value of a provider that is not anthropic, that the session writes,
+// gives a refusal and changes nothing on the host. This holds also after
+// host changes of that entry. If the sync takes a value of the session for
+// a value of the host, this test fails.
+func TestSyncPIAuthSession_SessionValueOfOtherEntryIsRefused(t *testing.T) {
+	e := newPIAuthEnv(t, piAuthTestHost)
+	e.replaceHostFile(t, strings.Replace(piAuthTestHost, `"sk-or-1"`, `"sk-or-2"`, 1))
+	e.sync(t)
+	hostBefore := mustRead(t, e.hostAuth)
+
+	for _, entry := range []string{
+		`{"type":"api_key","key":"sk-or-planted"}`,
+		`{"type":"api_key","key":"!touch /tmp/planted"}`,
+	} {
+		e.writeSessionEntry(t, "openrouter", entry)
+		res := e.sync(t)
+		want := `provider "openrouter": the sync copies only the "anthropic" entry to the host file`
+		if !slices.Equal(res.Refused, []string{want}) || len(res.ToHost) != 0 {
+			t.Errorf("session entry %s: result = %+v, want the refusal %q and no copy", entry, res, want)
+		}
+		if got := mustRead(t, e.hostAuth); got != hostBefore {
+			t.Errorf("session entry %s: host file changed:\n%s", entry, got)
+		}
+		if got := readJSONFile(t, e.sessionAuth())["openrouter"]["key"]; got != "sk-or-2" {
+			t.Errorf("session entry %s: session openrouter key = %v, want the host value sk-or-2", entry, got)
+		}
+	}
+}
+
+// A login of the anthropic provider in the session reaches the host. The
+// sync copies only the anthropic entry to the host file (#3314).
 func TestSyncPIAuthSession_LoginReachesHost(t *testing.T) {
 	e := newPIAuthEnv(t, "")
 	writeFile(t, e.sessionAuth(), `{"anthropic":{"type":"oauth","access":"a","refresh":"r","expires":1}}`)
