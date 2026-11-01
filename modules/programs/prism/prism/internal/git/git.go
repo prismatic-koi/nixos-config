@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // ErrNotAWorktree is returned by ResolveWorktreeGitDir when worktreePath's
@@ -1145,11 +1146,41 @@ func removeEmptyDirs(dirs []string) {
 // and is not empty.
 var ErrCloneTargetNotEmpty = errors.New("target directory exists and is not empty")
 
+// CloneTargetLock takes the lock on dir, the target of a clone. While the
+// lock is held, no session can start in dir. It returns an error when it
+// cannot take the lock, or when a session is in dir. When it holds the
+// lock, it returns the release, also with an error. A nil release means
+// that it holds no lock.
+type CloneTargetLock func(dir string) (release func(), err error)
+
+var cloneTargetLockSource atomic.Pointer[CloneTargetLock]
+
+// SetCloneTargetLockSource sets the CloneTargetLock of CloneWorktree.
+// internal/session sets it in its init, because internal/git cannot import
+// internal/session.
+func SetCloneTargetLockSource(lock CloneTargetLock) {
+	cloneTargetLockSource.Store(&lock)
+}
+
+// SetCloneTargetLockForTest makes lock the CloneTargetLock of CloneWorktree
+// until restore, for a test control that clones with no real lock. lock
+// must not be nil.
+func SetCloneTargetLockForTest(lock CloneTargetLock) (restore func()) {
+	prev := cloneTargetLockSource.Swap(&lock)
+	return func() { cloneTargetLockSource.Store(prev) }
+}
+
 // CloneWorktree clones repoURL into targetDir using the prism bare+worktree layout.
 // progress receives human-readable step messages.
 //
 // targetDir must be missing or empty. On failure CloneWorktree removes only
 // the paths that it made, so a file that is in targetDir is never removed.
+//
+// A session that starts in targetDir during the clone can write the .bare
+// that the clone makes (#3388). So CloneWorktree holds the lock of
+// SetCloneTargetLockSource on targetDir from before its checks to its end.
+// After it asks for the lock, it removes a path that it made only while it
+// holds the lock: without the lock, another clone can use targetDir.
 func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	// The git commands below run in the bare dir, so the paths must be
 	// absolute.
@@ -1174,6 +1205,21 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	// mkdir.
 	if err := requireProjectRoot(targetDir); err != nil {
 		removeEmptyDirs(made)
+		return err
+	}
+	lockTarget := cloneTargetLockSource.Load()
+	if lockTarget == nil {
+		removeEmptyDirs(made)
+		return fmt.Errorf("clone into %s: no lock of the clone target is set", targetDir)
+	}
+	release, err := (*lockTarget)(targetDir)
+	if release != nil {
+		defer release()
+	}
+	if err != nil {
+		if release != nil {
+			removeEmptyDirs(made)
+		}
 		return err
 	}
 	if entries, err := os.ReadDir(targetDir); err != nil {

@@ -313,13 +313,15 @@ jobs:
       # here too (#3136). The ended-session sweep and EnsureSidecarStopped
       # depend on that owner check, and Darwin is where the review-sidecar
       # leak was measured, so they run here as well (#3160). The selector
-      # excludes TestKillSidecarAndWait*, which skip on Darwin.
-      - name: go test ./internal/session -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile)' -race
+      # excludes TestKillSidecarAndWait*, which skip on Darwin. The tests of
+      # the clone lock (#3388) run here too, so that a Darwin result exists
+      # for the flock, the dir identity check, and the killed clone.
+      - name: go test ./internal/session -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile|Test.*_3388$)' -race
         if: always() && steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism
         run: |
           set -o pipefail
-          go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile)' -race -count=1 2>&1 | tee /tmp/go-test-macos-sidecar-owner.log
+          go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile|Test.*_3388$)' -race -count=1 2>&1 | tee /tmp/go-test-macos-sidecar-owner.log
       - name: Guard against SKIP-as-PASS and a zero-test run (sidecar owner check)
         if: always() && steps.changes.outputs.go == 'true'
         run: |
@@ -339,7 +341,13 @@ jobs:
             echo "::error::0 TestStopSidecar tests ran - the -run selector matched nothing, check for naming drift" >&2
             exit 1
           fi
+          lock_count=$(grep -cE '^=== RUN   Test.*_3388$' /tmp/go-test-macos-sidecar-owner.log || true)
+          if [ -z "$lock_count" ] || [ "$lock_count" -eq 0 ]; then
+            echo "::error::0 _3388 clone-lock tests ran - the -run selector matched nothing, check for naming drift" >&2
+            exit 1
+          fi
           echo "sidecar owner check: ${stop_count} TestStopSidecar test(s) ran, none skipped"
+          echo "clone lock: ${lock_count} _3388 test(s) ran"
       # The exit of a sidecar waits for its host-API handlers before it
       # removes its PID file (#3391). The issue is on Darwin, where the
       # harness pipe of a sandbox-exec session is a TCP port. The tests need

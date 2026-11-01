@@ -33,6 +33,10 @@ func TestMain(m *testing.M) {
 	// package cannot import internal/db. With no records, the start of the
 	// bare repo record records no .bare.
 	SetSessionStartSource(func(string) ([]SessionStart, error) { return nil, nil })
+	// internal/session sets the lock of the clone target, and this package
+	// cannot import internal/session. The tests of that lock are in
+	// internal/session.
+	SetCloneTargetLockSource(func(string) (func(), error) { return func() {}, nil })
 	code := m.Run()
 	restoreFileTransport()
 	restore()
