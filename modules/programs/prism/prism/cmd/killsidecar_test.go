@@ -77,7 +77,7 @@ import (
 //     environment is restored after m.Run().
 //
 //  5. Sandbox-env isolation: unsets the PRISM_* variables the
-//     sidecar injects into agent sessions (PRISM_SESSION_NAME,
+//     container layer injects into agent sessions (PRISM_SESSION_NAME,
 //     PRISM_HOST_API, …) so tests see the same environment surface on CI,
 //     developer hosts, and inside prism worker sandboxes. See
 //     sandbox_env_isolation_test.go for the full rationale.

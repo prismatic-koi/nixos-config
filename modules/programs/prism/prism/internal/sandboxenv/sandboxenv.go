@@ -6,8 +6,8 @@
 //
 // IsInsideSandbox uses PRISM_HOST_API != "" as its sentinel:
 //
-//   - PRISM_HOST_API is set exclusively by the prism sidecar when launching a
-//     sandboxed session (bwrap or sandbox-exec).
+//   - PRISM_HOST_API is set exclusively by the container layer of prism when
+//     it launches a sandboxed session (bwrap or sandbox-exec).
 //   - PRISM_SPAWN_PATH is also set in sandboxed sessions but serves as a
 //     working-directory hint only — it is NOT a sandbox sentinel and NOT a
 //     keybind discriminator. The dedicated tmux-keybind sentinel is
@@ -23,9 +23,9 @@ import "os"
 // IsInsideSandbox reports whether the current process is running inside a
 // prism sandbox (bwrap or sandbox-exec).
 //
-// It uses PRISM_HOST_API != "" as the sentinel: the sidecar sets this variable
-// exclusively when launching a sandboxed session, so its presence is a reliable
-// indicator that the process is inside a sandbox.
+// It uses PRISM_HOST_API != "" as the sentinel: the container layer sets this
+// variable exclusively when it launches a sandboxed session, so its presence
+// is a reliable indicator that the process is inside a sandbox.
 func IsInsideSandbox() bool {
 	return os.Getenv("PRISM_HOST_API") != ""
 }

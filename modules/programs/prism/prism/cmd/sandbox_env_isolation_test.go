@@ -2,10 +2,11 @@ package cmd
 
 // Suite-wide sandbox-env isolation for the cmd package.
 //
-// The prism sidecar injects a set of PRISM_* environment variables into every
-// agent session it spawns (see cmd/agent_run_sandbox_exec_darwin.go and
-// internal/container/container.go). Those variables are UNSET on CI and on a
-// developer host shell, but SET inside prism worker sandboxes — so any test
+// The container layer of prism injects a set of PRISM_* environment variables
+// into every sandboxed agent session (see
+// cmd/agent_run_sandbox_exec_darwin.go and internal/container/container.go).
+// Those variables are UNSET on CI and on a developer host shell, but SET
+// inside prism worker sandboxes — so any test
 // that exercises a code path consulting them behaves differently across the
 // two environments unless it pins them with t.Setenv. Production code in
 // cmd/ reads several of them:
@@ -20,7 +21,7 @@ package cmd
 //   - PRISM_SPAWN_PATH / PRISM_BARE_ROOT → cwd/repo fallbacks (checkin
 //     --list, list-sessions, spawn).
 //   - PRISM_HARNESS_PIPE → not read by Go code today; cleared so the suite
-//     controls the full surface the sidecar injects.
+//     controls the full surface the container layer injects.
 //
 // As with the tmux isolation, per-test t.Setenv is not a structural
 // fix: it protects only the tests that remembered it. The suite-wide
