@@ -113,7 +113,10 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	}
 	// A PID file that names an exited sidecar is stale. A stop then has
 	// nothing to find, and the sweep must classify the PID again.
-	defer prismSession.RemoveOwnSidecarPIDFile(sessionName)
+	// closeHostAPI stays nil until the sidecar exists: no host-API handler
+	// runs before that.
+	var closeHostAPI func() error
+	defer func() { removeOwnPIDFileAfterHostAPI(sessionName, closeHostAPI) }()
 
 	// Parse --model-override flags into a role→model map.
 	// Each entry is expected to be "role=model"; malformed entries are logged
@@ -411,6 +414,11 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		Harness:                h,
 	}
 	sc := sidecar.New(cfg)
+	closeHostAPI = sc.CloseHostAPI
+	// This defer runs before d.Close: a handler that runs can still use the
+	// database. It also covers the clean exit after a session_shutdown
+	// frame, where Shutdown does not run.
+	defer func() { _ = sc.CloseHostAPI() }()
 
 	// Set up signal handling for clean shutdown.
 	//
@@ -483,6 +491,24 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 
 	proglog.Infof("[prism sidecar] shutting down\n")
 	return nil
+}
+
+// removeOwnPIDFileAfterHostAPI removes the sidecar PID file of sessionName
+// as the sidecar exits, after closeHostAPI reports that no host-API handler
+// runs. A nil closeHostAPI means that no host-API server ran.
+//
+// A handler can start a podman client after the process group check of
+// RemoveOwnSidecarPIDFile, and a later stop finds the process group of that
+// client only through the PID file. So the file stays when a handler still
+// runs at the end of the bound (#3391).
+func removeOwnPIDFileAfterHostAPI(sessionName string, closeHostAPI func() error) {
+	if closeHostAPI != nil {
+		if err := closeHostAPI(); err != nil {
+			proglog.Errorf("[prism sidecar] %v; the PID file stays, so that a later stop finds the process group of the sidecar\n", err)
+			return
+		}
+	}
+	prismSession.RemoveOwnSidecarPIDFile(sessionName)
 }
 
 // sidecarTmuxGoneGrace is how long the tmux session of a sidecar must stay

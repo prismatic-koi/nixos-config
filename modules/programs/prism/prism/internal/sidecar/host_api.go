@@ -212,9 +212,11 @@ func (s *Sidecar) HostAPIHandlerForTest() http.Handler {
 // routes of hostAPIRoutes behind the credential check of
 // requireHostAPICredential (#3379). Do not serve hostAPIRoutes directly: the
 // role gates in it assume that the caller is the session of this sidecar,
-// and only the credential check proves that.
+// and only the credential check proves that. trackHostAPIHandler is the
+// outer layer, so that CloseHostAPI sees each handler and no handler starts
+// after it (#3391).
 func (s *Sidecar) hostAPIHandler() http.Handler {
-	return s.requireHostAPICredential(s.hostAPIRoutes())
+	return s.trackHostAPIHandler(s.requireHostAPICredential(s.hostAPIRoutes()))
 }
 
 // hostAPIRoutes returns an http.Handler that exposes host-side tmux operations

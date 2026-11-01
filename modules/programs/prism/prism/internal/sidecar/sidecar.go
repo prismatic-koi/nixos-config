@@ -323,6 +323,10 @@ type Config struct {
 	// DefaultShutdownDrainTimeout (250ms) when zero. Set to a small value in
 	// tests to assert the bounded fallback path.
 	ShutdownDrainTimeout time.Duration
+	// HostAPIDrainTimeout is the bound of CloseHostAPI: the longest wait for
+	// the host-API handlers that run when the sidecar exits. Defaults to
+	// DefaultHostAPIDrainTimeout (5s) when zero.
+	HostAPIDrainTimeout time.Duration
 	// ActivityTimeout is the duration of inbound-frame silence after which the
 	// sidecar force-transitions the session to StateError with note="inactivity
 	// timeout". The watchdog is reset on every inbound frame received
@@ -481,7 +485,7 @@ type Sidecar struct {
 	// Protected by mu.
 	hostAPIListener net.Listener
 	// hostAPISrv is the HTTP server for the host-API Unix socket.
-	// Stored so Shutdown() can drain in-flight requests gracefully.
+	// Stored so CloseHostAPI can drain in-flight requests gracefully.
 	// Protected by mu.
 	hostAPISrv *http.Server
 	// hostAPITCPListener is the TCP listener for the host-API HTTP server on Darwin.
@@ -489,11 +493,14 @@ type Sidecar struct {
 	// the container is launched. Protected by mu.
 	hostAPITCPListener net.Listener
 	// hostAPITCPSrv is the HTTP server for the host-API TCP listener (Darwin only).
-	// Stored so Shutdown() can drain in-flight requests gracefully. Protected by mu.
+	// Stored so CloseHostAPI can drain in-flight requests gracefully. Protected by mu.
 	hostAPITCPSrv *http.Server
 	// hostAPISecret is the host-API credential of this sidecar
 	// (host_api_auth.go). Run stores it before it binds the socket.
 	hostAPISecret atomic.Pointer[string]
+	// hostAPIDrain records the host-API handlers that run, for
+	// CloseHostAPI (host_api_drain.go).
+	hostAPIDrain hostAPIDrain
 	// binaryStaleOnce and binaryStaleDiag hold the prism-binary
 	// staleness check's process-scoped result. Deliberately fields on
 	// *Sidecar rather than a closure-local var inside hostAPIHandler():
@@ -1401,21 +1408,14 @@ func (s *Sidecar) Shutdown() {
 		ctr.mgr.Shutdown()
 	}
 
-	// Close the host-API Unix socket listener and remove the socket file.
-	// Drain in-flight requests with a short deadline before closing.
+	// Close the host-API listeners (Unix socket, and TCP on Darwin), wait
+	// for the handlers that run, and remove the socket file. The caller
+	// calls CloseHostAPI again before it removes the PID file, so the result
+	// is not needed here.
+	_ = s.CloseHostAPI()
 	s.mu.Lock()
 	ln := s.hostAPIListener
-	srv := s.hostAPISrv
-	tcpLn := s.hostAPITCPListener
-	tcpSrv := s.hostAPITCPSrv
 	s.mu.Unlock()
-	if srv != nil {
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutCtx)
-	} else if ln != nil {
-		_ = ln.Close()
-	}
 	if ln != nil {
 		_ = os.Remove(s.cfg.HostAPISockPath)
 		_ = os.Remove(hostapiauth.SecretPath(s.cfg.HostAPISockPath))
@@ -1423,16 +1423,6 @@ func (s *Sidecar) Shutdown() {
 		// when the directory is empty (which it is after the socket file is
 		// removed), so this is safe.
 		_ = os.Remove(filepath.Dir(s.cfg.HostAPISockPath))
-	}
-	// Close the TCP host-API listener/server (Darwin only). Idempotent when
-	// the listener was never started (both are nil on Linux or when container
-	// mode is inactive).
-	if tcpSrv != nil {
-		shutCtx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel2()
-		_ = tcpSrv.Shutdown(shutCtx2)
-	} else if tcpLn != nil {
-		_ = tcpLn.Close()
 	}
 
 	// Close the harness pipe listener and connection (socket-pipe transport).
