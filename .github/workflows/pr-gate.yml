@@ -340,6 +340,37 @@ jobs:
             exit 1
           fi
           echo "sidecar owner check: ${stop_count} TestStopSidecar test(s) ran, none skipped"
+      # The exit of a sidecar waits for its host-API handlers before it
+      # removes its PID file (#3391). The issue is on Darwin, where the
+      # harness pipe of a sandbox-exec session is a TCP port. The tests need
+      # no nested sandbox and no Nix binary, so they run directly on the
+      # runner. Each test of the issue ends in _3391.
+      - name: go test ./cmd ./internal/sidecar -run '_3391$' -race
+        if: always() && steps.changes.outputs.go == 'true'
+        working-directory: modules/programs/prism/prism
+        run: |
+          set -o pipefail
+          go test -v ./cmd/ ./internal/sidecar/ -run '_3391$' -race -count=1 2>&1 | tee /tmp/go-test-macos-sidecar-exit.log
+      - name: Guard against SKIP-as-PASS and a zero-test run (sidecar exit)
+        if: always() && steps.changes.outputs.go == 'true'
+        run: |
+          if [ ! -f /tmp/go-test-macos-sidecar-exit.log ]; then
+            echo "::error::go test log not found - likely the test step did not run" >&2
+            exit 1
+          fi
+          run_count=$(grep -cE '^=== RUN   Test[A-Za-z0-9_]+_3391$' /tmp/go-test-macos-sidecar-exit.log || true)
+          skip_lines=$(grep -E '^[[:space:]]*--- SKIP: ' /tmp/go-test-macos-sidecar-exit.log || true)
+          echo "_3391 tests run: ${run_count:-0}"
+          if [ -n "$skip_lines" ]; then
+            echo "::error::one or more selected tests reported SKIP - a skip must not read as a pass:"
+            echo "$skip_lines"
+            exit 1
+          fi
+          if [ -z "$run_count" ] || [ "$run_count" -eq 0 ]; then
+            echo "::error::0 _3391 tests ran - the -run selector matched nothing, check for naming drift" >&2
+            exit 1
+          fi
+          echo "sidecar exit: ${run_count} _3391 test(s) ran, none skipped"
       - name: No Go-relevant changes
         if: steps.changes.outputs.go != 'true'
         run: echo "no Go-relevant paths touched; skipping go-tests-macos-sandbox-exec"

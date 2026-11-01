@@ -743,6 +743,20 @@ the exec of `/bin/ps`, and the runner does not. If you add a
 session test for a Darwin code path of the owner check, add its name to the
 `-run` selector.
 
+**Sidecar exit tests (`cmd`, `internal/sidecar`).** The job also runs each
+test of issue #3391, with the selector `_3391$`. The exit of a sidecar
+waits for its host-API handlers before it removes its PID file. The issue
+is on Darwin, where the harness pipe of a `sandbox-exec` session is a TCP
+port. These tests need no nested sandbox and no Nix binary, so the step
+runs directly on the runner:
+
+```
+go test -v ./cmd/ ./internal/sidecar/ -run '_3391$' -race -count=1
+```
+
+The step has its own guard step. The guard fails the job on any SKIP, or
+if no `_3391` test runs.
+
 This job is CI-only test execution. It does not change worker isolation.
 It does not touch `config.ValidIsolationModes`, and no worker spawn
 default moves to `host` mode.
