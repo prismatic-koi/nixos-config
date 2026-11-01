@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -255,6 +256,21 @@ func SessionsInDir(d *db.DB, dir string) ([]string, error) {
 // one session for each line, with a tab between them. Tests replace it.
 var listTmuxSessionPaths = func() (string, error) {
 	return tmux.Run("list-sessions", "-F", "#{session_name}\t#{session_path}")
+}
+
+// AllowNoTmuxForTest makes SessionsInDir find no tmux session when it finds
+// no tmux binary, until restore. A test suite calls it in TestMain, so that
+// a clone of a test fixture works where tmux is not installed, as in the
+// nix build. prism itself refuses a clone when it cannot ask tmux.
+func AllowNoTmuxForTest() (restore func()) {
+	prev := listTmuxSessionPaths
+	listTmuxSessionPaths = func() (string, error) {
+		if _, err := exec.LookPath(tmux.TmuxBin); err != nil {
+			return "", nil
+		}
+		return prev()
+	}
+	return func() { listTmuxSessionPaths = prev }
 }
 
 func lexists(p string) bool {

@@ -331,6 +331,7 @@ const (
 	cloneHoldEnv       = "PRISM_TEST_CLONE_HOLD_TARGET"
 	cloneHoldOriginEnv = "PRISM_TEST_CLONE_HOLD_ORIGIN"
 	cloneHoldReadyEnv  = "PRISM_TEST_CLONE_HOLD_READY"
+	cloneHoldTmuxEnv   = "PRISM_TEST_CLONE_HOLD_TMUX"
 )
 
 // The helper process starts here, before TestMain, so it runs no test.
@@ -345,6 +346,9 @@ func init() {
 func runCloneHold(target string) int {
 	git.AllowFileTransportForTest()
 	git.SetCloneTargetLockSource(lockCloneTarget)
+	// The stub tmux of the test: tmux.TmuxBin of the test process does not
+	// pass to this process.
+	tmux.TmuxBin = os.Getenv(cloneHoldTmuxEnv)
 	err := git.CloneWorktree(os.Getenv(cloneHoldOriginEnv), target, func(msg string) {
 		if strings.HasPrefix(msg, "cloning ") {
 			_ = os.WriteFile(os.Getenv(cloneHoldReadyEnv), nil, 0o644)
@@ -370,6 +374,7 @@ func TestCloneWorktree_ReleasesTheLockWhenTheCloneIsKilled_3388(t *testing.T) {
 		cloneHoldEnv+"="+target,
 		cloneHoldOriginEnv+"="+origin,
 		cloneHoldReadyEnv+"="+ready,
+		cloneHoldTmuxEnv+"="+tmux.TmuxBin,
 	)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
