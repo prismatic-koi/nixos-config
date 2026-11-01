@@ -668,6 +668,12 @@ the checks of the dir. `TestCloneWorktree_HoldsTheTargetLockToTheEnd_3388`
 and `TestCloneWorktree_RefusalOfTheTargetLock_3388` (`internal/git`) cover
 the contract of `CloneWorktree` with a stand-in lock.
 
+The nix build runs the tests with no tmux binary. So the `TestMain` of
+`cmd`, `internal/review`, `internal/sidecar`, and `internal/session` calls
+`session.AllowNoTmuxForTest`. With that hook, `SessionsInDir` finds no tmux
+session when it finds no tmux binary, and a clone of a test fixture works.
+prism itself refuses a clone when it cannot ask tmux.
+
 ## The `/review` rebase pre-flight (#3323, #3335)
 
 `prism review` runs a pre-flight that fetches the base ref and checks that it

@@ -900,9 +900,11 @@ func startupGuardKillOld(name string, d *db.DB, forceFresh bool) bool {
 //     live (no-op behaviour).
 //
 // A LayoutFull start holds the shared start lock of directory until Create
-// returns. While prism converts directory to the bare+worktree layout,
-// Create returns an error that wraps ErrConvertInProgress. When directory
-// holds a .bare, it returns an error that wraps ErrStartInBareRoot
+// returns. While prism converts directory to the bare+worktree layout, or
+// clones a repo into it, Create returns an error that wraps
+// ErrConvertInProgress. When directory holds a .bare, it returns an error
+// that wraps ErrStartInBareRoot. Outside a bare+worktree layout, a
+// LayoutFull start in a dir that does not exist returns an error
 // (convert_lock.go). A sandboxed LayoutFull start in a dir that holds
 // project roots returns an error that wraps
 // container.ErrSessionDirHoldsProjectRoots.

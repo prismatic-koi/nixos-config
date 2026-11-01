@@ -30,7 +30,9 @@ func init() {
 }
 
 // cloneLockWait is the time that a clone waits for the lock of its target.
-// Tests set it.
+// Tests set it. It is shorter than the wait of a conversion: when a start,
+// a conversion, or another clone in the target ends, the clone usually
+// refuses anyway, because the session or the files are then in the target.
 var cloneLockWait = 10 * time.Second
 
 // lockCloneTarget takes the exclusive lock on dir, the target of a clone.

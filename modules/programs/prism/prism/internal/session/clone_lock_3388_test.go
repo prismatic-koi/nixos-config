@@ -352,7 +352,12 @@ func runCloneHold(target string) int {
 	err := git.CloneWorktree(os.Getenv(cloneHoldOriginEnv), target, func(msg string) {
 		if strings.HasPrefix(msg, "cloning ") {
 			_ = os.WriteFile(os.Getenv(cloneHoldReadyEnv), nil, 0o644)
-			select {}
+			// Do not use an empty select here. When no goroutine can run,
+			// the Go runtime stops the process, and the kernel then
+			// releases the lock before the test kills the process.
+			for {
+				time.Sleep(time.Minute)
+			}
 		}
 	})
 	if err != nil {
@@ -376,8 +381,17 @@ func TestCloneWorktree_ReleasesTheLockWhenTheCloneIsKilled_3388(t *testing.T) {
 		cloneHoldReadyEnv+"="+ready,
 		cloneHoldTmuxEnv+"="+tmux.TmuxBin,
 	)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
+	stderrPath := filepath.Join(t.TempDir(), "stderr")
+	stderr, err := os.Create(stderrPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderr.Close()
+	cmd.Stderr = stderr
+	output := func() string {
+		data, _ := os.ReadFile(stderrPath)
+		return string(data)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start the clone process: %v", err)
 	}
@@ -388,12 +402,12 @@ func TestCloneWorktree_ReleasesTheLockWhenTheCloneIsKilled_3388(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the clone process did not take the lock: %s", stderr.String())
+			t.Fatalf("the clone process did not take the lock: %s", output())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	if _, err := holdStartLock(target); !errors.Is(err, ErrConvertInProgress) {
-		t.Fatalf("holdStartLock while the clone process runs = %v, want ErrConvertInProgress", err)
+		t.Fatalf("holdStartLock while the clone process runs = %v, want ErrConvertInProgress. Output of the clone process: %s", err, output())
 	}
 
 	if err := cmd.Process.Kill(); err != nil {

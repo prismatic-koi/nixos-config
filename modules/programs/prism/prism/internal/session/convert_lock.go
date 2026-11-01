@@ -33,7 +33,7 @@ import (
 // ErrConvertInProgress is in the error chain of Create when prism converts
 // the dir of the session to the bare+worktree layout, or clones a repo
 // into it.
-var ErrConvertInProgress = errors.New("prism converts this dir to the bare+worktree layout, or clones a repo into it, so no session can start in it until that ends")
+var ErrConvertInProgress = errors.New("prism converts this dir to the bare+worktree layout, or clones a repo into it, so no session can start in it until the conversion or the clone ends")
 
 // ErrStartInBareRoot is in the error chain of Create when the dir of the
 // session holds a .bare. A session in that dir can write the .bare.
