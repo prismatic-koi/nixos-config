@@ -29,8 +29,9 @@ package container
 // auth.json is not the host file. pi runs an api_key value in auth.json
 // that starts with "!" as a shell command, so a sandbox must not write the
 // file that later sessions read. Each sandboxed session has its own
-// auth.json in a per-session host dir, and the sidecar copies OAuth entries
-// between it and the host file (pi_auth_session.go, #3295).
+// auth.json in a per-session host dir. The sidecar copies the host file to
+// it, and only the anthropic OAuth entry of it to the host file
+// (pi_auth_session.go, #3295).
 //
 // The Notion MCP store and the shared OAuth refresh lock are not in the
 // agent dir. They are in dedicated dirs that the sessions share
