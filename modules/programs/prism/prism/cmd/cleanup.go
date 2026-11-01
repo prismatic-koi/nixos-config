@@ -1103,6 +1103,7 @@ func closeSession(session string) error {
 		}
 		endSessionsRow := sessionsRowOpen(d, snap.instanceID)
 		keepChildren, _ := endStoppingReviewChildren(d, session)
+		review.RemoveRoundFilesForParent(d, session)
 		if endSessionsRow {
 			if updErr := d.UpdateSessionEnded(snap.instanceID, "finished"); updErr != nil {
 				proglog.Errorf("[prism] closeSession: update session ended: %v\n", updErr)
