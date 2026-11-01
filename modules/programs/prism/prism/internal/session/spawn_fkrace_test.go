@@ -47,10 +47,12 @@ func TestSpawnSession_FullLayout_PreInsertsSessionsRow(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	const sessionName = "myrepo@fk-race-fullspawn"
+	// A LayoutFull start refuses a dir that does not exist (holdStartLock).
+	worktree := t.TempDir()
 	opts := SpawnOpts{
 		SessionName:   sessionName,
 		Repo:          "myrepo",
-		Worktree:      "/worktrees/myrepo-fk",
+		Worktree:      worktree,
 		AgentRole:     "worker",
 		Prompt:        "go",
 		Layout:        LayoutFull,
@@ -98,7 +100,7 @@ func TestSpawnSession_FullLayout_PreInsertsSessionsRow(t *testing.T) {
 		ID:          uuid.New().String(),
 		SessionName: sessionName,
 		Repo:        "myrepo",
-		Worktree:    "/worktrees/myrepo-fk",
+		Worktree:    worktree,
 		InstanceID:  &iid,
 		Type:        "state_change",
 		Payload:     `{"state":"active"}`,
@@ -128,7 +130,7 @@ func TestSpawnSession_FullLayout_HonoursPreSetInstanceID(t *testing.T) {
 	opts := SpawnOpts{
 		SessionName:    sessionName,
 		Repo:           "myrepo",
-		Worktree:       "/worktrees/myrepo-preset",
+		Worktree:       t.TempDir(),
 		AgentRole:      "worker",
 		Prompt:         "go",
 		InstanceID:     preMinted,
@@ -178,16 +180,20 @@ func TestSpawnSession_FullLayout_ConcurrentSpawnsAllPreSeeded(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, N)
 	names := make([]string, N)
+	worktrees := make(map[string]string, N)
+	for i := 0; i < N; i++ {
+		names[i] = "myrepo@fk-race-conc-" + uuid.New().String()[:8]
+		worktrees[names[i]] = t.TempDir()
+	}
 	for i := 0; i < N; i++ {
 		i := i
-		names[i] = "myrepo@fk-race-conc-" + uuid.New().String()[:8]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			opts := SpawnOpts{
 				SessionName:    names[i],
 				Repo:           "myrepo",
-				Worktree:       "/worktrees/myrepo-conc-" + names[i],
+				Worktree:       worktrees[names[i]],
 				AgentRole:      "worker",
 				Prompt:         "go",
 				Layout:         LayoutFull,
@@ -227,7 +233,7 @@ func TestSpawnSession_FullLayout_ConcurrentSpawnsAllPreSeeded(t *testing.T) {
 			ID:          uuid.New().String(),
 			SessionName: name,
 			Repo:        "myrepo",
-			Worktree:    "/worktrees/myrepo-conc-" + name,
+			Worktree:    worktrees[name],
 			InstanceID:  &iid,
 			Type:        "state_change",
 			Payload:     `{"state":"active"}`,

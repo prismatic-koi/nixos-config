@@ -788,9 +788,11 @@ func TestSpawnSession_NeedsPromptFile_AllModesAndLayouts(t *testing.T) {
 			sessionName := "myrepo@branch~review-1-review-code-" + strings.ReplaceAll(tc.name, "+", "-")
 
 			opts := SpawnOpts{
-				SessionName:    sessionName,
-				Repo:           "myrepo",
-				Worktree:       "/worktrees/myrepo",
+				SessionName: sessionName,
+				Repo:        "myrepo",
+				// A LayoutFull start refuses a dir that does not exist
+				// (holdStartLock).
+				Worktree:       t.TempDir(),
 				AgentRole:      "review-code",
 				Prompt:         prompt,
 				Layout:         tc.layout,

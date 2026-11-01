@@ -106,7 +106,11 @@ func TestMain(m *testing.M) {
 	// host-mode command building never sees the real profiles.json.
 	var restoreState func()
 	suiteStateRoot, restoreState = stateguardtest.IsolateSuite()
+	// The nix build runs the suite with no tmux binary. A clone of a fixture
+	// asks tmux for a session in the target, and refuses with no answer.
+	restoreNoTmux := AllowNoTmuxForTest()
 	code := m.Run()
+	restoreNoTmux()
 	restoreState()
 	restoreTmuxEnv()
 	os.Exit(code)

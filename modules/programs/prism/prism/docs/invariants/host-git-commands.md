@@ -10,7 +10,7 @@
   git and nvim names, not names in this source tree.
 -->
 
-Issues: #3322, #3315, #3293, #3347, #3337, #3333, #3364, #3381. Code: `internal/git/host.go`
+Issues: #3322, #3315, #3293, #3347, #3337, #3333, #3364, #3381, #3388. Code: `internal/git/host.go`
 (`OpenBare`, `OpenWorktree`, `OpenDir`, `OuterBareRoot`, `EnvForDir`,
 `CloneCommand`), `internal/git/bare_record.go`, `internal/db/session_starts.go`, `cmd/confirm_bare.go`, the prefix+b keybind in the tmux config of prism
 (modules/programs/prism/tmux.nix, outside the prism Go tree), and the nvim
@@ -546,7 +546,8 @@ location. So below a dir in which a sandboxed session starts, such a
   conversion of a plain clone" in `session-lifecycle.md`). Then
   `ConvertToBare` refuses while a session in the root, or above it, runs.
 - `prism clone` into an empty project root refuses while a session in that
-  root runs.
+  root runs. No session can start in the root until the clone ends (#3388,
+  "A session start during a clone" below).
 - The check of `CloneWorktree` and `ConvertToBare` also covers a session
   that started before this rule, and a session in a dir that a later change
   of config.json makes a project location.
@@ -555,10 +556,6 @@ location. So below a dir in which a sandboxed session starts, such a
 
 - **A `.bare` outside the project roots.** A session can write it. Host
   git refuses it with `ErrNotProjectRoot`, so it is not a prism repo.
-- **A start during a clone (#3388).** The check of `CloneWorktree` reads
-  the start records one time, before the bare clone. A session start in the
-  target that passes `holdStartLock` before the `.bare` exists can write
-  the new `.bare`.
 - **A detached process on Darwin (#3375).** It outlives its session, so
   the check of `CloneWorktree` and `ConvertToBare` does not see it.
 
@@ -582,6 +579,100 @@ starts and cannot write the `.bare`.
 `TestConvertToBare_RefusesWhileSessionAtOrAboveRuns_3381`, and
 `TestCloneWorktree_AsksTmuxForSessionsAbove_3381` cover the check of the
 clone and the conversion.
+
+## A session start during a clone (#3388)
+
+Code: `CloneWorktree` in `internal/git/git.go`, `lockCloneTarget` in
+`internal/session/clone_lock.go`, and `holdStartLock` and `SessionsInDir`
+in `internal/session/convert_lock.go`.
+
+### The clone-lock rule
+
+`prism clone` and the clone entry of the `prism switch` picker hold the
+lock of `prism convert` (#3361) on the target. The clone takes the lock
+before its checks, and releases it after its last step.
+
+- While the clone holds the lock, `session.Create` refuses a start in the
+  target, before tmux. The error wraps `ErrConvertInProgress` and names the
+  dir. So `prism switch --path`, the picker, `prism restore`, and
+  `/switch` refuse the start.
+- With the lock held, the clone refuses while a prism session is in the
+  target (`SessionsInDir`, the same check as `prism convert`). Such a
+  session has a tmux session whose path is the target, with a prism row or
+  a sidecar PID file. Or it has a row with no end time whose dir is the
+  target. The error names the dir and the session.
+- If prism cannot read the rows or ask tmux, the clone refuses. No tmux
+  server is not an error, because then no tmux session runs.
+- The clone also keeps the check of #3381: a session that started in the
+  target, or in a dir above it.
+- When a conversion or another clone holds the lock of the target, the
+  clone waits up to 10 seconds, and then refuses. The error names the dir.
+  The refused clone changes nothing in the target.
+- The clone refuses a target in a bare+worktree layout, because a start in
+  such a dir takes no lock. `OpenBare` also refuses such a root, after the
+  bare clone.
+- `session.Create` refuses a `LayoutFull` start in a dir that does not
+  exist, unless the dir is in a bare+worktree layout. The clone can make
+  its target, and a start that found no dir holds no lock.
+- The lock file names the dir by its device and inode. When prism gets a
+  lock, it makes sure that the dir at the path is still the dir of the
+  lock. Another dir at the path has another lock.
+- After it asks for the lock, the clone removes a dir that it made only
+  while it holds the lock. Without the lock, another clone can use the dir.
+- The kernel releases the lock when the clone process ends. A failed clone
+  releases the lock before it returns. A later start or clone in the dir
+  then works.
+
+### Why the clone holds the lock
+
+The sandbox of a session can write the dir of the session ("Why prism
+refuses the session" above). A session that starts in the target during
+the clone can write `.bare/config`, `.bare/hooks`, and
+`.bare/info/attributes` of the new `.bare`. The bare repo record accepts
+that `.bare`, because prism made it. The next spawn runs host git in it.
+
+The check of #3381 reads the start records one time. The tmux hook writes
+the start record after `session.Create` returns. So that check alone does
+not see a start that ends just before the check.
+
+`session.Create` holds the shared lock from before tmux to the end of the
+layout. So a start that held the shared lock when the clone asked for the
+lock ended first, and its tmux session runs in the target. The clone finds
+that session in tmux.
+
+### Limits of the clone-lock rule
+
+- **A detached process on Darwin (#3375).** It outlives its session, so
+  the check of the clone does not see it.
+
+### Tests of the clone-lock rule
+
+`TestCloneWorktree_SessionInTargetCannotPlantInNewBare_3388` (`cmd`) runs
+a session in the target whose pane plants a smudge filter in the `.bare`.
+Its control clones with a lock that does nothing, and shows that the plant
+lands and that the worktree add of a spawn runs the payload. With the real
+lock, the clone refuses. The test also starts a session with
+`ensureAndSwitch` during the clone, and makes sure that prism refuses it.
+
+`TestCloneWorktree_RefusesStartInTargetDuringClone_3388`,
+`TestCloneWorktree_RefusesSessionThatStartedBeforeTheLock_3388`,
+`TestCloneWorktree_RefusesWhenTmuxGivesNoAnswer_3388`,
+`TestCloneWorktree_RefusesTargetLockedByConvertOrClone_3388`,
+`TestCloneWorktree_ReleasesTheLockAfterAFailure_3388`,
+`TestCloneWorktree_ReleasesTheLockWhenTheCloneIsKilled_3388`,
+`TestHoldStartLock_RefusesDirThatDoesNotExist_3388`,
+`TestLockExclusive_RefusesDirThatTookThePlaceOfTheDir_3388`, and
+`TestCloneWorktree_RefusesTargetInABareLayout_3388` (`internal/session`)
+cover the refusals, the order, the holders of the lock, the release, and
+the checks of the dir. `TestCloneWorktree_HoldsTheTargetLockToTheEnd_3388`
+and `TestCloneWorktree_RefusalOfTheTargetLock_3388` (`internal/git`) cover
+the contract of `CloneWorktree` with a stand-in lock.
+
+The nix build runs the tests with no tmux binary. So the `TestMain` of
+`cmd`, `internal/review`, `internal/sidecar`, and `internal/session` calls
+`session.AllowNoTmuxForTest`. With that hook, `SessionsInDir` finds no tmux
+session when it finds no tmux binary, and a clone of a test fixture works.
+prism itself refuses a clone when it cannot ask tmux.
 
 ## The `/review` rebase pre-flight (#3323, #3335)
 
@@ -780,7 +871,9 @@ table.
   - A detached process on Darwin `sandbox-exec` survives the stop (#3375).
 
   A session in a dir above the root is refused (#3381, "A session in a dir
-  that holds project roots" above).
+  that holds project roots" above). `prism clone` refuses while a session
+  is in the target, and no session can start in the target during the
+  clone (#3388, "A session start during a clone" above).
 - **A plant that host git used before the update.** The start of the
   record records a plant if a worktree session started in it before the
   update, and `db.Prune` removed the start record of the planting session.

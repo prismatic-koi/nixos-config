@@ -47,6 +47,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/review"
+	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -112,7 +113,11 @@ func TestMain(m *testing.M) {
 	// suite in its sandbox, where PRISM_HOST_API is set, so the suite unsets
 	// it, as in CI.
 	os.Unsetenv("PRISM_HOST_API")
+	// The nix build runs the suite with no tmux binary. A clone of a fixture
+	// asks tmux for a session in the target, and refuses with no answer.
+	restoreNoTmux := session.AllowNoTmuxForTest()
 	code := m.Run()
+	restoreNoTmux()
 	restoreFileTransport()
 	restoreState()
 	restore()

@@ -163,9 +163,13 @@ func TestMain(m *testing.M) {
 	// The cleanup and spawn fixtures make .bare with plain git, not with
 	// prism clone, so it is not in the bare repo record.
 	restoreUnrecordedBare := git.AllowUnrecordedBareForTest()
+	// The nix build runs the suite with no tmux binary. A clone of a fixture
+	// asks tmux for a session in the target, and refuses with no answer.
+	restoreNoTmux := prismSession.AllowNoTmuxForTest()
 
 	code := m.Run()
 
+	restoreNoTmux()
 	restoreUnrecordedBare()
 	restoreFileTransport()
 	restoreStateEnv()
