@@ -20,11 +20,33 @@ var (
 		return prismSession.EnsureSidecarStoppedErr(session, prismSession.SidecarStopTimeout)
 	}
 	cleanupReviewChildren = review.CleanupReviewSessionsForParent
+	// stopSessionSandboxProcs ends each process in the sandbox of a session
+	// (#3375). The cleanup paths, the stop before a conversion, and the
+	// tmux-session-end hook call it after the tmux kill.
+	stopSessionSandboxProcs = func(session string) error {
+		return prismSession.StopSandboxProcesses(session, prismSession.SandboxProcessStopTimeout)
+	}
 )
 
 // errSidecarNotStopped is in the error chain of a cleanup path that kept a
 // session because its sidecar did not stop.
 var errSidecarNotStopped = errors.New("sidecar did not stop")
+
+// errSandboxProcessRuns is in the error chain of a cleanup path that kept
+// the row of a session because a process in its sandbox still runs after
+// the tmux kill.
+var errSandboxProcessRuns = errors.New("a process in the sandbox of the session still runs")
+
+// sandboxProcessKeptError returns the error of a cleanup path that stopped
+// after the tmux kill of session, because stopErr reports a process in the
+// sandbox of session that prism cannot end. The path keeps the row, the
+// port, the review children, and the instance dirs, so that a later
+// cleanup of the session ends the process and does the rest. stopErr names
+// the process and the session.
+func sandboxProcessKeptError(session string, stopErr error) error {
+	proglog.Warnf("[prism] warning: a process in the sandbox of %q still runs after the tmux kill — keeping its row, port, and review children\n", session)
+	return errors.Join(stopErr, fmt.Errorf("%w: prism kept the row, the port, and the review children of %s, so prism confirm-bare and prism convert refuse a project root that the session can write. Run the cleanup again when the process is gone", errSandboxProcessRuns, strconv.Quote(session)))
+}
 
 // sidecarsNotStoppedError returns nil when sessions is empty. Otherwise it
 // returns an error that names each session, so that the command exits
@@ -73,13 +95,14 @@ func cleanupChildrenOfKeptSession(session string) []string {
 
 // runCleanupTUI runs the interactive cleanup of m. The TUI closes as soon
 // as the cleanup is done, so it returns the error of a sidecar that did not
-// stop: the command then names the session and exits non-zero.
+// stop, or of a process in the sandbox that still runs: the command then
+// names the session and exits non-zero.
 func runCleanupTUI(m cleanupModel) error {
 	final, err := tea.NewProgram(cleanupWrapper{cleanupModel: m}, tea.WithAltScreen()).Run()
 	if err != nil {
 		return err
 	}
-	if w, ok := final.(cleanupWrapper); ok && errors.Is(w.doneErr, errSidecarNotStopped) {
+	if w, ok := final.(cleanupWrapper); ok && (errors.Is(w.doneErr, errSidecarNotStopped) || errors.Is(w.doneErr, errSandboxProcessRuns)) {
 		return w.doneErr
 	}
 	return nil

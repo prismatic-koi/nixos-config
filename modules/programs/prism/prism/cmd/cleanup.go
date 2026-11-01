@@ -314,6 +314,11 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		}
 		snap := takeCleanupSnapshot(m.session)
 		_ = cleanupKillTmuxSession(m.session)
+		// A process that the agent detached outlives the tmux kill on
+		// sandbox-exec (#3375). End it before the row ends.
+		if err := stopSessionSandboxProcs(m.session); err != nil {
+			return cleanupDoneMsg{sandboxProcessKeptError(m.session, err)}
+		}
 		if d, err := openDB(); err == nil {
 			// Stop and remove child review-agent containers BEFORE removing their
 			// DB rows — so a failed stop still has a record to retry against.
@@ -881,6 +886,11 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	// non-nil for already-dead sessions, which is not a failure for our
 	// purposes), so we set the field unconditionally here.
 	result.SessionKilled = true
+	// A process that the agent detached outlives the tmux kill on
+	// sandbox-exec (#3375). End it before the row ends.
+	if err := stopSessionSandboxProcs(session); err != nil {
+		return finishSandboxKeptCleanup(session, err, &result, jsonMode, stdout)
+	}
 	// archiveCollisionWarning records a non-fatal archive-already-exists
 	// outcome so it can be surfaced as a stderr warning at the end of cleanup
 	// rather than aborting (archive.ErrAlreadyExists is a benign collision once
@@ -994,6 +1004,18 @@ func finishKeptSessionCleanup(session string, stopErr error, result *cleanupResu
 	return keptSessionError(stopErr, failed)
 }
 
+// finishSandboxKeptCleanup ends a headless cleanup or close of session
+// after the tmux kill, when a process in its sandbox still runs (stopErr).
+// The envelope reports the lifecycle fields as skipped, because the row
+// and the port stay. See sandboxProcessKeptError.
+func finishSandboxKeptCleanup(session string, stopErr error, result *cleanupResult, jsonMode bool, stdout io.Writer) error {
+	markDBLifecycleSkipped(result, "skipped: a process in the sandbox still runs")
+	if jsonMode {
+		emitCleanupJSONTo(stdout, *result)
+	}
+	return sandboxProcessKeptError(session, stopErr)
+}
+
 // applySessionResourceSweep runs the orphan-resource sweep for session
 // and, when the sweep actually ran (containers_enabled=1), records the
 // counts on result so they surface in the --json envelope. When
@@ -1058,6 +1080,11 @@ func closeSession(session string) error {
 	}
 	snap := takeCleanupSnapshot(session)
 	_ = cleanupKillTmuxSession(session)
+	// A process that the agent detached outlives the tmux kill on
+	// sandbox-exec (#3375). End it before the row ends.
+	if err := stopSessionSandboxProcs(session); err != nil {
+		return sandboxProcessKeptError(session, err)
+	}
 	if d, err := openDB(); err == nil {
 		if snap.isolationMode != "host" {
 			removeContainerIfExists(session)
@@ -1181,6 +1208,11 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 	result.SessionKilled = true
 	snap := takeCleanupSnapshot(session)
 	_ = cleanupKillTmuxSession(session)
+	// A process that the agent detached outlives the tmux kill on
+	// sandbox-exec (#3375). End it before the row ends.
+	if err := stopSessionSandboxProcs(session); err != nil {
+		return finishSandboxKeptCleanup(session, err, &result, jsonMode, stdout)
+	}
 	var archiveCollisionWarning string
 	var keepChildren []string
 	if d, err := openDB(); err == nil {

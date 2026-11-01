@@ -11,7 +11,10 @@ package cmd
 //     transcript, or its instance directories, because the sidecar can
 //     still use them.
 //  2. Kill the tmux server (equivalent to `tmux kill-server`). If a session
-//     is kept, kill every other tmux session instead.
+//     is kept, kill every other tmux session instead. Then end the
+//     processes in the sandbox of each session that reset ends. A session
+//     where such a process still runs keeps its row and its resume
+//     pointer (#3375).
 //  3. Run each registered isolator's Reset sweep (all no-op stubs today).
 //  4. Mark all non-ended rows in agent_status as ended (sets ended_at = now;
 //     state is intentionally left at its last known value — ended_at IS NULL
@@ -63,7 +66,9 @@ Steps (each attempted independently):
      ~/.local/state/prism/run/). A session whose sidecar does not stop
      keeps its tmux session and its row, and the later steps skip it.
   2. Kill the tmux server (all sessions and panes). If a session is kept,
-     kill every other tmux session instead.
+     kill every other tmux session instead. Then end the processes in the
+     sandbox of each session. A session where such a process still runs
+     keeps its row.
   3. Run each registered isolator's Reset sweep.
   4. Mark all non-ended rows in agent_status as ended, clear the pi
      conversation resume pointer (harness_session_id) on every row, and
@@ -120,6 +125,17 @@ func runReset(cmd *cobra.Command, _ []string) error {
 
 	// ── Step 2: Kill tmux ────────────────────────────────────────────────────
 	resetKillTmuxStep(kept)
+
+	// A process that the agent detached outlives the tmux kill on
+	// sandbox-exec (#3375). A session where such a process still runs keeps
+	// its row, so that prism confirm-bare and the stop before a conversion
+	// still see the session. Its transcript stays with its resume pointer.
+	if sandboxKept := resetStopSandboxProcs(kept); len(sandboxKept) > 0 {
+		kept = append(kept, sandboxKept...)
+		resumePointers = slices.DeleteFunc(resumePointers, func(p piResumePointer) bool {
+			return slices.Contains(sandboxKept, p.sessionName)
+		})
+	}
 
 	// ── Step 3: Reset every registered isolator ──────────────────────────────
 	// The per-mode reset logic lives in each Isolator's Reset method.
@@ -407,6 +423,49 @@ func resetStopSidecars() ([]string, error) {
 // resetKillTmuxStep is step 2 of runReset. Tests replace it, so that a test
 // can act as the session-closed hook of each killed tmux session.
 var resetKillTmuxStep = resetKillTmux
+
+// resetStopSandboxProcs ends the processes in the sandbox of each session
+// with an open row that kept does not name. The stops run at the same
+// time. It returns the sessions where a process still runs, and writes a
+// warning that names the process and the session for each one. If it
+// cannot read the rows, it returns nil after a warning.
+func resetStopSandboxProcs(kept []string) []string {
+	d, err := openDB()
+	if err != nil {
+		proglog.Warnf("[prism reset] sandbox processes: open DB: %v (continuing)\n", err)
+		return nil
+	}
+	statuses, err := d.AllStatusesWithPrefix("")
+	d.Close()
+	if err != nil {
+		proglog.Warnf("[prism reset] sandbox processes: read rows: %v (continuing)\n", err)
+		return nil
+	}
+	var sessions []string
+	for _, s := range statuses {
+		if s.EndedAt == nil && !slices.Contains(kept, s.SessionName) {
+			sessions = append(sessions, s.SessionName)
+		}
+	}
+	errs := make([]error, len(sessions))
+	var wg sync.WaitGroup
+	for i, name := range sessions {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = stopSessionSandboxProcs(name)
+		}()
+	}
+	wg.Wait()
+	var sandboxKept []string
+	for i, name := range sessions {
+		if errs[i] != nil {
+			proglog.Warnf("[prism reset] warning: %v — keeping the row of %q (continuing)\n", errs[i], name)
+			sandboxKept = append(sandboxKept, name)
+		}
+	}
+	return sandboxKept
+}
 
 // resetKillTmux kills the tmux server. When kept names a session, the
 // server stays, and every tmux session that kept does not name is killed.

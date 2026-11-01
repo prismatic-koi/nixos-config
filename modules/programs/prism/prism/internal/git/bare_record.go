@@ -167,8 +167,8 @@ func registeredSessionRuns() SessionRuns {
 //
 // A session runs if its start record is open (SessionStart.Open), or if runs
 // says so. runs must ask a source that the host controls, such as tmux. A
-// session can end its own start record and keep its sandbox: the sidecar
-// ends the record when the session sends session_shutdown. If runs is nil or
+// session can end its own sessions row and keep its sandbox: the sidecar
+// ends the row when the session sends session_shutdown. If runs is nil or
 // cannot tell, refuseSessionsAtOrAbove refuses.
 func refuseSessionsAtOrAbove(action string, root projectRoot, runs SessionRuns) error {
 	dir, err := bareRecordDir()
@@ -356,7 +356,8 @@ func readOrStartBareRecord(dir string) (bareRecordFile, error) {
 
 // SessionStart is the start record of one session in prism.db: the name of
 // the session and the dir that prism started it in. prism writes it on the
-// host. Open is true when the record has no end time.
+// host. Open is true while the session can still run: see
+// db.SessionStarts.
 type SessionStart struct {
 	Name     string
 	Worktree string

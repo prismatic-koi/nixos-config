@@ -257,6 +257,9 @@ var switchProjectStopSidecar = func(sessionName string) error {
 //     can still use them.
 //   - A pane process still runs after the tmux kill. The agent sandbox
 //     stops after the tmux kill, not at the kill.
+//   - A process in the sandbox of the session still runs. On sandbox-exec,
+//     a process that the agent detached outlives the pane processes
+//     (#3375).
 //   - The sweep of the `prism container` containers failed. A container
 //     with a read-write mount can write the clone.
 //   - The row did not end. `prism restore` starts the session of an open
@@ -272,6 +275,9 @@ func stopSessionForConvert(name string) error {
 	}
 	_ = tmux.KillSession(name)
 	if err := waitProcessesGone(panes, convertPaneWait); err != nil {
+		return fmt.Errorf("stop session %q: %w", name, err)
+	}
+	if err := stopSessionSandboxProcs(name); err != nil {
 		return fmt.Errorf("stop session %q: %w", name, err)
 	}
 	if err := sweepPrismContainersForSession(name); err != nil {

@@ -437,6 +437,24 @@ integration test coverage exists for:
     the section-21m deny. The matching change of the node works.
 
   See `sandbox_exec_run_dir_darwin_test.go`.
+- **The stop of a detached process** — the stop of a session finds each
+  process in its sandbox by the section-6 grant on the run dir node and the
+  absent grant on the run root (#3375). It does not change the profile.
+  Under the production profile:
+  - A process that calls `setsid`, ignores SIGTERM and SIGHUP, has launchd
+    as its parent, and writes the worktree stops at
+    `session.StopSandboxProcesses`, and the worktree file then stays as it
+    is.
+  - The stop ends no process in the sandbox of another session and no
+    process with no sandbox.
+  - A loop of processes that each start the next one in a new session and
+    exit at once writes the worktree. The stop ends the loop or refuses,
+    and it never reports success while the loop runs.
+  - A zombie of the user that no parent reaps does not make the stop fail.
+
+  The paired negative points the run-dir rules of the profile at a missing
+  path. The stop then does not find the process. See
+  `sandbox_exec_detached_process_darwin_test.go`.
 - **The review diff dir** — the section-5l read grant on the review diff
   dir of the parent of a review agent,
   `$XDG_STATE_HOME/prism/review-diff/<hash>/` (#3377). `prism review`
@@ -602,7 +620,7 @@ workflow already uses that same action. The job then runs the tests inside
 
 ```
 nix shell nixpkgs#bash nixpkgs#coreutils nixpkgs#git \
-  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode)' -race
+  --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)' -race
 ```
 
 The tests in `sandbox_exec_gitlab_token_darwin_test.go` and
@@ -612,7 +630,7 @@ The production secrets.d deny regexes key off that path. A bare `macos-15`
 runner starts with `TMPDIR` under `/private/tmp`, so the job exports
 `TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"` before it runs `go test`.
 
-**Selector scope: eleven named families, not the whole `TestSandboxExec*`
+**Selector scope: fifteen named families, not the whole `TestSandboxExec*`
 family.** Issue #2749's problem statement names exactly two affected files:
 `sandbox_exec_gitlab_token_darwin_test.go` and
 `sandbox_exec_grafana_config_darwin_test.go`. Issue #3061 adds a third file,
@@ -665,13 +683,20 @@ family of the selector runs them. It needs no Nix tool. It builds a
 CGO-disabled HTTP probe and uses the connect probe of #3066. It runs a real
 coordinator sidecar in the test process, and puts the state dir under the
 real home, as the RunDir file does.
+Issue #3381 adds `sandbox_exec_session_above_root_darwin_test.go`, for the
+refusal of a session in a dir that holds project roots.
+Issue #3375 adds `sandbox_exec_detached_process_darwin_test.go`, for the
+stop of a process that the agent detaches. It needs no Nix tool. It builds
+a CGO-disabled probe with the Go toolchain that the job sets up. It puts
+the state dir and the worktree under the real home.
 The `-run` selector matches only the `TestSandboxExecGitLabToken_*`,
 `TestSandboxExecGrafanaConfig_*`, `TestSandboxExecPIAgentDir_*`,
 `TestSandboxExecWorktreeEntry_*`, `TestSandboxExecWorktreeReadOnly_*`,
 `TestSandboxExecContainerCLI_*`, `TestSandboxExecContainerSocket_*`,
 `TestSandboxExecSessionTmp_*`, `TestSandboxExecGitWriteScope_*`,
 `TestSandboxExecPipeSecret_*`, `TestSandboxExecRunDir_*`,
-`TestSandboxExecReviewDiff_*`, and `TestSandboxExecSessionWorkDirNode_*`
+`TestSandboxExecReviewDiff_*`, `TestSandboxExecSessionWorkDirNode_*`,
+`TestSandboxExecSessionAboveRoot_*`, and `TestSandboxExecDetachedProcess_*`
 functions. A wider `^TestSandboxExec`
 selector was tried first. PR #2785 (round-2 review) found that this
 selector skips several other sandbox-exec suites on a bare `macos-15`
@@ -726,11 +751,13 @@ sidecar owner-check tests of issue #3136. On Darwin, `StopSidecar` and
 sysctl, not from `/proc`. The ubuntu `go-tests` job cannot run that code.
 The step also runs the tests of `EnsureSidecarStopped` and of the
 ended-session sweep (#3160). Both use the owner check, and the
-review-sidecar leak was measured on Darwin. This step runs directly on the runner, with no `nix shell` and no
+review-sidecar leak was measured on Darwin. It also runs the tests of the
+clone lock (#3388), and `TestStopSandboxProcesses_*` (#3375), which send
+real signals to a real process. This step runs directly on the runner, with no `nix shell` and no
 `sandbox-exec` profile:
 
 ```
-go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile)' -race -count=1
+go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile|TestStopSandboxProcesses|Test.*_3388$)' -race -count=1
 ```
 
 The selector has `TestKillSidecar_*` with the underscore, so it does not

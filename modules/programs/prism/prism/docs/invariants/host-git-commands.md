@@ -393,16 +393,23 @@ you made later, for example a moved project, do the same steps.
 `prism confirm-bare` also refuses while a session that started in the
 root or in a dir above it runs, because that session can write the
 `.bare` after the confirmation. On Linux, this refusal stops each write
-after the confirmation. On Darwin, it does not stop a process that the
-session detached (see "Known limits", #3375). It uses two signals, and
-either one refuses:
+after the confirmation. On Darwin, a process that the session detached
+outlives the session. `prism cleanup`, `prism close`, `prism reset`, and
+the `session-closed` hook end such a process before they end the row
+(#3375). Other paths do not (see "Known limits", #3392). It uses two
+signals, and either one refuses:
 
 - The start record is open (`SessionStarts` in
-  `internal/db/session_starts.go`). A `sessions` row is open when it has
-  no end time, and the `agent_status` row of the name has no end time and
-  names the same instance, or no instance. prism can leave a `sessions` row
-  open after its session stops (#3027). Then `agent_status` names another
-  instance, has an end time, or is gone, and the row does not refuse. If a
+  `internal/db/session_starts.go`). A record is open when the
+  `agent_status` row of the name has no end time and names the instance of
+  a `sessions` row of the record. That `sessions` row can have an end time:
+  a sidecar stop ends it first, and a stop that fails after the sidecar
+  stop keeps `agent_status`, for example while a process in the sandbox of
+  the session still runs (#3375). A record is also open when `agent_status`
+  names no instance and a `sessions` row has no end time, because a start is
+  in progress. prism can leave a `sessions` row open after its session
+  stops (#3027). Then `agent_status` names another instance, has an end
+  time, or is gone, and the row does not refuse. If a
   record refuses and the session does not run, end it with
   `prism cleanup --yes --session <name>`, then run `prism confirm-bare`
   again. The error gives this step.
@@ -411,7 +418,8 @@ either one refuses:
   the sidecar ends the row when the session sends `session_shutdown` on
   the harness pipe. A sandbox has no access to the tmux server, so on
   Linux this signal is the one that a session cannot change. On Darwin, a
-  detached process outlives the tmux session (see "Known limits", #3375).
+  detached process outlives the tmux session. The hook ends it, or keeps
+  the row open when it cannot (#3375).
 
 A session cannot set the `agent_status` values through the `/event` proxy
 ("The `/event` proxy" in `session-lifecycle.md`). `tmux-session-start`
@@ -556,8 +564,12 @@ location. So below a dir in which a sandboxed session starts, such a
 
 - **A `.bare` outside the project roots.** A session can write it. Host
   git refuses it with `ErrNotProjectRoot`, so it is not a prism repo.
-- **A detached process on Darwin (#3375).** It outlives its session, so
-  the check of `CloneWorktree` and `ConvertToBare` does not see it.
+- **A detached process on Darwin (#3392).** A process that a session
+  detaches outlives the session. `prism cleanup`, `prism close`,
+  `prism reset`, and the `session-closed` hook end it (#3375). If the
+  session ended by another path, for example the cleanup of a failed
+  spawn, the check of `CloneWorktree` and `ConvertToBare` does not see
+  the process.
 
 ### Tests of the session-dir rule
 
@@ -642,8 +654,11 @@ that session in tmux.
 
 ### Limits of the clone-lock rule
 
-- **A detached process on Darwin (#3375).** It outlives its session, so
-  the check of the clone does not see it.
+- **A detached process on Darwin (#3392).** A process that a session
+  detaches outlives the session. `prism cleanup`, `prism close`,
+  `prism reset`, and the `session-closed` hook end it (#3375). If the
+  session ended by another path, for example the cleanup of a failed
+  spawn, the check of the clone does not see the process.
 
 ### Tests of the clone-lock rule
 
@@ -867,8 +882,12 @@ table.
   So `prism convert`, and the convert entry of `prism switch`, stop the
   sandboxed root session of the plain clone first, and refuse its restart
   until the conversion ends (#3361). See "The conversion of a plain clone"
-  in `session-lifecycle.md`. One in-scope route remains:
-  - A detached process on Darwin `sandbox-exec` survives the stop (#3375).
+  in `session-lifecycle.md`. The stop also ends each process in the
+  sandbox of the root session, also a process that the session detached
+  on Darwin (#3375). One in-scope route remains:
+  - On Darwin, a detached process of another session in the clone that
+    ended by a path that does not end its processes, for example the
+    cleanup of a failed spawn (#3392).
 
   A session in a dir above the root is refused (#3381, "A session in a dir
   that holds project roots" above). `prism clone` refuses while a session
@@ -879,12 +898,14 @@ table.
   update, and `db.Prune` removed the start record of the planting session.
   The host git command of that start ran the payload before the update,
   so the host was already exposed.
-- **`prism confirm-bare` on Darwin (#3375).** On Darwin, a process that a
+- **`prism confirm-bare` on Darwin (#3392).** On Darwin, a process that a
   session detaches (`setsid`, `nohup`) outlives the session, because
-  `sandbox-exec` has no PID namespace. After `prism confirm-bare` of a
-  root that such a session started in, that process can still write
-  `.bare/config` and `.bare/info/attributes`, and the record still accepts
-  the `.bare`. #3375 tracks the fix.
+  `sandbox-exec` has no PID namespace. `prism cleanup`, `prism close`,
+  `prism reset`, and the `session-closed` hook end it before they end the
+  row (#3375). If the session ended by another path, for example the
+  cleanup of a failed spawn, the process can still write `.bare/config`
+  and `.bare/info/attributes` after `prism confirm-bare` of a root that
+  the session started in, and the record still accepts the `.bare`.
 - **A moved, copied, or restored project.** The `.bare` has another inode
   or another path, so `OpenBare` refuses it. Do the steps for
   `prism confirm-bare` in "How prism starts the record" above.
