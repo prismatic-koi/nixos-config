@@ -173,9 +173,8 @@ func (s *Sidecar) handleServerConnected() {
 		// Suppress if reviewingInFlight AND the DB still shows "reviewing".
 		// For socket-pipe (pi) sessions, reviewingInFlight is cleared by the
 		// /prompt handler when source='review-complete'. For HTTP-harness
-		// sessions, the monitor delivers via deliverViaHTTP (the harness
-		// prompt_async API), bypassing /prompt entirely — so reviewingInFlight
-		// stays true. The monitor writes "active" to the DB just before
+		// sessions, the delivery of the monitor does not reach the /prompt
+		// handler of this sidecar — so reviewingInFlight stays true. The monitor writes "active" to the DB just before
 		// delivering, so checking currentDBState() == StateReviewing detects
 		// whether delivery has already happened: once it has, the DB is
 		// "active" (not "reviewing"), the guard is false, and suppression is
@@ -430,8 +429,8 @@ func (s *Sidecar) handleSessionIdle() {
 		//
 		// Note: unlike handleSessionFinished (the PI socket-pipe path), this SSE
 		// path retains the AND with DB state deliberately. The monitor writes
-		// "active" to DB just before delivering the review-complete prompt via
-		// deliverViaHTTP (bypassing the sidecar's /prompt handler). That
+		// "active" to DB just before delivering the review-complete prompt, and
+		// that delivery does not reach the sidecar's /prompt handler. That
 		// pre-delivery write is the signal that review is done. If this path
 		// suppressed on reviewingInFlight alone, the session wedges after
 		// review-complete delivery on SSE-harness workers.

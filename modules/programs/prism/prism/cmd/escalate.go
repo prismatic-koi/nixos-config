@@ -553,8 +553,8 @@ func writeSessionEscalatedEvent(database *db.DB, fromSession string, selfStatus 
 }
 
 // deliverEscalationPrompt routes the prompt to the target coordinator. It
-// reuses the same delivery machinery as `prism prompt`: HTTP for HTTP harnesses
-// sessions, host-API socket for socket-pipe (PI) sessions.
+// reuses the same delivery machinery as `prism prompt`: the host-API socket
+// of the session.
 //
 // The audit row in bus_messages is written with delivered_at set on success.
 // from_session is the calling worker session. The returned string is the
@@ -603,10 +603,10 @@ func deliverEscalationPrompt(database *db.DB, fromSession string, target *db.Sta
 	return msg.ID, nil
 }
 
-// deliverEscalationToTarget delivers the escalation to the target session.
-// Uses promptdelivery which dispatches based on harness transport shape.
+// deliverEscalationToTarget delivers the escalation to the target session
+// through promptdelivery.
 func deliverEscalationToTarget(target *db.Status, promptText string) error {
-	return promptdelivery.DeliverToSession(target.SessionName, target, promptText, nil, "", "followUp")
+	return promptdelivery.DeliverToSession(target.SessionName, target, promptText, "", "followUp")
 }
 
 // discoverPRNumbers best-effort returns open PRs whose head matches the

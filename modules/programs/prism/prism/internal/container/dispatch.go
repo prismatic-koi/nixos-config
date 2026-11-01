@@ -184,10 +184,9 @@ type SidecarFlagOpts struct {
 	InitialPrompt  string
 }
 
-// AgentPaneOpts carries the inputs that AgentPaneCmd consumes. Mirrors the
-// fields read by BuildOpencodeCmd
-// (internal/session/session.go). DirectCmd is the host-mode fallback
-// command produced by the caller (buildDirectOpencodeCmd) — passed in rather
+// AgentPaneOpts carries the inputs that AgentPaneCmd consumes. BuildAgentCmd
+// (internal/session/session.go) fills it. DirectCmd is the host-mode fallback
+// command produced by the caller (buildDirectAgentCmd) — passed in rather
 // than constructed here so this dispatch stays a thin shim and host-mode
 // behaviour remains in the session package.
 type AgentPaneOpts struct {
@@ -324,8 +323,7 @@ func (b *bwrapIsolator) Cap(ctx context.Context, dbPath string) CapStatus {
 // "<abs-path>/prism agent-run --session <name>". The bwrap sandbox is owned
 // by the tmux pane (not the sidecar), so the agent-run dispatch reads the
 // session's isolation mode from the DB and invokes the bwrap arg builder
-// there. Mirrors the branch in BuildOpencodeCmd
-// (internal/session/session.go).
+// there.
 //
 // The prism binary's absolute path is resolved via prismBinaryPathFn (os.Executable
 // in production) and shell-quoted into the rendered command so the agent-run
@@ -406,8 +404,7 @@ func (s *sandboxExecIsolator) Cap(ctx context.Context, dbPath string) CapStatus 
 
 // AgentPaneCmd returns the tmux pane command for sandbox-exec — same shape
 // as bwrap because both modes are pane-owned:
-// "<abs-path>/prism agent-run --session <name>". Mirrors the branch in
-// BuildOpencodeCmd (internal/session/session.go).
+// "<abs-path>/prism agent-run --session <name>".
 //
 // The prism binary's absolute path is resolved via prismBinaryPathFn (os.Executable
 // in production) and shell-quoted into the rendered command so the agent-run

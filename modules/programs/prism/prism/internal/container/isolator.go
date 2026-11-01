@@ -180,7 +180,6 @@ type Isolator interface {
 	// own binary path. Callers must propagate the error rather than fall
 	// back to a bare "prism" — silent fallback re-introduces the PATH-
 	// shadow class this method exists to eliminate.
-	// Cites: internal/session/session.go:265-298 (BuildOpencodeCmd switch).
 	AgentPaneCmd(opts AgentPaneOpts) (string, error)
 
 	// SidecarFlags returns the per-mode argv extensions appended to the
