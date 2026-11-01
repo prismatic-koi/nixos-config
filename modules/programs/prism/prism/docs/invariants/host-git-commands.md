@@ -706,11 +706,11 @@ write rights:
   `Rebase: true` in the container), then proxies the review to the host with
   no rebase, so the host subprocess runs only the non-rebase pre-flight. The
   host-API `/review` handler refuses a rebase request — every `/review`
-  caller is sandboxed, because the sidecar injects `PRISM_HOST_API` only into
-  a sandboxed session. So a planted `rebase-merge/autostash`, `head-name`, or
-  `orig-head` applies at the worker's own trust level: it cannot make the
-  host run a command or move a host-owned local branch such as `main`. This
-  closes the success-path and abort-path races that #3323 left open on the
+  caller is sandboxed, because the container layer injects `PRISM_HOST_API`
+  only into a sandboxed session. So a planted `rebase-merge/autostash`,
+  `head-name`, or `orig-head` applies at the worker's own trust level: it
+  cannot make the host run a command or move a host-owned local branch such
+  as `main`. This closes the success-path race that #3323 left open on the
   host.
 - **A host-mode session.** There is no separate sandbox, so the steps run in
   the session's own environment, which is the host. A host-mode session is
@@ -752,10 +752,10 @@ pre-flight that runs on the host for every session:
   worktree path, and when `HEAD` is not on that branch. The rebase acts on
   `HEAD`, so this keeps the rebase, the push, and the restore on one branch;
   prism never falls back to a bare `git push` that follows `HEAD`. This guard
-  holds against a host-mode session only, which is not a trust boundary. The
-  old race in the window between the `HEAD` check and the start of
-  `git rebase` no longer reaches a host rebase, because a sandboxed session
-  runs no rebase on the host.
+  holds against a host-mode session only, which is not a trust boundary. A race
+  in the window between the `HEAD` check and the start of `git rebase` does
+  not reach a host rebase, because a sandboxed session runs no rebase on the
+  host.
 
 Code: `internal/review/preflight.go`, `cmd/review.go` (the sandboxed
 container branch runs the rebase in the sandbox and proxies with no rebase;
