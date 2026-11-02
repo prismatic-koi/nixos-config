@@ -655,9 +655,10 @@ request — both are declared only, because the token endpoint rejects a
     **Why it exists.** pi runs the key of an `api_key` entry in `auth.json`
     that starts with `!` as a shell command. So a bwrap or sandbox-exec
     session must not write the host `~/.pi/agent/auth.json`, which every
-    later pi reads. Each sandboxed session has its own `auth.json`, and the
-    prism sidecar of the session copies OAuth entries between that file and
-    the host file (`prism/internal/container/pi_auth_session.go`,
+    later pi reads. Each sandboxed session has its own `auth.json`. The
+    prism sidecar of the session copies only the OAuth entry of the
+    `anthropic` provider from that file to the host file, and it copies the
+    host file to that file (`prism/internal/container/pi_auth_session.go`,
     `prism/internal/sidecar/pi_auth_sync.go`). The lock of divergence 21 is
     then not enough: a session reads only its own file, so it does not see
     the token that the holder before it wrote.

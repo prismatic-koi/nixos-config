@@ -207,9 +207,6 @@ func runReview(cmd *cobra.Command, args []string) error {
 				return rbErr
 			}
 		}
-		// The rebase (if any) already ran in-sandbox above; the host must not
-		// rebase for a sandboxed session (#3335). proxyReviewAsync has no rebase
-		// parameter for that reason.
 		ackOutput, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr, quietStdout, reviewProxyExtras{
 			Models:        modelsByRole,
 			DiffInlineMax: diffInlineMaxFlag,

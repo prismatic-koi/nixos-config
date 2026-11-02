@@ -548,9 +548,6 @@ func piAuthOAuthEntry(provider string, raw json.RawMessage) (piOAuthEntry, strin
 	if err := json.Unmarshal(fields["type"], &typ); err != nil || typ != "oauth" {
 		return piOAuthEntry{}, piAuthNotOAuth
 	}
-	if !piAuthProviderRe.MatchString(provider) {
-		return piOAuthEntry{}, fmt.Sprintf("the provider name %s is not a name that prism copies", piAuthName(provider))
-	}
 	e := piOAuthEntry{Type: "oauth"}
 	for _, field := range []struct {
 		name string
@@ -620,9 +617,19 @@ func (e piOAuthEntry) overlay(hostRaw json.RawMessage) (json.RawMessage, error) 
 }
 
 // piAuthRawHash is the hash of an entry that is not a valid OAuth entry, so
-// that the sync reports its refusal once.
+// that the sync reports its refusal once. It hashes the canonical JSON of
+// the entry: pi and the sync write the same entry with other white space.
 func piAuthRawHash(raw json.RawMessage) string {
-	sum := sha256.Sum256(append([]byte("raw:"), raw...))
+	data := []byte(raw)
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if dec.Decode(&v) == nil {
+		if c, err := json.Marshal(v); err == nil {
+			data = c
+		}
+	}
+	sum := sha256.Sum256(append([]byte("raw:"), data...))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -905,7 +912,9 @@ func (s *piAuthSyncState) addSeen(p, h string) {
 }
 
 // setCurrent records the OAuth values of entries, the content of the two
-// files after a sync, as current and as seen.
+// files after a sync, as current and as seen. For an entry that is not an
+// OAuth entry, it records piAuthRawHash as seen: after a change on the
+// host, the old host value in the session file is then not a refusal.
 func (s *piAuthSyncState) setCurrent(entries map[string]json.RawMessage) {
 	for p, ps := range s.Providers {
 		if _, ok := entries[p]; !ok {
@@ -918,6 +927,7 @@ func (s *piAuthSyncState) setCurrent(entries map[string]json.RawMessage) {
 			if ps := s.Providers[p]; ps != nil {
 				ps.Current = ""
 			}
+			s.addSeen(p, piAuthRawHash(raw))
 			continue
 		}
 		h := e.hash()
