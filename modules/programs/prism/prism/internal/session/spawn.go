@@ -867,8 +867,8 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		cleanupFailedSpawn(d, opts, db.ReapCauseSpawnFailure)
 		removeInitialPrompt(opts.SessionName)
 		// Durable failure event + best-effort bus-message notification to
-		// the invoker. Written AFTER cleanupHalfAliveSession so
-		// the bus-message row survives — cleanupHalfAliveSession calls
+		// the invoker. Written AFTER cleanupFailedSpawn so
+		// the bus-message row survives — cleanupFailedSpawn calls
 		// PurgeBusMessages(sessionName) which would otherwise delete any
 		// undelivered row with from_session = opts.SessionName. The audit
 		// row for the failure is more useful than the DB-consistency signal
@@ -944,7 +944,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			// Drop the per-session prompt file so a retry starts fresh.
 			removeInitialPrompt(opts.SessionName)
 			// Durable failure event + best-effort bus-message notification
-			// to the invoker. Written AFTER cleanupHalfAliveSession
+			// to the invoker. Written AFTER cleanupFailedSpawn
 			// so the bus_messages row is not caught by that helper's purge
 			// of undelivered messages for this session (from_session =
 			// opts.SessionName). See the layout-failure branch above for the
@@ -1062,42 +1062,16 @@ func cleanupFailedSpawn(d *db.DB, opts SpawnOpts, cause db.SessionReapCause, det
 	endHalfAliveSession(d, opts.SessionName, opts.InstanceID)
 }
 
-// cleanupHalfAliveSession releases the DB resources for a session that was
-// spawned but failed its readiness gate. Mirrors the cleanupAgentSession
-// helper in internal/review/review.go but lives here so the session package
-// can self-contain the readiness-failure cleanup path without an import
-// cycle. All operations are best-effort and tolerant of missing rows.
-//
-// Importantly, this transitions the agent_status state to "error" so that
-// db.GroupCompleted treats the row as terminal — without that, a review
-// monitor watching the group would block indefinitely on the half-alive
-// member's "idle" state.
+// endHalfAliveSession ends the row of a session whose spawn failed, after
+// markHalfAliveSessionError and the sandbox stop (cleanupFailedSpawn). It
+// releases the port, ends the row, and purges the bus messages of
+// sessionName. All operations are best-effort and tolerant of missing rows.
+// It records no cause.
 //
 // instanceID is the host-minted UUID pre-inserted into sessions by
-// SpawnSession. When non-empty, cleanupHalfAliveSession also writes
+// SpawnSession. When non-empty, endHalfAliveSession also writes
 // sessions.ended_at and sessions.end_state so the two tables stay in
 // lock-step, avoiding the zombie-incarnation drift class.
-//
-// cause names the path that is closing the row, recorded as a session_reaped
-// event. This helper is on the review-agent lifecycle:
-// internal/review's spawn loop calls SpawnSession, so a review agent that
-// fails its layout step or SpawnSession's own inline readiness gate is closed
-// here, in state "error". Without the record, that row is indistinguishable in
-// the round report from a force-terminate. detail is optional free text.
-//
-// The record is guarded on ended_at so this helper never claims a close it did
-// not perform — db.SetEnded below carries the same `AND ended_at IS NULL`
-// guard, and SessionEndCauses returns the LATEST recorded cause, so an
-// unguarded record on an already-closed row would overwrite the true cause
-// with a false one.
-func cleanupHalfAliveSession(d *db.DB, sessionName, instanceID string, cause db.SessionReapCause, detail ...string) {
-	markHalfAliveSessionError(d, sessionName, cause, detail...)
-	endHalfAliveSession(d, sessionName, instanceID)
-}
-
-// endHalfAliveSession is the second half of cleanupHalfAliveSession: it
-// releases the port, ends the row, and purges the bus messages of
-// sessionName. It records no cause.
 func endHalfAliveSession(d *db.DB, sessionName, instanceID string) {
 	_ = d.ReleasePort(sessionName)
 	_ = d.SetEnded(sessionName)
@@ -1119,7 +1093,7 @@ func endHalfAliveSession(d *db.DB, sessionName, instanceID string) {
 	if instanceID != "" {
 		if updErr := d.UpdateSessionEnded(instanceID, "readiness-timeout"); updErr != nil {
 			fmt.Fprintf(os.Stderr,
-				"warning: cleanupHalfAliveSession: UpdateSessionEnded(%s): %v\n",
+				"warning: endHalfAliveSession: UpdateSessionEnded(%s): %v\n",
 				instanceID, updErr)
 		}
 	}
@@ -1127,6 +1101,24 @@ func endHalfAliveSession(d *db.DB, sessionName, instanceID string) {
 
 // markHalfAliveSessionError records cause and sets the state of the row of
 // sessionName to "error". It does not end the row.
+//
+// State "error" matters because db.GroupCompleted treats it as terminal.
+// Without it, a review monitor watching the group would block indefinitely
+// on the half-alive member's "idle" state.
+//
+// cause names the path that is closing the row, recorded as a session_reaped
+// event. This helper is on the review-agent lifecycle: internal/review's
+// spawn loop calls SpawnSession, so a review agent that fails its layout
+// step or SpawnSession's own inline readiness gate is closed by
+// cleanupFailedSpawn, in state "error". Without the record, that row is
+// indistinguishable in the round report from a force-terminate. detail is
+// optional free text.
+//
+// The record is guarded on ended_at so this helper never claims a close it
+// did not perform — db.SetEnded carries the same `AND ended_at IS NULL`
+// guard, and SessionEndCauses returns the LATEST recorded cause, so an
+// unguarded record on an already-closed row would overwrite the true cause
+// with a false one.
 func markHalfAliveSessionError(d *db.DB, sessionName string, cause db.SessionReapCause, detail ...string) {
 	st, lookupErr := d.CurrentStatus(sessionName)
 	if lookupErr == nil && st != nil && st.EndedAt == nil {

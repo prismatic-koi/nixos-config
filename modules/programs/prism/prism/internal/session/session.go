@@ -1231,10 +1231,9 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// The agent window IS the session — if this call fails, the session has
 	// no usable pane and callers that later WaitForReady will silently time
 	// out after 30s with no diagnostic. Surface the error so SpawnSession's
-	// layoutErr cleanup path (KillSidecar + cleanupHalfAliveSession +
-	// tmux.KillSession + spawn_failed event) runs instead. A discarded error
-	// here hides the real failure behind a bare "not ready within 30s"
-	// timeout.
+	// layoutErr cleanup path (cleanupFailedSpawn + spawn_failed event) runs
+	// instead. A discarded error here hides the real failure behind a bare
+	// "not ready within 30s" timeout.
 	paneID, err := tmux.NewWindowPane(name, 1, "agent", directory, agentCmd, agentPaneEnvVars(opts))
 	if err != nil {
 		return fmt.Errorf("setupFullLayout: create agent window for %q: %w", name, err)

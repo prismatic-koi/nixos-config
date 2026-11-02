@@ -61,7 +61,8 @@ const readinessPollInterval = 250 * time.Millisecond
 // as a "failed to start" outcome, not a transient error: the spawned sidecar
 // is still running and reporting `connection refused` to its own log, but
 // the agent itself never came up. The right response is to clean up the half-
-// alive session (KillSidecar + cleanupAgentSession + tmux KillSession) and
+// alive session (cleanupFailedSpawn, or cleanupFailedAgentSession in
+// internal/review) and
 // surface the failure to the operator.
 type ReadinessTimeoutError struct {
 	SessionName string
@@ -156,7 +157,7 @@ type ReadinessOpts struct {
 // "what to do on failed-to-ready" policy. Single-worker spawns might leave
 // the session alive for the operator to debug; review fan-outs typically
 // kill it. Both code paths handle the cleanup explicitly via
-// KillSidecar + cleanupAgentSession + tmux.KillSession.
+// cleanupFailedSpawn, or cleanupFailedAgentSession in internal/review.
 func WaitForReady(d *db.DB, sessionName string, timeout time.Duration) error {
 	return WaitForReadyWithOpts(d, sessionName, ReadinessOpts{Timeout: timeout})
 }

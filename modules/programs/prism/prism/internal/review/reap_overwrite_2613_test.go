@@ -32,7 +32,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
-func TestCleanupAgentSession_DoesNotOverwriteAnEarlierCause(t *testing.T) {
+func TestMarkAndEndAgentSession_DoesNotOverwriteAnEarlierCause(t *testing.T) {
 	d := openTestDB(t)
 	const session = "prism-test@2613-overwrite~review-1-review-qa"
 
@@ -41,7 +41,7 @@ func TestCleanupAgentSession_DoesNotOverwriteAnEarlierCause(t *testing.T) {
 	}
 
 	// Step 1: the readiness gate closes the row with its own cause.
-	review.CleanupAgentSessionForTest(d, session, db.ReapCauseReadinessGate, "not ready within 30s")
+	review.MarkAndEndAgentSessionForTest(d, session, db.ReapCauseReadinessGate, "not ready within 30s")
 
 	st, err := d.CurrentStatus(session)
 	if err != nil {
@@ -52,7 +52,7 @@ func TestCleanupAgentSession_DoesNotOverwriteAnEarlierCause(t *testing.T) {
 	}
 
 	// Steps 2 and 3: the parent-cleanup cascade runs over the same row.
-	review.CleanupAgentSessionForTest(d, session, db.ReapCauseParentCleanup)
+	review.MarkAndEndAgentSessionForTest(d, session, db.ReapCauseParentCleanup)
 
 	causes, err := d.SessionEndCauses([]string{session})
 	if err != nil {
@@ -83,17 +83,17 @@ func TestCleanupAgentSession_DoesNotOverwriteAnEarlierCause(t *testing.T) {
 	}
 }
 
-// TestCleanupAgentSession_RecordsWhenItActuallyCloses is the positive
+// TestMarkAndEndAgentSession_RecordsWhenItActuallyCloses is the positive
 // counterpart: the guard must not suppress the record on the path that really
 // does close the row.
-func TestCleanupAgentSession_RecordsWhenItActuallyCloses(t *testing.T) {
+func TestMarkAndEndAgentSession_RecordsWhenItActuallyCloses(t *testing.T) {
 	d := openTestDB(t)
 	const session = "prism-test@2613-firstclose~review-1-review-code"
 
 	if err := d.UpsertStatus(session, "prism-test", "/code/prism-test/x", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
-	review.CleanupAgentSessionForTest(d, session, db.ReapCauseParentCleanup)
+	review.MarkAndEndAgentSessionForTest(d, session, db.ReapCauseParentCleanup)
 
 	causes, err := d.SessionEndCauses([]string{session})
 	if err != nil {

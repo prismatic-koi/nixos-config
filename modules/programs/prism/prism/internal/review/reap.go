@@ -244,7 +244,7 @@ func reapOne(d *db.DB, c db.ReapCandidate) bool {
 	// closer of review-agent rows, and without it a coordinator reading the DB
 	// is told that nothing recorded why.
 	//
-	// Guarded on ended_at, the same guard cleanupAgentSession applies and the
+	// Guarded on ended_at, the same guard markAgentSessionError applies and the
 	// one the cause-recording invariant states: a path that finds the row already closed
 	// records nothing, so it cannot claim a close it did not perform. The
 	// candidate query already filtered on ended_at IS NULL, but that was at

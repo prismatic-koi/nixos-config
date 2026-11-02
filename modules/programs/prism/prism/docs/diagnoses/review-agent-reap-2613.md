@@ -1,5 +1,13 @@
 # Diagnosis: `review-qa` reaped in two consecutive rounds (#2613)
 
+<!-- doclint-ignore: cleanupHalfAliveSession -->
+<!--
+  `cleanupHalfAliveSession` is the name of the SpawnSession failure cleanup
+  at the time of this diagnosis. #3392 split it into
+  markHalfAliveSessionError and endHalfAliveSession, which
+  cleanupFailedSpawn calls. This record keeps the old name.
+-->
+
 Issue: #2613. Parent that surfaced it: `nixos-config@fix-flaky-logs-tail-test`
 (PR #2610, issue #2598).
 

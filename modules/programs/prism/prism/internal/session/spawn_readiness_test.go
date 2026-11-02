@@ -69,7 +69,7 @@ func TestSpawnSession_ReadinessTimeout_FiresAndCleansUp(t *testing.T) {
 	}
 
 	// Cleanup verification: the agent_status row should now show ended_at
-	// (cleanupHalfAliveSession calls SetEnded). Either nil status or a
+	// (cleanupFailedSpawn calls SetEnded). Either nil status or a
 	// row with EndedAt != nil is acceptable evidence of cleanup.
 	st, _ := d.CurrentStatus(sessionName)
 	if st != nil && st.EndedAt == nil {
@@ -165,7 +165,7 @@ func TestSpawnSession_WritesStartupLog(t *testing.T) {
 }
 
 // TestSpawnSession_ReadinessTimeout_SetsSessionsRowEnded verifies that after
-// cleanupHalfAliveSession runs on readiness-timeout, the pre-inserted sessions
+// cleanupFailedSpawn runs on readiness-timeout, the pre-inserted sessions
 // row (which SpawnSession inserts host-side) has ended_at IS NOT NULL and
 // end_state set to the documented value "readiness-timeout".
 //

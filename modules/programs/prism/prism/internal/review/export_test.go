@@ -127,10 +127,14 @@ func BuildDeliveryMessageWithCausesForTest(prNumber string, round int, formatted
 	return buildDeliveryMessage(prNumber, round, formattedResults, allPassed, status)
 }
 
-// CleanupAgentSessionForTest is an exported wrapper around cleanupAgentSession
-// so tests can pin that the reap record is guarded on ended_at.
-func CleanupAgentSessionForTest(d *db.DB, agentSession string, cause db.SessionReapCause, detail ...string) {
-	cleanupAgentSession(d, agentSession, "", cause, detail...)
+// MarkAndEndAgentSessionForTest runs the DB half of the end of one review
+// agent: markAgentSessionError, then endAgentSession, in the order of
+// endStoppedAgents and cleanupFailedAgentSession. It kills no tmux session
+// and runs no sandbox stop. Tests use it to pin that the reap record is
+// guarded on ended_at, and that the dirs of the agent go.
+func MarkAndEndAgentSessionForTest(d *db.DB, agentSession string, cause db.SessionReapCause, detail ...string) {
+	st, _ := markAgentSessionError(d, agentSession, cause, detail...)
+	endAgentSession(d, agentSession, "", st)
 }
 
 // SetKillTmuxSessionForTest replaces the tmux kill of KillSessionsByNames

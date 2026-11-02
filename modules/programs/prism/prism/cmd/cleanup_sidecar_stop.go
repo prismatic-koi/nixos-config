@@ -82,7 +82,11 @@ func sandboxChildrenKeptError(kept review.KeptChildren) error {
 	for i, s := range kept.SandboxRuns {
 		quoted[i] = strconv.Quote(s)
 	}
-	return errors.Join(kept.SandboxErr, fmt.Errorf("%w: prism kept the row and the port of the review child %s. Run the cleanup again when the process is gone", errSandboxProcessRuns, strings.Join(quoted, ", ")))
+	children := "review child"
+	if len(quoted) > 1 {
+		children = "review children"
+	}
+	return errors.Join(kept.SandboxErr, fmt.Errorf("%w: prism kept the row and the port of the %s %s. Run the cleanup again when the process is gone", errSandboxProcessRuns, children, strings.Join(quoted, ", ")))
 }
 
 // keptChildrenError returns nil when kept keeps no review child. Otherwise

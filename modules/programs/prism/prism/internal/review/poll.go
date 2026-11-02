@@ -296,7 +296,7 @@ func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 }
 
 // isTerminalAgentState reports whether a state is one that
-// cleanupAgentSession should leave alone (rather than overwriting to
+// markAgentSessionError should leave alone (rather than overwriting to
 // "error"). It is intentionally broader than db.terminalStates and
 // review.isTerminalState: it includes "interrupted" so that the cleanup
 // path does NOT clobber an interrupted session's state — doing so would
@@ -312,7 +312,7 @@ func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 //     additionally excluded because pollAgents has its own missing-session
 //     handling.
 //   - review.isTerminalAgentState (this function): {finished, interrupted,
-//     error, deleted} — used only by cleanupAgentSession to decide whether
+//     error, deleted} — used only by markAgentSessionError to decide whether
 //     to overwrite a row to "error". The broader set here is correct
 //     because cleanup must not destroy the interrupted state.
 func isTerminalAgentState(state string) bool {

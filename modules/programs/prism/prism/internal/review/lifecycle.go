@@ -226,7 +226,11 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession, parentInstanceID st
 	// Kill the tmux sessions that are left (best effort, idempotent), and
 	// end the processes in their sandboxes.
 	_, sandboxRuns, sandboxErr := stopAgentSandboxes(KillSessionPrefix(prefix))
-	kept.SandboxRuns = append(kept.SandboxRuns, sandboxRuns...)
+	for _, name := range sandboxRuns {
+		if !slices.Contains(kept.SandboxRuns, name) {
+			kept.SandboxRuns = append(kept.SandboxRuns, name)
+		}
+	}
 	kept.SandboxErr = errors.Join(kept.SandboxErr, sandboxErr)
 	return kept
 }
@@ -385,7 +389,29 @@ func cleanupFailedAgentSession(d *db.DB, agentSession string, cause db.SessionRe
 }
 
 // markAgentSessionError records cause and moves a non-terminal row to state
-// "error". It does not end the row. It returns the row as it read it.
+// "error". It does not end the row. It returns the row as it read it. Each
+// path that ends a review agent calls it before the tmux kill, and calls
+// endAgentSession after the sandbox stop.
+//
+// State "error" matters for the review monitor's GroupCompleted check: a
+// half-alive agent stuck at "idle" would otherwise block the group's
+// terminal-state count forever. State="error" is a valid agent state machine
+// transition from any non-terminal state and is treated as terminal by
+// GroupCompleted.
+//
+// cause names the path that is closing the row. It is recorded as a
+// session_reaped event so the review report and a coordinator reading the DB
+// can both name one cause instead of guessing between the paths that leave
+// state="error" behind. detail is optional free text.
+//
+// The record is guarded on ended_at, like db.SetEnded's own `AND ended_at IS
+// NULL`. Without the guard this helper claims a close it did not perform:
+// `prism cleanup` of a parent worker cascades through
+// CleanupReviewSessionsForParent, whose GroupMembersForParent returns every
+// member row across every round — including rows a readiness gate closed
+// hours earlier. Recording unconditionally would stamp `parent_cleanup` over
+// that row's real `readiness_gate` cause, and SessionEndCauses returns the
+// latest event, so the report would name a cause that is false.
 func markAgentSessionError(d *db.DB, agentSession string, cause db.SessionReapCause, detail ...string) (*db.Status, error) {
 	st, lookupErr := d.CurrentStatus(agentSession)
 	if lookupErr == nil && st != nil && st.EndedAt == nil {
@@ -397,42 +423,10 @@ func markAgentSessionError(d *db.DB, agentSession string, cause db.SessionReapCa
 	return st, lookupErr
 }
 
-// cleanupAgentSession cleans up the DB state for a completed agent session.
-//
-// In addition to releasing the port and marking the row ended, this transitions
-// the state to "error" when the row is non-terminal. That matters for the
-// review monitor's GroupCompleted check: a half-alive agent
-// stuck at "idle" would otherwise block the group's terminal-state count
-// forever. State="error" is a valid agent state machine transition from any
-// non-terminal state and is treated as terminal by GroupCompleted.
-//
-// cause names the path that is closing the row. It is recorded as a
-// session_reaped event so the review report and a coordinator reading the DB
-// can both name one cause instead of guessing between the paths that leave
-// state="error" behind. detail is optional free text; pass "" when the cause
-// alone is the whole story.
-//
-// The record is guarded on ended_at, exactly like the state write below it and
-// like db.SetEnded's own `AND ended_at IS NULL`. Without the guard this helper
-// claims a close it did not perform: `prism cleanup` of a parent worker
-// cascades through CleanupReviewSessionsForParent, whose GroupMembersForParent
-// returns every member row across every round — including rows a readiness
-// gate closed hours earlier. Recording unconditionally would stamp
-// `parent_cleanup` over that row's real `readiness_gate` cause, and
-// SessionEndCauses returns the latest event, so the report would name a cause
-// that is false. A wrong cause is worse than the disjunction this all
-// replaces.
-//
-// parentInstanceID is as for CleanupReviewSessionsForParent.
-func cleanupAgentSession(d *db.DB, agentSession, parentInstanceID string, cause db.SessionReapCause, detail ...string) {
-	st, _ := markAgentSessionError(d, agentSession, cause, detail...)
-	endAgentSession(d, agentSession, parentInstanceID, st)
-}
-
-// endAgentSession is the second half of cleanupAgentSession: it releases
-// the port, ends the row, purges the bus messages, and removes the dirs of
-// each incarnation of agentSession. st is the row that
-// markAgentSessionError read. It records no cause.
+// endAgentSession releases the port, ends the row, purges the bus messages,
+// and removes the dirs of each incarnation of agentSession. st is the row
+// that markAgentSessionError read. It records no cause. parentInstanceID is
+// as for CleanupReviewSessionsForParent.
 func endAgentSession(d *db.DB, agentSession, parentInstanceID string, st *db.Status) {
 	_ = d.ReleasePort(agentSession)
 	_ = d.SetEnded(agentSession)
@@ -463,7 +457,7 @@ func endAgentSession(d *db.DB, agentSession, parentInstanceID string, st *db.Sta
 // each sessions row of agentSession, with no duplicates. The sessions rows
 // are necessary: when the tmux session of the child closes outside prism,
 // the session-closed hook clears agent_status.instance_id, and this can
-// occur before cleanupAgentSession runs (#3279).
+// occur before endAgentSession runs (#3279).
 func childIncarnationIDs(d *db.DB, agentSession string, st *db.Status) []string {
 	var ids []string
 	add := func(id string) {

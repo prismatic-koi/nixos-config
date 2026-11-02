@@ -804,13 +804,16 @@ func memberWatchdogAlive(d *db.DB, sess string) (bool, error) {
 // terminal, and SetGroupDeliveredAt then releases the in-progress guard.
 //
 // After setting state="error" we also call SetEnded so that ended_at is
-// written atomically for both agent_status and sessions rows. This mirrors
-// cleanupAgentSession (lifecycle.go:170-178), which calls UpsertStatus then
-// SetEnded for the same reason — without SetEnded the row has state="error"
-// but ended_at=NULL, and any query that filters on "ended_at IS NOT NULL"
-// (e.g. AllActiveStatus, dashboard active-session listings) will still treat
-// the row as live. Same table-drift class as MarkAllEnded/SetEnded and
-// cleanupHalfAliveSession.
+// written atomically for both agent_status and sessions rows, unless a
+// process in the sandbox of the member still runs (#3392). Then the row stays
+// open in state "error", and the round report gives the member the class of
+// a row in that state, not the force-terminate class. This mirrors
+// markAgentSessionError then endAgentSession in lifecycle.go, which call
+// UpsertStatus then SetEnded for the same reason — without SetEnded the row
+// has state="error" but ended_at=NULL, and any query that filters on
+// "ended_at IS NOT NULL" (e.g. AllActiveStatus, dashboard active-session
+// listings) will still treat the row as live. Same table-drift class as
+// MarkAllEnded/SetEnded and endHalfAliveSession.
 //
 // All failures are logged but non-fatal: a stuck DB row is recoverable via
 // `prism cleanup`, but a hard error here would also block the partial

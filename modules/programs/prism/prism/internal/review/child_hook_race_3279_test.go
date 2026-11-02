@@ -178,7 +178,7 @@ func TestChildKillPaths_SpawnOutcome_3279(t *testing.T) {
 }
 
 // AC (#3279): when the hook has cleared the instance ID of the parent and of
-// the child before cleanupAgentSession runs, the child audit lines go to the
+// the child before endAgentSession runs, the child audit lines go to the
 // log of the parent incarnation that the caller gives, and the child dirs
 // are removed. A child with no audit log is cleaned up with no warning.
 func TestCleanupReviewSessionsForParent_HookClearedIDs_3279(t *testing.T) {

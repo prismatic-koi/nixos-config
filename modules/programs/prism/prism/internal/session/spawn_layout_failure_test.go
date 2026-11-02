@@ -5,8 +5,8 @@ package session
 // cleanup primitives as the readiness-timeout path rather than returning a
 // hint string and leaving residue in the DB.
 //
-// The layout-failure path must call KillSidecar, cleanupHalfAliveSession,
-// tmux.KillSession, and removeInitialPrompt before returning the error, so the
+// The layout-failure path must call cleanupFailedSpawn and
+// removeInitialPrompt before returning the error, so the
 // DB is left in the same clean state as a readiness-timeout failure. Skipping
 // them leaves DB residue (active agent_status row, allocated port) on every
 // layout failure.
