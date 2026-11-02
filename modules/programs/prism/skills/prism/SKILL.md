@@ -272,8 +272,9 @@ review cycles without convergence, stop and escalate to the coordinator via
 
 A review agent is released **15 minutes** after the review-complete prompt is
 delivered for its round (issue #2649). The release stops the sidecar, kills the
-tmux session, and returns the harness port to the pool. It runs on its own — no
-operator command is needed.
+tmux session, ends the processes in the sandbox of the agent (#3392), and
+returns the harness port to the pool. It runs on its own — no operator command
+is needed.
 
 The release keeps every database row. It deletes no `agent_status` row, no
 `agent_events` row, and no `session_groups` row. It removes no worktree and
