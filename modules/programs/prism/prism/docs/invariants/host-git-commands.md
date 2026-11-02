@@ -394,10 +394,11 @@ you made later, for example a moved project, do the same steps.
 root or in a dir above it runs, because that session can write the
 `.bare` after the confirmation. On Linux, this refusal stops each write
 after the confirmation. On Darwin, a process that the session detached
-outlives the session. `prism cleanup`, `prism close`, `prism reset`, and
-the `session-closed` hook end such a process before they end the row
-(#3375). Other paths do not (see "Known limits", #3392). It uses two
-signals, and either one refuses:
+outlives the session. `prism cleanup`, `prism close`, `prism reset`, the
+`session-closed` hook, and the other paths that end a session end such a
+process before they end the row (#3375, #3392). `prism restore` of a
+session with no worktree does not (see "Known limits", #3400). It uses
+two signals, and either one refuses:
 
 - The start record is open (`SessionStarts` in
   `internal/db/session_starts.go`). A record is open when the
@@ -564,12 +565,11 @@ location. So below a dir in which a sandboxed session starts, such a
 
 - **A `.bare` outside the project roots.** A session can write it. Host
   git refuses it with `ErrNotProjectRoot`, so it is not a prism repo.
-- **A detached process on Darwin (#3392).** A process that a session
-  detaches outlives the session. `prism cleanup`, `prism close`,
-  `prism reset`, and the `session-closed` hook end it (#3375). If the
-  session ended by another path, for example the cleanup of a failed
-  spawn, the check of `CloneWorktree` and `ConvertToBare` does not see
-  the process.
+- **A detached process on Darwin (#3400).** A process that a session
+  detaches outlives the session. Each path that ends a session ends it
+  (#3375, #3392), except `prism restore` of a session with no worktree.
+  If the session ended that way, the check of `CloneWorktree` and
+  `ConvertToBare` does not see the process.
 
 ### Tests of the session-dir rule
 
@@ -679,11 +679,11 @@ that session in tmux.
 
 ### Limits of the clone-lock rule
 
-- **A detached process on Darwin (#3392).** A process that a session
-  detaches outlives the session. `prism cleanup`, `prism close`,
-  `prism reset`, and the `session-closed` hook end it (#3375). If the
-  session ended by another path, for example the cleanup of a failed
-  spawn, the check of the clone does not see the process.
+- **A detached process on Darwin (#3400).** A process that a session
+  detaches outlives the session. Each path that ends a session ends it
+  (#3375, #3392), except `prism restore` of a session with no worktree.
+  If the session ended that way, the check of the clone does not see the
+  process.
 
 ### Tests of the clone-lock rule
 
@@ -925,8 +925,8 @@ table.
   sandbox of the root session, also a process that the session detached
   on Darwin (#3375). One in-scope route remains:
   - On Darwin, a detached process of another session in the clone that
-    ended by a path that does not end its processes, for example the
-    cleanup of a failed spawn (#3392).
+    ended by a path that does not end its processes: `prism restore` of
+    a session with no worktree (#3400).
 
   A session in a dir above the root is refused (#3381, "A session in a dir
   that holds project roots" above). `prism clone` refuses while a session
@@ -937,12 +937,12 @@ table.
   update, and `db.Prune` removed the start record of the planting session.
   The host git command of that start ran the payload before the update,
   so the host was already exposed.
-- **`prism confirm-bare` on Darwin (#3392).** On Darwin, a process that a
+- **`prism confirm-bare` on Darwin (#3400).** On Darwin, a process that a
   session detaches (`setsid`, `nohup`) outlives the session, because
-  `sandbox-exec` has no PID namespace. `prism cleanup`, `prism close`,
-  `prism reset`, and the `session-closed` hook end it before they end the
-  row (#3375). If the session ended by another path, for example the
-  cleanup of a failed spawn, the process can still write `.bare/config`
+  `sandbox-exec` has no PID namespace. Each path that ends a session ends
+  it before it ends the row (#3375, #3392), except `prism restore` of a
+  session with no worktree. If the session ended that way, the process
+  can still write `.bare/config`
   and `.bare/info/attributes` after `prism confirm-bare` of a root that
   the session started in, and the record still accepts the `.bare`.
 - **A moved, copied, or restored project.** The `.bare` has another inode

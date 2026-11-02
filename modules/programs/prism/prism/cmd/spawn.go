@@ -1516,7 +1516,10 @@ var (
 // teardownAbtestLeg is the both-or-neither teardown of one --abtest leg.
 // started is true when the leg started its session. It stops the sidecar
 // first. When the stop fails, it keeps the tmux session, the row, the port,
-// and the worktree, because the process can still use them (#3168).
+// and the worktree, because the process can still use them (#3168). After
+// the tmux kill it ends the processes in the sandbox of the session. When
+// one still runs, it keeps the row, the port, and the worktree for the same
+// reason (#3392).
 func teardownAbtestLeg(d *db.DB, bareRoot, sessionName, worktreePath string, started bool) {
 	stopFailed := false
 	if started && sessionName != "" {
@@ -1525,7 +1528,10 @@ func teardownAbtestLeg(d *db.DB, bareRoot, sessionName, worktreePath string, sta
 			stopFailed = true
 		} else {
 			_ = abtestKillTmux(sessionName)
-			if killDBErr := setEndedStoppingReviewChildren(d, sessionName); killDBErr != nil {
+			if err := stopSessionSandboxProcs(sessionName); err != nil {
+				proglog.Warnf("[prism spawn] warning: %v \u2014 keeping the row, port, and worktree of %q\n", err, sessionName)
+				stopFailed = true
+			} else if killDBErr := setEndedStoppingReviewChildren(d, sessionName); killDBErr != nil {
 				proglog.Warnf("[prism spawn] warning: cleanup DB for %q failed: %v\n", sessionName, killDBErr)
 			}
 		}

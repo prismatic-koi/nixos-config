@@ -272,8 +272,9 @@ review cycles without convergence, stop and escalate to the coordinator via
 
 A review agent is released **15 minutes** after the review-complete prompt is
 delivered for its round (issue #2649). The release stops the sidecar, kills the
-tmux session, and returns the harness port to the pool. It runs on its own — no
-operator command is needed.
+tmux session, ends the processes in the sandbox of the agent (#3392), and
+returns the harness port to the pool. It runs on its own — no operator command
+is needed.
 
 The release keeps every database row. It deletes no `agent_status` row, no
 `agent_events` row, and no `session_groups` row. It removes no worktree and
@@ -965,7 +966,7 @@ Each of `ended_at_stamped`, `harness_port_released`, `harness_session_id_cleared
 
 If `prism cleanup` exits non-zero with `sidecar did not stop for "<session>"`, prism kept the tmux session, the row, and the port of each named session, and the worktree and branch of a named worker. Prism cleans up the other sessions of the cleanup. Run the cleanup again later. If the error stays, report it to the user.
 
-If `prism cleanup` or `prism close` exits non-zero with `a process in the sandbox of the session still runs`, a process that the session started on Darwin still runs after the tmux kill (#3375). The error names each process and the session. The tmux session is gone. Prism kept the row, the port, and the review children of the session. A hard cleanup already removed the worktree and the branch. Run the same command again later. If the error stays, report it to the user with the process IDs. Do not stop the process yourself, and do not run `prism confirm-bare` or `prism convert` for the project of that session until the error is gone.
+If `prism cleanup` or `prism close` exits non-zero with `a process in the sandbox of the session still runs`, a process that the session started on Darwin still runs after the tmux kill (#3375). The error names each process and the session. The tmux session is gone. Prism kept the row, the port, and the review children of the session. A hard cleanup already removed the worktree and the branch. If the error names a review child (`prism kept the row and the port of the review child`), prism ended the session and kept only the row and the port of that child (#3392). Run the same command again later. If the error stays, report it to the user with the process IDs. Do not stop the process yourself, and do not run `prism confirm-bare` or `prism convert` for the project of that session until the error is gone.
 
 Only call this after you have confirmed the PR is merged. The `--yes` path always force-deletes the branch — it does not check whether the branch is reachable from main, because squash-merges produce a different SHA on main than the branch tip.
 

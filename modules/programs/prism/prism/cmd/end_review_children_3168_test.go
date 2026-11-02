@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/review"
 )
 
 // withChildStops replaces stopReviewChildrenForEnd. The fake checks that
@@ -22,7 +23,7 @@ func withChildStops(t *testing.T, dbFile string, failed ...string) *[]string {
 	t.Helper()
 	var parents []string
 	prev := stopReviewChildrenForEnd
-	stopReviewChildrenForEnd = func(_ *db.DB, parent string) []string {
+	stopReviewChildrenForEnd = func(_ *db.DB, parent string) review.KeptChildren {
 		parents = append(parents, parent)
 		d, err := db.Open(dbFile)
 		if err != nil {
@@ -38,7 +39,7 @@ func withChildStops(t *testing.T, dbFile string, failed ...string) *[]string {
 				t.Errorf("child %q ended before its sidecar stopped", r.SessionName)
 			}
 		}
-		return failed
+		return review.KeptChildren{SidecarRuns: failed}
 	}
 	t.Cleanup(func() { stopReviewChildrenForEnd = prev })
 	return &parents

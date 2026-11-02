@@ -21,8 +21,9 @@ var (
 	}
 	cleanupReviewChildren = review.CleanupReviewSessionsForParent
 	// stopSessionSandboxProcs ends each process in the sandbox of a session
-	// (#3375). The cleanup paths, the stop before a conversion, and the
-	// tmux-session-end hook call it after the tmux kill.
+	// (#3375). The cleanup paths, the stop before a conversion, the
+	// tmux-session-end hook, and the teardown of an --abtest leg call it
+	// after the tmux kill.
 	stopSessionSandboxProcs = func(session string) error {
 		return prismSession.StopSandboxProcesses(session, prismSession.SandboxProcessStopTimeout)
 	}
@@ -69,28 +70,55 @@ func keptSessionError(stopErr error, failed []string) error {
 	return errors.Join(stopErr, sidecarsNotStoppedError(failed))
 }
 
+// sandboxChildrenKeptError returns nil when kept keeps no review child for
+// a process in its sandbox. Otherwise it returns an error that holds the
+// error of each sandbox stop, which names the process and the child, and
+// wraps errSandboxProcessRuns, so that the command exits non-zero (#3392).
+func sandboxChildrenKeptError(kept review.KeptChildren) error {
+	if len(kept.SandboxRuns) == 0 {
+		return nil
+	}
+	quoted := make([]string, len(kept.SandboxRuns))
+	for i, s := range kept.SandboxRuns {
+		quoted[i] = strconv.Quote(s)
+	}
+	children := "review child"
+	if len(quoted) > 1 {
+		children = "review children"
+	}
+	return errors.Join(kept.SandboxErr, fmt.Errorf("%w: prism kept the row and the port of the %s %s. Run the cleanup again when the process is gone", errSandboxProcessRuns, children, strings.Join(quoted, ", ")))
+}
+
+// keptChildrenError returns nil when kept keeps no review child. Otherwise
+// it returns an error that names each kept child and why prism kept it.
+func keptChildrenError(kept review.KeptChildren) error {
+	return errors.Join(sandboxChildrenKeptError(kept), sidecarsNotStoppedError(kept.SidecarRuns))
+}
+
 // cleanupChildrenOfKeptSession runs when the sidecar of session did not
 // stop. The tmux session, the row, the port, the worktree, and the branch
 // of session stay, because the sidecar can still use them. The review
 // children are cleaned up as usual, because each child has its own sidecar
-// stop. It returns session and each child whose sidecar did not stop.
-func cleanupChildrenOfKeptSession(session string) []string {
+// stop. It returns session and each child whose sidecar did not stop, and
+// the error of each child where a process in the sandbox still runs
+// (sandboxChildrenKeptError).
+func cleanupChildrenOfKeptSession(session string) (failed []string, childErr error) {
 	proglog.Warnf("[prism] warning: sidecar of %q did not stop — keeping its tmux session, row, port, worktree, and branch\n", session)
-	failed := []string{session}
+	failed = []string{session}
 	d, err := openDB()
 	if err != nil {
 		proglog.Errorf("[prism] cleanup: open db: %v\n", err)
 		killOrphanReviewSidecars(session, nil)
-		return failed
+		return failed, nil
 	}
 	defer d.Close()
 	stopAndRemoveChildContainers(d, session)
 	// The tmux session of session still runs, so the hand-over of the child
 	// audit logs reads the instance ID of session from agent_status.
-	keepChildren := cleanupReviewChildren(d, session, "")
+	kept := cleanupReviewChildren(d, session, "")
 	// After the child stop: see the header of cleanup_orphan_sidecars.go.
-	killOrphanReviewSidecars(session, keepChildren)
-	return append(failed, keepChildren...)
+	killOrphanReviewSidecars(session, kept.Names())
+	return append(failed, kept.SidecarRuns...), sandboxChildrenKeptError(kept)
 }
 
 // runCleanupTUI runs the interactive cleanup of m. The TUI closes as soon

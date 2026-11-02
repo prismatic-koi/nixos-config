@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/review"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -102,7 +103,8 @@ var orphanScanSites = []struct {
 		return headlessCloseSessionWithJSONTo(parent, false, io.Discard)
 	}},
 	{"cleanupChildrenOfKeptSession", func(_ *testing.T, parent string) error {
-		return sidecarsNotStoppedError(cleanupChildrenOfKeptSession(parent))
+		failed, childErr := cleanupChildrenOfKeptSession(parent)
+		return errors.Join(sidecarsNotStoppedError(failed), childErr)
 	}},
 }
 
@@ -151,7 +153,7 @@ func TestCleanupSites_OrphanScanRunsAfterChildStop_3206(t *testing.T) {
 			// counts as stopped.
 			var childStops int
 			prevChildren := cleanupReviewChildren
-			cleanupReviewChildren = func(d *db.DB, p, _ string) []string {
+			cleanupReviewChildren = func(d *db.DB, p, _ string) review.KeptChildren {
 				childStops++
 				if p != parent {
 					t.Errorf("child stop for %q, want %q", p, parent)
@@ -173,7 +175,7 @@ func TestCleanupSites_OrphanScanRunsAfterChildStop_3206(t *testing.T) {
 					_ = d.ReleasePort(name)
 					_ = d.SetEnded(name)
 				}
-				return []string{kept}
+				return review.KeptChildren{SidecarRuns: []string{kept}}
 			}
 			t.Cleanup(func() { cleanupReviewChildren = prevChildren })
 

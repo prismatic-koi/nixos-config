@@ -134,7 +134,7 @@ func TestForceTerminateStuckMembers_TransitionsActiveRows(t *testing.T) {
 		t.Errorf("state after sweep: got %q, want %q", status.State, "error")
 	}
 	// ended_at must be set so that queries filtering on ended_at IS NOT NULL
-	// treat the row as terminal (mirrors cleanupAgentSession, lifecycle.go:170-178).
+	// treat the row as terminal (mirrors endAgentSession in lifecycle.go).
 	if status.EndedAt == nil {
 		t.Error("ended_at after sweep: got nil, want non-nil (force-terminated row must have ended_at set)")
 	}

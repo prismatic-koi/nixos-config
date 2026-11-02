@@ -116,8 +116,9 @@ func TestSessionReapCauseDescriptions_NameOneCauseEach(t *testing.T) {
 // ended_at, so a path that finds the row already closed records nothing. That
 // guard exists precisely BECAUSE this reader takes the latest: an unguarded
 // second record would overwrite a row's true cause with a false one. The
-// caller-side guard is pinned by TestCleanupAgentSession_DoesNotOverwrite... in
-// internal/review and TestCleanupHalfAliveSession_... in internal/session.
+// caller-side guard is pinned by TestMarkAndEndAgentSession_DoesNotOverwrite...
+// in internal/review and TestCleanupFailedSpawn_DoesNotOverwrite... in
+// internal/session.
 func TestSessionEndCauses_LatestReapWins(t *testing.T) {
 	d := openTestDB(t)
 	const session = "prism-test@2613-latest"

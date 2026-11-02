@@ -8,7 +8,7 @@ package review_test
 //   1. RunAsync's monitor receives only liveSessions — agents that became
 //      ready — so the failed-to-start agents are not in the monitor's
 //      AgentSessions list at all.
-//   2. The cleanup path for failed agents (cleanupAgentSession) transitions
+//   2. The cleanup path for failed agents (markAgentSessionError) transitions
 //      the agent_status row to state="error", which db.GroupCompleted
 //      treats as terminal. So even if a stale row remains in the group,
 //      GroupCompleted will not block on it.
@@ -73,7 +73,7 @@ func TestMonitor_FailedReadyAgent_DoesNotBlockGroupCompleted(t *testing.T) {
 	}
 
 	// Simulate the gate tripping for sessFailed: the gate calls
-	// gateReviewAgents → cleanupAgentSession, which transitions the row to
+	// gateReviewAgents → cleanupFailedAgentSession, which transitions the row to
 	// "error". Drive the same code path here by running the gate with a
 	// short timeout and no readiness signal for sessFailed.
 	agents := []review.Agent{

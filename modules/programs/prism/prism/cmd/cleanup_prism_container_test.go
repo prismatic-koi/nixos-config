@@ -186,7 +186,7 @@ func TestHeadlessCleanup_PrismContainer_StopsRunningBuild(t *testing.T) {
 // TestHeadlessCleanup_PrismContainer_FailedSweepKeepsAuditDirs checks the
 // gate at every removal site of a cleanup: the final incarnation
 // (removeSessionInstanceDirs), an earlier one
-// (gatherPrismContainerAuditLogs), and a review child (cleanupAgentSession).
+// (gatherPrismContainerAuditLogs), and a review child (endAgentSession).
 // After a failed sweep each dir stays. A later cleanup of the same session
 // then removes the service container or the built image, and the dirs.
 func TestHeadlessCleanup_PrismContainer_FailedSweepKeepsAuditDirs(t *testing.T) {

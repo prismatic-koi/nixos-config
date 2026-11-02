@@ -53,8 +53,9 @@ var (
 // to each. The corresponding sidecar PID file is also removed on a best-
 // effort basis so a subsequent KillSidecar call does not stumble over it.
 //
-// keep names the children whose sidecar did not stop (the return value of
-// review.CleanupReviewSessionsForParent). The scan does not signal them and
+// keep names the children that review.CleanupReviewSessionsForParent kept
+// (KeptChildren.Names): their sidecar did not stop, or a process in their
+// sandbox still runs. The scan does not signal them and
 // does not remove their PID files, so that the next stop of each one still
 // finds its PID.
 //

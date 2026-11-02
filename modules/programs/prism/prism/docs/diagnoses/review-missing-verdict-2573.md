@@ -7,6 +7,13 @@
   Same class of cross-boundary reference as the annotations in
   review-agent-no-verdict-1993.md and doclint.md.
 -->
+<!-- doclint-ignore: cleanupHalfAliveSession -->
+<!--
+  `cleanupHalfAliveSession` is the name of the SpawnSession failure cleanup
+  at the time of this diagnosis. #3392 split it into
+  markHalfAliveSessionError and endHalfAliveSession, which
+  cleanupFailedSpawn calls. This record keeps the old name.
+-->
 
 ## Symptom
 

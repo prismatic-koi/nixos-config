@@ -1,9 +1,9 @@
 package session
 
-// spawn_reap_cause_2613_test.go — cleanupHalfAliveSession must record why it
+// spawn_reap_cause_2613_test.go — cleanupFailedSpawn must record why it
 // closed the row.
 //
-// This helper is on the review-agent lifecycle: internal/review's spawn loop
+// This path is on the review-agent lifecycle: internal/review's spawn loop
 // calls SpawnSession, so a review agent that fails its layout step or
 // SpawnSession's own inline readiness gate is closed here, in state "error".
 // A closed row in that state with no recorded cause reads as
@@ -27,7 +27,19 @@ func openReapTestDB(t *testing.T) *db.DB {
 	return d
 }
 
-func TestCleanupHalfAliveSession_RecordsTheCause(t *testing.T) {
+// runFailedSpawnCleanup runs cleanupFailedSpawn for session with a sidecar
+// stop and a sandbox stop that succeed, and a tmux that does nothing.
+func runFailedSpawnCleanup(t *testing.T, d *db.DB, session string, cause db.SessionReapCause, detail ...string) {
+	t.Helper()
+	withLoggingTmux(t)
+	prevSidecar, prevSandbox := stopFailedSpawnSidecar, stopFailedSpawnSandboxProcs
+	defer func() { stopFailedSpawnSidecar, stopFailedSpawnSandboxProcs = prevSidecar, prevSandbox }()
+	stopFailedSpawnSidecar = func(string) bool { return true }
+	stopFailedSpawnSandboxProcs = func(string) error { return nil }
+	cleanupFailedSpawn(d, SpawnOpts{SessionName: session}, cause, detail...)
+}
+
+func TestCleanupFailedSpawn_RecordsTheCause(t *testing.T) {
 	cases := []struct {
 		name   string
 		cause  db.SessionReapCause
@@ -54,7 +66,7 @@ func TestCleanupHalfAliveSession_RecordsTheCause(t *testing.T) {
 				t.Fatalf("UpsertStatus: %v", err)
 			}
 
-			cleanupHalfAliveSession(d, session, "", tc.cause, tc.detail...)
+			runFailedSpawnCleanup(t, d, session, tc.cause, tc.detail...)
 
 			causes, err := d.SessionEndCauses([]string{session})
 			if err != nil {
@@ -84,21 +96,21 @@ func TestCleanupHalfAliveSession_RecordsTheCause(t *testing.T) {
 	}
 }
 
-// TestCleanupHalfAliveSession_DoesNotOverwriteAnEarlierCause pins the
+// TestCleanupFailedSpawn_DoesNotOverwriteAnEarlierCause pins the
 // ended_at guard. db.SetEnded will not re-close an already-closed row, so this
-// helper must not record a cause claiming that it did — SessionEndCauses
+// path must not record a cause claiming that it did — SessionEndCauses
 // returns the latest record, so an unguarded second write replaces the row's
 // true cause with a false one.
-func TestCleanupHalfAliveSession_DoesNotOverwriteAnEarlierCause(t *testing.T) {
+func TestCleanupFailedSpawn_DoesNotOverwriteAnEarlierCause(t *testing.T) {
 	d := openReapTestDB(t)
 	const session = "prism-test@2613-halfalive~review-1-review-qa"
 	if err := d.UpsertStatus(session, "prism-test", "/code/prism-test/x", "idle", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
 
-	cleanupHalfAliveSession(d, session, "", db.ReapCauseReadinessGate, "not ready within 30s")
+	runFailedSpawnCleanup(t, d, session, db.ReapCauseReadinessGate, "not ready within 30s")
 	// A second pass over the same, now-closed row.
-	cleanupHalfAliveSession(d, session, "", db.ReapCauseSpawnFailure, "some later failure")
+	runFailedSpawnCleanup(t, d, session, db.ReapCauseSpawnFailure, "some later failure")
 
 	causes, err := d.SessionEndCauses([]string{session})
 	if err != nil {
