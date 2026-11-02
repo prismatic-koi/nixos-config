@@ -3463,7 +3463,7 @@ func TestBwrapBuildArgs_NoHostAPIWhenSockPathEmpty(t *testing.T) {
 	}
 }
 
-// ── findPairs/findTriples smoke tests ────────────────────────────────────────
+// ── findTriples smoke tests ──────────────────────────────────────────────────
 
 func TestHelpers_FindTriples(t *testing.T) {
 	args := []string{"--bind", "/a", "/a", "--ro-bind", "/b", "/b", "--bind", "/c", "/c"}

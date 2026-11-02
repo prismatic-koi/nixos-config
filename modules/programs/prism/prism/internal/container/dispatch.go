@@ -32,8 +32,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
-// CapStatus is the outcome of an Isolator.Cap probe. It generalises
-// container.CheckResult over all isolation modes.
+// CapStatus is the outcome of an Isolator.Cap probe.
 //
 // IgnoreCap and CallerName concerns are handled by Check(), not embedded here.
 type CapStatus struct {
@@ -289,7 +288,7 @@ type LogPaths struct {
 
 // Available reports whether bwrap mode can run on this host. Today the only
 // requirement is Linux (the bwrap binary check is done lazily at run time by
-// the bwrap.go arg builder). Mirrors checkBwrapPlatform (cmd/spawn.go).
+// the bwrap.go arg builder).
 func (b *bwrapIsolator) Available() error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("isolation mode %q requires Linux; current platform is %s", config.IsolationBwrap, runtime.GOOS)
@@ -371,8 +370,7 @@ func (b *bwrapIsolator) LogPaths() LogPaths {
 // ----------------------------------------------------------------------------
 
 // Available reports whether sandbox-exec mode can run on this host. Today the
-// only requirement is Darwin. Mirrors checkSandboxExecPlatform
-// (cmd/spawn.go).
+// only requirement is Darwin.
 func (s *sandboxExecIsolator) Available() error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("isolation mode %q requires macOS (Darwin); current platform is %s", config.IsolationSandboxExec, runtime.GOOS)
