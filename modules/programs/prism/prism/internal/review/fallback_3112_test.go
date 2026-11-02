@@ -8,8 +8,6 @@ package review_test
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -125,22 +123,7 @@ func (h *fallbackHarness) run(fallbacks []string) string {
 		t.Fatalf("UpsertStatus worker: %v", err)
 	}
 	var delivered string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && len(body.Parts) > 0 {
-			delivered = body.Parts[0].Text
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	t.Cleanup(srv.Close)
-	if err := setHarnessInfo(t, h.d, fbWorker, extractPort(t, srv.URL), "sid"); err != nil {
-		t.Fatalf("setHarnessInfo: %v", err)
-	}
+	startWorkerHostAPI(t, fbWorker, func(prompt string) { delivered = prompt })
 
 	opts := review.MonitorOpts{
 		GroupID:              h.groupID,

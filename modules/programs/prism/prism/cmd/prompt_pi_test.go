@@ -100,7 +100,7 @@ func TestRunPrompt_PISession_RoutesThroughSidecarHostAPI(t *testing.T) {
 	t.Cleanup(func() { _ = srv.Close() })
 
 	d := openPromptTestDB(t)
-	seedSession(t, d, sessionName, "active", nil, nil, strPtr("worker"), nil)
+	seedSession(t, d, sessionName, "active", nil, strPtr("worker"), nil)
 	// Override the harness column so the prompt path takes the socket-pipe branch.
 	setStatusHarness(t, d, sessionName, "pi")
 
@@ -152,7 +152,7 @@ func TestRunPrompt_PISession_SocketMissingReturnsClearError(t *testing.T) {
 	sessionName := "repo@pi-no-sock"
 
 	d := openPromptTestDB(t)
-	seedSession(t, d, sessionName, "active", nil, nil, strPtr("worker"), nil)
+	seedSession(t, d, sessionName, "active", nil, strPtr("worker"), nil)
 	setStatusHarness(t, d, sessionName, "pi")
 
 	rootCmd.SetArgs([]string{"prompt", sessionName, "--prompt", "test"})

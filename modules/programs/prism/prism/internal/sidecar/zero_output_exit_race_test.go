@@ -46,7 +46,7 @@ func TestSocketPipe_FastAgentRace_MsgAssistantThenFinishedFromIdle(t *testing.T)
 		capturedText string
 		capturedCnt  int
 	)
-	sc.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+	sc.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, source string, deliverAs string) error {
 		deliverMu.Lock()
 		defer deliverMu.Unlock()
 		capturedCnt++
@@ -122,7 +122,7 @@ func TestSocketPipe_TrueZeroOutputExit_NoMsgAssistantStillErrors(t *testing.T) {
 		capturedText string
 		capturedCnt  int
 	)
-	sc.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+	sc.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, source string, deliverAs string) error {
 		deliverMu.Lock()
 		defer deliverMu.Unlock()
 		capturedCnt++

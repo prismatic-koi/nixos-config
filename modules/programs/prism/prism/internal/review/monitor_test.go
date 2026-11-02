@@ -15,8 +15,8 @@ package review_test
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +25,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // ── MonitorFunc ──────────────────────────────────────────────────────────────
@@ -64,34 +65,15 @@ func TestMonitorFunc_DetectsCompletionAndDelivers(t *testing.T) {
 	seedAssistantEvent(t, d, sessions[0], "All ACs verified.\n<verdict>PASS</verdict>")
 	seedAssistantEvent(t, d, sessions[1], "Code looks good.\n<verdict>PASS</verdict>")
 
-	// Seed the worker session with harness info for HTTP delivery.
+	// Seed the worker session of the pi harness.
 	workerSession := "nixos-config@worker-test"
 	if err := d.UpsertStatus(workerSession, "nixos-config", "/wt", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus worker: %v", err)
 	}
 
-	// Start an httptest server to simulate the harness prompt_async endpoint.
+	// Start a stub of the host-API socket of the worker.
 	var deliveredText string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && len(body.Parts) > 0 {
-			deliveredText = body.Parts[0].Text
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	defer srv.Close()
-
-	// Extract port from test server URL and set harness info directly.
-	port := extractPort(t, srv.URL)
-	sessionID := "test-pi-session-id"
-	if err := setHarnessInfo(t, d, workerSession, port, sessionID); err != nil {
-		t.Fatalf("SetHarnessInfo: %v", err)
-	}
+	startWorkerHostAPI(t, workerSession, func(prompt string) { deliveredText = prompt })
 
 	opts := review.MonitorOpts{
 		GroupID:              groupID,
@@ -167,22 +149,15 @@ func TestMonitorFunc_FlipsReviewingToActiveBeforeDelivery(t *testing.T) {
 	}
 
 	// Capture the worker's DB state at the moment of delivery (i.e. when the
-	// HTTP server receives the prompt_async POST). If the monitor has correctly
-	// flipped reviewing→active before delivery, this snapshot must read `active`.
+	// host-API socket of the worker receives the /prompt POST). If the monitor
+	// has correctly flipped reviewing→active before delivery, this snapshot
+	// must read `active`.
 	var stateAtDelivery string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	startWorkerHostAPI(t, workerSession, func(string) {
 		if status, sErr := d.CurrentStatus(workerSession); sErr == nil && status != nil {
 			stateAtDelivery = status.State
 		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	defer srv.Close()
-
-	port := extractPort(t, srv.URL)
-	if err := setHarnessInfo(t, d, workerSession, port, "test-pi-session-id"); err != nil {
-		t.Fatalf("SetHarnessInfo: %v", err)
-	}
+	})
 
 	opts := review.MonitorOpts{
 		GroupID:              groupID,
@@ -241,7 +216,7 @@ func TestMonitorFunc_DeliveryFailure_WritesFallbackFile(t *testing.T) {
 	}
 	seedAssistantEvent(t, d, sess, "All good.\n<verdict>PASS</verdict>")
 
-	// Worker session: no harness port → delivery will fail.
+	// Worker session: no row → delivery will fail.
 	workerSession := "nixos-config@nonexistent-worker"
 	// We do NOT seed this session in the DB, so delivery will fail
 	// (session not found).
@@ -322,30 +297,12 @@ func TestMonitorFunc_MissingSession(t *testing.T) {
 		t.Fatalf("SetGroupID deleted: %v", err)
 	}
 
-	// Capture the delivery text via a test HTTP server.
-	var deliveredText string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && len(body.Parts) > 0 {
-			deliveredText = body.Parts[0].Text
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	defer srv.Close()
-
+	// Capture the delivery text via a stub of the host-API socket.
 	workerSession := "nixos-config@missing-session-worker"
-	port := extractPort(t, srv.URL)
-	sessionID := "test-session-id-missing"
+	var deliveredText string
+	startWorkerHostAPI(t, workerSession, func(prompt string) { deliveredText = prompt })
 	if err := d.UpsertStatus(workerSession, "nixos-config", "/wt", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus worker: %v", err)
-	}
-	if err := setHarnessInfo(t, d, workerSession, port, sessionID); err != nil {
-		t.Fatalf("SetHarnessInfo: %v", err)
 	}
 
 	opts := review.MonitorOpts{
@@ -1191,35 +1148,36 @@ func TestReviewRoundForGroup_Empty(t *testing.T) {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-// extractPort extracts the port number from an http://host:port URL.
-func extractPort(t *testing.T, rawURL string) int {
+// startWorkerHostAPI starts a stub of the host-API socket of the pi session
+// sessionName. onPrompt gets the prompt of each POST /prompt. The socket path
+// comes from XDG_STATE_HOME. The suite dir of IsolateSuite is short, so the
+// path fits in sun_path.
+func startWorkerHostAPI(t *testing.T, sessionName string, onPrompt func(prompt string)) {
 	t.Helper()
-	// rawURL is like "http://127.0.0.1:PORT"
-	parts := strings.Split(rawURL, ":")
-	if len(parts) < 3 {
-		t.Fatalf("extractPort: unexpected URL format %q", rawURL)
+	sockPath, err := session.SidecarHostAPIPath(sessionName)
+	if err != nil {
+		t.Fatalf("host-API socket path of %q: %v", sessionName, err)
 	}
-	portStr := parts[len(parts)-1]
-	var port int
-	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
-		t.Fatalf("extractPort: parse port from %q: %v", rawURL, err)
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	return port
-}
-
-// setHarnessInfo writes harness_port and harness_session_id directly via SQL,
-// bypassing AllocatePort's OS-level port availability check (not needed for
-// tests using httptest.Server which already owns the port).
-// Sets harness to empty string so promptdelivery falls back to the HTTP path
-// (used by these tests which spin up httptest.Server for delivery assertions).
-func setHarnessInfo(t *testing.T, d *db.DB, sessionName string, port int, sessionID string) error {
-	t.Helper()
-	var dummy int
-	err := d.QueryRow(
-		"UPDATE agent_status SET harness_port = ?, harness_session_id = ?, harness = '' WHERE session_name = ? RETURNING 1",
-		port, sessionID, sessionName,
-	).Scan(&dummy)
-	return err
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen on %s: %v", sockPath, err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/prompt" {
+			var body struct {
+				Prompt string `json:"prompt"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			onPrompt(body.Prompt)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
 }
 
 // ── no-start error distinction ───────────────────────────────────────

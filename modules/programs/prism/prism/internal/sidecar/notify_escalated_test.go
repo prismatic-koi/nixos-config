@@ -1,10 +1,6 @@
 package sidecar
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,33 +17,13 @@ func TestNotifyCoordinator_EscalatedSuppressed(t *testing.T) {
 	// socket paths, etc.) stay within a temp directory and never touch the
 	// developer's real prism state. Also activate the host-API socket guard
 	// so promptdelivery refuses to dial any real host socket.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
+	useShortStateHome(t)
 
 	d := openTestDB(t)
 
 	coordSID := "coord-sid-escalated-suppressed"
-
-	var notifyCount int
-	var notifyMu sync.Mutex
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			sessions := []map[string]any{{"id": coordSID}}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		notifyMu.Lock()
-		notifyCount++
-		notifyMu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	seedCoordinator(t, d, "test-repo", coordSID)
+	coord := listenHostAPI(t, "test-repo@main")
 
 	clk := newTestClock()
 	workerSession := "test-repo@feature"
@@ -58,7 +34,6 @@ func TestNotifyCoordinator_EscalatedSuppressed(t *testing.T) {
 		HarnessURL:  "http://localhost:14002",
 		DB:          d,
 		Clock:       clk,
-		HTTPClient:  srv.Client(),
 		Harness:     newSSEHarness(),
 		AgentRole:   "worker",
 	}
@@ -88,10 +63,8 @@ func TestNotifyCoordinator_EscalatedSuppressed(t *testing.T) {
 		t.Errorf("escalated session must NOT send coordinator notification, but got %d bus message(s)", totalMsgs)
 	}
 
-	notifyMu.Lock()
-	count := notifyCount
-	notifyMu.Unlock()
+	count := coord.count()
 	if count != 0 {
-		t.Errorf("notifyCoordinator HTTP calls = %d for escalated session, want 0", count)
+		t.Errorf("prompts on the host-API socket of the coordinator = %d for escalated session, want 0", count)
 	}
 }
