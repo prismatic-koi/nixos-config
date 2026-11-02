@@ -57,6 +57,7 @@ func noTmuxServer(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = -u ]; then shift; fi\n" +
 		"if [ \"$1\" = list-sessions ]; then echo 'no server running on /stub/default' >&2; exit 1; fi\n" +
 		"echo \"stub tmux: $1 refused\" >&2\n" +
 		"exit 1\n"

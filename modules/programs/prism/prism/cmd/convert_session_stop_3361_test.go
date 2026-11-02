@@ -312,6 +312,7 @@ func TestConvertPlainClone_KeepsHostShellSessionsInTheClone_3361(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = -u ]; then shift; fi\n" +
 		"if [ \"$1\" = list-sessions ]; then\n" +
 		"  case \"$3\" in\n" +
 		"    *session_path*) cat " + filepath.Join(spyDir, "sessions-with-path") + " ;;\n" +

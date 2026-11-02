@@ -97,6 +97,9 @@ func projectEntries() []entry {
 
 // ── worktree second-level picker ──────────────────────────────────────────────
 
+// pickWorktree is the picker of handleBareRepo. Tests replace it.
+var pickWorktree = pick
+
 func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities, cfg config.Config) (retErr error) {
 	worktrees := git.Worktrees(projectPath)
 	createNew := entry{display: "[+ create new worktree]", special: "[+ create new worktree]"}
@@ -114,7 +117,7 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 
 	items = append(items, createNew)
 
-	chosen := pick("worktree> ", items)
+	chosen := pickWorktree("worktree> ", items)
 	if chosen == nil {
 		return nil
 	}
@@ -167,9 +170,37 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 		return ensureAndSwitch(worktreePath, projectPath, opts)
 	}
 
+	wt, err := layoutWorktree(projectPath, chosen.path)
+	if err != nil {
+		return err
+	}
 	// Apply per-path isolation override for the chosen worktree.
-	applyPathIsolationOverride(chosen.path, cfg, &opts, isoCaps, pf)
-	return ensureAndSwitch(chosen.path, projectPath, opts)
+	applyPathIsolationOverride(wt, cfg, &opts, isoCaps, pf)
+	return ensureAndSwitch(wt, projectPath, opts)
+}
+
+// layoutWorktree returns path as a worktree of the bare+worktree layout in
+// root (git.WorktreeRootIn). A session can make `git worktree list` name a
+// symlink in its worktree to a dir outside the layout, for example the
+// target of a clone (#3396). A session there can write the .bare that the
+// clone makes, so prism refuses such a path.
+func layoutWorktree(root, path string) (string, error) {
+	// OpenDir gives an absolute work tree, so WorktreeRootIn refuses a
+	// relative path.
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if wt, ok := git.WorktreeRootIn(root, path); ok {
+		return wt, nil
+	}
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("prism does not start a session in %s: the path does not resolve (%v). It is not a worktree of the bare+worktree layout of %s", path, err, root)
+	}
+	return "", fmt.Errorf("prism does not start a session in %s: the path resolves to %s, which is not a worktree of the bare+worktree layout of %s", path, target, root)
 }
 
 // activeReviewSessionEntries returns picker entries for active review agent

@@ -595,8 +595,10 @@ clone and the conversion.
 ## A session start during a clone (#3388)
 
 Code: `CloneWorktree` in `internal/git/git.go`, `lockCloneTarget` in
-`internal/session/clone_lock.go`, and `holdStartLock` and `SessionsInDir`
-in `internal/session/convert_lock.go`.
+`internal/session/clone_lock.go`, `holdStartLock` and `SessionsInDir` in
+`internal/session/convert_lock.go`, `convertPlainClone` in
+`cmd/convert.go`, `layoutWorktree` in `cmd/switch_project.go`, and
+`WorktreeRootIn` in `internal/git/worktree_root.go`.
 
 ### The clone-lock rule
 
@@ -615,6 +617,16 @@ before its checks, and releases it after its last step.
   target. The error names the dir and the session.
 - If prism cannot read the rows or ask tmux, the clone refuses. No tmux
   server is not an error, because then no tmux session runs.
+- `SessionsInDir` runs `tmux -u list-sessions`. Without `-u`, a tmux
+  client outside tmux in a locale that is not UTF-8 (`LC_ALL=C`) writes
+  the tab, and each byte of a path that is not ASCII, as `_`. A line of
+  the output that does not parse is an error, so the clone refuses
+  (#3396).
+- `prism convert` refuses in the same cases: prism cannot open the DB,
+  read the rows, or ask tmux, or a line does not parse. The error names
+  the dir and the cause. `prism convert` also refuses a plain clone in a
+  bare+worktree layout, because a start in such a dir takes no lock
+  (#3396).
 - The clone also keeps the check of #3381: a session that started in the
   target, or in a dir above it.
 - When a conversion or another clone holds the lock of the target, the
@@ -623,6 +635,19 @@ before its checks, and releases it after its last step.
 - The clone refuses a target in a bare+worktree layout, because a start in
   such a dir takes no lock. `OpenBare` also refuses such a root, after the
   bare clone.
+- `session.Create` takes the lock of the real dir of the start, with the
+  symlinks resolved (`holdStartLock`, #3396). A symlink in a worktree is
+  in a bare+worktree layout, but it can name the target. So a start
+  through that symlink takes the lock of the target, and the start is
+  refused while the clone runs. After the clone, the `.bare` check of the
+  real dir refuses it.
+- The `prism switch` picker and `prism switch --path` start a session in
+  a bare+worktree layout only at a worktree of that layout
+  (`git.WorktreeRootIn`, the check of `/switch`). A session can make `git
+  worktree list` name a symlink in its worktree to a dir outside the
+  layout. The start refuses that path, and the error names the path and
+  its real target. The start uses the path that `git.WorktreeRootIn`
+  gives, which has no symlink below the root (#3396).
 - `session.Create` refuses a `LayoutFull` start in a dir that does not
   exist, unless the dir is in a bare+worktree layout. The clone can make
   its target, and a start that found no dir holds no lock.
@@ -659,14 +684,6 @@ that session in tmux.
   `prism reset`, and the `session-closed` hook end it (#3375). If the
   session ended by another path, for example the cleanup of a failed
   spawn, the check of the clone does not see the process.
-- **A symlink to the clone target (#3396).** `holdStartLock` reads only
-  the path that it gets. A symlink in a worktree that points at a clone
-  target outside the layout is in a bare+worktree layout, so a start there
-  takes no lock. Two owner routes start such a session. One is
-  `prism switch --path` on the symlink. The other is the `prism switch`
-  picker, which lists the raw `git worktree list` paths and calls
-  `ensureAndSwitch` with no `worktreeRootIn` check. A session can make that
-  list name the symlink. #3396 tracks the fix.
 
 ### Tests of the clone-lock rule
 
@@ -690,6 +707,20 @@ cover the refusals, the order, the holders of the lock, the release, and
 the checks of the dir. `TestCloneWorktree_HoldsTheTargetLockToTheEnd_3388`
 and `TestCloneWorktree_RefusalOfTheTargetLock_3388` (`internal/git`) cover
 the contract of `CloneWorktree` with a stand-in lock.
+
+Tests of #3396. `TestSessionsInDir_FindsSessionInCLocale_3396`
+(`internal/session`) and `TestConvertPlainClone_FindsTmuxSessionInCLocale_3396`
+(`cmd`) run a real tmux server with `LC_ALL=C`. Their control shows that
+tmux with no `-u` writes no tab. The clone refuses, and the conversion
+stops the session. `TestSessionsInDir_LineThatDoesNotParseIsAnError_3396`
+and `TestConvertPlainClone_RefusesWhenTheSessionCheckFails_3396` cover the
+refusals of the session check. `TestConvertPlainClone_RefusesCloneInABareLayout_3396`
+covers the plain clone in a bare+worktree layout. Its control shows that
+the conversion lock does not refuse a start in that clone.
+`TestHoldStartLock_SymlinkToCloneTarget_3396` starts a session through a
+symlink to the target during a clone. `TestSwitchPicker_RefusesSymlinkedWorktreeEntry_3396`
+and `TestSwitchPath_RefusesSymlinkedWorktree_3396` (`cmd`) cover the picker
+and `prism switch --path`, and the start at the main worktree.
 
 The nix build runs the tests with no tmux binary. So the `TestMain` of
 `cmd`, `internal/review`, `internal/sidecar`, and `internal/session` calls

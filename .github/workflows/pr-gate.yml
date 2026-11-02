@@ -317,12 +317,14 @@ jobs:
       # the clone lock (#3388) run here too, so that a Darwin result exists
       # for the flock, the dir identity check, and the killed clone. The
       # stop of the sandbox processes sends real signals on Darwin (#3375).
-      - name: go test ./internal/session -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile|TestStopSandboxProcesses|Test.*_3388$)' -race
+      # Two tests of #3396 that need no tmux server run here too: the start
+      # lock resolves symlinks, and macOS gives /var as a symlink.
+      - name: go test ./internal/session -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile|TestStopSandboxProcesses|Test.*_3388$|TestHoldStartLock_SymlinkToCloneTarget_3396$|TestSessionsInDir_LineThatDoesNotParseIsAnError_3396$)' -race
         if: always() && steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism
         run: |
           set -o pipefail
-          go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile|TestStopSandboxProcesses|Test.*_3388$)' -race -count=1 2>&1 | tee /tmp/go-test-macos-sidecar-owner.log
+          go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile|TestStopSandboxProcesses|Test.*_3388$|TestHoldStartLock_SymlinkToCloneTarget_3396$|TestSessionsInDir_LineThatDoesNotParseIsAnError_3396$)' -race -count=1 2>&1 | tee /tmp/go-test-macos-sidecar-owner.log
       - name: Guard against SKIP-as-PASS and a zero-test run (sidecar owner check)
         if: always() && steps.changes.outputs.go == 'true'
         run: |

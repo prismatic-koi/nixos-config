@@ -474,6 +474,45 @@ func loadSwitchSetup(fresh bool) (switchSetup, error) {
 	return switchSetup{cfg: cfg, pf: pf, isoCaps: isoCaps, opts: opts}, nil
 }
 
+// switchToPath opens the session of the dir pathArg, the --path of prism
+// switch, with the start input s.
+func switchToPath(pathArg string, s switchSetup) error {
+	cfg, pf, isoCaps, opts := s.cfg, s.pf, s.isoCaps, s.opts
+	p := expandHome(pathArg)
+	info, err := os.Stat(p)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("not a directory: %s", pathArg)
+	}
+	if git.IsBareRepo(p) {
+		worktrees := git.Worktrees(p)
+		if len(worktrees) == 0 {
+			return fmt.Errorf("no worktrees found in %s", p)
+		}
+		wt, err := layoutWorktree(p, worktrees[0])
+		if err != nil {
+			return err
+		}
+		o := opts
+		// Apply per-path isolation override for the first worktree.
+		applyPathIsolationOverride(wt, cfg, &o, isoCaps, pf)
+		return ensureAndSwitch(wt, p, o)
+	}
+	if bareRoot := git.BareRoot(p); bareRoot != "" {
+		wt, err := layoutWorktree(bareRoot, p)
+		if err != nil {
+			return err
+		}
+		o := opts
+		// Apply per-path isolation override for the worktree path.
+		applyPathIsolationOverride(wt, cfg, &o, isoCaps, pf)
+		return ensureAndSwitch(wt, bareRoot, o)
+	}
+	o := opts
+	// Apply per-path isolation override for plain directory paths.
+	applyPathIsolationOverride(p, cfg, &o, isoCaps, pf)
+	return ensureAndSwitch(p, "", o)
+}
+
 // ── cobra command ─────────────────────────────────────────────────────────────
 
 var switchCmd = &cobra.Command{
@@ -499,31 +538,7 @@ var switchCmd = &cobra.Command{
 
 		// --path: open a specific path directly.
 		if pathArg != "" {
-			p := expandHome(pathArg)
-			info, err := os.Stat(p)
-			if err != nil || !info.IsDir() {
-				return fmt.Errorf("not a directory: %s", pathArg)
-			}
-			if git.IsBareRepo(p) {
-				worktrees := git.Worktrees(p)
-				if len(worktrees) == 0 {
-					return fmt.Errorf("no worktrees found in %s", p)
-				}
-				o := opts
-				// Apply per-path isolation override for the first worktree.
-				applyPathIsolationOverride(worktrees[0], cfg, &o, isoCaps, pf)
-				return ensureAndSwitch(worktrees[0], p, o)
-			}
-			if bareRoot := git.BareRoot(p); bareRoot != "" {
-				o := opts
-				// Apply per-path isolation override for the worktree path.
-				applyPathIsolationOverride(p, cfg, &o, isoCaps, pf)
-				return ensureAndSwitch(p, bareRoot, o)
-			}
-			o := opts
-			// Apply per-path isolation override for plain directory paths.
-			applyPathIsolationOverride(p, cfg, &o, isoCaps, pf)
-			return ensureAndSwitch(p, "", o)
+			return switchToPath(pathArg, setup)
 		}
 
 		// Ensure dashboard exists in background.
