@@ -575,26 +575,14 @@ func deliverEscalationPrompt(database *db.DB, fromSession string, target *db.Sta
 	// Reuse the existing delivery primitives. The "deliver_as=followUp" mode
 	// queues the message until the coordinator's current turn ends, matching
 	// the semantics of finish notifications today (the coordinator should not
-	// be steered mid-stream by a worker escalation).
-	if target.Harness != nil && *target.Harness != "" {
-		// Try the harness-aware path. We mirror cmd/prompt.go's runPrompt
-		// inline rather than calling it because runPrompt resolves the
-		// from_session via CWD walk, which is brittle here (we already know
-		// it). The actual transport selection is what we want to share.
-		if err := deliverEscalationToTarget(target, promptText); err != nil {
-			if writeErr := database.WriteBusMessageFailed(msg); writeErr != nil {
-				fmt.Fprintf(os.Stderr, "prism escalate: write failed audit: %v\n", writeErr)
-			}
-			return "", err
+	// be steered mid-stream by a worker escalation). We do not call
+	// cmd/prompt.go's runPrompt because runPrompt resolves the from_session
+	// via CWD walk, which is brittle here (we already know it).
+	if err := deliverEscalationToTarget(target, promptText); err != nil {
+		if writeErr := database.WriteBusMessageFailed(msg); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "prism escalate: write failed audit: %v\n", writeErr)
 		}
-	} else {
-		// A row with no harness column falls back to HTTP delivery.
-		if err := deliverEscalationToTarget(target, promptText); err != nil {
-			if writeErr := database.WriteBusMessageFailed(msg); writeErr != nil {
-				fmt.Fprintf(os.Stderr, "prism escalate: write failed audit: %v\n", writeErr)
-			}
-			return "", err
-		}
+		return "", err
 	}
 
 	if err := database.WriteBusMessageDelivered(msg); err != nil {

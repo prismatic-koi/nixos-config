@@ -8819,14 +8819,14 @@ func TestWriteStartupError_ReviewAgent_ParentEnded_LogsAndExitsCleanly(t *testin
 	time.Sleep(50 * time.Millisecond)
 }
 
-// TestWriteStartupError_ReviewAgent_ParentNoPort_LogsAndExitsCleanly verifies
-// the edge case: if the parent worker has no harness port, the notification
-// failure is logged and the sidecar exits cleanly.
-func TestWriteStartupError_ReviewAgent_ParentNoPort_LogsAndExitsCleanly(t *testing.T) {
+// TestWriteStartupError_ReviewAgent_ParentNoSocket_LogsAndExitsCleanly
+// verifies the edge case: if the parent worker has no host-API socket, the
+// notification failure is logged and the sidecar exits cleanly.
+func TestWriteStartupError_ReviewAgent_ParentNoSocket_LogsAndExitsCleanly(t *testing.T) {
 	d := openTestDB(t)
 
 	parentSession := "test-repo@feature"
-	// Seed parent without a harness port.
+	// Seed parent with no listener on its host-API socket.
 	if err := d.UpsertStatus(parentSession, "test-repo", "/tmp/"+parentSession, "active", nil, nil); err != nil {
 		t.Fatalf("seed parent: %v", err)
 	}
@@ -9552,10 +9552,9 @@ func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 }
 
 // TestReviewing_OpencodeHarness_IdleDebounceNotSuppressedAfterMonitorWrite
-// verifies that on HTTP-harness sessions the monitor writes
-// "active" to the DB just before delivering the review-complete prompt, and
-// that delivery does not reach the sidecar's /prompt handler, so
-// reviewingInFlight is never cleared by the socket-pipe path. The idle
+// verifies the SSE-harness path, where no /prompt of the sidecar clears
+// reviewingInFlight: the monitor writes "active" to the DB just before it
+// delivers the review-complete prompt. The idle
 // debounce guard must not suppress when reviewingInFlight is true but the DB
 // state is already "active" (not "reviewing").
 func TestReviewing_OpencodeHarness_IdleDebounceNotSuppressedAfterMonitorWrite(t *testing.T) {

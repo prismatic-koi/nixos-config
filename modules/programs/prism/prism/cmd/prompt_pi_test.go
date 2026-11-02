@@ -2,10 +2,9 @@ package cmd
 
 // prompt_pi_test.go — tests for the PI socket-pipe routing in `prism prompt`.
 //
-// The host-side `prism prompt <pi-session>` CLI cannot use the harness HTTP
-// API path (PI sessions have no harness_port). Instead it must dial the
-// per-session sidecar host-API Unix socket and route via /prompt, which the
-// sidecar then forwards to the harness pipe via DeliverPrompt.
+// The host-side `prism prompt <pi-session>` CLI dials the per-session
+// sidecar host-API Unix socket and routes via /prompt, which the sidecar
+// then forwards to the harness pipe via DeliverPrompt.
 
 import (
 	"encoding/json"

@@ -214,7 +214,7 @@ func seedInvoker(t *testing.T, d *db.DB, invokerSession string) {
 		"UPDATE agent_status SET harness_session_id = ?, harness = 'pi' WHERE session_name = ? RETURNING session_name",
 		sid, invokerSession,
 	).Scan(new(string)); err != nil {
-		t.Fatalf("sidecartest: set port/sid for invoker %q: %v", invokerSession, err)
+		t.Fatalf("sidecartest: set sid and harness for invoker %q: %v", invokerSession, err)
 	}
 }
 

@@ -204,24 +204,22 @@ func AgentRunLogPath(sessionName string) (string, error) {
 // command line of a live PID cannot be read, the kill is skipped, a warning
 // names the PID, and the file is removed.
 func KillSidecar(sessionName string) bool {
-	_, owner := killSidecar(sessionName)
-	return owner == pidOwnerSidecar
+	return killSidecar(sessionName) == pidOwnerSidecar
 }
 
-// killSidecar is the body of KillSidecar. It returns the PID in the PID
-// file (0 when the file is absent or does not hold a PID) and the owner of
-// that PID. It sent SIGTERM only when the owner is pidOwnerSidecar.
-func killSidecar(sessionName string) (int, pidOwner) {
+// killSidecar is the body of KillSidecar. It returns the owner of the PID in
+// the PID file. It sent SIGTERM only when the owner is pidOwnerSidecar.
+func killSidecar(sessionName string) pidOwner {
 	pidPath, err := SidecarPIDPath(sessionName)
 	if err != nil {
 		// Can't derive the path — nothing to clean up.
-		return 0, pidOwnerGone
+		return pidOwnerGone
 	}
 
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		// PID file absent — sidecar was never started or already cleaned up.
-		return 0, pidOwnerGone
+		return pidOwnerGone
 	}
 
 	pidStr := strings.TrimSpace(string(data))
@@ -229,7 +227,7 @@ func killSidecar(sessionName string) (int, pidOwner) {
 	if err != nil || pid <= 0 {
 		// Corrupt PID file — remove it and move on.
 		_ = os.Remove(pidPath)
-		return 0, pidOwnerGone
+		return pidOwnerGone
 	}
 
 	// Guard against same-user PID recycling: verify the PID belongs to a
@@ -253,12 +251,12 @@ func killSidecar(sessionName string) (int, pidOwner) {
 		// PID has been recycled to an unrelated process — do not kill it.
 		fmt.Fprintf(os.Stderr, "warning: sidecar pid %d does not appear to be a prism sidecar process — skipping kill\n", pid)
 		_ = os.Remove(pidPath)
-		return pid, owner
+		return owner
 	case pidOwnerGone, pidOwnerUnknown:
 		// Fail closed: do not signal a PID that prism cannot prove is a
 		// sidecar.
 		_ = os.Remove(pidPath)
-		return pid, owner
+		return owner
 	}
 
 	// Send SIGTERM; ignore ESRCH (no such process — already gone).
@@ -268,7 +266,7 @@ func killSidecar(sessionName string) (int, pidOwner) {
 	}
 
 	_ = os.Remove(pidPath)
-	return pid, owner
+	return owner
 }
 
 // ErrSidecarOwnerUnknown is in the error of a stop that cannot read the

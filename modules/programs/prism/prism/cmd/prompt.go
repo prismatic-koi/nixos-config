@@ -48,7 +48,7 @@ The --deliver-as flag controls the delivery mode for socket-pipe (PI) sessions:
 func init() {
 	addPromptFlags(promptCmd)
 	promptCmd.Flags().String("deliver-as", "steer", `Delivery mode for socket-pipe sessions: steer (mid-turn), followUp, or nextTurn.`)
-	promptCmd.Flags().Bool("json", false, `Emit a single JSON object to stdout instead of the human-readable success line. Shape: {"delivered_to":"<session>","delivery_id":"<uuid>","buffered":<bool>,"replayed":<bool>,"transport":"socket-pipe"}. When buffered=true the delivery was accepted but the PI extension was disconnected — the sidecar will replay it on the next handshake.`)
+	promptCmd.Flags().Bool("json", false, `Emit a single JSON object to stdout instead of the human-readable success line. Shape: {"delivered_to":"<session>","delivery_id":"<uuid>","buffered":<bool>,"replayed":<bool>,"transport":"socket-pipe"|"host-api"}. transport is "host-api" when a sandboxed caller proxies the prompt through its sidecar. When buffered=true the delivery was accepted but the PI extension was disconnected — the sidecar will replay it on the next handshake.`)
 	rootCmd.AddCommand(promptCmd)
 }
 

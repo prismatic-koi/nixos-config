@@ -669,7 +669,7 @@ type Sidecar struct {
 	// reviewingInFlight is set to true when the /review handler successfully
 	// writes the reviewing state to the DB, and cleared when the monitor
 	// delivers the review-complete prompt via /prompt (same-session,
-	// TransportSocketPipe path only — HTTP-harness sessions bypass /prompt).
+	// TransportSocketPipe path only).
 	//
 	// Clearing semantics for the same-session /prompt path:
 	//   - Synchronous-success branch: cleared AFTER DeliverPrompt returns true.
@@ -684,8 +684,8 @@ type Sidecar struct {
 	//
 	// The suppress guards in events.go additionally check currentDBState() ==
 	// StateReviewing so they lift naturally when the monitor's pre-delivery DB
-	// write ("active") lands, even on HTTP-harness sessions where
-	// reviewingInFlight is never cleared via /prompt.
+	// write ("active") lands, even on a session where reviewingInFlight is
+	// never cleared via /prompt.
 	//
 	// Protected by s.mu.
 	reviewingInFlight bool
@@ -1068,9 +1068,8 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	}
 
 	// Stage 2: Start the merge-queue watcher for coordinator sessions.
-	// This is transport-agnostic and must run for ALL transport shapes so that
-	// PI coordinator sessions receive merge-queue notifications exactly like
-	// HTTP-harness coordinator sessions.
+	// This is transport-agnostic and must run for ALL transport shapes, so
+	// that a PI coordinator session receives merge-queue notifications.
 	//
 	// The watcher polls the pending_merges head on a 30s ticker
 	// (mergequeue.PollInterval) and drives PRs through the merge lifecycle. It is

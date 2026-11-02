@@ -120,7 +120,7 @@ func TestNotifyInvestigatorCompletion_Delivery(t *testing.T) {
 	}
 	body := bodies[0]
 
-	// The body is a JSON-encoded prompt_async payload; the text is inside.
+	// The body is a JSON-encoded /prompt request; the text is inside.
 	// Check that all required elements are present in the delivered payload.
 	if !strings.Contains(body, "From investigator session: "+investigatorSession) {
 		t.Errorf("notification body missing sender label; got: %s", body)
