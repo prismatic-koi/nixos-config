@@ -157,7 +157,6 @@ func TestEscalate_BusEventDistinct(t *testing.T) {
 func TestEscalate_MultipleCandidatesNoTo(t *testing.T) {
 	d := openPromptTestDB(t)
 
-
 	// A `<repo>@main` row with a NULL root_agent_name.
 	seedSession(t, d, "repo@main", "active", nil, nil, nil)
 	// Fresh coordinator with explicit root_agent_name='coordinator' on a
@@ -185,7 +184,6 @@ func TestEscalate_MultipleCandidatesNoTo(t *testing.T) {
 // and a self-marker is recorded in the worker's own log.
 func TestEscalate_NoCoordinatorStillEscalates(t *testing.T) {
 	d := openPromptTestDB(t)
-
 
 	// Only the worker — no coordinator anywhere in the repo.
 	seedSession(t, d, "repo@feature", "active", nil, strPtr("worker"), nil)
