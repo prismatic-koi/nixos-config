@@ -12,8 +12,7 @@ package session
 // session.Create, so that by the time the new sidecar attempts its
 // duplicate-start probe, the old socket is gone.
 //
-// These tests verify the key invariant for KillSidecarAndWait and for
-// EnsureSidecarStopped:
+// These tests verify the key invariant for EnsureSidecarStopped:
 //
 //   After the stop reports the sidecar gone, a dial to the socket that the
 //   killed process was listening on either fails with ECONNREFUSED (tombstone)
@@ -80,28 +79,11 @@ func init() {
 	os.Exit(0)
 }
 
-// TestKillSidecarAndWait_StaleZombie_SocketFreedBeforeReturn is the stale-zombie
-// regression test. It:
-//
-//  1. Starts a stub subprocess that binds a Unix socket and keeps it alive.
-//  2. Verifies that the socket is initially live (a dial succeeds).
-//  3. Calls KillSidecarAndWait with the PID file for the stub.
-//  4. Asserts that after the call returns, the socket is no longer accepting
-//     connections — i.e. the new sidecar's duplicate-start guard would pass.
-func TestKillSidecarAndWait_StaleZombie_SocketFreedBeforeReturn(t *testing.T) {
-	checkStaleZombieSocketFreed(t, "KillSidecarAndWait", func(sessionName string) bool {
-		if err := KillSidecarAndWait(sessionName, 5*time.Second); err != nil {
-			t.Errorf("KillSidecarAndWait: %v", err)
-		}
-		return true
-	})
-}
-
-// TestStaleZombie_EnsureSidecarStopped_SocketFreedBeforeReturn runs the same
-// check on EnsureSidecarStopped, the stop of the stale-zombie restart path
-// of ensureAndSwitch. The test is Linux-only, so its name must not start
-// with TestEnsureSidecarStopped: the macOS job of pr-gate.yml selects that
-// prefix and fails on a SKIP.
+// TestStaleZombie_EnsureSidecarStopped_SocketFreedBeforeReturn is the
+// stale-zombie regression test. It runs the check on EnsureSidecarStopped,
+// the stop of the stale-zombie restart path of ensureAndSwitch. The test is
+// Linux-only, so its name must not start with TestEnsureSidecarStopped: the
+// macOS job of pr-gate.yml selects that prefix and fails on a SKIP.
 func TestStaleZombie_EnsureSidecarStopped_SocketFreedBeforeReturn(t *testing.T) {
 	checkStaleZombieSocketFreed(t, "EnsureSidecarStopped", func(sessionName string) bool {
 		return EnsureSidecarStopped(sessionName, 5*time.Second)
@@ -120,7 +102,7 @@ func checkStaleZombieSocketFreed(t *testing.T, stopName string, stop func(sessio
 	// Use a short-prefix MkdirTemp (not t.TempDir) for XDG_STATE_HOME so the
 	// derived socket path stays under Linux's 108-byte sun_path limit.
 	// t.TempDir() embeds the full test function name which on GitHub Actions
-	// produces a path like /tmp/TestKillSidecarAndWait_StaleZombie_…<N>/
+	// produces a path like /tmp/TestStaleZombie_EnsureSidecarStopped_…<N>/
 	// that, combined with the per-session hash subdir and "hostapi.sock",
 	// exceeds 108 bytes and causes bind(2) to fail with EINVAL.
 	tmp, err := os.MkdirTemp("", "pst-")

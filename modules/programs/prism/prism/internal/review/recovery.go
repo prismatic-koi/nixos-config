@@ -204,7 +204,7 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 
 	if delErr := promptdelivery.DeliverToSessionWithID(
 		info.ParentSession, workerStatus, deliveryText,
-		buildPromptBodyForMonitor, "review-complete", "", deliveryID,
+		"review-complete", "", deliveryID,
 	); delErr != nil {
 		// Delivery failed once; mirror MonitorFunc by writing the fallback.
 		// We do NOT retry here — the caller (the watcher) will fire again on

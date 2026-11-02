@@ -1810,7 +1810,7 @@ func collectSecretsDAllowlistNames(m *Manager, home string) []string {
 	for _, src := range sources {
 		resolved, err := filepath.EvalSymlinks(src)
 		if err != nil {
-			continue // absent on host — no exception needed (mirrors symlinkIfExists)
+			continue // absent on host — no exception needed
 		}
 		name, ok := secretsDRelativeName(resolved)
 		if !ok || seen[name] {

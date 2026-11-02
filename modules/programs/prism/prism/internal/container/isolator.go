@@ -139,7 +139,6 @@ type Isolator interface {
 	// Returns nil for "yes" or a wrapped, user-facing error describing the
 	// missing prerequisite. For platform-only checks (bwrap → Linux,
 	// sandbox-exec → Darwin) the error names the required platform.
-	// Cites: cmd/spawn.go:190-204 (checkBwrapPlatform / checkSandboxExecPlatform).
 	Available() error
 
 	// Cap returns the soft concurrency-cap descriptor for this isolator.
@@ -155,7 +154,7 @@ type Isolator interface {
 	// any per-mode probe-failure context. The caller uses CapStatus.Check(...)
 	// to apply the --ignore-concurrency-cap policy.
 	//
-	// Reads Status.IsolationMode directly, NOT Status.EffectiveIsolationMode().
+	// Reads Status.IsolationMode directly.
 	//
 	// Implementations must NOT have side effects: Cap is called speculatively
 	// before any worktree, DB row, or tmux session is created.
@@ -180,7 +179,6 @@ type Isolator interface {
 	// own binary path. Callers must propagate the error rather than fall
 	// back to a bare "prism" — silent fallback re-introduces the PATH-
 	// shadow class this method exists to eliminate.
-	// Cites: internal/session/session.go:265-298 (BuildOpencodeCmd switch).
 	AgentPaneCmd(opts AgentPaneOpts) (string, error)
 
 	// SidecarFlags returns the per-mode argv extensions appended to the
@@ -199,7 +197,6 @@ type Isolator interface {
 	//
 	// Stopgap: once an ArchiveAdapter interface lands, the archive-side
 	// dispatch moves there and this method may be removed.
-	// Cites: internal/archive/archive.go:260-275 (resolveStorageRoot switch).
 	ArchivePaths(home, sessionName string) ArchivePaths
 
 	// LogPaths returns the per-mode log-file set for this session. Today

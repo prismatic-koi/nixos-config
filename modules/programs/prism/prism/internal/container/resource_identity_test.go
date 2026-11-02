@@ -225,7 +225,7 @@ func TestResourceIdentity_AdmittedNamesAreOwned(t *testing.T) {
 	// Every suffix shape the create policies admit inside the prefix:
 	// the auto-injected 8 hex, a user-chosen name, a name that looks
 	// like another session's, and the empty suffix (the bare prefix,
-	// which applyVolumeNamePolicy admits and podman accepts).
+	// which podman accepts).
 	suffixes := []string{"", "a1b2c3d4", "my-postgres", "cache.v2", "foo-bar-data", "prism-foo-data"}
 
 	for _, session := range sessions {

@@ -98,7 +98,6 @@ func TestNotifyInvestigatorCompletion_Delivery(t *testing.T) {
 		Worktree:    "/tmp/investigate-test-wt",
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -121,7 +120,7 @@ func TestNotifyInvestigatorCompletion_Delivery(t *testing.T) {
 	}
 	body := bodies[0]
 
-	// The body is a JSON-encoded prompt_async payload; the text is inside.
+	// The body is a JSON-encoded /prompt request; the text is inside.
 	// Check that all required elements are present in the delivered payload.
 	if !strings.Contains(body, "From investigator session: "+investigatorSession) {
 		t.Errorf("notification body missing sender label; got: %s", body)
@@ -150,7 +149,6 @@ func TestNotifyInvestigatorCompletion_EmptyText(t *testing.T) {
 		Worktree:    "/tmp/investigate-test-empty",
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -191,7 +189,6 @@ func TestNotifyInvestigatorCompletion_ErrorState(t *testing.T) {
 		Worktree:    "/tmp/investigate-test-error",
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -237,7 +234,6 @@ func TestNotifyInvestigatorCompletion_InvokerEnded(t *testing.T) {
 		Worktree:    "/tmp/investigate-test-ended",
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -263,7 +259,6 @@ func TestNotifyInvestigatorCompletion_NotInvestigateSession(t *testing.T) {
 		Worktree:    "/tmp/investigate-test-not-investigate",
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -302,7 +297,6 @@ func TestNotifyCoordinator_InvestigateAgentSuppressed(t *testing.T) {
 		Worktree:    "/tmp/investigate-coord-suppressed",
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -334,7 +328,6 @@ func TestNotifyInvestigatorCompletion_ConcurrentDelivery(t *testing.T) {
 		Worktree:    "/tmp/investigate-concurrent-1",
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	cfg2 := Config{
@@ -343,7 +336,6 @@ func TestNotifyInvestigatorCompletion_ConcurrentDelivery(t *testing.T) {
 		Worktree:    "/tmp/investigate-concurrent-2",
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s1 := New(cfg1)
@@ -407,7 +399,6 @@ func TestInvestigatorNoIntermediatePings(t *testing.T) {
 		Worktree:    "/tmp/investigate-nopings",
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -499,7 +490,6 @@ func TestNotifyInvestigatorCompletion_NoHostBusLeak(t *testing.T) {
 		Worktree:    "/tmp/investigate-leakcheck",
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)

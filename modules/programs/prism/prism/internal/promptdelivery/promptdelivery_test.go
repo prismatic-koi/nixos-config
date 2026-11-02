@@ -3,7 +3,6 @@ package promptdelivery_test
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -22,60 +22,37 @@ import (
 	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
-// TestDeliverToSession_HTTPFallbackPath verifies that DeliverToSession routes
-// sessions with an empty or unknown harness through the HTTP prompt_async
-// endpoint (legacy HTTP fallback path).
-func TestDeliverToSession_HTTPFallbackPath(t *testing.T) {
-	var gotBody []byte
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		gotBody = b
+// TestDeliverToSession_NoSocketPipeHarness_Refused: a session whose harness
+// does not have the socket-pipe shape gets an error, and prism sends no HTTP
+// request to its harness port. The server below listens on that port, so a
+// request to it fails the test.
+func TestDeliverToSession_NoSocketPipeHarness_Refused(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-
-	// Extract the port from the test server URL.
-	addr := srv.Listener.Addr().(*net.TCPAddr)
-	port := addr.Port
-
-	// Empty harness triggers HTTP fallback (no registered transport shape).
-	emptyHarness := ""
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
 	sid := "session-123"
-	status := &db.Status{
-		SessionName:      "myrepo@feature",
-		Harness:          &emptyHarness,
-		HarnessPort:      &port,
-		HarnessSessionID: &sid,
-	}
 
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello harness", nil, "", "")
-	if err != nil {
-		t.Fatalf("DeliverToSession: %v", err)
+	empty, unknown := "", "opencode"
+	for name, h := range map[string]*string{"empty harness": &empty, "nil harness": nil, "unknown harness": &unknown} {
+		t.Run(name, func(t *testing.T) {
+			status := &db.Status{
+				SessionName:      "myrepo@feature",
+				Harness:          h,
+				HarnessPort:      &port,
+				HarnessSessionID: &sid,
+			}
+			err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello harness", "", "")
+			if err == nil || !strings.Contains(err.Error(), "has no socket pipe") {
+				t.Fatalf("DeliverToSession = %v, want an error that says the harness has no socket pipe", err)
+			}
+		})
 	}
-
-	// Verify the body was sent to prompt_async.
-	if !strings.Contains(string(gotBody), "hello harness") {
-		t.Errorf("expected body to contain 'hello harness', got %q", gotBody)
-	}
-}
-
-// TestDeliverToSession_HTTPFallback_NoPort verifies that DeliverToSession
-// returns an error when the HTTP fallback path is used but no harness port
-// is set.
-func TestDeliverToSession_HTTPFallback_NoPort(t *testing.T) {
-	emptyHarness := ""
-	status := &db.Status{
-		SessionName: "myrepo@feature",
-		Harness:     &emptyHarness,
-		// HarnessPort is nil — cannot deliver via HTTP fallback.
-	}
-
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello", nil, "", "")
-	if err == nil {
-		t.Fatal("expected error for missing harness port, got nil")
-	}
-	if !strings.Contains(err.Error(), "harness port") {
-		t.Errorf("error %q should mention harness port", err.Error())
+	if n := requests.Load(); n != 0 {
+		t.Errorf("HTTP requests to the harness port = %d, want 0", n)
 	}
 }
 
@@ -90,7 +67,7 @@ func TestDeliverToSession_PiPath_MissingSocket(t *testing.T) {
 	}
 
 	// The socket path doesn't exist — we expect a clear error, not a hang.
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello", nil, "", "")
+	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello", "", "")
 	if err == nil {
 		t.Fatal("expected error for missing socket, got nil")
 	}
@@ -98,76 +75,6 @@ func TestDeliverToSession_PiPath_MissingSocket(t *testing.T) {
 	errStr := err.Error()
 	if !strings.Contains(errStr, "socket") && !strings.Contains(errStr, "session") {
 		t.Errorf("error %q should mention socket or session", errStr)
-	}
-}
-
-// TestDeliverToSession_NilHarness verifies that DeliverToSession falls back to
-// the HTTP path when status.Harness is nil (pre-migration rows).
-func TestDeliverToSession_NilHarness(t *testing.T) {
-	var gotRequest bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotRequest = true
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	addr := srv.Listener.Addr().(*net.TCPAddr)
-	port := addr.Port
-	sid := "session-456"
-
-	status := &db.Status{
-		SessionName:      "myrepo@feature",
-		Harness:          nil, // pre-migration: no harness recorded
-		HarnessPort:      &port,
-		HarnessSessionID: &sid,
-	}
-
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello nil harness", nil, "", "")
-	if err != nil {
-		t.Fatalf("DeliverToSession: %v", err)
-	}
-	if !gotRequest {
-		t.Error("expected HTTP request to be made for nil harness, but none was sent")
-	}
-}
-
-// TestDeliverToSession_CustomBodyBuilder verifies that a custom buildHTTPBody
-// function is called for the HTTP fallback path and its output is used as the
-// POST body.
-func TestDeliverToSession_CustomBodyBuilder(t *testing.T) {
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(b, &gotBody)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	addr := srv.Listener.Addr().(*net.TCPAddr)
-	port := addr.Port
-	sid := "session-789"
-	harness := "" // empty = HTTP fallback path
-
-	status := &db.Status{
-		SessionName:      "myrepo@feature",
-		Harness:          &harness,
-		HarnessPort:      &port,
-		HarnessSessionID: &sid,
-	}
-
-	customBuilder := func(text string, _ *db.Status) map[string]any {
-		return map[string]any{"custom_text": text, "extra": "field"}
-	}
-
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "custom body test", customBuilder, "", "")
-	if err != nil {
-		t.Fatalf("DeliverToSession: %v", err)
-	}
-	if gotBody["custom_text"] != "custom body test" {
-		t.Errorf("custom_text = %v, want 'custom body test'", gotBody["custom_text"])
-	}
-	if gotBody["extra"] != "field" {
-		t.Errorf("extra = %v, want 'field'", gotBody["extra"])
 	}
 }
 
@@ -234,7 +141,7 @@ func TestDeliverToSession_PiPath_DeliverAsForwarded(t *testing.T) {
 				Harness:     &piHarness,
 			}
 
-			if deliverErr := promptdelivery.DeliverToSession(sessionName, status, "hello pi", nil, "", tc.deliverAs); deliverErr != nil {
+			if deliverErr := promptdelivery.DeliverToSession(sessionName, status, "hello pi", "", tc.deliverAs); deliverErr != nil {
 				t.Fatalf("DeliverToSession: %v", deliverErr)
 			}
 
@@ -320,7 +227,7 @@ func TestDeliverToSession_StaleTombstoneSocket(t *testing.T) {
 		Harness:     &piHarness,
 	}
 
-	err = promptdelivery.DeliverToSession(sessionName, status, "hello", nil, "", "")
+	err = promptdelivery.DeliverToSession(sessionName, status, "hello", "", "")
 	if err == nil {
 		t.Fatal("expected error for stale tombstone socket, got nil")
 	}
@@ -381,7 +288,7 @@ func TestDeliverToSession_RestrictHostapiGuard_RefusesOutOfXDG(t *testing.T) {
 		Harness:     &piHarness,
 	}
 
-	err := promptdelivery.DeliverToSession("myrepo@guard", status, "hello", nil, "", "")
+	err := promptdelivery.DeliverToSession("myrepo@guard", status, "hello", "", "")
 	if err == nil {
 		t.Fatal("expected guard error, got nil")
 	}
@@ -403,53 +310,6 @@ func TestDeliverToSession_RestrictHostapiGuard_RefusesOutOfXDG(t *testing.T) {
 
 	if dialed {
 		t.Error("guard fired but a dial was still attempted (listener was contacted)")
-	}
-}
-
-// TestDeliverToSession_HTTPNon2xx_SurfacesStatus verifies that when the HTTP
-// fallback delivery path receives a non-2xx response, the returned error
-// includes the status code and the URL — per the documented error format in
-// promptdelivery.go (deliverViaHTTP: "http status %d from %s").
-func TestDeliverToSession_HTTPNon2xx_SurfacesStatus(t *testing.T) {
-	tests := []struct {
-		name   string
-		status int
-	}{
-		{name: "4xx", status: http.StatusBadRequest},
-		{name: "5xx", status: http.StatusInternalServerError},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(tc.status)
-			}))
-			defer srv.Close()
-
-			port := srv.Listener.Addr().(*net.TCPAddr).Port
-			emptyHarness := ""
-			sid := "session-nonok"
-			status := &db.Status{
-				SessionName:      "myrepo@feature",
-				Harness:          &emptyHarness,
-				HarnessPort:      &port,
-				HarnessSessionID: &sid,
-			}
-
-			err := promptdelivery.DeliverToSession("myrepo@feature", status, "hi", nil, "", "")
-			if err == nil {
-				t.Fatalf("expected non-2xx error for status %d, got nil", tc.status)
-			}
-			// Documented format: "http status %d from %s".
-			wantStatus := fmt.Sprintf("http status %d", tc.status)
-			if !strings.Contains(err.Error(), wantStatus) {
-				t.Errorf("error %q should contain %q", err.Error(), wantStatus)
-			}
-			wantURL := fmt.Sprintf("http://localhost:%d/session/%s/prompt_async", port, sid)
-			if !strings.Contains(err.Error(), wantURL) {
-				t.Errorf("error %q should contain URL %q", err.Error(), wantURL)
-			}
-		})
 	}
 }
 

@@ -46,7 +46,7 @@ func TestDeliverToSession_UnreachableSocketReturnsActionableError(t *testing.T) 
 	// No socket file exists at the resolved path. DeliverToSession must
 	// return an error whose message names the missing socket and hints at
 	// the "session may have ended" cause.
-	err := promptdelivery.DeliverToSession("prism-test@invoker-unreachable", status, "hello", nil, "", "steer")
+	err := promptdelivery.DeliverToSession("prism-test@invoker-unreachable", status, "hello", "", "steer")
 	if err == nil {
 		t.Fatal("DeliverToSession returned nil error for unreachable socket; want non-nil (AC #8: silent success is forbidden)")
 	}
@@ -103,7 +103,7 @@ func TestDeliverToSession_StaleTombstoneSocketReturnsActionableError(t *testing.
 	// of this test is that ANY misalignment (missing file OR unreachable
 	// listener) surfaces as an error rather than silent success. So a
 	// non-nil err is the required error signal here.
-	err := promptdelivery.DeliverToSession("prism-test@invoker-tombstone", status, "hello", nil, "", "steer")
+	err := promptdelivery.DeliverToSession("prism-test@invoker-tombstone", status, "hello", "", "steer")
 	if err == nil {
 		t.Fatal("DeliverToSession returned nil error for unreachable-and-unlistened socket; want non-nil (AC #8: silent success is forbidden)")
 	}

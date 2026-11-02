@@ -725,7 +725,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 						if existing.State == "waiting" {
 							return waitingStateError(existing.SessionName)
 						}
-						if deliverErr := promptdelivery.DeliverToSession(existing.SessionName, existing, promptText, buildPromptBody, "", "steer"); deliverErr != nil {
+						if deliverErr := promptdelivery.DeliverToSession(existing.SessionName, existing, promptText, "", "steer"); deliverErr != nil {
 							return fmt.Errorf("deliver prompt to %s: %w", existing.SessionName, deliverErr)
 						}
 					}

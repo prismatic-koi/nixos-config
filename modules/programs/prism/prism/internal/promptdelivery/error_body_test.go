@@ -92,7 +92,7 @@ func TestDeliverToSession_Non2xxErrorIncludesBody(t *testing.T) {
 
 	pi := "pi"
 	status := &db.Status{SessionName: sessionName, Harness: &pi}
-	err = promptdelivery.DeliverToSession(sessionName, status, "hello", nil, "", "bogus")
+	err = promptdelivery.DeliverToSession(sessionName, status, "hello", "", "bogus")
 	if err == nil {
 		t.Fatal("DeliverToSession returned nil for a 400 response")
 	}

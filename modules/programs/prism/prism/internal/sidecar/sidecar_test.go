@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,7 +20,9 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
+	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sidecar/sidecartest"
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
 // ── test clock ──────────────────────────────────────────────────────────────
@@ -886,7 +889,7 @@ func TestSessionCompacted_NoCoordinatorNotification(t *testing.T) {
 	coordSID := "coord-sid-compacted-test"
 	_ = d.UpsertStatus("test-repo@main", "test-repo", "/tmp/coord", "active", nil, &coordSID)
 
-	worker, _ := newWorkerSidecar(t, d, nil)
+	worker, _ := newWorkerSidecar(t, d)
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
 	worker.mu.Lock()
 	worker.compacting = true
@@ -1897,12 +1900,9 @@ func TestServerConnected_SilentlyIgnored(t *testing.T) {
 // newWorkerSidecar creates a worker sidecar (session name "test-repo@feature",
 // repo "test-repo") distinct from the coordinator ("test-repo@main").
 // It uses the given DB so both worker and coordinator share the same store.
-// An optional *http.Client may be passed to override the HTTP client used for
-// coordinator notifications; pass nil to use the package default.
-func newWorkerSidecar(t *testing.T, d *db.DB, httpClient *http.Client) (*Sidecar, *testClock) {
+func newWorkerSidecar(t *testing.T, d *db.DB) (*Sidecar, *testClock) {
 	t.Helper()
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
+	useShortStateHome(t)
 	clk := newTestClock()
 	cfg := Config{
 		SessionName: "test-repo@feature",
@@ -1911,17 +1911,24 @@ func newWorkerSidecar(t *testing.T, d *db.DB, httpClient *http.Client) (*Sidecar
 		HarnessURL:  "http://localhost:14001",
 		DB:          d,
 		Clock:       clk,
-		HTTPClient:  httpClient,
 		Harness:     newSSEHarness(),
 	}
 	return New(cfg), clk
 }
 
-// seedCoordinatorWithPort inserts a coordinator row with a specific known port
-// and harness_session_id using a SQL exec via db.QueryRow (for testing).
-// root_agent_name is also set to "coordinator" so that isCoordinatorSession
-// and CoordinatorForRepo exercise the DB-backed path rather than the name heuristic.
-func seedCoordinatorWithPort(t *testing.T, d *db.DB, repo string, port int, sid string) {
+// useShortStateHome sets XDG_STATE_HOME to a new short dir, so that a host-API
+// socket path under it fits in sun_path, and sets the test-mode guard of
+// promptdelivery.
+func useShortStateHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", stateguardtest.ShortTempDir(t, "sc-state-"))
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
+}
+
+// seedCoordinator inserts the coordinator row <repo>@main of a pi session.
+// root_agent_name is "coordinator", so that isCoordinatorSession and
+// CoordinatorForRepo take the DB-backed path, not the name heuristic.
+func seedCoordinator(t *testing.T, d *db.DB, repo, sid string) {
 	t.Helper()
 	coordName := repo + "@main"
 	agentName := "coordinator"
@@ -1929,25 +1936,73 @@ func seedCoordinatorWithPort(t *testing.T, d *db.DB, repo string, port int, sid 
 	if err := d.UpsertStatusWithAgent(coordName, repo, "/tmp/coord-worktree", "active", nil, &sid, &agentName, &modelID); err != nil {
 		t.Fatalf("seed coordinator: UpsertStatusWithAgent: %v", err)
 	}
-	// Set root_agent_name = 'coordinator' so the DB-backed coordinator detection
-	// path is exercised by tests that call notifyCoordinator / CoordinatorForRepo.
 	if err := d.QueryRow(
-		"UPDATE agent_status SET root_agent_name = 'coordinator' WHERE session_name = ? RETURNING session_name",
+		"UPDATE agent_status SET root_agent_name = 'coordinator', harness = 'pi' WHERE session_name = ? RETURNING session_name",
 		coordName,
 	).Scan(new(string)); err != nil {
-		t.Fatalf("seed coordinator: set root_agent_name: %v", err)
+		t.Fatalf("seed coordinator: set root_agent_name and harness: %v", err)
 	}
-	// Set the port and clear harness so HTTP fallback is used in tests
-	// (tests use httptest.Server, not a socket-pipe).
-	var got int
-	if err := d.QueryRow(
-		"UPDATE agent_status SET harness_port = ?, harness = '' WHERE session_name = ? RETURNING harness_port",
-		port, coordName,
-	).Scan(&got); err != nil {
-		t.Fatalf("seed coordinator: set port: %v", err)
+}
+
+// fakeHostAPI stands in for the host-API socket of a pi session. It records
+// the prompt of each POST /prompt.
+type fakeHostAPI struct {
+	mu      sync.Mutex
+	prompts []string
+}
+
+// listenHostAPI starts a fakeHostAPI at the host-API socket path of
+// sessionName. The path comes from XDG_STATE_HOME, so call it after the
+// helper that sets XDG_STATE_HOME for the test.
+func listenHostAPI(t *testing.T, sessionName string) *fakeHostAPI {
+	t.Helper()
+	sockPath, err := session.SidecarHostAPIPath(sessionName)
+	if err != nil {
+		t.Fatalf("host-API socket path of %q: %v", sessionName, err)
 	}
-	if got != port {
-		t.Fatalf("seed coordinator: port mismatch: got %d, want %d", got, port)
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen on %s: %v", sockPath, err)
+	}
+	f := &fakeHostAPI{}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/prompt" {
+			var body struct {
+				Prompt string `json:"prompt"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.mu.Lock()
+			f.prompts = append(f.prompts, body.Prompt)
+			f.mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return f
+}
+
+// count returns the number of prompts that f got.
+func (f *fakeHostAPI) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.prompts)
+}
+
+// waitFor waits up to 2 s until f has n prompts, and returns the prompts.
+func (f *fakeHostAPI) waitFor(n int) []string {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		f.mu.Lock()
+		got := append([]string(nil), f.prompts...)
+		f.mu.Unlock()
+		if len(got) >= n || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -1976,17 +2031,10 @@ func TestNotifyCoordinator_IdleDebouncePath(t *testing.T) {
 	d := openTestDB(t)
 
 	coordSID := "coord-sid-123"
-	// Seed the coordinator with a known port and sid via a test HTTP server
-	// that properly serves GET /session (SID validation) and POST prompt_async.
-	srv, _ := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
-	defer srv.Close()
+	seedCoordinator(t, d, "test-repo", coordSID)
 
-	srvPort := parseSrvPort(t, srv.URL)
-
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
-
-	// Create worker sidecar with the test server's HTTP client.
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	worker, clk := newWorkerSidecar(t, d)
+	coord := listenHostAPI(t, "test-repo@main")
 
 	// Seed worker as active.
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
@@ -2009,6 +2057,9 @@ func TestNotifyCoordinator_IdleDebouncePath(t *testing.T) {
 	if msg == nil {
 		t.Fatal("expected delivered bus message to coordinator, got none")
 	}
+	if n := coord.count(); n != 1 {
+		t.Errorf("prompts on the host-API socket of the coordinator = %d, want 1", n)
+	}
 	if msg.FromSession != worker.cfg.SessionName {
 		t.Errorf("from_session = %q, want %q", msg.FromSession, worker.cfg.SessionName)
 	}
@@ -2025,25 +2076,12 @@ func TestNotifyCoordinator_CompactedPath_NoNotification(t *testing.T) {
 	d := openTestDB(t)
 
 	// Seed coordinator with port so a notification would be deliverable if triggered.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	var srvPort int
-	_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
-	if err != nil {
-		_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
-	}
-	if err != nil {
-		t.Fatalf("parse test server port from %q: %v", srv.URL, err)
-	}
 
 	coordSID := "coord-sid-456"
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	seedCoordinator(t, d, "test-repo", coordSID)
 
-	// Create worker sidecar with the test server's HTTP client.
-	worker, _ := newWorkerSidecar(t, d, srv.Client())
+	worker, _ := newWorkerSidecar(t, d)
+	coord := listenHostAPI(t, "test-repo@main")
 
 	// Seed worker as compacting.
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
@@ -2069,11 +2107,14 @@ func TestNotifyCoordinator_CompactedPath_NoNotification(t *testing.T) {
 	if totalMsgs != 0 {
 		t.Errorf("session.compacted must not send coordinator notification, but got %d bus message(s)", totalMsgs)
 	}
+	if n := coord.count(); n != 0 {
+		t.Errorf("prompts on the host-API socket of the coordinator = %d, want 0", n)
+	}
 }
 
 func TestNotifyCoordinator_NoNotificationOnInterrupted(t *testing.T) {
 	d := openTestDB(t)
-	worker, clk := newWorkerSidecar(t, d, nil)
+	worker, clk := newWorkerSidecar(t, d)
 
 	// Seed coordinator.
 	coordSID := "coord-sid-789"
@@ -2160,7 +2201,7 @@ func TestNotifyCoordinator_SelfNotificationSkipped(t *testing.T) {
 
 func TestNotifyCoordinator_SilentSkipWhenNoCoordinator(t *testing.T) {
 	d := openTestDB(t)
-	worker, clk := newWorkerSidecar(t, d, nil)
+	worker, clk := newWorkerSidecar(t, d)
 
 	// Do NOT seed a coordinator row.
 
@@ -2402,7 +2443,7 @@ func TestSubagentIdle_UnknownAssistantAgent_AllowsDebounce(t *testing.T) {
 
 func TestNotifyCoordinator_EndedCoordinatorSkipped(t *testing.T) {
 	d := openTestDB(t)
-	worker, clk := newWorkerSidecar(t, d, nil)
+	worker, clk := newWorkerSidecar(t, d)
 
 	// Seed coordinator row, then mark it as ended.
 	coordName := "test-repo@main"
@@ -2457,29 +2498,11 @@ func TestNotifyCoordinator_ReviewAgentSuppressed(t *testing.T) {
 
 	coordSID := "coord-sid-review-suppressed"
 
-	// Seed a live coordinator with an HTTP server so that if a notification
-	// fires, we can detect it via the HTTP server or bus_messages table.
-	var notifyCount int
-	var notifyMu sync.Mutex
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			sessions := []map[string]any{{"id": coordSID}}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		// POST /session/<sid>/prompt_async — count unexpected delivery attempts.
-		notifyMu.Lock()
-		notifyCount++
-		notifyMu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	// Seed a live coordinator so that if a notification fires, we can detect
+	// it on its host-API socket or in the bus_messages table.
+	seedCoordinator(t, d, "test-repo", coordSID)
+	useShortStateHome(t)
+	coord := listenHostAPI(t, "test-repo@main")
 
 	// Create a sidecar with a review-agent session name. The session name
 	// follows the prism review naming convention: <parent>~review-<N>-<role>.
@@ -2492,7 +2515,6 @@ func TestNotifyCoordinator_ReviewAgentSuppressed(t *testing.T) {
 		HarnessURL:  "http://localhost:14002",
 		DB:          d,
 		Clock:       clk,
-		HTTPClient:  srv.Client(),
 		Harness:     newSSEHarness(),
 	}
 	reviewAgent := New(cfg)
@@ -2526,11 +2548,9 @@ func TestNotifyCoordinator_ReviewAgentSuppressed(t *testing.T) {
 	}
 
 	// The HTTP notification endpoint must NOT have been called.
-	notifyMu.Lock()
-	count := notifyCount
-	notifyMu.Unlock()
+	count := coord.count()
 	if count != 0 {
-		t.Errorf("notifyCoordinator HTTP calls = %d for review-agent session, want 0", count)
+		t.Errorf("prompts on the host-API socket of the coordinator = %d for review-agent session, want 0", count)
 	}
 }
 
@@ -2781,14 +2801,11 @@ func TestNotifyCoordinator_ParentWorkerStillNotifies(t *testing.T) {
 
 	coordSID := "coord-sid-parent-worker"
 
-	srv, _ := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	seedCoordinator(t, d, "test-repo", coordSID)
 
 	// Parent worker: session name WITHOUT "~review" — must still notify.
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	worker, clk := newWorkerSidecar(t, d)
+	coord := listenHostAPI(t, "test-repo@main")
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
 
 	// Trigger idle debounce → finished.
@@ -2807,6 +2824,9 @@ func TestNotifyCoordinator_ParentWorkerStillNotifies(t *testing.T) {
 	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
 	if msg == nil {
 		t.Fatal("expected coordinator notification from parent worker, got none — parent worker notification must not be suppressed")
+	}
+	if n := coord.count(); n != 1 {
+		t.Errorf("prompts on the host-API socket of the coordinator = %d, want 1", n)
 	}
 	if msg.FromSession != worker.cfg.SessionName {
 		t.Errorf("from_session = %q, want %q", msg.FromSession, worker.cfg.SessionName)
@@ -3679,30 +3699,12 @@ func TestSubagentFinish_IdleAlsoArrivesAfterRootMessage(t *testing.T) {
 
 	coordSID := "coord-sid-race"
 
-	// Seed a real coordinator with a test HTTP server so we can count
+	// Seed a real coordinator with a host-API socket so we can count
 	// delivered notifications and verify exactly-once behaviour.
-	// The server must serve GET /session for SID validation.
-	var notifyCount int
-	var notifyMu sync.Mutex
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			sessions := []map[string]any{{"id": coordSID}}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		notifyMu.Lock()
-		notifyCount++
-		notifyMu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	seedCoordinator(t, d, "test-repo", coordSID)
 
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	worker, clk := newWorkerSidecar(t, d)
+	coord := listenHostAPI(t, "test-repo@main")
 
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
 
@@ -3757,11 +3759,9 @@ func TestSubagentFinish_IdleAlsoArrivesAfterRootMessage(t *testing.T) {
 		t.Fatal("expected exactly one delivered bus message, got none")
 	}
 
-	notifyMu.Lock()
-	count := notifyCount
-	notifyMu.Unlock()
+	count := coord.count()
 	if count != 1 {
-		t.Errorf("notifyCoordinator HTTP calls = %d, want exactly 1 (idempotency)", count)
+		t.Errorf("prompts on the host-API socket of the coordinator = %d, want exactly 1 (idempotency)", count)
 	}
 
 	// Verify no second (undelivered) bus message was written.
@@ -3975,10 +3975,9 @@ func TestSubagentFinish_NoRootAgent_NoSpuriousFinished(t *testing.T) {
 // newWorkerSidecarWithRole creates a worker sidecar with AgentRole set, so
 // rootAgent is pre-set from config rather than inferred from the first user
 // message.
-func newWorkerSidecarWithRole(t *testing.T, d *db.DB, httpClient *http.Client, role string) (*Sidecar, *testClock) {
+func newWorkerSidecarWithRole(t *testing.T, d *db.DB, role string) (*Sidecar, *testClock) {
 	t.Helper()
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
+	useShortStateHome(t)
 	clk := newTestClock()
 	cfg := Config{
 		SessionName: "test-repo@feature",
@@ -3988,7 +3987,6 @@ func newWorkerSidecarWithRole(t *testing.T, d *db.DB, httpClient *http.Client, r
 		DB:          d,
 		Clock:       clk,
 		AgentRole:   role,
-		HTTPClient:  httpClient,
 		Harness:     newSSEHarness(),
 	}
 	return New(cfg), clk
@@ -3998,7 +3996,7 @@ func newWorkerSidecarWithRole(t *testing.T, d *db.DB, httpClient *http.Client, r
 // Config.AgentRole in New(), before any SSE events are processed.
 func TestRootAgentPreset_FromConfig(t *testing.T) {
 	d := openTestDB(t)
-	sc, _ := newWorkerSidecarWithRole(t, d, nil, "worker")
+	sc, _ := newWorkerSidecarWithRole(t, d, "worker")
 
 	sc.mu.Lock()
 	rootAgent := sc.rootAgent
@@ -4014,7 +4012,7 @@ func TestRootAgentPreset_FromConfig(t *testing.T) {
 // arrives (with agent="review"), rootAgent must NOT be overwritten.
 func TestRootAgentPreset_SubagentUserMessageDoesNotOverwrite(t *testing.T) {
 	d := openTestDB(t)
-	sc, _ := newWorkerSidecarWithRole(t, d, nil, "worker")
+	sc, _ := newWorkerSidecarWithRole(t, d, "worker")
 
 	_ = d.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
@@ -4049,7 +4047,7 @@ func TestRootAgentPreset_SubagentUserMessageDoesNotOverwrite(t *testing.T) {
 // config, so idle proceeds normally.
 func TestRootAgentPreset_IdleAfterSubagentNotSuppressed(t *testing.T) {
 	d := openTestDB(t)
-	sc, clk := newWorkerSidecarWithRole(t, d, nil, "worker")
+	sc, clk := newWorkerSidecarWithRole(t, d, "worker")
 
 	_ = d.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
@@ -4100,7 +4098,7 @@ func TestRootAgentPreset_IdleAfterSubagentNotSuppressed(t *testing.T) {
 // intermediate false finishes.
 func TestRootAgentPreset_MultipleReviewRounds(t *testing.T) {
 	d := openTestDB(t)
-	sc, clk := newWorkerSidecarWithRole(t, d, nil, "worker")
+	sc, clk := newWorkerSidecarWithRole(t, d, "worker")
 
 	_ = d.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
@@ -4292,30 +4290,12 @@ func TestRootAgentPreset_NotifyCoordinatorAfterSubagentCycle(t *testing.T) {
 
 	coordSID := "coord-sid-notify-test"
 
-	// Set up a test HTTP server to capture coordinator notifications.
-	// The server must serve GET /session for SID validation.
-	var notifyCount int
-	var notifyMu sync.Mutex
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			sessions := []map[string]any{{"id": coordSID}}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		notifyMu.Lock()
-		notifyCount++
-		notifyMu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	// Seed a coordinator with a host-API socket to capture its notifications.
+	seedCoordinator(t, d, "test-repo", coordSID)
 
 	// Create worker sidecar with AgentRole="worker" pre-set (the fix).
-	sc, clk := newWorkerSidecarWithRole(t, d, srv.Client(), "worker")
+	sc, clk := newWorkerSidecarWithRole(t, d, "worker")
+	coord := listenHostAPI(t, "test-repo@main")
 	_ = d.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
 	// Simulate prompt_async user message with empty agent field.
@@ -4348,11 +4328,9 @@ func TestRootAgentPreset_NotifyCoordinatorAfterSubagentCycle(t *testing.T) {
 		t.Fatal("expected coordinator notification after worker finished, got none")
 	}
 
-	notifyMu.Lock()
-	count := notifyCount
-	notifyMu.Unlock()
+	count := coord.count()
 	if count != 1 {
-		t.Errorf("notifyCoordinator HTTP calls = %d, want exactly 1", count)
+		t.Errorf("prompts on the host-API socket of the coordinator = %d, want exactly 1", count)
 	}
 }
 
@@ -6892,54 +6870,6 @@ func writeSidecarLogFile(t *testing.T, sessionName, content string) string {
 
 // ── notifyCoordinator SID validation tests ──────────────────────────────────
 
-// makeSessionListServer creates an httptest.Server that:
-//   - GET /session returns sessionIDs as a JSON array of {id, time: {updated: <ts>}}
-//   - POST /session/<sid>/prompt_async returns promptStatus
-func makeSessionListServer(t *testing.T, sessionIDs []string, promptStatus int) (*httptest.Server, *int) {
-	t.Helper()
-	promptCalls := new(int)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			sessions := make([]map[string]any, len(sessionIDs))
-			for i, id := range sessionIDs {
-				sessions[i] = map[string]any{
-					"id": id,
-					"time": map[string]any{
-						"updated": float64(1000 + i),
-					},
-				}
-			}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		// POST /session/<sid>/prompt_async
-		if r.Method == http.MethodPost {
-			*promptCalls++
-			w.WriteHeader(promptStatus)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	return srv, promptCalls
-}
-
-// parseSrvPort extracts the port from an httptest.Server URL.
-func parseSrvPort(t *testing.T, srvURL string) int {
-	t.Helper()
-	var port int
-	_, err := fmt.Sscanf(srvURL, "http://127.0.0.1:%d", &port)
-	if err != nil {
-		_, err = fmt.Sscanf(srvURL, "http://localhost:%d", &port)
-	}
-	if err != nil {
-		t.Fatalf("parse test server port from %q: %v", srvURL, err)
-	}
-	return port
-}
-
 // waitForBusMessageFailed polls the DB for a failed bus message (failed_at IS
 // NOT NULL and delivered_at IS NULL) to toSession.
 func waitForBusMessageFailed(t *testing.T, d *db.DB, toSession string) bool {
@@ -8100,71 +8030,6 @@ func TestHostAPI_Review_ReviewingWriteSucceeds(t *testing.T) {
 	}
 }
 
-// ── buildNotifyPromptBody tests ────────────────────────
-
-// TestBuildNotifyPromptBody_AgentField verifies that the outgoing notification
-// body includes the "agent" field when the receiving session has a non-nil,
-// non-empty RootAgentName, and omits it otherwise.
-//
-// Background: setting "agent" can switch a subagent's context, which is
-// dangerous. The status passed to buildNotifyPromptBody is the *receiving*
-// session's own status. Re-asserting root_agent_name is safe and necessary to
-// prevent the agent from defaulting to its last-active (wrong) agent in host
-// mode.
-func TestBuildNotifyPromptBody_AgentField(t *testing.T) {
-	coordinatorAgent := "coordinator"
-	workerAgent := "worker"
-	agentName := "explore"
-	rootModel := "anthropic/claude-opus-4"
-	modelID := "anthropic/claude-sonnet-4"
-
-	t.Run("includes agent when RootAgentName is coordinator", func(t *testing.T) {
-		body := buildNotifyPromptBody("hello", &db.Status{
-			RootAgentName: &coordinatorAgent,
-			RootModelID:   &rootModel,
-			AgentName:     &agentName,
-			ModelID:       &modelID,
-		})
-		agent, ok := body["agent"]
-		if !ok {
-			t.Fatal("body must contain \"agent\" field when RootAgentName is set")
-		}
-		if agent != "coordinator" {
-			t.Errorf("body[\"agent\"] = %q, want \"coordinator\"", agent)
-		}
-	})
-
-	t.Run("includes agent when RootAgentName is worker", func(t *testing.T) {
-		body := buildNotifyPromptBody("hello", &db.Status{
-			RootAgentName: &workerAgent,
-		})
-		agent, ok := body["agent"]
-		if !ok {
-			t.Fatal("body must contain \"agent\" field when RootAgentName is set")
-		}
-		if agent != "worker" {
-			t.Errorf("body[\"agent\"] = %q, want \"worker\"", agent)
-		}
-	})
-
-	t.Run("omits agent when RootAgentName is nil", func(t *testing.T) {
-		body := buildNotifyPromptBody("hello", &db.Status{
-			AgentName: &agentName,
-			ModelID:   &modelID,
-		})
-		if _, ok := body["agent"]; ok {
-			t.Errorf("body must not contain \"agent\" field when RootAgentName is nil (got %v)", body["agent"])
-		}
-	})
-
-	t.Run("omits agent when no fields present", func(t *testing.T) {
-		body := buildNotifyPromptBody("hello", &db.Status{})
-		if _, ok := body["agent"]; ok {
-			t.Errorf("body must not contain \"agent\" field when status is empty (got %v)", body["agent"])
-		}
-	})
-}
-
 // ── error-state debounce tests ─────────────────────────────────
 
 // TestSessionError_NonAbort_CancelsIdleTimer verifies Fix 1: when session.error
@@ -8763,69 +8628,14 @@ func TestUnknownEventType_PostCapFastPath(t *testing.T) {
 	}
 }
 
-// TestBuildNotifyPromptBody_IncludesTextAndModel verifies that the notification
-// body still carries the prompt text and, when a model is known, the split
-// provider/model identifiers. Model is preferred from RootModelID, falling
-// back to ModelID for pre-migration sessions.
-func TestBuildNotifyPromptBody_IncludesTextAndModel(t *testing.T) {
-	rootModel := "anthropic/claude-opus-4"
-	legacyModel := "openai/gpt-4o"
-
-	t.Run("root model preferred", func(t *testing.T) {
-		body := buildNotifyPromptBody("hello", &db.Status{
-			RootModelID: &rootModel,
-			ModelID:     &legacyModel,
-		})
-
-		parts, ok := body["parts"].([]map[string]string)
-		if !ok || len(parts) != 1 || parts[0]["text"] != "hello" {
-			t.Errorf("parts = %v, want single text part with \"hello\"", body["parts"])
-		}
-
-		model, ok := body["model"].(map[string]string)
-		if !ok {
-			t.Fatalf("model = %v, want map[string]string", body["model"])
-		}
-		if model["providerID"] != "anthropic" || model["modelID"] != "claude-opus-4" {
-			t.Errorf("model = %v, want providerID=anthropic modelID=claude-opus-4", model)
-		}
-	})
-
-	t.Run("legacy model fallback", func(t *testing.T) {
-		body := buildNotifyPromptBody("hello", &db.Status{
-			ModelID: &legacyModel,
-		})
-		model, ok := body["model"].(map[string]string)
-		if !ok {
-			t.Fatalf("model = %v, want map[string]string", body["model"])
-		}
-		if model["providerID"] != "openai" || model["modelID"] != "gpt-4o" {
-			t.Errorf("model = %v, want providerID=openai modelID=gpt-4o", model)
-		}
-	})
-
-	t.Run("no model omits model field", func(t *testing.T) {
-		body := buildNotifyPromptBody("hello", &db.Status{})
-		if _, ok := body["model"]; ok {
-			t.Errorf("model field must be absent when no model known, got %v", body["model"])
-		}
-		// text must still be present
-		parts, ok := body["parts"].([]map[string]string)
-		if !ok || len(parts) != 1 || parts[0]["text"] != "hello" {
-			t.Errorf("parts = %v, want single text part with \"hello\"", body["parts"])
-		}
-	})
-}
-
 // ── Startup failure tests ──────────────────────────────────────
 
 // newReviewAgentSidecar creates a review-agent sidecar whose session name
 // follows the <parent>~review-<N>-<role> convention. It shares the given DB
-// and HTTP client with the parent worker.
-func newReviewAgentSidecar(t *testing.T, parentSession string, d *db.DB, httpClient *http.Client) (*Sidecar, *testClock) {
+// with the parent worker.
+func newReviewAgentSidecar(t *testing.T, parentSession string, d *db.DB) (*Sidecar, *testClock) {
 	t.Helper()
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
+	useShortStateHome(t)
 	clk := newTestClock()
 	reviewSession := parentSession + "~review-1-review-goal"
 	cfg := Config{
@@ -8835,45 +8645,26 @@ func newReviewAgentSidecar(t *testing.T, parentSession string, d *db.DB, httpCli
 		HarnessURL:  "http://localhost:14003",
 		DB:          d,
 		Clock:       clk,
-		HTTPClient:  httpClient,
 		AgentRole:   "review-goal",
 		Harness:     newSSEHarness(),
 	}
 	return New(cfg), clk
 }
 
-// seedParentWorkerWithPort seeds a parent worker session in the DB with a
-// harness port and session ID, so notifyParentWorkerOnStartupFailure can
-// deliver notifications.
-func seedParentWorkerWithPort(t *testing.T, d *db.DB, sessionName, repo string, port int, sid string) {
+// seedParentWorker seeds a parent worker of a pi session in the DB, so
+// notifyParentWorkerOnStartupFailure can deliver notifications to its
+// host-API socket.
+func seedParentWorker(t *testing.T, d *db.DB, sessionName, repo string, sid string) {
 	t.Helper()
 	if err := d.UpsertStatus(sessionName, repo, "/tmp/"+sessionName, "active", nil, &sid); err != nil {
 		t.Fatalf("seed parent worker: UpsertStatus: %v", err)
 	}
-	// Clear harness so HTTP fallback is used (tests use httptest.Server).
 	if err := d.QueryRow(
-		"UPDATE agent_status SET harness_port = ?, harness = '' WHERE session_name = ? RETURNING harness_port",
-		port, sessionName,
-	).Scan(new(int)); err != nil {
-		t.Fatalf("seed parent worker: set port: %v", err)
+		"UPDATE agent_status SET harness = 'pi' WHERE session_name = ? RETURNING session_name",
+		sessionName,
+	).Scan(new(string)); err != nil {
+		t.Fatalf("seed parent worker: set harness: %v", err)
 	}
-}
-
-// waitForHTTPPromptCalls polls until the given counter reaches the expected
-// value (for async HTTP delivery).
-func waitForHTTPPromptCalls(t *testing.T, counter *int, mu *sync.Mutex, want int) bool {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		got := *counter
-		mu.Unlock()
-		if got >= want {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return false
 }
 
 // TestWriteStartupError_WritesErrorState verifies that when writeStartupError
@@ -8881,7 +8672,7 @@ func waitForHTTPPromptCalls(t *testing.T, counter *int, mu *sync.Mutex, want int
 // transitions directly to "error" state — not via the pane-died tmux hook.
 func TestWriteStartupError_WritesErrorState(t *testing.T) {
 	d := openTestDB(t)
-	sc, _ := newReviewAgentSidecar(t, "test-repo@feature", d, nil)
+	sc, _ := newReviewAgentSidecar(t, "test-repo@feature", d)
 
 	// Seed an idle row (as tmux-session-start would write it).
 	_ = d.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "idle", nil, nil)
@@ -8901,7 +8692,7 @@ func TestWriteStartupError_WritesErrorState(t *testing.T) {
 // writes a state_change event to the DB, providing a visible audit trail.
 func TestWriteStartupError_WritesStateChangeEvent(t *testing.T) {
 	d := openTestDB(t)
-	sc, _ := newReviewAgentSidecar(t, "test-repo@feature", d, nil)
+	sc, _ := newReviewAgentSidecar(t, "test-repo@feature", d)
 
 	_ = d.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "idle", nil, nil)
 
@@ -8933,7 +8724,7 @@ func TestWriteStartupError_NonReviewAgent_NoParentNotification(t *testing.T) {
 	d := openTestDB(t)
 
 	// A regular worker session (no "~review" in name).
-	worker, _ := newWorkerSidecar(t, d, nil)
+	worker, _ := newWorkerSidecar(t, d)
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "idle", nil, nil)
 
 	worker.writeStartupError(fmt.Errorf("container health check: timeout"))
@@ -8959,54 +8750,16 @@ func TestWriteStartupError_NonReviewAgent_NoParentNotification(t *testing.T) {
 
 // TestWriteStartupError_ReviewAgent_NotifiesParentWorker verifies that:
 // when a review-agent container fails to start, the parent worker session
-// receives a notification via HTTP POST to its harness port.
+// receives a notification on its host-API socket.
 func TestWriteStartupError_ReviewAgent_NotifiesParentWorker(t *testing.T) {
 	d := openTestDB(t)
 
 	parentSession := "test-repo@feature"
 	parentSID := "parent-sid-startup-failure"
+	seedParentWorker(t, d, parentSession, "test-repo", parentSID)
 
-	// Set up a test HTTP server that simulates the parent worker's opencode process.
-	// It must serve GET /session (for SID validation) and POST prompt_async.
-	var promptCallCount int
-	var promptMu sync.Mutex
-	var capturedText string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			sessions := []map[string]any{{"id": parentSID}}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		if r.Method == http.MethodPost {
-			body, _ := io.ReadAll(r.Body)
-			promptMu.Lock()
-			promptCallCount++
-			var bodyMap map[string]any
-			if err := json.Unmarshal(body, &bodyMap); err == nil {
-				if parts, ok := bodyMap["parts"].([]any); ok && len(parts) > 0 {
-					if part, ok := parts[0].(map[string]any); ok {
-						capturedText, _ = part["text"].(string)
-					}
-				}
-			}
-			promptMu.Unlock()
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-
-	// Seed the parent worker with a port and SID.
-	seedParentWorkerWithPort(t, d, parentSession, "test-repo", srvPort, parentSID)
-
-	// Create review-agent sidecar with the test server's HTTP client.
-	reviewAgent, _ := newReviewAgentSidecar(t, parentSession, d, srv.Client())
+	reviewAgent, _ := newReviewAgentSidecar(t, parentSession, d)
+	parent := listenHostAPI(t, parentSession)
 	_ = d.UpsertStatus(reviewAgent.cfg.SessionName, reviewAgent.cfg.Repo, reviewAgent.cfg.Worktree, "idle", nil, nil)
 
 	// Simulate WaitHealthy timeout.
@@ -9019,14 +8772,13 @@ func TestWriteStartupError_ReviewAgent_NotifiesParentWorker(t *testing.T) {
 	}
 
 	// Wait for the parent worker notification to arrive.
-	if !waitForHTTPPromptCalls(t, &promptCallCount, &promptMu, 1) {
-		t.Fatal("timed out waiting for parent worker notification (Gap 2 fix) — expected HTTP POST to parent's harness port")
+	prompts := parent.waitFor(1)
+	if len(prompts) < 1 {
+		t.Fatal("timed out waiting for parent worker notification (Gap 2 fix) — expected a /prompt on the host-API socket of the parent")
 	}
 
 	// Verify the notification text mentions the review agent session name.
-	promptMu.Lock()
-	text := capturedText
-	promptMu.Unlock()
+	text := prompts[0]
 	if !strings.Contains(text, reviewAgent.cfg.SessionName) {
 		t.Errorf("notification text %q does not mention review agent session name %q", text, reviewAgent.cfg.SessionName)
 	}
@@ -9052,7 +8804,7 @@ func TestWriteStartupError_ReviewAgent_ParentEnded_LogsAndExitsCleanly(t *testin
 		t.Fatalf("SetEnded parent: %v", err)
 	}
 
-	reviewAgent, _ := newReviewAgentSidecar(t, parentSession, d, nil)
+	reviewAgent, _ := newReviewAgentSidecar(t, parentSession, d)
 	_ = d.UpsertStatus(reviewAgent.cfg.SessionName, reviewAgent.cfg.Repo, reviewAgent.cfg.Worktree, "idle", nil, nil)
 
 	// writeStartupError should not panic even when parent has ended.
@@ -9067,19 +8819,19 @@ func TestWriteStartupError_ReviewAgent_ParentEnded_LogsAndExitsCleanly(t *testin
 	time.Sleep(50 * time.Millisecond)
 }
 
-// TestWriteStartupError_ReviewAgent_ParentNoPort_LogsAndExitsCleanly verifies
-// the edge case: if the parent worker has no harness port, the notification
-// failure is logged and the sidecar exits cleanly.
-func TestWriteStartupError_ReviewAgent_ParentNoPort_LogsAndExitsCleanly(t *testing.T) {
+// TestWriteStartupError_ReviewAgent_ParentNoSocket_LogsAndExitsCleanly
+// verifies the edge case: if the parent worker has no host-API socket, the
+// notification failure is logged and the sidecar exits cleanly.
+func TestWriteStartupError_ReviewAgent_ParentNoSocket_LogsAndExitsCleanly(t *testing.T) {
 	d := openTestDB(t)
 
 	parentSession := "test-repo@feature"
-	// Seed parent without a harness port.
+	// Seed parent with no listener on its host-API socket.
 	if err := d.UpsertStatus(parentSession, "test-repo", "/tmp/"+parentSession, "active", nil, nil); err != nil {
 		t.Fatalf("seed parent: %v", err)
 	}
 
-	reviewAgent, _ := newReviewAgentSidecar(t, parentSession, d, nil)
+	reviewAgent, _ := newReviewAgentSidecar(t, parentSession, d)
 	_ = d.UpsertStatus(reviewAgent.cfg.SessionName, reviewAgent.cfg.Repo, reviewAgent.cfg.Worktree, "idle", nil, nil)
 
 	// Should not panic — notification is skipped with a log message.
@@ -9101,14 +8853,12 @@ func TestWriteStartupError_NormalFinish_NotSuppressed(t *testing.T) {
 	d := openTestDB(t)
 
 	coordSID := "coord-sid-normal-finish"
-	srv, promptCalls := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
-	defer srv.Close()
 
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	seedCoordinator(t, d, "test-repo", coordSID)
 
 	// Review agent session (normal finish path).
-	reviewAgent, clk := newReviewAgentSidecar(t, "test-repo@feature", d, srv.Client())
+	reviewAgent, clk := newReviewAgentSidecar(t, "test-repo@feature", d)
+	coord := listenHostAPI(t, "test-repo@main")
 	_ = d.UpsertStatus(reviewAgent.cfg.SessionName, reviewAgent.cfg.Repo, reviewAgent.cfg.Worktree, "active", nil, nil)
 
 	// Normal finish: session.idle → debounce → finished.
@@ -9127,8 +8877,8 @@ func TestWriteStartupError_NormalFinish_NotSuppressed(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// The coordinator must NOT have received a notification (review-agent suppression preserved).
-	if *promptCalls != 0 {
-		t.Errorf("coordinator received %d notification(s) from review-agent normal finish, want 0 (suppression must be preserved)", *promptCalls)
+	if coord.count() != 0 {
+		t.Errorf("coordinator received %d notification(s) from review-agent normal finish, want 0 (suppression must be preserved)", coord.count())
 	}
 
 	var totalMsgs int
@@ -9523,11 +9273,10 @@ func TestStartupConnectTimeout_WorkerSessionNotifiesCoordinator(t *testing.T) {
 
 	coordSID := "coord-sid-worker-startup-fail"
 
-	// Set up a coordinator with an HTTP server so we can detect notifications.
-	srv, promptCalls := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
-	defer srv.Close()
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	// Seed a coordinator with a host-API socket so we can detect notifications.
+	seedCoordinator(t, d, "test-repo", coordSID)
+	useShortStateHome(t)
+	coord := listenHostAPI(t, "test-repo@main")
 
 	// Create a worker-agent sidecar (non-review, no "~review" in session name).
 	cfg := Config{
@@ -9539,7 +9288,6 @@ func TestStartupConnectTimeout_WorkerSessionNotifiesCoordinator(t *testing.T) {
 		Clock:                 newTestClock(),
 		Harness:               &blockingHarness{},
 		IsolationMode:         config.IsolationBwrap,
-		HTTPClient:            srv.Client(),
 		StartupConnectTimeout: timeout,
 		// Container is nil — bwrap mode has no container lifecycle.
 	}
@@ -9578,8 +9326,8 @@ func TestStartupConnectTimeout_WorkerSessionNotifiesCoordinator(t *testing.T) {
 		t.Errorf("from_session = %q, want %q", msg.FromSession, "test-repo@feature")
 	}
 
-	if *promptCalls < 1 {
-		t.Errorf("coordinator POST calls = %d, want >= 1", *promptCalls)
+	if coord.count() < 1 {
+		t.Errorf("prompts on the host-API socket of the coordinator = %d, want >= 1", coord.count())
 	}
 }
 
@@ -9592,33 +9340,14 @@ func TestStartupConnectTimeout_WorkerSessionNotifiesCoordinator(t *testing.T) {
 func TestReviewing_IdleDebounceSuppressed(t *testing.T) {
 	d := openTestDB(t)
 
-	// Seed a live coordinator with an HTTP server so that if a notification
-	// fires unexpectedly we can detect it via bus_messages.
+	// Seed a live coordinator so that if a notification fires unexpectedly we
+	// can detect it via bus_messages.
 	coordSID := "coord-sid-reviewing-test"
-	var notifyCount int
-	var notifyMu sync.Mutex
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			sessions := []map[string]any{{"id": coordSID}}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		// POST /session/<sid>/prompt_async — count unexpected delivery attempts.
-		notifyMu.Lock()
-		notifyCount++
-		notifyMu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	seedCoordinator(t, d, "test-repo", coordSID)
 
 	// Create worker sidecar.
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	worker, clk := newWorkerSidecar(t, d)
+	coord := listenHostAPI(t, "test-repo@main")
 
 	// Set the worker state to "reviewing" (simulating what the /review handler
 	// does: pre-emptive DB write + set reviewingInFlight).
@@ -9652,11 +9381,9 @@ func TestReviewing_IdleDebounceSuppressed(t *testing.T) {
 		t.Errorf("worker in reviewing state must NOT send coordinator notification, but got %d bus message(s)", totalMsgs)
 	}
 
-	notifyMu.Lock()
-	nc := notifyCount
-	notifyMu.Unlock()
+	nc := coord.count()
 	if nc != 0 {
-		t.Errorf("coordinator HTTP POST count = %d, want 0 (reviewing state must suppress notification)", nc)
+		t.Errorf("prompts on the host-API socket of the coordinator = %d, want 0 (reviewing state must suppress notification)", nc)
 	}
 }
 
@@ -9677,28 +9404,11 @@ func TestReviewing_NotClobberedByBusyTurn(t *testing.T) {
 	d := openTestDB(t)
 
 	coordSID := "coord-sid-reviewing-clobber"
-	var notifyCount int
-	var notifyMu sync.Mutex
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			sessions := []map[string]any{{"id": coordSID}}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		notifyMu.Lock()
-		notifyCount++
-		notifyMu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
 
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	seedCoordinator(t, d, "test-repo", coordSID)
 
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	worker, clk := newWorkerSidecar(t, d)
+	coord := listenHostAPI(t, "test-repo@main")
 
 	// Set the worker state to "reviewing" (simulating what the /review handler
 	// does: pre-emptive DB write + set reviewingInFlight).
@@ -9738,7 +9448,7 @@ func TestReviewing_NotClobberedByBusyTurn(t *testing.T) {
 	// Allow async goroutines a moment to settle.
 	time.Sleep(100 * time.Millisecond)
 
-	// No bus messages and no HTTP POST notifications must have been delivered.
+	// No bus messages and no prompts on the host-API socket must have been delivered.
 	var totalMsgs int
 	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
 		t.Fatalf("count bus_messages: %v", err)
@@ -9747,11 +9457,9 @@ func TestReviewing_NotClobberedByBusyTurn(t *testing.T) {
 		t.Errorf("worker in reviewing state must NOT send coordinator notification, but got %d bus message(s)", totalMsgs)
 	}
 
-	notifyMu.Lock()
-	nc := notifyCount
-	notifyMu.Unlock()
+	nc := coord.count()
 	if nc != 0 {
-		t.Errorf("coordinator HTTP POST count = %d, want 0 (busy turns while reviewing must suppress notifications)", nc)
+		t.Errorf("prompts on the host-API socket of the coordinator = %d, want 0 (busy turns while reviewing must suppress notifications)", nc)
 	}
 }
 
@@ -9770,13 +9478,11 @@ func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 	d := openTestDB(t)
 
 	coordSID := "coord-sid-reviewing-pass"
-	srv, _ := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
-	defer srv.Close()
 
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	seedCoordinator(t, d, "test-repo", coordSID)
 
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	worker, clk := newWorkerSidecar(t, d)
+	coord := listenHostAPI(t, "test-repo@main")
 
 	// Set the worker state to "reviewing" (simulating what the /review handler
 	// does: pre-emptive DB write + set reviewingInFlight).
@@ -9836,6 +9542,9 @@ func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 	if msg == nil {
 		t.Fatal("expected coordinator notification after reviewing→active→finished, got none")
 	}
+	if n := coord.count(); n != 1 {
+		t.Errorf("prompts on the host-API socket of the coordinator = %d, want 1", n)
+	}
 	wantText := "Agent test-repo@feature has finished its current task"
 	if msg.Text != wantText {
 		t.Errorf("notification text = %q, want %q", msg.Text, wantText)
@@ -9843,23 +9552,20 @@ func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 }
 
 // TestReviewing_OpencodeHarness_IdleDebounceNotSuppressedAfterMonitorWrite
-// verifies that on pi-harness sessions the monitor writes
-// "active" to the DB just before delivering the review-complete prompt via
-// deliverViaHTTP (bypassing the sidecar's /prompt handler, so
-// reviewingInFlight is never cleared by the socket-pipe path). The idle
+// verifies the SSE-harness path, where no /prompt of the sidecar clears
+// reviewingInFlight: the monitor writes "active" to the DB just before it
+// delivers the review-complete prompt. The idle
 // debounce guard must not suppress when reviewingInFlight is true but the DB
 // state is already "active" (not "reviewing").
 func TestReviewing_OpencodeHarness_IdleDebounceNotSuppressedAfterMonitorWrite(t *testing.T) {
 	d := openTestDB(t)
 
 	coordSID := "coord-sid-oc-harness-idle"
-	srv, _ := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
-	defer srv.Close()
 
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	seedCoordinator(t, d, "test-repo", coordSID)
 
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	worker, clk := newWorkerSidecar(t, d)
+	coord := listenHostAPI(t, "test-repo@main")
 
 	// Step 1: simulate the /review handler — write "reviewing" to DB and set
 	// reviewingInFlight.
@@ -9869,9 +9575,9 @@ func TestReviewing_OpencodeHarness_IdleDebounceNotSuppressedAfterMonitorWrite(t 
 	worker.mu.Unlock()
 
 	// Step 2: simulate the monitor's pre-delivery write — it writes "active"
-	// to the DB just before delivering the review-complete prompt via
-	// deliverViaHTTP. reviewingInFlight is NOT cleared (opencode-harness
-	// bypasses /prompt entirely).
+	// to the DB just before delivering the review-complete prompt.
+	// reviewingInFlight is NOT cleared (opencode-harness bypasses /prompt
+	// entirely).
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, string(agent.StateActive), nil, nil)
 
 	// Step 3: the worker's opencode goes busy (processing the review-complete
@@ -9904,6 +9610,9 @@ func TestReviewing_OpencodeHarness_IdleDebounceNotSuppressedAfterMonitorWrite(t 
 	if msg == nil {
 		t.Fatal("expected coordinator notification after pi-harness review-complete cycle, got none")
 	}
+	if n := coord.count(); n != 1 {
+		t.Errorf("prompts on the host-API socket of the coordinator = %d, want 1", n)
+	}
 	wantText := "Agent test-repo@feature has finished its current task"
 	if msg.Text != wantText {
 		t.Errorf("notification text = %q, want %q", msg.Text, wantText)
@@ -9918,13 +9627,11 @@ func TestReviewing_OpencodeHarness_BusyNotSuppressedAfterMonitorWrite(t *testing
 	d := openTestDB(t)
 
 	coordSID := "coord-sid-oc-harness-busy"
-	srv, _ := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
-	defer srv.Close()
 
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	seedCoordinator(t, d, "test-repo", coordSID)
 
-	worker, _ := newWorkerSidecar(t, d, srv.Client())
+	worker, _ := newWorkerSidecar(t, d)
+	coord := listenHostAPI(t, "test-repo@main")
 
 	// Set reviewingInFlight = true (as /review handler does).
 	worker.mu.Lock()
@@ -9942,6 +9649,9 @@ func TestReviewing_OpencodeHarness_BusyNotSuppressedAfterMonitorWrite(t *testing
 	if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateActive) {
 		t.Errorf("state = %q after busy (reviewingInFlight=true, DB=active): want %q (busy suppression must not fire when DB is active)", state, agent.StateActive)
 	}
+	if n := coord.count(); n != 0 {
+		t.Errorf("prompts on the host-API socket of the coordinator = %d, want 0", n)
+	}
 }
 
 // TestReviewing_OpencodeHarness_StillSuppressedBeforeMonitorWrite verifies
@@ -9952,28 +9662,11 @@ func TestReviewing_OpencodeHarness_StillSuppressedBeforeMonitorWrite(t *testing.
 	d := openTestDB(t)
 
 	coordSID := "coord-sid-oc-harness-suppress"
-	var notifyCount int
-	var notifyMu sync.Mutex
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			sessions := []map[string]any{{"id": coordSID}}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		notifyMu.Lock()
-		notifyCount++
-		notifyMu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
 
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+	seedCoordinator(t, d, "test-repo", coordSID)
 
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	worker, clk := newWorkerSidecar(t, d)
+	coord := listenHostAPI(t, "test-repo@main")
 
 	// Simulate /review handler: DB = "reviewing", reviewingInFlight = true.
 	// The monitor has NOT yet written "active" — review is genuinely in flight.
@@ -10005,11 +9698,9 @@ func TestReviewing_OpencodeHarness_StillSuppressedBeforeMonitorWrite(t *testing.
 		t.Errorf("suppression must still fire (DB=reviewing): got %d bus message(s)", totalMsgs)
 	}
 
-	notifyMu.Lock()
-	nc := notifyCount
-	notifyMu.Unlock()
+	nc := coord.count()
 	if nc != 0 {
-		t.Errorf("coordinator HTTP POST count = %d, want 0 (suppression must still fire)", nc)
+		t.Errorf("prompts on the host-API socket of the coordinator = %d, want 0 (suppression must still fire)", nc)
 	}
 }
 

@@ -221,7 +221,7 @@ func TestHostModeSidecar_ReceivesPromptDelivery(t *testing.T) {
 			harnessName := "pi"
 			status := &db.Status{SessionName: target, Repo: "prism-test", State: "active", Harness: &harnessName}
 			const text = "prompt for issue 3135"
-			outcome, err := promptdelivery.DeliverToSessionEx(target, status, text, nil, "", "followUp")
+			outcome, err := promptdelivery.DeliverToSessionEx(target, status, text, "", "followUp")
 			if err != nil {
 				t.Fatalf("DeliverToSessionEx(%s target): %v", mode, err)
 			}

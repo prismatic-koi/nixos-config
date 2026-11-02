@@ -19,8 +19,6 @@ package review_test
 //   - orphaned parent  — reaping is safe when the parent has already gone.
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -983,7 +981,7 @@ func TestReapGroupAfterGrace_UsesSuppliedGrace(t *testing.T) {
 
 // runMonitorForReapTest drives MonitorFunc against a seeded, already-terminal
 // group and returns once the review-complete prompt has been delivered. It
-// stands up the httptest harness the delivery path needs, mirroring the setup
+// stands up the host-API stub the delivery path needs, mirroring the setup
 // in monitor_test.go.
 func runMonitorForReapTest(t *testing.T, d *db.DB, parent string, sessions []string, groupID string, reapAfterDelivery bool) {
 	t.Helper()
@@ -992,14 +990,7 @@ func runMonitorForReapTest(t *testing.T, d *db.DB, parent string, sessions []str
 	if err := d.UpsertStatus(workerSession, "nixos-config", "/wt", "reviewing", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus worker: %v", err)
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	t.Cleanup(srv.Close)
-	if err := setHarnessInfo(t, d, workerSession, extractPort(t, srv.URL), "reap-test-pi-session"); err != nil {
-		t.Fatalf("setHarnessInfo: %v", err)
-	}
+	startWorkerHostAPI(t, workerSession, func(string) {})
 
 	agents := make([]review.Agent, 0, len(sessions))
 	for _, sess := range sessions {

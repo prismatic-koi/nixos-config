@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -21,15 +20,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/db"
-	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
 	"github.com/prismatic-koi/prism/internal/session"
 )
-
-// httpClient is the HTTP client used for prompt delivery. Package-level so
-// tests can replace it with an httptest.Server-backed client.
-var httpClient = &http.Client{Timeout: 10 * time.Second}
 
 var promptCmd = &cobra.Command{
 	Use:   "prompt <session>",
@@ -37,19 +31,16 @@ var promptCmd = &cobra.Command{
 	Long: `Send a follow-up message to the agent running in the named tmux
 session. The session must already exist and have an agent window.
 
-The prompt is delivered directly via POST /session/:id/prompt_async for
-instant delivery. A record is also written to bus_messages (with delivered_at
-set) for audit. If HTTP delivery fails, an error is returned.
+prism delivers the prompt at once through the host-API socket of the
+session. It also writes a record to bus_messages (with delivered_at set)
+for audit. If the delivery fails, the command returns an error.
 
 The --deliver-as flag controls the delivery mode for socket-pipe (PI) sessions:
 
   steer     — inject mid-turn so the agent sees the correction immediately
               (default — use for coordinator mid-flight redirections)
   followUp  — queue as the next user turn after the current turn completes
-  nextTurn  — alias for followUp; the sidecar's own default when no mode is set
-
-For HTTP sessions the flag is accepted but has no effect — the harness
-uses prompt_async and does not support delivery modes.`,
+  nextTurn  — alias for followUp; the sidecar's own default when no mode is set`,
 	Args: cobra.ExactArgs(1),
 	RunE: runPrompt,
 }
@@ -57,7 +48,7 @@ uses prompt_async and does not support delivery modes.`,
 func init() {
 	addPromptFlags(promptCmd)
 	promptCmd.Flags().String("deliver-as", "steer", `Delivery mode for socket-pipe sessions: steer (mid-turn), followUp, or nextTurn.`)
-	promptCmd.Flags().Bool("json", false, `Emit a single JSON object to stdout instead of the human-readable success line. Shape: {"delivered_to":"<session>","delivery_id":"<uuid>","buffered":<bool>,"replayed":<bool>,"transport":"socket-pipe"|"http"}. When buffered=true the delivery was accepted but the PI extension was disconnected — the sidecar will replay it on the next handshake.`)
+	promptCmd.Flags().Bool("json", false, `Emit a single JSON object to stdout instead of the human-readable success line. Shape: {"delivered_to":"<session>","delivery_id":"<uuid>","buffered":<bool>,"replayed":<bool>,"transport":"socket-pipe"|"host-api"}. transport is "host-api" when a sandboxed caller proxies the prompt through its sidecar. When buffered=true the delivery was accepted but the PI extension was disconnected — the sidecar will replay it on the next handshake.`)
 	rootCmd.AddCommand(promptCmd)
 }
 
@@ -175,26 +166,14 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		SentAt:       time.Now(),
 	}
 
-	// Dispatch based on harness transport shape:
-	// socket-pipe (pi) → host-API socket; other/unknown → HTTP fallback.
-	buildBody := func(text string, s *db.Status) map[string]any {
-		return buildPromptBody(text, s)
-	}
-	outcome, err := promptdelivery.DeliverToSessionEx(sessionName, status, promptText, buildBody, "", deliverAs)
+	outcome, err := promptdelivery.DeliverToSessionEx(sessionName, status, promptText, "", deliverAs)
 	if err != nil {
 		return fmt.Errorf("%w", err)
 	}
 	if err := database.WriteBusMessageDelivered(msg); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write audit bus message: %v\n", err)
 	}
-	// Determine transport for human-readable output and JSON envelope.
-	transport := "http"
-	if status.Harness != nil && *status.Harness != "" {
-		if shape, ok := harness.ShapeOf(*status.Harness); ok && shape == harness.TransportSocketPipe {
-			transport = "socket-pipe"
-		}
-	}
-	return emitPromptOutcome(cmd.OutOrStdout(), jsonOut, sessionName, transport, outcome)
+	return emitPromptOutcome(cmd.OutOrStdout(), jsonOut, sessionName, "socket-pipe", outcome)
 }
 
 // emitPromptOutcome renders the result of a `prism prompt` invocation. In
@@ -237,46 +216,6 @@ func emitPromptOutcome(stdout io.Writer, jsonOut bool, sessionName, transport st
 		fmt.Fprintf(stdout, "prompt delivered to %s via %s\n", sessionName, transport)
 	}
 	return nil
-}
-
-// buildPromptBody constructs the request body for prompt_async.
-// When root_agent_name and root_model_id are known, they are included
-// so the session continues using its root agent/model. Falls back to
-// agent_name/model_id for sessions created before the root fields migration.
-func buildPromptBody(text string, status *db.Status) map[string]any {
-	body := map[string]any{
-		"parts": []map[string]string{
-			{"type": "text", "text": text},
-		},
-	}
-
-	agentName := status.RootAgentName
-	if agentName == nil {
-		agentName = status.AgentName
-	}
-	modelID := status.RootModelID
-	if modelID == nil {
-		modelID = status.ModelID
-	}
-
-	if agentName != nil && modelID != nil {
-		body["agent"] = *agentName
-
-		// Split model_id on the first "/" to get providerID and modelID.
-		slashIdx := strings.Index(*modelID, "/")
-		providerID := *modelID
-		modelIDStr := ""
-		if slashIdx >= 0 {
-			providerID = (*modelID)[:slashIdx]
-			modelIDStr = (*modelID)[slashIdx+1:]
-		}
-		body["model"] = map[string]string{
-			"providerID": providerID,
-			"modelID":    modelIDStr,
-		}
-	}
-
-	return body
 }
 
 // deriveSessionNameFromCWD walks up from cwd to find a .bare marker and

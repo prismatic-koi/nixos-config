@@ -12,24 +12,13 @@
 // socket path is computed. The guard is set automatically by
 // sidecartest.NewIsolated and must never be set in production.
 //
-// # Problem
+// # Delivery
 //
-// Three delivery paths in prism (review-complete monitor, coordinator notify,
-// merge-queue watcher) send follow-up prompts. The harness HTTP API
-// (http://localhost:<port>/session/<sid>/prompt_async) only works for HTTP
-// harness sessions — pi sessions do not have an HTTP server, so a single HTTP
-// path cannot reach them.
-//
-// # Solution
-//
-// DeliverToSession inspects the target session's harness field and routes:
-//
-//   - harness = "pi" (TransportSocketPipe) → POST {"session":…,"prompt":…} to
-//     the session's host-API Unix socket at /prompt. The sidecar's /prompt
-//     handler detects the same-session socket-pipe shape and forwards the text
-//     to the pi process via DeliverPrompt (stdin pipe write).
-//   - harness != "pi" (or unknown) → POST to the harness HTTP API
-//     at http://localhost:<port>/session/<sid>/prompt_async.
+// DeliverToSession POSTs {"session":…,"prompt":…} to the host-API Unix
+// socket of the target session at /prompt. The /prompt handler of the
+// sidecar forwards the text to the pi process via DeliverPrompt. Only a
+// session whose harness has the socket-pipe shape (pi) has that path. For
+// each other session, DeliverToSession returns an error and sends nothing.
 //
 // All callers must pass the result of db.CurrentStatus for the target session.
 // The caller is responsible for pre-flight checks (session found, not ended, etc).
@@ -59,21 +48,20 @@ import (
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
-// DeliveryOutcome is the summary result of a /prompt or prompt_async round
-// trip. It surfaces the sidecar's response envelope to the caller so the CLI
-// can distinguish a synchronous delivery from a buffered one and act
+// DeliveryOutcome is the summary result of a /prompt round trip. It
+// surfaces the sidecar's response envelope to the caller so the CLI can
+// distinguish a synchronous delivery from a buffered one and act
 // accordingly.
 //
 // A zero-value DeliveryOutcome (Buffered=false, Replayed=false) means
-// synchronous success on both socket-pipe and HTTP harness paths.
+// synchronous success.
 type DeliveryOutcome struct {
 	// Buffered is true when the sidecar's /prompt handler returned
 	// {"buffered": true} — the delivery was accepted but the PI extension
 	// was disconnected at the time, so the frame will be flushed on the
 	// next successful handshake (marked replay=true on the wire). Callers
 	// MUST surface this so operators can tell the difference between "on
-	// the wire" and "parked awaiting reconnect". The HTTP fallback path
-	// never produces Buffered=true; only the socket-pipe path does.
+	// the wire" and "parked awaiting reconnect".
 	Buffered bool
 
 	// Replayed is true when the sidecar's /prompt handler returned
@@ -90,22 +78,15 @@ type DeliveryOutcome struct {
 	DeliveryID string
 }
 
-// DeliverToSession delivers text to the agent session described by status,
-// routing based on the session's harness field.
+// DeliverToSession delivers text to the agent session described by status.
 //
-// For pi sessions (TransportSocketPipe), it dials the session's host-API Unix
-// socket and POSTs /prompt. The socket path is derived from sessionName via
-// session.SidecarHostAPIPath.
-//
-// For HTTP harness sessions (or when the harness is unknown / unset), it POSTs
-// to http://localhost:<HarnessPort>/session/<HarnessSessionID>/prompt_async.
+// It dials the host-API Unix socket of the session and POSTs /prompt. The
+// socket path is derived from sessionName via session.SidecarHostAPIPath. It
+// returns an error, and sends nothing, when the harness of the session does
+// not have the socket-pipe shape.
 //
 // status must be non-nil. The caller is expected to have already verified that
 // the session is active (EndedAt == nil) before calling this function.
-//
-// buildHTTPBody is called for HTTP harness sessions to construct the POST body.
-// For the pi path, only the plain text is sent (the sidecar handles wrapping).
-// When buildHTTPBody is nil, a minimal body with just a "parts" array is used.
 //
 // source identifies the logical origin of the delivery. When non-empty it is
 // forwarded to the sidecar's /prompt handler via the "source" JSON field. The
@@ -113,18 +94,16 @@ type DeliveryOutcome struct {
 // source="review-complete" (the monitor's delivery) clears the flag; all other
 // deliveries leave it unchanged. Pass "" for non-monitor callers.
 //
-// deliverAs controls the prompt delivery mode for pi (TransportSocketPipe)
-// sessions. It is forwarded as the "deliver_as" JSON field to the sidecar's
-// /prompt handler, which validates and passes it through to DeliverPrompt.
-// Accepted values: "steer", "followUp", "nextTurn". Empty string defaults to
-// "nextTurn".
-// For HTTP harness sessions the parameter is ignored (they use prompt_async).
+// deliverAs controls the prompt delivery mode. It is forwarded as the
+// "deliver_as" JSON field to the sidecar's /prompt handler, which validates
+// and passes it through to DeliverPrompt. Accepted values: "steer",
+// "followUp", "nextTurn". Empty string defaults to "nextTurn".
 //
 // The returned DeliveryOutcome is populated when the transport surfaces
 // a distinguishing signal (buffered / replayed); callers that only need the
 // error can discard it.
-func DeliverToSession(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
-	_, err := DeliverToSessionEx(sessionName, status, text, buildHTTPBody, source, deliverAs)
+func DeliverToSession(sessionName string, status *db.Status, text string, source string, deliverAs string) error {
+	_, err := DeliverToSessionEx(sessionName, status, text, source, deliverAs)
 	return err
 }
 
@@ -133,8 +112,8 @@ func DeliverToSession(sessionName string, status *db.Status, text string, buildH
 // "synchronous" or dedup-replay to their own users (e.g. the
 // `prism prompt` CLI) should use this form. Mints a fresh delivery_id
 // so the receiving sidecar can dedup repeats at the bus boundary.
-func DeliverToSessionEx(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) (DeliveryOutcome, error) {
-	return DeliverToSessionExWithID(sessionName, status, text, buildHTTPBody, source, deliverAs, uuid.NewString())
+func DeliverToSessionEx(sessionName string, status *db.Status, text string, source string, deliverAs string) (DeliveryOutcome, error) {
+	return DeliverToSessionExWithID(sessionName, status, text, source, deliverAs, uuid.NewString())
 }
 
 // DeliverToSessionWithID is the explicit-ID variant of DeliverToSession.
@@ -142,8 +121,8 @@ func DeliverToSessionEx(sessionName string, status *db.Status, text string, buil
 // requests so the receiving sidecar can dedup retries. Pass "" to skip
 // dedup (legacy behaviour) — the receiving sidecar will then deliver the
 // frame unconditionally.
-func DeliverToSessionWithID(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string, deliveryID string) error {
-	_, err := DeliverToSessionExWithID(sessionName, status, text, buildHTTPBody, source, deliverAs, deliveryID)
+func DeliverToSessionWithID(sessionName string, status *db.Status, text string, source string, deliverAs string, deliveryID string) error {
+	_, err := DeliverToSessionExWithID(sessionName, status, text, source, deliverAs, deliveryID)
 	return err
 }
 
@@ -151,20 +130,15 @@ func DeliverToSessionWithID(sessionName string, status *db.Status, text string, 
 // variant of DeliverToSession. This is the single point where the receiving
 // sidecar's response envelope (buffered / replayed) is parsed and surfaced
 // to callers.
-func DeliverToSessionExWithID(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string, deliveryID string) (DeliveryOutcome, error) {
-	// Determine the transport shape from the harness field.
-	if status.Harness != nil && *status.Harness != "" {
-		shape, ok := harness.ShapeOf(*status.Harness)
-		if ok && shape == harness.TransportSocketPipe {
-			return deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID)
-		}
+func DeliverToSessionExWithID(sessionName string, status *db.Status, text string, source string, deliverAs string, deliveryID string) (DeliveryOutcome, error) {
+	name := ""
+	if status.Harness != nil {
+		name = *status.Harness
 	}
-
-	// Default: HTTP delivery path. The HTTP fallback (harness HTTP API)
-	// does not currently honour delivery_id — the harness has its own
-	// queue and is treated as a thin pass-through. If duplication is
-	// observed there in future, plumb deliveryID into buildHTTPBody.
-	return DeliveryOutcome{DeliveryID: deliveryID}, deliverViaHTTP(status, text, buildHTTPBody)
+	if shape, ok := harness.ShapeOf(name); !ok || shape != harness.TransportSocketPipe {
+		return DeliveryOutcome{DeliveryID: deliveryID}, fmt.Errorf("deliver to session %q: harness %q has no socket pipe, so prism cannot deliver a prompt to it", sessionName, name)
+	}
+	return deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID)
 }
 
 // deliverViaSidecarSocket dials the target session's host-API Unix socket and
@@ -277,49 +251,6 @@ func deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID st
 	outcome.Buffered = env.Buffered
 	outcome.Replayed = env.Replayed
 	return outcome, nil
-}
-
-// deliverViaHTTP sends text to the harness HTTP API at
-// http://localhost:<HarnessPort>/session/<HarnessSessionID>/prompt_async.
-func deliverViaHTTP(status *db.Status, text string, buildBody func(string, *db.Status) map[string]any) error {
-	if status.HarnessPort == nil || status.HarnessSessionID == nil {
-		return fmt.Errorf("session %q has no harness port or session ID — cannot deliver prompt", status.SessionName)
-	}
-
-	var body map[string]any
-	if buildBody != nil {
-		body = buildBody(text, status)
-	} else {
-		body = map[string]any{
-			"parts": []map[string]string{
-				{"type": "text", "text": text},
-			},
-		}
-	}
-
-	jsonBytes, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("marshal prompt body: %w", err)
-	}
-
-	url := fmt.Sprintf("http://localhost:%d/session/%s/prompt_async", *status.HarnessPort, *status.HarnessSessionID)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(jsonBytes))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("http request to %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("http status %d from %s", resp.StatusCode, url)
-	}
-	return nil
 }
 
 // hasPathPrefix reports whether path p is equal to or a sub-path of prefix.

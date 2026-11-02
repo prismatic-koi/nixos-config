@@ -27,9 +27,7 @@ package cmd
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +38,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config/configtest"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
 // buildSpawnCmdForMainReuseTest constructs a cobra.Command wired with the
@@ -122,7 +121,7 @@ func initBareRepoWithMainWorktree(t *testing.T, baseDir, repoName string) string
 // opens it via openTestDBAt).
 func setupIsolatedSpawn(t *testing.T) string {
 	t.Helper()
-	stateHome := t.TempDir()
+	stateHome := stateguardtest.ShortTempDir(t, "spawn-")
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	t.Setenv("PRISM_HOST_API", "")
 	t.Setenv("PRISM_KEYBIND_SPAWN", "")
@@ -203,21 +202,15 @@ func TestExistingWorktreeForBranch_OtherBranchNotMatched(t *testing.T) {
 // --repo <x> --branch main` with an active healthy `<x>@main` session prints
 // the existing session's name/agent/port and exits 0, without --reuse.
 func TestRunSpawn_MainBranch_HealthySessionReuses(t *testing.T) {
-	// A stub HTTP server sinks the prompt delivery so the reuse path runs
-	// end-to-end without a real coordinator listening on the harness port.
-	srv := stubHarnessServer(t)
-	defer srv.Close()
-	oldClient := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = oldClient }()
-
 	dbFile := setupIsolatedSpawn(t)
+	// A stub of the host-API socket sinks the prompt delivery so the reuse
+	// path runs end-to-end without a real coordinator.
+	startHostAPIStub(t, "myrepo@main", func(string, []byte) int { return http.StatusOK })
 	d := openTestDBAt(t, dbFile)
 	baseDir := t.TempDir()
 	bareRoot := initBareRepoWithMainWorktree(t, baseDir, "myrepo")
 	t.Setenv("PRISM_BARE_ROOT", bareRoot)
 
-	port := extractTestServerPort(t, srv.URL)
 	sid := "pi-sid-1"
 	agent := "coordinator"
 	// worktree column must hold the full worktree path (production writers
@@ -227,10 +220,6 @@ func TestRunSpawn_MainBranch_HealthySessionReuses(t *testing.T) {
 	mainWt := filepath.Join(bareRoot, "main")
 	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", mainWt, "active", nil, &sid, &agent, nil); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
-	}
-	// Clear harness so DeliverToSession takes the HTTP fallback path.
-	if err := d.QueryRow("UPDATE agent_status SET harness = '', harness_port = ? WHERE session_name = ? RETURNING 1", port, "myrepo@main").Scan(new(int)); err != nil {
-		t.Fatalf("clear harness / set port: %v", err)
 	}
 
 	cmd := buildSpawnCmdForMainReuseTest(t)
@@ -252,17 +241,6 @@ func TestRunSpawn_MainBranch_HealthySessionReuses(t *testing.T) {
 	if !strings.Contains(got, "coordinator") {
 		t.Errorf("stdout %q does not include agent name", got)
 	}
-}
-
-// stubHarnessServer returns an httptest.Server that accepts any request and
-// returns 200 OK. Used as a black-hole sink for prompt delivery in tests that
-// exercise the reuse path but don't assert on the delivered body.
-func stubHarnessServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		w.WriteHeader(200)
-	}))
 }
 
 // TestRunSpawn_MainBranch_BrokenSessionErrors covers AC6: when an existing
@@ -309,47 +287,35 @@ func TestRunSpawn_MainBranch_BrokenSessionErrors(t *testing.T) {
 // session reuse path is taken and --prompt is provided, the prompt is
 // delivered to the running coordinator session.
 //
-// The mock HTTP harness receives the prompt POST and records the URL path
-// (which encodes the harness session id) so the test asserts the delivery
-// went to the correct session.
+// The stub of the host-API socket of the coordinator receives the /prompt
+// POST and records its body, so the test asserts the delivery went to the
+// correct session.
 func TestRunSpawn_MainBranch_WithPromptDelivers(t *testing.T) {
 	type received struct {
 		path string
 		body []byte
 	}
 	recvCh := make(chan received, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+	dbFile := setupIsolatedSpawn(t)
+	startHostAPIStub(t, "myrepo@main", func(path string, body []byte) int {
 		select {
-		case recvCh <- received{path: r.URL.Path, body: body}:
+		case recvCh <- received{path: path, body: body}:
 		default:
 		}
-		w.WriteHeader(200)
-	}))
-	defer srv.Close()
-
-	oldClient := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = oldClient }()
-
-	dbFile := setupIsolatedSpawn(t)
+		return http.StatusOK
+	})
 	d := openTestDBAt(t, dbFile)
 	baseDir := t.TempDir()
 	bareRoot := initBareRepoWithMainWorktree(t, baseDir, "myrepo")
 	t.Setenv("PRISM_BARE_ROOT", bareRoot)
 
-	// Seed an active coordinator session; wire the harness port to the mock
-	// httptest server, clear harness so the HTTP fallback path fires.
-	port := extractTestServerPort(t, srv.URL)
+	// Seed an active coordinator session of the pi harness.
 	sid := "pi-sid-4"
 	agent := "coordinator"
 	model := "anthropic/claude-sonnet-4-6"
 	mainWt := filepath.Join(bareRoot, "main")
 	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", mainWt, "active", nil, &sid, &agent, &model); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
-	}
-	if err := d.QueryRow("UPDATE agent_status SET harness = '', harness_port = ? WHERE session_name = ? RETURNING 1", port, "myrepo@main").Scan(new(int)); err != nil {
-		t.Fatalf("set port / clear harness: %v", err)
 	}
 
 	cmd := buildSpawnCmdForMainReuseTest(t)
@@ -364,28 +330,22 @@ func TestRunSpawn_MainBranch_WithPromptDelivers(t *testing.T) {
 		t.Fatalf("runSpawn: %v", err)
 	}
 
-	// The prompt must have been POSTed to the harness HTTP API.
+	// The prompt must have been POSTed to the host-API socket of the
+	// coordinator.
 	select {
 	case r := <-recvCh:
-		if !strings.Contains(r.path, sid) {
-			t.Errorf("delivery URL path %q does not contain harness session id %q", r.path, sid)
+		if r.path != "/prompt" {
+			t.Errorf("delivery URL path = %q, want %q", r.path, "/prompt")
 		}
-		// The body must carry the prompt text somewhere. Parse loosely
-		// since the exact shape is buildPromptBody's contract.
 		var body map[string]any
 		if err := json.Unmarshal(r.body, &body); err != nil {
 			t.Fatalf("unmarshal delivered body: %v (raw: %s)", err, string(r.body))
 		}
-		parts, ok := body["parts"].([]any)
-		if !ok || len(parts) == 0 {
-			t.Fatalf("delivered body has no parts: %v", body)
+		if body["session"] != "myrepo@main" {
+			t.Errorf("delivered session = %v, want %q", body["session"], "myrepo@main")
 		}
-		p0, ok := parts[0].(map[string]any)
-		if !ok {
-			t.Fatalf("parts[0] is not a map: %v", parts[0])
-		}
-		if p0["text"] != "please do the mahi" {
-			t.Errorf("delivered text = %v, want %q", p0["text"], "please do the mahi")
+		if body["prompt"] != "please do the mahi" {
+			t.Errorf("delivered text = %v, want %q", body["prompt"], "please do the mahi")
 		}
 	default:
 		t.Fatal("no delivery received — prompt was not sent to the running coordinator")
@@ -431,27 +391,18 @@ func TestRunSpawn_MainBranch_WaitingWithPromptRefuses(t *testing.T) {
 // explicit --reuse alongside --branch main is accepted and behaves
 // identically to omitting it.
 func TestRunSpawn_MainBranch_ExplicitReuseIdentical(t *testing.T) {
-	srv := stubHarnessServer(t)
-	defer srv.Close()
-	oldClient := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = oldClient }()
-
 	dbFile := setupIsolatedSpawn(t)
+	startHostAPIStub(t, "myrepo@main", func(string, []byte) int { return http.StatusOK })
 	d := openTestDBAt(t, dbFile)
 	baseDir := t.TempDir()
 	bareRoot := initBareRepoWithMainWorktree(t, baseDir, "myrepo")
 	t.Setenv("PRISM_BARE_ROOT", bareRoot)
 
-	port := extractTestServerPort(t, srv.URL)
 	sid := "pi-sid-8"
 	agent := "coordinator"
 	mainWt := filepath.Join(bareRoot, "main")
 	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", mainWt, "active", nil, &sid, &agent, nil); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
-	}
-	if err := d.QueryRow("UPDATE agent_status SET harness = '', harness_port = ? WHERE session_name = ? RETURNING 1", port, "myrepo@main").Scan(new(int)); err != nil {
-		t.Fatalf("set port: %v", err)
 	}
 
 	cmd := buildSpawnCmdForMainReuseTest(t)

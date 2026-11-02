@@ -32,8 +32,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
-// CapStatus is the outcome of an Isolator.Cap probe. It generalises
-// container.CheckResult over all isolation modes.
+// CapStatus is the outcome of an Isolator.Cap probe.
 //
 // IgnoreCap and CallerName concerns are handled by Check(), not embedded here.
 type CapStatus struct {
@@ -184,10 +183,9 @@ type SidecarFlagOpts struct {
 	InitialPrompt  string
 }
 
-// AgentPaneOpts carries the inputs that AgentPaneCmd consumes. Mirrors the
-// fields read by BuildOpencodeCmd
-// (internal/session/session.go). DirectCmd is the host-mode fallback
-// command produced by the caller (buildDirectOpencodeCmd) — passed in rather
+// AgentPaneOpts carries the inputs that AgentPaneCmd consumes. BuildAgentCmd
+// (internal/session/session.go) fills it. DirectCmd is the host-mode fallback
+// command produced by the caller (buildDirectAgentCmd) — passed in rather
 // than constructed here so this dispatch stays a thin shim and host-mode
 // behaviour remains in the session package.
 type AgentPaneOpts struct {
@@ -290,7 +288,7 @@ type LogPaths struct {
 
 // Available reports whether bwrap mode can run on this host. Today the only
 // requirement is Linux (the bwrap binary check is done lazily at run time by
-// the bwrap.go arg builder). Mirrors checkBwrapPlatform (cmd/spawn.go).
+// the bwrap.go arg builder).
 func (b *bwrapIsolator) Available() error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("isolation mode %q requires Linux; current platform is %s", config.IsolationBwrap, runtime.GOOS)
@@ -324,8 +322,7 @@ func (b *bwrapIsolator) Cap(ctx context.Context, dbPath string) CapStatus {
 // "<abs-path>/prism agent-run --session <name>". The bwrap sandbox is owned
 // by the tmux pane (not the sidecar), so the agent-run dispatch reads the
 // session's isolation mode from the DB and invokes the bwrap arg builder
-// there. Mirrors the branch in BuildOpencodeCmd
-// (internal/session/session.go).
+// there.
 //
 // The prism binary's absolute path is resolved via prismBinaryPathFn (os.Executable
 // in production) and shell-quoted into the rendered command so the agent-run
@@ -373,8 +370,7 @@ func (b *bwrapIsolator) LogPaths() LogPaths {
 // ----------------------------------------------------------------------------
 
 // Available reports whether sandbox-exec mode can run on this host. Today the
-// only requirement is Darwin. Mirrors checkSandboxExecPlatform
-// (cmd/spawn.go).
+// only requirement is Darwin.
 func (s *sandboxExecIsolator) Available() error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("isolation mode %q requires macOS (Darwin); current platform is %s", config.IsolationSandboxExec, runtime.GOOS)
@@ -406,8 +402,7 @@ func (s *sandboxExecIsolator) Cap(ctx context.Context, dbPath string) CapStatus 
 
 // AgentPaneCmd returns the tmux pane command for sandbox-exec — same shape
 // as bwrap because both modes are pane-owned:
-// "<abs-path>/prism agent-run --session <name>". Mirrors the branch in
-// BuildOpencodeCmd (internal/session/session.go).
+// "<abs-path>/prism agent-run --session <name>".
 //
 // The prism binary's absolute path is resolved via prismBinaryPathFn (os.Executable
 // in production) and shell-quoted into the rendered command so the agent-run

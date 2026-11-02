@@ -1188,9 +1188,9 @@ func (s *Sidecar) hostAPIRoutes() http.Handler {
 		// dials the per-session host-API socket directly, and by the
 		// promptdelivery.DeliverToSession helper used by the review-complete
 		// monitor, coordinator notify, and merge-queue watcher.
-		// We still gate on the harness having a TransportSocketPipe shape
-		// so an HTTP-harness session — which uses HTTP-port delivery — does not
-		// silently route through this branch.
+		// We still gate on the harness having a TransportSocketPipe shape: a
+		// session of another harness has no pipe to deliver to, so it does
+		// not silently route through this branch.
 		if req.Session == s.cfg.SessionName {
 			if shape, ok := harness.ShapeOf(s.cfg.HarnessName); ok && shape == harness.TransportSocketPipe {
 				// Reject delivery when the pi session is in "waiting" state,

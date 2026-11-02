@@ -186,7 +186,7 @@ type Config struct {
 	HostAPISockPath string
 
 	// HostAPITCPPort is the host-side TCP port allocated by the sidecar for the
-	// host-API TCP listener (Darwin only). When non-zero, buildRunArgs sets
+	// host-API TCP listener (Darwin only). When non-zero, the bwrap BuildArgs sets
 	// PRISM_HOST_API=http://host.containers.internal:<HostAPITCPPort> so the
 	// container reaches the sidecar via the gvproxy bridge — no --publish flag
 	// is needed. On Linux this field is zero and the Unix socket is used.
@@ -516,8 +516,9 @@ type Manager struct {
 	// New() and can be replaced in tests or by PrepareBwrap/PrepareSandboxExec.
 	isolator Isolator
 	// allowedSignersReady is true when writeGitconfig successfully wrote the
-	// allowed_signers temp file. buildRunArgs uses this to gate the bind-mount
-	// so that bwrap is never given a source path that doesn't exist on disk.
+	// allowed_signers temp file. The bwrap BuildArgs uses this to gate the
+	// bind-mount so that bwrap is never given a source path that doesn't exist
+	// on disk.
 	allowedSignersReady bool
 
 	// piBwrapErr holds any error produced by appendPIBwrapMounts during
@@ -972,7 +973,8 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 	}
 
 	// ── Optional directories ──────────────────────────────────────────────
-	// These are guarded by os.Stat in buildRunArgs and skipped when absent.
+	// Their sandbox mounts are OptionalIfMissing (mounts.go), so a missing
+	// dir is skipped.
 	// Log failures but do not fail the call — the container still starts.
 
 	// Agent plugin/model cache.
@@ -987,12 +989,13 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 		log.Printf("container: failed to create bun cache dir %q (optional): %v", bunCacheDir, err)
 	}
 
-	// Clipboard staging directory: pre-create so that the bind-mount in
-	// buildRunArgs() is always active, even on the first paste. Without this,
-	// a first-ever paste on a fresh system would write the file host-side but
-	// the container would not see it (the bind-mount only fires when the dir
-	// exists at container spawn time). Creating it eagerly here ensures the
-	// directory always exists before buildRunArgs() runs its os.Stat check.
+	// Clipboard staging directory: pre-create so that the bind-mount of
+	// StandardSandboxMounts is always active, even on the first paste.
+	// Without this, a first-ever paste on a fresh system would write the file
+	// host-side but the container would not see it (the bind-mount only fires
+	// when the dir exists at container spawn time). Creating it eagerly here
+	// ensures the directory always exists before StandardSandboxMounts runs
+	// its os.Stat check.
 	clipboardCacheDir := filepath.Join(home, ".cache", "prism", "clipboard")
 	if err := os.MkdirAll(clipboardCacheDir, 0o755); err != nil {
 		log.Printf("container: failed to create clipboard staging dir %q (optional): %v", clipboardCacheDir, err)

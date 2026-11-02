@@ -232,7 +232,7 @@ func TestCredentialEnvVars_AtlassianKeysNotForwarded(t *testing.T) {
 }
 
 func TestCredentialEnvVars_SpeculativeKeysNotForwarded(t *testing.T) {
-	// These keys were removed from forwardKeys because they are speculative:
+	// These keys are not forwarded because they are speculative:
 	// not populated on the host and not consumed by any in-repo agent/skill/config.
 	//   OPENAI_API_KEY    — no OpenAI provider configured.
 	//   GEMINI_API_KEY    — Google auth uses Gemini OAuth plugin.

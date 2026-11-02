@@ -63,10 +63,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/rundir"
 )
 
-// defaultNotifyHTTPClient is the HTTP client used for coordinator notification
-// delivery when Config.HTTPClient is nil.
-var defaultNotifyHTTPClient = &http.Client{Timeout: 10 * time.Second}
-
 // IdleDebounce is the duration to wait after session.idle before committing
 // the finished state. Cancelled if session.status busy fires in the window.
 const IdleDebounce = 2 * time.Second
@@ -191,8 +187,7 @@ type Config struct {
 	// AgentModel is the model identifier for the agent role (for example,
 	// "anthropic/claude-sonnet-4-6"), resolved by cmd/sidecar.go from
 	// --model-override or the harness adapter's EffectiveModel.
-	// When non-empty it is seeded into root_model_id in the DB so that
-	// buildPromptBody can include the model in the prompt_async body.
+	// When non-empty it is seeded into root_model_id in the DB.
 	//
 	// This field is a reporting value on the sidecar's own path: the model pi
 	// runs on is selected by the launch path instead — buildDirectAgentCmd on
@@ -236,9 +231,6 @@ type Config struct {
 	// spawned by the sidecar capture it at construction time via the parent
 	// sidecar's cfg.Logger field.
 	Logger *log.Logger
-	// HTTPClient is the HTTP client used for coordinator notification delivery.
-	// If nil, defaultNotifyHTTPClient is used.
-	HTTPClient *http.Client
 	// IsolationMode is the effective isolation mode for this session
 	// ("bwrap", "sandbox-exec", or "host" — see config.ValidIsolationModes).
 	// It is used to derive
@@ -677,7 +669,7 @@ type Sidecar struct {
 	// reviewingInFlight is set to true when the /review handler successfully
 	// writes the reviewing state to the DB, and cleared when the monitor
 	// delivers the review-complete prompt via /prompt (same-session,
-	// TransportSocketPipe path only — HTTP-harness sessions bypass /prompt).
+	// TransportSocketPipe path only).
 	//
 	// Clearing semantics for the same-session /prompt path:
 	//   - Synchronous-success branch: cleared AFTER DeliverPrompt returns true.
@@ -692,8 +684,8 @@ type Sidecar struct {
 	//
 	// The suppress guards in events.go additionally check currentDBState() ==
 	// StateReviewing so they lift naturally when the monitor's pre-delivery DB
-	// write ("active") lands, even on HTTP-harness sessions where
-	// reviewingInFlight is never cleared via /prompt.
+	// write ("active") lands, even on a session where reviewingInFlight is
+	// never cleared via /prompt.
 	//
 	// Protected by s.mu.
 	reviewingInFlight bool
@@ -799,7 +791,7 @@ type Sidecar struct {
 	// concurrently with notifyCoordinator. Scope is intentionally limited to
 	// the coordinator notify path — do not extend this to other
 	// notify* methods without a separate justification.
-	notifyCoordinatorDeliverFn func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error
+	notifyCoordinatorDeliverFn func(sessionName string, status *db.Status, text string, source string, deliverAs string) error
 }
 
 // defaultReviewRecoveryInterval is how often the worker-sidecar recovery
@@ -828,9 +820,6 @@ func New(cfg Config) *Sidecar {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = log.Default()
-	}
-	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = defaultNotifyHTTPClient
 	}
 	if cfg.DashboardSink == nil {
 		// Auto-install the no-op sink when the test-mode guard is active. The
@@ -1079,9 +1068,8 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	}
 
 	// Stage 2: Start the merge-queue watcher for coordinator sessions.
-	// This is transport-agnostic and must run for ALL transport shapes so that
-	// PI coordinator sessions receive merge-queue notifications exactly like
-	// HTTP-harness coordinator sessions.
+	// This is transport-agnostic and must run for ALL transport shapes, so
+	// that a PI coordinator session receives merge-queue notifications.
 	//
 	// The watcher polls the pending_merges head on a 30s ticker
 	// (mergequeue.PollInterval) and drives PRs through the merge lifecycle. It is
