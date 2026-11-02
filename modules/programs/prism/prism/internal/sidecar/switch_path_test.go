@@ -221,13 +221,13 @@ func TestWorktreeRootIn_RefusesPathInBare(t *testing.T) {
 	if r, err := git.OpenDir(own); err != nil || r.WorkTree() != own {
 		t.Fatalf("control: OpenDir(%s) = work tree %q, %v; want the path in .bare", own, r.WorkTree(), err)
 	}
-	if wt, ok := worktreeRootIn(l.root, own); ok {
-		t.Errorf("worktreeRootIn(%s) = %q, true; want a refusal", own, wt)
+	if wt, ok := git.WorktreeRootIn(l.root, own); ok {
+		t.Errorf("git.WorktreeRootIn(%s) = %q, true; want a refusal", own, wt)
 	}
 }
 
 // TestWorktreeRootIn_RefusesPathInBareThroughSymlink_3338: the .bare check
-// of worktreeRootIn compares resolved paths. A session can put a symlink
+// of git.WorktreeRootIn compares resolved paths. A session can put a symlink
 // into .bare in its worktree, and point the gitdir file of its own entry at
 // it, so `git worktree list` lists the symlink. A project location can also
 // go through a symlink. Each listed path that resolves into .bare is refused.
@@ -251,8 +251,8 @@ func TestWorktreeRootIn_RefusesPathInBareThroughSymlink_3338(t *testing.T) {
 	if err := os.Symlink(l.root, alias); err != nil {
 		t.Fatal(err)
 	}
-	if wt, ok := worktreeRootIn(alias, l.main); !ok || wt != filepath.Join(alias, "main") {
-		t.Fatalf("control: worktreeRootIn(%s, %s) = %q, %v; want the main worktree under the alias", alias, l.main, wt, ok)
+	if wt, ok := git.WorktreeRootIn(alias, l.main); !ok || wt != filepath.Join(alias, "main") {
+		t.Fatalf("control: git.WorktreeRootIn(%s, %s) = %q, %v; want the main worktree under the alias", alias, l.main, wt, ok)
 	}
 
 	for _, tc := range []struct{ root, listed string }{
@@ -260,8 +260,8 @@ func TestWorktreeRootIn_RefusesPathInBareThroughSymlink_3338(t *testing.T) {
 		{alias, link},
 		{alias, own},
 	} {
-		if wt, ok := worktreeRootIn(tc.root, tc.listed); ok {
-			t.Errorf("worktreeRootIn(%s, %s) = %q, true; want a refusal", tc.root, tc.listed, wt)
+		if wt, ok := git.WorktreeRootIn(tc.root, tc.listed); ok {
+			t.Errorf("git.WorktreeRootIn(%s, %s) = %q, true; want a refusal", tc.root, tc.listed, wt)
 		}
 	}
 }

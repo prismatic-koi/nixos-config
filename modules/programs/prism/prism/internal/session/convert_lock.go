@@ -107,50 +107,96 @@ func (l *ConvertLock) Release() {
 // caller calls release when the start ends. It returns ErrConvertInProgress
 // when a conversion or a clone holds the lock.
 //
+// It acts on the real dir of directory, with the symlinks resolved
+// (resolveStartDir). A symlink in a worktree is in a bare+worktree layout,
+// but it can name a dir outside the layout, for example the target of a
+// clone. A start through the symlink runs in that dir.
+//
 // A dir inside a bare+worktree layout is a worktree, and prism converts or
 // clones into a project root only, so such a dir gets no lock. BareRoot
-// reads only the parents of directory, so a .bare that a conversion or a
-// clone makes in directory does not change this result. The clone refuses
-// a target in a bare+worktree layout (lockCloneTarget).
+// reads only the parents of the dir, so a .bare that a conversion or a
+// clone makes in the dir does not change this result. The clone and the
+// conversion refuse a dir in a bare+worktree layout (lockCloneTarget, and
+// convertPlainClone in cmd).
 //
 // A dir that does not exist is refused: a clone makes its target, and a
 // start that found no dir has no lock to hold while the clone runs.
 //
-// With the shared lock held, it returns ErrStartInBareRoot when directory
+// With the shared lock held, it returns ErrStartInBareRoot when the dir
 // holds a .bare. A start that read its row before a conversion, for example
 // a `prism restore`, comes here after the conversion released the lock. A
 // conversion or a clone makes the .bare only while it holds the exclusive
 // lock, so this check sees the .bare of each one that ended.
 func holdStartLock(directory string) (release func(), err error) {
-	if git.BareRoot(directory) != "" {
+	dir, err := resolveStartDir(directory)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			err = fmt.Errorf("%w: %w", errStartDirMissing, err)
+		}
+		return nil, fmt.Errorf("start a session in %s: %w", directory, err)
+	}
+	label := directory
+	if dir != directory {
+		label = fmt.Sprintf("%s (real dir %s)", directory, dir)
+	}
+	if git.BareRoot(dir) != "" {
 		return func() {}, nil
 	}
-	if _, statErr := os.Stat(directory); statErr != nil {
+	if _, statErr := os.Stat(dir); statErr != nil {
 		if errors.Is(statErr, os.ErrNotExist) {
 			statErr = errStartDirMissing
 		}
-		return nil, fmt.Errorf("start a session in %s: %w", directory, statErr)
+		return nil, fmt.Errorf("start a session in %s: %w", label, statErr)
 	}
-	f, info, err := openConvertLock(directory)
+	f, info, err := openConvertLock(dir)
 	if err != nil {
-		return nil, fmt.Errorf("lock %s for the session start: %w", directory, err)
+		return nil, fmt.Errorf("lock %s for the session start: %w", label, err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, fmt.Errorf("start a session in %s: %w", directory, ErrConvertInProgress)
+			return nil, fmt.Errorf("start a session in %s: %w", label, ErrConvertInProgress)
 		}
-		return nil, fmt.Errorf("lock %s for the session start: %w", directory, err)
+		return nil, fmt.Errorf("lock %s for the session start: %w", label, err)
 	}
+	// The start uses directory, not dir. So directory must still name the
+	// locked dir: a symlink can change after resolveStartDir.
 	if err := requireLockedDir(directory, info); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("start a session in %s: %w", directory, err)
+		return nil, fmt.Errorf("start a session in %s: %w", label, err)
 	}
-	if _, err := os.Lstat(filepath.Join(directory, ".bare")); err == nil {
+	if _, err := os.Lstat(filepath.Join(dir, ".bare")); err == nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("start a session in %s: %w", directory, ErrStartInBareRoot)
+		return nil, fmt.Errorf("start a session in %s: %w", label, ErrStartInBareRoot)
 	}
 	return func() { _ = f.Close() }, nil
+}
+
+// resolveStartDir returns directory with each symlink resolved. When the
+// last parts of directory do not exist, it resolves the longest part that
+// exists and adds the rest. It returns an error when a part that exists
+// does not resolve, for example a symlink to a dir that does not exist: a
+// clone can make that dir later.
+func resolveStartDir(directory string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(directory)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if _, lerr := os.Lstat(directory); lerr == nil || !errors.Is(lerr, os.ErrNotExist) {
+		return "", err
+	}
+	parent := filepath.Dir(directory)
+	if parent == directory {
+		return "", err
+	}
+	resolvedParent, err := resolveStartDir(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedParent, filepath.Base(directory)), nil
 }
 
 // openConvertLock opens the lock file of dir in the prism state dir, which
@@ -209,7 +255,8 @@ func requireLockedDir(dir string, locked os.FileInfo) error {
 //
 // When it cannot read the rows or ask tmux, it returns an error, and the
 // sessions that it found. No tmux server is not an error, because then no
-// tmux session runs.
+// tmux session runs. A line of the tmux output that does not parse is an
+// error too, because that line can be a session in dir.
 func SessionsInDir(d *db.DB, dir string) ([]string, error) {
 	var names []string
 	var errs []error
@@ -242,11 +289,20 @@ func SessionsInDir(d *db.DB, dir string) ([]string, error) {
 	if err != nil && classifyTmuxListError(err.Error()) != TmuxGone {
 		errs = append(errs, fmt.Errorf("list the tmux sessions: %w", err))
 	}
-	if err == nil {
+	if err == nil && out != "" {
+		var bad []string
 		for _, line := range strings.Split(out, "\n") {
-			if n, p, ok := strings.Cut(line, "\t"); ok && p != "" && config.SameDir(p, dir) && isPrismSession(n) {
+			n, p, ok := strings.Cut(line, "\t")
+			if !ok || n == "" || p == "" {
+				bad = append(bad, line)
+				continue
+			}
+			if config.SameDir(p, dir) && isPrismSession(n) {
 				add(n)
 			}
+		}
+		if len(bad) > 0 {
+			errs = append(errs, fmt.Errorf("list the tmux sessions: %d line(s) of the output do not parse as a name, a tab, and a path. The first is %q", len(bad), bad[0]))
 		}
 	}
 	return names, errors.Join(errs...)
@@ -254,8 +310,12 @@ func SessionsInDir(d *db.DB, dir string) ([]string, error) {
 
 // listTmuxSessionPaths returns the name and the path of each tmux session,
 // one session for each line, with a tab between them. Tests replace it.
+//
+// Keep -u. Without it, a tmux client outside tmux in a locale that is not
+// UTF-8 (LC_ALL=C) writes the tab, and each byte of a path that is not
+// ASCII, as "_". Then no line names a dir (#3396).
 var listTmuxSessionPaths = func() (string, error) {
-	return tmux.Run("list-sessions", "-F", "#{session_name}\t#{session_path}")
+	return tmux.Run("-u", "list-sessions", "-F", "#{session_name}\t#{session_path}")
 }
 
 // AllowNoTmuxForTest makes SessionsInDir find no tmux session when it finds

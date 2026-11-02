@@ -13,7 +13,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
 	"github.com/prismatic-koi/prism/internal/session"
@@ -134,7 +133,16 @@ func convertPlainClone(path string, progress func(string)) (convertResult, error
 	if !git.IsRegularRepo(dir) {
 		return res, fmt.Errorf("convert %s: the dir is not a plain git clone", dir)
 	}
-	sessions := sessionsInDir(dir, name)
+	// A start in a dir in a bare+worktree layout takes no start lock
+	// (holdStartLock in internal/session), so the lock does not keep a
+	// session out of such a clone (#3396).
+	if root := git.BareRoot(dir); root != "" {
+		return res, fmt.Errorf("convert %s: the dir is in the bare+worktree layout of %s. A session start in such a dir takes no start lock, so prism cannot keep a session out of the dir during the conversion", dir, root)
+	}
+	sessions, err := sessionsInDir(dir, name)
+	if err != nil {
+		return res, fmt.Errorf("convert %s: prism cannot tell if a session is in the dir: %w. A session in the dir can write the .bare of the conversion", dir, err)
+	}
 	// The stop kills each pane of the session, so it also kills this
 	// process if it runs in one of them.
 	if caller := convertCallerSession(); slices.Contains(sessions, caller) {
@@ -185,20 +193,26 @@ func canonicalDir(dir string) (string, error) {
 // (session.SessionsInDir). Such a session started through a symlink or
 // another letter case, so its name is not name. The stop moves the clients
 // of a session to scratchpad, so a meta session is never in the list.
-func sessionsInDir(dir, name string) []string {
-	names := []string{name}
-	var d *db.DB
-	if opened, err := openDB(); err == nil {
-		d = opened
-		defer d.Close()
+//
+// It returns an error when it cannot open the DB, read the rows, or ask
+// tmux. Then a session that it does not see can run in dir.
+func sessionsInDir(dir, name string) ([]string, error) {
+	d, err := openDB()
+	if err != nil {
+		return nil, fmt.Errorf("open the DB: %w", err)
 	}
-	found, _ := session.SessionsInDir(d, dir)
+	defer d.Close()
+	found, err := session.SessionsInDir(d, dir)
+	if err != nil {
+		return nil, err
+	}
+	names := []string{name}
 	for _, n := range found {
 		if !slices.Contains(names, n) {
 			names = append(names, n)
 		}
 	}
-	return names
+	return names, nil
 }
 
 // restartAfterConvert starts a session again after a prism convert, if the
