@@ -16,12 +16,12 @@ package review
 // # What a reap does, and does not do
 //
 // A reap is the `prism close --keep-worktree` primitive applied to one review
-// agent: stop the sidecar, kill the tmux session, drop the container's
-// per-session temp state, release the harness port, stamp `ended_at`, and
-// purge queued bus messages. It is the same per-agent teardown that
-// `CleanupReviewSessionsForParent` runs when the parent worker is cleaned
-// up, so the reaper introduces no new teardown behaviour — only a new
-// trigger for it.
+// agent: stop the sidecar, kill the tmux session, end the processes in its
+// sandbox, drop the container's per-session temp state, release the harness
+// port, stamp `ended_at`, and purge queued bus messages. It is the same
+// per-agent teardown that `CleanupReviewSessionsForParent` runs when the
+// parent worker is cleaned up, so the reaper introduces no new teardown
+// behaviour — only a new trigger for it.
 //
 // # Rows that another path already ended
 //
@@ -115,6 +115,12 @@ var (
 	reapKillTmuxSession = func(name string) { _ = tmux.KillSession(name) }
 	stopAgentSidecar    = func(name string) bool { return session.EnsureSidecarStopped(name, session.SidecarStopTimeout) }
 	reapRemoveContainer = removeReviewAgentContainer
+	// stopAgentSandboxProcs ends each process in the sandbox of a review
+	// agent (#3392). Each path that ends a review agent calls it after the
+	// tmux kill and before the row ends.
+	stopAgentSandboxProcs = func(name string) error {
+		return session.StopSandboxProcesses(name, session.SandboxProcessStopTimeout)
+	}
 )
 
 // reapContainerBudget bounds the per-agent container teardown. It matches the
@@ -131,8 +137,9 @@ type ReapResult struct {
 	Reaped []string
 	// Skipped names candidates rejected by the Go-side shape re-check.
 	Skipped []string
-	// Failed names candidates whose sidecar did not stop. Their tmux
-	// session, row, and port stay, and the next sweep tries again.
+	// Failed names candidates whose sidecar did not stop, or where a
+	// process in the sandbox still runs after the tmux kill. Their row and
+	// port stay, and the next sweep tries again.
 	Failed []string
 }
 
@@ -190,14 +197,21 @@ func ReapDeliveredReviewAgents(d *db.DB, groupID string, now time.Time, grace ti
 
 // reapOne applies the `prism close --keep-worktree` teardown to a single
 // review agent. Every step is idempotent. It returns false when the sidecar
-// does not stop.
+// does not stop, or when a process in the sandbox still runs after the
+// tmux kill.
 //
-// The order has three constraints, and they act on different steps.
+// The order has four constraints, and they act on different steps.
 //
 // The sidecar stops before the tmux kill. If it does not stop, reapOne
 // returns and changes nothing else: the tmux session, the row, and the port
 // stay, so the next sweep retries the whole sequence. A sidecar that still
 // runs can write to its row and hold its port.
+//
+// The processes in the sandbox stop after the tmux kill and before the
+// container state, the port, and the row (#3392). On sandbox-exec, a
+// process that the agent detached outlives the tmux kill (#3375). If one
+// still runs, reapOne returns: the row and the port stay, so the next sweep
+// tries again, and `prism cleanup` of the parent still sees the child.
 //
 // `ended_at` is written LAST. If the process dies part-way, the next sweep
 // still sees `ended_at IS NULL` and retries the whole sequence. Writing it
@@ -259,6 +273,10 @@ func reapOne(d *db.DB, c db.ReapCandidate) bool {
 		return false
 	}
 	reapKillTmuxSession(c.SessionName)
+	if err := stopAgentSandboxProcs(c.SessionName); err != nil {
+		proglog.Warnf("[prism reap] warning: %v — keeping the row and port of %q for the next sweep\n", err, c.SessionName)
+		return false
+	}
 	reapRemoveContainer(c.SessionName, c.IsolationMode)
 
 	// Release the harness port. A row whose port is already NULL is a
@@ -289,9 +307,10 @@ func reapOne(d *db.DB, c db.ReapCandidate) bool {
 //   - session.SweepEndedSidecars, with the release rule for review agents.
 //     An ended review agent whose tmux session still exists is released
 //     when its round was delivered at or before now minus ReapGracePeriod:
-//     the sweep stops its sidecar and closes its tmux session. That is the
-//     agent the candidate query skips because another path, such as the
-//     monitor's force-terminate, ended its row first (#3160).
+//     the sweep stops its sidecar, closes its tmux session, and ends the
+//     processes in its sandbox (releaseEndedAgent). That is the agent the
+//     candidate query skips because another path ended its row first
+//     (#3160).
 //   - session.SweepStaleSessionTmpDirs, which removes each per-session
 //     TMPDIR that no session owns (#3170).
 //
@@ -310,7 +329,7 @@ func SweepEndedSessions(d *db.DB, now time.Time) (session.SweepResult, error) {
 func sweepEndedSessions(d *db.DB, now time.Time, grace time.Duration) (session.SweepResult, error) {
 	res, sidecarErr := session.SweepEndedSidecars(d, session.SweepOpts{
 		ReleaseLive: func(st *db.Status) bool { return roundReleased(d, st, now, grace) },
-		KillTmux:    reapKillTmuxSession,
+		KillTmux:    releaseEndedAgent,
 	})
 	if sidecarErr == nil {
 		if len(res.Stopped) > 0 || len(res.StaleRemoved) > 0 {
@@ -327,6 +346,19 @@ func sweepEndedSessions(d *db.DB, now time.Time, grace time.Duration) (session.S
 		proglog.Infof("[prism reap] ended-session sweep: removed %d stale session TMPDIR(s)\n", len(removed))
 	}
 	return res, errors.Join(sidecarErr, tmpErr)
+}
+
+// releaseEndedAgent closes the tmux session of a review agent whose row
+// another path ended, and then ends each process in its sandbox (#3392).
+// The row is already ended, so a process that still runs gets a warning
+// that names it. The next `prism cleanup` of the parent runs the stop
+// again, because CleanupReviewSessionsForParent takes each member of each
+// round of the parent, also an ended one.
+func releaseEndedAgent(name string) {
+	reapKillTmuxSession(name)
+	if err := stopAgentSandboxProcs(name); err != nil {
+		proglog.Warnf("[prism reap] warning: %v — the row of %q was already ended\n", err, name)
+	}
 }
 
 // roundReleased reports whether st is a review agent whose round was

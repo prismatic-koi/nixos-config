@@ -858,9 +858,10 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		// Cleanup primitive set (same as readiness-timeout path below):
 		//   - cleanupFailedSpawn:   stops any sidecar that was started before
 		//                           the tmux step failed (spawnAgentOnlyLayout
-		//                           starts the sidecar first), then ends the
-		//                           row, releases the port, and removes any
-		//                           partial tmux session.
+		//                           starts the sidecar first), removes any
+		//                           partial tmux session, ends the processes
+		//                           in its sandbox, then ends the row and
+		//                           releases the port.
 		//   - removeInitialPrompt:  drops the per-session prompt file so a
 		//                           retry with the same name starts fresh.
 		cleanupFailedSpawn(d, opts, db.ReapCauseSpawnFailure)
@@ -1026,19 +1027,39 @@ var stopFailedSpawnSidecar = func(sessionName string) bool {
 	return EnsureSidecarStopped(sessionName, SidecarStopTimeout)
 }
 
-// cleanupFailedSpawn stops the sidecar of a spawn that failed, then runs
-// cleanupHalfAliveSession and closes the tmux session. If the sidecar does
+// stopFailedSpawnSandboxProcs ends each process in the sandbox of a spawn
+// that failed (#3392). Tests replace it.
+var stopFailedSpawnSandboxProcs = func(sessionName string) error {
+	return StopSandboxProcesses(sessionName, SandboxProcessStopTimeout)
+}
+
+// cleanupFailedSpawn stops the sidecar of a spawn that failed, records the
+// cause, closes the tmux session, ends each process in the sandbox of the
+// session, and then ends the row (endHalfAliveSession). If the sidecar does
 // not stop, it keeps the tmux session, the row, and the port, and only
 // marks the row "error": the process can still write to the row and hold
-// the port (#3168).
+// the port (#3168). If a process in the sandbox still runs after the tmux
+// kill, it keeps the row and the port in the same way, so that a later
+// prism cleanup of the session ends the process (#3392).
+//
+// The cause is recorded before the tmux kill, as in reapOne in
+// internal/review: if the rename of tmux.KillSession fails, the
+// session-closed hook can end the row first.
 func cleanupFailedSpawn(d *db.DB, opts SpawnOpts, cause db.SessionReapCause, detail ...string) {
 	if !stopFailedSpawnSidecar(opts.SessionName) {
 		fmt.Fprintf(os.Stderr, "warning: sidecar of %q did not stop — keeping its tmux session, row, and port\n", opts.SessionName)
 		markHalfAliveSessionError(d, opts.SessionName, cause, detail...)
 		return
 	}
-	cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID, cause, detail...)
+	markHalfAliveSessionError(d, opts.SessionName, cause, detail...)
 	_ = tmux.KillSession(opts.SessionName)
+	// A process that the agent detached outlives the tmux kill on
+	// sandbox-exec (#3375). End it before the row ends.
+	if err := stopFailedSpawnSandboxProcs(opts.SessionName); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v — keeping the row and port of %q\n", err, opts.SessionName)
+		return
+	}
+	endHalfAliveSession(d, opts.SessionName, opts.InstanceID)
 }
 
 // cleanupHalfAliveSession releases the DB resources for a session that was
@@ -1071,6 +1092,13 @@ func cleanupFailedSpawn(d *db.DB, opts SpawnOpts, cause db.SessionReapCause, det
 // with a false one.
 func cleanupHalfAliveSession(d *db.DB, sessionName, instanceID string, cause db.SessionReapCause, detail ...string) {
 	markHalfAliveSessionError(d, sessionName, cause, detail...)
+	endHalfAliveSession(d, sessionName, instanceID)
+}
+
+// endHalfAliveSession is the second half of cleanupHalfAliveSession: it
+// releases the port, ends the row, and purges the bus messages of
+// sessionName. It records no cause.
+func endHalfAliveSession(d *db.DB, sessionName, instanceID string) {
 	_ = d.ReleasePort(sessionName)
 	_ = d.SetEnded(sessionName)
 	_ = d.PurgeBusMessages(sessionName)

@@ -859,6 +859,16 @@ func forceTerminateStuckMembers(d *db.DB, agentSessions []string, groupDeadline 
 		if err := d.UpsertStatus(sess, status.Repo, status.Worktree, "error", nil, nil); err != nil {
 			proglog.Warnf("[prism monitor-review] warning: UpsertStatus(%s, error): %v\n", sess, err)
 		}
+		// End each process in the sandbox of the member before the row ends
+		// (#3392). On sandbox-exec, such a process keeps the rights of the
+		// sandbox until it ends (#3375). This also ends the agent. The tmux
+		// session and the sidecar stay until the release. If a process still
+		// runs, the row stays open in state "error", which is terminal, so
+		// the round can complete, and the release tries the stop again.
+		if err := stopAgentSandboxProcs(sess); err != nil {
+			proglog.Warnf("[prism monitor-review] warning: %v — keeping the row and port of %s for the release\n", err, sess)
+			continue
+		}
 		// Set ended_at so the row is fully terminal for queries filtering on
 		// ended_at IS NOT NULL (see comment above). Best-effort: failure logs
 		// and continues — this is already a recovery path.

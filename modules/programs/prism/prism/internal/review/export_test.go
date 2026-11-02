@@ -294,8 +294,11 @@ func ReapSideEffectsForTest(killTmux func(string), killSidecar func(string), rem
 
 // ReapSideEffectsWithStopForTest is ReapSideEffectsForTest with a sidecar
 // stop that reports whether the sidecar stopped, so that a test can make a
-// stop fail. A nil stop reports success.
+// stop fail. A nil stop reports success. The sandbox stop becomes a stop
+// that finds no process. Install SandboxStopForTest after this call to
+// replace it.
 func ReapSideEffectsWithStopForTest(killTmux func(string), stopSidecar func(string) bool, removeContainer func(sessionName, isolationMode string)) func() {
+	restoreSandbox := SandboxStopForTest(nil)
 	prevTmux, prevSidecar, prevContainer := reapKillTmuxSession, stopAgentSidecar, reapRemoveContainer
 	if killTmux == nil {
 		killTmux = func(string) {}
@@ -309,7 +312,20 @@ func ReapSideEffectsWithStopForTest(killTmux func(string), stopSidecar func(stri
 	reapKillTmuxSession, stopAgentSidecar, reapRemoveContainer = killTmux, stopSidecar, removeContainer
 	return func() {
 		reapKillTmuxSession, stopAgentSidecar, reapRemoveContainer = prevTmux, prevSidecar, prevContainer
+		restoreSandbox()
 	}
+}
+
+// SandboxStopForTest replaces the stop of the processes in the sandbox of
+// a review agent (#3392) and returns a restore function. A nil stop finds
+// no process.
+func SandboxStopForTest(stop func(string) error) func() {
+	prev := stopAgentSandboxProcs
+	if stop == nil {
+		stop = func(string) error { return nil }
+	}
+	stopAgentSandboxProcs = stop
+	return func() { stopAgentSandboxProcs = prev }
 }
 
 // ReapClockForTest replaces the ReapGroupAfterGrace clock pair

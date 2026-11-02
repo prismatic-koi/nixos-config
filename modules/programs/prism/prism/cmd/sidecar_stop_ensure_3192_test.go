@@ -22,6 +22,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/review"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -98,7 +99,7 @@ func withChildCleanup(t *testing.T, stuck ...string) *[]string {
 	t.Helper()
 	var parents []string
 	prev := cleanupReviewChildren
-	cleanupReviewChildren = func(d *db.DB, parent, _ string) []string {
+	cleanupReviewChildren = func(d *db.DB, parent, _ string) review.KeptChildren {
 		parents = append(parents, parent)
 		rows, err := d.AllStatusesWithPrefix(parent + "~review-")
 		if err != nil {
@@ -111,7 +112,7 @@ func withChildCleanup(t *testing.T, stuck ...string) *[]string {
 			_ = d.ReleasePort(r.SessionName)
 			_ = d.SetEnded(r.SessionName)
 		}
-		return stuck
+		return review.KeptChildren{SidecarRuns: stuck}
 	}
 	t.Cleanup(func() { cleanupReviewChildren = prev })
 	return &parents

@@ -9,6 +9,7 @@ package review
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"slices"
 	"strconv"
@@ -68,18 +69,22 @@ func NextRoundNumber(d *db.DB, parentSession string) int {
 }
 
 // KillSessionPrefix kills all tmux sessions whose names start with the given
-// prefix. Used to clean up all ~review-* sessions for a parent.
-func KillSessionPrefix(prefix string) {
+// prefix. Used to clean up all ~review-* sessions for a parent. It returns
+// the names of the sessions that it tried to kill.
+func KillSessionPrefix(prefix string) []string {
 	out, err := tmux.Run("list-sessions", "-F", "#{session_name}")
 	if err != nil {
-		return
+		return nil
 	}
+	var killed []string
 	for _, name := range strings.Split(out, "\n") {
 		name = strings.TrimSpace(name)
 		if name != "" && strings.HasPrefix(name, prefix) {
 			_ = tmux.KillSession(name)
+			killed = append(killed, name)
 		}
 	}
+	return killed
 }
 
 // killTmuxSession is the tmux kill of KillSessionsByNames. Tests replace it,
@@ -135,6 +140,26 @@ func KillReviewSessionsForParentWithDB(d *db.DB, parentSession string) {
 	KillSessionPrefix(prefix)
 }
 
+// KeptChildren names the review children that a stop of their parent
+// keeps. The caller passes Names to db.SetEndedExcept when it ends the
+// parent, because the db.SetEnded cascade would end their rows too.
+type KeptChildren struct {
+	// SidecarRuns names each child whose sidecar did not stop. Its tmux
+	// session, row, and port stay.
+	SidecarRuns []string
+	// SandboxRuns names each child where a process in the sandbox still
+	// runs after the tmux kill (#3392). Its row and port stay.
+	SandboxRuns []string
+	// SandboxErr joins the error of the sandbox stop of each child in
+	// SandboxRuns. Each error names the process and the child.
+	SandboxErr error
+}
+
+// Names returns each kept child.
+func (k KeptChildren) Names() []string {
+	return slices.Concat(k.SidecarRuns, k.SandboxRuns)
+}
+
 // CleanupReviewSessionsForParent kills all review sessions for the
 // given parent AND cleans up their DB rows (port allocations, ended state,
 // bus messages). Called by prism cleanup --yes --session <parent> to cascade
@@ -143,10 +168,12 @@ func KillReviewSessionsForParentWithDB(d *db.DB, parentSession string) {
 // a name-prefix fallback for pre-migration rows where group_id is not set.
 //
 // It stops the sidecar of each review session first, on every platform.
-// It returns the sessions whose sidecar did not stop. For those it changes
-// nothing else: the tmux session, the row, and the port stay. The caller
-// must pass them to db.SetEndedExcept when it ends the parent, because the
-// db.SetEnded cascade would end their rows too.
+// For a session whose sidecar did not stop it changes nothing else: the
+// tmux session, the row, and the port stay. For each other session it
+// records the cause, kills the tmux session, and ends the processes in its
+// sandbox (#3392). When such a process still runs, the row and the port of
+// the session stay. It ends the rows of the other sessions. It returns the
+// sessions that it keeps.
 //
 // It also removes the review files of the parent (RemoveRoundFilesForParent).
 //
@@ -156,7 +183,7 @@ func KillReviewSessionsForParentWithDB(d *db.DB, parentSession string) {
 // agent_status.instance_id of the parent first. The audit logs of the
 // children go to the log of that incarnation. Pass "" when the tmux session
 // of the parent still runs: the hand-over then reads agent_status.
-func CleanupReviewSessionsForParent(d *db.DB, parentSession, parentInstanceID string) (failed []string) {
+func CleanupReviewSessionsForParent(d *db.DB, parentSession, parentInstanceID string) KeptChildren {
 	prefix := parentSession + "~review-"
 	defer RemoveRoundFilesForParent(d, parentSession)
 
@@ -168,14 +195,10 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession, parentInstanceID st
 		for _, row := range members {
 			names = append(names, row.SessionName)
 		}
-		var stopped []string
-		stopped, failed = stopAgentSidecars(names)
-		for _, name := range stopped {
-			cleanupAgentSession(d, name, parentInstanceID, db.ReapCauseParentCleanup)
-		}
-		// Kill the tmux sessions (best effort, idempotent).
-		KillSessionsByNames(stopped)
-		return failed
+		stopped, failed := stopAgentSidecars(names)
+		kept := endStoppedAgents(d, stopped, parentInstanceID)
+		kept.SidecarRuns = failed
+		return kept
 	}
 	if err != nil {
 		proglog.Warnf("[prism] warning: CleanupReviewSessionsForParent: DB group error for %q: %v — using name-prefix fallback\n", parentSession, err)
@@ -183,28 +206,79 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession, parentInstanceID st
 	// Pre-migration fallback: find rows by name prefix and kill by prefix.
 
 	// Find all review session rows in the DB.
+	var kept KeptChildren
 	rows, err := d.AllStatusesWithPrefix(prefix)
 	if err == nil {
 		names := make([]string, 0, len(rows))
 		for _, row := range rows {
 			names = append(names, row.SessionName)
 		}
-		var stopped []string
-		stopped, failed = stopAgentSidecars(names)
-		for _, name := range stopped {
-			cleanupAgentSession(d, name, parentInstanceID, db.ReapCauseParentCleanup)
-		}
+		stopped, failed := stopAgentSidecars(names)
+		kept = endStoppedAgents(d, stopped, parentInstanceID)
+		kept.SidecarRuns = failed
 		if len(failed) > 0 {
 			// A prefix kill would also close the tmux session of a review
 			// agent whose sidecar still runs.
-			KillSessionsByNames(stopped)
-			return failed
+			return kept
 		}
 	}
 
+	// Kill the tmux sessions that are left (best effort, idempotent), and
+	// end the processes in their sandboxes.
+	_, sandboxRuns, sandboxErr := stopAgentSandboxes(KillSessionPrefix(prefix))
+	kept.SandboxRuns = append(kept.SandboxRuns, sandboxRuns...)
+	kept.SandboxErr = errors.Join(kept.SandboxErr, sandboxErr)
+	return kept
+}
+
+// endStoppedAgents ends the review agents in names, whose sidecars
+// stopped, for the cleanup of their parent. It records the cause and sets
+// state "error", kills the tmux sessions, and ends the processes in their
+// sandboxes (#3392). Then it ends the row and removes the dirs of each
+// agent where no such process runs. It returns the other agents in
+// SandboxRuns: their rows and ports stay.
+//
+// The cause is recorded before the tmux kill, as in reapOne: if the rename
+// of tmux.KillSession fails, the session-closed hook can end the row first.
+func endStoppedAgents(d *db.DB, names []string, parentInstanceID string) KeptChildren {
+	statuses := make(map[string]*db.Status, len(names))
+	for _, name := range names {
+		statuses[name], _ = markAgentSessionError(d, name, db.ReapCauseParentCleanup)
+	}
 	// Kill the tmux sessions (best effort, idempotent).
-	KillSessionPrefix(prefix)
-	return failed
+	KillSessionsByNames(names)
+	ended, sandboxRuns, sandboxErr := stopAgentSandboxes(names)
+	for _, name := range ended {
+		endAgentSession(d, name, parentInstanceID, statuses[name])
+	}
+	return KeptChildren{SandboxRuns: sandboxRuns, SandboxErr: sandboxErr}
+}
+
+// stopAgentSandboxes ends the processes in the sandbox of each of names at
+// the same time, so that several slow stops cost one stop timeout (#3392).
+// Call it after the tmux kills. It returns the names in their input order,
+// split by the result, and joins the error of each failed stop. Each error
+// names the process and the session, and a warning writes it.
+func stopAgentSandboxes(names []string) (ended, running []string, err error) {
+	errs := make([]error, len(names))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = stopAgentSandboxProcs(name)
+		}()
+	}
+	wg.Wait()
+	for i, name := range names {
+		if errs[i] == nil {
+			ended = append(ended, name)
+			continue
+		}
+		proglog.Warnf("[prism] warning: %v — keeping the row and port of %q\n", errs[i], name)
+		running = append(running, name)
+	}
+	return ended, running, errors.Join(errs...)
 }
 
 // RemoveRoundFilesForParent removes the stored fallback plan and the monitor
@@ -234,15 +308,17 @@ func RemoveMonitorOptsForParent(d *db.DB, parentSession string) {
 
 // StopReviewChildrenForEnd prepares db.SetEnded(parent). That call also
 // ends every open `<parent>~review-*` row, so each of those rows must lose
-// its sidecar first. For each open child row it stops the sidecar and then
-// closes the tmux session of the child. It returns the children whose
-// sidecar still runs. Pass them to db.SetEndedExcept, so that their rows and
-// their ports stay reserved.
-func StopReviewChildrenForEnd(d *db.DB, parent string) []string {
+// its sidecar first. For each open child row it stops the sidecar, closes
+// the tmux session of the child, and then ends the processes in the sandbox
+// of the child (#3392). It returns the children whose sidecar still runs,
+// and the children where a process in the sandbox still runs. Pass
+// KeptChildren.Names to db.SetEndedExcept, so that their rows and their
+// ports stay reserved.
+func StopReviewChildrenForEnd(d *db.DB, parent string) KeptChildren {
 	rows, err := d.AllStatusesWithPrefix(parent + "~review-")
 	if err != nil {
 		proglog.Warnf("[prism] warning: list review children of %q: %v\n", parent, err)
-		return nil
+		return KeptChildren{}
 	}
 	var open []string
 	for _, row := range rows {
@@ -254,7 +330,8 @@ func StopReviewChildrenForEnd(d *db.DB, parent string) []string {
 	for _, name := range stopped {
 		reapKillTmuxSession(name)
 	}
-	return failed
+	_, sandboxRuns, sandboxErr := stopAgentSandboxes(stopped)
+	return KeptChildren{SidecarRuns: failed, SandboxRuns: sandboxRuns, SandboxErr: sandboxErr}
 }
 
 // stopAgentSidecars stops the sidecars of names at the same time, so that
@@ -283,19 +360,28 @@ func stopAgentSidecars(names []string) (stopped, failed []string) {
 }
 
 // cleanupFailedAgentSession is the cleanup of a review agent whose spawn
-// or readiness gate failed. It stops the sidecar first, then runs
-// cleanupAgentSession and closes the tmux session. If the sidecar does not
-// stop, it keeps the tmux session, the row, and the port, and only marks
-// the row "error", so that the round can complete. The release stops the
-// sidecar of that row later (#3168).
+// or readiness gate failed. It stops the sidecar first, then records the
+// cause, closes the tmux session, ends the processes in the sandbox of the
+// agent (#3392), and ends the row (endAgentSession). If the sidecar does
+// not stop, it keeps the tmux session, the row, and the port, and only
+// marks the row "error", so that the round can complete. The release stops
+// the sidecar of that row later (#3168). If a process in the sandbox still
+// runs after the tmux kill, it keeps the row and the port in the same way,
+// and the release tries the stop again later.
 func cleanupFailedAgentSession(d *db.DB, agentSession string, cause db.SessionReapCause, detail string) {
 	if !stopAgentSidecar(agentSession) {
 		proglog.Warnf("[prism] warning: sidecar of %q did not stop — keeping its tmux session, row, and port\n", agentSession)
 		_, _ = markAgentSessionError(d, agentSession, cause, detail)
 		return
 	}
-	cleanupAgentSession(d, agentSession, "", cause, detail)
-	_ = tmux.KillSession(agentSession)
+	// The cause is recorded before the tmux kill, as in reapOne.
+	st, _ := markAgentSessionError(d, agentSession, cause, detail)
+	_ = killTmuxSession(agentSession)
+	if err := stopAgentSandboxProcs(agentSession); err != nil {
+		proglog.Warnf("[prism] warning: %v — keeping the row and port of %q\n", err, agentSession)
+		return
+	}
+	endAgentSession(d, agentSession, "", st)
 }
 
 // markAgentSessionError records cause and moves a non-terminal row to state
@@ -340,6 +426,14 @@ func markAgentSessionError(d *db.DB, agentSession string, cause db.SessionReapCa
 // parentInstanceID is as for CleanupReviewSessionsForParent.
 func cleanupAgentSession(d *db.DB, agentSession, parentInstanceID string, cause db.SessionReapCause, detail ...string) {
 	st, _ := markAgentSessionError(d, agentSession, cause, detail...)
+	endAgentSession(d, agentSession, parentInstanceID, st)
+}
+
+// endAgentSession is the second half of cleanupAgentSession: it releases
+// the port, ends the row, purges the bus messages, and removes the dirs of
+// each incarnation of agentSession. st is the row that
+// markAgentSessionError read. It records no cause.
+func endAgentSession(d *db.DB, agentSession, parentInstanceID string, st *db.Status) {
 	_ = d.ReleasePort(agentSession)
 	_ = d.SetEnded(agentSession)
 	_ = d.PurgeBusMessages(agentSession)

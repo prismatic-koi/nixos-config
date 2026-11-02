@@ -252,7 +252,8 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		// Stop the sidecar before the worktree, the tmux session, or the row
 		// goes. A sidecar that does not stop can still use all of them.
 		if err := cleanupStopSidecar(m.session); err != nil {
-			return cleanupDoneMsg{keptSessionError(err, cleanupChildrenOfKeptSession(m.session))}
+			failed, childErr := cleanupChildrenOfKeptSession(m.session)
+			return cleanupDoneMsg{errors.Join(keptSessionError(err, failed), childErr)}
 		}
 		// Resolve the actual branch name BEFORE the worktree is removed —
 		// git.RemoveWorktree deletes worktreePath's .git file, after which
@@ -325,7 +326,8 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			stopAndRemoveChildContainers(d, m.session)
 			// Kill and clean up all review sessions spawned by this parent session,
 			// including their port allocations and DB rows.
-			keepChildren := cleanupReviewChildren(d, m.session, snap.instanceID)
+			kept := cleanupReviewChildren(d, m.session, snap.instanceID)
+			keepChildren := kept.Names()
 			// Orphan-sidecar safety net, after the child stop: see the header
 			// of cleanup_orphan_sidecars.go.
 			killOrphanReviewSidecars(m.session, keepChildren)
@@ -369,7 +371,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 				_ = d.PurgeBusMessages(m.session)
 				d.Close()
-				return cleanupDoneMsg{errors.Join(archiveErr, sidecarsNotStoppedError(keepChildren))}
+				return cleanupDoneMsg{errors.Join(archiveErr, keptChildrenError(kept))}
 			}
 			// Other archive errors are non-fatal — cleanup continues.
 			if snap.instanceID != "" {
@@ -377,7 +379,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			}
 			_ = d.PurgeBusMessages(m.session)
 			d.Close()
-			return cleanupDoneMsg{sidecarsNotStoppedError(keepChildren)}
+			return cleanupDoneMsg{keptChildrenError(kept)}
 		} else {
 			// DB unavailable — still attempt container removal conservatively.
 			review.KillReviewSessionsForParent(m.session)
@@ -664,9 +666,10 @@ type cleanupResult struct {
 // owns the sequencing so both modes route through one code path. Callers
 // populate result.HarnessSessionIDCleared from that helper's outcome.
 //
-// keepChildren names review children whose sidecar did not stop (the
-// return value of review.CleanupReviewSessionsForParent). The ended_at
-// cascade leaves their rows open, so their rows and ports stay reserved.
+// keepChildren names the review children that
+// review.CleanupReviewSessionsForParent kept: their sidecar did not stop,
+// or a process in their sandbox still runs. The ended_at cascade leaves
+// their rows open, so their rows and ports stay reserved.
 func applyDBLifecycleClears(d *db.DB, sessionName string, result *cleanupResult, keepChildren ...string) {
 	// 0. Record WHY this row is about to close. A closed row in
 	//    state "error" is otherwise indistinguishable from one a review
@@ -897,17 +900,17 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	// worktree/branch/session are already torn down). Other steps continue as
 	// normal.
 	var archiveCollisionWarning string
-	var keepChildren []string
+	var kept review.KeptChildren
 	if d, err := openDB(); err == nil {
 		// Stop and remove child review-agent containers BEFORE removing their
 		// DB rows — so a failed stop still has a record to retry against.
 		stopAndRemoveChildContainers(d, session)
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
-		keepChildren = cleanupReviewChildren(d, session, snap.instanceID)
+		kept = cleanupReviewChildren(d, session, snap.instanceID)
 		// Orphan-sidecar safety net, after the child stop: see the header of
 		// cleanup_orphan_sidecars.go.
-		killOrphanReviewSidecars(session, keepChildren)
+		killOrphanReviewSidecars(session, kept.Names())
 		if snap.isolationMode != "host" {
 			removeContainerIfExists(session)
 		}
@@ -927,7 +930,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		// Apply the lifecycle clears — release harness_port and stamp
 		// ended_at — and capture per-update outcomes for the JSON envelope. The
 		// harness_session_id clear runs later, after the archive.
-		applyDBLifecycleClears(d, session, &result, keepChildren...)
+		applyDBLifecycleClears(d, session, &result, kept.Names()...)
 		if endSessionsRow {
 			if updErr := d.UpdateSessionEnded(snap.instanceID, "finished"); updErr != nil {
 				proglog.Errorf("[prism] headlessCleanup: update session ended: %v\n", updErr)
@@ -986,7 +989,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	} else {
 		fmt.Fprintln(stdout, "done")
 	}
-	return sidecarsNotStoppedError(keepChildren)
+	return keptChildrenError(kept)
 }
 
 // finishKeptSessionCleanup ends a headless cleanup of session after its
@@ -996,12 +999,12 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 // reports the lifecycle fields as skipped and session_killed as false,
 // because the row, the port, and the tmux session stay.
 func finishKeptSessionCleanup(session string, stopErr error, result *cleanupResult, jsonMode bool, stdout io.Writer) error {
-	failed := cleanupChildrenOfKeptSession(session)
+	failed, childErr := cleanupChildrenOfKeptSession(session)
 	markDBLifecycleSkipped(result, "skipped: sidecar did not stop")
 	if jsonMode {
 		emitCleanupJSONTo(stdout, *result)
 	}
-	return keptSessionError(stopErr, failed)
+	return errors.Join(keptSessionError(stopErr, failed), childErr)
 }
 
 // finishSandboxKeptCleanup ends a headless cleanup or close of session
@@ -1102,7 +1105,7 @@ func closeSession(session string) error {
 			proglog.Errorf("[prism] closeSession: release port: %v\n", releaseErr)
 		}
 		endSessionsRow := sessionsRowOpen(d, snap.instanceID)
-		keepChildren, _ := endStoppingReviewChildren(d, session)
+		kept, _ := endStoppingReviewChildren(d, session)
 		review.RemoveRoundFilesForParent(d, session)
 		if endSessionsRow {
 			if updErr := d.UpdateSessionEnded(snap.instanceID, "finished"); updErr != nil {
@@ -1128,7 +1131,7 @@ func closeSession(session string) error {
 		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 			_ = d.PurgeBusMessages(session)
 			d.Close()
-			return errors.Join(archiveErr, sidecarsNotStoppedError(keepChildren))
+			return errors.Join(archiveErr, keptChildrenError(kept))
 		}
 		// Other archive errors are non-fatal — cleanup continues.
 		if snap.instanceID != "" {
@@ -1136,7 +1139,7 @@ func closeSession(session string) error {
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
-		return sidecarsNotStoppedError(keepChildren)
+		return keptChildrenError(kept)
 	}
 	// DB unavailable — still attempt container removal conservatively.
 	removeContainerIfExists(session)
@@ -1215,17 +1218,17 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		return finishSandboxKeptCleanup(session, err, &result, jsonMode, stdout)
 	}
 	var archiveCollisionWarning string
-	var keepChildren []string
+	var kept review.KeptChildren
 	if d, err := openDB(); err == nil {
 		// Stop and remove child review-agent containers BEFORE removing their
 		// DB rows — so a failed stop still has a record to retry against.
 		stopAndRemoveChildContainers(d, session)
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
-		keepChildren = cleanupReviewChildren(d, session, snap.instanceID)
+		kept = cleanupReviewChildren(d, session, snap.instanceID)
 		// Orphan-sidecar safety net, after the child stop: see the header of
 		// cleanup_orphan_sidecars.go.
-		killOrphanReviewSidecars(session, keepChildren)
+		killOrphanReviewSidecars(session, kept.Names())
 		if snap.isolationMode != "host" {
 			removeContainerIfExists(session)
 		}
@@ -1243,7 +1246,7 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		// Apply the lifecycle clears — release harness_port and stamp
 		// ended_at — and capture per-update outcomes for the JSON envelope. The
 		// harness_session_id clear runs later, after the archive.
-		applyDBLifecycleClears(d, session, &result, keepChildren...)
+		applyDBLifecycleClears(d, session, &result, kept.Names()...)
 		if endSessionsRow {
 			if updErr := d.UpdateSessionEnded(snap.instanceID, "finished"); updErr != nil {
 				proglog.Errorf("[prism] headlessCloseSession: update session ended: %v\n", updErr)
@@ -1293,7 +1296,7 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 	} else {
 		fmt.Fprintln(stdout, "done")
 	}
-	return sidecarsNotStoppedError(keepChildren)
+	return keptChildrenError(kept)
 }
 
 // cleanupWrapper wraps cleanupModel to intercept cleanupDoneMsg in Update.

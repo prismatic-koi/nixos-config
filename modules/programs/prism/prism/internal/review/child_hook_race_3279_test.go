@@ -114,13 +114,13 @@ var childKillPaths = []struct {
 	{"KillSessionsByNames", func(t *testing.T, d *db.DB, parent, _ string, kill func(string)) {
 		t.Cleanup(review.ReapSideEffectsForTest(nil, nil, nil))
 		t.Cleanup(review.SetKillTmuxSessionForTest(func(name string) error { kill(name); return nil }))
-		if failed := review.CleanupReviewSessionsForParent(d, parent, hookRaceParentIID); len(failed) != 0 {
+		if failed := review.CleanupReviewSessionsForParent(d, parent, hookRaceParentIID).Names(); len(failed) != 0 {
 			t.Fatalf("CleanupReviewSessionsForParent failed = %v", failed)
 		}
 	}},
 	{"StopReviewChildrenForEnd", func(t *testing.T, d *db.DB, parent, _ string, kill func(string)) {
 		t.Cleanup(review.ReapSideEffectsForTest(kill, nil, nil))
-		if failed := review.StopReviewChildrenForEnd(d, parent); len(failed) != 0 {
+		if failed := review.StopReviewChildrenForEnd(d, parent).Names(); len(failed) != 0 {
 			t.Fatalf("StopReviewChildrenForEnd failed = %v", failed)
 		}
 		if err := d.SetEnded(parent); err != nil {
@@ -206,7 +206,7 @@ func TestCleanupReviewSessionsForParent_HookClearedIDs_3279(t *testing.T) {
 
 			var failed []string
 			stderr := captureWarnings(t, func() {
-				failed = review.CleanupReviewSessionsForParent(d, parent, hookRaceParentIID)
+				failed = review.CleanupReviewSessionsForParent(d, parent, hookRaceParentIID).Names()
 			})
 
 			if len(failed) != 0 {

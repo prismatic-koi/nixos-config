@@ -639,7 +639,7 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		}
 		// SetEnded also ends the open review children of this session, so
 		// their sidecars stop first too.
-		keepChildren := hookStopReviewChildren(d, session)
+		keepChildren := hookStopReviewChildren(d, session).Names()
 
 		if err := d.ReleasePort(session); err != nil {
 			return fmt.Errorf("event tmux-session-end: release port: %w", err)

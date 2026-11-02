@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/review"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -69,7 +70,10 @@ func withHookPresenceGone(t *testing.T) {
 func withHookStops(t *testing.T, self func(string) bool, children func(*db.DB, string) []string) {
 	t.Helper()
 	prevSelf, prevChildren := hookStopSidecar, hookStopReviewChildren
-	hookStopSidecar, hookStopReviewChildren = self, children
+	hookStopSidecar = self
+	hookStopReviewChildren = func(d *db.DB, parent string) review.KeptChildren {
+		return review.KeptChildren{SidecarRuns: children(d, parent)}
+	}
 	t.Cleanup(func() { hookStopSidecar, hookStopReviewChildren = prevSelf, prevChildren })
 }
 
