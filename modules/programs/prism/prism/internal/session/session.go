@@ -938,7 +938,7 @@ func Create(name, directory string, opts Opts) error {
 		return nil
 	}
 
-	if err := newSessionRetryingServerExit(name, directory); err != nil {
+	if err := NewSessionRetryingServerExit(func() error { return tmux.NewSessionDetached(name, directory) }); err != nil {
 		return fmt.Errorf("new-session: %w", err)
 	}
 
@@ -967,22 +967,22 @@ var startLayoutSidecar = StartSidecarWithOpts
 // connects to exits before it answers.
 const tmuxServerExitedMsg = "server exited unexpectedly"
 
-// newSessionAttempts is the number of times Create runs tmux new-session
-// when tmux reports tmuxServerExitedMsg.
+// newSessionAttempts is the number of times NewSessionRetryingServerExit
+// runs tmux new-session when tmux reports tmuxServerExitedMsg.
 const newSessionAttempts = 5
 
 // newSessionRetryDelay is the wait before the second attempt. The wait
 // doubles before each next attempt. Tests set it.
 var newSessionRetryDelay = 100 * time.Millisecond
 
-// newSessionRetryingServerExit runs tmux new-session and tries again when
-// tmux reports tmuxServerExitedMsg. After `prism restart` runs kill-server,
-// the old server can still run its session-closed hooks. A client that
-// connects to it in that time gets this error, and no session is made
-// (#3309). Only new-session is tried again: the layout, and with it the
-// sidecar, starts only after new-session succeeds, so one Create starts at
-// most one sidecar.
-func newSessionRetryingServerExit(name, directory string) error {
+// NewSessionRetryingServerExit runs newSession, a tmux new-session, and
+// tries again when tmux reports tmuxServerExitedMsg. After `prism restart`
+// runs kill-server, the old server can still run its session-closed hooks. A
+// client that connects to it in that time gets this error, and no session is
+// made (#3309). newSession must run only the new-session: the layout of
+// Create, and with it the sidecar, starts only after new-session succeeds,
+// so one Create starts at most one sidecar.
+func NewSessionRetryingServerExit(newSession func() error) error {
 	delay := newSessionRetryDelay
 	var err error
 	for attempt := 1; attempt <= newSessionAttempts; attempt++ {
@@ -990,7 +990,7 @@ func newSessionRetryingServerExit(name, directory string) error {
 			time.Sleep(delay)
 			delay *= 2
 		}
-		err = tmux.NewSessionDetached(name, directory)
+		err = newSession()
 		if err == nil || !strings.Contains(err.Error(), tmuxServerExitedMsg) {
 			return err
 		}

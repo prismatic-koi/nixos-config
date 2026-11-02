@@ -435,8 +435,8 @@ A sandbox cannot read the prism state dir. So in a sandbox, prism does
 not use the record, and `OpenBare` accepts a `.bare` that is not in it.
 In a sandbox, git runs with the rights of the session, so such a `.bare`
 gives the session nothing more. prism finds a sandbox with
-`sandboxenv.IsInsideSandbox`, which reads `PRISM_HOST_API`. The sidecar
-sets that variable only in a sandboxed session.
+`sandboxenv.IsInsideSandbox`, which reads `PRISM_HOST_API`. The container
+layer sets that variable only in a sandboxed session.
 
 ### The routes that the record covers
 
@@ -659,6 +659,14 @@ that session in tmux.
   `prism reset`, and the `session-closed` hook end it (#3375). If the
   session ended by another path, for example the cleanup of a failed
   spawn, the check of the clone does not see the process.
+- **A symlink to the clone target (#3396).** `holdStartLock` reads only
+  the path that it gets. A symlink in a worktree that points at a clone
+  target outside the layout is in a bare+worktree layout, so a start there
+  takes no lock. Two owner routes start such a session. One is
+  `prism switch --path` on the symlink. The other is the `prism switch`
+  picker, which lists the raw `git worktree list` paths and calls
+  `ensureAndSwitch` with no `worktreeRootIn` check. A session can make that
+  list name the symlink. #3396 tracks the fix.
 
 ### Tests of the clone-lock rule
 
@@ -706,11 +714,11 @@ write rights:
   `Rebase: true` in the container), then proxies the review to the host with
   no rebase, so the host subprocess runs only the non-rebase pre-flight. The
   host-API `/review` handler refuses a rebase request — every `/review`
-  caller is sandboxed, because the sidecar injects `PRISM_HOST_API` only into
-  a sandboxed session. So a planted `rebase-merge/autostash`, `head-name`, or
-  `orig-head` applies at the worker's own trust level: it cannot make the
-  host run a command or move a host-owned local branch such as `main`. This
-  closes the success-path and abort-path races that #3323 left open on the
+  caller is sandboxed, because the container layer injects `PRISM_HOST_API`
+  only into a sandboxed session. So a planted `rebase-merge/autostash`,
+  `head-name`, or `orig-head` applies at the worker's own trust level: it
+  cannot make the host run a command or move a host-owned local branch such
+  as `main`. This closes the success-path race that #3323 left open on the
   host.
 - **A host-mode session.** There is no separate sandbox, so the steps run in
   the session's own environment, which is the host. A host-mode session is
@@ -752,10 +760,10 @@ pre-flight that runs on the host for every session:
   worktree path, and when `HEAD` is not on that branch. The rebase acts on
   `HEAD`, so this keeps the rebase, the push, and the restore on one branch;
   prism never falls back to a bare `git push` that follows `HEAD`. This guard
-  holds against a host-mode session only, which is not a trust boundary. The
-  old race in the window between the `HEAD` check and the start of
-  `git rebase` no longer reaches a host rebase, because a sandboxed session
-  runs no rebase on the host.
+  holds against a host-mode session only, which is not a trust boundary. A race
+  in the window between the `HEAD` check and the start of `git rebase` does
+  not reach a host rebase, because a sandboxed session runs no rebase on the
+  host.
 
 Code: `internal/review/preflight.go`, `cmd/review.go` (the sandboxed
 container branch runs the rebase in the sandbox and proxies with no rebase;

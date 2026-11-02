@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/dashboard"
+	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -103,8 +104,10 @@ func ensureDashSession() error {
 		self = "prism"
 	}
 	dashCmd := "'" + strings.ReplaceAll(self, "'", "'\\''") + "' dashboard"
-	c := exec.Command(tmux.TmuxBin, "new-session", "-ds", dashboard.DashSession, "-n", "dashboard", dashCmd)
-	return c.Run()
+	return session.NewSessionRetryingServerExit(func() error {
+		_, err := tmux.Run("new-session", "-ds", dashboard.DashSession, "-n", "dashboard", dashCmd)
+		return err
+	})
 }
 
 // syscallExec is a package-level indirection over syscall.Exec so tests can

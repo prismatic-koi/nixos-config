@@ -6,8 +6,9 @@
 // session, not the host ~/.pi/agent/auth.json: pi runs an api_key value in
 // auth.json that starts with "!" as a shell command, so a sandbox must not
 // write the file that later sessions read. The sidecar of the session runs
-// on the host and copies OAuth entries between the two files
-// (prism/internal/container/pi_auth_session.go).
+// on the host. It copies only the OAuth entry of the anthropic provider from
+// the session file to the host file, and it copies the host file to the
+// session file (prism/internal/container/pi_auth_session.go).
 //
 // The two refresh paths call the sync while they hold the shared refresh
 // lock (refresh-lock.ts):

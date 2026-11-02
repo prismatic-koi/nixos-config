@@ -231,7 +231,7 @@ func describeRefreshError(accountName string, err error) string {
 // Two conditions, checked in order:
 //
 //  1. Inside a sandbox. PRISM_HOST_API is the sentinel, and it is set only by
-//     the sidecar when it launches a sandboxed session. The accounts
+//     the container layer when it launches a sandboxed session. The accounts
 //     directory is not bound into that sandbox, so accounts/current — and
 //     with it the identity of the account being refreshed — is out of reach
 //     by construction.
@@ -362,9 +362,9 @@ func persistSnapshot(payload *usage.SnapshotPayload) error {
 // discoverSidecarAPI finds a live sidecar host-API socket to POST through.
 //
 // The refresh only runs host-side, where PRISM_HOST_API is unset by
-// definition (the sidecar injects it into sandboxed sessions only), so there
-// is no environment variable to read. Instead the per-session run directories
-// are scanned and each candidate socket is dialled.
+// definition (the container layer injects it into sandboxed sessions only), so
+// there is no environment variable to read. Instead the per-session run
+// directories are scanned and each candidate socket is dialled.
 //
 // ANY live sidecar will do. /usage/snapshot ignores the calling session
 // entirely: it resolves `accounts/current` itself and writes the one shared

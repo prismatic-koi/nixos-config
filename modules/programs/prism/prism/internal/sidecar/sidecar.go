@@ -1121,8 +1121,9 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	s.mu.Unlock()
 
 	// Stage 2c: the pi auth sync of a bwrap or sandbox-exec session. It
-	// copies OAuth entries between the auth.json of the session and the host
-	// auth.json (pi_auth_sync.go, #3295). It needs the instance ID of stage 1.
+	// copies the host auth.json to the auth.json of the session, and only the
+	// anthropic OAuth entry of the session file to the host auth.json
+	// (pi_auth_sync.go, #3295). It needs the instance ID of stage 1.
 	s.startPIAuthSync(ctx)
 
 	// Stage 3: transport-shape gate. Consult the harness registry to

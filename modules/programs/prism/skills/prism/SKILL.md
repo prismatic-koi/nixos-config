@@ -622,7 +622,7 @@ Who can read which logs:
 
 The command works the same in a `bwrap`, `sandbox-exec`, or `host` session. In a sandbox, the host decides who you are from the host-API credential of your session: the secret in `hostapi.secret`, next to the `hostapi.sock` of the session. A request that reaches the socket of another session without its secret gets HTTP 401. `PRISM_SESSION_NAME` and `--session` cannot widen the access.
 
-If the round has no log, the command exits non-zero with an error that names the round. A round that ran on a prism version older than this command has no log that the command can read. `prism cleanup` and `prism close --yes` of a session remove the logs of its review rounds. An interactive `prism close` that keeps the worktree keeps the logs.
+If the round has no log, the command exits non-zero with an error that names the round. A round that ran on a prism version older than this command has no log that the command can read. `prism cleanup` and `prism close` of a session remove the logs of its review rounds.
 
 ## Investigator agents
 

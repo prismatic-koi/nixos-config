@@ -148,9 +148,7 @@ func KillReviewSessionsForParentWithDB(d *db.DB, parentSession string) {
 // must pass them to db.SetEndedExcept when it ends the parent, because the
 // db.SetEnded cascade would end their rows too.
 //
-// It also removes the stored fallback plan and the monitor log of each round
-// of the parent (RemoveMonitorOptsForParent, RemoveMonitorLogsForParent), and
-// the diff dir of the parent (RemoveDiffDirForParent).
+// It also removes the review files of the parent (RemoveRoundFilesForParent).
 //
 // parentInstanceID is the instance ID of the parent incarnation that the
 // archive step of the caller copies. The caller reads it before the tmux
@@ -160,9 +158,7 @@ func KillReviewSessionsForParentWithDB(d *db.DB, parentSession string) {
 // of the parent still runs: the hand-over then reads agent_status.
 func CleanupReviewSessionsForParent(d *db.DB, parentSession, parentInstanceID string) (failed []string) {
 	prefix := parentSession + "~review-"
-	defer RemoveMonitorOptsForParent(d, parentSession)
-	defer RemoveMonitorLogsForParent(d, parentSession)
-	defer RemoveDiffDirForParent(parentSession)
+	defer RemoveRoundFilesForParent(d, parentSession)
 
 	// Try DB-backed group membership first (post-migration rows).
 	members, err := d.GroupMembersForParent(parentSession)
@@ -209,6 +205,15 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession, parentInstanceID st
 	// Kill the tmux sessions (best effort, idempotent).
 	KillSessionPrefix(prefix)
 	return failed
+}
+
+// RemoveRoundFilesForParent removes the stored fallback plan and the monitor
+// log of each review round of parentSession, and the diff dir of
+// parentSession.
+func RemoveRoundFilesForParent(d *db.DB, parentSession string) {
+	RemoveMonitorOptsForParent(d, parentSession)
+	RemoveMonitorLogsForParent(d, parentSession)
+	RemoveDiffDirForParent(parentSession)
 }
 
 // RemoveMonitorOptsForParent removes the stored monitor opts file (the
