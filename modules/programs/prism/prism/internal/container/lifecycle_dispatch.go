@@ -381,7 +381,7 @@ func (h *hostIsolator) WriteGitconfig(m *Manager) error { return nil }
 func (h *hostIsolator) Reset(ctx context.Context) error { return nil }
 
 // Prepare is not the entry point for host mode — host runs the agent
-// directly in the tmux pane via the BuildOpencodeCmd (DirectCmd) path.
+// directly in the tmux pane via the BuildAgentCmd (DirectCmd) path.
 // Returns an error so callers route correctly.
 func (h *hostIsolator) Prepare(ctx context.Context, m *Manager) ([]string, error) {
 	return nil, fmt.Errorf("container: host does not use Prepare; pi launches directly in the tmux pane")

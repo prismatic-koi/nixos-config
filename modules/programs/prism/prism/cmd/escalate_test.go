@@ -2,39 +2,36 @@ package cmd
 
 import (
 	"encoding/json"
-	"io"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
 
-// startEscalateHTTPStub spins up an httptest.Server that accepts the
-// POST /session/<sid>/prompt_async call used by deliverViaHTTP. The handler
-// records the last received request for the test to assert on.
+// capturedPromptCall is the last request that the stub of the host-API
+// socket of the coordinator got.
 type capturedPromptCall struct {
 	body map[string]any
 	url  string
 }
 
-func startEscalateHTTPStub(t *testing.T) (*httptest.Server, *capturedPromptCall) {
+// startEscalateHostAPI sets a short XDG_STATE_HOME for the test and starts a
+// stub of the host-API socket of the coordinator session coordinator. The
+// stub records the last request for the test to assert on.
+func startEscalateHostAPI(t *testing.T, coordinator string) *capturedPromptCall {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", stateguardtest.ShortTempDir(t, "esc-"))
 	captured := &capturedPromptCall{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, _ := io.ReadAll(r.Body)
+	startHostAPIStub(t, coordinator, func(path string, body []byte) int {
 		var b map[string]any
-		_ = json.Unmarshal(bodyBytes, &b)
+		_ = json.Unmarshal(body, &b)
 		captured.body = b
-		captured.url = r.URL.Path
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	t.Cleanup(srv.Close)
-	return srv, captured
+		captured.url = path
+		return http.StatusOK
+	})
+	return captured
 }
 
 // TestEscalate_AutoDiscoversSingleCoordinator covers auto-discovery of the
@@ -43,20 +40,13 @@ func startEscalateHTTPStub(t *testing.T) (*httptest.Server, *capturedPromptCall)
 func TestEscalate_AutoDiscoversSingleCoordinator(t *testing.T) {
 	d := openPromptTestDB(t)
 
-	srv, captured := startEscalateHTTPStub(t)
-	port := extractTestServerPort(t, srv.URL)
-
-	// Override httpClient to use a Unix-friendly net.Dialer (default is fine for httptest)
-	// but force its timeout shorter so failed tests fail fast.
-	httpClient = &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{
-		DialContext: (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
-	}}
+	captured := startEscalateHostAPI(t, "repo@main")
 
 	// Coordinator session in the same repo.
-	seedSession(t, d, "repo@main", "active", intPtr(port), strPtr("oc-coord-sid"),
+	seedSession(t, d, "repo@main", "active", strPtr("oc-coord-sid"),
 		strPtr("coordinator"), strPtr("anthropic/claude-sonnet-4.6"))
 	// Worker session that is calling escalate.
-	seedSession(t, d, "repo@feature", "active", nil, nil,
+	seedSession(t, d, "repo@feature", "active", nil,
 		strPtr("worker"), strPtr("anthropic/claude-sonnet-4.6"))
 
 	if err := runEscalateForSession(d, "repo@feature", "", "I'm stuck — please advise."); err != nil {
@@ -76,12 +66,14 @@ func TestEscalate_AutoDiscoversSingleCoordinator(t *testing.T) {
 	if captured.body == nil {
 		t.Fatalf("coordinator received no prompt")
 	}
-	parts, ok := captured.body["parts"].([]any)
-	if !ok || len(parts) == 0 {
-		t.Fatalf("prompt body parts: got %v", captured.body["parts"])
+	if prompt, _ := captured.body["prompt"].(string); prompt == "" {
+		t.Fatalf("prompt body: got %v, want a non-empty prompt", captured.body)
 	}
-	if !strings.Contains(captured.url, "oc-coord-sid") {
-		t.Errorf("URL = %q, want path containing %q", captured.url, "oc-coord-sid")
+	if got, _ := captured.body["session"].(string); got != "repo@main" {
+		t.Errorf("session = %q, want %q", got, "repo@main")
+	}
+	if captured.url != "/prompt" {
+		t.Errorf("URL = %q, want %q", captured.url, "/prompt")
 	}
 }
 
@@ -90,14 +82,11 @@ func TestEscalate_AutoDiscoversSingleCoordinator(t *testing.T) {
 func TestEscalate_StateTransitionEscalated(t *testing.T) {
 	d := openPromptTestDB(t)
 
-	srv, _ := startEscalateHTTPStub(t)
-	port := extractTestServerPort(t, srv.URL)
+	_ = startEscalateHostAPI(t, "repo@main")
 
-	httpClient = &http.Client{Timeout: 2 * time.Second}
-
-	seedSession(t, d, "repo@main", "active", intPtr(port), strPtr("oc-sid-coord"),
+	seedSession(t, d, "repo@main", "active", strPtr("oc-sid-coord"),
 		strPtr("coordinator"), nil)
-	seedSession(t, d, "repo@feature", "active", nil, nil, strPtr("worker"), nil)
+	seedSession(t, d, "repo@feature", "active", nil, strPtr("worker"), nil)
 
 	if err := runEscalateForSession(d, "repo@feature", "", "help"); err != nil {
 		t.Fatalf("runEscalateForSession: %v", err)
@@ -115,12 +104,10 @@ func TestEscalate_StateTransitionEscalated(t *testing.T) {
 func TestEscalate_BusEventDistinct(t *testing.T) {
 	d := openPromptTestDB(t)
 
-	srv, _ := startEscalateHTTPStub(t)
-	port := extractTestServerPort(t, srv.URL)
-	httpClient = &http.Client{Timeout: 2 * time.Second}
+	_ = startEscalateHostAPI(t, "repo@main")
 
-	seedSession(t, d, "repo@main", "active", intPtr(port), strPtr("oc-sid"), strPtr("coordinator"), nil)
-	seedSession(t, d, "repo@feature", "active", nil, nil, strPtr("worker"), nil)
+	seedSession(t, d, "repo@main", "active", strPtr("oc-sid"), strPtr("coordinator"), nil)
+	seedSession(t, d, "repo@feature", "active", nil, strPtr("worker"), nil)
 
 	if err := runEscalateForSession(d, "repo@feature", "", "stuck on review"); err != nil {
 		t.Fatalf("runEscalateForSession: %v", err)
@@ -170,15 +157,13 @@ func TestEscalate_BusEventDistinct(t *testing.T) {
 func TestEscalate_MultipleCandidatesNoTo(t *testing.T) {
 	d := openPromptTestDB(t)
 
-	httpClient = &http.Client{Timeout: 2 * time.Second}
-
 	// A `<repo>@main` row with a NULL root_agent_name.
-	seedSession(t, d, "repo@main", "active", nil, nil, nil, nil)
+	seedSession(t, d, "repo@main", "active", nil, nil, nil)
 	// Fresh coordinator with explicit root_agent_name='coordinator' on a
 	// different branch. The unique index permits this because it filters on
 	// root_agent_name='coordinator' only — the legacy row does not match.
-	seedSession(t, d, "repo@coord-2", "active", nil, nil, strPtr("coordinator"), nil)
-	seedSession(t, d, "repo@feature", "active", nil, nil, strPtr("worker"), nil)
+	seedSession(t, d, "repo@coord-2", "active", nil, strPtr("coordinator"), nil)
+	seedSession(t, d, "repo@feature", "active", nil, strPtr("worker"), nil)
 
 	err := runEscalateForSession(d, "repo@feature", "", "halp")
 	if err == nil {
@@ -200,10 +185,8 @@ func TestEscalate_MultipleCandidatesNoTo(t *testing.T) {
 func TestEscalate_NoCoordinatorStillEscalates(t *testing.T) {
 	d := openPromptTestDB(t)
 
-	httpClient = &http.Client{Timeout: 2 * time.Second}
-
 	// Only the worker — no coordinator anywhere in the repo.
-	seedSession(t, d, "repo@feature", "active", nil, nil, strPtr("worker"), nil)
+	seedSession(t, d, "repo@feature", "active", nil, strPtr("worker"), nil)
 
 	if err := runEscalateForSession(d, "repo@feature", "", "lonely worker"); err != nil {
 		t.Fatalf("runEscalateForSession: %v", err)
@@ -237,7 +220,7 @@ func TestEscalate_NoCoordinatorStillEscalates(t *testing.T) {
 func TestEscalate_ExplicitToMissingSession(t *testing.T) {
 	d := openPromptTestDB(t)
 
-	seedSession(t, d, "repo@feature", "active", nil, nil, strPtr("worker"), nil)
+	seedSession(t, d, "repo@feature", "active", nil, strPtr("worker"), nil)
 
 	err := runEscalateForSession(d, "repo@feature", "ghost-session", "halp")
 	if err == nil {
@@ -258,12 +241,10 @@ func TestEscalate_ExplicitToMissingSession(t *testing.T) {
 func TestEscalate_PromptEchoedToSelf(t *testing.T) {
 	d := openPromptTestDB(t)
 
-	srv, _ := startEscalateHTTPStub(t)
-	port := extractTestServerPort(t, srv.URL)
-	httpClient = &http.Client{Timeout: 2 * time.Second}
+	_ = startEscalateHostAPI(t, "repo@main")
 
-	seedSession(t, d, "repo@main", "active", intPtr(port), strPtr("oc-sid"), strPtr("coordinator"), nil)
-	seedSession(t, d, "repo@feature", "active", nil, nil, strPtr("worker"), nil)
+	seedSession(t, d, "repo@main", "active", strPtr("oc-sid"), strPtr("coordinator"), nil)
+	seedSession(t, d, "repo@feature", "active", nil, strPtr("worker"), nil)
 
 	const body = "the question I need answered"
 	if err := runEscalateForSession(d, "repo@feature", "", body); err != nil {
@@ -287,7 +268,7 @@ func TestEscalate_PromptEchoedToSelf(t *testing.T) {
 // TestEscalate_ResolveTarget_OneCandidate exercises the resolver directly.
 func TestEscalate_ResolveTarget_OneCandidate(t *testing.T) {
 	d := openPromptTestDB(t)
-	seedSession(t, d, "repo@main", "active", nil, nil, strPtr("coordinator"), nil)
+	seedSession(t, d, "repo@main", "active", nil, strPtr("coordinator"), nil)
 
 	target, err := resolveEscalationTarget(d, "repo", "")
 	if err != nil {
@@ -304,7 +285,7 @@ func TestEscalate_ResolveTarget_OneCandidate(t *testing.T) {
 func TestEscalate_ResolveTarget_LegacyAtMainRow(t *testing.T) {
 	d := openPromptTestDB(t)
 	// Note: seedSession passes nil rootAgent → root_agent_name stays NULL.
-	seedSession(t, d, "repo@main", "active", nil, nil, nil, nil)
+	seedSession(t, d, "repo@main", "active", nil, nil, nil)
 
 	target, err := resolveEscalationTarget(d, "repo", "")
 	if err != nil {
@@ -318,11 +299,11 @@ func TestEscalate_ResolveTarget_LegacyAtMainRow(t *testing.T) {
 // TestEscalate_ResolveTarget_ExplicitTo exercises the --to override path.
 func TestEscalate_ResolveTarget_ExplicitTo(t *testing.T) {
 	d := openPromptTestDB(t)
-	seedSession(t, d, "repo@main", "active", nil, nil, strPtr("coordinator"), nil)
+	seedSession(t, d, "repo@main", "active", nil, strPtr("coordinator"), nil)
 	// Use a non-coordinator role for the second target so the unique index
 	// (one coordinator per repo) is not violated. --to allows targeting any
 	// session by name regardless of role.
-	seedSession(t, d, "repo@coord-2", "active", nil, nil, strPtr("worker"), nil)
+	seedSession(t, d, "repo@coord-2", "active", nil, strPtr("worker"), nil)
 
 	target, err := resolveEscalationTarget(d, "repo", "repo@coord-2")
 	if err != nil {

@@ -123,7 +123,7 @@ func (s *Sidecar) notifyInvestigatorCompletion(state agent.AgentState, finalText
 		return
 	}
 
-	if err := promptdelivery.DeliverToSession(invokerSession, invokerStatus, bodyText, buildNotifyPromptBody, "", "followUp"); err != nil {
+	if err := promptdelivery.DeliverToSession(invokerSession, invokerStatus, bodyText, "", "followUp"); err != nil {
 		s.logger().Printf("sidecar: notifyInvestigatorCompletion: FAILED — investigator=%s invoker=%s reason=%v",
 			s.cfg.SessionName, invokerSession, err)
 		return
@@ -182,7 +182,7 @@ func (s *Sidecar) notifyParentWorkerOnReviewFailure(failureText string) {
 	notifyText := fmt.Sprintf("review agent %s %s", s.cfg.SessionName, failureText)
 
 	// All sessions use the pi harness — route through the host-API Unix socket.
-	if err := promptdelivery.DeliverToSession(parentSession, parentStatus, notifyText, buildNotifyPromptBody, "", "followUp"); err != nil {
+	if err := promptdelivery.DeliverToSession(parentSession, parentStatus, notifyText, "", "followUp"); err != nil {
 		s.logger().Printf("sidecar: notifyParentWorker: FAILED — parent=%s reason=%v", parentSession, err)
 	} else {
 		s.logger().Printf("sidecar: notifyParentWorker: delivered to parent=%s via host-API socket", parentSession)
@@ -513,7 +513,7 @@ func (s *Sidecar) sendCoordinatorNotification(notifyText string, attachDisagreem
 	if deliverFn == nil {
 		deliverFn = promptdelivery.DeliverToSession
 	}
-	if err := deliverFn(coordinatorName, coordStatus, notifyText, buildNotifyPromptBody, "", "followUp"); err != nil {
+	if err := deliverFn(coordinatorName, coordStatus, notifyText, "", "followUp"); err != nil {
 		s.logger().Printf("sidecar: notifyCoordinator: FAILED — coordinator=%s reason=%v", coordinatorName, err)
 		if writeErr := s.cfg.DB.WriteBusMessageFailed(msg); writeErr != nil {
 			s.logger().Printf("sidecar: notifyCoordinator: write failed audit: %v", writeErr)
@@ -524,58 +524,6 @@ func (s *Sidecar) sendCoordinatorNotification(notifyText string, attachDisagreem
 		s.logger().Printf("sidecar: notifyCoordinator: write delivered audit: %v", err)
 	}
 	s.logger().Printf("sidecar: notifyCoordinator: delivered to coordinator=%s via host-API socket", coordinatorName)
-}
-
-// buildNotifyPromptBody constructs the request body for the coordinator
-// notification prompt_async call. When root_model_id is known, it is included
-// so the session continues using its root model. Falls back to model_id for
-// sessions created before the root fields migration.
-//
-// The "agent" field is included when root_agent_name is non-nil and non-empty.
-// This re-asserts the correct agent on notification delivery, preventing
-// the agent from defaulting to its last-active (wrong) agent in host mode.
-//
-// Background: setting "agent" can let an incoming notification switch a
-// subagent's context to the notifier's agent. That concern does not apply
-// here: the status passed in is the *receiving*
-// session's own status, not the sender's. Re-asserting root_agent_name on
-// delivery is safe and correct — it keeps the coordinator pinned to the right
-// agent persona regardless of what the agent last processed.
-func buildNotifyPromptBody(text string, status *db.Status) map[string]any {
-	body := map[string]any{
-		"parts": []map[string]string{
-			{"type": "text", "text": text},
-		},
-	}
-
-	// Re-assert the receiving session's root agent so the agent does not default
-	// to its internally-tracked last-active agent (which may differ in host
-	// mode). Only set when root_agent_name is known and non-empty.
-	if status.RootAgentName != nil && *status.RootAgentName != "" {
-		body["agent"] = *status.RootAgentName
-	}
-
-	modelID := status.RootModelID
-	if modelID == nil {
-		modelID = status.ModelID
-	}
-
-	if modelID != nil {
-		// Split model_id on the first "/" to get providerID and modelID.
-		slashIdx := strings.Index(*modelID, "/")
-		providerID := *modelID
-		modelIDStr := ""
-		if slashIdx >= 0 {
-			providerID = (*modelID)[:slashIdx]
-			modelIDStr = (*modelID)[slashIdx+1:]
-		}
-		body["model"] = map[string]string{
-			"providerID": providerID,
-			"modelID":    modelIDStr,
-		}
-	}
-
-	return body
 }
 
 // goNotify launches fn on a new goroutine while tracking it in s.notifyWG.

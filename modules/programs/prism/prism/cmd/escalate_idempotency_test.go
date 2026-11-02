@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -91,11 +90,9 @@ func eventCount(t *testing.T, d *db.DB, sessionName, evType string) int {
 // pointer so callers can assert on what (if anything) was delivered.
 func seedEscalatePair(t *testing.T, d *db.DB, fromSession, toSession string) *capturedPromptCall {
 	t.Helper()
-	srv, captured := startEscalateHTTPStub(t)
-	port := extractTestServerPort(t, srv.URL)
-	httpClient = &http.Client{Timeout: 2 * time.Second}
-	seedSession(t, d, toSession, "active", intPtr(port), strPtr("oc-sid-"+toSession), strPtr("coordinator"), nil)
-	seedSession(t, d, fromSession, "active", nil, nil, strPtr("worker"), nil)
+	captured := startEscalateHostAPI(t, toSession)
+	seedSession(t, d, toSession, "active", strPtr("oc-sid-"+toSession), strPtr("coordinator"), nil)
+	seedSession(t, d, fromSession, "active", nil, strPtr("worker"), nil)
 	return captured
 }
 
@@ -185,7 +182,7 @@ func TestEscalate_PartB_JSON_ErrorPath(t *testing.T) {
 	d := openPromptTestDB(t)
 	// Only the worker — explicit --to to a nonexistent session triggers an
 	// error before any state transition (existing behaviour).
-	seedSession(t, d, "repo@feature", "active", nil, nil, strPtr("worker"), nil)
+	seedSession(t, d, "repo@feature", "active", nil, strPtr("worker"), nil)
 
 	// Drive through the cobra command so the --json flag and error reporter
 	// fire. resetRootCmdFlags is called by openPromptTestDB.
@@ -286,7 +283,7 @@ func TestEscalate_PartC_ReplayWithinWindow_SkipsAllWrites(t *testing.T) {
 		t.Errorf("session.escalated agent_events count after replay = %d, want %d", got, busEventsBefore)
 	}
 
-	// no re-delivery (captured.body would be set if the HTTP stub
+	// no re-delivery (captured.body would be set if the host-API stub
 	// received a second prompt).
 	if captured.body != nil {
 		t.Errorf("replay re-delivered to coordinator (captured.body = %v); want no new delivery", captured.body)
@@ -384,8 +381,8 @@ func TestEscalate_PartC_QueuedNotYetDelivered_ShortCircuits(t *testing.T) {
 	d := openPromptTestDB(t)
 	// Seed a worker but NOT a coordinator HTTP stub — we synthesise a queued
 	// row directly to test the "delivered_at IS NULL" replay path.
-	seedSession(t, d, "repo@main", "active", nil, nil, strPtr("coordinator"), nil)
-	seedSession(t, d, "repo@feature", "active", nil, nil, strPtr("worker"), nil)
+	seedSession(t, d, "repo@main", "active", nil, strPtr("coordinator"), nil)
+	seedSession(t, d, "repo@feature", "active", nil, strPtr("worker"), nil)
 
 	// Mark the worker as already in escalated state — the dedup guard only
 	// fires when current_state == escalated. The bus row would have been
@@ -464,7 +461,7 @@ func TestEscalate_PartC_DedupScopedToFromSession(t *testing.T) {
 	d := openPromptTestDB(t)
 	captured := seedEscalatePair(t, d, "repo@feature", "repo@main")
 	// Also seed a second worker in the same repo.
-	seedSession(t, d, "repo@feature-2", "active", nil, nil, strPtr("worker"), nil)
+	seedSession(t, d, "repo@feature-2", "active", nil, strPtr("worker"), nil)
 
 	if err := runEscalateForSessionOpts(d, "repo@feature", "", "halp", escalateOptions{dedupWindow: escalateDefaultDedupWindow}); err != nil {
 		t.Fatalf("first runEscalateForSessionOpts: %v", err)

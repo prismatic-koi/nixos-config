@@ -108,7 +108,6 @@ func TestNotifyCoordinator_WriteBusMessageFailed_OnDeliveryError(t *testing.T) {
 		Worktree:    "/tmp/test-worker-failaudit",
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 		AgentRole:   "worker",
 	}
@@ -119,7 +118,7 @@ func TestNotifyCoordinator_WriteBusMessageFailed_OnDeliveryError(t *testing.T) {
 	injectedErr := errors.New("simulated: coordinator vanished mid-delivery")
 	var capturedCoordinator string
 	var capturedText string
-	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, source string, deliverAs string) error {
 		capturedCoordinator = sessionName
 		capturedText = text
 		return injectedErr
@@ -200,7 +199,6 @@ func TestNotifyCoordinator_NoFailedAudit_OnDeliverySuccess(t *testing.T) {
 		Worktree:    "/tmp/test-worker-okaudit",
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 		AgentRole:   "worker",
 	}
@@ -209,7 +207,7 @@ func TestNotifyCoordinator_NoFailedAudit_OnDeliverySuccess(t *testing.T) {
 	// Force a successful delivery — the seam returns nil, so the
 	// WriteBusMessageFailed branch must not run.
 	var delivered bool
-	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, source string, deliverAs string) error {
 		delivered = true
 		return nil
 	}

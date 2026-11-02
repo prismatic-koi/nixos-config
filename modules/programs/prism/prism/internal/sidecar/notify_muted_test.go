@@ -43,14 +43,13 @@ func newMutedTestSidecar(t *testing.T, workerSession, coordSession, repo string)
 		Worktree:    "/tmp/test-worker-" + workerSession,
 		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 		AgentRole:   "worker",
 	}
 	s := New(cfg)
 
 	tr := &deliveryTracker{}
-	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, source string, deliverAs string) error {
 		tr.calls = append(tr.calls, deliveryCall{to: sessionName, text: text})
 		return nil
 	}

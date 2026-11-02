@@ -52,7 +52,7 @@ func (h *hostIsolator) Capabilities() Capabilities {
 }
 
 // BuildRunArgs is a no-op for host mode: the agent is launched directly by the
-// tmux pane command (BuildOpencodeCmd), not via a Run call.
+// tmux pane command (BuildAgentCmd), not via a Run call.
 func (h *hostIsolator) BuildRunArgs() []string {
 	return nil
 }

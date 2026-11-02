@@ -210,14 +210,13 @@ func TestNotifyCoordinator_NoFollowUps_DeliversGenericText(t *testing.T) {
 		Worktree:    "/tmp/test-worker-nofollowups",
 		DB:          bus.DB,
 		Clock:       newTestClock(),
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 		AgentRole:   "worker",
 	}
 	s := New(cfg)
 
 	var capturedText string
-	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, source string, deliverAs string) error {
 		capturedText = text
 		return nil
 	}
@@ -245,14 +244,13 @@ func TestNotifyCoordinator_WithFollowUps_DeliversBody(t *testing.T) {
 		Worktree:    "/tmp/test-worker-withfollowups",
 		DB:          bus.DB,
 		Clock:       newTestClock(),
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 		AgentRole:   "worker",
 	}
 	s := New(cfg)
 
 	var capturedText string
-	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, source string, deliverAs string) error {
 		capturedText = text
 		return nil
 	}
@@ -289,14 +287,13 @@ func TestNotifyCoordinatorError_WithFollowUps_DeliversBody(t *testing.T) {
 		Worktree:    "/tmp/test-worker-errfollowups",
 		DB:          bus.DB,
 		Clock:       newTestClock(),
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 		AgentRole:   "worker",
 	}
 	s := New(cfg)
 
 	var capturedText string
-	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, source string, deliverAs string) error {
 		capturedText = text
 		return nil
 	}
@@ -327,14 +324,13 @@ func TestNotifyCoordinatorError_NoFollowUps_DeliversGenericText(t *testing.T) {
 		Worktree:    "/tmp/test-worker-errnofollowups",
 		DB:          bus.DB,
 		Clock:       newTestClock(),
-		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 		AgentRole:   "worker",
 	}
 	s := New(cfg)
 
 	var capturedText string
-	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+	s.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, source string, deliverAs string) error {
 		capturedText = text
 		return nil
 	}

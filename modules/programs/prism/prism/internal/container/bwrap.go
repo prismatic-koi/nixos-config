@@ -414,7 +414,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// credentials, AWS SSO/CLI cache, kube config, the clipboard
 	// staging dir, prism profiles.json, the prism usage snapshot dir,
 	// and the Go module and build caches. The
-	// bwrap appendBind appender (mounts.go) translates each MountSpec into
+	// AppendBwrapBind (mounts.go) translates each MountSpec into
 	// the correct --bind / --ro-bind triple.
 	//
 	// Bwrap argument order does not affect the runtime mount layout: bwrap
@@ -984,7 +984,7 @@ func (b *bwrapIsolator) Run(ctx context.Context, args []string) error {
 // is NOT the sandbox interior env (bwrap starts the sandbox with --clearenv
 // and rebuilds the interior env from explicit --setenv pairs in BuildArgs).
 //
-// This is a thin alias over minimalIsolatedExecEnv (sandbox_exec.go) — the
+// This is a thin alias over MinimalIsolatedExecEnv (sandbox_exec.go) — the
 // allow-list is identical across bwrap and sandbox-exec, so both call sites
 // share a single helper. The alias is retained so the existing tests and
 // callers in this file continue to read naturally as a bwrap-specific

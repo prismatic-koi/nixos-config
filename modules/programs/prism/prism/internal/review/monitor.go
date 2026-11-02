@@ -1297,10 +1297,8 @@ func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff ti
 	return promptdelivery.DeliveryOutcome{}, fmt.Errorf("delivery failed after %d attempts: %w", maxRetries+1, lastErr)
 }
 
-// deliverPrompt sends text to workerSession via the harness-aware delivery
-// helper. For pi sessions (TransportSocketPipe), it routes through the
-// session's host-API Unix socket. For HTTP-harness sessions, it uses the
-// harness HTTP API (prompt_async).
+// deliverPrompt sends text to workerSession through the host-API Unix socket
+// of the session (promptdelivery).
 // deliveryID is forwarded to the host-API /prompt handler; pass
 // RecoveryDeliveryID(groupID) so the sidecar's dedup set can
 // collapse a concurrent recovery-watcher delivery to exactly one prompt.
@@ -1325,46 +1323,7 @@ func deliverPrompt(workerSession, text, dbPath, deliveryID string) (promptdelive
 		return promptdelivery.DeliveryOutcome{}, fmt.Errorf("session %q has ended — cannot deliver review results", workerSession)
 	}
 
-	return promptdelivery.DeliverToSessionExWithID(workerSession, status, text, buildPromptBodyForMonitor, "review-complete", "", deliveryID)
-}
-
-// buildPromptBodyForMonitor constructs the HTTP request body for prompt_async.
-// Mirrors cmd/prompt.go buildPromptBody but operates on db.Status directly
-// (monitor lives in internal/review, not cmd).
-func buildPromptBodyForMonitor(text string, status *db.Status) map[string]any {
-	body := map[string]any{
-		"parts": []map[string]string{
-			{"type": "text", "text": text},
-		},
-	}
-
-	agentName := status.RootAgentName
-	if agentName == nil {
-		agentName = status.AgentName
-	}
-	modelID := status.RootModelID
-	if modelID == nil {
-		modelID = status.ModelID
-	}
-
-	if agentName != nil && modelID != nil {
-		body["agent"] = *agentName
-
-		// Split model_id on the first "/" to get providerID and modelID.
-		slashIdx := strings.Index(*modelID, "/")
-		providerID := *modelID
-		modelIDStr := ""
-		if slashIdx >= 0 {
-			providerID = (*modelID)[:slashIdx]
-			modelIDStr = (*modelID)[slashIdx+1:]
-		}
-		body["model"] = map[string]string{
-			"providerID": providerID,
-			"modelID":    modelIDStr,
-		}
-	}
-
-	return body
+	return promptdelivery.DeliverToSessionExWithID(workerSession, status, text, "review-complete", "", deliveryID)
 }
 
 // MonitorStateDir returns $XDG_STATE_HOME/prism/review-monitor, the

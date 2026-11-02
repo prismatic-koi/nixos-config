@@ -3715,9 +3715,8 @@ func newZeroOutputWorkerSidecar(t *testing.T, sockPath string) (*Sidecar, *testC
 
 	// Seed an active coordinator row at testrepo@main so CoordinatorForRepo
 	// discovers it via the DB-backed path. root_agent_name='coordinator' is
-	// required for isCoordinatorSession's DB lookup; harness='' forces the
-	// HTTP fallback in promptdelivery (we shortcut that anyway via the
-	// notifyCoordinatorDeliverFn seam).
+	// required for isCoordinatorSession's DB lookup. The
+	// notifyCoordinatorDeliverFn seam replaces the delivery.
 	coordName := "testrepo@main"
 	coordAgent := "coordinator"
 	coordModel := "anthropic/claude-sonnet-4-5"
@@ -3726,7 +3725,7 @@ func newZeroOutputWorkerSidecar(t *testing.T, sockPath string) (*Sidecar, *testC
 		t.Fatalf("seed coordinator: UpsertStatusWithAgent: %v", err)
 	}
 	if err := d.QueryRow(
-		"UPDATE agent_status SET root_agent_name = 'coordinator', harness = '' WHERE session_name = ? RETURNING session_name",
+		"UPDATE agent_status SET root_agent_name = 'coordinator', harness = 'pi' WHERE session_name = ? RETURNING session_name",
 		coordName,
 	).Scan(new(string)); err != nil {
 		t.Fatalf("seed coordinator: set root_agent_name: %v", err)
@@ -3777,7 +3776,7 @@ func TestSocketPipe_ZeroOutputExit_ClassifiesAsError(t *testing.T) {
 		capturedText  string
 		capturedToCnt int
 	)
-	sc.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+	sc.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, source string, deliverAs string) error {
 		deliverMu.Lock()
 		defer deliverMu.Unlock()
 		capturedToCnt++
@@ -3858,7 +3857,7 @@ func TestSocketPipe_NormalExitWithContent_StillClassifiesFinished(t *testing.T) 
 		capturedText string
 		capturedCnt  int
 	)
-	sc.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+	sc.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, source string, deliverAs string) error {
 		deliverMu.Lock()
 		defer deliverMu.Unlock()
 		capturedCnt++

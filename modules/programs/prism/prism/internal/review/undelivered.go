@@ -122,7 +122,7 @@ func notifyCoordinatorUndelivered(d *db.DB, worker *db.Status, u undeliveredRevi
 		Urgency:      "normal",
 		SentAt:       time.Now(),
 	}
-	if err := promptdelivery.DeliverToSession(coord.SessionName, coord, text, buildPromptBodyForMonitor, "", "followUp"); err != nil {
+	if err := promptdelivery.DeliverToSession(coord.SessionName, coord, text, "", "followUp"); err != nil {
 		proglog.Warnf("[prism monitor-review] warning: could not tell coordinator %s about the undelivered prompt: %v\n", coord.SessionName, err)
 		if writeErr := d.WriteBusMessageFailed(msg); writeErr != nil {
 			proglog.Warnf("[prism monitor-review] warning: write failed audit: %v\n", writeErr)

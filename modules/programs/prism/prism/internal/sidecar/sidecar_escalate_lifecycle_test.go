@@ -61,7 +61,7 @@ type notifyRecorder struct {
 	calls []string // delivered text, in order
 }
 
-func (r *notifyRecorder) record(_ string, _ *db.Status, text string, _ func(string, *db.Status) map[string]any, _ string, _ string) error {
+func (r *notifyRecorder) record(_ string, _ *db.Status, text string, _ string, _ string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, text)

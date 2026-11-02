@@ -760,10 +760,8 @@ real signals to a real process. This step runs directly on the runner, with no `
 go test -v ./internal/session/ -run '^(TestStopSidecar|TestKillSidecar_|TestSidecarPIDOwner|TestReadPIDArgv|TestParseProcArgs2|TestEnsureSidecarStopped|TestSweepEndedSidecars|TestRemoveOwnSidecarPIDFile|TestStopSandboxProcesses|Test.*_3388$)' -race -count=1
 ```
 
-The selector has `TestKillSidecar_*` with the underscore, so it does not
-match the `TestKillSidecarAndWait*` tests. Some of those tests skip on Darwin, and
-a SKIP fails the guard. The step has its own guard step. The guard fails
-the job on any SKIP, or if no `TestStopSidecar*` test runs. These tests need
+The step has its own guard step. The guard fails the job on any SKIP, or if
+no `TestStopSidecar*` test runs. These tests need
 no nested sandbox, so they also run inside a prism worker on Darwin. Only
 that run covers the sandbox condition of #3136: the worker sandbox denies
 the exec of `/bin/ps`, and the runner does not. If you add a

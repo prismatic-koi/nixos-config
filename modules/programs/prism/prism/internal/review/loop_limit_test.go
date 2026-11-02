@@ -707,7 +707,7 @@ func mockMonitorRound3StallFailure(t *testing.T, d *db.DB, parent, prNumber stri
 
 // assembleDeliveryBody mirrors MonitorFunc's tail (FormatResults +
 // buildDeliveryMessage + LOOP-LIMIT footer) so we can unit-test the
-// integrated behaviour without spinning up an HTTP delivery target.
+// integrated behaviour without spinning up a delivery target.
 func assembleDeliveryBody(t *testing.T, d *db.DB, parent, prNumber string, round int, groupID string, allPassed, infra bool) string {
 	t.Helper()
 	groupData, err := d.GroupResults(groupID)

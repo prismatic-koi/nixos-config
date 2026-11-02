@@ -1266,7 +1266,7 @@ see [Passing prompts safely](#passing-prompts-safely--shell-escaping) above.
 |---|---|
 | `--prompt <text>` | Prompt text to send. Supports `-` to read from stdin. |
 | `--prompt-file <path>` | Read prompt from a file. Mutually exclusive with `--prompt`. |
-| `--deliver-as <mode>` | Delivery mode for socket-pipe (PI) sessions: `steer` (default), `followUp`, or `nextTurn`. Has no effect for HTTP-transport sessions. |
+| `--deliver-as <mode>` | Delivery mode for socket-pipe (PI) sessions: `steer` (default), `followUp`, or `nextTurn`. |
 
 **Delivery modes** (relevant for PI / socket-pipe sessions):
 
@@ -1278,7 +1278,7 @@ see [Passing prompts safely](#passing-prompts-safely--shell-escaping) above.
 
 The CLI validates the mode client-side before making any network call. An invalid value exits non-zero with a message listing the accepted values.
 
-The prompt is delivered directly via HTTP to the session. The session must exist and have an active harness port — use `prism sessions list` to check first.
+prism delivers the prompt through the host-API socket of the session. The session must exist and run — use `prism sessions list` to check first.
 
 ### Waiting state guard
 

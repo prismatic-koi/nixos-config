@@ -313,8 +313,7 @@ jobs:
       # (/proc). The go-tests job runs on Linux only, so these tests run
       # here too (#3136). The ended-session sweep and EnsureSidecarStopped
       # depend on that owner check, and Darwin is where the review-sidecar
-      # leak was measured, so they run here as well (#3160). The selector
-      # excludes TestKillSidecarAndWait*, which skip on Darwin. The tests of
+      # leak was measured, so they run here as well (#3160). The tests of
       # the clone lock (#3388) run here too, so that a Darwin result exists
       # for the flock, the dir identity check, and the killed clone. The
       # stop of the sandbox processes sends real signals on Darwin (#3375).

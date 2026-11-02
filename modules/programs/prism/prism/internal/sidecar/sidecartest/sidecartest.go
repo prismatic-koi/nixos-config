@@ -26,16 +26,15 @@ package sidecartest
 
 import (
 	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	_ "github.com/prismatic-koi/prism/internal/harness/pi" // DeliverToSession looks up the shape of the pi harness
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/stateguard/stateguardtest"
 )
@@ -58,14 +57,10 @@ import (
 const EnvRestrictHostAPI = "PRISM_TEST_MODE_RESTRICT_HOSTAPI"
 
 // Bus is the in-process test bus for a single isolated sidecar test. It
-// provides an httptest.Server for the HTTP delivery path and a Unix-socket
-// listener for the socket-pipe delivery path. Both listeners reside under a
-// t.TempDir() so they can never interfere with host-side prism state.
+// provides a Unix-socket listener for the socket-pipe delivery path. The
+// listener resides under a t.TempDir() so it can never interfere with
+// host-side prism state.
 type Bus struct {
-	// HTTPServer is the httptest.Server that captures HTTP deliveries
-	// (the harness HTTP prompt_async path).
-	HTTPServer *httptest.Server
-
 	// SockPath is the Unix socket path for the socket-pipe delivery path.
 	// It lives at $XDG_STATE_HOME/prism/run/<hash>/hostapi.sock (where
 	// XDG_STATE_HOME is the test tempdir set by NewIsolated).
@@ -77,13 +72,15 @@ type Bus struct {
 	// XDGStateHome is the tempdir that was set as $XDG_STATE_HOME.
 	XDGStateHome string
 
-	// ReceivedBodies records the raw JSON bodies received by the HTTP server.
+	// ReceivedBodies records the raw JSON bodies received by the socket
+	// listener.
 	// Access is mutex-protected; use CopyBodies() from tests.
 	mu             sync.Mutex
 	receivedBodies []string
 }
 
-// CopyBodies returns a snapshot of all bodies received by the HTTP server.
+// CopyBodies returns a snapshot of all bodies received by the socket
+// listener.
 func (b *Bus) CopyBodies() []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -102,13 +99,13 @@ func (b *Bus) CopyBodies() []string {
 //   - Opens an isolated SQLite DB at $XDG_STATE_HOME/prism/prism.db (the
 //     production-resolved path under the redirected tempdir), so tests can
 //     assert DB isolation by construction via Bus.DB.Path().
-//   - Starts an httptest.Server that records received prompt bodies.
-//   - Starts a Unix-socket listener at the test-session hostapi.sock path so
-//     that the socket-pipe delivery path is also exercised in-process.
+//   - Starts a Unix-socket listener at the test-session hostapi.sock path
+//     that records the received prompt bodies.
 //   - Registers t.Cleanup handlers for graceful shutdown.
 //
-// invokerSession is the session name to seed into the DB as an active invoker
-// row pointing to the httptest.Server. Pass an empty string to skip seeding.
+// invokerSession is the session name to seed into the DB as an active pi
+// invoker row, whose host-API socket is the listener. Pass an empty string to
+// skip seeding.
 //
 // All session names used in tests must use the "prism-test@" prefix, for example:
 //
@@ -146,39 +143,12 @@ func NewIsolated(t *testing.T, invokerSession string) *Bus {
 		XDGStateHome: xdgTmp,
 	}
 
-	// 4. Start the HTTP server (captures prompt_async deliveries).
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			// Return a minimal session list for GET /session requests from
-			// the promptdelivery HTTP path. The session ID here is a
-			// recognisable placeholder — tests that need to assert on the
-			// session ID should seed the DB explicitly.
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`[{"id":"test-sid"}]`))
-			return
-		}
-		if r.Method == http.MethodPost {
-			body := make([]byte, 65536)
-			n, _ := r.Body.Read(body)
-			bus.mu.Lock()
-			bus.receivedBodies = append(bus.receivedBodies, string(body[:n]))
-			bus.mu.Unlock()
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(srv.Close)
-	bus.HTTPServer = srv
-
-	// 5. Seed the invoker row in the DB, pointing to the httptest.Server.
+	// 4. Seed the invoker row in the DB.
 	if invokerSession != "" {
-		port := testServerPort(t, srv.URL)
-		seedInvoker(t, d, invokerSession, port)
+		seedInvoker(t, d, invokerSession)
 	}
 
-	// 6. Start a Unix-socket listener for the socket-pipe delivery path.
+	// 5. Start a Unix-socket listener for the socket-pipe delivery path.
 	//    The socket lives at $XDG_STATE_HOME/prism/run/<hash>/hostapi.sock —
 	//    the exact path that SidecarHostAPIPath would resolve for the invoker.
 	//    This allows tests that exercise the pi-harness path to also be caught
@@ -217,10 +187,9 @@ func NewIsolated(t *testing.T, invokerSession string) *Bus {
 	return bus
 }
 
-// seedInvoker writes an active invoker row into d pointing to the HTTP test
-// server at port, using an empty harness so DeliverToSession routes via the
-// HTTP fallback path.
-func seedInvoker(t *testing.T, d *db.DB, invokerSession string, port int) {
+// seedInvoker writes an active invoker row into d with the pi harness, so
+// DeliverToSession dials the host-API socket of the invoker.
+func seedInvoker(t *testing.T, d *db.DB, invokerSession string) {
 	t.Helper()
 
 	// Derive a repo name from the invoker session name ("prism-test" from
@@ -241,29 +210,12 @@ func seedInvoker(t *testing.T, d *db.DB, invokerSession string, port int) {
 	if err := d.UpsertStatusWithAgent(invokerSession, repo, "/tmp/test-worktree", "active", nil, &sid, &agentName, &modelID); err != nil {
 		t.Fatalf("sidecartest: seed invoker %q: %v", invokerSession, err)
 	}
-	// Use empty harness so DeliverToSession uses the HTTP fallback path —
-	// tests use httptest.Server which has a port but no socket.
 	if err := d.QueryRow(
-		"UPDATE agent_status SET harness_port = ?, harness_session_id = ?, harness = '' WHERE session_name = ? RETURNING session_name",
-		port, sid, invokerSession,
+		"UPDATE agent_status SET harness_session_id = ?, harness = 'pi' WHERE session_name = ? RETURNING session_name",
+		sid, invokerSession,
 	).Scan(new(string)); err != nil {
-		t.Fatalf("sidecartest: set port/sid for invoker %q: %v", invokerSession, err)
+		t.Fatalf("sidecartest: set sid and harness for invoker %q: %v", invokerSession, err)
 	}
-}
-
-// testServerPort extracts the port number from an httptest.Server URL of the
-// form "http://127.0.0.1:<port>".
-func testServerPort(t *testing.T, srvURL string) int {
-	t.Helper()
-	var port int
-	_, err := fmt.Sscanf(srvURL, "http://127.0.0.1:%d", &port)
-	if err != nil {
-		_, err = fmt.Sscanf(srvURL, "http://localhost:%d", &port)
-	}
-	if err != nil {
-		t.Fatalf("sidecartest: parse test server port from %q: %v", srvURL, err)
-	}
-	return port
 }
 
 // BodyContains reports whether any received body contains substring.

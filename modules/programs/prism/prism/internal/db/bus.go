@@ -28,7 +28,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`
 
 // WriteBusMessageDelivered inserts a new row into bus_messages with
 // delivered_at set to now. It records an audit-trail write for a prompt that
-// was delivered via HTTP, so the plugin does not deliver it again.
+// prism delivered directly, so the plugin does not deliver it again.
 func (d *DB) WriteBusMessageDelivered(msg BusMessage) error {
 	now := time.Now().UnixMilli()
 	var sentAt int64

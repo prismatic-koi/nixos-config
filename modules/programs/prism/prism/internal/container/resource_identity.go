@@ -24,9 +24,9 @@ package container
 // data, and the guard that suppresses that sweep leaks the resources it
 // spares.
 //
-// No separator rule closes either one. `isAllowedBindSource` closes the
-// substring trap for host PATHS by requiring an exact match or a match
-// on the entry plus `/`, but that technique does not transfer here:
+// No separator rule closes either one. A check of host PATHS closes the
+// substring trap by requiring an exact match or a match on the entry plus
+// `/`, but that technique does not transfer here:
 // `prism-foo-bar-data` already carries the separator after `prism-foo-`,
 // and it is a legitimate name for session `foo-bar`. The ambiguity is in
 // the name space itself.

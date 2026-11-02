@@ -25,7 +25,7 @@ package container
 // that the host entries named when the sandbox started. A change on the host
 // becomes visible to a pi session after a respawn.
 //
-// This file provides PIInvocation (analogous to HarnessInvocation) and
+// This file provides PIInvocation and
 // EnsurePIAgentConfigDir which prepares the shared host directory.
 
 import (
@@ -119,7 +119,7 @@ func PIModelFlags(provider, agentModel, model, thinking string) []string {
 }
 
 // PIInvocation returns the trailing arg slice that launches PI with the
-// profile-derived flags. It is the PI analogue of HarnessInvocation.
+// profile-derived flags.
 //
 // The returned slice begins with "pi" and includes:
 //

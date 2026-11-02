@@ -90,7 +90,7 @@ func AuthorizeReviewLog(req ReviewLogRequest) ReviewLogDecision {
 	}
 	if req.Caller == "" {
 		return denyReviewLog(http.StatusForbidden,
-			"cannot determine the calling session — review log read denied")
+			"cannot determine the calling session — review log read refused")
 	}
 	if req.Target == "" {
 		return denyReviewLog(http.StatusBadRequest, "session is required")
@@ -112,7 +112,7 @@ func AuthorizeReviewLog(req ReviewLogRequest) ReviewLogDecision {
 	if req.DB == nil {
 		req.Logger.Printf("review log: no DB handle — cannot verify the repo of %q, denying", req.Target)
 		return denyReviewLog(http.StatusForbidden,
-			"cannot verify the repo of %q (no database handle) — review log read denied", req.Target)
+			"cannot verify the repo of %q (no database handle) — review log read refused", req.Target)
 	}
 	ownRepo, err := RepoFromSession(req.Caller, req.DB)
 	if err != nil {

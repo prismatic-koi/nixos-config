@@ -792,7 +792,7 @@ func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, t
 			// Use "followUp" so the coordinator receives the merge-queue outcome
 			// after its current turn completes, even when it is mid-stream at
 			// delivery time. Queue outcomes are post-turn signals.
-			if deliverErr := promptdelivery.DeliverToSession(targetSession, status, text, buildNotifyBody, "", "followUp"); deliverErr != nil {
+			if deliverErr := promptdelivery.DeliverToSession(targetSession, status, text, "", "followUp"); deliverErr != nil {
 				log.Printf("[mergequeue] notify: FAILED (pi path) — coordinator=%s reason=%v", targetSession, deliverErr)
 			} else {
 				log.Printf("[mergequeue] notify: delivered to pi coordinator=%s via host-API socket", targetSession)
@@ -865,33 +865,6 @@ func (w *Watcher) lookupWorkerArchivePath(head *db.PendingMerge) string {
 		return *best.ArchivePath
 	}
 	return ""
-}
-
-// buildNotifyBody constructs the prompt_async body.
-func buildNotifyBody(text string, status *db.Status) map[string]any {
-	body := map[string]any{
-		"parts": []map[string]string{
-			{"type": "text", "text": text},
-		},
-	}
-	modelID := status.RootModelID
-	if modelID == nil {
-		modelID = status.ModelID
-	}
-	if modelID != nil {
-		slashIdx := strings.Index(*modelID, "/")
-		providerID := *modelID
-		modelIDStr := ""
-		if slashIdx >= 0 {
-			providerID = (*modelID)[:slashIdx]
-			modelIDStr = (*modelID)[slashIdx+1:]
-		}
-		body["model"] = map[string]string{
-			"providerID": providerID,
-			"modelID":    modelIDStr,
-		}
-	}
-	return body
 }
 
 // prInfoJSONFields is the comma-separated list of fields requested from

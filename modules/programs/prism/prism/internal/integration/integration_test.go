@@ -256,7 +256,7 @@ func TestDBLifecycle_BusMessageDelivered(t *testing.T) {
 		t.Fatalf("query delivered_at: %v", err)
 	}
 	if deliveredAt == nil {
-		t.Error("delivered_at: got nil, want non-nil (message delivered via HTTP)")
+		t.Error("delivered_at: got nil, want non-nil (message delivered)")
 	}
 }
 

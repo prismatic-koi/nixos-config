@@ -288,7 +288,7 @@ func newDetachedWorkerSidecar(t *testing.T, worker string, reconnectTimeout time
 		Harness:               pih.New("", "", ""),
 	})
 	notices := &noticeLog{sc: sc}
-	sc.notifyCoordinatorDeliverFn = func(sessionName string, _ *db.Status, text string, _ func(string, *db.Status) map[string]any, _ string, _ string) error {
+	sc.notifyCoordinatorDeliverFn = func(sessionName string, _ *db.Status, text string, _ string, _ string) error {
 		if sessionName != coordinator {
 			t.Errorf("notice sent to %q, want the coordinator %q", sessionName, coordinator)
 		}

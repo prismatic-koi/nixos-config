@@ -37,8 +37,8 @@ var reviewsLogCmd = &cobra.Command{
 
 The review monitor waits for the review agents of a round, and delivers the
 review-complete prompt. Its log shows what it saw and did. Use the log to
-debug a round that was not delivered, or that was delivered with a wrong
-result.
+debug a round when the monitor did not deliver its result, or delivered a
+wrong result.
 
 With no --session, the command reads a round of your own session.
 
@@ -46,7 +46,7 @@ Access:
   - Each session can read the logs of its own review rounds.
   - A coordinator can also read the logs of the review rounds of a session
     in its own repo, with --session <session>.
-  - All other reads are refused.
+  - prism refuses all other reads.
 
   prism reviews log 2
   prism reviews log 1 --session nixos-config@feature`,

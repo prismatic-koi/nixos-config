@@ -65,10 +65,10 @@ func TestStopSidecarReport_3175(t *testing.T) {
 	})
 }
 
-// KillSidecarAndWait marks the error of an unreadable command line with
-// ErrSidecarOwnerUnknown, and not the error of a recycled PID: only the
-// first can still be the sidecar.
-func TestKillSidecarAndWait_OwnerUnknown_3175(t *testing.T) {
+// EnsureSidecarStoppedErr marks the error of an unreadable command line with
+// ErrSidecarOwnerUnknown. A recycled PID is not the sidecar, so the stop
+// reports no error for it: only the first can still be the sidecar.
+func TestEnsureSidecarStoppedErr_OwnerUnknown_3175(t *testing.T) {
 	for _, tc := range []struct {
 		desc        string
 		argv        []string
@@ -80,7 +80,7 @@ func TestKillSidecarAndWait_OwnerUnknown_3175(t *testing.T) {
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Setenv("XDG_STATE_HOME", t.TempDir())
-			const name = "prism-test@kill-wait-owner"
+			const name = "prism-test@stop-err-owner"
 			argv := tc.argv
 			if argv == nil {
 				argv = []string{"sidecar", "--session", name}
@@ -90,12 +90,12 @@ func TestKillSidecarAndWait_OwnerUnknown_3175(t *testing.T) {
 				withFakePIDArgv(t, pid, nil, errors.New("fake read failure"))
 			}
 			var err error
-			_ = captureStderr(t, func() { err = KillSidecarAndWait(name, time.Second) })
-			if !errors.Is(err, ErrSidecarNotSignalled) {
-				t.Fatalf("err = %v, want ErrSidecarNotSignalled", err)
-			}
+			_ = captureStderr(t, func() { err = EnsureSidecarStoppedErr(name, time.Second) })
 			if got := errors.Is(err, ErrSidecarOwnerUnknown); got != tc.wantUnknown {
 				t.Errorf("errors.Is(err, ErrSidecarOwnerUnknown) = %v, want %v (err = %v)", got, tc.wantUnknown, err)
+			}
+			if !sidecarProcessExists(pid) {
+				t.Error("EnsureSidecarStoppedErr signalled a PID that the owner check did not confirm")
 			}
 		})
 	}

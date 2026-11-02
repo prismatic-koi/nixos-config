@@ -109,7 +109,7 @@ func TestEmitPromptOutcome_HumanSynchronousUnchanged(t *testing.T) {
 // when the delivery is synchronous.
 func TestEmitPromptOutcome_JSONSynchronous(t *testing.T) {
 	var out bytes.Buffer
-	err := emitPromptOutcome(&out, true, "myrepo@worker", "http", promptdelivery.DeliveryOutcome{
+	err := emitPromptOutcome(&out, true, "myrepo@worker", "socket-pipe", promptdelivery.DeliveryOutcome{
 		DeliveryID: "sync-id",
 	})
 	if err != nil {

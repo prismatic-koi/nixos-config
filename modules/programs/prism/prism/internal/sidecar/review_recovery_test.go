@@ -138,7 +138,6 @@ func newWorkerSidecarForRecovery(t *testing.T, fix *stuckReviewGroupFixture) *Si
 		Worktree:    "/tmp/worktree",
 		DB:          fix.bus.DB,
 		Clock:       newTestClock(),
-		HTTPClient:  fix.bus.HTTPServer.Client(),
 		AgentRole:   "worker",
 		HarnessName: "pi",
 		Harness:     pih.New("", "", ""),
