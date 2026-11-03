@@ -32,21 +32,6 @@ rec {
       # See: https://github.com/prismatic-koi/nixos-config/issues/1894
       bitwarden-cli = stablePkgs.bitwarden-cli;
 
-      # direnv: disable the test phase on Darwin to work around a hang in
-      # `direnv-test.zsh` introduced when libarchive was bumped 3.8.4 -> 3.8.6
-      # on staging-25.11 (nixpkgs commit 32e655f). Direnv's source is
-      # unchanged but transitive input changes force rebuilds, and the test
-      # harness wedges on aarch64-darwin.
-      # See: https://github.com/NixOS/nixpkgs/issues/507531
-      # Remove this override once upstream lands a fix.
-      direnv =
-        if final.stdenv.hostPlatform.isDarwin then
-          prev.direnv.overrideAttrs (_: {
-            doCheck = false;
-          })
-        else
-          prev.direnv;
-
       # packages not yet in nixpkgs; use local definitions
       # playwright-cli is cross-platform: on Linux it uses pkgs.chromium
       # (the user's daily-driver browser, closure already paid for); on
