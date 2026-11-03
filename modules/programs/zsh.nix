@@ -53,21 +53,26 @@ in
                 add_newline = false;
                 format = "$os$directory$git_branch$git_status$character";
                 right_format = lib.concatStrings [
-                  "$status$jobs$direnv$python$nodejs$kubernetes$aws$azure$gcloud"
+                  "$status$jobs$direnv$python$nodejs$kubernetes$custom$gcloud"
                   "$container$username$hostname$nix_shell"
                 ];
                 os = {
                   disabled = false;
                   format = "[$symbol]($style)";
-                  style = "white";
+                  style = "";
                   symbols = {
                     NixOS = "${glyph "f313"} ";
                     Macos = "${glyph "f179"} ";
                     Linux = "${glyph "f17c"} ";
                   };
                 };
+                # p10k: truncate_to_unique with length 1. Starship has no
+                # unique-prefix mode, so shorten to one character.
                 directory = {
                   style = "blue";
+                  truncate_to_repo = false;
+                  truncation_length = 1;
+                  fish_style_pwd_dir_length = 1;
                   format = "[$path]($style) ";
                 };
                 git_branch = {
@@ -75,9 +80,21 @@ in
                   style = "green";
                   format = "[$symbol$branch]($style) ";
                 };
+                # Counts and colours follow my_git_formatter in p10k.zsh.
+                # Every symbol ends with a space, so the group needs no
+                # separator of its own.
                 git_status = {
-                  style = "yellow";
-                  format = "([$all_status$ahead_behind]($style) )";
+                  format = "($ahead_behind$stashed$conflicted$staged$modified$renamed$deleted$untracked)";
+                  ahead = "[⇡$count ](green)";
+                  behind = "[⇣$count ](green)";
+                  diverged = "[⇣$behind_count⇡$ahead_count ](green)";
+                  stashed = "[*$count ](green)";
+                  conflicted = "[~$count ](red)";
+                  staged = "[+$count ](yellow)";
+                  modified = "[!$count ](yellow)";
+                  renamed = "[+$count ](yellow)";
+                  deleted = "[!$count ](yellow)";
+                  untracked = "[?$count ](blue)";
                 };
                 character = {
                   success_symbol = "[❯](green)";
@@ -90,7 +107,29 @@ in
                 };
                 jobs.style = "red";
                 direnv.disabled = false;
-                kubernetes.disabled = false;
+                # Show-on-command (#3408): the zle hook in starshipInit sets
+                # these variables while the typed command matches p10k's
+                # *_SHOW_ON_COMMAND list. aws and azure have no
+                # detect_env_vars, so a custom module gates each of them.
+                kubernetes = {
+                  disabled = false;
+                  detect_env_vars = [ "NX_SHOW_KUBE" ];
+                  style = "5";
+                  format = "[$symbol$context( \\($namespace\\))]($style)";
+                };
+                gcloud.detect_env_vars = [ "NX_SHOW_GCLOUD" ];
+                custom.aws = {
+                  when = "[ -n \"$NX_SHOW_AWS\" ]";
+                  command = "starship module aws";
+                  format = "$output";
+                  shell = [ "sh" ];
+                };
+                custom.azure = {
+                  when = "[ -n \"$NX_SHOW_AZURE\" ]";
+                  command = "starship module azure";
+                  format = "$output";
+                  shell = [ "sh" ];
+                };
                 azure.disabled = false;
               };
           };
@@ -198,6 +237,15 @@ in
                   fi
                 '';
 
+                # p10k's show-on-command patterns, read from p10k.zsh.
+                p10kShowOn =
+                  name:
+                  builtins.head (
+                    builtins.match ".*POWERLEVEL9K_${name}_SHOW_ON_COMMAND='([^']*)'.*" (
+                      builtins.readFile ./files/p10k.zsh
+                    )
+                  );
+
                 # Opt-in starship prompt (#3405). Runs after vi-mode.
                 # zsh-vi-mode keeps $KEYMAP at "main", so the prompt reads
                 # $_nx_keymap, set by the zsh-vi-mode hook.
@@ -229,8 +277,33 @@ in
                       PROMPT=$_nx_prompt_full
                       RPROMPT=$_nx_rprompt_full
                     }
+                    # Show-on-command (#3408): match the first word of the
+                    # buffer against p10k's patterns. Render the prompt again
+                    # only when the match result changes.
+                    _nx_showon_sig=
+                    _nx_showon_update() {
+                      local -a ws=(''${(z)BUFFER})
+                      local w=$ws[1] sig=
+                      unset NX_SHOW_KUBE NX_SHOW_AWS NX_SHOW_AZURE NX_SHOW_GCLOUD
+                      if [[ -n $w ]]; then
+                        [[ $w == (${p10kShowOn "KUBECONTEXT"}) ]] && { export NX_SHOW_KUBE=1; sig+=k; }
+                        [[ $w == (${p10kShowOn "AWS"}) ]] && { export NX_SHOW_AWS=1; sig+=a; }
+                        [[ $w == (${p10kShowOn "AZURE"}) ]] && { export NX_SHOW_AZURE=1; sig+=z; }
+                        [[ $w == (${p10kShowOn "GCLOUD"}) ]] && { export NX_SHOW_GCLOUD=1; sig+=g; }
+                      fi
+                      if [[ $sig != $_nx_showon_sig ]]; then
+                        _nx_showon_sig=$sig
+                        zle .reset-prompt
+                      fi
+                    }
+                    _nx_showon_reset() {
+                      _nx_showon_sig=
+                      unset NX_SHOW_KUBE NX_SHOW_AWS NX_SHOW_AZURE NX_SHOW_GCLOUD
+                    }
                     autoload -Uz add-zle-hook-widget
+                    add-zle-hook-widget line-pre-redraw _nx_showon_update
                     add-zle-hook-widget line-finish _nx_transient_finish
+                    precmd_functions+=(_nx_showon_reset)
                     precmd_functions+=(_nx_transient_restore)
                   fi
                 '';
