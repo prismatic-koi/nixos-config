@@ -42,6 +42,59 @@ in
           # On Darwin we need .zshenv to bootstrap ZDOTDIR
           home.file.".zshenv".enable = isDarwin;
 
+          programs.starship = {
+            enable = true;
+            enableZshIntegration = false;
+            settings =
+              let
+                glyph = code: builtins.fromJSON ''"\u${code}"'';
+              in
+              {
+                add_newline = false;
+                format = "$os$directory$git_branch$git_status$character";
+                right_format = lib.concatStrings [
+                  "$status$jobs$direnv$python$nodejs$kubernetes$aws$azure$gcloud"
+                  "$container$username$hostname$nix_shell"
+                ];
+                os = {
+                  disabled = false;
+                  format = "[$symbol]($style)";
+                  style = "white";
+                  symbols = {
+                    NixOS = "${glyph "f313"} ";
+                    Macos = "${glyph "f179"} ";
+                    Linux = "${glyph "f17c"} ";
+                  };
+                };
+                directory = {
+                  style = "blue";
+                  format = "[$path]($style) ";
+                };
+                git_branch = {
+                  symbol = "${glyph "f126"} ";
+                  style = "green";
+                  format = "[$symbol$branch]($style) ";
+                };
+                git_status = {
+                  style = "yellow";
+                  format = "([$all_status$ahead_behind]($style) )";
+                };
+                character = {
+                  success_symbol = "[❯](green)";
+                  error_symbol = "[❯](red)";
+                  vimcmd_symbol = "[❮](green)";
+                };
+                status = {
+                  disabled = false;
+                  format = "[✘ $status]($style) ";
+                };
+                jobs.style = "red";
+                direnv.disabled = false;
+                kubernetes.disabled = false;
+                azure.disabled = false;
+              };
+          };
+
           programs.direnv = {
             enable = true;
             enableZshIntegration = true;
@@ -88,16 +141,6 @@ in
             syntaxHighlighting.enable = true;
             # zprof.enable = true; # for troubleshooting startup
             plugins = [
-              {
-                name = "powerlevel10k";
-                src = pkgs.zsh-powerlevel10k;
-                file = "share/zsh-powerlevel10k/powerlevel10k.zsh-theme";
-              }
-              {
-                name = "powerlevel10k-config";
-                src = lib.cleanSource ./files;
-                file = "p10k.zsh";
-              }
               # Use zsh-vi-mode on all platforms for consistent vi-mode experience
               {
                 name = "vi-mode";
@@ -145,6 +188,53 @@ in
 
             initContent =
               let
+                # p10k loads here (order 899), right before the plugin block
+                # (order 900), so it keeps its place ahead of vi-mode.
+                # NX_PROMPT=starship skips it; see starshipInit below.
+                p10kInit = ''
+                  if [[ "$NX_PROMPT" != starship ]]; then
+                    source ${pkgs.zsh-powerlevel10k}/share/zsh-powerlevel10k/powerlevel10k.zsh-theme
+                    source ${lib.cleanSource ./files}/p10k.zsh
+                  fi
+                '';
+
+                # Opt-in starship prompt (#3405). Runs after vi-mode.
+                # zsh-vi-mode keeps $KEYMAP at "main", so the prompt reads
+                # $_nx_keymap, set by the zsh-vi-mode hook.
+                starshipInit = ''
+                  if [[ "$NX_PROMPT" == starship ]]; then
+                    eval "$(starship init zsh)"
+                    _nx_keymap=
+                    local _from='$'"{KEYMAP:-}" _to='$'"{_nx_keymap:-}"
+                    PROMPT="''${PROMPT//$_from/$_to}"
+                    RPROMPT="''${RPROMPT//$_from/$_to}"
+
+                    zvm_after_select_vi_mode() {
+                      case $ZVM_MODE in
+                        $ZVM_MODE_NORMAL) _nx_keymap=vicmd ;;
+                        *) _nx_keymap= ;;
+                      esac
+                    }
+
+                    # Transient prompt: when a line is accepted, redraw the
+                    # prompt as the character only. precmd restores it.
+                    _nx_prompt_full=$PROMPT
+                    _nx_rprompt_full=$RPROMPT
+                    _nx_transient_finish() {
+                      PROMPT="$(starship module character --status "''${STARSHIP_CMD_STATUS:-0}")"
+                      RPROMPT=
+                      zle .reset-prompt
+                    }
+                    _nx_transient_restore() {
+                      PROMPT=$_nx_prompt_full
+                      RPROMPT=$_nx_rprompt_full
+                    }
+                    autoload -Uz add-zle-hook-widget
+                    add-zle-hook-widget line-finish _nx_transient_finish
+                    precmd_functions+=(_nx_transient_restore)
+                  fi
+                '';
+
                 # Common init
                 commonInit = ''
                   # History beginning search — matches commands that start with what's typed
@@ -194,7 +284,10 @@ in
                   fi
                 '';
               in
-              lib.mkOrder 1000 (commonInit + darwinInit);
+              lib.mkMerge [
+                (lib.mkOrder 899 p10kInit)
+                (lib.mkOrder 1000 (commonInit + darwinInit + starshipInit))
+              ];
           };
 
           # NixOS-specific: Impermanence support
