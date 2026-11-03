@@ -8,6 +8,7 @@
 <!-- doclint-ignore: attr.tree, AGENTS.md, gitsigns.nix -->
 <!-- doclint-ignore: http.cookieFile, http.saveCookies, g:fugitive_git_executable, vim-fugitive.nix -->
 <!-- doclint-ignore: rebase-merge/autostash -->
+<!-- doclint-ignore: modules/programs/zsh.nix, NX_PROMPT, git_status, git_branch, git_metrics -->
 <!--
   These names are git config keys, environment variables that git and zsh
   read, paths in a git dir at run time, and Nix files and options outside
@@ -160,6 +161,7 @@ submodule.
 | The tmux server, `run-shell`, and hooks | The environment of the process that started the server. | All from a shell. The service list from `prism-restore` (Linux). |
 | nvim and gitsigns | prism types `nvim` into the zsh of the pane. nvim passes its environment to each job. | All |
 | The p10k prompt | The `vcs_info` fallback runs git in the zsh of the pane. gitstatusd is libgit2, and it runs no command for a planted config. | All |
+| The starship prompt (opt-in) | starship runs in the zsh of the pane. Its `git_status` module is disabled. See "The starship prompt" below. | All |
 | systemd user units (Linux) | `systemd.user.sessionVariables` writes `environment.d`. | The service list |
 | launchd agents and apps (Darwin) | The agent `git-env-overrides` runs `launchctl setenv` at each login. | The service list |
 | A prism session in `host` mode | The tmux pane. | All |
@@ -314,3 +316,31 @@ overrides of this doc cannot stop a driver that the config of that git dir
 defines. So the control for the nvim panes is in the nvim config: the git
 plugins of the prism nvim run git only in the repo of the dir where nvim
 starts. See the nvim-pane rule in `host-git-commands.md`.
+
+## The starship prompt (#3411)
+
+`modules/programs/zsh.nix` also has an opt-in starship prompt. A shell with
+`NX_PROMPT=starship` uses it in place of p10k. A shell without `NX_PROMPT`
+uses p10k. Each fact below was tested on starship 1.27.0 with gix 0.89.0.
+
+The starship `git_status` module is disabled, and the `format` of the
+prompt does not include `$git_status`. The module gets the status of the
+work tree with gitoxide, in the starship process. gitoxide runs the
+`filter.<name>.clean` or `filter.<name>.process` driver of a planted config
+when an index entry is stat-dirty or racy-clean. A `touch` on a tracked file
+is sufficient. The attribute can come from `.gitattributes` or from
+`info/attributes`.
+
+The list above does not stop the driver, because it has no key for a filter
+driver. `use_git_executable = true` does not stop it, because `git status`
+also runs the driver. If the repo uses a reftable ref store, an fsmonitor
+config, or a sparse index, the module runs `git status` in place of
+gitoxide. With `git_status` disabled, no planted driver ran. The `git_branch`
+module ran no planted driver. The `git_metrics` module ran a planted driver.
+
+The rule: the starship prompt must not enable `git_status`, `git_metrics`,
+or another module that reads the status of the work tree. Such a module runs
+a planted filter driver at each prompt, and the owner types no git command.
+The p10k prompt runs no command for a planted config, and the starship
+prompt must not lower this bar. A planted config gets to a worktree by the
+routes in "Known limits", for example #3325, #3346, and #3348.

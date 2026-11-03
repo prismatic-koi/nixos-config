@@ -51,7 +51,7 @@ in
               in
               {
                 add_newline = false;
-                format = "$os$directory$git_branch$git_status$character";
+                format = "$os$directory$git_branch$character";
                 right_format = lib.concatStrings [
                   "$status$jobs$direnv$python$nodejs$kubernetes$custom$gcloud"
                   "$container$username$hostname$nix_shell"
@@ -81,22 +81,13 @@ in
                   style = "green";
                   format = "[$symbol$branch]($style) ";
                 };
-                # Counts and colours follow my_git_formatter in p10k.zsh.
-                # Every symbol ends with a space, so the group needs no
-                # separator of its own.
-                git_status = {
-                  format = "($ahead_behind$stashed$conflicted$staged$modified$renamed$deleted$untracked)";
-                  ahead = "[⇡$count ](green)";
-                  behind = "[⇣$count ](green)";
-                  diverged = "[⇣$behind_count⇡$ahead_count ](green)";
-                  stashed = "[*$count ](green)";
-                  conflicted = "[~$count ](red)";
-                  staged = "[+$count ](yellow)";
-                  modified = "[!$count ](yellow)";
-                  renamed = "[+$count ](yellow)";
-                  deleted = "[!$count ](yellow)";
-                  untracked = "[?$count ](blue)";
-                };
+                # git_status is disabled (#3411). Its gitoxide status runs
+                # the filter drivers that a planted repo config defines, at
+                # each prompt. use_git_executable does not stop this,
+                # because git status also runs them. Do not enable
+                # git_status, git_metrics, or another module that reads the
+                # work-tree status, without a security review.
+                git_status.disabled = true;
                 character = {
                   success_symbol = "[❯](green)";
                   error_symbol = "[❯](red)";
