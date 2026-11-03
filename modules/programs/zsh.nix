@@ -299,6 +299,9 @@ in
                 # Common init
                 commonInit = ''
                   # Search the full history. `history` lists the last 16 events only.
+                  # On Darwin, the oh-my-zsh history plugin defines `alias hs`.
+                  # Remove it first, or the definition below is a parse error.
+                  unalias hs 2>/dev/null
                   hs() { fc -ln 1 | rg "$@"; }
 
                   # History beginning search — matches commands that start with what's typed
