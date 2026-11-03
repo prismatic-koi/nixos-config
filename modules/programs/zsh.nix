@@ -195,8 +195,6 @@ in
               ls = "eza";
               l = "eza -la";
               tree = "eza --tree -la";
-              # ripgrep instead of grep
-              grep = "rg";
               # nvim
               v = "nvim";
               # youtube music download script
@@ -204,8 +202,6 @@ in
               # git aliases
               gP = "git pull";
               gcb = "git checkout -b";
-              # history search
-              hs = "history | grep";
             };
 
             # Set ZVM_INIT_MODE for zsh-vi-mode plugin to not break custom keybindings
@@ -293,6 +289,12 @@ in
 
                 # Common init
                 commonInit = ''
+                  # Search the full history. `history` lists the last 16 events only.
+                  # On Darwin, the oh-my-zsh history plugin defines `alias hs`.
+                  # Remove it first, or the definition below is a parse error.
+                  unalias hs 2>/dev/null
+                  hs() { fc -ln 1 | rg "$@"; }
+
                   # History beginning search — matches commands that start with what's typed
                   autoload -U history-search-end
                   zle -N history-beginning-search-backward-end history-search-end
