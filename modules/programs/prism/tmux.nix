@@ -166,6 +166,7 @@ in
           secureSocket = false; # for some reason, tmux started via hyprland doesnt respect this and I only want 1 tmux server running
           aggressiveResize = true;
           escapeTime = 10; # no delay for escape key, vim style
+          focusEvents = true;
           prefix = "C-a";
           terminal = if isDarwin then "xterm-kitty" else "kitty";
           extraConfig =
