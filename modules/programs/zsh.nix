@@ -53,7 +53,8 @@ in
                 add_newline = false;
                 format = "$os$directory$git_branch$character";
                 right_format = lib.concatStrings [
-                  "$status$jobs$direnv$python$nodejs$kubernetes$custom$gcloud"
+                  "$status$jobs$direnv$python$nodejs$kubernetes"
+                  "\${env_var.NX_SHOW_AWS}\${env_var.NX_SHOW_AZURE}$gcloud"
                   "$container$username$hostname$nix_shell"
                 ];
                 os = {
@@ -66,9 +67,9 @@ in
                     Linux = "${glyph "f17c"} ";
                   };
                 };
-                # p10k: truncate_to_unique with length 1. Starship has no
-                # unique-prefix mode. Show the last two folders in full, and
-                # shorten each parent folder to one character.
+                # Starship has no unique-prefix mode. Show the last two
+                # folders in full, and shorten each parent folder to one
+                # character.
                 directory = {
                   style = "blue";
                   truncate_to_repo = false;
@@ -100,9 +101,11 @@ in
                 jobs.style = "red";
                 direnv.disabled = false;
                 # Show-on-command (#3408): the zle hook in starshipInit sets
-                # these variables while the typed command matches p10k's
-                # *_SHOW_ON_COMMAND list. aws and azure have no
-                # detect_env_vars, so a custom module gates each of them.
+                # these variables while the first word of the command line
+                # matches showOn. aws and azure have no detect_env_vars, so
+                # the hook puts their module output in NX_SHOW_AWS and
+                # NX_SHOW_AZURE, and env_var shows it. Do not use a custom
+                # module with a `when` command: it starts sh at each prompt.
                 kubernetes = {
                   disabled = false;
                   detect_env_vars = [ "NX_SHOW_KUBE" ];
@@ -110,19 +113,12 @@ in
                   format = "[$symbol$context( \\($namespace\\))]($style)";
                 };
                 gcloud.detect_env_vars = [ "NX_SHOW_GCLOUD" ];
-                custom.aws = {
-                  when = "[ -n \"$NX_SHOW_AWS\" ]";
-                  command = "starship module aws";
-                  format = "$output";
-                  shell = [ "sh" ];
+                env_var.NX_SHOW_AWS.format = "$env_value";
+                env_var.NX_SHOW_AZURE.format = "$env_value";
+                azure = {
+                  disabled = false;
+                  format = "on [$symbol($subscription)]($style)";
                 };
-                custom.azure = {
-                  when = "[ -n \"$NX_SHOW_AZURE\" ]";
-                  command = "starship module azure";
-                  format = "$output";
-                  shell = [ "sh" ];
-                };
-                azure.disabled = false;
               };
           };
 
@@ -215,85 +211,80 @@ in
 
             initContent =
               let
-                # p10k loads here (order 899), right before the plugin block
-                # (order 900), so it keeps its place ahead of vi-mode.
-                # NX_PROMPT=starship skips it; see starshipInit below.
-                p10kInit = ''
-                  if [[ "$NX_PROMPT" != starship ]]; then
-                    source ${pkgs.zsh-powerlevel10k}/share/zsh-powerlevel10k/powerlevel10k.zsh-theme
-                    source ${lib.cleanSource ./files}/p10k.zsh
-                  fi
-                '';
+                # Show-on-command lists (#3408): a segment shows only while
+                # the first word of the command line matches its list.
+                showOn = {
+                  kube = "kubectl|helm|kubens|kubectx|oc|istioctl|kogito|k9s|helmfile|flux|fluxctl|stern|kubeseal|skaffold";
+                  aws = "aws|awless|pulumi";
+                  azure = "az|pulumi";
+                  gcloud = "gcloud|gcs|gsutil";
+                };
 
-                # p10k's show-on-command patterns, read from p10k.zsh.
-                p10kShowOn =
-                  name:
-                  builtins.head (
-                    builtins.match ".*POWERLEVEL9K_${name}_SHOW_ON_COMMAND='([^']*)'.*" (
-                      builtins.readFile ./files/p10k.zsh
-                    )
-                  );
-
-                # Opt-in starship prompt (#3405). Runs after vi-mode.
-                # zsh-vi-mode keeps $KEYMAP at "main", so the prompt reads
-                # $_nx_keymap, set by the zsh-vi-mode hook.
+                # Runs after vi-mode. zsh-vi-mode keeps $KEYMAP at "main",
+                # so the prompt reads $_nx_keymap, set by the zsh-vi-mode
+                # hook.
                 starshipInit = ''
-                  if [[ "$NX_PROMPT" == starship ]]; then
-                    eval "$(starship init zsh)"
-                    _nx_keymap=
-                    local _from='$'"{KEYMAP:-}" _to='$'"{_nx_keymap:-}"
-                    PROMPT="''${PROMPT//$_from/$_to}"
-                    RPROMPT="''${RPROMPT//$_from/$_to}"
+                  eval "$(starship init zsh)"
+                  _nx_keymap=
+                  local _from='$'"{KEYMAP:-}" _to='$'"{_nx_keymap:-}"
+                  PROMPT="''${PROMPT//$_from/$_to}"
+                  RPROMPT="''${RPROMPT//$_from/$_to}"
 
-                    zvm_after_select_vi_mode() {
-                      case $ZVM_MODE in
-                        $ZVM_MODE_NORMAL) _nx_keymap=vicmd ;;
-                        *) _nx_keymap= ;;
-                      esac
-                    }
+                  zvm_after_select_vi_mode() {
+                    case $ZVM_MODE in
+                      $ZVM_MODE_NORMAL) _nx_keymap=vicmd ;;
+                      *) _nx_keymap= ;;
+                    esac
+                  }
 
-                    # Transient prompt: when a line is accepted, redraw the
-                    # prompt as the character only. precmd restores it.
-                    _nx_prompt_full=$PROMPT
-                    _nx_rprompt_full=$RPROMPT
-                    _nx_transient_finish() {
-                      PROMPT="$(starship module character --status "''${STARSHIP_CMD_STATUS:-0}")"
-                      RPROMPT=
-                      zle .reset-prompt
-                    }
-                    _nx_transient_restore() {
-                      PROMPT=$_nx_prompt_full
-                      RPROMPT=$_nx_rprompt_full
-                    }
-                    # Show-on-command (#3408): match the first word of the
-                    # buffer against p10k's patterns. Render the prompt again
-                    # only when the match result changes.
+                  # Transient prompt: when a line is accepted, redraw the
+                  # prompt as the character only. precmd restores it.
+                  _nx_full_prompt=$PROMPT
+                  _nx_full_rprompt=$RPROMPT
+                  _nx_transient_finish() {
+                    PROMPT="$(starship module character --status "''${STARSHIP_CMD_STATUS:-0}")"
+                    RPROMPT=
+                    zle .reset-prompt
+                  }
+                  _nx_transient_restore() {
+                    PROMPT=$_nx_full_prompt
+                    RPROMPT=$_nx_full_rprompt
+                  }
+                  # Show-on-command (#3408): match the first word of the
+                  # buffer against showOn. Set the variables and render the
+                  # prompt again only when the match result changes. A
+                  # keystroke that does not change it starts no process.
+                  # The aws and azure values hold the module output. With
+                  # STARSHIP_SHELL empty, the module does not escape %, so
+                  # starship escapes it one time.
+                  _nx_showon_sig=
+                  _nx_showon_update() {
+                    local -a ws=(''${(z)BUFFER})
+                    local w=$ws[1] sig=
+                    if [[ -n $w ]]; then
+                      [[ $w == (${showOn.kube}) ]] && sig+=k
+                      [[ $w == (${showOn.aws}) ]] && sig+=a
+                      [[ $w == (${showOn.azure}) ]] && sig+=z
+                      [[ $w == (${showOn.gcloud}) ]] && sig+=g
+                    fi
+                    [[ $sig == "$_nx_showon_sig" ]] && return
+                    _nx_showon_sig=$sig
+                    unset NX_SHOW_KUBE NX_SHOW_AWS NX_SHOW_AZURE NX_SHOW_GCLOUD
+                    [[ $sig == *k* ]] && export NX_SHOW_KUBE=1
+                    [[ $sig == *a* ]] && export NX_SHOW_AWS="$(STARSHIP_SHELL= starship module aws)"
+                    [[ $sig == *z* ]] && export NX_SHOW_AZURE="$(STARSHIP_SHELL= starship module azure)"
+                    [[ $sig == *g* ]] && export NX_SHOW_GCLOUD=1
+                    zle .reset-prompt
+                  }
+                  _nx_showon_reset() {
                     _nx_showon_sig=
-                    _nx_showon_update() {
-                      local -a ws=(''${(z)BUFFER})
-                      local w=$ws[1] sig=
-                      unset NX_SHOW_KUBE NX_SHOW_AWS NX_SHOW_AZURE NX_SHOW_GCLOUD
-                      if [[ -n $w ]]; then
-                        [[ $w == (${p10kShowOn "KUBECONTEXT"}) ]] && { export NX_SHOW_KUBE=1; sig+=k; }
-                        [[ $w == (${p10kShowOn "AWS"}) ]] && { export NX_SHOW_AWS=1; sig+=a; }
-                        [[ $w == (${p10kShowOn "AZURE"}) ]] && { export NX_SHOW_AZURE=1; sig+=z; }
-                        [[ $w == (${p10kShowOn "GCLOUD"}) ]] && { export NX_SHOW_GCLOUD=1; sig+=g; }
-                      fi
-                      if [[ $sig != $_nx_showon_sig ]]; then
-                        _nx_showon_sig=$sig
-                        zle .reset-prompt
-                      fi
-                    }
-                    _nx_showon_reset() {
-                      _nx_showon_sig=
-                      unset NX_SHOW_KUBE NX_SHOW_AWS NX_SHOW_AZURE NX_SHOW_GCLOUD
-                    }
-                    autoload -Uz add-zle-hook-widget
-                    add-zle-hook-widget line-pre-redraw _nx_showon_update
-                    add-zle-hook-widget line-finish _nx_transient_finish
-                    precmd_functions+=(_nx_showon_reset)
-                    precmd_functions+=(_nx_transient_restore)
-                  fi
+                    unset NX_SHOW_KUBE NX_SHOW_AWS NX_SHOW_AZURE NX_SHOW_GCLOUD
+                  }
+                  autoload -Uz add-zle-hook-widget
+                  add-zle-hook-widget line-pre-redraw _nx_showon_update
+                  add-zle-hook-widget line-finish _nx_transient_finish
+                  precmd_functions+=(_nx_showon_reset)
+                  precmd_functions+=(_nx_transient_restore)
                 '';
 
                 # Common init
@@ -351,10 +342,7 @@ in
                   fi
                 '';
               in
-              lib.mkMerge [
-                (lib.mkOrder 899 p10kInit)
-                (lib.mkOrder 1000 (commonInit + darwinInit + starshipInit))
-              ];
+              lib.mkOrder 1000 (commonInit + darwinInit + starshipInit);
           };
 
           # NixOS-specific: Impermanence support
