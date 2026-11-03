@@ -35,6 +35,18 @@ in
         };
       })
 
+      # System-level zsh, both platforms. Keep enableCompletion on so the
+      # system completion functions stay in fpath. Turn off the global
+      # compinit call and the promptinit/suse prompt. The home-manager
+      # completionInit runs compinit one time, and starship sets the prompt.
+      {
+        programs.zsh = {
+          enableCompletion = true;
+          enableGlobalCompInit = false;
+          promptInit = "";
+        };
+      }
+
       # Common home-manager config
       {
         home-manager.users.${config.nx.username} = {
