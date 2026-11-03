@@ -67,7 +67,8 @@ in
                   };
                 };
                 # p10k: truncate_to_unique with length 1. Starship has no
-                # unique-prefix mode, so shorten to one character.
+                # unique-prefix mode. Show the last two folders in full, and
+                # shorten each parent folder to one character.
                 directory = {
                   style = "blue";
                   truncate_to_repo = false;
