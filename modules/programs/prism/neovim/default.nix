@@ -36,6 +36,7 @@
           defaultEditor = true;
           withRuby = false;
           withPython3 = false;
+          extraPackages = lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.inotify-tools ];
           initLua = lib.mkAfter ''
             vim.opt.runtimepath:append("${maoriSpellDir}")
           '';
