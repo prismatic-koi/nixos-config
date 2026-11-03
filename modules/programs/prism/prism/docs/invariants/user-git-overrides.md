@@ -3,12 +3,12 @@
 <!-- doclint-ignore: merge.default, maintenance.auto, gc.recentObjectsHook -->
 <!-- doclint-ignore: core.alternateRefsCommand, core.askPass, core.attributesFile, core.gitProxy, gpg.openpgp.program, gpg.ssh.defaultKeyCommand, gpg.x509.program, log.showSignature, status.submoduleSummary, interactive.diffFilter -->
 <!-- doclint-ignore: diff.tool, merge.tool, man.viewer, web.browser, help.format -->
-<!-- doclint-ignore: EDITOR, VISUAL, SSH_ASKPASS, GIT_ATTR_SOURCE, GIT_EDITOR, GIT_NO_LAZY_FETCH, GIT_PROXY_COMMAND, vcs_info -->
+<!-- doclint-ignore: EDITOR, VISUAL, SSH_ASKPASS, GIT_ATTR_SOURCE, GIT_EDITOR, GIT_NO_LAZY_FETCH, GIT_PROXY_COMMAND -->
 <!-- doclint-ignore: .bare/config, .bare/info, .bare/commondir, info/attributes, git.nix, tmux.nix, modules/programs/git.nix, systemd.user.sessionVariables -->
 <!-- doclint-ignore: attr.tree, AGENTS.md, gitsigns.nix -->
 <!-- doclint-ignore: http.cookieFile, http.saveCookies, g:fugitive_git_executable, vim-fugitive.nix -->
 <!-- doclint-ignore: rebase-merge/autostash -->
-<!-- doclint-ignore: modules/programs/zsh.nix, NX_PROMPT, git_status, git_branch, git_metrics -->
+<!-- doclint-ignore: modules/programs/zsh.nix, git_status, git_branch, git_metrics -->
 <!--
   These names are git config keys, environment variables that git and zsh
   read, paths in a git dir at run time, and Nix files and options outside
@@ -119,8 +119,8 @@ value, and an empty value makes each `git diff` that shows a patch stop with
 `external diff died`. So the list does not pin `diff.external`. A planted
 `diff.external` on a typed `git diff` (and on any `--ext-diff` variant, for
 example `git show --ext-diff`) is a known limit, below. Bare `git show` and
-`git log -p` do not trigger it. The shell prompt and gitsigns pass
-`--no-ext-diff`, so they do not run it.
+`git log -p` do not trigger it. The shell prompt runs no `git diff`, and
+gitsigns passes `--no-ext-diff`, so they do not run it.
 
 ## The submodule guard (#3343)
 
@@ -147,9 +147,10 @@ guard closes this for a typed command and for fugitive:
   `:Git` and `<leader>gs` into a warning if fugitive does not route through
   the guard.
 
-The shell prompt, gitsigns, the Telescope git pickers, and nvim-tree already
-pass `--ignore-submodules` (#3347), so they do not descend into the
-submodule.
+gitsigns, the Telescope git pickers, and nvim-tree already pass
+`--ignore-submodules` (#3347), so they do not descend into the submodule.
+The shell prompt reads no status of the work tree, so it does not descend
+into the submodule.
 
 ## Where the overrides reach
 
@@ -160,8 +161,7 @@ submodule.
 | A tmux pane | `tmux.nix` removes `__HM_SESS_VARS_SOURCED` from the tmux environment, so the zsh of each new pane sources the file again. | All |
 | The tmux server, `run-shell`, and hooks | The environment of the process that started the server. | All from a shell. The service list from `prism-restore` (Linux). |
 | nvim and gitsigns | prism types `nvim` into the zsh of the pane. nvim passes its environment to each job. | All |
-| The p10k prompt | The `vcs_info` fallback runs git in the zsh of the pane. gitstatusd is libgit2, and it runs no command for a planted config. | All |
-| The starship prompt (opt-in) | starship runs in the zsh of the pane. Its `git_status` module is disabled. See "The starship prompt" below. | All |
+| The starship prompt | starship runs in the zsh of the pane. Its `git_status` module is disabled. See "The starship prompt" below. | All. The config probe of gitoxide removes them, and reads no repo config. |
 | systemd user units (Linux) | `systemd.user.sessionVariables` writes `environment.d`. | The service list |
 | launchd agents and apps (Darwin) | The agent `git-env-overrides` runs `launchctl setenv` at each login. | The service list |
 | A prism session in `host` mode | The tmux pane. | All |
@@ -236,8 +236,8 @@ staged submodule (#3343).
   the config write-protection.
 - **A planted `diff.external`.** It runs on a typed `git diff` and on any
   `--ext-diff` variant (for example `git show --ext-diff`). Bare `git show`
-  and `git log -p` do not trigger it. The prompt and gitsigns pass
-  `--no-ext-diff`. Tracked by #3346.
+  and `git log -p` do not trigger it. The prompt runs no `git diff`, and
+  gitsigns passes `--no-ext-diff`. Tracked by #3346.
 - **A planted merge driver.** A `merge=<name>` attribute, or a planted
   `merge.default` with no attribute, selects a merge driver that a planted
   config defines. The driver runs on a typed `git pull`, `git merge`, or
@@ -317,11 +317,11 @@ defines. So the control for the nvim panes is in the nvim config: the git
 plugins of the prism nvim run git only in the repo of the dir where nvim
 starts. See the nvim-pane rule in `host-git-commands.md`.
 
-## The starship prompt (#3411)
+## The starship prompt (#3411, #3412)
 
-`modules/programs/zsh.nix` also has an opt-in starship prompt. A shell with
-`NX_PROMPT=starship` uses it in place of p10k. A shell without `NX_PROMPT`
-uses p10k. Each fact below was tested on starship 1.27.0 with gix 0.89.0.
+The zsh prompt is starship, in `modules/programs/zsh.nix`. Each new
+interactive zsh starts it. Each fact below was tested on starship 1.27.0
+with gix 0.89.0 and git 2.56.
 
 The starship `git_status` module is disabled, and the `format` of the
 prompt does not include `$git_status`. The module gets the status of the
@@ -341,6 +341,46 @@ module ran no planted driver. The `git_metrics` module ran a planted driver.
 The rule: the starship prompt must not enable `git_status`, `git_metrics`,
 or another module that reads the status of the work tree. Such a module runs
 a planted filter driver at each prompt, and the owner types no git command.
-The p10k prompt runs no command for a planted config, and the starship
-prompt must not lower this bar. A planted config gets to a worktree by the
-routes in "Known limits", for example #3325, #3346, and #3348.
+The prompt must run no command that a planted config defines. A planted
+config gets to a worktree by the routes in "Known limits", for example
+#3325, #3346, and #3348.
+
+### The git processes of the prompt (#3412)
+
+The format of the prompt has one git module, `git_branch`. starship reads
+the repo with gitoxide, in the starship process. starship starts a git
+process only in these conditions:
+
+- **In a git repo, at each prompt.** gitoxide runs
+  `git config -lz --show-origin --no-includes --show-scope --name-only` to
+  find the config file of the git installation. This config probe runs in
+  `/`, with `GIT_DIR` and `GIT_CONFIG_GLOBAL` set to `/dev/null`. It
+  removes `GIT_CONFIG_COUNT` and `GIT_CONFIG_PARAMETERS`, so the list does
+  not apply to it. It reads the system config and the installation config,
+  and no repo config.
+- **In a repo with a reftable ref store.** `git_branch` uses git in place
+  of gitoxide. It runs `git symbolic-ref HEAD`. If `HEAD` names a branch,
+  it also runs `git for-each-ref --format=%(upstream)` for that branch.
+  Each command gets the list. These commands read refs and config, and
+  they run no filter, hook, or pager.
+
+starship adds `-C`, `--git-dir`, `--work-tree`, and `-c core.fsmonitor=`
+to the `git_branch` commands. If gitoxide reads `core.fsmonitor` as true,
+starship adds `-c core.fsmonitor=true` in place of the empty value. The
+list sets `core.fsmonitor` to false, and gitoxide reads the list, so
+starship adds the empty value.
+
+A test planted a config with a filter driver, a diff driver,
+`diff.external`, an fsmonitor hook, a pager, `core.hooksPath`, and a config
+hook. The test touched each tracked file. Then it ran the prompt in each of
+these repos:
+
+- a repo with the files ref store
+- a repo with a reftable ref store
+- a reftable repo with a detached `HEAD`
+- a repo with `core.fsmonitor = true`
+- a repo with a sparse index
+- a worktree of a bare+worktree layout
+
+No planted command ran, with or without the list. With `git_status`
+enabled, the planted filter driver ran.
