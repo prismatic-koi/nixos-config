@@ -71,7 +71,7 @@ in
                 directory = {
                   style = "blue";
                   truncate_to_repo = false;
-                  truncation_length = 1;
+                  truncation_length = 2;
                   fish_style_pwd_dir_length = 1;
                   format = "[$path]($style) ";
                 };
