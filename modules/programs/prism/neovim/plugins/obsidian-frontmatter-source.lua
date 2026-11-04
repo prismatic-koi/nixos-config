@@ -4,7 +4,7 @@ local M = {}
 
 -- One row per completed frontmatter key. Add a field by adding a row.
 M.fields = {
-	pronouns = { kind = "link", field = "pronoun-set" },
+	pronouns = { kind = "link", field = "pronoun-sets" },
 	tags = { kind = "tag" },
 }
 
@@ -45,20 +45,57 @@ function obsidian.find_tags(dir, cb)
 	end
 end
 
--- Matches the first `field:` line inside the leading frontmatter block only.
+---@param text string frontmatter text without the --- fences
+---@return table|nil
+function obsidian.parse_yaml(text)
+	local ok, parsed = pcall(function()
+		return require("obsidian.yaml").loads(text)
+	end)
+	if ok and type(parsed) == "table" then
+		return parsed
+	end
+end
+
+-- Matches files whose leading frontmatter block holds a `field:` key.
 -- A line that is exactly `---` closes the block, so a body line cannot match.
 local function frontmatter_pattern(field)
 	local not_closer = [[(?:[^-\n][^\n]*|-{1,2}(?:[^-\n][^\n]*)?|---[^\n]+)?\n]]
-	return [[\A---[ \t]*\n(?:]] .. not_closer .. [[)*?]] .. vim.pesc(field):gsub("%%", "\\") .. [[[ \t]*:[ \t]*([^\n]+)]]
+	return [[\A---[ \t]*\n(?:]] .. not_closer .. [[)*?]] .. vim.pesc(field):gsub("%%", "\\") .. [[[ \t]*:]]
 end
 
-local function unquote(value)
-	value = vim.trim(value)
-	local q = value:sub(1, 1)
-	if (q == '"' or q == "'") and value:sub(-1) == q and #value >= 2 then
-		value = value:sub(2, -2)
+---@return string|nil text of the leading frontmatter block
+local function frontmatter_text(content)
+	local lines = vim.split(content, "\n", { plain = true })
+	if not (lines[1] or ""):match("^%-%-%-%s*$") then
+		return nil
 	end
-	return value
+	local out = {}
+	for i = 2, #lines do
+		if lines[i]:match("^%-%-%-%s*$") or lines[i]:match("^%.%.%.%s*$") then
+			return table.concat(out, "\n")
+		end
+		out[#out + 1] = lines[i]
+	end
+end
+
+-- Non-blocking whole-file read. Calls cb(nil) on any error.
+local function read_file(path, cb)
+	local uv = vim.uv
+	uv.fs_open(path, "r", 438, function(oerr, fd)
+		if oerr or not fd then
+			return cb(nil)
+		end
+		uv.fs_fstat(fd, function(serr, stat)
+			if serr or not stat then
+				uv.fs_close(fd, function() end)
+				return cb(nil)
+			end
+			uv.fs_read(fd, stat.size, 0, function(rerr, data)
+				uv.fs_close(fd, function() end)
+				cb(not rerr and data or nil)
+			end)
+		end)
+	end)
 end
 
 ---@param dir string
@@ -70,26 +107,54 @@ local function scan_links(dir, field, cb)
 		return cb(nil)
 	end
 	local cmd = {
-		rg, "--multiline", "--only-matching", "--no-messages", "--null", "--no-heading",
-		"--with-filename", "--no-line-number", "--glob", "*.md",
-		"--replace", "$1", frontmatter_pattern(field), dir,
+		rg, "--multiline", "--files-with-matches", "--no-messages", "--null",
+		"--glob", "*.md", frontmatter_pattern(field), dir,
 	}
 	local ok = pcall(vim.system, cmd, { text = true }, function(res)
-		vim.schedule(function()
-			-- rg exits 1 for "no matches" and 2 for partial errors; keep stdout either way.
-			if res.code > 2 then
-				return cb(nil)
-			end
-			local items = {}
-			for line in (res.stdout or ""):gmatch("[^\n]+") do
-				local path, value = line:match("^(.-)%z(.*)$")
-				value = value and unquote(value)
-				if path and value ~= "" then
-					items[#items + 1] = { stem = vim.fn.fnamemodify(path, ":t:r"), value = value }
+		-- rg exits 1 for "no matches" and 2 for partial errors; keep stdout either way.
+		if res.code > 2 then
+			return vim.schedule(function()
+				cb(nil)
+			end)
+		end
+		local paths = {}
+		for path in (res.stdout or ""):gmatch("([^%z]+)%z") do
+			paths[#paths + 1] = path
+		end
+		local items, pending = {}, #paths
+		local function finish()
+			table.sort(items, function(x, y)
+				if x.value ~= y.value then
+					return x.value < y.value
 				end
-			end
+				return x.stem < y.stem
+			end)
 			cb(items)
-		end)
+		end
+		if pending == 0 then
+			return vim.schedule(finish)
+		end
+		for _, path in ipairs(paths) do
+			read_file(path, function(content)
+				vim.schedule(function()
+					local fm = content and frontmatter_text(content)
+					local parsed = fm and obsidian.parse_yaml(fm)
+					local raw = parsed and parsed[field]
+					if type(raw) ~= "table" then
+						raw = { raw }
+					end
+					for _, v in ipairs(raw) do
+						if type(v) == "string" and vim.trim(v) ~= "" then
+							items[#items + 1] = { stem = vim.fn.fnamemodify(path, ":t:r"), value = vim.trim(v) }
+						end
+					end
+					pending = pending - 1
+					if pending == 0 then
+						finish()
+					end
+				end)
+			end)
+		end
 	end)
 	if not ok then
 		cb(nil)
@@ -230,11 +295,12 @@ function Source:get_completions(ctx, callback)
 	get_items(key, dir, spec, function(data)
 		local items = {}
 		for _, d in ipairs(data) do
-			local label, text, detail, kind
+			local label, text, detail, doc, kind
 			if spec.kind == "link" then
 				label = d.value
 				text = string.format('"[[%s|%s]]"', d.stem, d.value)
 				detail = d.stem
+				doc = "Note: " .. d.stem
 				kind = Kind.Reference
 			else
 				label, text, kind = d, d, Kind.Keyword
@@ -243,6 +309,7 @@ function Source:get_completions(ctx, callback)
 				label = label,
 				filterText = label,
 				kind = kind,
+				documentation = doc,
 				labelDetails = detail and { description = detail } or nil,
 				textEdit = { newText = text, range = range },
 			}
