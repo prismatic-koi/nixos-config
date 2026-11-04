@@ -265,6 +265,24 @@ local function list_context(bufnr, row, col)
 	end
 end
 
+--- Fills the cache of every row in M.fields, asynchronously. Skips a row that
+--- is loading or still fresh. Does nothing for a buffer outside the vault.
+---@param bufnr integer
+function M.prewarm(bufnr)
+	local dir = in_vault(bufnr)
+	if not dir then
+		return
+	end
+	for key, spec in pairs(M.fields) do
+		local ckey = dir .. "\0" .. key
+		local entry = cache[ckey]
+		local fresh = entry and entry.items and now() - entry.at <= M.ttl_ms
+		if not fresh and not (entry and entry.loading) then
+			refresh(ckey, dir, spec)
+		end
+	end
+end
+
 local Source = {}
 
 function Source.new()
