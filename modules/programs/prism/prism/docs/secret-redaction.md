@@ -1,9 +1,11 @@
 # Secret redaction in the capture path
 
-<!-- doclint-ignore: prism.ts, makeFrameWriter, truncateString -->
+<!-- doclint-ignore: prism.ts, makeFrameWriter, truncateString, redactToolResult -->
+<!-- doclint-ignore: structuredContent, tool_execution_end, tool_execution_update -->
 <!--
-  The three tokens above are cross-boundary references to the pi extension
-  at modules/programs/prism/pi/extensions/prism.ts. The doclint source index
+  The tokens above are cross-boundary references to the pi extension at
+  modules/programs/prism/pi/extensions/prism.ts, and to the pi event fields
+  and event names that it handles. The doclint source index
   covers TypeScript only when the repo root is available; inside the nix
   build sandbox (runChecks = true) only the prism subtree is copied in, so
   they do not resolve there. Same situation as the AGENTS.md annotation in
@@ -19,22 +21,27 @@ that carries an Authorization header, a failing test that dumps an argv, a tool
 that echoes its own configuration on error. Before this control, that value was
 written verbatim into `prism.db` and kept until the prune job removed it.
 
-This document specifies the control that removes it.
+The same output also goes to the model. Pi puts each tool result into the
+model context, into the request to the model provider, and into the pi session
+transcript. Issue #3420 added a control for that copy.
 
-## The two controls
+This document specifies the controls that remove the value.
 
-Redaction runs twice. The two controls are independent on purpose: each covers
-a producer the other cannot see.
+## The three controls
+
+Redaction runs at three points. The controls are independent on purpose: each
+covers data that the others cannot see.
 
 | Control | Where | Covers |
 |---|---|---|
 | 1 — pre-socket | `prism.ts`, in `makeFrameWriter` and `truncateString` | Every frame the pi extension emits. The secret never leaves the agent process. |
 | 2 — pre-INSERT | `internal/db`, in `WriteEvent`, `WriteEventReturningRowID`, and `WriteHarnessFrame` | Every row written by any producer: a harness with no redactor of its own, a hook event, an audit row, a backfill. |
+| 3 — tool result | `prism.ts`, in the `tool_result` handler, `redactToolResult` | The tool result that pi keeps: the model context, the request to the model provider, and the pi session transcript. See [Control 3](#control-3--the-tool-result-that-pi-keeps). |
 
 ## Redact one scalar at a time, never a serialised document
 
-Both controls redact each string scalar and each object key ON ITS OWN. Neither
-ever runs a pattern over a serialised JSON document. This is a correctness
+Every control redacts each string scalar and each object key ON ITS OWN. No
+control runs a pattern over a serialised JSON document. This is a correctness
 rule, not a style preference.
 
 The `private-key-block` shape has a `[\s\S]*?` body. Run over a serialised
@@ -63,12 +70,15 @@ Use `Redact` (the flat pass) only for text that is not a structured document:
 a single decoded string value, or a payload that does not parse as JSON. There
 are no delimiters to protect in either case.
 
-Control 1 is the primary one. It is the only one that stops the secret from
-crossing a process boundary. Control 2 is defence in depth: it is the last line
-before the row exists, and it is harness-agnostic.
+Controls 1 and 3 are the primary ones. They run in the agent process, before
+the secret leaves it. Control 1 protects the copy that goes to the prism
+socket. Control 3 protects the copy that goes to the model provider and to the
+transcript. Control 2 is defence in depth: it is the last line before the row
+exists, and it is harness-agnostic.
 
-Both controls apply the same rules. The Go rules live in
-`internal/payload/redact.go`; the TypeScript rules live in `prism.ts`.
+All three controls apply the same rules. The Go rules live in
+`internal/payload/redact.go`. The TypeScript rules live in `prism.ts`, and
+controls 1 and 3 share them.
 `TestRedactorParityWithExtension_EnvNameRegistry` and its sibling tests read
 the extension source and fail when the two registries drift.
 
@@ -182,9 +192,14 @@ without depending on the speed of the machine.
 
 The TypeScript side runs the equivalent two passes per scalar. Its
 regular-expression engine backtracks, so the multi-line private-key shape is
-not linear in the strict sense; it needs a literal `-----BEGIN … PRIVATE KEY-----`
-to start scanning, and the wire budget caps a frame at 8 KiB, so the practical
-bound holds.
+not linear. A match attempt starts only at a literal
+`-----BEGIN … PRIVATE KEY-----`. Input with many of these lines and no END
+line costs quadratic time.
+
+Controls 1 and 3 both run on the full output of a tool, before any truncation.
+The built-in tools of pi cap that output at 50 KB. At that size, the worst case
+measured 14 ms. A tool with no cap can return more: 1 MiB of these lines
+measured 5.4 seconds. Ordinary output of 1 MiB measured 5 ms.
 
 ## Frame boundaries and truncation
 
@@ -203,6 +218,51 @@ streaming assistant response whose deltas break mid-token — is not matched by
 the value layer, because neither half is the whole value. Nothing in the
 current capture path reassembles deltas before storage, so this is documented
 rather than fixed.
+
+## Control 3 — the tool result that pi keeps
+
+Controls 1 and 2 redact a copy of each tool result. Pi keeps the original. It
+puts the original into the model context, into the request to the model
+provider, and into the pi session transcript.
+
+Pi fires the `tool_result` event after a tool runs and before pi builds the
+tool result message. A handler of this event can return a replacement result.
+Pi then uses the replacement for the model context, for the transcript, and
+for the `tool_execution_end` event. The extension handles the event with
+`redactToolResult`, which does these steps:
+
+1. It redacts each text item of `content` on its own. It does not change an
+   image item.
+2. It redacts `structuredContent` with the walk of `redactFrame`: each string
+   scalar and each object key on its own. It never serialises the value.
+3. If no value changed, it returns no result. Pi then keeps the tool result
+   unchanged, byte for byte.
+4. If a value changed, it returns `content` and `structuredContent` together.
+   Pi drops `structuredContent` when a handler replaces `content` alone. The
+   built-in `bash` and `read` tools set `structuredContent`.
+
+The handler applies to the result of every tool: the built-in tools, the tools
+of other extensions, and MCP tools. The extension registers the handler in each
+prism session, also when `PRISM_HARNESS_PIPE` is not set. Outside prism, the
+extension does nothing, so no redaction occurs.
+
+An agent cannot read the value of a credential from tool output. It sees the
+marker, for example `[redacted:GITHUB_TOKEN]`. A command that refers to the
+variable continues to work, because the shell expands the variable. The value
+does not go through the tool output.
+
+### What control 3 covers
+
+| Data | Covered | Where pi sends the data |
+|---|---|---|
+| Text items in `content` | Yes | The model context, the provider request, and the transcript. |
+| String scalars and keys in `structuredContent` | Yes | Programmatic callers, for example codemode scripts. Pi does not send it to the model or write it to the transcript. |
+| Image items in `content` | No. They pass through unchanged. | The model context and the transcript. |
+| The `details` of a tool result | No | The transcript and the terminal. Pi does not send it to the model. The `edit` tool puts a diff of the file in it. |
+| Text that the model writes: assistant messages and tool-call arguments | No | The model context and the transcript. |
+| User messages, and messages that an extension adds | No | The model context and the transcript. |
+| The streaming output of a running tool (`tool_execution_update`) | No | The terminal only. |
+| The file where `bash` saves its full output when it truncates the output | No | The disk. A `read` of that file is a tool result, so control 3 redacts what the model gets from it. |
 
 ## Remediation for rows already written
 
@@ -231,24 +291,32 @@ safe: redaction is idempotent, so a second pass reports zero rewrites.
 |---|---|
 | `agent_events` payload column | Yes — every event, every type. |
 | `harness_frames` payload column | Yes — the raw wire archive. |
-| On-disk session archives | **No — and no other control covers them either.** |
+| On-disk session archives | **No.** Control 3 covers part of an archive. See below. |
 
 `prism cleanup` copies a session's harness transcript out of the pi sessions
 root — `$PI_CODING_AGENT_DIR/sessions/`, or `~/.pi/agent/sessions/` when that
 variable is unset — into the directory named by `sessions.archive_path`. Those
 files sit outside the database and `prism scrub-secrets` does not touch them.
 
-**Neither control protects an archive, before or after this change.** Pi's own
-`SessionManager` writes the transcript JSONL; the prism extension is not in
-that write path. `Archive` in `internal/harness/pi/archive.go` is a byte-copy
-of the file pi wrote. Control 1 redacts a COPY of the tool result on its way to
-the prism socket — it never mutates pi's message store, so the transcript still
-holds the raw value.
+Pi's own `SessionManager` writes the transcript JSONL. `Archive` in
+`internal/harness/pi/archive.go` is a byte-copy of the file pi wrote. Control 1
+redacts a COPY of the tool result on its way to the prism socket. It does not
+change the transcript. Control 3 replaces the tool result before pi writes it,
+so the transcript holds the marker in place of the value.
 
-Treat every archive, old or new, as carrying whatever the session printed:
-delete or rotate it separately, and rotate any credential you believe reached
-it. Closing this gap means redacting at the pi transcript writer, which is
-outside prism's code.
+An archive can still hold a credential in these places:
+
+- A transcript that a session wrote before control 3 existed (issue #3420).
+  Every part of it can hold a credential.
+- The parts of a transcript that control 3 does not cover: the `details` of a
+  tool result, assistant messages, tool-call arguments, user messages, and
+  messages that an extension adds. See
+  [What control 3 covers](#what-control-3-covers).
+
+If an archive is older than control 3, treat it as carrying whatever the
+session printed. Delete or rotate it separately, and rotate any credential you
+believe reached it. For a newer archive, the same applies to the parts in the
+list above.
 
 ## Rules for changing this code
 
@@ -277,3 +345,6 @@ outside prism's code.
 - Never apply a shape to a serialised JSON document. Use `RedactJSON` on the
   Go side and `redactFrame` in the extension. See the scalar-at-a-time section
   above for what goes wrong.
+- Keep the `tool_result` handler on the same scalar walk. Do not serialise
+  `structuredContent` to redact it. If the handler returns `content`, it must
+  also return `structuredContent`. If it does not, pi drops `structuredContent`.

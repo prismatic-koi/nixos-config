@@ -73,6 +73,8 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   ProviderConfig,
+  ToolResultEvent,
+  ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent"
 
 // ---------------------------------------------------------------------------
@@ -2405,6 +2407,12 @@ export interface SecretRedactor {
    *      scalar on its own makes that structurally impossible.
    */
   redactFrame(frame: Record<string, unknown>): Record<string, unknown>
+  /**
+   * Redact any value — an object, an array, or a scalar — with the walk that
+   * redactFrame uses. Returns `value` itself, not a copy, when no string in
+   * it changed, so a caller can tell "no credential" from "redacted".
+   */
+  redactValue(value: unknown): unknown
   /** Distinct credential values the value layer covers. Never the values. */
   readonly valueCount: number
 }
@@ -2456,10 +2464,14 @@ export function makeSecretRedactor(
     return out
   }
 
-  const walk = (v: unknown, depth: number): unknown => {
-    if (typeof v === "string") return redact(v)
+  const walk = (
+    v: unknown,
+    depth: number,
+    scalar: (s: string) => string,
+  ): unknown => {
+    if (typeof v === "string") return scalar(v)
     if (depth >= REDACT_MAX_DEPTH) return v
-    if (Array.isArray(v)) return v.map((x) => walk(x, depth + 1))
+    if (Array.isArray(v)) return v.map((x) => walk(x, depth + 1, scalar))
     if (v !== null && typeof v === "object") {
       const proto = Object.getPrototypeOf(v)
       if (proto !== Object.prototype && proto !== null) {
@@ -2470,7 +2482,7 @@ export function makeSecretRedactor(
         // not need a second pass over the serialised line — a second pass
         // would be able to span a JSON delimiter, which this cannot.
         try {
-          return walk(JSON.parse(JSON.stringify(v)) as unknown, depth + 1)
+          return walk(JSON.parse(JSON.stringify(v)) as unknown, depth + 1, scalar)
         } catch {
           // Not serialisable (a cycle, a bigint). JSON.stringify in the
           // writer will throw on it too, so the frame is dropped there
@@ -2480,7 +2492,7 @@ export function makeSecretRedactor(
       }
       const out: Record<string, unknown> = {}
       for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-        out[redact(k)] = walk(val, depth + 1)
+        out[scalar(k)] = walk(val, depth + 1, scalar)
       }
       return out
     }
@@ -2490,7 +2502,16 @@ export function makeSecretRedactor(
   return {
     redact,
     redactFrame(frame) {
-      return walk(frame, 0) as Record<string, unknown>
+      return walk(frame, 0, redact) as Record<string, unknown>
+    },
+    redactValue(value) {
+      let changed = false
+      const out = walk(value, 0, (s) => {
+        const r = redact(s)
+        if (r !== s) changed = true
+        return r
+      })
+      return changed ? out : value
     },
     valueCount: markerByValue.size,
   }
@@ -2512,6 +2533,53 @@ export function defaultSecretRedactor(): SecretRedactor {
 /** Test-only: drop the cached default so the next call re-reads process.env. */
 export function resetDefaultSecretRedactor(): void {
   cachedDefaultRedactor = undefined
+}
+
+/**
+ * Redact the tool result that pi keeps (issue #3420).
+ *
+ * makeFrameWriter redacts only the copy that goes to the prism socket. Pi
+ * puts the original result into the model context, the provider request, and
+ * the session transcript, unless a `tool_result` handler returns a
+ * replacement.
+ *
+ * Each text item of `content` is redacted on its own, and `structuredContent`
+ * goes through the redactFrame walk. Neither is serialised first: see
+ * SecretRedactor.redactFrame for why a pattern must not run over JSON.
+ *
+ * Returns undefined when no value changed, so pi keeps the result as it is.
+ * Otherwise it returns `content` and `structuredContent` together, because pi
+ * drops `structuredContent` when a handler replaces `content` alone.
+ */
+export function redactToolResult(
+  event: Pick<ToolResultEvent, "content" | "structuredContent">,
+  redactor: SecretRedactor = defaultSecretRedactor(),
+): ToolResultEventResult | undefined {
+  let changed = false
+  // An untyped tool can return no content array. Pi normalises that later,
+  // so leave it as it is.
+  const content = Array.isArray(event.content)
+    ? event.content.map((item) => {
+        if (item?.type !== "text" || typeof item.text !== "string") return item
+        const text = redactor.redact(item.text)
+        if (text === item.text) return item
+        changed = true
+        return { ...item, text }
+      })
+    : undefined
+  const original = event.structuredContent
+  const structuredContent =
+    original === undefined ? undefined : redactor.redactValue(original)
+  if (structuredContent !== original) changed = true
+  if (!changed) return undefined
+
+  const result: ToolResultEventResult = {}
+  if (content !== undefined) result.content = content
+  if (structuredContent !== undefined) {
+    result.structuredContent =
+      structuredContent as ToolResultEventResult["structuredContent"]
+  }
+  return result
 }
 
 // ---------------------------------------------------------------------------
@@ -3295,6 +3363,10 @@ export default function prismExtension(pi: ExtensionAPI): void {
   if (!shouldActivate()) {
     return
   }
+
+  // Register before the endpoint checks below. The model context and the
+  // transcript need redaction even when the prism socket is not configured.
+  pi.on("tool_result", async (event) => redactToolResult(event))
 
   // Endpoint derivation: PRISM_HARNESS_PIPE points at the sidecar's listener.
   const endpointEnv = process.env.PRISM_HARNESS_PIPE
