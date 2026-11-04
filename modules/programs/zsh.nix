@@ -342,8 +342,8 @@ in
                   bindkey '^[[B' history-beginning-search-forward-end
 
                   # Custom keybindings
-                  bindkey -s ^v "nvim\n"
-                  bindkey -s ^o "prism launch --in-terminal --path ~/documents/obsidian\n"
+                  bindkey -s ^v " nvim\n"
+                  bindkey -s ^o " prism launch --in-terminal --path ~/documents/obsidian\n"
 
                   _prism_launch() {
                     _PRISM_LAUNCH_PENDING=1
