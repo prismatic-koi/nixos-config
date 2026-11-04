@@ -11,14 +11,16 @@ package cmd
 // Stagger: a configurable delay (default 500ms) is inserted between successive
 // session creates to flatten the sidecar startup burst on machines with many
 // sessions. The delay only applies to sessions that are actually being created;
-// it is skipped for already-running sessions and for sessions being marked
-// ended due to missing worktrees. It is also fully skipped in dry-run mode.
+// it is skipped for already-running sessions and for sessions with a missing
+// worktree, which restore does not start (see endSessionWithNoWorktree). It
+// is also fully skipped in dry-run mode.
 
 import (
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,9 +43,11 @@ import (
 type restoreOutcome int
 
 const (
-	// restoreOutcomeSkipped means the session was already running or was
-	// marked ended (missing worktree). No sidecar was started; no stagger
-	// delay should be applied after this call.
+	// restoreOutcomeSkipped means the session was already running, or its
+	// worktree is missing and restore did not start it. Restore ends the row
+	// of such a session, or keeps the row when a process in its sandbox still
+	// runs. No sidecar was started; no stagger delay should be applied after
+	// this call.
 	restoreOutcomeSkipped restoreOutcome = iota
 
 	// restoreOutcomeCreated means the session was successfully created.
@@ -257,8 +261,10 @@ func Restore(dryRun bool) error {
 }
 
 // restoreSession recreates a single session. Already-existing sessions are
-// skipped silently. Sessions with missing/inaccessible worktrees are marked as
-// ended in the DB rather than left as zombies.
+// skipped silently. For a session whose worktree is missing or inaccessible,
+// restore stops the processes in its sandbox first, and then ends its row, so
+// that the row does not stay as a zombie. If such a process still runs,
+// restore keeps the row and returns an error.
 //
 // pendingStagger points to a bool that is set by the caller after each
 // successful create. If *pendingStagger is true when session.Create is about
@@ -307,18 +313,17 @@ func restoreSession(d *db.DB, s db.Status, pendingStagger *bool, staggerDelay ti
 // os.Executable() does not reliably resolve the real prism binary in all
 // contexts (e.g. test binaries).
 func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerDelay time.Duration) (restoreOutcome, error) {
-	// If the worktree directory doesn't exist or is inaccessible, mark the
-	// session as ended in the DB so it doesn't appear as a zombie in the
-	// dashboard.
+	// If the worktree directory does not exist or is inaccessible, stop the
+	// processes in the sandbox of the session, and then end its row, so that
+	// it does not show as a zombie in the dashboard. If such a process still
+	// runs, keep the row (endSessionWithNoWorktree).
 	directory := s.Worktree
 	if directory == "" {
-		fmt.Fprintf(os.Stderr, "restore %q: no worktree recorded — marking ended\n", s.SessionName)
-		return restoreOutcomeSkipped, setEndedStoppingReviewChildren(d, s.SessionName)
+		return restoreOutcomeSkipped, endSessionWithNoWorktree(d, s.SessionName, "no worktree recorded")
 	}
 	if _, err := os.Stat(directory); err != nil {
-		fmt.Fprintf(os.Stderr, "restore %q: worktree %q not accessible (%v) — marking ended\n",
-			s.SessionName, directory, err)
-		return restoreOutcomeSkipped, setEndedStoppingReviewChildren(d, s.SessionName)
+		return restoreOutcomeSkipped, endSessionWithNoWorktree(d, s.SessionName,
+			fmt.Sprintf("worktree %q not accessible (%v)", directory, err))
 	}
 
 	// Build opts for the full three-window layout. SkipStatusSeed prevents
@@ -534,6 +539,24 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 
 	fmt.Printf("session %q restored\n", s.SessionName)
 	return restoreOutcomeCreated, nil
+}
+
+// endSessionWithNoWorktree ends the row of a session that restore cannot
+// start, because its worktree is missing or not recorded. reason tells why.
+//
+// On Darwin, a process that the session detached can outlive its tmux
+// session, and it can still write the git paths in .bare that the profile
+// grants (#3375). So the stop of the processes in the sandbox of the
+// session runs before the row ends (#3400). If such a process still runs,
+// the row stays open, so that prism confirm-bare, ConvertToBare, and the
+// target check of CloneWorktree still see the session.
+func endSessionWithNoWorktree(d *db.DB, sessionName, reason string) error {
+	if err := stopSessionSandboxProcs(sessionName); err != nil {
+		return errors.Join(err, fmt.Errorf("%s, and %w. prism restore kept the row of %s, so prism confirm-bare and prism convert refuse a project root that the session can write. Run prism restore again when the process is gone",
+			reason, errSandboxProcessRuns, strconv.Quote(sessionName)))
+	}
+	fmt.Fprintf(os.Stderr, "restore %q: %s — marking ended\n", sessionName, reason)
+	return setEndedStoppingReviewChildren(d, sessionName)
 }
 
 // restoreResumeSessionID returns harnessSessionID when pi can resume it in

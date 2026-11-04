@@ -34,13 +34,11 @@ If a session record refuses and the session does not run, end the record
 with "prism cleanup --yes --session <name>", then run this command again.
 
 On Darwin, each path that ends a session ends each process that the
-session detached (#3375, #3392). prism restore of a session whose
-worktree is missing ends the session and does not end such a process
-(#3400). If a path gave an error or a warning that names a process in
-the sandbox of the session, that process can still run. If a sandboxed
-session ran in a plain clone of the project and had such an error, or
-prism restore ended it, restart the host before you run this command. A
-restart ends such a process.`,
+session detached (#3375, #3392, #3400). If a path gave an error or a
+warning that names a process in the sandbox of the session, that process
+can still run. If a sandboxed session ran in a plain clone of the
+project and had such an error, restart the host before you run this
+command. A restart ends such a process.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		gitDir, err := git.ConfirmBare(args[0], prismSession.SessionRunsInTmux)

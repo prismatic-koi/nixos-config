@@ -782,7 +782,7 @@ func TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists(t *testing.T) 
 	t.Setenv("HOME", fakeHome)
 
 	// restoreSession drives a REAL tmux server (cmdTestServer), so
-	// setupFullLayout's `tmux.SendKeys(name+":0", NvimCmd(directory))`
+	// setupFullLayout's `tmux.SendKeys(name+":0", " "+nvimCmd)`
 	// (internal/session/session.go) doesn't just record a string — it
 	// types the command into a live shell in a live pane, which really
 	// execs the `nvim` binary. That real nvim process is the writer of
