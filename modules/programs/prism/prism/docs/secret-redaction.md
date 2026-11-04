@@ -1,7 +1,7 @@
 # Secret redaction in the capture path
 
 <!-- doclint-ignore: prism.ts, makeFrameWriter, truncateString, redactToolResult -->
-<!-- doclint-ignore: structuredContent, tool_execution_end, tool_execution_update -->
+<!-- doclint-ignore: structuredContent, structuredContent.output, tool_execution_end, tool_execution_update -->
 <!--
   The tokens above are cross-boundary references to the pi extension at
   modules/programs/prism/pi/extensions/prism.ts, and to the pi event fields
@@ -196,10 +196,14 @@ not linear. A match attempt starts only at a literal
 `-----BEGIN … PRIVATE KEY-----`. Input with many of these lines and no END
 line costs quadratic time.
 
-Controls 1 and 3 both run on the full output of a tool, before any truncation.
-The built-in tools of pi cap that output at 50 KB. At that size, the worst case
-measured 14 ms. A tool with no cap can return more: 1 MiB of these lines
-measured 5.4 seconds. Ordinary output of 1 MiB measured 5 ms.
+Control 1 runs on the full `content` of a tool result, before its 8 KiB byte
+cut. The built-in tools of pi cap `content` at 50 KB. At that size, the worst
+case measured 14 ms.
+
+Control 3 also walks `structuredContent` and `details`. The `bash` tool puts up
+to 1 MiB of output in `structuredContent.output`. At 1 MiB, the worst case
+measured 1.2 to 5.4 seconds for each call, by the form of the line. A tool with
+no cap can return more. Ordinary output of 1 MiB measured 5 ms.
 
 ## Frame boundaries and truncation
 
