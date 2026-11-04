@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -312,13 +313,11 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	// dashboard.
 	directory := s.Worktree
 	if directory == "" {
-		fmt.Fprintf(os.Stderr, "restore %q: no worktree recorded — marking ended\n", s.SessionName)
-		return restoreOutcomeSkipped, setEndedStoppingReviewChildren(d, s.SessionName)
+		return restoreOutcomeSkipped, endSessionWithNoWorktree(d, s.SessionName, "no worktree recorded")
 	}
 	if _, err := os.Stat(directory); err != nil {
-		fmt.Fprintf(os.Stderr, "restore %q: worktree %q not accessible (%v) — marking ended\n",
-			s.SessionName, directory, err)
-		return restoreOutcomeSkipped, setEndedStoppingReviewChildren(d, s.SessionName)
+		return restoreOutcomeSkipped, endSessionWithNoWorktree(d, s.SessionName,
+			fmt.Sprintf("worktree %q not accessible (%v)", directory, err))
 	}
 
 	// Build opts for the full three-window layout. SkipStatusSeed prevents
@@ -534,6 +533,24 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 
 	fmt.Printf("session %q restored\n", s.SessionName)
 	return restoreOutcomeCreated, nil
+}
+
+// endSessionWithNoWorktree ends the row of a session that restore cannot
+// start, because its worktree is missing or not recorded. reason tells why.
+//
+// On Darwin, a process that the session detached can outlive its tmux
+// session, and it can still write the git paths in .bare that the profile
+// grants (#3375). So the stop of the processes in the sandbox of the
+// session runs before the row ends (#3400). If such a process still runs,
+// the row stays open, so that prism confirm-bare, ConvertToBare, and the
+// target check of CloneWorktree still see the session.
+func endSessionWithNoWorktree(d *db.DB, sessionName, reason string) error {
+	if err := stopSessionSandboxProcs(sessionName); err != nil {
+		return errors.Join(err, fmt.Errorf("%s, and %w. prism restore kept the row of %s, so prism confirm-bare and prism convert refuse a project root that the session can write. Run prism restore again when the process is gone",
+			reason, errSandboxProcessRuns, strconv.Quote(sessionName)))
+	}
+	fmt.Fprintf(os.Stderr, "restore %q: %s — marking ended\n", sessionName, reason)
+	return setEndedStoppingReviewChildren(d, sessionName)
 }
 
 // restoreResumeSessionID returns harnessSessionID when pi can resume it in
