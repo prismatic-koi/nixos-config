@@ -143,9 +143,12 @@ local function scan_links(dir, field, cb)
 					if type(raw) ~= "table" then
 						raw = { raw }
 					end
+					local seen = {}
 					for _, v in ipairs(raw) do
-						if type(v) == "string" and vim.trim(v) ~= "" then
-							items[#items + 1] = { stem = vim.fn.fnamemodify(path, ":t:r"), value = vim.trim(v) }
+						v = type(v) == "string" and vim.trim(v) or ""
+						if v ~= "" and not seen[v] then
+							seen[v] = true
+							items[#items + 1] = { stem = vim.fn.fnamemodify(path, ":t:r"), value = v }
 						end
 					end
 					pending = pending - 1
@@ -161,7 +164,9 @@ local function scan_links(dir, field, cb)
 	end
 end
 
--- cache[kind_key] = { items = table|nil, at = ms, pending = callbacks|nil }
+-- cache[vault_root .. "\0" .. key] = {
+--   items = table|nil, at = ms, loading = bool, waiting = callbacks|nil
+-- }
 local cache = {}
 
 local function now()
@@ -222,8 +227,10 @@ local function in_vault(bufnr)
 	return root
 end
 
---- Returns the owning key and the 0-based column where the list item text starts.
----@return string|nil, integer|nil
+--- Returns the owning key, the 0-based column where the list item text starts,
+--- and the 0-based row and column range of a ` []` to remove from the key line
+--- (nil when the key line is a plain `key:`).
+---@return string|nil, integer|nil, table|nil
 local function list_context(bufnr, row, col)
 	local lines = vim.api.nvim_buf_get_lines(bufnr, 0, row, false)
 	if lines[1] == nil or not lines[1]:match("^%-%-%-%s*$") then
@@ -246,7 +253,11 @@ local function list_context(bufnr, row, col)
 	for i = row - 1, 2, -1 do
 		local key = lines[i]:match("^([%w_%-]+):%s*$")
 		if key then
-			return key, #dash
+			return key, #dash, nil
+		end
+		local ekey = lines[i]:match("^([%w_%-]+):%s*%[%s*%]%s*$")
+		if ekey then
+			return ekey, #dash, { row = i - 1, from = #ekey + 1, to = #lines[i] }
 		end
 		if not (lines[i]:match("^%s*%-") or lines[i]:match("^%s*$")) then
 			return nil
@@ -278,7 +289,7 @@ function Source:get_completions(ctx, callback)
 	if not dir then
 		return empty()
 	end
-	local key, start_col = list_context(bufnr, row, col)
+	local key, start_col, empty_flow = list_context(bufnr, row, col)
 	local spec = key and M.fields[key]
 	if not spec then
 		return empty()
@@ -292,7 +303,20 @@ function Source:get_completions(ctx, callback)
 	}
 	local Kind = vim.lsp.protocol.CompletionItemKind
 
-	get_items(key, dir, spec, function(data)
+	local extra
+	if empty_flow then
+		extra = {
+			{
+				newText = "",
+				range = {
+					start = { line = empty_flow.row, character = empty_flow.from },
+					["end"] = { line = empty_flow.row, character = empty_flow.to },
+				},
+			},
+		}
+	end
+
+	get_items(dir .. "\0" .. key, dir, spec, function(data)
 		local items = {}
 		for _, d in ipairs(data) do
 			local label, text, detail, doc, kind
@@ -312,6 +336,7 @@ function Source:get_completions(ctx, callback)
 				documentation = doc,
 				labelDetails = detail and { description = detail } or nil,
 				textEdit = { newText = text, range = range },
+				additionalTextEdits = extra,
 			}
 		end
 		callback({ items = items, is_incomplete_forward = false, is_incomplete_backward = false })
