@@ -1124,8 +1124,10 @@ func setupFullLayout(name, directory string, opts Opts) error {
 
 	_ = tmux.RenameWindow(name+":0", "edit")
 
+	// The leading space keeps the line out of the zsh history file
+	// (HIST_IGNORE_SPACE). Do not remove it.
 	nvimCmd := NvimCmd(directory)
-	_ = tmux.SendKeys(name+":0", nvimCmd)
+	_ = tmux.SendKeys(name+":0", " "+nvimCmd)
 
 	// Clear before the seed, the sidecar, and the agent window. Each of them
 	// reads root_agent_name, and `prism agent-run` turns it into the --agent
