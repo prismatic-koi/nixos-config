@@ -168,6 +168,32 @@ in
               size = 10000;
               expireDuplicatesFirst = true;
               path = "${homeDir}/.local/state/zsh/history";
+              ignorePatterns = [
+                # Token prefixes
+                "*sk-ant-*"
+                "*sk-or-v1-*"
+                "*glpat-*"
+                "*hskey-auth-*"
+                "*ghp_*"
+                "*gho_*"
+                "*github_pat_*"
+                # Assignments with a literal value
+                "*BW_SESSION=*"
+                "*_API_KEY=[^\$\"']*"
+                "*_API_KEY=[\"'][^\$]*"
+                "*_TOKEN=[^\$\"']*"
+                "*_TOKEN=[\"'][^\$]*"
+                # Headers and cookies
+                "*Bearer [^\$]*"
+                "*x-api-key: [^\$]*"
+                "*Subscription-Key*"
+                "*-b '*=*"
+                "*[Cc]ookie: *"
+                # Passwords and card data
+                "*input_pw*"
+                "*mosquitto_passwd*-b*"
+                "*\"cvv\"*"
+              ];
             };
 
             autosuggestion = {
@@ -210,7 +236,8 @@ in
               # nvim
               v = "nvim";
               # youtube music download script
-              ytm-download = "yt-dlp  --add-metadata --format m4a -i -o '~/music/%(artist)s/%(album)s/%(title)s.%(ext)s' --sponsorblock-remove 'music_offtopic' --";
+              # yt-dlp does not expand `~` in the chromium profile path, so use the absolute path.
+              ytm-download = "yt-dlp ${lib.optionalString config.nx.programs.qutebrowser.enable "--cookies-from-browser chromium:${homeDir}/.local/share/qutebrowser"} --add-metadata --format m4a -i -o '~/music/%(artist)s/%(album)s/%(title)s.%(ext)s' --sponsorblock-remove 'music_offtopic' --";
               # git aliases
               gP = "git pull";
               gcb = "git checkout -b";
