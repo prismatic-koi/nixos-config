@@ -7,8 +7,8 @@
 //
 // This script loads the extension end-to-end against a real, installed
 // pi-coding-agent build using pi's own extension-loading mechanism (jiti,
-// given the SDK modules from pi's `dist/bundle`, as pi does at run time), invokes its async default export with a fake ExtensionAPI,
-// and asserts the anthropic provider actually registers with a non-empty
+// given the SDK modules from pi's `dist/bundle`, as pi does at run time),
+// invokes its async default export with a fake ExtensionAPI, and asserts the anthropic provider actually registers with a non-empty
 // model list and all four OAuth handlers wired.
 //
 // Run after any pi-coding-agent version bump (overlay pin or nixpkgs bump)

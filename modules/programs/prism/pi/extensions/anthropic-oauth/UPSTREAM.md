@@ -192,8 +192,7 @@ request — both are declared only, because the token endpoint rejects a
    **Regression guard.** `verify-extension-loads.mjs` (in this directory)
    loads this extension end-to-end against a real, installed
    pi-coding-agent build using pi's own extension-loading mechanism (jiti,
-   aliased the same way `dist/core/extensions/loader.js` aliases it for
-   Node/dev mode) and asserts the anthropic provider registers with a
+   given the SDK modules from pi's `dist/bundle`, as pi does at run time) and asserts the anthropic provider registers with a
    non-empty model list and all OAuth handlers wired. Run it after any
    pi-coding-agent version bump (overlay pin or nixpkgs bump) — it is what
    would have caught issue #2428 before it reached an interactive `pi`
