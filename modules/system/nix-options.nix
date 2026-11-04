@@ -13,6 +13,7 @@
           "nix-command"
           "flakes"
         ];
+        use-xdg-base-directories = true;
         trusted-users = [
           "root"
           "@wheel"

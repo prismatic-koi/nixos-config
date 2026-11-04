@@ -1,6 +1,8 @@
 {
   lib,
+  stdenv,
   buildGoModule,
+  installShellFiles,
   git,
   tmux,
   # When true, run the Go test suite inside the nix build sandbox.
@@ -132,6 +134,14 @@ buildGoModule {
   # `go test ./internal/tmux/...` from a host shell (not inside a prism spawn
   # or nix build), where a real controlling terminal is available.
   nativeCheckInputs = [ git ];
+
+  nativeBuildInputs = [ installShellFiles ];
+
+  # This runs in the build sandbox with HOME=/homeless-shelter. `prism
+  # completion zsh` must not touch the home dir, the state dir, or the DB.
+  postInstall = lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
+    installShellCompletion --cmd prism --zsh <($out/bin/prism completion zsh)
+  '';
 
   meta = {
     description = "Prism — tmux-based AI development environment TUI";
