@@ -67,20 +67,37 @@ func completeProfileNames(_ *cobra.Command, args []string, toComplete string) ([
 	return filterPrefix(config.AvailableProfileNames(pf), toComplete), cobra.ShellCompDirectiveNoFileComp
 }
 
-func completeSessionNames(_ *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+func completeSessionNames(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 	if len(args) > 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	return filterPrefix(sessionNameCandidates(dbPath()), toComplete), cobra.ShellCompDirectiveNoFileComp
+	return filterPrefix(sessionNameCandidates(dbPath(), sessionScopeFor(cmd)), toComplete), cobra.ShellCompDirectiveNoFileComp
 }
 
 func completeSessionFlag(_ *cobra.Command, _ []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
-	return filterPrefix(sessionNameCandidates(dbPath()), toComplete), cobra.ShellCompDirectiveNoFileComp
+	return filterPrefix(sessionNameCandidates(dbPath(), sessionScopeRunning), toComplete), cobra.ShellCompDirectiveNoFileComp
+}
+
+type sessionScope int
+
+const (
+	// sessionScopeRunning lists sessions with ended_at IS NULL.
+	sessionScopeRunning sessionScope = iota
+	// sessionScopeAll lists running and ended sessions, minus review sub-sessions.
+	sessionScopeAll
+)
+
+func sessionScopeFor(cmd *cobra.Command) sessionScope {
+	switch cmd {
+	case checkinCmd, statsCmd, archiveCmd:
+		return sessionScopeAll
+	}
+	return sessionScopeRunning
 }
 
 // sessionNameCandidates uses db.OpenReadOnly and not db.Open: db.Open
 // creates the file when it is missing and runs the migrations.
-func sessionNameCandidates(path string) []string {
+func sessionNameCandidates(path string, scope sessionScope) []string {
 	conn, err := db.OpenReadOnly(path)
 	if err != nil {
 		return nil
@@ -88,8 +105,11 @@ func sessionNameCandidates(path string) []string {
 	defer conn.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	rows, err := conn.QueryContext(ctx,
-		`SELECT DISTINCT session_name FROM sessions ORDER BY session_name`)
+	query := `SELECT DISTINCT session_name FROM sessions WHERE ended_at IS NULL ORDER BY session_name`
+	if scope == sessionScopeAll {
+		query = `SELECT DISTINCT session_name FROM sessions WHERE instr(session_name, '~review-') = 0 ORDER BY session_name`
+	}
+	rows, err := conn.QueryContext(ctx, query)
 	if err != nil {
 		return nil
 	}
