@@ -14,9 +14,10 @@
 // harness transcript out of the pi sessions root
 // ($PI_CODING_AGENT_DIR/sessions/, else ~/.pi/agent/sessions/) and into the
 // archive directory named by sessions.archive_path. Pi writes that transcript
-// itself; no prism redaction has ever run over it, before or after this
-// change. Those files are outside the database and are not touched here. See
-// docs/secret-redaction.md.
+// itself. The pi extension redacts the values it matches in each tool result
+// before pi writes it, but any part of a transcript, and every transcript
+// written before that control, can still hold a credential. Those files are outside the database
+// and are not touched here. See docs/secret-redaction.md.
 package db
 
 import (
