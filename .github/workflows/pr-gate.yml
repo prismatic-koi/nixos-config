@@ -683,6 +683,8 @@ jobs:
             ext:
               - 'modules/programs/prism/pi/extensions/**'
               - '.github/workflows/pr-gate.yml'
+              - 'flake.lock'
+              - 'overlays/default.nix'
       - uses: cachix/install-nix-action@v31
         if: steps.changes.outputs.ext == 'true'
         with:
