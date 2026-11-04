@@ -7,6 +7,9 @@
       config =
         # lua
         ''
+          package.preload["obsidian-frontmatter"] = function()
+          ${builtins.readFile ./obsidian-frontmatter-source.lua}
+          end
           require("blink.cmp").setup({
           	keymap = {
           		preset = "none",
@@ -35,7 +38,7 @@
           	},
           	snippets = { preset = "luasnip" },
           	sources = {
-          		default = { "lsp", "snippets", "buffer", "path" },
+          		default = { "lsp", "snippets", "buffer", "path", "obsidian_frontmatter" },
           		min_keyword_length = function(ctx)
           			local ft = vim.bo[ctx.bufnr].filetype
           			if ft == "markdown" or ft == "text" or ft == "gitcommit" then
@@ -45,6 +48,11 @@
           		end,
           		providers = {
           			buffer = { min_keyword_length = 5 },
+          			obsidian_frontmatter = {
+          				name = "ObsidianFrontmatter",
+          				module = "obsidian-frontmatter",
+          				min_keyword_length = 0,
+          			},
           		},
           	},
           	cmdline = {
