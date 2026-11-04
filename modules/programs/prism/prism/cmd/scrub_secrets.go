@@ -42,10 +42,13 @@ Tables covered:
 
 On-disk session archives are NOT covered. "prism cleanup" byte-copies the pi
 transcript JSONL into the directory named by sessions.archive_path. The prism
-extension redacts each tool result before pi writes it to the transcript.
-Assistant messages, tool-call arguments, user messages, and every transcript
-written before that control can still hold a credential. Delete or rotate
-those archives separately, and rotate any credential you believe reached them.
+extension redacts each tool result before pi writes it to the transcript, but
+it removes only the values that the two layers below match. Assistant
+messages, tool-call arguments, user messages, the output of ! and !!
+commands, messages that an extension adds, and every transcript written
+before that control are not redacted. Treat every archive as able to hold a
+credential: delete or rotate it separately, and rotate any credential you
+believe reached it.
 
 Matching has two layers. The value layer replaces the exact value of every
 credential environment variable in this process's environment, so run the

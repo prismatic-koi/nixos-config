@@ -249,8 +249,9 @@ of other extensions, and MCP tools. The extension registers the handler in each
 prism session, also when `PRISM_HARNESS_PIPE` is not set. Outside prism, the
 extension does nothing, so no redaction occurs.
 
-An agent cannot read the value of a credential from tool output. It sees the
-marker, for example `[redacted:GITHUB_TOKEN]`. A command that refers to the
+An agent cannot read, from tool output, the value of a credential that the
+value layer or the shape layer matches. It sees the marker, for example
+`[redacted:GITHUB_TOKEN]`. A command that refers to the
 variable continues to work, because the shell expands the variable. The value
 does not go through the tool output.
 
@@ -264,6 +265,8 @@ does not go through the tool output.
 | String scalars and keys in `details` | Yes | The transcript and the terminal. Pi does not send it to the model. When `bash`, `read`, `grep`, `find`, or `ls` truncates its output, it puts the shown text in `details.truncation.content`. The `edit` tool puts a diff of the file in `details`. |
 | Text that the model writes: assistant messages and tool-call arguments | No | The model context and the transcript. |
 | User messages, and messages that an extension adds | No | The model context and the transcript. |
+| A credential that neither layer matches: an encoded value, for example the base64 Authorization header that `curl -v` prints for Basic auth, or a password that is not in the environment and has no known shape | No | Each place that the tool result goes to. |
+| The output of a command that the user runs with `!` or `!!` | No | The transcript. Pi also sends the output of a `!` command to the model as a user message. It keeps the output of a `!!` command out of the model context. |
 | The streaming output of a running tool (`tool_execution_update`) | No | The terminal only. |
 | The file where `bash` saves its full output when it truncates the output | No | The disk. A `read` of that file is a tool result, so control 3 redacts what the model gets from it. |
 
@@ -311,14 +314,15 @@ An archive can still hold a credential in these places:
 
 - A transcript that a session wrote before control 3 existed (issue #3420).
   Every part of it can hold a credential.
+- A credential that neither layer matches, in any part of a transcript.
+  Examples are an encoded value, and a password that is not in the environment.
 - The parts of a transcript that control 3 does not cover: assistant
-  messages, tool-call arguments, user messages, and messages that an extension
-  adds. See [What control 3 covers](#what-control-3-covers).
+  messages, tool-call arguments, user messages, the output of a `!` or `!!`
+  command, and messages that an extension adds. See
+  [What control 3 covers](#what-control-3-covers).
 
-If an archive is older than control 3, treat it as carrying whatever the
-session printed. Delete or rotate it separately, and rotate any credential you
-believe reached it. For a newer archive, the same applies to the parts in the
-list above.
+Treat every archive, old or new, as able to hold a credential. Delete or rotate
+it separately, and rotate any credential you believe reached it.
 
 ## Rules for changing this code
 
