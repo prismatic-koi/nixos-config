@@ -85,6 +85,10 @@
           		end
           	end
 
+          	if vim.tbl_contains(out.tags, "person") and out.pronouns == nil then
+          		out.pronouns = {}
+          	end
+
           	-- Use note.new to determine if it's a newly created note.
           	-- Add 'created' ONLY if it's a new note AND it doesn't already have a 'created' field
           	if note.new and out.created == nil then
