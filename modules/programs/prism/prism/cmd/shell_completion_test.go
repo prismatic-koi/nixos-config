@@ -107,11 +107,11 @@ func createMinimalSessionsDB(t *testing.T, path string, names ...string) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if _, err := conn.Exec(`CREATE TABLE sessions (instance_id TEXT PRIMARY KEY, session_name TEXT NOT NULL, started_at INTEGER NOT NULL)`); err != nil {
+	if _, err := conn.Exec(`CREATE TABLE sessions (instance_id TEXT PRIMARY KEY, session_name TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER)`); err != nil {
 		t.Fatal(err)
 	}
 	for i, n := range names {
-		if _, err := conn.Exec(`INSERT INTO sessions VALUES (?, ?, ?)`, n+string(rune('a'+i)), n, i); err != nil {
+		if _, err := conn.Exec(`INSERT INTO sessions (instance_id, session_name, started_at) VALUES (?, ?, ?)`, n+string(rune('a'+i)), n, i); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -170,5 +170,37 @@ func TestCompleteSessionNames_MissingDB(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("completion created %s: %v", path, err)
+	}
+}
+
+func TestCompleteSessionNames_FilterByCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prism.db")
+	createMinimalSessionsDB(t, path, "a@run", "b@done", "a@run~review-1-code", "c@gone")
+	conn, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`UPDATE sessions SET ended_at = 1 WHERE session_name IN ('b@done', 'c@gone')`); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	SetTestDBPath(path)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	for _, c := range []*cobra.Command{promptCmd, logsCmd} {
+		got, _ := completeSessionNames(c, nil, "")
+		if want := []cobra.Completion{"a@run", "a@run~review-1-code"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %v, want %v", c.Name(), got, want)
+		}
+	}
+	got, _ := completeSessionFlag(cleanupCmd, nil, "")
+	if want := []cobra.Completion{"a@run", "a@run~review-1-code"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("cleanup flag: got %v, want %v", got, want)
+	}
+	for _, c := range []*cobra.Command{checkinCmd, statsCmd, archiveCmd} {
+		got, _ := completeSessionNames(c, nil, "")
+		if want := []cobra.Completion{"a@run", "b@done", "c@gone"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %v, want %v", c.Name(), got, want)
+		}
 	}
 }
