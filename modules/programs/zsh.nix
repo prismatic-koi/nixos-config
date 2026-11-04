@@ -237,9 +237,7 @@ in
               v = "nvim";
               # youtube music download script
               # yt-dlp does not expand `~` in the chromium profile path, so use the absolute path.
-              ytm-download = "yt-dlp ${
-                lib.optionalString config.nx.programs.qutebrowser.enable "--cookies-from-browser chromium:${homeDir}/.local/share/qutebrowser"
-              } --add-metadata --format m4a -i -o '~/music/%(artist)s/%(album)s/%(title)s.%(ext)s' --sponsorblock-remove 'music_offtopic' --";
+              ytm-download = "yt-dlp ${lib.optionalString config.nx.programs.qutebrowser.enable "--cookies-from-browser chromium:${homeDir}/.local/share/qutebrowser"} --add-metadata --format m4a -i -o '~/music/%(artist)s/%(album)s/%(title)s.%(ext)s' --sponsorblock-remove 'music_offtopic' --";
               # git aliases
               gP = "git pull";
               gcb = "git checkout -b";
