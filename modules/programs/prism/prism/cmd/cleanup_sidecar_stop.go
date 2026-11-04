@@ -23,7 +23,8 @@ var (
 	// stopSessionSandboxProcs ends each process in the sandbox of a session
 	// (#3375). The cleanup paths, the stop before a conversion, the
 	// tmux-session-end hook, and the teardown of an --abtest leg call it
-	// after the tmux kill.
+	// after the tmux kill. prism restore calls it before it ends the row of
+	// a session with no worktree (#3400).
 	stopSessionSandboxProcs = func(session string) error {
 		return prismSession.StopSandboxProcesses(session, prismSession.SandboxProcessStopTimeout)
 	}

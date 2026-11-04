@@ -226,7 +226,7 @@
       programs.zsh.initContent =
         let
           initExtra = lib.mkOrder 1000 ''
-            bindkey -s ^k "k9s\n"
+            bindkey -s ^k " k9s\n"
           '';
         in
         lib.mkMerge [ initExtra ];
