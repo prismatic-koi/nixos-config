@@ -2160,8 +2160,10 @@ export function redactLine(line: string): string {
 //
 // Cost
 // ----
-// Two linear passes: one alternation of literal values, one alternation of
-// shapes. Neither is quadratic in the size of a tool_result payload.
+// Two passes: one alternation of literal values, one alternation of shapes.
+// The JavaScript engine backtracks, so the private-key shape is not linear:
+// many BEGIN lines with no END line cost quadratic time. The Cost section of
+// docs/secret-redaction.md gives the measured bounds.
 //
 // SECURITY: nothing in this block logs, echoes, or returns a credential
 // value. Every test value is synthetic.
@@ -2543,16 +2545,21 @@ export function resetDefaultSecretRedactor(): void {
  * the session transcript, unless a `tool_result` handler returns a
  * replacement.
  *
- * Each text item of `content` is redacted on its own, and `structuredContent`
- * goes through the redactFrame walk. Neither is serialised first: see
+ * Each text item of `content` is redacted on its own. `structuredContent` and
+ * `details` go through the redactFrame walk. None is serialised first: see
  * SecretRedactor.redactFrame for why a pattern must not run over JSON.
+ * `details` is in scope because pi writes it to the transcript, and a tool that
+ * truncates its output puts the shown text in `details.truncation.content`.
  *
  * Returns undefined when no value changed, so pi keeps the result as it is.
  * Otherwise it returns `content` and `structuredContent` together, because pi
- * drops `structuredContent` when a handler replaces `content` alone.
+ * drops `structuredContent` when a handler replaces `content` alone. It
+ * returns `details` only when `details` changed.
  */
 export function redactToolResult(
-  event: Pick<ToolResultEvent, "content" | "structuredContent">,
+  event: Pick<ToolResultEvent, "content" | "structuredContent"> & {
+    details?: unknown
+  },
   redactor: SecretRedactor = defaultSecretRedactor(),
 ): ToolResultEventResult | undefined {
   let changed = false
@@ -2571,6 +2578,9 @@ export function redactToolResult(
   const structuredContent =
     original === undefined ? undefined : redactor.redactValue(original)
   if (structuredContent !== original) changed = true
+  const details =
+    event.details === undefined ? undefined : redactor.redactValue(event.details)
+  if (details !== event.details) changed = true
   if (!changed) return undefined
 
   const result: ToolResultEventResult = {}
@@ -2579,6 +2589,7 @@ export function redactToolResult(
     result.structuredContent =
       structuredContent as ToolResultEventResult["structuredContent"]
   }
+  if (details !== event.details) result.details = details
   return result
 }
 

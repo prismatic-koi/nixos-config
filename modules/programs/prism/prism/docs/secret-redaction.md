@@ -233,13 +233,16 @@ for the `tool_execution_end` event. The extension handles the event with
 
 1. It redacts each text item of `content` on its own. It does not change an
    image item.
-2. It redacts `structuredContent` with the walk of `redactFrame`: each string
-   scalar and each object key on its own. It never serialises the value.
+2. It redacts `structuredContent` and `details` with the walk of
+   `redactFrame`: each string scalar and each object key on its own. It never
+   serialises the value.
 3. If no value changed, it returns no result. Pi then keeps the tool result
    unchanged, byte for byte.
 4. If a value changed, it returns `content` and `structuredContent` together.
    Pi drops `structuredContent` when a handler replaces `content` alone. The
    built-in `bash` and `read` tools set `structuredContent`.
+5. It returns `details` only when `details` changed. Otherwise pi keeps the
+   original `details`.
 
 The handler applies to the result of every tool: the built-in tools, the tools
 of other extensions, and MCP tools. The extension registers the handler in each
@@ -258,7 +261,7 @@ does not go through the tool output.
 | Text items in `content` | Yes | The model context, the provider request, and the transcript. |
 | String scalars and keys in `structuredContent` | Yes | Programmatic callers, for example codemode scripts. Pi does not send it to the model or write it to the transcript. |
 | Image items in `content` | No. They pass through unchanged. | The model context and the transcript. |
-| The `details` of a tool result | No | The transcript and the terminal. Pi does not send it to the model. The `edit` tool puts a diff of the file in it. |
+| String scalars and keys in `details` | Yes | The transcript and the terminal. Pi does not send it to the model. When `bash`, `read`, `grep`, `find`, or `ls` truncates its output, it puts the shown text in `details.truncation.content`. The `edit` tool puts a diff of the file in `details`. |
 | Text that the model writes: assistant messages and tool-call arguments | No | The model context and the transcript. |
 | User messages, and messages that an extension adds | No | The model context and the transcript. |
 | The streaming output of a running tool (`tool_execution_update`) | No | The terminal only. |
@@ -308,10 +311,9 @@ An archive can still hold a credential in these places:
 
 - A transcript that a session wrote before control 3 existed (issue #3420).
   Every part of it can hold a credential.
-- The parts of a transcript that control 3 does not cover: the `details` of a
-  tool result, assistant messages, tool-call arguments, user messages, and
-  messages that an extension adds. See
-  [What control 3 covers](#what-control-3-covers).
+- The parts of a transcript that control 3 does not cover: assistant
+  messages, tool-call arguments, user messages, and messages that an extension
+  adds. See [What control 3 covers](#what-control-3-covers).
 
 If an archive is older than control 3, treat it as carrying whatever the
 session printed. Delete or rotate it separately, and rotate any credential you
@@ -346,5 +348,5 @@ list above.
   Go side and `redactFrame` in the extension. See the scalar-at-a-time section
   above for what goes wrong.
 - Keep the `tool_result` handler on the same scalar walk. Do not serialise
-  `structuredContent` to redact it. If the handler returns `content`, it must
+  `structuredContent` or `details` to redact them. If the handler returns `content`, it must
   also return `structuredContent`. If it does not, pi drops `structuredContent`.

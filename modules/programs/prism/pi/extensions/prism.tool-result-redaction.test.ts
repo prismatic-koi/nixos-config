@@ -95,6 +95,7 @@ describe("#3420: redactToolResult", () => {
       { content: [image(), text("caption")], structuredContent: "caption" },
       { content: [] },
       { content: [text(`already ${MARKER} and ${SHAPE_MARKER}`)] },
+      { content: [text("ok")], details: { truncation: { content: "ok", truncated: true } } },
     ]
     for (const event of events) {
       const before = structuredClone(event)
@@ -113,6 +114,33 @@ describe("#3420: redactToolResult", () => {
     assert.ok(result)
     assert.equal(result.structuredContent, structured)
     assert.deepEqual(result.structuredContent, { output: "clean", exit_code: 0 })
+  })
+
+  it("redacts details, where pi keeps the shown text of a truncated result", () => {
+    const event = {
+      content: [text("clean")],
+      structuredContent: { exit_code: 0 },
+      details: {
+        truncation: { content: `line\n${SYNTHETIC_VALUE}\n`, truncated: true, totalLines: 3001 },
+        fullOutputPath: "/tmp/pi-bash-1.log",
+      },
+    }
+    assert.deepEqual(redactToolResult(event, redactor()), {
+      content: [text("clean")],
+      structuredContent: { exit_code: 0 },
+      details: {
+        truncation: { content: `line\n${MARKER}\n`, truncated: true, totalLines: 3001 },
+        fullOutputPath: "/tmp/pi-bash-1.log",
+      },
+    })
+  })
+
+  it("returns no details when only content changed, so pi keeps the original", () => {
+    const result = redactToolResult(
+      { content: [text(`t=${SYNTHETIC_VALUE}`)], details: { diff: "clean" } },
+      redactor(),
+    )
+    assert.deepEqual(result, { content: [text(`t=${MARKER}`)] })
   })
 
   it("passes an image item through unchanged", () => {
@@ -275,7 +303,7 @@ interface TranscriptMessage {
 interface ToolExecutionEnd {
   type: string
   toolCallId: string
-  result: { content: unknown; structuredContent?: unknown }
+  result: { content: unknown; structuredContent?: unknown; details?: unknown }
 }
 
 describe("#3420: end to end through the installed pi runtime", () => {
@@ -291,6 +319,7 @@ describe("#3420: end to end through the installed pi runtime", () => {
     )
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-3420-"))
+    const ends: ToolExecutionEnd[] = []
     try {
       const credFile = path.join(dir, "creds.txt")
       fs.writeFileSync(credFile, `token=${SYNTHETIC_VALUE}\n`)
@@ -314,6 +343,13 @@ describe("#3420: end to end through the installed pi runtime", () => {
               "bash",
               { command: `printf '%s\\n' "$${SYNTHETIC_NAME}"; exit 3` },
               { id: "bash-failed" },
+            ),
+            // More than 2000 lines, so pi truncates the result and puts the
+            // shown output in details.truncation.content.
+            faux.fauxToolCall(
+              "bash",
+              { command: `seq 1 3000; printf '%s\\n' "$${SYNTHETIC_NAME}"` },
+              { id: "bash-truncated" },
             ),
             faux.fauxToolCall("read", { path: credFile }, { id: "read-cred" }),
             faux.fauxToolCall("read", { path: shapeFile }, { id: "read-shape" }),
@@ -349,7 +385,6 @@ describe("#3420: end to end through the installed pi runtime", () => {
         })
       }
 
-      const ends: ToolExecutionEnd[] = []
       let sessionFile = ""
       await withEnv(PRISM_SESSION_ENV, async () => {
         const modelRuntime = await sdk.ModelRuntime.create({
@@ -399,7 +434,7 @@ describe("#3420: end to end through the installed pi runtime", () => {
 
       // What the model got.
       const results = modelSaw.filter((m) => m.role === "toolResult")
-      assert.equal(results.length, 6, JSON.stringify(modelSaw.map((m) => m.role)))
+      assert.equal(results.length, 7, JSON.stringify(modelSaw.map((m) => m.role)))
       const sawResult = (id: string) => {
         const m = results.find((r) => r.toolCallId === id)
         assert.ok(m, `the model got no result for ${id}`)
@@ -411,25 +446,33 @@ describe("#3420: end to end through the installed pi runtime", () => {
       const bashFailed = sawResult("bash-failed")
       assert.equal(bashFailed.isError, true)
       assert.ok(JSON.stringify(bashFailed.content).includes(MARKER), JSON.stringify(bashFailed))
+      assert.ok(JSON.stringify(sawResult("bash-truncated").content).includes(MARKER))
       assert.deepEqual(sawResult("read-cred").content, [text(`token=${MARKER}\n`)])
       assert.deepEqual(sawResult("read-shape").content, [text(`shape=${SHAPE_MARKER}\n`)])
       assert.deepEqual(sawResult("fixture-secret").content, [image(), text(`t=${MARKER}`)])
       assert.deepEqual(sawResult("fixture-plain").content, [image(), text("plain")])
       const sent = JSON.stringify(modelSaw)
-      assert.ok(!sent.includes(SYNTHETIC_VALUE), "the credential value reached the model")
-      assert.ok(!sent.includes(SHAPE_TOKEN), "the shape token reached the model")
+      // The context messages also carry `details`, so this covers it too.
+      assert.ok(!sent.includes(SYNTHETIC_VALUE), "the credential value is in the model context")
+      assert.ok(!sent.includes(SHAPE_TOKEN), "the shape token is in the model context")
 
       // What the transcript holds.
       assert.ok(sessionFile, "the session wrote no transcript file")
       const transcript = fs.readFileSync(sessionFile, "utf8")
       assert.ok(!transcript.includes(SYNTHETIC_VALUE), "the credential value is in the transcript")
       assert.ok(!transcript.includes(SHAPE_TOKEN), "the shape token is in the transcript")
-      const bashEntry = transcript
+      const entries = transcript
         .split("\n")
         .filter((line) => line.trim() !== "")
-        .map((line) => JSON.parse(line) as { message?: TranscriptMessage })
-        .find((e) => e.message?.role === "toolResult" && e.message.toolCallId === "bash-ok")
-      assert.deepEqual(bashEntry?.message?.content, [text(`${MARKER}\n`)])
+        .map((line) => JSON.parse(line) as { message?: TranscriptMessage & { details?: unknown } })
+      const entryFor = (id: string) =>
+        entries.find((e) => e.message?.role === "toolResult" && e.message.toolCallId === id)
+      assert.deepEqual(entryFor("bash-ok")?.message?.content, [text(`${MARKER}\n`)])
+      const truncation = (
+        entryFor("bash-truncated")?.message?.details as { truncation?: { content?: unknown } }
+      )?.truncation
+      assert.equal(typeof truncation?.content, "string", "pi did not truncate the bash result")
+      assert.ok(String(truncation?.content).includes(MARKER), "details lost the marker")
 
       // structuredContent, which pi gives to programmatic callers. Pi can end
       // parallel tool calls in any order, so look each one up by its id.
@@ -451,6 +494,12 @@ describe("#3420: end to end through the installed pi runtime", () => {
       )
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
+      // The bash tool saves the full output of a truncated command to a temp
+      // file, which holds the synthetic value.
+      for (const e of ends) {
+        const p = (e.result.details as { fullOutputPath?: unknown } | undefined)?.fullOutputPath
+        if (typeof p === "string") fs.rmSync(p, { force: true })
+      }
     }
   })
 })
