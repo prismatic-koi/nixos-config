@@ -7,9 +7,8 @@
 //
 // This script loads the extension end-to-end against a real, installed
 // pi-coding-agent build using pi's own extension-loading mechanism (jiti,
-// aliased the same way pi's `dist/core/extensions/loader.js` aliases it for
-// Node/dev mode), invokes its async default export with a fake ExtensionAPI,
-// and asserts the anthropic provider actually registers with a non-empty
+// given the SDK modules from pi's `dist/bundle`, as pi does at run time),
+// invokes its async default export with a fake ExtensionAPI, and asserts the anthropic provider actually registers with a non-empty
 // model list and all four OAuth handlers wired.
 //
 // Run after any pi-coding-agent version bump (overlay pin or nixpkgs bump)
@@ -25,7 +24,7 @@
 // default `pkgs.pi-coding-agent`).
 
 import { execFileSync } from "node:child_process"
-import { existsSync, realpathSync } from "node:fs"
+import { existsSync, readdirSync, realpathSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
@@ -52,9 +51,10 @@ function resolveInstallRoot() {
 async function main() {
   const installRoot = resolveInstallRoot()
   const pkgRoot = path.join(installRoot, "lib/node_modules/pi-monorepo")
-  const nm = path.join(pkgRoot, "node_modules/@earendil-works")
+  const bundleDir = path.join(pkgRoot, "dist/bundle")
+  const bundleEntry = path.join(bundleDir, "index.js")
 
-  for (const p of [pkgRoot, nm]) {
+  for (const p of [pkgRoot, bundleEntry]) {
     if (!existsSync(p)) {
       throw new Error(
         `expected pi-coding-agent install layout not found at ${p} (installRoot=${installRoot}); ` +
@@ -62,6 +62,17 @@ async function main() {
       )
     }
   }
+
+  // The bundle holds the SDK modules pi runs. The virtual-modules chunk maps
+  // each SDK specifier to its bundled module; pi hands it to jiti the same way.
+  const chunkDir = path.join(bundleDir, "chunks")
+  const virtualChunk = existsSync(chunkDir)
+    ? readdirSync(chunkDir).find((f) => /^virtual-modules-.*\.js$/.test(f))
+    : undefined
+  if (!virtualChunk) {
+    throw new Error(`pi bundle virtual-modules chunk not found in ${chunkDir} (installRoot=${installRoot})`)
+  }
+  const { VIRTUAL_MODULES } = await import(pathToFileURL(path.join(chunkDir, virtualChunk)).href)
 
   const jitiEntry = path.join(pkgRoot, "node_modules/jiti/lib/jiti.mjs")
   const { createJiti } = await import(pathToFileURL(jitiEntry).href)
@@ -100,17 +111,8 @@ async function main() {
 
   const jiti = createJiti(import.meta.url, {
     moduleCache: false,
-    // Mirrors dist/core/extensions/loader.js::getAliases() for Node/dev
-    // mode (see that file for the Bun-binary virtualModules equivalent).
-    alias: {
-      "@earendil-works/pi-coding-agent": path.join(pkgRoot, "dist/index.js"),
-      "@earendil-works/pi-agent-core": path.join(nm, "pi-agent-core/dist/index.js"),
-      "@earendil-works/pi-tui": path.join(nm, "pi-tui/dist/index.js"),
-      "@earendil-works/pi-ai/providers/all": path.join(nm, "pi-ai/dist/providers/all.js"),
-      "@earendil-works/pi-ai/compat": path.join(nm, "pi-ai/dist/compat.js"),
-      "@earendil-works/pi-ai/oauth": path.join(nm, "pi-ai/dist/oauth.js"),
-      "@earendil-works/pi-ai": path.join(nm, "pi-ai/dist/compat.js"),
-    },
+    virtualModules: VIRTUAL_MODULES,
+    tryNative: false,
   })
 
   const factory = await jiti.import(extensionPath, { default: true })
