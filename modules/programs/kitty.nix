@@ -61,9 +61,11 @@ let
       remember_window_size no
     ''}
 
-
-
-
+    ${lib.optionalString isDarwin ''
+      # aerospace opens each window with `open --new`, so each window is a
+      # process. Cmd+Q is mapped to Cmd+W, so quit the process with its window.
+      macos_quit_when_last_window_closed yes
+    ''}
 
     foreground                 ${neutrals.foreground}
     background                 ${neutrals.background_0}
