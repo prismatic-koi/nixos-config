@@ -1,0 +1,130 @@
+{
+  "description": "Private-key cases for the shape layer. The Go suite (redact_parity_test.go) and the pi extension suite (prism.test.ts) run each input through a redactor with no credential values, and compare the output with want. Thus the two outputs are identical. An input or a want is a list of segments. A segment is a string, or {\"repeat\": s, \"count\": n} for n copies of s. All values are synthetic.",
+  "cases": [
+    {
+      "name": "complete block",
+      "input": ["head\n-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----\ntail"],
+      "want": ["head\n[redacted:private-key-block]\ntail"]
+    },
+    {
+      "name": "block with no type word",
+      "input": ["-----BEGIN PRIVATE KEY-----\nc3ludGhldGlj\n-----END PRIVATE KEY-----"],
+      "want": ["[redacted:private-key-block]"]
+    },
+    {
+      "name": "BEGIN and END lines with different types",
+      "input": ["-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END EC PRIVATE KEY-----"],
+      "want": ["[redacted:private-key-block]"]
+    },
+    {
+      "name": "two blocks keep the text between them",
+      "input": ["a\n-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----\nbetween\n-----BEGIN OPENSSH PRIVATE KEY-----\nc3ludGhldGlj\n-----END OPENSSH PRIVATE KEY-----\nz"],
+      "want": ["a\n[redacted:private-key-block]\nbetween\n[redacted:private-key-block]\nz"]
+    },
+    {
+      "name": "BEGIN line with no END line",
+      "input": ["x\n-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n"],
+      "want": ["x\n-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n"]
+    },
+    {
+      "name": "certificate BEGIN line does not start a block",
+      "input": ["-----BEGIN CERTIFICATE-----\nMIIB\n-----END RSA PRIVATE KEY-----\n"],
+      "want": ["-----BEGIN CERTIFICATE-----\nMIIB\n-----END RSA PRIVATE KEY-----\n"]
+    },
+    {
+      "name": "certificate before a block stays",
+      "input": ["-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----\n"],
+      "want": ["-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n[redacted:private-key-block]\n"]
+    },
+    {
+      "name": "lower-case type does not start a block",
+      "input": ["-----BEGIN rsa PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----"],
+      "want": ["-----BEGIN rsa PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----"]
+    },
+    {
+      "name": "first END line stops the block",
+      "input": ["-----BEGIN A PRIVATE KEY-----\nc3ludGhldGlj\n-----END A PRIVATE KEY-----\nrest\n-----END A PRIVATE KEY-----"],
+      "want": ["[redacted:private-key-block]\nrest\n-----END A PRIVATE KEY-----"]
+    },
+    {
+      "name": "BEGIN line inside a block",
+      "input": ["-----BEGIN A PRIVATE KEY-----\n-----BEGIN B PRIVATE KEY-----\nc3ludGhldGlj\n-----END B PRIVATE KEY-----\n-----END A PRIVATE KEY-----"],
+      "want": ["[redacted:private-key-block]\n-----END A PRIVATE KEY-----"]
+    },
+    {
+      "name": "two BEGIN lines that share dashes",
+      "input": ["-----BEGIN A PRIVATE KEY-----BEGIN B PRIVATE KEY-----\nc3ludGhldGlj\n-----END B PRIVATE KEY-----"],
+      "want": ["[redacted:private-key-block]"]
+    },
+    {
+      "name": "END line that shares the dashes of the BEGIN line",
+      "input": ["-----BEGIN A PRIVATE KEY-----END A PRIVATE KEY-----"],
+      "want": ["-----BEGIN A PRIVATE KEY-----END A PRIVATE KEY-----"]
+    },
+    {
+      "name": "500 BEGIN lines, one END line, 500 BEGIN lines",
+      "input": [
+        {"repeat": "-----BEGIN RSA PRIVATE KEY-----\n", "count": 500},
+        "-----END RSA PRIVATE KEY-----\n",
+        {"repeat": "-----BEGIN RSA PRIVATE KEY-----\n", "count": 500}
+      ],
+      "want": [
+        "[redacted:private-key-block]\n",
+        {"repeat": "-----BEGIN RSA PRIVATE KEY-----\n", "count": 500}
+      ]
+    },
+    {
+      "name": "block after the first 50 KB of 1 MiB",
+      "input": [
+        {"repeat": "2026-06-01T00:00:00Z level=info msg=\"step complete\" step=42\n", "count": 1000},
+        "-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----\n",
+        {"repeat": "2026-06-01T00:00:00Z level=info msg=\"step complete\" step=42\n", "count": 16476}
+      ],
+      "want": [
+        {"repeat": "2026-06-01T00:00:00Z level=info msg=\"step complete\" step=42\n", "count": 1000},
+        "[redacted:private-key-block]\n",
+        {"repeat": "2026-06-01T00:00:00Z level=info msg=\"step complete\" step=42\n", "count": 16476}
+      ]
+    },
+    {
+      "name": "gitlab token directly before a BEGIN line",
+      "input": ["token glpat-", {"repeat": "H", "count": 20}, "-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----\ntail"],
+      "want": ["token [redacted:gitlab-pat][redacted:private-key-block]\ntail"]
+    },
+    {
+      "name": "anthropic key directly before a BEGIN line",
+      "input": ["sk-ant-", {"repeat": "c", "count": 24}, "-----BEGIN A PRIVATE KEY-----\nc3ludGhldGlj\n-----END A PRIVATE KEY-----"],
+      "want": ["[redacted:anthropic-api-key][redacted:private-key-block]"]
+    },
+    {
+      "name": "slack token directly before a BEGIN line",
+      "input": ["xoxb-", {"repeat": "1", "count": 12}, "-----BEGIN A PRIVATE KEY-----\nc3ludGhldGlj\n-----END A PRIVATE KEY-----"],
+      "want": ["[redacted:slack-token][redacted:private-key-block]"]
+    },
+    {
+      "name": "atlassian token directly before a BEGIN line",
+      "input": ["ATATT3", {"repeat": "G", "count": 50}, "-----BEGIN A PRIVATE KEY-----\nc3ludGhldGlj\n-----END A PRIVATE KEY-----"],
+      "want": ["[redacted:atlassian-api-token][redacted:private-key-block]"]
+    },
+    {
+      "name": "github token inside a block",
+      "input": ["-----BEGIN RSA PRIVATE KEY-----\nghp_", {"repeat": "A", "count": 36}, "\n-----END RSA PRIVATE KEY-----"],
+      "want": ["[redacted:private-key-block]"]
+    },
+    {
+      "name": "github token after a block",
+      "input": ["-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----\nghp_", {"repeat": "A", "count": 36}, " end"],
+      "want": ["[redacted:private-key-block]\n[redacted:github-token] end"]
+    },
+    {
+      "name": "github token directly after the END line",
+      "input": ["-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----ghp_", {"repeat": "A", "count": 36}],
+      "want": ["[redacted:private-key-block][redacted:github-token]"]
+    },
+    {
+      "name": "marker stays as it is",
+      "input": ["[redacted:private-key-block]"],
+      "want": ["[redacted:private-key-block]"]
+    }
+  ]
+}

@@ -8,17 +8,25 @@ package payload_test
 // know about is caught only by the weaker second control, and a shape the Go
 // side does not know about is never caught at all.
 //
-// The test reads the TypeScript source and compares the four things that must
-// agree: the exact env-var names, the name prefixes, the name suffixes, and
-// the shape rules (name AND pattern — the pattern strings are deliberately
-// written to be byte-identical in both dialects).
+// The test reads the TypeScript source and compares the five things that must
+// agree: the exact env-var names, the name prefixes, the name suffixes, the
+// shape rules of the combined pass (name AND pattern — the pattern strings
+// are deliberately written to be byte-identical in both dialects), and the
+// private-key shape (name, BEGIN and END patterns, and triggers).
+//
+// The private-key pass is code, not one pattern, so equal strings do not
+// prove equal output. testdata/private-key-cases.json holds the output both
+// sides must give. This file runs the cases against Go, and prism.test.ts
+// runs the same file against the extension.
 //
 // The nix build sandbox copies in only modules/programs/prism/prism, so the
-// extension source is absent there and the test skips. It runs in the
+// extension source is absent there and the source tests skip. They run in the
 // `go-tests` CI job and on a developer checkout, which is where drift is
 // introduced.
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -34,11 +42,22 @@ import (
 // directory: internal/payload -> prism -> pi/extensions/prism.ts.
 const extensionSourcePath = "../../../pi/extensions/prism.ts"
 
+// extensionTestSourcePath is the test suite of the pi extension.
+const extensionTestSourcePath = "../../../pi/extensions/prism.test.ts"
+
+// privateKeyCasesPath is the private-key case file that both suites run.
+const privateKeyCasesPath = "testdata/private-key-cases.json"
+
 func readExtensionSource(t *testing.T) string {
 	t.Helper()
-	abs, err := filepath.Abs(extensionSourcePath)
+	return readExtensionFile(t, extensionSourcePath)
+}
+
+func readExtensionFile(t *testing.T, rel string) string {
+	t.Helper()
+	abs, err := filepath.Abs(rel)
 	if err != nil {
-		t.Skipf("cannot resolve %s: %v", extensionSourcePath, err)
+		t.Skipf("cannot resolve %s: %v", rel, err)
 	}
 	b, err := os.ReadFile(abs)
 	if err != nil {
@@ -154,6 +173,151 @@ func TestRedactorParityWithExtension_ShapeRules(t *testing.T) {
 		if !slices.Equal(goTriggers[name], tsTriggers[name]) {
 			t.Errorf("shape %q triggers drifted:\n  Go: %v\n  TS: %v", name, goTriggers[name], tsTriggers[name])
 		}
+	}
+}
+
+func TestRedactorParityWithExtension_PrivateKeyShape(t *testing.T) {
+	src := readExtensionSource(t)
+
+	block := regexp.MustCompile(`(?s)export const PRIVATE_KEY_SHAPE[^=]*=\s*\{(.*?)\n\}`).FindStringSubmatch(src)
+	if block == nil {
+		t.Fatal("could not find PRIVATE_KEY_SHAPE in the extension source")
+	}
+	field := func(re string) string {
+		t.Helper()
+		m := regexp.MustCompile(`(?m)^\s*` + re).FindStringSubmatch(block[1])
+		if m == nil {
+			t.Fatalf("PRIVATE_KEY_SHAPE: no field matches %s", re)
+		}
+		return m[1]
+	}
+	rawField := func(key string) string {
+		t.Helper()
+		return field(key + `:\s*String\.raw` + "`" + "([^`]*)" + "`")
+	}
+
+	name, begin, end, triggers := payload.PrivateKeyShapeForTest()
+	if ts := field(`name:\s*"([^"]+)"`); ts != name {
+		t.Errorf("private-key name drifted: Go %q, TS %q", name, ts)
+	}
+	if ts := rawField("begin"); ts != begin {
+		t.Errorf("private-key BEGIN pattern drifted:\n  Go: %s\n  TS: %s", begin, ts)
+	}
+	if ts := rawField("end"); ts != end {
+		t.Errorf("private-key END pattern drifted:\n  Go: %s\n  TS: %s", end, ts)
+	}
+	var tsTriggers []string
+	for _, e := range regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`).FindAllStringSubmatch(field(`triggers:\s*\[([^\]]*)\]`), -1) {
+		unquoted, err := strconv.Unquote(`"` + e[1] + `"`)
+		if err != nil {
+			t.Fatalf("private-key trigger %q: cannot unquote: %v", e[1], err)
+		}
+		tsTriggers = append(tsTriggers, unquoted)
+	}
+	if !slices.Equal(triggers, tsTriggers) {
+		t.Errorf("private-key triggers drifted:\n  Go: %v\n  TS: %v", triggers, tsTriggers)
+	}
+}
+
+// segment is one part of an input or a want in the private-key case file:
+// a string, or {"repeat": s, "count": n} for n copies of s.
+type segment string
+
+func (s *segment) UnmarshalJSON(b []byte) error {
+	var lit string
+	if err := json.Unmarshal(b, &lit); err == nil {
+		*s = segment(lit)
+		return nil
+	}
+	var rep struct {
+		Repeat string `json:"repeat"`
+		Count  int    `json:"count"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&rep); err != nil {
+		return err
+	}
+	if rep.Repeat == "" || rep.Count < 1 {
+		return fmt.Errorf("repeat segment needs a non-empty repeat and a count of 1 or more: %s", b)
+	}
+	*s = segment(strings.Repeat(rep.Repeat, rep.Count))
+	return nil
+}
+
+type privateKeyCase struct {
+	Name  string
+	Input string
+	Want  string
+}
+
+func loadPrivateKeyCases(tb testing.TB) []privateKeyCase {
+	tb.Helper()
+	b, err := os.ReadFile(privateKeyCasesPath)
+	if err != nil {
+		tb.Fatalf("read %s: %v", privateKeyCasesPath, err)
+	}
+	var file struct {
+		Cases []struct {
+			Name  string    `json:"name"`
+			Input []segment `json:"input"`
+			Want  []segment `json:"want"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(b, &file); err != nil {
+		tb.Fatalf("parse %s: %v", privateKeyCasesPath, err)
+	}
+	if len(file.Cases) == 0 {
+		tb.Fatalf("%s holds no cases", privateKeyCasesPath)
+	}
+	join := func(segs []segment) string {
+		var sb strings.Builder
+		for _, s := range segs {
+			sb.WriteString(string(s))
+		}
+		return sb.String()
+	}
+	out := make([]privateKeyCase, 0, len(file.Cases))
+	for _, c := range file.Cases {
+		out = append(out, privateKeyCase{Name: c.Name, Input: join(c.Input), Want: join(c.Want)})
+	}
+	return out
+}
+
+// mismatch describes where got and want first differ, without a dump of an
+// input that can be 1 MiB long.
+func mismatch(got, want string) string {
+	i := 0
+	for i < len(got) && i < len(want) && got[i] == want[i] {
+		i++
+	}
+	window := func(s string) string {
+		return s[max(0, i-40):min(len(s), i+40)]
+	}
+	return fmt.Sprintf("first difference at byte %d (got %d bytes, want %d bytes):\n  got:  %q\n  want: %q",
+		i, len(got), len(want), window(got), window(want))
+}
+
+// TestRedactorParityWithExtension_PrivateKeyCases runs the shared case file
+// against Go. prism.test.ts runs the same file against the extension, so a
+// pass on both sides means the two outputs are identical.
+func TestRedactorParityWithExtension_PrivateKeyCases(t *testing.T) {
+	r := payload.NewShapeOnlyRedactor()
+	for _, tc := range loadPrivateKeyCases(t) {
+		t.Run(tc.Name, func(t *testing.T) {
+			if got := r.Redact(tc.Input); got != tc.Want {
+				t.Error(mismatch(got, tc.Want))
+			}
+		})
+	}
+}
+
+// TestRedactorParityWithExtension_ExtensionRunsThePrivateKeyCases is a source
+// guard. The case file proves parity only while both suites run it.
+func TestRedactorParityWithExtension_ExtensionRunsThePrivateKeyCases(t *testing.T) {
+	src := readExtensionFile(t, extensionTestSourcePath)
+	if want := filepath.Base(privateKeyCasesPath); !strings.Contains(src, want) {
+		t.Errorf("prism.test.ts no longer reads %s — the private-key parity check is gone from the extension side", want)
 	}
 }
 

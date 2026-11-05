@@ -10,6 +10,7 @@ package payload_test
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -451,6 +452,31 @@ func TestRedact_LargePayloadCostIsNotQuadratic(t *testing.T) {
 	}
 }
 
+// TestRedact_PrivateKeyPassCostIsNotQuadratic is the private-key form of the
+// test above. No BEGIN line has an END line after it. A pass that scans to the
+// end of the input from each BEGIN line takes minutes on 8 MiB.
+func TestRedact_PrivateKeyPassCostIsNotQuadratic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping cost bound in -short mode")
+	}
+	r := payload.NewShapeOnlyRedactor()
+	line := "-----BEGIN RSA PRIVATE KEY-----\n"
+	in := strings.Repeat(line, (8<<20)/len(line))
+
+	const budget = 10 * time.Second
+	start := time.Now()
+	got := r.Redact(in)
+	elapsed := time.Since(start)
+
+	if got != in {
+		t.Error("BEGIN lines with no END line were changed")
+	}
+	if elapsed > budget {
+		t.Errorf("Redact of %d bytes took %s, over the %s budget — suspect a super-linear implementation",
+			len(in), elapsed, budget)
+	}
+}
+
 func BenchmarkRedact_NoMatch(b *testing.B) {
 	r := payload.NewRedactor(map[string]string{"GITHUB_TOKEN": syntheticGitHubToken})
 	in := strings.Repeat("ok  github.com/prismatic-koi/prism/internal/db\t0.412s\n", 2000)
@@ -499,6 +525,9 @@ func shapeCorpus() []string {
 		"key ATATT3" + strings.Repeat("G", 50) + " end",
 		"head\n-----BEGIN OPENSSH PRIVATE KEY-----\nc3ludGhldGlj\n-----END OPENSSH PRIVATE KEY-----\ntail",
 		"two ghp_" + strings.Repeat("A", 36) + " and AIza" + strings.Repeat("F", 35),
+		"x\n-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n",
+		"token glpat-" + strings.Repeat("H", 20) + "-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----",
+		"-----BEGIN A PRIVATE KEY-----BEGIN B PRIVATE KEY-----\nc3ludGhldGlj\n-----END B PRIVATE KEY-----",
 	}
 }
 
@@ -540,6 +569,16 @@ func TestCredentialShapeTriggers_EveryShapeDeclaresAtLeastOne(t *testing.T) {
 			}
 		}
 	}
+
+	name, _, _, pkTriggers := payload.PrivateKeyShapeForTest()
+	if len(pkTriggers) == 0 {
+		t.Errorf("shape %q declares no prefilter trigger", name)
+	}
+	for _, trig := range pkTriggers {
+		if trig == "" {
+			t.Errorf("shape %q declares an empty trigger", name)
+		}
+	}
 }
 
 // FuzzRedactShapePrefilter is the generalised form of the two tests above: for
@@ -553,6 +592,28 @@ func FuzzRedactShapePrefilter(f *testing.F) {
 	f.Fuzz(func(t *testing.T, in string) {
 		if got, want := r.Redact(in), payload.RedactShapesNoPrefilterForTest(in); got != want {
 			t.Errorf("prefilter changed the result for %q: got %q, want %q", in, got, want)
+		}
+	})
+}
+
+// FuzzPrivateKeyPassMatchesLazyRegexp pins the private-key pass to the lazy
+// regexp begin[\s\S]*?end. The pass must give the same output for any input.
+// RE2 runs the lazy regexp in linear time, so it is a cheap reference here.
+func FuzzPrivateKeyPassMatchesLazyRegexp(f *testing.F) {
+	for _, s := range shapeCorpus() {
+		f.Add(s)
+	}
+	for _, c := range loadPrivateKeyCases(f) {
+		if len(c.Input) <= 4096 {
+			f.Add(c.Input)
+		}
+	}
+	name, begin, end, _ := payload.PrivateKeyShapeForTest()
+	lazy := regexp.MustCompile(begin + `[\s\S]*?` + end)
+	marker := payload.RedactionMarker(name)
+	f.Fuzz(func(t *testing.T, in string) {
+		if got, want := payload.RedactPrivateKeyBlocksForTest(in), lazy.ReplaceAllLiteralString(in, marker); got != want {
+			t.Errorf("private-key pass differs from the lazy regexp for %q:\n  got:  %q\n  want: %q", in, got, want)
 		}
 	})
 }
