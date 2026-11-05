@@ -29,6 +29,16 @@
           	return string.lower(title:gsub("%s", "_"))
           end
 
+          -- Notes whose id is YYYY-MM-DD live in dailies/ on every creation path;
+          -- all other notes go in the directory the plugin picks (notes/).
+          local notePathFunction = function(spec)
+          	local id = tostring(spec.id)
+          	if id:match("^%d%d%d%d%-%d%d%-%d%d$") then
+          		return vim.fs.joinpath(tostring(Obsidian.workspace.root), "dailies", id)
+          	end
+          	return vim.fs.joinpath(tostring(spec.dir), id)
+          end
+
           -- Define note_frontmatter_func separately for clarity
           local noteFrontmatterFunction = function(note)
           	-- Ensure note.path is a string
@@ -142,6 +152,7 @@
           		},
           	},
           	note_id_func = noteIdFunction,
+          	note_path_func = notePathFunction,
           	notes_subdir = "notes",
           	daily_notes = {
               folder = "dailies",
@@ -184,16 +195,95 @@
             legacy_commands = false, -- Disable legacy commands
           })
 
-          -- Mirrors `Obsidian today [N]`, but opens with :edit in the current window.
+          -- Opens the daily note for `timestamp` (default: today), creating it from the
+          -- daily template when missing. Uses :edit in the current window.
           -- Obsidian's api.open_note switches to :drop when any window already shows
           -- the note, which jumps to zen-mode's hidden parent window and closes zen.
-          local open_daily = function(offset_from_today)
-          	local note = require("obsidian.daily").daily({ offset = offset_from_today })
+          local open_daily = function(timestamp)
+          	local note = require("obsidian.daily").daily({ date = timestamp })
           	if not note:exists() then
           		note:write()
           	end
           	vim.cmd.edit(vim.fn.fnameescape(tostring(note.path)))
           	vim.b[vim.api.nvim_get_current_buf()].note = note
+          end
+
+          -- Mirrors `Obsidian today [N]`: same offset arithmetic as obsidian.daily.
+          local open_daily_offset = function(offset_from_today)
+          	open_daily(os.time() + offset_from_today * 24 * 60 * 60)
+          end
+
+          -- Midday timestamp for "YYYY-MM-DD", or nil when the date is not real.
+          -- os.time() normalises out-of-range fields, so check the round trip.
+          local date_to_timestamp = function(str)
+          	local y, m, d = str:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+          	if not y then
+          		return nil
+          	end
+          	local ts = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12 })
+          	if ts and os.date("%Y-%m-%d", ts) == str then
+          		return ts
+          	end
+          	return nil
+          end
+
+          -- Shared by <leader>of and gd.
+          -- - real date link: open or create the daily note (template, tag)
+          -- - labelled link to a missing note: create it with the label as title,
+          --   alias and H1
+          -- - anything else: plain `Obsidian follow_link`
+          local follow_link = function()
+          	local fallback = function()
+          		vim.cmd("Obsidian follow_link")
+          	end
+          	local api = require("obsidian.api")
+          	local link, _, _, _ = api.cursor_link()
+          	if not link then
+          		return fallback()
+          	end
+          	local ref = require("obsidian.parse.refs").parse(link)
+          	if not ref or ref.kind ~= "wiki" then
+          		return fallback()
+          	end
+          	local target = vim.uri_decode(ref.target) or ref.target
+          	local location = require("obsidian.link.parser").parse(target)
+
+          	local ts = date_to_timestamp(location)
+          	if ts then
+          		return open_daily(ts)
+          	end
+
+          	local label = ref.label
+          	if label == nil or label == "" or location == "" or api.is_attachment_path(location) then
+          		return fallback()
+          	end
+
+          	local bufnr = vim.api.nvim_get_current_buf()
+          	local source = vim.api.nvim_buf_get_name(bufnr)
+          	require("obsidian.search").resolve_note_async(location, function(notes)
+          		if not vim.tbl_isempty(notes) then
+          			return fallback()
+          		end
+          		if api.confirm(("Create new note '%s'?"):format(location), "&Yes\n&No") ~= "Yes" then
+          			return require("obsidian.log").warn("Aborted")
+          		end
+          		local note = require("obsidian.note").create({
+          			id = location,
+          			title = label,
+          			aliases = { label },
+          			source_path = source ~= "" and source or nil,
+          		})
+          		note:write({
+          			update_content = function(_)
+          				return { "# " .. label }
+          			end,
+          		})
+          		vim.cmd.edit(vim.fn.fnameescape(tostring(note.path)))
+          		vim.b[vim.api.nvim_get_current_buf()].note = note
+          	end, {
+          		dir = api.resolve_workspace_dir(source ~= "" and source or nil),
+          		buf_dir = source ~= "" and vim.fs.dirname(source) or nil,
+          	})
           end
 
           -- custom commands for previous and next daily note
@@ -242,7 +332,7 @@
           	-- Divide by seconds in a day (24*60*60) and round to nearest whole number
           	local total_offset_from_today = math.floor((target_note_timestamp - today_timestamp) / (24 * 60 * 60) + 0.5)
 
-          	open_daily(total_offset_from_today)
+          	open_daily_offset(total_offset_from_today)
           	return true
           end
 
@@ -299,15 +389,16 @@
               vim.keymap.del("n", "<CR>", { buffer = true })
               vim.keymap.del("n", "]o", { buffer = true })
               vim.keymap.del("n", "[o", { buffer = true })
+              vim.keymap.set("n", "gd", follow_link, { buffer = true, desc = "Obsidian follow link" })
             end,
           })
 
           local open_today = function()
-          	open_daily(0)
+          	open_daily_offset(0)
           end
           -- offset -1 rather than daily.yesterday(), which honours workdays_only
           local open_yesterday = function()
-          	open_daily(-1)
+          	open_daily_offset(-1)
           end
           vim.keymap.set("n", "<leader>od", open_today, { desc = "[O]bsidian [D]aily note for Today" })
           vim.keymap.set("n", "<leader>odt", open_today, { desc = "[O]bsidian [D]aily note for [T]oday" })
@@ -343,7 +434,7 @@
 
           vim.keymap.set("n", "<leader>ob", "<cmd>Obsidian backlinks<cr>", { desc = "[O]bsidian [B]acklinks" })
           vim.keymap.set("n", "<leader>oc", "<cmd>Obsidian toggle_checkbox<cr>", { desc = "[O]bsidian [C]heckbox" })
-          vim.keymap.set("n", "<leader>of", "<cmd>Obsidian follow_link<cr>", { desc = "[O]bsidian [F]ollow" })
+          vim.keymap.set("n", "<leader>of", follow_link, { desc = "[O]bsidian [F]ollow" })
           vim.keymap.set("v", "<leader>ol", "<cmd>Obsidian link_new<cr>", { desc = "[O]bsidian [L]ink (new note from selection)" })
           vim.keymap.set("n", "<leader>oo", "<cmd>Obsidian open<cr>", { desc = "[O]bsidian [O]pen" })
           vim.keymap.set("n", "<leader>osn", "<cmd>Obsidian search<cr>", { desc = "[O]bsidian [S]earch [N]otes" })
