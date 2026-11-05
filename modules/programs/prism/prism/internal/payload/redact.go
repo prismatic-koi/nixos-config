@@ -649,8 +649,8 @@ func (r *Redactor) Redact(s string) string {
 // Why it exists
 // -------------
 //
-// Redact matches over flat text. The private-key-block shape has a
-// `[\s\S]*?` body, so on a serialised JSON document a dangling
+// Redact matches over flat text. A private-key-block match runs from a BEGIN
+// line to the next END line, so on a serialised JSON document a dangling
 // `-----BEGIN … PRIVATE KEY-----` in one field and an `-----END …-----` in a
 // later field make one match consume the JSON structure between them. Two
 // failure modes follow, both silent and both permanent once the row is

@@ -2160,10 +2160,12 @@ export function redactLine(line: string): string {
 //
 // Cost
 // ----
-// Two passes: one alternation of literal values, one alternation of shapes.
-// The JavaScript engine backtracks, so the private-key shape is not linear:
-// many BEGIN lines with no END line cost quadratic time. The Cost section of
-// docs/secret-redaction.md gives the measured bounds.
+// At most three linear passes: one alternation of literal values, the
+// private-key pass, and one alternation of the other shapes. The private-key
+// pass stops at the first BEGIN line with no END line after it, so its worst
+// case is one scan from that line to the end of the input. See
+// redactPrivateKeyBlocks. The Cost section of docs/secret-redaction.md gives
+// the measured bounds.
 //
 // SECURITY: nothing in this block logs, echoes, or returns a credential
 // value. Every test value is synthetic.

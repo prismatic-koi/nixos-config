@@ -621,10 +621,11 @@ func FuzzPrivateKeyPassMatchesLazyRegexp(f *testing.F) {
 // ---------------------------------------------------------------------------
 // RedactJSON — the flat pass must never span a JSON delimiter.
 //
-// The private-key-block shape has a `[\s\S]*?` body, so on a serialised JSON
-// document a BEGIN in one field and an END in a later field make one match
-// consume the structure between them. Two failure modes, both silent and both
-// permanent once the row is written: invalid JSON, and silent field loss.
+// A private-key-block match runs from a BEGIN line to the next END line, so on
+// a serialised JSON document a BEGIN in one field and an END in a later field
+// make one match consume the structure between them. Two failure modes, both
+// silent and both permanent once the row is written: invalid JSON, and silent
+// field loss.
 // ---------------------------------------------------------------------------
 
 func TestRedactJSON_DoesNotProduceInvalidJSON(t *testing.T) {
