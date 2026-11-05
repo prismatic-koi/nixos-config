@@ -101,8 +101,11 @@ import {
   CREDENTIAL_ENV_PREFIXES,
   CREDENTIAL_ENV_NAME_SUFFIXES,
   CREDENTIAL_SHAPES,
+  PRIVATE_KEY_SHAPE,
   REDACTION_MIN_VALUE_LENGTH,
   shapeTriggerPresent,
+  privateKeyTriggerPresent,
+  redactPrivateKeyBlocks,
   isCredentialEnvName,
   makeSecretRedactor,
   redactionMarker,
@@ -7317,13 +7320,21 @@ describe("#2589: shape layer", () => {
 
   it("declares its shape rules in a stable order", () => {
     assert.ok(CREDENTIAL_SHAPES.length > 0)
-    assert.equal(CREDENTIAL_SHAPES[0].name, "private-key-block")
+    assert.equal(CREDENTIAL_SHAPES[0].name, "github-fine-grained-pat")
+    // The private-key shape has a pass of its own, before the combined pass.
+    assert.ok(!CREDENTIAL_SHAPES.some((s) => s.name === PRIVATE_KEY_SHAPE.name))
     for (const s of CREDENTIAL_SHAPES) {
       assert.doesNotThrow(() => new RegExp(s.pattern), `shape ${s.name} must compile`)
       assert.ok(s.triggers.length > 0, `shape ${s.name} declares no prefilter trigger`)
       for (const t of s.triggers) {
         assert.ok(t.length > 0, `shape ${s.name} declares an empty trigger`)
       }
+    }
+    assert.doesNotThrow(() => new RegExp(PRIVATE_KEY_SHAPE.begin))
+    assert.doesNotThrow(() => new RegExp(PRIVATE_KEY_SHAPE.end))
+    assert.ok(PRIVATE_KEY_SHAPE.triggers.length > 0)
+    for (const t of PRIVATE_KEY_SHAPE.triggers) {
+      assert.ok(t.length > 0, "the private-key shape declares an empty trigger")
     }
   })
 
@@ -7362,17 +7373,168 @@ describe("#2589: shape layer", () => {
       `two ghp_${"A".repeat(36)} and AIza${"F".repeat(35)}`,
     ]
     for (const input of corpus) {
-      unfiltered.lastIndex = 0
-      const matched = unfiltered.test(input)
+      const afterKeys = redactPrivateKeyBlocks(input)
+      const keyMatched = afterKeys !== input
       assert.equal(
-        shapeTriggerPresent(input) || !matched,
+        privateKeyTriggerPresent(input) || !keyMatched,
         true,
-        `a shape matched ${JSON.stringify(input)} but no trigger is present`,
+        `the private-key pass matched ${JSON.stringify(input)} but no trigger is present`,
       )
-      if (!matched) {
+      unfiltered.lastIndex = 0
+      const matched = unfiltered.test(afterKeys)
+      assert.equal(
+        shapeTriggerPresent(afterKeys) || !matched,
+        true,
+        `a shape matched ${JSON.stringify(afterKeys)} but no trigger is present`,
+      )
+      if (!keyMatched && !matched) {
         assert.equal(r.redact(input), input, `unmatched input changed: ${JSON.stringify(input)}`)
       }
     }
+  })
+})
+
+// ===========================================================================
+// Private-key pass (issue #3437)
+// ===========================================================================
+
+// The Go suite runs the same file (redact_parity_test.go), so a pass on both
+// sides means the two outputs are identical.
+const PRIVATE_KEY_CASES_PATH = path.join(
+  __dirname,
+  "../../prism/internal/payload/testdata/private-key-cases.json",
+)
+
+type CaseSegment = string | { repeat: string; count: number }
+
+function loadPrivateKeyCases(): Array<{ name: string; input: string; want: string }> {
+  const file = JSON.parse(fs.readFileSync(PRIVATE_KEY_CASES_PATH, "utf8")) as {
+    cases: Array<{ name: string; input: CaseSegment[]; want: CaseSegment[] }>
+  }
+  const join = (segments: CaseSegment[]) =>
+    segments.map((s) => (typeof s === "string" ? s : s.repeat.repeat(s.count))).join("")
+  return file.cases.map((c) => ({ name: c.name, input: join(c.input), want: join(c.want) }))
+}
+
+/** Describes where two strings first differ, without a dump of 1 MiB. */
+function firstDifference(got: string, want: string): string {
+  let i = 0
+  while (i < got.length && i < want.length && got[i] === want[i]) i++
+  const around = (s: string) => JSON.stringify(s.slice(Math.max(0, i - 40), i + 40))
+  return (
+    `first difference at index ${i} (got ${got.length}, want ${want.length}):\n` +
+    `  got:  ${around(got)}\n  want: ${around(want)}`
+  )
+}
+
+const RSA_BEGIN_LINE = "-----BEGIN RSA PRIVATE KEY-----\n"
+const A_BEGIN_LINE = "-----BEGIN A PRIVATE KEY-----\n"
+const RSA_END_LINE = "-----END RSA PRIVATE KEY-----\n"
+const MIB = 1 << 20
+
+/**
+ * `lines` copies of `line`, spread evenly over `size` characters.
+ *
+ * The filler between them is lines of dashes. Each dash is a place where an
+ * END line can start, so a scan for an END line is slow over this filler. With
+ * ordinary text as filler, V8 skips to the next dash and a quadratic pass
+ * stays under the time bound.
+ */
+function spreadLines(line: string, lines: number, size: number): string {
+  const dashes = (n: number) =>
+    ("-".repeat(79) + "\n").repeat(Math.floor(n / 80)) +
+    (n % 80 > 0 ? "-".repeat((n % 80) - 1) + "\n" : "")
+  const block = Math.floor(size / lines)
+  const out = (line + dashes(block - line.length)).repeat(lines)
+  return out + dashes(size - out.length)
+}
+
+/**
+ * The best of three timed runs of `r.redact(s)`, in milliseconds. An untimed
+ * run first flattens `s` and compiles the regexps. The best run, not the
+ * first, keeps a GC pause or a busy CI runner from failing the bound.
+ */
+function bestRedactMs(r: SecretRedactor, s: string): number {
+  r.redact(s)
+  let best = Infinity
+  for (let i = 0; i < 3; i++) {
+    const start = performance.now()
+    r.redact(s)
+    best = Math.min(best, performance.now() - start)
+  }
+  return best
+}
+
+describe("#3437: private-key pass", () => {
+  const shapeOnly = () => makeSecretRedactor({})
+  const MARKER = redactionMarker(PRIVATE_KEY_SHAPE.name)
+
+  it("gives the output of the shared case file, the same as the Go redactor", () => {
+    const cases = loadPrivateKeyCases()
+    assert.ok(cases.length > 0, "the case file holds no cases")
+    const r = shapeOnly()
+    for (const c of cases) {
+      const got = r.redact(c.input)
+      if (got !== c.want) assert.fail(`case "${c.name}": ${firstDifference(got, c.want)}`)
+    }
+  })
+
+  it("gives the same output as the lazy regexp begin[\\s\\S]*?end", () => {
+    const lazy = new RegExp(
+      PRIVATE_KEY_SHAPE.begin + String.raw`[\s\S]*?` + PRIVATE_KEY_SHAPE.end,
+      "g",
+    )
+    for (const c of loadPrivateKeyCases()) {
+      const want = c.input.replace(lazy, MARKER)
+      const got = redactPrivateKeyBlocks(c.input)
+      if (got !== want) assert.fail(`case "${c.name}": ${firstDifference(got, want)}`)
+    }
+  })
+
+  it("redacts a block after a gitlab token with no separator before the BEGIN line", () => {
+    const token = `glpat-${"H".repeat(20)}`
+    const input = `${token}-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----`
+    assert.equal(shapeOnly().redact(input), `[redacted:gitlab-pat]${MARKER}`)
+  })
+
+  for (const [form, line] of [
+    ["RSA", RSA_BEGIN_LINE],
+    ["A", A_BEGIN_LINE],
+  ] as const) {
+    it(`processes 1 MiB with 1000 ${form} BEGIN lines and no END line in less than 100 ms`, () => {
+      const input = spreadLines(line, 1000, MIB)
+      assert.equal(input.length, MIB)
+      const r = shapeOnly()
+      assert.ok(r.redact(input) === input, "BEGIN lines with no END line were changed")
+      const ms = bestRedactMs(r, input)
+      assert.ok(ms < 100, `took ${ms.toFixed(1)} ms`)
+    })
+  }
+
+  it("processes 1 MiB with 500 BEGIN lines, one END line, and 500 BEGIN lines in less than 100 ms", () => {
+    const first = spreadLines(RSA_BEGIN_LINE, 500, MIB / 2)
+    const rest = spreadLines(RSA_BEGIN_LINE, 500, MIB / 2 - RSA_END_LINE.length)
+    const input = first + RSA_END_LINE + rest
+    assert.equal(input.length, MIB)
+    const r = shapeOnly()
+    const want = `${MARKER}\n${rest}`
+    const got = r.redact(input)
+    if (got !== want) assert.fail(firstDifference(got, want))
+    const ms = bestRedactMs(r, input)
+    assert.ok(ms < 100, `took ${ms.toFixed(1)} ms`)
+  })
+
+  it("takes less than 16 times as long on 8 MiB of BEGIN lines as on 1 MiB", () => {
+    // A linear pass takes about 8 times as long. A quadratic pass takes about
+    // 64 times as long. The ratio does not depend on the speed of the machine.
+    const r = shapeOnly()
+    const of = (size: number) => RSA_BEGIN_LINE.repeat(Math.floor(size / RSA_BEGIN_LINE.length))
+    const small = bestRedactMs(r, of(MIB))
+    const large = bestRedactMs(r, of(8 * MIB))
+    assert.ok(
+      large < 16 * small,
+      `1 MiB took ${small.toFixed(2)} ms, 8 MiB took ${large.toFixed(2)} ms`,
+    )
   })
 })
 

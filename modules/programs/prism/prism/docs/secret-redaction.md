@@ -44,9 +44,10 @@ Every control redacts each string scalar and each object key ON ITS OWN. No
 control runs a pattern over a serialised JSON document. This is a correctness
 rule, not a style preference.
 
-The `private-key-block` shape has a `[\s\S]*?` body. Run over a serialised
-document, one match can start in one field and end in a later one, consuming
-the JSON structure between them. Two failure modes follow, both silent:
+A `private-key-block` match runs from a BEGIN line to the next END line, with
+any text between them. Run over a serialised document, one match can start in
+one field and end in a later one, consuming the JSON structure between them.
+Two failure modes follow, both silent:
 
 ```
 {"a":"-----BEGIN A PRIVATE KEY-----","b":[1,"-----END A PRIVATE KEY-----"]}
@@ -124,8 +125,22 @@ the capturing process. It is defence in depth and it never replaces layer 1.
 
 Each shape is anchored on a distinctive issuer prefix: `ghp_`, `github_pat_`,
 `glpat-`, `sk-ant-`, `sk-or-v1-`, `sk-proj-`, `xoxb-`, `AKIA`, `AIza`,
-`ATATT3`, and the PEM private-key block. `CredentialShapeNames` lists them in
-match order.
+`ATATT3`, and the BEGIN line of a PEM private-key block.
+
+The shape layer has two passes, in this order:
+
+1. The private-key pass replaces each PEM private-key block. A block starts
+   at a line that matches `-----BEGIN [A-Z ]*PRIVATE KEY-----`. It stops at
+   the first line after it that matches `-----END [A-Z ]*PRIVATE KEY-----`.
+   Both implementations call the pass `redactPrivateKeyBlocks`.
+2. The combined pass runs all other shapes as one regular expression.
+   `CredentialShapeNames` lists them in match order.
+
+The private-key pass runs first because some token shapes accept `-`, for
+example `glpat-[A-Za-z0-9_-]{20,255}`. In one combined expression, the
+leftmost match wins. A token directly before a BEGIN line then consumes the
+dashes of the line, and the key body goes out without redaction (issue #3437).
+A token inside a block is part of the block, so the block marker replaces it.
 
 A shape with a generic body — a bare base64 run, a JWT — is deliberately
 absent. Its false-positive rate would corrupt more output than the rule
@@ -164,20 +179,26 @@ Output that carries no credential value is written unchanged, byte for byte.
 
 ## Cost
 
-`Redact` makes at most two linear passes over the input:
+`Redact` makes at most three linear passes over the input:
 
-- the value layer is one `strings.Replacer`. It builds its trie once, at
+- The value layer is one `strings.Replacer`. It builds its trie once, at
   construction time, and walks the input once. Walk depth is bounded by the
   longest secret, which is a constant.
-- the shape layer is one combined RE2 regular expression. RE2 is linear in the
-  input and does not backtrack.
+- The private-key pass searches for a BEGIN line, then for the first END line
+  after it. The next search starts after that END line. If a BEGIN line has
+  no END line after it, the pass stops. Each later BEGIN line ends after that
+  line, so no END line can follow a later one either. Thus no part of the
+  input is searched two times, and the pass is linear. The worst case is one
+  scan for an END line, from the first BEGIN line to the end of the input.
+- The combined pass is one RE2 regular expression. RE2 is linear in the input
+  and does not backtrack.
 
-The shape layer runs behind a literal prefilter. Every shape declares a set of
-trigger substrings — `ghp_`, `sk-ant-`, `-----BEGIN `, and so on — of which at
-least one must be present for the pattern to match at all. When none is
-present, which is the overwhelmingly common case, the regular expression is
-skipped and only the literal scans run. Measured on this repo, that takes the
-throughput from about 8 MB/s to about 365 MB/s.
+Each pass of the shape layer runs behind a literal prefilter. Every shape
+declares a set of trigger substrings — `ghp_`, `sk-ant-`, `-----BEGIN `, and
+so on — of which at least one must be present for the pattern to match at
+all. When none is present, which is the overwhelmingly common case, the shape
+layer skips the pass and only the literal scans run. Measured on this repo, that takes
+the throughput from about 8 MB/s to about 365 MB/s.
 
 The prefilter is a cost optimisation, never a correctness one. It is sound
 only while every trigger is a NECESSARY substring of its pattern.
@@ -185,25 +206,42 @@ only while every trigger is a NECESSARY substring of its pattern.
 shape layer and the unfiltered one must produce the same output. Add a shape
 and you must add its triggers, on both sides.
 
-Neither pass is quadratic in the size of a `tool_result` payload.
-`TestRedact_LargePayloadCostIsNotQuadratic` bounds the wall-clock cost of one
+No pass is quadratic in the size of a `tool_result` payload.
+`TestRedact_LargePayloadCostIsNotQuadratic` and
+`TestRedact_PrivateKeyPassCostIsNotQuadratic` bound the wall-clock cost of one
 call on 8 MiB, which separates a linear implementation from a quadratic one
 without depending on the speed of the machine.
 
-The TypeScript side runs the equivalent two passes per scalar. Its
-regular-expression engine backtracks, so the multi-line private-key shape is
-not linear. A match attempt starts only at a literal
-`-----BEGIN … PRIVATE KEY-----`. Input with many of these lines and no END
-line costs quadratic time.
+The private-key pass gives the same output as the lazy expression
+`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`.
+`FuzzPrivateKeyPassMatchesLazyRegexp` pins this on the Go side. The extension
+does not use the lazy expression, because V8 backtracks. In V8, each BEGIN line
+with no END line after it starts a scan to the end of the input, so the cost of
+the lazy expression is quadratic.
+
+The TypeScript side runs the same three passes per scalar, and its private-key
+pass stops at the same point. Thus its worst case is also one scan for an END
+line, from the first BEGIN line to the end of the scalar.
 
 Control 1 runs on the full `content` of a tool result, before its 8 KiB byte
-cut. The built-in tools of pi cap `content` at 50 KB. At that size, the worst
-case measured 14 ms.
+cut. The built-in tools of pi cap `content` at 50 KB. Control 3 also walks
+`structuredContent` and `details`. The `bash` tool puts up to 1 MiB of output
+in `structuredContent.output`. A tool with no cap can return more, and the cost
+increases linearly with the size.
 
-Control 3 also walks `structuredContent` and `details`. The `bash` tool puts up
-to 1 MiB of output in `structuredContent.output`. At 1 MiB, the worst case
-measured 1.2 to 5.4 seconds for each call, by the form of the line. A tool with
-no cap can return more. Ordinary output of 1 MiB measured 5 ms.
+Measured on an Apple M4 host, with the best of three runs:
+
+| Input | Time |
+|---|---|
+| 1 MiB with 1000 BEGIN lines and no END line, in the RSA or the one-letter form, with lines of dashes between them | 1.1 ms |
+| 1 MiB with 500 BEGIN lines, one END line, and 500 BEGIN lines, with lines of dashes between them | 1.0 ms |
+| 1 MiB of BEGIN lines with no END line | 1.6 ms |
+| 8 MiB of BEGIN lines with no END line | 11 ms, 7.3 times the time for 1 MiB |
+| A `bash` result of BEGIN lines with no END line: 50 KiB `content` and `details`, 1 MiB `structuredContent.output` | 2.3 ms |
+
+The extension tests assert a bound of 100 ms for each 1 MiB case and for the
+`bash` result. They also assert that 8 MiB takes less than 16 times as long as
+1 MiB. A quadratic pass takes about 64 times as long.
 
 ## Frame boundaries and truncation
 
@@ -349,7 +387,15 @@ it separately, and rotate any credential you believe reached it.
   credential added there is injected into every sandbox but never redacted.
 - Keep the shape patterns byte-identical between the two implementations. They
   are written to be valid and equivalent in both RE2 and the JavaScript
-  dialect, which is what lets the parity test compare them directly.
+  dialect, which is what lets the parity test compare them directly. This
+  includes the BEGIN and END patterns of the private-key shape
+  (`PRIVATE_KEY_SHAPE` in the extension).
+- The private-key pass is code, so equal patterns do not prove equal output.
+  `internal/payload/testdata/private-key-cases.json` holds the output that
+  both implementations must give. The Go suite and `prism.test.ts` run each
+  case. If you change the private-key pass, add a case to that file.
+- Do not put the private-key shape back into the combined pass. A token shape
+  that accepts `-` then consumes the dashes of a BEGIN line again.
 - Do not add a shape with a generic body. Precision beats recall here: a
   control that mangles ordinary output gets switched off.
 - Never apply a shape to a serialised JSON document. Use `RedactJSON` on the

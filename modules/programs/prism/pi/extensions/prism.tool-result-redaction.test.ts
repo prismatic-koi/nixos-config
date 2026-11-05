@@ -181,6 +181,63 @@ describe("#3420: redactToolResult", () => {
     )
   })
 
+  it("replaces a complete private-key block in each part of a tool result (#3437)", () => {
+    const pem = "-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----"
+    const marker = "[redacted:private-key-block]"
+    assert.deepEqual(
+      redactToolResult(
+        {
+          content: [text(`cat id_rsa\n${pem}\n`)],
+          structuredContent: { output: `${pem}\n`, exit_code: 0 },
+          details: { truncation: { content: `${pem}\n`, truncated: true } },
+        },
+        makeSecretRedactor({}),
+      ),
+      {
+        content: [text(`cat id_rsa\n${marker}\n`)],
+        structuredContent: { output: `${marker}\n`, exit_code: 0 },
+        details: { truncation: { content: `${marker}\n`, truncated: true } },
+      },
+    )
+  })
+
+  it("replaces a private-key block after the first 50 KB of a 1 MiB output (#3437)", () => {
+    const pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nc3ludGhldGlj\n-----END OPENSSH PRIVATE KEY-----\n"
+    const head = "y".repeat(63) + "\n"
+    const before = head.repeat(1024)
+    const after = head.repeat(Math.floor(((1 << 20) - before.length - pem.length) / head.length))
+    const result = redactToolResult(
+      { content: [text("ok")], structuredContent: { output: before + pem + after } },
+      makeSecretRedactor({}),
+    )
+    const output = (result?.structuredContent as { output?: string } | undefined)?.output
+    assert.ok(before.length > 50_000)
+    assert.ok(output === `${before}[redacted:private-key-block]\n${after}`, "the block was not redacted")
+  })
+
+  it("redacts a bash-shaped result of BEGIN lines with no END line in less than 100 ms (#3437)", () => {
+    // Both line forms, at the sizes of the pi 1.5.0 bash tool: 50 KiB for
+    // content and details, 1 MiB for structuredContent.output.
+    const lines = "-----BEGIN RSA PRIVATE KEY-----\n-----BEGIN A PRIVATE KEY-----\n"
+    const of = (size: number) => lines.repeat(Math.floor(size / lines.length))
+    const event = {
+      content: [text(of(50 << 10))],
+      structuredContent: { output: of(1 << 20), exit_code: 0 },
+      details: { truncation: { content: of(50 << 10), truncated: true } },
+    }
+    const r = redactor()
+    assert.equal(redactToolResult(event, r), undefined)
+    // The best of three runs, so a GC pause or a busy CI runner does not
+    // fail the bound.
+    let best = Infinity
+    for (let i = 0; i < 3; i++) {
+      const start = performance.now()
+      redactToolResult(event, r)
+      best = Math.min(best, performance.now() - start)
+    }
+    assert.ok(best < 100, `took ${best.toFixed(1)} ms`)
+  })
+
   it("is idempotent: a second pass over a redacted result returns no result", () => {
     const first = redactToolResult(
       { content: [text(`t=${SYNTHETIC_VALUE}`)], structuredContent: { t: SYNTHETIC_VALUE } },

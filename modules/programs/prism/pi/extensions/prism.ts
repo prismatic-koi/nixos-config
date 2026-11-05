@@ -2160,10 +2160,12 @@ export function redactLine(line: string): string {
 //
 // Cost
 // ----
-// Two passes: one alternation of literal values, one alternation of shapes.
-// The JavaScript engine backtracks, so the private-key shape is not linear:
-// many BEGIN lines with no END line cost quadratic time. The Cost section of
-// docs/secret-redaction.md gives the measured bounds.
+// At most three linear passes: one alternation of literal values, the
+// private-key pass, and one alternation of the other shapes. The private-key
+// pass stops at the first BEGIN line with no END line after it, so its worst
+// case is one scan from that line to the end of the input. See
+// redactPrivateKeyBlocks. The Cost section of docs/secret-redaction.md gives
+// the measured bounds.
 //
 // SECURITY: nothing in this block logs, echoes, or returns a credential
 // value. Every test value is synthetic.
@@ -2241,10 +2243,11 @@ export const CREDENTIAL_ENV_NAME_SUFFIXES: readonly string[] = [
 ]
 
 /**
- * Known credential shapes, in match order. Each is anchored on a distinctive
- * issuer prefix so ordinary output does not match. A shape with a generic
- * body (a bare base64 run, a JWT) is deliberately absent: the false-positive
- * rate would corrupt more output than the rule protects.
+ * Known credential shapes of the combined pass, in match order. Each is
+ * anchored on a distinctive issuer prefix so ordinary output does not match.
+ * A shape with a generic body (a bare base64 run, a JWT) is deliberately
+ * absent: the false-positive rate would corrupt more output than the rule
+ * protects. The private-key shape is not in this list: see PRIVATE_KEY_SHAPE.
  *
  * The pattern strings are byte-identical to the Go rules in
  * internal/payload/redact.go so the parity test can compare them directly.
@@ -2260,11 +2263,6 @@ export const CREDENTIAL_SHAPES: ReadonlyArray<{
   readonly pattern: string
   readonly triggers: readonly string[]
 }> = [
-  {
-    name: "private-key-block",
-    pattern: String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`,
-    triggers: ["-----BEGIN "],
-  },
   {
     name: "github-fine-grained-pat",
     pattern: String.raw`github_pat_[A-Za-z0-9_]{40,255}`,
@@ -2317,6 +2315,58 @@ export const CREDENTIAL_SHAPES: ReadonlyArray<{
   },
 ]
 
+/**
+ * The PEM private-key shape. Its own pass, redactPrivateKeyBlocks, runs before
+ * the combined pass of CREDENTIAL_SHAPES. A block starts at a `begin` line
+ * and stops at the first `end` line after it.
+ *
+ * The pass runs first because some token shapes accept `-`. In the combined
+ * pass, such a token directly before a BEGIN line consumes the dashes of the
+ * line, and the block then goes out unredacted.
+ *
+ * The strings are byte-identical to privateKeyShape in
+ * internal/payload/redact.go, and the parity test compares them.
+ */
+export const PRIVATE_KEY_SHAPE: {
+  readonly name: string
+  readonly begin: string
+  readonly end: string
+  readonly triggers: readonly string[]
+} = {
+  name: "private-key-block",
+  begin: String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----`,
+  end: String.raw`-----END [A-Z ]*PRIVATE KEY-----`,
+  triggers: ["-----BEGIN "],
+}
+
+const PRIVATE_KEY_BEGIN = new RegExp(PRIVATE_KEY_SHAPE.begin, "g")
+const PRIVATE_KEY_END = new RegExp(PRIVATE_KEY_SHAPE.end, "g")
+const PRIVATE_KEY_MARKER = redactionMarker(PRIVATE_KEY_SHAPE.name)
+
+/**
+ * Replace each private-key block in `s` with the private-key marker.
+ *
+ * The output is the same as a global replace with the lazy regexp
+ * `begin[\s\S]*?end`. The pass stops at the first BEGIN line with no END line
+ * after it. Each later BEGIN line ends after that one, so no END line follows
+ * a later one either. The stop keeps the pass linear. V8 runs the lazy regexp
+ * to the end of the input from each such BEGIN line, which is quadratic.
+ */
+export function redactPrivateKeyBlocks(s: string): string {
+  let out = ""
+  let done = 0
+  for (;;) {
+    PRIVATE_KEY_BEGIN.lastIndex = done
+    const begin = PRIVATE_KEY_BEGIN.exec(s)
+    if (!begin) break
+    PRIVATE_KEY_END.lastIndex = PRIVATE_KEY_BEGIN.lastIndex
+    if (!PRIVATE_KEY_END.exec(s)) break
+    out += s.slice(done, begin.index) + PRIVATE_KEY_MARKER
+    done = PRIVATE_KEY_END.lastIndex
+  }
+  return done === 0 ? s : out + s.slice(done)
+}
+
 /** Reports whether an environment-variable name is expected to hold a secret. */
 export function isCredentialEnvName(name: string): boolean {
   if (!name) return false
@@ -2358,23 +2408,32 @@ const COMBINED_SHAPE_SOURCE = CREDENTIAL_SHAPES.map(
   (s) => "(?:" + s.pattern + ")",
 ).join("|")
 
-/** Flattened trigger set for the shape prefilter. */
+/** Flattened trigger set for the prefilter of the combined pass. */
 const SHAPE_TRIGGERS: readonly string[] = CREDENTIAL_SHAPES.flatMap(
   (s) => s.triggers as string[],
 )
 
+function anyTriggerPresent(s: string, triggers: readonly string[]): boolean {
+  for (const t of triggers) {
+    if (s.includes(t)) return true
+  }
+  return false
+}
+
 /**
- * Reports whether any shape could possibly match `s`.
+ * Reports whether any shape of the combined pass could possibly match `s`.
  *
  * Every trigger is a NECESSARY substring of its pattern, so a false negative
  * is impossible. The Go side pins that property with a fuzz target
  * (FuzzRedactShapePrefilter).
  */
 export function shapeTriggerPresent(s: string): boolean {
-  for (const t of SHAPE_TRIGGERS) {
-    if (s.includes(t)) return true
-  }
-  return false
+  return anyTriggerPresent(s, SHAPE_TRIGGERS)
+}
+
+/** Reports whether the private-key pass could possibly match `s`. */
+export function privateKeyTriggerPresent(s: string): boolean {
+  return anyTriggerPresent(s, PRIVATE_KEY_SHAPE.triggers)
 }
 
 /** Attribute a combined-regexp match back to the shape rule that produced it. */
@@ -2402,11 +2461,11 @@ export interface SecretRedactor {
    *
    *   1. A secret containing a quote or a backslash appears in escaped form
    *      once JSON.stringify has run, and a literal match would miss it.
-   *   2. The private-key-block shape has a `[\s\S]*?` body. Run over a
-   *      serialised line, one match can start in one field and end in a
-   *      later one, consuming the JSON structure between them — which either
-   *      emits invalid JSON or silently deletes whole fields. Redacting each
-   *      scalar on its own makes that structurally impossible.
+   *   2. A private-key-block match runs from a BEGIN line to the next END
+   *      line. Run over a serialised line, one match can start in one field
+   *      and end in a later one, consuming the JSON structure between them —
+   *      which either emits invalid JSON or silently deletes whole fields.
+   *      Redacting each scalar on its own makes that structurally impossible.
    */
   redactFrame(frame: Record<string, unknown>): Record<string, unknown>
   /**
@@ -2459,6 +2518,7 @@ export function makeSecretRedactor(
       valueRe.lastIndex = 0
       out = out.replace(valueRe, (m) => markerByValue.get(m) ?? m)
     }
+    if (privateKeyTriggerPresent(out)) out = redactPrivateKeyBlocks(out)
     if (shapeTriggerPresent(out)) {
       shapeRe.lastIndex = 0
       out = out.replace(shapeRe, (m) => redactionMarker(shapeNameFor(m)))

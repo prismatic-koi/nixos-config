@@ -95,6 +95,14 @@ jobs:
               # hook line of tmux.nix and runs it on a test tmux server. A PR
               # that changes only tmux.nix must run that test.
               - 'modules/programs/prism/tmux.nix'
+              # internal/payload/redact_parity_test.go reads prism.ts and
+              # compares its redactor rules with the Go rules. A PR that
+              # changes only prism.ts must run that test.
+              - 'modules/programs/prism/pi/extensions/prism.ts'
+              # The same parity test checks that prism.test.ts still runs the
+              # shared private-key case file. A PR that changes only
+              # prism.test.ts must run that test.
+              - 'modules/programs/prism/pi/extensions/prism.test.ts'
       - name: Set up Go
         if: steps.changes.outputs.go == 'true'
         uses: actions/setup-go@v7
@@ -685,6 +693,10 @@ jobs:
               - '.github/workflows/pr-gate.yml'
               - 'flake.lock'
               - 'overlays/default.nix'
+              # prism.test.ts runs the private-key case file of the Go
+              # redactor. A PR that changes only the case file must run the
+              # extension tests.
+              - 'modules/programs/prism/prism/internal/payload/testdata/private-key-cases.json'
       - uses: cachix/install-nix-action@v31
         if: steps.changes.outputs.ext == 'true'
         with:

@@ -25,15 +25,18 @@
 // Cost
 // ----
 //
-// Redact runs at most two linear passes over the input:
+// Redact runs at most three linear passes over the input:
 //
 //   - strings.Replacer builds a trie once, at Redactor construction time, and
 //     walks the input once. The walk depth is bounded by the longest secret,
 //     which is a constant, so the pass is O(len(input)).
-//   - The shape layer is one combined RE2 regexp. RE2 is linear in the input
-//     with no backtracking.
+//   - The private-key pass finds each block with two RE2 searches. It stops
+//     at the first BEGIN line with no END line after it. See
+//     redactPrivateKeyBlocks.
+//   - The other shapes are one combined RE2 regexp. RE2 is linear in the
+//     input with no backtracking.
 //
-// Neither pass is quadratic in the size of a tool_result payload.
+// No pass is quadratic in the size of a tool_result payload.
 //
 // Security rule for this file and its tests
 // -----------------------------------------
@@ -238,21 +241,13 @@ type credentialShape struct {
 	anchored *regexp.Regexp
 }
 
+// credentialShapes are the shapes of the combined pass. The private-key shape
+// is not one of them: see privateKeyShape.
 var credentialShapes = func() []credentialShape {
 	raw := []struct {
 		name, pattern string
 		triggers      []string
 	}{
-		// A PEM private-key block. First, because its body can contain
-		// text that a later shape would otherwise match piecemeal.
-		//
-		// `[\s\S]` rather than `(?s).` so the pattern string is byte-
-		// identical to the JavaScript one in the pi extension.
-		{
-			"private-key-block",
-			`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`,
-			[]string{"-----BEGIN "},
-		},
 		// GitHub fine-grained PAT. Before the classic prefixes because
 		// `github_pat_` shares no prefix with them but is the longer name.
 		{
@@ -300,7 +295,75 @@ var credentialShapes = func() []credentialShape {
 	return out
 }()
 
-// shapeTriggers is the flattened trigger set, computed once.
+// privateKeyShape is the PEM private-key shape. Its own pass,
+// redactPrivateKeyBlocks, runs before the combined pass. A block starts at a
+// begin line and stops at the first end line after it.
+//
+// The pass runs first for two reasons. A block body can contain text that a
+// combined shape would otherwise match piecemeal. And some token shapes
+// accept `-`: in the combined pass, such a token directly before a BEGIN line
+// consumes the dashes of the line, and the block then goes out unredacted.
+//
+// The strings are byte-identical to PRIVATE_KEY_SHAPE in the pi extension,
+// and the parity test compares them.
+var privateKeyShape = struct {
+	name, begin, end string
+	// triggers are the prefilter literals of the pass. See
+	// credentialShape.triggers.
+	triggers []string
+}{
+	name:     "private-key-block",
+	begin:    `-----BEGIN [A-Z ]*PRIVATE KEY-----`,
+	end:      `-----END [A-Z ]*PRIVATE KEY-----`,
+	triggers: []string{"-----BEGIN "},
+}
+
+var (
+	privateKeyBeginRE = regexp.MustCompile(privateKeyShape.begin)
+	privateKeyEndRE   = regexp.MustCompile(privateKeyShape.end)
+)
+
+// redactPrivateKeyBlocks replaces each private-key block in s with the
+// private-key marker.
+//
+// The output is the same as a replace with the lazy regexp
+// begin[\s\S]*?end. The pass stops at the first BEGIN line with no END line
+// after it. Each later BEGIN line ends after that one, so no END line follows
+// a later one either. The stop keeps the pass linear. Without it, each such
+// BEGIN line costs a scan to the end of the input, which is the quadratic
+// cost of the lazy regexp in V8.
+func redactPrivateKeyBlocks(s string) string {
+	var out strings.Builder
+	done := 0
+	for {
+		begin := privateKeyBeginRE.FindStringIndex(s[done:])
+		if begin == nil {
+			break
+		}
+		bodyStart := done + begin[1]
+		end := privateKeyEndRE.FindStringIndex(s[bodyStart:])
+		if end == nil {
+			break
+		}
+		out.WriteString(s[done : done+begin[0]])
+		out.WriteString(RedactionMarker(privateKeyShape.name))
+		done = bodyStart + end[1]
+	}
+	if done == 0 {
+		return s
+	}
+	out.WriteString(s[done:])
+	return out.String()
+}
+
+// privateKeyTriggerPresent reports whether the private-key pass could
+// possibly match s. See shapeTriggerPresent.
+func privateKeyTriggerPresent(s string) bool {
+	return anyTriggerPresent(s, privateKeyShape.triggers)
+}
+
+// shapeTriggers is the flattened trigger set of the combined pass, computed
+// once.
 var shapeTriggers = func() []string {
 	var out []string
 	for _, s := range credentialShapes {
@@ -309,7 +372,8 @@ var shapeTriggers = func() []string {
 	return out
 }()
 
-// shapeTriggerPresent reports whether any shape could possibly match s.
+// shapeTriggerPresent reports whether any shape of the combined pass could
+// possibly match s.
 //
 // It exists for cost, not correctness. Running the combined regexp over a
 // large payload costs roughly ten times as much as the literal substring
@@ -318,7 +382,11 @@ var shapeTriggers = func() []string {
 // its pattern, so a false negative here is impossible;
 // TestCredentialShapes_EveryPatternRequiresOneOfItsTriggers pins that.
 func shapeTriggerPresent(s string) bool {
-	for _, t := range shapeTriggers {
+	return anyTriggerPresent(s, shapeTriggers)
+}
+
+func anyTriggerPresent(s string, triggers []string) bool {
+	for _, t := range triggers {
 		if strings.Contains(s, t) {
 			return true
 		}
@@ -326,8 +394,8 @@ func shapeTriggerPresent(s string) bool {
 	return false
 }
 
-// combinedShapeRE matches any credential shape in a single linear pass.
-// Go's regexp uses leftmost-first alternation, so the order of
+// combinedShapeRE matches any shape of credentialShapes in a single linear
+// pass. Go's regexp uses leftmost-first alternation, so the order of
 // credentialShapes decides which rule wins an overlap.
 var combinedShapeRE = func() *regexp.Regexp {
 	parts := make([]string, 0, len(credentialShapes))
@@ -348,9 +416,10 @@ func CredentialShapeTriggers() map[string][]string {
 	return out
 }
 
-// CredentialShapeNames returns the names of the shape rules, in match order.
-// The order is load-bearing: alternation is leftmost-first, so it decides
-// which rule wins an overlapping match.
+// CredentialShapeNames returns the names of the shape rules of the combined
+// pass, in match order. The order is load-bearing: alternation is
+// leftmost-first, so it decides which rule wins an overlapping match. The
+// private-key shape is not in the list, because its pass runs first.
 func CredentialShapeNames() []string {
 	out := make([]string, 0, len(credentialShapes))
 	for _, s := range credentialShapes {
@@ -401,7 +470,8 @@ type Redactor struct {
 	// themselves.
 	valueCount int
 	// shapes is the combined shape regexp, or nil when the shape layer is
-	// switched off.
+	// switched off. When it is nil, the private-key pass does not run
+	// either.
 	shapes *regexp.Regexp
 }
 
@@ -558,7 +628,13 @@ func (r *Redactor) Redact(s string) string {
 	if r.values != nil {
 		s = r.values.Replace(s)
 	}
-	if r.shapes != nil && shapeTriggerPresent(s) {
+	if r.shapes == nil {
+		return s
+	}
+	if privateKeyTriggerPresent(s) {
+		s = redactPrivateKeyBlocks(s)
+	}
+	if shapeTriggerPresent(s) {
 		s = r.shapes.ReplaceAllStringFunc(s, func(m string) string {
 			return RedactionMarker(shapeNameFor(m))
 		})
@@ -573,8 +649,8 @@ func (r *Redactor) Redact(s string) string {
 // Why it exists
 // -------------
 //
-// Redact matches over flat text. The private-key-block shape has a
-// `[\s\S]*?` body, so on a serialised JSON document a dangling
+// Redact matches over flat text. A private-key-block match runs from a BEGIN
+// line to the next END line, so on a serialised JSON document a dangling
 // `-----BEGIN … PRIVATE KEY-----` in one field and an `-----END …-----` in a
 // later field make one match consume the JSON structure between them. Two
 // failure modes follow, both silent and both permanent once the row is
