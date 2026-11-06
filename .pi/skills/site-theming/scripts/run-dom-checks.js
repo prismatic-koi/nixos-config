@@ -35,6 +35,8 @@ const runSnap = (p, full) => p.evaluate(`(${SNAP})(${full}, ${snapCfg})`);
 const PAGES = process.env.PAGES ? process.env.PAGES.split(',') : site.pages;
 const VIEWS = (process.env.VIEWS || '1440x1,1100x1,800x1,1100x1.25').split(',').map((v) => { const [w, d] = v.split('x'); return { w: +w, d: +d }; });
 const THEMES = (process.env.THEMES || 'everforest-light,catppuccin-mocha').split(',');
+// A site config can set colorScheme and cookies(mode), for a site with a dark mode.
+const ctxOpts = { colorScheme: site.colorScheme, cookies: site.cookies ? site.cookies(site.colorScheme) : undefined };
 const RES = path.join(OUT, 'results'); const UDIR = path.join(OUT, 'unthemed');
 fs.mkdirSync(RES, { recursive: true }); fs.mkdirSync(UDIR, { recursive: true });
 
@@ -59,7 +61,7 @@ function unthemed(browser, v, page) {
   if (fs.existsSync(f)) return Promise.resolve(JSON.parse(fs.readFileSync(f)));
   if (pending.has(f)) return pending.get(f);
   const job = (async () => {
-    const ctx = await newCtx(browser, { site, width: v.w, dsf: v.d });
+    const ctx = await newCtx(browser, { site, width: v.w, dsf: v.d, ...ctxOpts });
     const p = await ctx.newPage();
     await load(p, name, page);
     await site.expand(p);
@@ -77,7 +79,7 @@ function unthemed(browser, v, page) {
 async function one(browser, theme, v, page) {
   const name = `${theme}_${v.w}x${v.d}_${site.pageName(page)}`;
   const U = await unthemed(browser, v, page);
-  const ctx = await newCtx(browser, { site, theme, css: CSS, width: v.w, dsf: v.d });
+  const ctx = await newCtx(browser, { site, theme, css: CSS, width: v.w, dsf: v.d, ...ctxOpts });
   const p = await ctx.newPage(); const helper = await ctx.newPage();
   try {
     const r = { name };

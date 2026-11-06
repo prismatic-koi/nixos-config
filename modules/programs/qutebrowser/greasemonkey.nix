@@ -229,6 +229,11 @@ in
           name = "metservice.css.js";
           text = builtins.readFile ./greasemonkey/metservice.css.js;
         })
+        # style for instagram.com
+        (pkgs.writeTextFile {
+          name = "instagram.css.js";
+          text = builtins.readFile ./greasemonkey/instagram.css.js;
+        })
         # style for reddit
         (pkgs.writeTextFile {
           name = "reddit.css.js";
