@@ -351,6 +351,19 @@
   // brand gradient get an override rule with the same selector.
   let NAMES = new Set();
   const extra = new Set();
+  // A disabled button (the login button before input) is drawn at 40%
+  // opacity, so its text cannot reach 4.5. The static style below sets the
+  // opacity to 1. This rule shows the disabled state with a neutral fill.
+  // The fill sits on a child that can carry a Meta theme class, so the rule
+  // also sets the children. The :not(#igt) term adds id weight, to lift the
+  // rule above the theme class selectors in the token rule.
+  const DISABLED =
+    '[role="button"][aria-disabled="true"]:not(#igt),\n' +
+    '[role="button"][aria-disabled="true"] :not(#igt) {\n' +
+    '  --primary-button-background: var(--system-theme-bg2) !important;\n' +
+    '  --primary-button-text: var(--igt-sec-text) !important;\n' +
+    '  --primary-button-icon: var(--igt-sec-text) !important;\n' +
+    '}';
   const gradients = new Map();
   const doneSheets = new WeakSet();
   let tokenStyle = null;
@@ -379,7 +392,7 @@
     const grads = [...gradients]
       .map(([s, g]) => s + ' {\n  background-image: ' + g + ' !important;\n  color: var(--igt-on-grad) !important;\n}')
       .join('\n');
-    tokenStyle.textContent = sel + ' {\n' + body + '\n}\n' + grads;
+    tokenStyle.textContent = sel + ' {\n' + body + '\n}\n' + grads + '\n' + DISABLED;
     probe.remove();
   }
   function readSheet(sheet) {
@@ -432,18 +445,11 @@ GM_addStyle(`
     color: var(--system-theme-fg) !important;
   }
 
-  /* A disabled button (the login button before input) is drawn at 40%
-     opacity, so its text cannot reach 4.5. Show the disabled state with a
-     neutral fill at full opacity. The fill and the opacity sit on a child,
-     which can carry a Meta theme class, so the rule also sets the child. The
-     :not(#igt) term adds id weight, to lift the rule above the theme class
-     rules in the token style. */
-  [role="button"][aria-disabled="true"]:not(#igt),
-  [role="button"][aria-disabled="true"] :not(#igt) {
+  /* A disabled button is drawn at 40% opacity, on a child of the button.
+     Draw it at full opacity. The token style gives it a neutral fill. */
+  [role="button"][aria-disabled="true"],
+  [role="button"][aria-disabled="true"] * {
     opacity: 1 !important;
-    --primary-button-background: var(--system-theme-bg2) !important;
-    --primary-button-text: var(--igt-sec-text) !important;
-    --primary-button-icon: var(--igt-sec-text) !important;
   }
 
   /* The Meta logo under the login form has fixed fill attributes: blue and
