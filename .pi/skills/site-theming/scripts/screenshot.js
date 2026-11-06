@@ -8,6 +8,7 @@
 //   --page <id>        Page id from the site config. Default: the first page.
 //   --mode <mode>      Site colour mode (light or dark), for sites that have one. Default: light.
 //   --regions <list>   Comma list of region names from the site config. Default: all regions.
+//   --expand           Run the expand step of the site config before the screenshots.
 // Environment: SITE_CSS (not needed for "unthemed"), OUT, and the variables in lib.js.
 //
 // A region in the site config is one of:
@@ -45,6 +46,7 @@ if (!unthemed) themeSource(theme);
     await p.waitForSelector(site.readySelector, { timeout: 60000 });
     await p.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => { });
     await p.evaluate(async () => { for (let y = 0; y < document.body.scrollHeight; y += 600) { scrollTo(0, y); await new Promise((r) => setTimeout(r, 120)); } scrollTo(0, 0); });
+    if (args.includes('--expand') && site.expand) await site.expand(p);
   } else {
     await p.goto(pages[pageId], { waitUntil: 'load', timeout: 60000 });
     await p.waitForTimeout(5000);
