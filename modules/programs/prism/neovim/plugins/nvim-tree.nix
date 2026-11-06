@@ -41,6 +41,19 @@
           	vim.notify("nvim-tree: git integration off. The git runner did not take --ignore-submodules.", vim.log.levels.ERROR)
           end
           require("nvim-tree").setup({
+          	on_attach = function(bufnr)
+          		local api = require("nvim-tree.api")
+          		api.map.on_attach.default(bufnr)
+          		-- No trash program is installed. Git history is the recovery path,
+          		-- so D deletes with the built-in remove, the same as d.
+          		vim.keymap.set({ "n", "x" }, "D", api.fs.remove, {
+          			desc = "nvim-tree: Delete",
+          			buffer = bufnr,
+          			noremap = true,
+          			silent = true,
+          			nowait = true,
+          		})
+          	end,
           	filters = {
           		--disable the filtering out of dotfiles
           		dotfiles = false,
