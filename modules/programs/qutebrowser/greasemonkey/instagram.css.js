@@ -57,6 +57,7 @@
   // Strings are joined with +, not with template placeholders, so that the
   // file has no dollar-brace sequence that reads as Nix interpolation.
   const v = (n) => 'var(--system-theme-' + n + ')';
+  const full = (c) => 'rgb(' + c.slice(0, 3).join(' ') + ' / ' + c[3] + ')';
   const WHITE = [255, 255, 255, 1];
 
   // The minimum ratio is 4.6, not 4.5, so that rounding to whole r, g, b
@@ -75,6 +76,17 @@
       if (bgs.every((b) => ratio(c, b) >= MIN)) break;
     }
     return c;
+  }
+  // The colour c, or c at another oklch lightness (same chroma and hue), that
+  // reaches MIN against each colour in bgs (design rule 2).
+  function lightnessOn(c, bgs) {
+    if (bgs.every((b) => ratio(c, b) >= MIN)) return c;
+    const darker = lum(bgs[0]) > 0.18;
+    for (let i = 0; i <= 50; i++) {
+      const x = rgba('oklch(from ' + full(c) + ' ' + (darker ? 0.6 - i * 0.012 : 0.6 + i * 0.008) + ' c h)');
+      if (bgs.every((b) => ratio(x, b) >= MIN)) return x;
+    }
+    return darker ? [0, 0, 0, 1] : WHITE;
   }
   // Dimmed text: the most grey1 in a mix with fg that still reaches MIN on each
   // colour in bgs. In a palette with a low-contrast fg, this is fg itself.
@@ -110,6 +122,17 @@
     // media. Keep the white, and give the button fill the lightness of the
     // theme blue that carries white text.
     const button = hueOn('blue', [WHITE]);
+    // A disabled button: the site fades its blue to 40% opacity. Mix 40% of
+    // the button blue into bg0 instead (in oklab, which keeps the hue), with
+    // more blue, up to 70%, where the fill needs it to keep a blue chroma.
+    // The cap keeps the disabled fill lighter than the enabled one. The text
+    // is fg, at the lightness that reaches MIN on that fill.
+    let disFill = button;
+    for (let p = 40; p <= 70; p += 5) {
+      disFill = rgba('color-mix(in oklab, ' + full(button) + ' ' + p + '%, ' + full(bg0) + ')');
+      if (oklch(disFill).C >= 0.065) break;
+    }
+    const disText = lightnessOn(fg, [disFill]);
     const hover = [...fg.slice(0, 3), 0.08];
     const press = [...fg.slice(0, 3), 0.14];
     const blur = [...bg1.slice(0, 3), 0.8];
@@ -299,13 +322,13 @@
       'status-positive': green,
     };
     const trip = (c) => (c[3] < 1 ? c.join(', ') : c.slice(0, 3).join(', '));
-    const full = (c) => 'rgb(' + c.slice(0, 3).join(' ') + ' / ' + c[3] + ')';
     const lines = [];
     const decl = (n, value) => lines.push(n + ': ' + value + ' !important;');
     for (const [n, c] of Object.entries(IG)) decl('--ig-' + n, trip(c));
     for (const [n, c] of Object.entries(FULL)) decl('--' + n, full(c));
     // Derived colours for the static rules at the end of this file.
-    decl('--igt-sec-text', full(secText));
+    decl('--igt-dis-fill', full(disFill));
+    decl('--igt-dis-text', full(disText));
     decl('--igt-on-grad', full(bg0));
     // Gradient stops in each theme hue, with MIN contrast against bg0, so that
     // gradient text (background-clip: text) is readable on the page.
@@ -353,16 +376,16 @@
   const extra = new Set();
   // A disabled button (the login button before input) is drawn at 40%
   // opacity, so its text cannot reach 4.5. The static style below sets the
-  // opacity to 1. This rule shows the disabled state with a neutral fill.
+  // opacity to 1. This rule shows the disabled state with a faded fill.
   // The fill sits on a child that can carry a Meta theme class, so the rule
   // also sets the children. The :not(#igt) term adds id weight, to lift the
   // rule above the theme class selectors in the token rule.
   const DISABLED =
     '[role="button"][aria-disabled="true"]:not(#igt),\n' +
     '[role="button"][aria-disabled="true"] :not(#igt) {\n' +
-    '  --primary-button-background: var(--system-theme-bg2) !important;\n' +
-    '  --primary-button-text: var(--igt-sec-text) !important;\n' +
-    '  --primary-button-icon: var(--igt-sec-text) !important;\n' +
+    '  --primary-button-background: var(--igt-dis-fill) !important;\n' +
+    '  --primary-button-text: var(--igt-dis-text) !important;\n' +
+    '  --primary-button-icon: var(--igt-dis-text) !important;\n' +
     '}';
   const gradients = new Map();
   const doneSheets = new WeakSet();
@@ -446,7 +469,7 @@ GM_addStyle(`
   }
 
   /* A disabled button is drawn at 40% opacity, on a child of the button.
-     Draw it at full opacity. The token style gives it a neutral fill. */
+     Draw it at full opacity. The token style gives it a faded fill. */
   [role="button"][aria-disabled="true"],
   [role="button"][aria-disabled="true"] * {
     opacity: 1 !important;
