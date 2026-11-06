@@ -43,7 +43,7 @@
           require("nvim-tree").setup({
           	on_attach = function(bufnr)
           		local api = require("nvim-tree.api")
-          		api.config.mappings.default_on_attach(bufnr)
+          		api.map.on_attach.default(bufnr)
           		-- No trash program is installed. Git history is the recovery path,
           		-- so D deletes with the built-in remove, the same as d.
           		vim.keymap.set({ "n", "x" }, "D", api.fs.remove, {
