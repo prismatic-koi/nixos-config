@@ -65,10 +65,10 @@ in
 
     # Tinted backgrounds — pull the hue toward the background (light: lighten)
     backgrounds = {
-      bg_red = "#f4d2ae"; # 15% mix of neutral red (#cc241d) into background_0
-      bg_green = "#ece4ad"; # 15% mix of neutral green (#98971a) into background_0
-      bg_blue = "#e0e1be"; # 15% mix of neutral blue (#458588) into background_0
-      bg_yellow = "#f6e4ae"; # 15% mix of neutral yellow (#d79921) into background_0
+      bg_red = "#fedbd6"; # OKLCH hue of neutral red (#cc241d), L 0.92, C 0.04
+      bg_green = "#e6e7c9"; # OKLCH hue of neutral green (#98971a), L 0.92, C 0.04
+      bg_blue = "#c7edef"; # OKLCH hue of neutral blue (#458588), L 0.92, C 0.04
+      bg_yellow = "#f4e2c8"; # OKLCH hue of neutral yellow (#d79921), L 0.92, C 0.04
       bg_visual = lighten hues.green 55; # derived — gruvbox has no visual bg
     };
 
