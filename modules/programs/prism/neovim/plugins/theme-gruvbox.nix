@@ -18,7 +18,19 @@ in
             # lua
             ''
               require("gruvbox").setup({
-              	overrides = {},
+              	overrides = {
+              		ObsidianTodo = { fg = "${theme.hues.orange}", bold = true },
+              		ObsidianDone = { fg = "${theme.hues.green}", bold = true },
+              		ObsidianRightArrow = { fg = "${theme.hues.orange}", bold = true },
+              		ObsidianTilde = { fg = "${theme.hues.red}", bold = true },
+              		ObsidianImportant = { fg = "${theme.hues.red}", bold = true },
+              		ObsidianBullet = { fg = "${theme.neutrals.background_5}" },
+              		ObsidianRefText = { fg = "${theme.hues.blue}", underline = true },
+              		ObsidianExtLinkIcon = { fg = "${theme.hues.blue}" },
+              		ObsidianTag = { fg = "${theme.hues.blue}", italic = true },
+              		ObsidianBlockID = { fg = "${theme.hues.blue}", italic = true },
+              		ObsidianHighlightText = { bg = "${theme.backgrounds.bg_visual}" },
+              	},
               })
               vim.o.background = "${theme.type}"
               vim.cmd([[colorscheme gruvbox]])

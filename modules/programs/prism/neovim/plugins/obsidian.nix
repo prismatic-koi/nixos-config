@@ -174,8 +174,21 @@
               func = noteFrontmatterFunction,
             },
           	ui = {
-          		-- don't use obsidian.nvim colours
-          		hl_groups = {},
+          		-- Replace the 11 default (Palenight) groups with links to standard
+          		-- groups. default = true lets a theme-defined group keep priority.
+          		hl_groups = {
+          			ObsidianTodo = { link = "Todo", default = true },
+          			ObsidianDone = { link = "String", default = true },
+          			ObsidianRightArrow = { link = "Special", default = true },
+          			ObsidianTilde = { link = "Error", default = true },
+          			ObsidianImportant = { link = "WarningMsg", default = true },
+          			ObsidianBullet = { link = "Delimiter", default = true },
+          			ObsidianRefText = { link = "Underlined", default = true },
+          			ObsidianExtLinkIcon = { link = "Underlined", default = true },
+          			ObsidianTag = { link = "@tag", default = true },
+          			ObsidianBlockID = { link = "Identifier", default = true },
+          			ObsidianHighlightText = { link = "Visual", default = true },
+          		},
           	},
             footer = {
               -- https://github.com/obsidian-nvim/obsidian.nvim/issues/566
