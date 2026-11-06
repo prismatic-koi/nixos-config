@@ -65,10 +65,10 @@ in
 
     # Tinted backgrounds — pull the hue toward the background (light: lighten)
     backgrounds = {
-      bg_red = "#fff5f1"; # hand-picked pale red tint, near-white for text contrast
-      bg_green = "#fafae4"; # hand-picked pale green tint, near-white for text contrast
-      bg_blue = "#f0f8f6"; # hand-picked pale blue tint, near-white for text contrast
-      bg_yellow = "#fff8e0"; # hand-picked pale yellow tint, near-white for text contrast
+      bg_red = "#fff6f5"; # hand-picked pale red tint, near-white for text contrast
+      bg_green = "#e6ffd9"; # hand-picked pale green tint, near-white for text contrast
+      bg_blue = "#f2f8ff"; # hand-picked pale blue tint, near-white for text contrast
+      bg_yellow = "#fff8da"; # hand-picked pale yellow tint, near-white for text contrast
       bg_visual = lighten hues.green 55; # derived — gruvbox has no visual bg
     };
 
