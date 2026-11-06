@@ -172,12 +172,17 @@ module.exports = {
     });
     r.header = rect ? await pixel.band(p, helper, rect) : null;
     r.modeClass = await p.evaluate(() => (document.documentElement.className.match(/__(fb|ig)-(light|dark)-mode/) || [''])[0]);
+    // After many loads, Instagram sends a signed-out profile to the login page (the URL
+    // gets "is_from_rle"). Such a run checks the wrong page, so it must fail.
+    r.url = p.url();
+    r.wantPath = new URL(module.exports.pageUrl(r.name.split('_')[2].replace(/-dark$/, ''))).pathname;
     await exceptions(p, r);
   },
   extraFails(r) {
     const out = [];
     if (r.header && Object.values(r.header).some((x) => x.length !== 1)) out.push('header: more than one colour on a row');
     if (r.lost.length) out.push('hidden text: ' + r.lost.length);
+    if (new URL(r.url).pathname !== r.wantPath) out.push('wrong page: ' + r.url);
     if (!r.modeClass.endsWith('-' + MODE + '-mode')) out.push('site mode: html class is "' + r.modeClass + '", not ' + MODE);
     return out;
   },
