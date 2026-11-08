@@ -103,6 +103,26 @@ rec {
         else
           prev.grafana-alloy;
 
+      # hyprland: carry the upstream-suggested fix for the dropped
+      # `SUPER + SUPER_L` release bind (quickshell:hide) in 0.57.1. A
+      # modifier-only release bind returned PARTIAL from CBind::matches()
+      # when another key was still held, and a release event can never
+      # resolve PARTIAL, so quickshell widgets stayed visible.
+      # Discussion: https://github.com/hyprwm/Hyprland/discussions/16878
+      # Issue: https://github.com/prismatic-koi/nixos-config/issues/3451
+      # Existing nixpkgs patches are kept. Linux only; Darwin has no Hyprland.
+      #
+      # REMOVAL CONDITION: an upstream Hyprland release that contains the
+      # fix lands in flake.lock (nixpkgs hyprland version above 0.57.1 with
+      # the fix). Then delete this override and the patch file.
+      hyprland =
+        if final.stdenv.hostPlatform.isLinux then
+          prev.hyprland.overrideAttrs (oldAttrs: {
+            patches = (oldAttrs.patches or [ ]) ++ [ ./patches/hyprland-modifier-release-bind.patch ];
+          })
+        else
+          prev.hyprland;
+
       _macronTypePkg =
         if final.stdenv.hostPlatform.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
       macron-type = if final.stdenv.hostPlatform.isDarwin then final._macronTypePkg.server else null;

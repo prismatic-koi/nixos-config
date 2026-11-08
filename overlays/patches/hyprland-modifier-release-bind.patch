@@ -1,0 +1,29 @@
+Modifier-only release binds (e.g. "SUPER + SUPER_L" with release) are dropped
+when an unrelated key is still held at release time. Return FULL instead of
+PARTIAL for such binds.
+
+Source: https://github.com/hyprwm/Hyprland/discussions/16878
+Author: lemonup (diff posted in a reply on that discussion).
+Tracking: https://github.com/prismatic-koi/nixos-config/issues/3451
+
+--- a/src/keybinds/Bind.cpp
++++ b/src/keybinds/Bind.cpp
+@@ -204,8 +204,17 @@
+     const bool TRIGGER_MATCHES = ctx.trigger && !m_keys.empty() && m_keys.back().matches(*ctx.trigger);
+     const bool TRIGGER_ONLY    = boundKeys.size() == 1 || ((m_flags & BIND_FLAG_RELEASE) && (boundKeys.empty() || !ctx.pressed));
+ 
+-    if (KEY_MATCH == BIND_MATCH_NONE && ctx.trigger && std::ranges::any_of(boundSidedMods, [&ctx](const auto* key) { return key->matches(*ctx.trigger); }))
++    if (KEY_MATCH == BIND_MATCH_NONE && ctx.trigger && std::ranges::any_of(boundSidedMods, [&ctx](const auto* key) { return key->matches(*ctx.trigger); })) {
++        // A modifier-only release bind (e.g. "ALT + Alt_L" with release) is completed by
++        // releasing that modifier, even while unrelated keys such as the Tab of Alt+Tab are
++        // still held. Such a bind has no non-modifier bound keys, so any held key makes
++        // matchKeySets() report NONE above. Returning PARTIAL here dropped the bind
++        // entirely: a release event can never resolve a partial match.
++        if ((m_flags & BIND_FLAG_RELEASE) && !ctx.pressed && boundKeys.empty())
++            return BIND_MATCH_FULL;
++
+         return BIND_MATCH_PARTIAL;
++    }
+ 
+     if (KEY_MATCH != BIND_MATCH_FULL && !(TRIGGER_ONLY && TRIGGER_MATCHES))
+         return KEY_MATCH;
