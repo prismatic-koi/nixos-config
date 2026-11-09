@@ -708,6 +708,11 @@ func (m *Manager) writeSshConfig(mode isolationMode) error {
 //   - [commit] / [gpg] — only when the signing keys are available.
 //   - [push] — autoSetupRemote = true (always).
 //   - [init] — defaultBranch = main (always).
+//   - [credential] — an empty helper (always). This clears the helper list
+//     of the system gitconfig of the nix git, which names osxkeychain.
+//   - [url "git@github.com:thankyou-payroll/"] — insteadOf =
+//     https://github.com/thankyou-payroll/ (always). An HTTPS URL of that
+//     org uses SSH, which needs no credential helper.
 //
 // Missing identity → return error, refuse to write the gitconfig. Without a
 // configured [user] section, git falls back to OS-level identity guessing
@@ -848,11 +853,17 @@ func (m *Manager) writeGitconfigArtefacts(embedSigningKeyPub, embedAllowedSigner
 		}
 	}
 
-	// [push] and [init] — always included.
+	// [push], [init], [credential], and [url] — always included.
 	sb.WriteString("\n[push]\n")
 	sb.WriteString("    autoSetupRemote = true\n")
 	sb.WriteString("\n[init]\n")
 	sb.WriteString("    defaultBranch = main\n")
+	sb.WriteString("\n[credential]\n")
+	sb.WriteString("    helper =\n")
+	// The scope is the thankyou-payroll org only. The trailing slash stops a
+	// match on an org name that starts with the same text.
+	sb.WriteString("\n[url \"git@github.com:thankyou-payroll/\"]\n")
+	sb.WriteString("    insteadOf = https://github.com/thankyou-payroll/\n")
 
 	if err := rundir.WriteFile(gitconfigDst, []byte(sb.String())); err != nil {
 		return err

@@ -356,6 +356,14 @@ in
                   credential = {
                     helper = "";
                   };
+                  # gh clones over HTTPS, and no credential helper is set. So
+                  # an HTTPS URL of this org uses SSH. The prism session
+                  # gitconfig has the same rule. Keep the scope to this org.
+                  url = {
+                    "git@github.com:thankyou-payroll/" = {
+                      insteadOf = "https://github.com/thankyou-payroll/";
+                    };
+                  };
                   # git uses a bare repo only when --git-dir or GIT_DIR names
                   # it. A repo config cannot change this key.
                   safe = {
