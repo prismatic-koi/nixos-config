@@ -81,7 +81,7 @@ reason given.
 | `core.pager`, `pager.<command>` | `GIT_PAGER` has priority. |
 | `core.gitProxy` | `GIT_ALLOW_PROTOCOL` refuses the `git` transport, and `GIT_PROXY_COMMAND` (above) also turns the key off. |
 | `gc.recentObjectsHook` | `maintenance.auto = false` (above). prism host git runs no `git gc`. |
-| `remote.<name>.uploadpack`, `remote.<name>.receivepack`, `remote.<name>.url`, `url.<base>.insteadOf` | For an SSH remote, the remote server runs the upload-pack and receive-pack command, not the host. `GIT_ALLOW_PROTOCOL` refuses a local remote. |
+| `remote.<name>.uploadpack`, `remote.<name>.receivepack`, `remote.<name>.url`, `url.<base>.insteadOf` | For an SSH remote, the remote server runs the upload-pack and receive-pack command, not the host. `GIT_ALLOW_PROTOCOL` refuses a local remote. The global git config of the owner sets one `url.<base>.insteadOf` rule itself: an HTTPS URL of the `thankyou-payroll` org uses SSH (#3460). It points only to an SSH remote. |
 | `remote.<name>.vcs`, a `<transport>::<address>` URL | `GIT_ALLOW_PROTOCOL` refuses each transport except SSH and HTTPS, so git runs no `git-remote-<name>` helper for a planted name. The HTTPS transport runs `git-remote-https` from the exec path of git. |
 | `uploadpack.packObjectsHook` | git reads it only from the system, global, and command-line config. |
 | `alias.*` | prism host git runs built-in commands only. An alias cannot replace a built-in command. |
@@ -802,6 +802,12 @@ rebase request). Tests:
   same values.
 - A `gh` command adds its own credential helper on the command line, after
   the empty `credential.helper`, so `gh` auth works.
+- The global git config of the owner rewrites an HTTPS URL of the
+  `thankyou-payroll` org to SSH, with `url.<base>.insteadOf`
+  (`modules/programs/git.nix`, #3460). prism host git reads the global
+  config, so a host fetch or push of such a URL uses SSH auth. The pins do
+  not set this key. The session gitconfig of a bwrap or sandbox-exec
+  session has the same rule (`user-git-overrides.md`).
 - An inherited `GIT_SSH_COMMAND`, `GIT_ASKPASS`, or `GIT_EDITOR` keeps
   priority over the pins. A worker cannot set the environment of prism on
   the host.

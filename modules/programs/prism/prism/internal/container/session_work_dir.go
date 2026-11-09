@@ -18,7 +18,9 @@ package container
 //
 //	<sessionDir>/ssh-config        — minimal ssh config for github.com and
 //	                                 gitlab.com
-//	<sessionDir>/gitconfig         — git identity + signing config
+//	<sessionDir>/gitconfig         — git identity + signing config, an
+//	                                 empty credential helper, and the
+//	                                 thankyou-payroll SSH rewrite
 //	<sessionDir>/allowed_signers   — for git verify-commit (when signing
 //	                                 is configured)
 //

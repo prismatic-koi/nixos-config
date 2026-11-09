@@ -18,7 +18,8 @@
 Issues: #3326. Related: #3325 (a nested `.git`), #3322 (prism host git),
 #3337 (prism host git on the bwrap detach route), #3346 (user git on the
 bwrap detach route), #3343 (a staged submodule with `ignore = none`),
-#3355 (the remaining env pins). Threat model:
+#3355 (the remaining env pins), #3460 (the session gitconfig and the
+`thankyou-payroll` SSH rewrite). Threat model:
 `docs/invariants/threat-model.md`. Code: `modules/programs/git.nix` at the
 repo root.
 
@@ -165,7 +166,7 @@ into the submodule.
 | systemd user units (Linux) | `systemd.user.sessionVariables` writes `environment.d`. | The service list |
 | launchd agents and apps (Darwin) | The agent `git-env-overrides` runs `launchctl setenv` at each login. | The service list |
 | A prism session in `host` mode | The tmux pane. | All |
-| A bwrap or sandbox-exec session | bwrap starts with `--clearenv`. sandbox-exec keeps an allow-list. | None. The session has its own gitconfig. |
+| A bwrap or sandbox-exec session | bwrap starts with `--clearenv`. sandbox-exec keeps an allow-list. | None. The session has its own gitconfig. See "The session gitconfig and the SSH rewrite" below. |
 
 `environment.d` cannot hold an empty value, and git stops with "missing
 config value" when one `GIT_CONFIG_VALUE_<n>` is absent. So the service
@@ -177,6 +178,33 @@ same list.
 A shell or a tmux server that started before the switch keeps its old
 environment. A new pane and a new shell get the overrides. launchd gets
 them at the next login.
+
+## The session gitconfig and the SSH rewrite (#3460)
+
+A bwrap or sandbox-exec session reads no user gitconfig.
+`GIT_CONFIG_GLOBAL` names a gitconfig that prism writes for the session
+(`writeGitconfigArtefacts`). The system gitconfig of the nix git sets
+`credential.helper=osxkeychain`, and the session still reads it. So the
+session gitconfig has these two entries. prism writes them also when the
+signing keys are not available.
+
+- An empty `credential.helper`. This clears the list of helpers, so an
+  HTTPS fetch or push in the session starts no osxkeychain helper and
+  shows no keychain prompt.
+- `url."git@github.com:thankyou-payroll/".insteadOf=https://github.com/thankyou-payroll/`.
+  git uses SSH for an HTTPS URL of the `thankyou-payroll` org. SSH needs
+  no credential helper.
+
+The user gitconfig in `modules/programs/git.nix` has the same rewrite,
+for host shells and `host`-mode sessions.
+
+"Known limits" below treats a planted `url.<base>.insteadOf` as a risk.
+This rewrite is different: prism and `git.nix` set it, not a repo. It
+points only to an SSH remote on `github.com`, so the remote server runs
+the command, not the host. The scope is the `thankyou-payroll` org only.
+The trailing slash stops a match on an org name that starts with the same
+text. An HTTPS URL of another org, for example
+`https://github.com/NixOS/nixpkgs`, does not change.
 
 ## A tool that sets its own config in the environment
 
@@ -288,7 +316,9 @@ staged submodule (#3343).
   remote side, not the host. A `remote.<name>.vcs` with a slash runs a
   helper by a path relative to the cwd of git; the tool selectors above run
   for a typed `git help`, `git difftool`, or `git mergetool`. The list
-  cannot name them.
+  cannot name them. `git.nix` and the prism session gitconfig set one
+  `url.<base>.insteadOf` rule themselves, to an SSH remote only. See "The
+  session gitconfig and the SSH rewrite" above.
 - **A URL-scoped `http.<url>.cookieFile` with `http.<url>.saveCookies`
   (#3355).** git reads the `http.*` keys by urlmatch, and a key for a more
   specific URL wins over the no-URL `http.cookieFile` pin, in any order. So a
