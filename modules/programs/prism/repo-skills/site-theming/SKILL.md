@@ -90,9 +90,18 @@ style file once, to make sure that the check can fail.
 
 ## Scripts
 
-All scripts are in `scripts/`. Run them from the repository root. Each
-script has usage text at the top. Results go to `OUT` (default
-`./site-theming-out`). That directory is in `.gitignore`. Never commit it.
+All scripts are in the `scripts` directory next to this file. pi shows the
+path of this file in the list of available skills. Set `S` to that
+`scripts` directory before you run the examples below. Run the scripts
+from the repository root. Each script has usage text at the top. Results go
+to `OUT` (default `./site-theming-out`). That directory is in `.gitignore`.
+Never commit it.
+
+The source of this skill is
+`modules/programs/prism/repo-skills/site-theming` in this repository. prism
+gives pi a copy in the nix store, and that copy changes only after a
+home-manager switch. If you change a script, run the copy in your worktree:
+set `S` to `modules/programs/prism/repo-skills/site-theming/scripts`.
 
 | Script | Use |
 |---|---|
@@ -115,16 +124,16 @@ package on `PATH`. To use another install, set `PLAYWRIGHT_MODULE` and
 Example for MetService (2 pages, 2 themes, 4 views):
 
 ```bash
+S=<directory of this SKILL.md>/scripts
 SITE_CSS=modules/programs/qutebrowser/greasemonkey/metservice.css.js \
-  PAGES=,extended node .pi/skills/site-theming/scripts/run-dom-checks.js \
-  .pi/skills/site-theming/scripts/sites/metservice.js
-node .pi/skills/site-theming/scripts/summary.js
+  PAGES=,extended node $S/run-dom-checks.js $S/sites/metservice.js
+node $S/summary.js
 ```
 
 Example for YouTube (one page, 2 themes, 2 modes):
 
 ```bash
-S=.pi/skills/site-theming/scripts
+S=<directory of this SKILL.md>/scripts
 UNTHEMED=1 PAGES=search node $S/run-shadow-checks.js $S/sites/youtube.js
 SITE_CSS=modules/programs/qutebrowser/greasemonkey/youtube.css.js PAGES=search \
   node $S/run-shadow-checks.js $S/sites/youtube.js
@@ -136,8 +145,10 @@ The environment variables `THEMES`, `VIEWS`, `PAGES`, `MODES`, `PAR`, and
 
 ### Add a new site
 
-1. Copy `scripts/sites/metservice.js` (light DOM) or `scripts/sites/youtube.js`
-   (shadow DOM).
+1. In your worktree, copy `sites/metservice.js` (light DOM) or
+   `sites/youtube.js` (shadow DOM) in
+   `modules/programs/prism/repo-skills/site-theming/scripts` to a new file in
+   the same directory. Give the path of the new file to the runner.
 2. Set the page URLs, the ready selector, and `cacheRe` (the hosts to cache).
 3. For a light-DOM site, set `checks.siteColours` to the base colours of the
    site as `r,g,b` strings. Set `assetRoots` and `warnRoots` to the selectors

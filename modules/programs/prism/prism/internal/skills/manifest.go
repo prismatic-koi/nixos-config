@@ -29,7 +29,10 @@ package skills
 // lifetime of the session — there is no watcher or per-invocation re-scan.
 //
 // Consequence: the spawn-time hash captured here is a complete manifest of
-// "what skills the agent could have loaded during this session". A
+// "what global skills the agent could have loaded during this session". The
+// repo skills that prism passes with --skill (internal/reposkills) are not in
+// it: they depend only on the repo of the session and on repo-skills.json,
+// and the legs of an --abtest run share both. A
 // skills_manifest_hash_end column on sessions is not needed; the spawn-time
 // value is authoritative for the full session. This holds while the agent
 // loads skills once per session; an agent version that re-scans dynamically

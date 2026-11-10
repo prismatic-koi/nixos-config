@@ -25,6 +25,10 @@
           .pi/APPEND_SYSTEM.md, and .agents/skills in the directory and its
           ancestors. An extension runs with the rights of the session.
 
+          To give the sessions of a repo a skill, use
+          nx.programs.prism.repoSkills (repo-skills.nix). A repo skill does
+          not need project trust.
+
           prism starts every pi with --approve or --no-approve. It decides on
           the host, when it builds the pi command line. pi gets --approve only
           when all of these are true:

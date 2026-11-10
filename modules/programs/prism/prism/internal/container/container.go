@@ -439,6 +439,13 @@ type Config struct {
 	// host passes on the pane command line (`--approve-project-dir`), never
 	// from a value that it computes itself (issue #3216).
 	PIApproveProject bool
+
+	// PISkillPaths are the repo skills of the session. PIInvocation passes
+	// each one to pi as --skill <path>. `prism agent-run` sets them from
+	// repo-skills.json on the host (internal/reposkills, issue #3463). Each
+	// path is in the nix store, which bwrap and sandbox-exec let the sandbox
+	// read.
+	PISkillPaths []string
 }
 
 // NameForSession returns the stable sandbox name for a session.
