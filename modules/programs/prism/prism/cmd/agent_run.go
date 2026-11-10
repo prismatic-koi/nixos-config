@@ -74,6 +74,7 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/projecttrust"
+	"github.com/prismatic-koi/prism/internal/reposkills"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/rundir"
 	"github.com/prismatic-koi/prism/internal/session"
@@ -809,6 +810,21 @@ func logAgentRunWarning(logFile *os.File, format string, args ...any) {
 	}
 }
 
+// agentRunWarner returns a warn function that writes each message to stderr
+// and to the agent-run log of sessionName.
+func agentRunWarner(sessionName string) func(string) {
+	return func(msg string) {
+		var logFile *os.File
+		if p, err := session.AgentRunLogPath(sessionName); err == nil {
+			if f, openErr := rundir.OpenAppend(p); openErr == nil {
+				logFile = f
+				defer f.Close()
+			}
+		}
+		logAgentRunWarning(logFile, "%s", msg)
+	}
+}
+
 // piOverrides bundles the CLI override values that `prism agent-run` accepts
 // for the pi harness. Empty fields mean "no override" and the active profile
 // slot's value is used unchanged. A non-empty Model wins over slot.Model. A
@@ -944,6 +960,11 @@ func profileSlotRole(agentRole string) string {
 //  8. Sets PIApproveProject from the `--approve-project-dir` value and
 //     ctrCfg.Worktree (piApproveProject). The caller must set ctrCfg.Worktree
 //     first.
+//  9. Sets PISkillPaths to the repo skills of the session, from
+//     repo-skills.json and the repo identity of sessionName and
+//     ctrCfg.Worktree (reposkills.Paths, #3463). A review agent and an
+//     investigator name the repo of their parent and start in its worktree,
+//     so they get the same skills.
 func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, cfg config.Config, overrides piOverrides) error {
 	// Load profiles.json.
 	pf, pfErr := config.LoadProfiles()
@@ -1058,6 +1079,7 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	// PIModelFlags ranks it above PIModel when it renders --model.
 	ctrCfg.AgentModel = overrides.AgentModel
 	ctrCfg.PIApproveProject = piApproveProject(overrides.ApproveProjectDir, ctrCfg.Worktree)
+	ctrCfg.PISkillPaths = reposkills.Paths(sessionName, ctrCfg.Worktree, cfg, agentRunWarner(sessionName))
 
 	// Resolve the pi binary path. This must be the absolute store
 	// path (or profile path) so that bwrap can bind-mount it into the sandbox.

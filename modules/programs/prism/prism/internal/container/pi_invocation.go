@@ -131,6 +131,7 @@ func PIModelFlags(provider, agentModel, model, thinking string) []string {
 //	--thinking <cfg.PIThinking>           (when non-empty)
 //	--extension <extensionPath>           (always; path is derived from cfg)
 //	--approve or --no-approve             (always; cfg.PIApproveProject)
+//	--skill    <path>                     (once for each cfg.PISkillPaths entry)
 //	--agent    <cfg.AgentRole>            (when non-empty; consumed by the
 //	                                       prism PI extension via
 //	                                       pi.registerFlag("agent") to source
@@ -173,6 +174,7 @@ func PIInvocation(cfg Config) []string {
 	extensionSandboxPath := filepath.Join(extensionSandboxDir, piExtensionFilename)
 	args = append(args, "--extension", extensionSandboxPath)
 	args = append(args, PIProjectTrustFlag(cfg.PIApproveProject))
+	args = append(args, PISkillFlags(cfg.PISkillPaths)...)
 
 	// --agent <role> for the prism PI extension's role-prompt injection.
 	// pi has no native concept of agents — the extension
@@ -220,6 +222,17 @@ func PIProjectTrustFlag(approve bool) string {
 		return "--approve"
 	}
 	return "--no-approve"
+}
+
+// PISkillFlags renders one --skill <path> pair for each path, in order.
+// PIInvocation and the host-mode command builder both render through this
+// function.
+func PISkillFlags(paths []string) []string {
+	var args []string
+	for _, p := range paths {
+		args = append(args, "--skill", p)
+	}
+	return args
 }
 
 // PIPromptLead returns the prefix to put before a prompt passed to pi as a

@@ -19,6 +19,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/projecttrust"
+	"github.com/prismatic-koi/prism/internal/reposkills"
 	"github.com/prismatic-koi/prism/internal/rundir"
 	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -519,6 +520,12 @@ func hostProfileSlot(opts Opts) config.RoleSlot {
 // host-mode pi launch resolves no model. Best-effort: a log failure never
 // blocks the launch.
 func logHostNoModelWarning(opts Opts) {
+	logHostWarning(opts, fmt.Sprintf("no profile model resolved for role %q in host mode; pi uses its default model", opts.Agent))
+}
+
+// logHostWarning appends one warning line to the agent-run log of the
+// session. Best-effort: a log failure never blocks the launch.
+func logHostWarning(opts Opts, msg string) {
 	if opts.SessionName == "" {
 		return
 	}
@@ -531,7 +538,19 @@ func logHostNoModelWarning(opts Opts) {
 		return
 	}
 	defer f.Close()
-	fmt.Fprintf(f, "[prism] warning: no profile model resolved for role %q in host mode; pi uses its default model\n", opts.Agent)
+	fmt.Fprintf(f, "[prism] warning: %s\n", msg)
+}
+
+// hostRepoSkills returns the repo skills of the session for the direct pi
+// command (reposkills.Paths). Only a host-mode session logs a warning: in
+// bwrap and sandbox-exec, BuildAgentCmd drops the direct command, and
+// `prism agent-run` resolves the skills again and logs the warnings.
+func hostRepoSkills(opts Opts) []string {
+	warn := func(string) {}
+	if effectiveIsolationMode(opts) == "host" {
+		warn = func(msg string) { logHostWarning(opts, msg) }
+	}
+	return reposkills.Paths(opts.SessionName, opts.Worktree, config.LoadFresh(), warn)
 }
 
 // harnessBinary returns the binary name to invoke for the given harness.
@@ -600,9 +619,17 @@ func buildDirectAgentCmd(opts Opts) string {
 			cmd += " --extension " + shellQuote(extPath)
 		}
 	}
-	// Host-mode mirror of the project-trust flag in container.PIInvocation.
+	// Host-mode mirror of the project-trust flag and the --skill flags in
+	// container.PIInvocation.
 	if container.IsPIHarness(opts.HarnessName) {
 		cmd += " " + container.PIProjectTrustFlag(projectTrustDir(opts) != "")
+		for i, a := range container.PISkillFlags(hostRepoSkills(opts)) {
+			if i%2 == 0 {
+				cmd += " " + a
+			} else {
+				cmd += " " + shellQuote(a)
+			}
+		}
 	}
 	// --exclude-tools <names> for role-scoped builtin tool restriction,
 	// host-mode mirror of container.PIInvocation. See

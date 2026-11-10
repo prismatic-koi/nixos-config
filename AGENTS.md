@@ -24,6 +24,7 @@ For example:
 - pi (agent runtime) configuration → `modules/programs/prism/pi.nix`
 - Custom agent markdown files → `modules/programs/prism/agents/`
 - Skills → `modules/programs/prism/skills/`
+- Repo skills (given only to the sessions of one repo, through `nx.programs.prism.repoSkills`) → `modules/programs/prism/repo-skills/`
 - Agent files at `~/.config/prism/agents/` and skills at `~/.config/prism/skills/` — **never edit these directly, they are overwritten on every switch**
 
 If you need to understand how something is configured, `grep` or `glob` within the working directory before reaching outside it.
@@ -47,6 +48,7 @@ Prism is a tmux-based AI development environment that is developed and configure
 - **Pi agent configuration**: `modules/programs/prism/pi.nix`
 - **Custom agents**: `modules/programs/prism/agents/`
 - **Skills**: `modules/programs/prism/skills/`
+- **Repo skills**: `modules/programs/prism/repo-skills/`, set per repo in `modules/programs/prism/repo-skills.nix`
 
 **Isolation modes.** The valid prism isolation modes are `bwrap` (Linux), `sandbox-exec` (Darwin), and `host` — the source of truth is `config.ValidIsolationModes` in `modules/programs/prism/prism/internal/config/config.go`. Podman is **not** a prism isolation mode; it was removed some time ago (issue #2189 cleaned up the stale references). The only remaining `podman` strings in prism source are legacy DB-row fallbacks (and the schema migrations that backfill them) which convert old `isolation_mode='podman'` rows to bwrap at read time — do not reintroduce podman as a mode, and do not "fix" those fallbacks without a dedicated audit. (Podman the container runtime is still used on these machines — `modules/programs/podman.nix` — that is unrelated to prism isolation.)
 
@@ -171,7 +173,7 @@ nixfmt .
 
 ### Site styles
 
-Read `.pi/skills/site-theming/SKILL.md` before you write, change, or check a site style, before you prepare a spawn prompt for one, and before you review a PR for one. A site style is a qutebrowser greasemonkey style (`modules/programs/qutebrowser/greasemonkey/*.css.js`) or a Firefox site block in `modules/programs/firefox/user-content.nix`.
+Load the `site-theming` skill before you write, change, or check a site style, before you prepare a spawn prompt for one, and before you review a PR for one. prism gives this skill to each session of this repo through `nx.programs.prism.repoSkills`. Its source is `modules/programs/prism/repo-skills/site-theming/SKILL.md`. A site style is a qutebrowser greasemonkey style (`modules/programs/qutebrowser/greasemonkey/*.css.js`) or a Firefox site block in `modules/programs/firefox/user-content.nix`.
 
 ### Secrets Management
 

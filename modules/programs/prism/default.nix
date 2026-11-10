@@ -327,6 +327,7 @@
     ./pi/grafana-secret.nix
     ./profiles.nix
     ./project-trust.nix
+    ./repo-skills.nix
     ./secrets.nix
     ./tmux.nix
     ./sessioniser.nix
