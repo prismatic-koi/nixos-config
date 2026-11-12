@@ -35,6 +35,7 @@ buildGoLatestModule {
   ldflags = [
     "-s"
     "-w"
+    "-X main.version=${version}"
   ];
 
   # flate embeds Helm and Kustomize rendering as Go libraries (helm.sh/
