@@ -15,8 +15,10 @@
 package db
 
 import (
+	"os"
 	"sync"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/payload"
 )
 
@@ -32,11 +34,33 @@ var (
 // Building from the environment is deliberate: the process that writes an
 // event holds the same credential values that a captured command could have
 // printed, so the value layer knows the exact strings to look for.
+//
+// It also reads the credential files that prism gives to sessions
+// (HostCredentialFiles). The sidecar of a session does not hold the path
+// variable of such a file, so its environment alone does not give the value.
 func ProcessRedactor() *payload.Redactor {
 	processRedactorOnce.Do(func() {
-		processRedactor = payload.NewEnvRedactor()
+		processRedactor = newProcessRedactor()
 	})
 	return processRedactor
+}
+
+func newProcessRedactor() *payload.Redactor {
+	return payload.NewRedactorFromEnvironAndFiles(os.Environ(), HostCredentialFiles())
+}
+
+// HostCredentialFiles returns the credential files that this host gives to
+// sessions as a file, keyed by marker name: today the UniFi API key in
+// unifi.json (issue #3472). The value layer of a host process reads them for
+// every session, whatever its repo: a host-mode session of any repo can read
+// the key file, so control 2 must know the value in all of them. A file that
+// cannot be read gives no value, and the shape layer still runs.
+func HostCredentialFiles() map[string]string {
+	u, err := config.LoadUniFi()
+	if err != nil || u.APIKeyPath == "" {
+		return nil
+	}
+	return map[string]string{payload.UniFiAPIKeyName: u.APIKeyPath}
 }
 
 // SetRedactor overrides the redactor this DB handle applies at write time.

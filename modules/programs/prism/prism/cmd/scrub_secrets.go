@@ -10,8 +10,10 @@ package cmd
 //	prism scrub-secrets --json       machine-readable report
 //
 // The command reads the credential values out of its own environment, so run
-// it from a shell that carries the same credentials the agents had. Values
-// the environment does not hold are still covered by the shape layer.
+// it from a shell that carries the same credentials the agents had. It also
+// reads the credential files that prism gives to sessions
+// (db.HostCredentialFiles). Values the environment does not hold are still
+// covered by the shape layer.
 
 import (
 	"encoding/json"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/payload"
 )
 
@@ -52,7 +55,9 @@ believe reached it.
 
 Matching has two layers. The value layer replaces the exact value of every
 credential environment variable in this process's environment, so run the
-command from a shell that carries the same credentials the agents had. The
+command from a shell that carries the same credentials the agents had. It
+also replaces the value of each credential that prism gives to sessions as a
+file, for example the UniFi API key named in ~/.config/prism/unifi.json. The
 shape layer replaces well-known credential shapes and always runs.
 
 A redacted value becomes a marker naming what was removed, for example
@@ -93,7 +98,7 @@ func runScrubSecrets(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	redactor := payload.NewEnvRedactor()
+	redactor := payload.NewRedactorFromEnvironAndFiles(os.Environ(), db.HostCredentialFiles())
 
 	d, err := openDB()
 	if err != nil {
@@ -130,7 +135,7 @@ func runScrubSecrets(cmd *cobra.Command, _ []string) error {
 
 	if redactor.ValueCount() == 0 {
 		fmt.Fprintln(os.Stderr,
-			"warning: no credential environment variable is set in this shell — only the shape layer ran")
+			"warning: no credential environment variable is set in this shell and no credential file is readable — only the shape layer ran")
 	}
 	if dryRun && report.Changed() > 0 {
 		fmt.Fprintln(out, "\nre-run without --dry-run to apply")

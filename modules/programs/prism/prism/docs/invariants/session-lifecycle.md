@@ -365,6 +365,22 @@ prism gives pi one `--skill <path>` for each skill of the repo of the session (i
 - A change to a repo skill takes effect after a home-manager switch, at the next start of a session.
 - `spawn_inputs.skills_manifest_hash` (`skills.ComputeManifest`) covers the global skills directory only. The repo skills of a session depend only on its repo and on `repo-skills.json`, and the legs of an `--abtest` run share both.
 
+## UniFi API key
+
+<!-- doclint-ignore: ~/.config/prism/unifi.json -->
+
+A session of a repo in `nx.programs.prism.unifi.repos` gets the UniFi API key as a read-only file (issue #3472). The default list is `home-ops`, `nixos-config`, `hass-config`, and `obsidian`. The session gets two variables: `UNIFI_API_KEY_FILE` holds the path of the decrypted `unifi_api_key` secret, and `UNIFI_HOST` holds the value of the `unifi_host` secret. No variable holds the key.
+
+- The repo list and the two secret paths come only from `~/.config/prism/unifi.json`. The prism NixOS module renders that file from the option. The Go source holds no repo list.
+- The repo comes from `projecttrust.Policy.SessionProject`, the repo identity of the project-trust decision. `unifi.ForSession` does the lookup. So the root session of `obsidian`, a project with no worktrees, matches by its bare name and its project directory.
+- The coordinator, the workers, and the investigators of a listed repo get the key. The five review roles do not get it: a review agent reviews a diff on a read-only worktree, and has no use for the UniFi API. A fallback reviewer has the role of the agent that it replaces. An investigator answers questions about the live system, and the key gives read access only.
+- `unifi.ForSession` reads the key file and the host file on the host. If a file is missing, or the key holds a value that the redactor cannot mask (`payload.UsableSecretValue`), the session gets neither variable. The session starts, and the agent-run log gives the reason. No warning holds a secret value.
+- In `bwrap` and `sandbox-exec` mode, `prism agent-run` sets `Config.UniFi` (`uniFiDelivery`). `bwrap` binds the key file read-only at the path that `UNIFI_API_KEY_FILE` holds (`bwrapUniFiAPIKeyBind`). Its Dst is a mount point, so a write, an unlink, and a rename onto it fail. No other bind exposes `/run/secrets` or `/run/secrets.d`. If the bind cannot resolve the path, `BuildArgs` sets no UniFi variable either. The `sandbox-exec` profile admits a read of the `unifi_api_key` name in `secrets.d`, and only for a session with a delivery (`collectSecretsDAllowlistNames`). The write deny on `secrets.d` has no exception.
+- In `host` mode, `agentPaneEnvVars` and `agentOnlyPaneEnvVars` put the two variables in the pane env, and write each warning to the agent-run log. **Known limit — host mode (permanent).** A `host` session has no filesystem isolation, so a `host` session of any repo can read the sops path. In `host` mode, prism controls the two variables only.
+- The argv of `bwrap` and of `sandbox-exec` holds the two paths and the host value, not the key value. The redactor reads the key file, so controls 1, 2, and 3 mask the key as `[redacted:UNIFI_API_KEY]`. See "Credential files" in `secret-redaction.md`.
+- No sandbox can read or write `~/.config/prism/unifi.json`. `StandardSandboxMounts` does not bind it, and `generateProfile` does not grant its path.
+- A change to the option takes effect after a home-manager switch, at the next start of a session.
+
 ## Checkin scope
 
 - `prism checkin` applies three permission tiers (issue #2587). The predicate is `authz.AuthorizeCheckin` in `internal/authz/checkin.go`. It takes the caller session as a parameter, so one copy serves both routes.
