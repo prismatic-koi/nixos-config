@@ -66,21 +66,23 @@
         in
         nixpkgs.lib.nixosSystem {
           inherit system;
-          pkgs = import nixpkgs {
-            inherit system;
-            config = lib.mkMerge [
-              {
-                allowUnfree = true;
-              }
-              extraConfig
-            ];
-            overlays = [ self.overlays.modifications ];
-          };
           specialArgs = {
             inherit inputs outputs;
             isLinux = true;
           };
           modules = [
+            # Set nixpkgs through the module options, not with an external
+            # `pkgs` instance. With an external instance, NixOS rejects each
+            # `nixpkgs.config` definition in a module.
+            {
+              nixpkgs.config = lib.mkMerge [
+                {
+                  allowUnfree = true;
+                }
+                extraConfig
+              ];
+              nixpkgs.overlays = [ self.overlays.modifications ];
+            }
             ./machines/${configFile}/configuration.nix
             home-manager.nixosModules.default
             inputs.impermanence.nixosModules.impermanence

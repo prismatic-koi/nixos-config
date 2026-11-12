@@ -2,6 +2,7 @@
   config,
   pkgs,
   lib,
+  isLinux,
   ...
 }:
 {
@@ -11,7 +12,8 @@
     ./greasemonkey.nix
     ./keybindings.nix
     ./secrets.nix
-  ];
+  ]
+  ++ lib.optionals isLinux [ ./emudhra-distrust.nix ];
   options = {
     nx.programs.qutebrowser.enable = lib.mkEnableOption "enables qutebrowser" // {
       default = true;
