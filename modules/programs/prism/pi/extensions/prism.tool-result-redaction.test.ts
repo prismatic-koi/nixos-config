@@ -560,3 +560,119 @@ describe("#3420: end to end through the installed pi runtime", () => {
     }
   })
 })
+
+// Issue #3472: the session gets the UniFi API key as a file. No variable holds
+// the key, so the value layer must read the file that UNIFI_API_KEY_FILE
+// names.
+describe("#3472: end to end, the UniFi API key file", () => {
+  it("gives the model and the transcript the marker for cat, env, and printenv", async () => {
+    const UNIFI_KEY = "synthetic-unifi-key-e2e-0123456789abcdef"
+    const UNIFI_MARKER = "[redacted:UNIFI_API_KEY]"
+    const piRoot = path.join(piInstallRoot(), "lib/node_modules/pi-monorepo")
+    const sdk = await import(pathToFileURL(path.join(piRoot, "dist/bundle/index.js")).href)
+    const faux = await import(
+      pathToFileURL(
+        path.join(piRoot, "node_modules/@earendil-works/pi-ai/dist/providers/faux.js"),
+      ).href
+    )
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-3472-"))
+    try {
+      const keyFile = path.join(dir, "unifi_api_key")
+      fs.writeFileSync(keyFile, `${UNIFI_KEY}\n`, { mode: 0o400 })
+
+      let modelSaw: TranscriptMessage[] = []
+      const provider = faux.fauxProvider({ models: [{ id: "faux-1", input: ["text"] }] })
+      provider.setResponses([
+        faux.fauxAssistantMessage(
+          [
+            faux.fauxToolCall("bash", { command: 'cat "$UNIFI_API_KEY_FILE"' }, { id: "cat" }),
+            faux.fauxToolCall("bash", { command: "env" }, { id: "env" }),
+            faux.fauxToolCall("bash", { command: "printenv" }, { id: "printenv" }),
+            faux.fauxToolCall(
+              "bash",
+              { command: 'K="$(cat "$UNIFI_API_KEY_FILE")" env' },
+              { id: "env-copy" },
+            ),
+            faux.fauxToolCall(
+              "bash",
+              { command: 'K="$(cat "$UNIFI_API_KEY_FILE")" printenv K' },
+              { id: "printenv-copy" },
+            ),
+          ],
+          { stopReason: "toolUse" },
+        ),
+        (context: { messages: TranscriptMessage[] }) => {
+          modelSaw = structuredClone(context.messages)
+          return faux.fauxAssistantMessage("done")
+        },
+      ])
+
+      let sessionFile = ""
+      await withEnv({ ...PRISM_SESSION_ENV, UNIFI_API_KEY_FILE: keyFile }, async () => {
+        const modelRuntime = await sdk.ModelRuntime.create({
+          authPath: path.join(dir, "auth.json"),
+          modelsPath: null,
+          refreshOnCreate: false,
+        })
+        modelRuntime.registerNativeProvider(provider.provider)
+        const settingsManager = sdk.SettingsManager.inMemory({
+          compaction: { enabled: false },
+          retry: { enabled: false },
+        })
+        const resourceLoader = new sdk.DefaultResourceLoader({
+          cwd: dir,
+          agentDir: dir,
+          settingsManager,
+          extensionFactories: [prismExtension],
+          noSkills: true,
+          noPromptTemplates: true,
+          noThemes: true,
+          noContextFiles: true,
+          systemPrompt: "test",
+        })
+        await resourceLoader.reload()
+        const sessionManager = sdk.SessionManager.create(dir, path.join(dir, "sessions"))
+        const { session } = await sdk.createAgentSession({
+          cwd: dir,
+          agentDir: dir,
+          model: provider.getModel(),
+          thinkingLevel: "off",
+          modelRuntime,
+          resourceLoader,
+          tools: ["bash"],
+          sessionManager,
+          settingsManager,
+        })
+        try {
+          await session.prompt("go")
+        } finally {
+          session.dispose()
+        }
+        sessionFile = sessionManager.getSessionFile() ?? ""
+      })
+
+      const results = modelSaw.filter((m) => m.role === "toolResult")
+      assert.equal(results.length, 5, JSON.stringify(modelSaw.map((m) => m.role)))
+      const saw = (id: string) => JSON.stringify(results.find((r) => r.toolCallId === id)?.content)
+      assert.deepEqual(results.find((r) => r.toolCallId === "cat")?.content, [
+        text(`${UNIFI_MARKER}\n`),
+      ])
+      assert.ok(saw("env").includes(`UNIFI_API_KEY_FILE=${keyFile}`), saw("env"))
+      assert.ok(saw("printenv").includes(`UNIFI_API_KEY_FILE=${keyFile}`), saw("printenv"))
+      assert.ok(saw("env-copy").includes(`K=${UNIFI_MARKER}`), saw("env-copy"))
+      assert.deepEqual(results.find((r) => r.toolCallId === "printenv-copy")?.content, [
+        text(`${UNIFI_MARKER}\n`),
+      ])
+      assert.ok(!JSON.stringify(modelSaw).includes(UNIFI_KEY), "the key is in the model context")
+
+      assert.ok(sessionFile, "the session wrote no transcript file")
+      assert.ok(
+        !fs.readFileSync(sessionFile, "utf8").includes(UNIFI_KEY),
+        "the key is in the transcript",
+      )
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

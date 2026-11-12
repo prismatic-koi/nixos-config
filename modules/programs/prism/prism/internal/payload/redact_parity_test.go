@@ -8,11 +8,12 @@ package payload_test
 // know about is caught only by the weaker second control, and a shape the Go
 // side does not know about is never caught at all.
 //
-// The test reads the TypeScript source and compares the five things that must
+// The test reads the TypeScript source and compares the six things that must
 // agree: the exact env-var names, the name prefixes, the name suffixes, the
-// shape rules of the combined pass (name AND pattern — the pattern strings
-// are deliberately written to be byte-identical in both dialects), and the
-// private-key shape (name, BEGIN and END patterns, and triggers).
+// credential file registry, the shape rules of the combined pass (name AND
+// pattern — the pattern strings are deliberately written to be
+// byte-identical in both dialects), and the private-key shape (name, BEGIN
+// and END patterns, and triggers).
 //
 // The private-key pass is code, not one pattern, so equal strings do not
 // prove equal output. testdata/private-key-cases.json holds the output both
@@ -27,6 +28,7 @@ package payload_test
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -120,6 +122,28 @@ func TestRedactorParityWithExtension_EnvNameRegistry(t *testing.T) {
 	assertSameSet(t, "CREDENTIAL_ENV_NAME_SUFFIXES",
 		payload.CredentialEnvNameSuffixes(),
 		stringArrayLiteral(t, src, "CREDENTIAL_ENV_NAME_SUFFIXES"))
+}
+
+// TestRedactorParityWithExtension_CredentialFileRegistry compares the path
+// variables whose file the value layer reads, and the marker name of each
+// (issue #3472). If one side drops an entry, that side leaves the key in the
+// output.
+func TestRedactorParityWithExtension_CredentialFileRegistry(t *testing.T) {
+	src := readExtensionSource(t)
+	block := regexp.MustCompile(`(?s)export const CREDENTIAL_FILE_ENV_NAMES[^=]*=\s*\{(.*?)\n\}`).FindStringSubmatch(src)
+	if block == nil {
+		t.Fatal("could not find CREDENTIAL_FILE_ENV_NAMES in the extension source")
+	}
+	ts := map[string]string{}
+	for _, m := range regexp.MustCompile(`(?m)^\s*([A-Z0-9_]+):\s*"([^"]+)",?\s*$`).FindAllStringSubmatch(block[1], -1) {
+		ts[m[1]] = m[2]
+	}
+	if len(ts) == 0 {
+		t.Fatal("CREDENTIAL_FILE_ENV_NAMES parsed to zero entries")
+	}
+	if goSide := payload.CredentialFileEnvNames(); !maps.Equal(goSide, ts) {
+		t.Errorf("credential file registry drifted between Go and the pi extension:\n  Go: %v\n  TS: %v", goSide, ts)
+	}
 }
 
 func TestRedactorParityWithExtension_ShapeRules(t *testing.T) {
@@ -335,6 +359,13 @@ func TestRedactorParityWithExtension_Constants(t *testing.T) {
 	}
 	if tsMin != payload.MinCredentialValueLen {
 		t.Errorf("minimum value length drifted: Go %d, TS %d", payload.MinCredentialValueLen, tsMin)
+	}
+
+	maxRe := regexp.MustCompile(`export const CREDENTIAL_FILE_MAX_BYTES\s*=\s*(\d+)`)
+	if mm := maxRe.FindStringSubmatch(src); mm == nil {
+		t.Error("could not find CREDENTIAL_FILE_MAX_BYTES in the extension source")
+	} else if tsMax, _ := strconv.Atoi(mm[1]); tsMax != payload.MaxCredentialFileSize {
+		t.Errorf("credential file size limit drifted: Go %d, TS %d", payload.MaxCredentialFileSize, tsMax)
 	}
 
 	for _, tc := range []struct{ constName, goValue string }{

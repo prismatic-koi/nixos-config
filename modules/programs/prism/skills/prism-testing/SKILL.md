@@ -185,6 +185,15 @@ It moved there because `internal/payload` is a stdlib-only leaf package, which i
 
 `TestRedactorParityWithExtension_EnvNameRegistry` fails if you edit only one of the two. See `modules/programs/prism/prism/docs/secret-redaction.md` for the full control.
 
+**When you give a session a credential as a file** (the variable holds the path, as `UNIFI_API_KEY_FILE` does, #3472), no variable holds the value. Then edit these places in the same change:
+
+1. `credentialFileEnvNames` in `internal/payload/redact.go`: the path variable, mapped to the marker name.
+2. `CREDENTIAL_FILE_ENV_NAMES` in `prism.ts`. `TestRedactorParityWithExtension_CredentialFileRegistry` fails if you edit only one of the two.
+3. `db.HostCredentialFiles` in `internal/db/redact.go`, so that the sidecar, which has no path variable, knows the value for control 2.
+4. The isolators: a read-only bwrap bind of the file and a sandbox-exec `secrets.d` exception (`collectSecretsDAllowlistNames`), only for a session that gets the variable. The UniFi key does this with `bwrapUniFiAPIKeyBind` and `Config.UniFi`.
+
+See "Credential files" in `secret-redaction.md`.
+
 ## The git stash incident (#2202)
 
 The repo `AGENTS.md` states the rule: worker-class sessions never use `git stash`; use a temp commit or a patch file instead. This is why.

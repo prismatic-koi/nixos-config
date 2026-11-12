@@ -35,6 +35,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/rundir"
+	"github.com/prismatic-koi/prism/internal/unifi"
 	"github.com/prismatic-koi/prism/internal/usage"
 )
 
@@ -323,6 +324,15 @@ type Config struct {
 	// The bwrap isolator does NOT read this field: it derives the same path
 	// inline from AgentEnvVars to emit its --ro-bind.
 	GrafanaConfigPath string
+
+	// UniFi is the UniFi API key delivery of the session (internal/unifi,
+	// issue #3472). `prism agent-run` sets it on the host from unifi.json and
+	// the repo identity of the session. The zero value gives nothing. When it
+	// is enabled, bwrap binds the key file read-only, the sandbox-exec
+	// profile admits a read of its secrets.d name, and both isolators set
+	// UNIFI_API_KEY_FILE and UNIFI_HOST (AppendStandardEnv,
+	// AppendSandboxEnvVarsKV). No argv and no variable holds the key.
+	UniFi unifi.Delivery
 
 	// InitialPrompt is the initial prompt to deliver to the agent at startup.
 	// When non-empty, it is appended to the agent command as

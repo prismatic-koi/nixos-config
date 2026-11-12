@@ -329,6 +329,7 @@
     ./project-trust.nix
     ./repo-skills.nix
     ./secrets.nix
+    ./unifi.nix
     ./tmux.nix
     ./sessioniser.nix
     ./context-switcher.nix

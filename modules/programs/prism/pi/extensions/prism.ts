@@ -2146,7 +2146,9 @@ export function redactLine(line: string): string {
 // ----------
 //   1. VALUE matching (primary). This process holds the literal value of
 //      every credential environment variable, so an exact match knows what a
-//      regex could only guess. Near-zero false positives.
+//      regex could only guess. Near-zero false positives. For a credential
+//      that the session gets as a file, the redactor reads the file
+//      (CREDENTIAL_FILE_ENV_NAMES).
 //   2. SHAPE matching (secondary). Well-known credential shapes, for a secret
 //      that is not in this process's environment. Defence in depth; it never
 //      replaces layer 1.
@@ -2241,6 +2243,43 @@ export const CREDENTIAL_ENV_NAME_SUFFIXES: readonly string[] = [
   "_SECRET_KEY",
   "_TOKEN",
 ]
+
+/**
+ * Credential files (issue #3472). prism gives some credentials to a session
+ * as a file: the variable holds the PATH, and no variable holds the value. For
+ * each path variable here, the value layer reads the file that the variable
+ * names, and the marker carries the credential name on the right.
+ * Mirrors payload.CredentialFileEnvNames().
+ */
+export const CREDENTIAL_FILE_ENV_NAMES: Readonly<Record<string, string>> = {
+  UNIFI_API_KEY_FILE: "UNIFI_API_KEY",
+}
+
+/**
+ * The largest credential file, in bytes, that the value layer reads. A larger
+ * file is not a one-token credential file. Mirrors
+ * payload.MaxCredentialFileSize.
+ */
+export const CREDENTIAL_FILE_MAX_BYTES = 4096
+
+/**
+ * Read a one-value secret file and return its content with surrounding
+ * whitespace removed, or undefined when the path is not a regular file, is
+ * larger than CREDENTIAL_FILE_MAX_BYTES, or cannot be read. Mirrors
+ * payload.ReadSecretFile.
+ */
+export function readCredentialFile(filePath: string): string | undefined {
+  if (!filePath) return undefined
+  try {
+    const st = fs.statSync(filePath)
+    if (!st.isFile() || st.size > CREDENTIAL_FILE_MAX_BYTES) return undefined
+    const data = fs.readFileSync(filePath)
+    if (data.length > CREDENTIAL_FILE_MAX_BYTES) return undefined
+    return data.toString("utf8").trim()
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * Known credential shapes of the combined pass, in match order. Each is
@@ -2481,20 +2520,41 @@ export interface SecretRedactor {
 /**
  * Build a redactor from an environment map.
  *
+ * The value layer reads each variable that isCredentialEnvName accepts, and
+ * the file that each variable of CREDENTIAL_FILE_ENV_NAMES names.
+ * `readFile` reads such a file; tests pass their own.
+ *
  * Values are filtered before they reach the value layer: see
  * usableSecretValue. When two names carry the same value, the marker names
  * the lexicographically first of them, so output is deterministic.
  */
 export function makeSecretRedactor(
   env: NodeJS.ProcessEnv = process.env,
+  readFile: (filePath: string) => string | undefined = readCredentialFile,
 ): SecretRedactor {
   const markerByValue = new Map<string, string>()
   const seenValue = new Set<string>()
 
-  for (const name of Object.keys(env).sort()) {
-    if (!isCredentialEnvName(name)) continue
+  const named: Array<[string, string]> = []
+  for (const name of Object.keys(env)) {
     const value = env[name]
-    if (typeof value !== "string" || !usableSecretValue(value)) continue
+    if (typeof value !== "string") continue
+    if (isCredentialEnvName(name)) named.push([name, value])
+    const marker = Object.hasOwn(CREDENTIAL_FILE_ENV_NAMES, name)
+      ? CREDENTIAL_FILE_ENV_NAMES[name]
+      : undefined
+    if (marker !== undefined) {
+      const fileValue = readFile(value)
+      if (fileValue !== undefined) named.push([marker, fileValue])
+    }
+  }
+  // The order of payload.newRedactor: by name, then by value.
+  named.sort(([an, av], [bn, bv]) =>
+    an !== bn ? (an < bn ? -1 : 1) : av < bv ? -1 : av > bv ? 1 : 0,
+  )
+
+  for (const [name, value] of named) {
+    if (!usableSecretValue(value)) continue
     if (seenValue.has(value)) continue
     seenValue.add(value)
     markerByValue.set(value, redactionMarker(name))
