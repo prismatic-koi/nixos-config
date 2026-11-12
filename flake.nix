@@ -73,8 +73,7 @@
           modules = [
             # Set nixpkgs through the module options, not with an external
             # `pkgs` instance. With an external instance, NixOS rejects each
-            # `nixpkgs.config` definition in a module, for example the
-            # qutebrowser permit in modules/programs/qutebrowser/default.nix.
+            # `nixpkgs.config` definition in a module.
             {
               nixpkgs.config = lib.mkMerge [
                 {
