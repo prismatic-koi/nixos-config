@@ -23,6 +23,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/rundir"
 	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/tmux"
+	"github.com/prismatic-koi/prism/internal/unifi"
 )
 
 // testDBPath overrides dbPath() during tests. Set via SetTestDBPath.
@@ -1048,6 +1049,34 @@ func hostHarnessEnvVars(sockPath, sessionName string) map[string]string {
 	return envs
 }
 
+// hostUniFiEnvVars returns UNIFI_API_KEY_FILE and UNIFI_HOST for a host-mode
+// session that gets the UniFi API key (unifi.ForSession, issue #3472), or
+// nil. Host mode has no filesystem isolation, so these variables are the only
+// control: a host-mode session of any repo can read the sops path. Each
+// warning goes to the agent-run log of the session.
+func hostUniFiEnvVars(sessionName, role, worktree string) map[string]string {
+	if sessionName == "" {
+		return nil
+	}
+	warn := func(msg string) { logHostWarning(Opts{SessionName: sessionName}, msg) }
+	return unifi.ForSession(sessionName, role, worktree, config.LoadFresh(), warn).EnvVars()
+}
+
+// mergeEnvVars returns the union of maps, or nil when it is empty. A later
+// map wins for a key that two maps hold.
+func mergeEnvVars(maps ...map[string]string) map[string]string {
+	var out map[string]string
+	for _, m := range maps {
+		for k, v := range m {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // agentPaneEnvVars builds the env-var map for the agent tmux pane.
 //
 // When opts.PromptFilePath is non-empty, PRISM_INITIAL_PROMPT_FILE carries
@@ -1074,8 +1103,12 @@ func agentPaneEnvVars(opts Opts) map[string]string {
 		// env var is needed. However, for socket-pipe harnesses (e.g. "pi")
 		// we must inject PRISM_HARNESS_PIPE so the PI extension can find the
 		// sidecar Unix socket. bwrap and sandbox-exec set this via their own
-		// paths; only inject here for host mode.
-		return hostHarnessEnvVars(opts.HarnessPipeSockPath, opts.SessionName)
+		// paths; only inject here for host mode. The same holds for the
+		// UniFi variables.
+		return mergeEnvVars(
+			hostHarnessEnvVars(opts.HarnessPipeSockPath, opts.SessionName),
+			hostUniFiEnvVars(opts.SessionName, opts.Agent, opts.Worktree),
+		)
 	}
 	if opts.Prompt == "" {
 		return nil

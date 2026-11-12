@@ -407,8 +407,8 @@ func generateProfile(m *Manager) string {
 	// host-side by agent-run (credentialEnvVars, including the
 	// GitHubTokenPath file fallback) and injected into the sandbox env as
 	// VALUES before sandbox-exec starts. The exceptions are the few secrets
-	// that ARE read in-sandbox — gitlab_token and the pi
-	// grafana MCP config bundle — see
+	// that ARE read in-sandbox — gitlab_token, the pi
+	// grafana MCP config bundle, and the UniFi API key — see
 	// collectSecretsDAllowlistNames.
 	//
 	// Shape:
@@ -419,8 +419,9 @@ func generateProfile(m *Manager) string {
 	//      exceptions for exactly the inventoried agent-needed secret NAMES
 	//      (collectSecretsDAllowlistNames: ssh access key + .pub, signing key
 	//      + .pub, aws readonly-config, aws credentials, kube agents-config,
-	//      plus the two config-gated names gitlab_token and the grafana config
-	//      bundle — each derived from its stable host source path, so a source
+	//      plus the three config-gated names gitlab_token, the grafana config
+	//      bundle, and unifi_api_key — each derived from its stable host
+	//      source path, so a source
 	//      that is absent, unconfigured, or not sops-backed simply produces no
 	//      exception).
 	//
@@ -1732,8 +1733,9 @@ func networkUnixSocketDeny(m *Manager, sessionDir string, sessionDirErr error, s
 //	~/.config/kube/agents-config         — read via KUBECONFIG env
 //	cfg.GitLabTokenPath                  — the gitlab_token sops secret
 //	cfg.GrafanaConfigPath                — the pi grafana MCP config bundle
+//	cfg.UniFi.APIKeyPath                 — the unifi_api_key sops secret
 //
-// The last two entries meet the rule below: an in-sandbox consumer reads them.
+// The last three entries meet the rule below: an in-sandbox consumer reads them.
 //
 // GitLab: any zsh the agent starts sources the home-manager session vars,
 // which re-derive GITLAB_TOKEN by running `cat <this path>`. With the read
@@ -1754,6 +1756,14 @@ func networkUnixSocketDeny(m *Manager, sessionDir string, sessionDirErr error, s
 // from the role-filtered agent env, so a review role — which has that var
 // stripped — gets no exception either. Again one file, by name.
 //
+// UniFi: the session gets the key as a file. UNIFI_API_KEY_FILE holds this
+// path, and the agent reads the file in-sandbox (issue #3472). The path is
+// set only for a session of a repo in nx.programs.prism.unifi.repos, and
+// never for a review role (internal/unifi). So every other session gets no
+// exception, and the key stays denied. The write deny on secrets.d above has
+// no exception, so the session cannot change or remove the file. One file,
+// by name.
+//
 // Each source is resolved via filepath.EvalSymlinks; when the resolved
 // target is a sops secrets.d path (…/secrets.d/<N>/<name>), <name> is
 // returned. Sources that are absent, unresolvable, or not sops-backed are
@@ -1764,10 +1774,10 @@ func networkUnixSocketDeny(m *Manager, sessionDir string, sessionDirErr error, s
 // This list is the enforcement half of the inventory: every
 // other name under secrets.d/<N>/ (github_token, the role PATs, aws-config,
 // workkube, …) stays denied. Do NOT add a source here merely because a
-// secret exists — only because an in-sandbox consumer reads it. gitlab_token
-// and the grafana config bundle are in the sources above because an
-// in-sandbox consumer reads each; both stay denied on any host (or role)
-// that does not configure them.
+// secret exists — only because an in-sandbox consumer reads it. gitlab_token,
+// the grafana config bundle, and unifi_api_key are in the sources above
+// because an in-sandbox consumer reads each; each stays denied on any host,
+// role, or repo that does not configure it.
 func collectSecretsDAllowlistNames(m *Manager, home string) []string {
 	if home == "" {
 		return nil
@@ -1804,6 +1814,9 @@ func collectSecretsDAllowlistNames(m *Manager, home string) []string {
 	// emitted and the bundle stays denied.
 	if m.cfg.GrafanaConfigPath != "" {
 		sources = append(sources, m.cfg.GrafanaConfigPath)
+	}
+	if m.cfg.UniFi.APIKeyPath != "" {
+		sources = append(sources, m.cfg.UniFi.APIKeyPath)
 	}
 	seen := map[string]bool{}
 	var names []string
