@@ -1064,9 +1064,9 @@ func hostUniFiEnvVars(sessionName, role, worktree string) map[string]string {
 
 // mergeEnvVars returns the union of maps, or nil when it is empty. A later
 // map wins for a key that two maps hold.
-func mergeEnvVars(maps ...map[string]string) map[string]string {
+func mergeEnvVars(sets ...map[string]string) map[string]string {
 	var out map[string]string
-	for _, m := range maps {
+	for _, m := range sets {
 		for k, v := range m {
 			if out == nil {
 				out = map[string]string{}
