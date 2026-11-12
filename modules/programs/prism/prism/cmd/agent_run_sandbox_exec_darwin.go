@@ -263,6 +263,10 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		AgentRunLogPath:   agentRunLogPath,
 		WorktreeReadOnly:  worktreeReadOnly,
 		ReviewDiffDir:     reviewDiffDir,
+		// The profile admits a read of the key file only when this is
+		// enabled (collectSecretsDAllowlistNames), and AppendSandboxEnvVarsKV
+		// below sets the two UniFi variables from it.
+		UniFi: uniFiDelivery(sessionName, agentRole, worktree, cfg, logFile),
 	}
 
 	// For socket-pipe harnesses (PI), the sidecar stores the TCP port it

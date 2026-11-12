@@ -15,7 +15,9 @@
 //  1. VALUE matching (primary). The process that captures the frame already
 //     holds the literal value of every credential environment variable. An
 //     exact match on that value has near-zero false positives: a regex for
-//     `ghp_*` guesses, an exact value match knows.
+//     `ghp_*` guesses, an exact value match knows. For a credential that a
+//     session gets as a file, the redactor reads the file
+//     (credentialFileEnvNames).
 //
 //  2. SHAPE matching (secondary). A small set of well-known credential shapes
 //     covers the case where the secret is not in the environment of the
@@ -48,6 +50,10 @@ package payload
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -200,6 +206,69 @@ func CredentialEnvPrefixes() []string { return slices.Clone(credentialEnvPrefixe
 // suffixes. See credentialEnvNameSuffixes for why a `_PATH` or `_FILE` name
 // is deliberately not covered.
 func CredentialEnvNameSuffixes() []string { return slices.Clone(credentialEnvNameSuffixes) }
+
+// Credential file registry (issue #3472).
+//
+// prism gives some credentials to a session as a file. The session gets the
+// PATH of the file in an environment variable, and no variable holds the
+// value. So the value layer cannot learn such a value from the environment.
+// For each variable in credentialFileEnvNames, the redactor reads the file
+// that the variable names, and uses the content as the credential value. The
+// marker names the credential, not the path variable.
+const (
+	// UniFiAPIKeyName is the marker name of the UniFi API key.
+	UniFiAPIKeyName = "UNIFI_API_KEY"
+
+	// UniFiAPIKeyFileEnvName holds the path of the UniFi API key file.
+	UniFiAPIKeyFileEnvName = "UNIFI_API_KEY_FILE"
+)
+
+// MaxCredentialFileSize is the largest file, in bytes, that ReadSecretFile
+// reads. A credential file holds one token. A larger file is not a
+// credential file, and the redactor must not load an arbitrary file into
+// memory because a variable names it.
+const MaxCredentialFileSize = 4096
+
+// credentialFileEnvNames maps each path variable to the marker name of the
+// credential in the file. Keep it in step with CREDENTIAL_FILE_ENV_NAMES in
+// the pi extension.
+var credentialFileEnvNames = map[string]string{
+	UniFiAPIKeyFileEnvName: UniFiAPIKeyName,
+}
+
+// CredentialFileEnvNames returns a copy of the credential file registry: the
+// path variable name, mapped to the marker name of the credential.
+func CredentialFileEnvNames() map[string]string { return maps.Clone(credentialFileEnvNames) }
+
+// ReadSecretFile reads a one-value secret file and returns its content with
+// surrounding whitespace removed. It refuses a path that is not a regular
+// file, and a file larger than MaxCredentialFileSize. No error holds the
+// content of the file.
+func ReadSecretFile(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("empty path")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", path)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, MaxCredentialFileSize+1))
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(data) > MaxCredentialFileSize {
+		return "", fmt.Errorf("%s is larger than %d bytes", path, MaxCredentialFileSize)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
 
 // IsCredentialEnvName reports whether an environment-variable name is
 // expected to carry a credential value.
@@ -488,22 +557,51 @@ type Redactor struct {
 // When two names carry the same value, the marker names the
 // lexicographically first of them, so the output is deterministic.
 func NewRedactor(secrets map[string]string) *Redactor {
-	return newRedactor(secrets)
+	named := make([]namedSecret, 0, len(secrets))
+	for name, value := range secrets {
+		named = append(named, namedSecret{name: name, value: value})
+	}
+	return newRedactor(named)
 }
 
 // NewRedactorFromEnviron builds a Redactor from an `os.Environ`-shaped slice
 // of `NAME=VALUE` strings. Only names that IsCredentialEnvName accepts are
-// read.
+// read. For each name in CredentialFileEnvNames, it also reads the file that
+// the variable names (see NewRedactorFromEnvironAndFiles).
 func NewRedactorFromEnviron(environ []string) *Redactor {
-	secrets := make(map[string]string, 8)
+	return NewRedactorFromEnvironAndFiles(environ, nil)
+}
+
+// NewRedactorFromEnvironAndFiles is NewRedactorFromEnviron with more
+// credential files. files maps a marker name to the path of a file that
+// holds the credential. A host process uses it for a credential that it
+// gives to sessions as a file, so that it knows the value also when no
+// variable of its own environment names the file.
+//
+// A file that ReadSecretFile refuses gives no value. The value of each file
+// goes through the same guards as an environment value.
+func NewRedactorFromEnvironAndFiles(environ []string, files map[string]string) *Redactor {
+	var named []namedSecret
 	for _, kv := range environ {
 		name, value, ok := strings.Cut(kv, "=")
-		if !ok || !IsCredentialEnvName(name) {
+		if !ok {
 			continue
 		}
-		secrets[name] = value
+		if IsCredentialEnvName(name) {
+			named = append(named, namedSecret{name: name, value: value})
+		}
+		if marker, ok := credentialFileEnvNames[name]; ok {
+			if v, err := ReadSecretFile(value); err == nil {
+				named = append(named, namedSecret{name: marker, value: v})
+			}
+		}
 	}
-	return NewRedactor(secrets)
+	for marker, path := range files {
+		if v, err := ReadSecretFile(path); err == nil {
+			named = append(named, namedSecret{name: marker, value: v})
+		}
+	}
+	return newRedactor(named)
 }
 
 // NewEnvRedactor builds a Redactor from the current process environment.
@@ -518,26 +616,34 @@ func NewShapeOnlyRedactor() *Redactor {
 	return newRedactor(nil)
 }
 
+// namedSecret is one credential value and the name that its marker carries.
+// One name can carry more than one value: for example, the value in the file
+// that an environment variable names and the value in the file of the host
+// config, before and after a rotation.
+type namedSecret struct{ name, value string }
+
 // newRedactor builds a Redactor with the shape layer always enabled and the
 // value layer populated from secrets. The shape layer is not optional: it is
 // the floor the whole control rests on when the process holds no credential
 // values.
-func newRedactor(secrets map[string]string) *Redactor {
+func newRedactor(secrets []namedSecret) *Redactor {
 	r := &Redactor{shapes: combinedShapeRE}
 
-	names := make([]string, 0, len(secrets))
-	for name := range secrets {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	secrets = slices.Clone(secrets)
+	slices.SortFunc(secrets, func(a, b namedSecret) int {
+		if c := strings.Compare(a.name, b.name); c != 0 {
+			return c
+		}
+		return strings.Compare(a.value, b.value)
+	})
 
 	type rule struct{ pattern, marker string }
 	var rules []rule
-	seenValue := make(map[string]bool, len(names))
-	seenPattern := make(map[string]bool, len(names)*2)
+	seenValue := make(map[string]bool, len(secrets))
+	seenPattern := make(map[string]bool, len(secrets)*2)
 
-	for _, name := range names {
-		value := secrets[name]
+	for _, s := range secrets {
+		name, value := s.name, s.value
 		if !usableSecretValue(value) {
 			continue
 		}
@@ -578,6 +684,11 @@ func newRedactor(secrets map[string]string) *Redactor {
 	r.values = strings.NewReplacer(pairs...)
 	return r
 }
+
+// UsableSecretValue reports whether the value layer can mask v. See
+// NewRedactor for the rules. A caller that gives a credential to a session
+// uses it to refuse a value that the redactor would leave in the output.
+func UsableSecretValue(v string) bool { return usableSecretValue(v) }
 
 // usableSecretValue reports whether a value is safe to feed to the value
 // layer. See NewRedactor for the rules.

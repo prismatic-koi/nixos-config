@@ -1177,23 +1177,18 @@ func spawnAgentPaneEnvVars(opts SpawnOpts) map[string]string {
 }
 
 // agentOnlyPaneEnvVars is spawnAgentPaneEnvVars plus, in host mode, the
-// harness env vars from hostHarnessEnvVars (the same ones LayoutFull sets).
+// harness env vars from hostHarnessEnvVars and the UniFi env vars from
+// hostUniFiEnvVars (the same ones LayoutFull sets).
 func agentOnlyPaneEnvVars(opts SpawnOpts, mode string) map[string]string {
 	envs := spawnAgentPaneEnvVars(opts)
 	if mode != "host" {
 		return envs
 	}
-	host := hostHarnessEnvVars(opts.HarnessPipeSockPath, opts.SessionName)
-	if host == nil {
-		return envs
-	}
-	if envs == nil {
-		envs = map[string]string{}
-	}
-	for k, v := range host {
-		envs[k] = v
-	}
-	return envs
+	return mergeEnvVars(
+		envs,
+		hostHarnessEnvVars(opts.HarnessPipeSockPath, opts.SessionName),
+		hostUniFiEnvVars(opts.SessionName, opts.AgentRole, opts.Worktree),
+	)
 }
 
 // agentOnlyAgentEnvVars resolves the profile-level AgentEnvVars map for the

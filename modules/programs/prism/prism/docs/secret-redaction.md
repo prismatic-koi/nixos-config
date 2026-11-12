@@ -118,6 +118,42 @@ config names, and injects the VALUE (`ResolveGitHubToken`,
 rest: the capturing process holds the value, so the value layer can remove
 it.
 
+#### Credential files
+
+prism gives some credentials to a session as a file. The session gets the
+path of the file in a variable, and no variable holds the value. Today the
+only such credential is the UniFi API key (issue #3472):
+`UNIFI_API_KEY_FILE` holds the path, and the marker is
+`[redacted:UNIFI_API_KEY]`.
+
+The value layer cannot learn such a value from the environment. So the
+registry has a third part, `CredentialFileEnvNames`. It maps each path
+variable to the marker name of the credential in the file. For each path
+variable in the environment, the redactor reads the file and adds its
+content to the value layer. The path variable itself is not a credential
+name, so the output keeps the path.
+
+The redactor reads a file with `ReadSecretFile`. It refuses a path that is
+not a regular file, and a file larger than `MaxCredentialFileSize` (4096
+bytes). It removes the surrounding whitespace. The content then goes
+through the same over-redaction guards as a variable value. A file that
+the redactor cannot read gives no value.
+
+The three controls learn the key in these ways:
+
+| Control | Process | How it learns the key |
+|---|---|---|
+| 1 and 3 | The pi extension in the session | The file that `UNIFI_API_KEY_FILE` names. |
+| 2 | The sidecar, and each other host process that writes `prism.db` | The path in `~/.config/prism/unifi.json` (`db.HostCredentialFiles`). The sidecar has no `UNIFI_API_KEY_FILE`. |
+
+Control 2 knows the key in every session, whatever its repo. Controls 1
+and 3 know the key only in a session that gets `UNIFI_API_KEY_FILE`. This
+is a limit of host mode: a host-mode session of another repo can read the
+sops path, and then only control 2 masks the key.
+
+prism does not give the key to a session when the key file holds a value
+that the value layer cannot mask (`payload.UsableSecretValue`).
+
 ### Layer 2 — shape matching (secondary)
 
 The shape layer covers the case where the secret is not in the environment of
@@ -325,7 +361,9 @@ prism scrub-secrets --json      # machine-readable report
 ```
 
 The command reads the credential values out of its own environment, so run it
-from a shell that carries the same credentials the agents had. Values the
+from a shell that carries the same credentials the agents had. It also reads
+the credential files of the host config (`db.HostCredentialFiles`), so it
+knows the UniFi API key with no variable set. Values the
 environment does not hold are still covered by the shape layer; the command
 prints a warning on stderr when the value layer is empty.
 
@@ -380,7 +418,12 @@ it separately, and rotate any credential you believe reached it.
   2. `CREDENTIAL_ENV_NAMES` in the extension.
 
   `TestRedactorParityWithExtension_EnvNameRegistry` fails if you edit only one
-  of the two. Do NOT try to add to `CredentialEnvNames` — it is a read-only
+  of the two. To add a credential that a session gets as a file, edit
+  `credentialFileEnvNames` in `internal/payload/redact.go` and
+  `CREDENTIAL_FILE_ENV_NAMES` in the extension instead.
+  `TestRedactorParityWithExtension_CredentialFileRegistry` fails if you edit
+  only one of the two. A host process knows the value only when
+  `db.HostCredentialFiles` names the file. Do NOT try to add to `CredentialEnvNames` — it is a read-only
   accessor over the computed union of those lists, not a list itself. Same for
   `credentialForwardEnvKeys` in `internal/container/credentials.go`, which is a
   derived copy; turning it back into a literal breaks the derivation and a
