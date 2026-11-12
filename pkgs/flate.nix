@@ -6,15 +6,15 @@
   coreutils,
 }:
 
-# flate v0.6.5 pin: this must move in lockstep with the home-ops CI pin.
+# flate v0.7.3 pin: this must move in lockstep with the home-ops CI pin.
 # Do not put this derivation on any automated update surface (e.g.
 # nix-update / renovate) — the version is intentionally hand-pinned to
-# match home-ops.
+# match home-ops (hand-pinned to 0.7.3, the version home-ops CI uses).
 let
-  version = "0.6.5";
+  version = "0.7.3";
 in
-# go.mod declares `go 1.27.0`. The pinned nixpkgs default buildGoModule
-# is pinned to go 1.26.7, which is too old to build this module;
+# go.mod declares `go 1.27.0` (unchanged at v0.7.3). The pinned nixpkgs
+# default buildGoModule is pinned to go 1.26.7, which is too old to build this module;
 # buildGoLatestModule (go 1.27.1) is the newest toolchain available in
 # the pinned nixpkgs that satisfies the requirement.
 buildGoLatestModule {
@@ -25,10 +25,10 @@ buildGoLatestModule {
     owner = "home-operations";
     repo = "flate";
     rev = "v${version}";
-    hash = "sha256-Z1bhf54xJSrCiLgRfzGuZ7ORzLgdFe5PfEVZzs8hkew=";
+    hash = "sha256-sm22CX+3B7roECyNz5v9yLaqlTPZN7GWMcNthBn5IpY=";
   };
 
-  vendorHash = "sha256-6ZmGkdHW2/8wk/dKN9MkB+JF0/GFIw2TxZHeWShLsQ0=";
+  vendorHash = "sha256-TyYkEU+UbN2B+rj0D3QxwEOGpwLKwHW9jZT/kitPYn8=";
 
   subPackages = [ "cmd/flate" ];
 
@@ -39,10 +39,9 @@ buildGoLatestModule {
 
   # flate embeds Helm and Kustomize rendering as Go libraries (helm.sh/
   # helm/v4, fluxcd/pkg/kustomize, etc.) rather than shelling out to the
-  # `helm` / `kustomize` binaries — confirmed by grepping the v0.6.5
-  # source tree for os/exec: the only use is an optional `git diff
-  # --no-index` fast path in pkg/change/detect.go, which falls back to
-  # a pure-Go tree walker when git isn't on PATH. No PATH injection is
+  # `helm` / `kustomize` binaries — confirmed by grepping the v0.7.3
+  # source tree for os/exec: no non-test code imports it, so flate
+  # starts no external binary. No PATH injection is
   # needed here — makeWrapper is used below only to install the three
   # guards from issue #2983.
 
