@@ -1,12 +1,15 @@
 package unifi_test
 
-// unifi_test.go — a session gets the UniFi API key only for a repo in
+// unifi_test.go — a session gets the UniFi credential only for a repo in
 // unifi.json, found by the repo identity of the project-trust decision, and
-// only when both secret files hold a usable value (issue #3472).
+// only when unifi.json names a username and both secret files hold a usable
+// value (issues #3472 and #3476).
 //
 // SECURITY: every value in this file is synthetic.
 
 import (
+	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,21 +30,21 @@ func collect() (func(string), *[]string) {
 }
 
 type fixture struct {
-	l                 projecttrusttest.Layout
-	cfg               config.Config
-	keyPath, hostPath string
+	l                      projecttrusttest.Layout
+	cfg                    config.Config
+	passwordPath, hostPath string
 }
 
 func newFixture(t *testing.T) fixture {
 	t.Helper()
 	l := projecttrusttest.New(t)
-	keyPath, hostPath := unifitest.Secrets(t, unifitest.Key, unifitest.Host)
-	unifitest.WriteFile(t, l.ConfigDir, fourRepos, keyPath, hostPath)
+	passwordPath, hostPath := unifitest.Secrets(t, unifitest.Password, unifitest.Host)
+	unifitest.WriteFile(t, l.ConfigDir, fourRepos, passwordPath, hostPath)
 	return fixture{
-		l:        l,
-		cfg:      config.Config{ProjectLocations: []string{l.Code}, ProjectSpecific: []string{l.Obsidian}},
-		keyPath:  keyPath,
-		hostPath: hostPath,
+		l:            l,
+		cfg:          config.Config{ProjectLocations: []string{l.Code}, ProjectSpecific: []string{l.Obsidian}},
+		passwordPath: passwordPath,
+		hostPath:     hostPath,
 	}
 }
 
@@ -58,7 +61,7 @@ func TestForSession_ByRepoIdentityAndRole(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := unifi.Delivery{APIKeyPath: f.keyPath, Host: unifitest.Host}
+	want := unifi.Delivery{PasswordPath: f.passwordPath, Username: unifitest.Username, Host: unifitest.Host}
 
 	cases := []struct {
 		name, session, role, dir string
@@ -98,12 +101,12 @@ func TestForSession_ByRepoIdentityAndRole(t *testing.T) {
 	}
 }
 
-// The repo list in unifi.json alone decides which repos get the key.
+// The repo list in unifi.json alone decides which repos get the credential.
 func TestForSession_RepoListComesFromTheFile(t *testing.T) {
 	f := newFixture(t)
 	other := projecttrusttest.Worktree(t, f.l.Code, "other-repo", "main")
 	homeOps := projecttrusttest.Worktree(t, f.l.Code, "home-ops", "main")
-	unifitest.WriteFile(t, f.l.ConfigDir, []string{"other-repo"}, f.keyPath, f.hostPath)
+	unifitest.WriteFile(t, f.l.ConfigDir, []string{"other-repo"}, f.passwordPath, f.hostPath)
 
 	warn, _ := collect()
 	if got := unifi.ForSession("other-repo@main", "worker", other, f.cfg, warn); !got.Enabled() {
@@ -112,7 +115,7 @@ func TestForSession_RepoListComesFromTheFile(t *testing.T) {
 	if got := unifi.ForSession("home-ops@main", "worker", homeOps, f.cfg, warn); got.Enabled() {
 		t.Errorf("home-ops, removed from the list, got %+v", got)
 	}
-	unifitest.WriteFile(t, f.l.ConfigDir, nil, f.keyPath, f.hostPath)
+	unifitest.WriteFile(t, f.l.ConfigDir, nil, f.passwordPath, f.hostPath)
 	if got := unifi.ForSession("other-repo@main", "worker", other, f.cfg, warn); got.Enabled() {
 		t.Errorf("an empty list gave %+v", got)
 	}
@@ -130,9 +133,9 @@ func TestForSession_NoFileGivesNothingAndNoWarning(t *testing.T) {
 
 func TestForSession_UnusableFileWarns(t *testing.T) {
 	for name, body := range map[string]string{
-		"malformed JSON":    `{"repos": [`,
-		"wrong shape":       `{"repos": "home-ops"}`,
-		"relative key path": `{"repos": ["home-ops"], "api_key_path": "secrets/key", "host_path": "/x"}`,
+		"malformed JSON":         `{"repos": [`,
+		"wrong shape":            `{"repos": "home-ops"}`,
+		"relative password path": `{"repos": ["home-ops"], "username": "u", "password_path": "secrets/password", "host_path": "/x"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			l := projecttrusttest.New(t)
@@ -153,32 +156,32 @@ func TestForSession_UnusableFileWarns(t *testing.T) {
 // A secret that is missing or does not decrypt gives no variable and one
 // warning with the reason. No warning holds a secret value.
 func TestForSession_SecretProblemsWarn(t *testing.T) {
-	const shortKey = "abc1234"
+	const shortPassword = "abc1234"
 	cases := []struct {
-		name, key, host string
-		removeKey       bool
-		removeHost      bool
-		wantInWarning   string
+		name, password, host string
+		removePassword       bool
+		removeHost           bool
+		wantInWarning        string
 	}{
-		{name: "key file missing", key: unifitest.Key, host: unifitest.Host, removeKey: true, wantInWarning: "unifi_api_key"},
-		{name: "host file missing", key: unifitest.Key, host: unifitest.Host, removeHost: true, wantInWarning: "unifi_host"},
-		{name: "key file empty", key: "", host: unifitest.Host, wantInWarning: "fewer than 8 characters"},
-		{name: "key file short", key: shortKey, host: unifitest.Host, wantInWarning: "fewer than 8 characters"},
-		{name: "host file empty", key: unifitest.Key, host: "", wantInWarning: "unifi_host"},
-		{name: "host with a space", key: unifitest.Key, host: "10.0.0.1 evil", wantInWarning: "space or a control character"},
+		{name: "password file missing", password: unifitest.Password, host: unifitest.Host, removePassword: true, wantInWarning: "unifi_password"},
+		{name: "host file missing", password: unifitest.Password, host: unifitest.Host, removeHost: true, wantInWarning: "unifi_host"},
+		{name: "password file empty", password: "", host: unifitest.Host, wantInWarning: "fewer than 8 characters"},
+		{name: "password file short", password: shortPassword, host: unifitest.Host, wantInWarning: "fewer than 8 characters"},
+		{name: "host file empty", password: unifitest.Password, host: "", wantInWarning: "unifi_host"},
+		{name: "host with a space", password: unifitest.Password, host: "10.0.0.1 evil", wantInWarning: "space or a control character"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			l := projecttrusttest.New(t)
 			wt := projecttrusttest.Worktree(t, l.Code, "home-ops", "main")
-			keyPath, hostPath := unifitest.Secrets(t, tc.key, tc.host)
-			if tc.removeKey {
-				os.Remove(keyPath)
+			passwordPath, hostPath := unifitest.Secrets(t, tc.password, tc.host)
+			if tc.removePassword {
+				os.Remove(passwordPath)
 			}
 			if tc.removeHost {
 				os.Remove(hostPath)
 			}
-			unifitest.WriteFile(t, l.ConfigDir, fourRepos, keyPath, hostPath)
+			unifitest.WriteFile(t, l.ConfigDir, fourRepos, passwordPath, hostPath)
 			warn, warnings := collect()
 			got := unifi.ForSession("home-ops@main", "worker", wt, config.Config{ProjectLocations: []string{l.Code}}, warn)
 			if got.Enabled() || got.EnvVars() != nil {
@@ -188,10 +191,10 @@ func TestForSession_SecretProblemsWarn(t *testing.T) {
 				t.Fatalf("warnings = %q, want one", *warnings)
 			}
 			w := (*warnings)[0]
-			if !strings.Contains(w, tc.wantInWarning) || !strings.Contains(w, unifi.APIKeyFileEnvName) {
+			if !strings.Contains(w, tc.wantInWarning) || !strings.Contains(w, unifi.PasswordFileEnvName) {
 				t.Errorf("warning %q does not give the reason %q and the variable", w, tc.wantInWarning)
 			}
-			for _, secret := range []string{unifitest.Key, shortKey} {
+			for _, secret := range []string{unifitest.Password, shortPassword} {
 				if strings.Contains(w, secret) {
 					t.Errorf("warning holds a secret value: %q", w)
 				}
@@ -204,19 +207,23 @@ func TestDelivery_EnvVars(t *testing.T) {
 	if got := (unifi.Delivery{}).EnvVars(); got != nil {
 		t.Errorf("zero Delivery EnvVars = %v, want nil", got)
 	}
-	got := unifi.Delivery{APIKeyPath: "/run/secrets/unifi_api_key", Host: unifitest.Host}.EnvVars()
-	want := map[string]string{"UNIFI_API_KEY_FILE": "/run/secrets/unifi_api_key", "UNIFI_HOST": unifitest.Host}
-	if len(got) != len(want) || got["UNIFI_API_KEY_FILE"] != want["UNIFI_API_KEY_FILE"] || got["UNIFI_HOST"] != want["UNIFI_HOST"] {
+	got := unifi.Delivery{PasswordPath: "/run/secrets/unifi_password", Username: unifitest.Username, Host: unifitest.Host}.EnvVars()
+	want := map[string]string{
+		"UNIFI_PASSWORD_FILE": "/run/secrets/unifi_password",
+		"UNIFI_USERNAME":      unifitest.Username,
+		"UNIFI_HOST":          unifitest.Host,
+	}
+	if !maps.Equal(got, want) {
 		t.Errorf("EnvVars = %v, want %v", got, want)
 	}
 	for k, v := range got {
-		if strings.Contains(v, unifitest.Key) {
-			t.Errorf("%s holds the key value", k)
+		if strings.Contains(v, unifitest.Password) {
+			t.Errorf("%s holds the password value", k)
 		}
 	}
 }
 
-// Each role of the canonical review set gets no key. If a review role is
+// Each role of the canonical review set gets no credential. If a review role is
 // added to internal/review and not here, this test fails.
 func TestForSession_EveryReviewRoleGetsNothing(t *testing.T) {
 	f := newFixture(t)
@@ -226,5 +233,34 @@ func TestForSession_EveryReviewRoleGetsNothing(t *testing.T) {
 		if got := unifi.ForSession("home-ops@main~review-1-"+a.Name, a.Name, wt, f.cfg, warn); got.Enabled() {
 			t.Errorf("review role %s got %+v", a.Name, got)
 		}
+	}
+}
+
+// unifi.json with no usable username gives no variable and one warning that
+// names the file.
+func TestForSession_UsernameProblemsWarn(t *testing.T) {
+	for name, username := range map[string]string{
+		"no username":             "",
+		"username with a space":   "agent readonly",
+		"username with a newline": "agent\nreadonly",
+	} {
+		t.Run(name, func(t *testing.T) {
+			l := projecttrusttest.New(t)
+			wt := projecttrusttest.Worktree(t, l.Code, "home-ops", "main")
+			passwordPath, hostPath := unifitest.Secrets(t, unifitest.Password, unifitest.Host)
+			body, err := json.Marshal(config.UniFi{Repos: fourRepos, Username: username, PasswordPath: passwordPath, HostPath: hostPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			unifitest.WriteRaw(t, l.ConfigDir, body)
+			warn, warnings := collect()
+			got := unifi.ForSession("home-ops@main", "worker", wt, config.Config{ProjectLocations: []string{l.Code}}, warn)
+			if got.Enabled() || got.EnvVars() != nil {
+				t.Errorf("ForSession = %+v, want nothing", got)
+			}
+			if len(*warnings) != 1 || !strings.Contains((*warnings)[0], "username") || !strings.Contains((*warnings)[0], unifi.UsernameEnvName) {
+				t.Errorf("warnings = %q, want one that names the username and %s", *warnings, unifi.UsernameEnvName)
+			}
+		})
 	}
 }

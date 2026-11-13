@@ -1,14 +1,15 @@
 // Package config — unifi.go
 //
-// Loads the UniFi API key delivery from ~/.config/prism/unifi.json (issue
-// #3472).
+// Loads the UniFi credential delivery from ~/.config/prism/unifi.json (issues
+// #3472 and #3476).
 //
-// The prism NixOS module renders the file from nx.programs.prism.unifi.repos
-// and the paths of the two sops secrets:
+// The prism NixOS module renders the file from nx.programs.prism.unifi.repos,
+// nx.programs.prism.unifi.username, and the paths of the two sops secrets:
 //
 //	{
 //	  "repos": ["home-ops", "nixos-config", "hass-config", "obsidian"],
-//	  "api_key_path": "/run/secrets/unifi_api_key",
+//	  "username": "agent-readonly",
+//	  "password_path": "/run/secrets/unifi_password",
 //	  "host_path": "/run/secrets/unifi_host"
 //	}
 //
@@ -33,10 +34,12 @@ const UniFiFileName = "unifi.json"
 
 // UniFi is the content of unifi.json.
 type UniFi struct {
-	// Repos are the repo directory names whose sessions get the key.
+	// Repos are the repo directory names whose sessions get the credential.
 	Repos []string `json:"repos"`
-	// APIKeyPath is the host path of the decrypted unifi_api_key secret.
-	APIKeyPath string `json:"api_key_path"`
+	// Username is the name of the local UniFi OS user.
+	Username string `json:"username"`
+	// PasswordPath is the host path of the decrypted unifi_password secret.
+	PasswordPath string `json:"password_path"`
 	// HostPath is the host path of the decrypted unifi_host secret.
 	HostPath string `json:"host_path"`
 }
@@ -57,10 +60,10 @@ func UniFiPath() string {
 
 // LoadUniFi reads unifi.json.
 //
-// A missing file returns the zero value and no error: the host gives the key
-// to no session. An unreadable or malformed file, or a path that is not
-// absolute, returns an error. Repo names are trimmed, and empty names are
-// dropped.
+// A missing file returns the zero value and no error: the host gives the
+// credential to no session. An unreadable or malformed file, or a path that is
+// not absolute, returns an error. The username and the repo names are
+// trimmed, and empty repo names are dropped.
 func LoadUniFi() (UniFi, error) {
 	path := UniFiPath()
 	if path == "" {
@@ -77,8 +80,12 @@ func LoadUniFi() (UniFi, error) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return UniFi{}, fmt.Errorf("unifi: parse %s: %w", path, err)
 	}
-	out := UniFi{APIKeyPath: strings.TrimSpace(raw.APIKeyPath), HostPath: strings.TrimSpace(raw.HostPath)}
-	for _, p := range []string{out.APIKeyPath, out.HostPath} {
+	out := UniFi{
+		Username:     strings.TrimSpace(raw.Username),
+		PasswordPath: strings.TrimSpace(raw.PasswordPath),
+		HostPath:     strings.TrimSpace(raw.HostPath),
+	}
+	for _, p := range []string{out.PasswordPath, out.HostPath} {
 		if p != "" && !filepath.IsAbs(p) {
 			return UniFi{}, fmt.Errorf("unifi: %s: path %q is not absolute", path, p)
 		}

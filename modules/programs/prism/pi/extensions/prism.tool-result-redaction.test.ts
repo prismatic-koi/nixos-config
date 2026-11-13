@@ -561,13 +561,16 @@ describe("#3420: end to end through the installed pi runtime", () => {
   })
 })
 
-// Issue #3472: the session gets the UniFi API key as a file. No variable holds
-// the key, so the value layer must read the file that UNIFI_API_KEY_FILE
-// names.
-describe("#3472: end to end, the UniFi API key file", () => {
+// Issue #3472: the session gets the UniFi password as a file. No variable
+// holds the password, so the value layer must read the file that
+// UNIFI_PASSWORD_FILE names. Issue #3476: the context shapes mask the session
+// values of a UniFi OS login.
+describe("#3472: end to end, the UniFi password file and the session values", () => {
   it("gives the model and the transcript the marker for cat, env, and printenv", async () => {
-    const UNIFI_KEY = "synthetic-unifi-key-e2e-0123456789abcdef"
-    const UNIFI_MARKER = "[redacted:UNIFI_API_KEY]"
+    const UNIFI_PASSWORD = "synthetic-unifi-password-e2e-0123456789abcdef"
+    const UNIFI_MARKER = "[redacted:UNIFI_PASSWORD]"
+    const SESSION_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+    const CSRF_TOKEN = "00000000-0000-4000-8000-000000003476"
     const piRoot = path.join(piInstallRoot(), "lib/node_modules/pi-monorepo")
     const sdk = await import(pathToFileURL(path.join(piRoot, "dist/bundle/index.js")).href)
     const faux = await import(
@@ -578,26 +581,38 @@ describe("#3472: end to end, the UniFi API key file", () => {
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-3472-"))
     try {
-      const keyFile = path.join(dir, "unifi_api_key")
-      fs.writeFileSync(keyFile, `${UNIFI_KEY}\n`, { mode: 0o400 })
+      const passwordFile = path.join(dir, "unifi_password")
+      fs.writeFileSync(passwordFile, `${UNIFI_PASSWORD}\n`, { mode: 0o400 })
+      const loginFile = path.join(dir, "login-output")
+      fs.writeFileSync(
+        loginFile,
+        `set-cookie: TOKEN=${SESSION_JWT}; path=/; secure; httponly\r\n` +
+          `x-csrf-token: ${CSRF_TOKEN}\r\n` +
+          `#HttpOnly_10.0.0.1\tFALSE\t/\tTRUE\t0\tTOKEN\t${SESSION_JWT}\n`,
+      )
 
       let modelSaw: TranscriptMessage[] = []
       const provider = faux.fauxProvider({ models: [{ id: "faux-1", input: ["text"] }] })
       provider.setResponses([
         faux.fauxAssistantMessage(
           [
-            faux.fauxToolCall("bash", { command: 'cat "$UNIFI_API_KEY_FILE"' }, { id: "cat" }),
+            faux.fauxToolCall("bash", { command: 'cat "$UNIFI_PASSWORD_FILE"' }, { id: "cat" }),
             faux.fauxToolCall("bash", { command: "env" }, { id: "env" }),
             faux.fauxToolCall("bash", { command: "printenv" }, { id: "printenv" }),
             faux.fauxToolCall(
               "bash",
-              { command: 'K="$(cat "$UNIFI_API_KEY_FILE")" env' },
+              { command: 'K="$(cat "$UNIFI_PASSWORD_FILE")" env' },
               { id: "env-copy" },
             ),
             faux.fauxToolCall(
               "bash",
-              { command: 'K="$(cat "$UNIFI_API_KEY_FILE")" printenv K' },
+              { command: 'K="$(cat "$UNIFI_PASSWORD_FILE")" printenv K' },
               { id: "printenv-copy" },
+            ),
+            faux.fauxToolCall(
+              "bash",
+              { command: `cat ${JSON.stringify(loginFile)}` },
+              { id: "session" },
             ),
           ],
           { stopReason: "toolUse" },
@@ -609,7 +624,7 @@ describe("#3472: end to end, the UniFi API key file", () => {
       ])
 
       let sessionFile = ""
-      await withEnv({ ...PRISM_SESSION_ENV, UNIFI_API_KEY_FILE: keyFile }, async () => {
+      await withEnv({ ...PRISM_SESSION_ENV, UNIFI_PASSWORD_FILE: passwordFile }, async () => {
         const modelRuntime = await sdk.ModelRuntime.create({
           authPath: path.join(dir, "auth.json"),
           modelsPath: null,
@@ -653,24 +668,33 @@ describe("#3472: end to end, the UniFi API key file", () => {
       })
 
       const results = modelSaw.filter((m) => m.role === "toolResult")
-      assert.equal(results.length, 5, JSON.stringify(modelSaw.map((m) => m.role)))
+      assert.equal(results.length, 6, JSON.stringify(modelSaw.map((m) => m.role)))
       const saw = (id: string) => JSON.stringify(results.find((r) => r.toolCallId === id)?.content)
       assert.deepEqual(results.find((r) => r.toolCallId === "cat")?.content, [
         text(`${UNIFI_MARKER}\n`),
       ])
-      assert.ok(saw("env").includes(`UNIFI_API_KEY_FILE=${keyFile}`), saw("env"))
-      assert.ok(saw("printenv").includes(`UNIFI_API_KEY_FILE=${keyFile}`), saw("printenv"))
+      assert.ok(saw("env").includes(`UNIFI_PASSWORD_FILE=${passwordFile}`), saw("env"))
+      assert.ok(saw("printenv").includes(`UNIFI_PASSWORD_FILE=${passwordFile}`), saw("printenv"))
       assert.ok(saw("env-copy").includes(`K=${UNIFI_MARKER}`), saw("env-copy"))
       assert.deepEqual(results.find((r) => r.toolCallId === "printenv-copy")?.content, [
         text(`${UNIFI_MARKER}\n`),
       ])
-      assert.ok(!JSON.stringify(modelSaw).includes(UNIFI_KEY), "the key is in the model context")
+      assert.deepEqual(results.find((r) => r.toolCallId === "session")?.content, [
+        text(
+          "set-cookie: TOKEN=[redacted:unifi-token-cookie]; path=/; secure; httponly\r\n" +
+            "x-csrf-token: [redacted:csrf-token-header]\r\n" +
+            "#HttpOnly_10.0.0.1\tFALSE\t/\tTRUE\t0\tTOKEN\t[redacted:unifi-token-cookie-jar]\n",
+        ),
+      ])
+      for (const secret of [UNIFI_PASSWORD, SESSION_JWT, CSRF_TOKEN]) {
+        assert.ok(!JSON.stringify(modelSaw).includes(secret), "a secret is in the model context")
+      }
 
       assert.ok(sessionFile, "the session wrote no transcript file")
-      assert.ok(
-        !fs.readFileSync(sessionFile, "utf8").includes(UNIFI_KEY),
-        "the key is in the transcript",
-      )
+      const transcript = fs.readFileSync(sessionFile, "utf8")
+      for (const secret of [UNIFI_PASSWORD, SESSION_JWT, CSRF_TOKEN]) {
+        assert.ok(!transcript.includes(secret), "a secret is in the transcript")
+      }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

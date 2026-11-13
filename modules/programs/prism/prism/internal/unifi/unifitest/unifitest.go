@@ -1,5 +1,5 @@
 // Package unifitest writes a unifi.json and synthetic secret files for tests
-// of the UniFi API key delivery (internal/unifi).
+// of the UniFi credential delivery (internal/unifi).
 package unifitest
 
 import (
@@ -11,32 +11,36 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 )
 
-// Key is a synthetic UniFi API key. It is not a credential and matches no
-// credential shape.
-const Key = "synthetic-unifi-key-3472-0123456789abcdef"
+// Password is a synthetic UniFi password. It is not a credential and matches
+// no credential shape.
+const Password = "synthetic-unifi-password-3476-0123456789abcdef"
+
+// Username is a synthetic UniFi OS username.
+const Username = "synthetic-agent-user"
 
 // Host is a synthetic UniFi host.
 const Host = "10.0.0.1"
 
-// Secrets writes key and host to two files in a temp dir, with mode 0400, and
-// returns their paths.
-func Secrets(t *testing.T, key, host string) (keyPath, hostPath string) {
+// Secrets writes password and host to two files in a temp dir, with mode
+// 0400, and returns their paths.
+func Secrets(t *testing.T, password, host string) (passwordPath, hostPath string) {
 	t.Helper()
 	dir := t.TempDir()
-	keyPath = filepath.Join(dir, "unifi_api_key")
+	passwordPath = filepath.Join(dir, "unifi_password")
 	hostPath = filepath.Join(dir, "unifi_host")
-	for p, v := range map[string]string{keyPath: key + "\n", hostPath: host + "\n"} {
+	for p, v := range map[string]string{passwordPath: password + "\n", hostPath: host + "\n"} {
 		if err := os.WriteFile(p, []byte(v), 0o400); err != nil {
 			t.Fatalf("write %s: %v", p, err)
 		}
 	}
-	return keyPath, hostPath
+	return passwordPath, hostPath
 }
 
-// WriteFile writes unifi.json under configDir/prism.
-func WriteFile(t *testing.T, configDir string, repos []string, keyPath, hostPath string) {
+// WriteFile writes unifi.json under configDir/prism, with Username as the
+// username.
+func WriteFile(t *testing.T, configDir string, repos []string, passwordPath, hostPath string) {
 	t.Helper()
-	body, err := json.Marshal(config.UniFi{Repos: repos, APIKeyPath: keyPath, HostPath: hostPath})
+	body, err := json.Marshal(config.UniFi{Repos: repos, Username: Username, PasswordPath: passwordPath, HostPath: hostPath})
 	if err != nil {
 		t.Fatal(err)
 	}

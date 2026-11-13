@@ -558,11 +558,11 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		}
 	}
 
-	// ── UniFi API key file (RO, EvalSymlinks, Src≠Dst, conditional) ─────────
-	// See bwrapUniFiAPIKeyBind (issue #3472). With no bind, the session gets
+	// ── UniFi password file (RO, EvalSymlinks, Src≠Dst, conditional) ────────
+	// See bwrapUniFiPasswordBind (issue #3472). With no bind, the session gets
 	// no UniFi variable either (AppendStandardEnv below reads cfg.UniFi), so
-	// UNIFI_API_KEY_FILE never names a file that the sandbox does not have.
-	uniFiBind := bwrapUniFiAPIKeyBind(cfg.UniFi.APIKeyPath)
+	// UNIFI_PASSWORD_FILE never names a file that the sandbox does not have.
+	uniFiBind := bwrapUniFiPasswordBind(cfg.UniFi.PasswordPath)
 	if uniFiBind == nil {
 		cfg.UniFi = unifi.Delivery{}
 	}

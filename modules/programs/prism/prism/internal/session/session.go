@@ -1049,9 +1049,9 @@ func hostHarnessEnvVars(sockPath, sessionName string) map[string]string {
 	return envs
 }
 
-// hostUniFiEnvVars returns UNIFI_API_KEY_FILE and UNIFI_HOST for a host-mode
-// session that gets the UniFi API key (unifi.ForSession, issue #3472), or
-// nil. Host mode has no filesystem isolation, so these variables are the only
+// hostUniFiEnvVars returns UNIFI_PASSWORD_FILE, UNIFI_USERNAME, and
+// UNIFI_HOST for a host-mode session that gets the UniFi credential
+// (unifi.ForSession, issue #3472), or nil. Host mode has no filesystem isolation, so these variables are the only
 // control: a host-mode session of any repo can read the sops path. Each
 // warning goes to the agent-run log of the session.
 func hostUniFiEnvVars(sessionName, role, worktree string) map[string]string {

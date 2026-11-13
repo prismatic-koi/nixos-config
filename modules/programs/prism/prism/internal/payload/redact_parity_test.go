@@ -8,17 +8,20 @@ package payload_test
 // know about is caught only by the weaker second control, and a shape the Go
 // side does not know about is never caught at all.
 //
-// The test reads the TypeScript source and compares the six things that must
-// agree: the exact env-var names, the name prefixes, the name suffixes, the
-// credential file registry, the shape rules of the combined pass (name AND
+// The test reads the TypeScript source and compares the seven things that
+// must agree: the exact env-var names, the name prefixes, the name suffixes,
+// the credential file registry, the shape rules of the combined pass (name AND
 // pattern — the pattern strings are deliberately written to be
-// byte-identical in both dialects), and the private-key shape (name, BEGIN
-// and END patterns, and triggers).
+// byte-identical in both dialects), the private-key shape (name, BEGIN
+// and END patterns, and triggers), and the context shapes (name, pattern,
+// triggers, and fold flag, in order).
 //
 // The private-key pass is code, not one pattern, so equal strings do not
 // prove equal output. testdata/private-key-cases.json holds the output both
 // sides must give. This file runs the cases against Go, and prism.test.ts
-// runs the same file against the extension.
+// runs the same file against the extension. testdata/context-shape-cases.json
+// does the same for the context shapes: the two regexp engines must give the
+// same match for the same pattern.
 //
 // The nix build sandbox copies in only modules/programs/prism/prism, so the
 // extension source is absent there and the source tests skip. They run in the
@@ -49,6 +52,9 @@ const extensionTestSourcePath = "../../../pi/extensions/prism.test.ts"
 
 // privateKeyCasesPath is the private-key case file that both suites run.
 const privateKeyCasesPath = "testdata/private-key-cases.json"
+
+// contextShapeCasesPath is the context shape case file that both suites run.
+const contextShapeCasesPath = "testdata/context-shape-cases.json"
 
 func readExtensionSource(t *testing.T) string {
 	t.Helper()
@@ -126,8 +132,8 @@ func TestRedactorParityWithExtension_EnvNameRegistry(t *testing.T) {
 
 // TestRedactorParityWithExtension_CredentialFileRegistry compares the path
 // variables whose file the value layer reads, and the marker name of each
-// (issue #3472). If one side drops an entry, that side leaves the key in the
-// output.
+// (issue #3472). If one side drops an entry, that side leaves the credential
+// in the output.
 func TestRedactorParityWithExtension_CredentialFileRegistry(t *testing.T) {
 	src := readExtensionSource(t)
 	block := regexp.MustCompile(`(?s)export const CREDENTIAL_FILE_ENV_NAMES[^=]*=\s*\{(.*?)\n\}`).FindStringSubmatch(src)
@@ -196,6 +202,51 @@ func TestRedactorParityWithExtension_ShapeRules(t *testing.T) {
 		// one of them silently skips a shape the other applies.
 		if !slices.Equal(goTriggers[name], tsTriggers[name]) {
 			t.Errorf("shape %q triggers drifted:\n  Go: %v\n  TS: %v", name, goTriggers[name], tsTriggers[name])
+		}
+	}
+}
+
+// TestRedactorParityWithExtension_ContextShapes compares the context shapes
+// (issue #3476). If one side drops a rule or a trigger, that side leaves the
+// UniFi session token in the output.
+func TestRedactorParityWithExtension_ContextShapes(t *testing.T) {
+	src := readExtensionSource(t)
+	block := regexp.MustCompile(`(?s)export const CONTEXT_SHAPES[^=]*=\s*\[(.*?)\n\]`).FindStringSubmatch(src)
+	if block == nil {
+		t.Fatal("could not find CONTEXT_SHAPES in the extension source")
+	}
+	ruleRe := regexp.MustCompile(`(?s)name:\s*"([^"]+)",\s*pattern:\s*String\.raw` + "`" + `([^` + "`" + `]*)` + "`" + `,\s*triggers:\s*\[([^\]]*)\],\s*foldTriggers:\s*(true|false)`)
+	entryRe := regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
+	var ts []payload.ContextShape
+	for _, m := range ruleRe.FindAllStringSubmatch(block[1], -1) {
+		rule := payload.ContextShape{Name: m[1], Pattern: m[2], FoldTriggers: m[4] == "true"}
+		for _, e := range entryRe.FindAllStringSubmatch(m[3], -1) {
+			unquoted, err := strconv.Unquote(`"` + e[1] + `"`)
+			if err != nil {
+				t.Fatalf("context shape %q: cannot unquote trigger %q: %v", m[1], e[1], err)
+			}
+			rule.Triggers = append(rule.Triggers, unquoted)
+		}
+		ts = append(ts, rule)
+	}
+	if len(ts) == 0 {
+		t.Fatal("CONTEXT_SHAPES parsed to zero rules")
+	}
+
+	goSide := payload.ContextShapes()
+	if len(goSide) != len(ts) {
+		t.Fatalf("context shape count drifted: Go %d, TS %d", len(goSide), len(ts))
+	}
+	for i := range goSide {
+		g, s := goSide[i], ts[i]
+		if g.Name != s.Name {
+			t.Errorf("context shape %d name/order drifted: Go %q, TS %q", i, g.Name, s.Name)
+		}
+		if g.Pattern != s.Pattern {
+			t.Errorf("context shape %q pattern drifted:\n  Go: %s\n  TS: %s", g.Name, g.Pattern, s.Pattern)
+		}
+		if !slices.Equal(g.Triggers, s.Triggers) || g.FoldTriggers != s.FoldTriggers {
+			t.Errorf("context shape %q triggers drifted:\n  Go: %q fold=%v\n  TS: %q fold=%v", g.Name, g.Triggers, g.FoldTriggers, s.Triggers, s.FoldTriggers)
 		}
 	}
 }
@@ -269,17 +320,22 @@ func (s *segment) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-type privateKeyCase struct {
+type redactCase struct {
 	Name  string
 	Input string
 	Want  string
 }
 
-func loadPrivateKeyCases(tb testing.TB) []privateKeyCase {
+func loadPrivateKeyCases(tb testing.TB) []redactCase {
 	tb.Helper()
-	b, err := os.ReadFile(privateKeyCasesPath)
+	return loadRedactCases(tb, privateKeyCasesPath)
+}
+
+func loadRedactCases(tb testing.TB, path string) []redactCase {
+	tb.Helper()
+	b, err := os.ReadFile(path)
 	if err != nil {
-		tb.Fatalf("read %s: %v", privateKeyCasesPath, err)
+		tb.Fatalf("read %s: %v", path, err)
 	}
 	var file struct {
 		Cases []struct {
@@ -289,10 +345,10 @@ func loadPrivateKeyCases(tb testing.TB) []privateKeyCase {
 		} `json:"cases"`
 	}
 	if err := json.Unmarshal(b, &file); err != nil {
-		tb.Fatalf("parse %s: %v", privateKeyCasesPath, err)
+		tb.Fatalf("parse %s: %v", path, err)
 	}
 	if len(file.Cases) == 0 {
-		tb.Fatalf("%s holds no cases", privateKeyCasesPath)
+		tb.Fatalf("%s holds no cases", path)
 	}
 	join := func(segs []segment) string {
 		var sb strings.Builder
@@ -301,9 +357,9 @@ func loadPrivateKeyCases(tb testing.TB) []privateKeyCase {
 		}
 		return sb.String()
 	}
-	out := make([]privateKeyCase, 0, len(file.Cases))
+	out := make([]redactCase, 0, len(file.Cases))
 	for _, c := range file.Cases {
-		out = append(out, privateKeyCase{Name: c.Name, Input: join(c.Input), Want: join(c.Want)})
+		out = append(out, redactCase{Name: c.Name, Input: join(c.Input), Want: join(c.Want)})
 	}
 	return out
 }
@@ -336,12 +392,31 @@ func TestRedactorParityWithExtension_PrivateKeyCases(t *testing.T) {
 	}
 }
 
-// TestRedactorParityWithExtension_ExtensionRunsThePrivateKeyCases is a source
-// guard. The case file proves parity only while both suites run it.
-func TestRedactorParityWithExtension_ExtensionRunsThePrivateKeyCases(t *testing.T) {
+// TestRedactorParityWithExtension_ContextShapeCases runs the shared context
+// shape case file against Go. prism.test.ts runs the same file against the
+// extension.
+func TestRedactorParityWithExtension_ContextShapeCases(t *testing.T) {
+	r := payload.NewShapeOnlyRedactor()
+	for _, tc := range loadRedactCases(t, contextShapeCasesPath) {
+		t.Run(tc.Name, func(t *testing.T) {
+			if got := r.Redact(tc.Input); got != tc.Want {
+				t.Error(mismatch(got, tc.Want))
+			}
+			if got := r.Redact(tc.Want); got != tc.Want {
+				t.Errorf("a second pass changed the output: %s", mismatch(got, tc.Want))
+			}
+		})
+	}
+}
+
+// TestRedactorParityWithExtension_ExtensionRunsTheCaseFiles is a source
+// guard. A case file proves parity only while both suites run it.
+func TestRedactorParityWithExtension_ExtensionRunsTheCaseFiles(t *testing.T) {
 	src := readExtensionFile(t, extensionTestSourcePath)
-	if want := filepath.Base(privateKeyCasesPath); !strings.Contains(src, want) {
-		t.Errorf("prism.test.ts no longer reads %s — the private-key parity check is gone from the extension side", want)
+	for _, p := range []string{privateKeyCasesPath, contextShapeCasesPath} {
+		if want := filepath.Base(p); !strings.Contains(src, want) {
+			t.Errorf("prism.test.ts no longer reads %s — the parity check of that file is gone from the extension side", want)
+		}
 	}
 }
 

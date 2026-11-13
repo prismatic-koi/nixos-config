@@ -101,6 +101,9 @@ import {
   CREDENTIAL_ENV_PREFIXES,
   CREDENTIAL_ENV_NAME_SUFFIXES,
   CREDENTIAL_SHAPES,
+  CONTEXT_SHAPES,
+  contextShapeTriggerPresent,
+  redactContextShapes,
   PRIVATE_KEY_SHAPE,
   REDACTION_MIN_VALUE_LENGTH,
   shapeTriggerPresent,
@@ -7407,8 +7410,10 @@ const PRIVATE_KEY_CASES_PATH = path.join(
 
 type CaseSegment = string | { repeat: string; count: number }
 
-function loadPrivateKeyCases(): Array<{ name: string; input: string; want: string }> {
-  const file = JSON.parse(fs.readFileSync(PRIVATE_KEY_CASES_PATH, "utf8")) as {
+function loadRedactCases(
+  casesPath: string = PRIVATE_KEY_CASES_PATH,
+): Array<{ name: string; input: string; want: string }> {
+  const file = JSON.parse(fs.readFileSync(casesPath, "utf8")) as {
     cases: Array<{ name: string; input: CaseSegment[]; want: CaseSegment[] }>
   }
   const join = (segments: CaseSegment[]) =>
@@ -7470,7 +7475,7 @@ describe("#3437: private-key pass", () => {
   const MARKER = redactionMarker(PRIVATE_KEY_SHAPE.name)
 
   it("gives the output of the shared case file, the same as the Go redactor", () => {
-    const cases = loadPrivateKeyCases()
+    const cases = loadRedactCases()
     assert.ok(cases.length > 0, "the case file holds no cases")
     const r = shapeOnly()
     for (const c of cases) {
@@ -7484,7 +7489,7 @@ describe("#3437: private-key pass", () => {
       PRIVATE_KEY_SHAPE.begin + String.raw`[\s\S]*?` + PRIVATE_KEY_SHAPE.end,
       "g",
     )
-    for (const c of loadPrivateKeyCases()) {
+    for (const c of loadRedactCases()) {
       const want = c.input.replace(lazy, MARKER)
       const got = redactPrivateKeyBlocks(c.input)
       if (got !== want) assert.fail(`case "${c.name}": ${firstDifference(got, want)}`)
@@ -7536,6 +7541,116 @@ describe("#3437: private-key pass", () => {
       `1 MiB took ${small.toFixed(2)} ms, 8 MiB took ${large.toFixed(2)} ms`,
     )
   })
+})
+
+// ===========================================================================
+// Context shapes (issue #3476)
+// ===========================================================================
+
+// The Go suite runs the same file (redact_parity_test.go), so a pass on both
+// sides means the two outputs are identical.
+const CONTEXT_SHAPE_CASES_PATH = path.join(
+  __dirname,
+  "../../prism/internal/payload/testdata/context-shape-cases.json",
+)
+
+describe("#3476: context shapes", () => {
+  const shapeOnly = () => makeSecretRedactor({})
+  const SESSION_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+  const CSRF_TOKEN = "00000000-0000-4000-8000-000000003476"
+
+  it("gives the output of the shared case file, the same as the Go redactor", () => {
+    const cases = loadRedactCases(CONTEXT_SHAPE_CASES_PATH)
+    assert.ok(cases.length > 0, "the case file holds no cases")
+    const r = shapeOnly()
+    for (const c of cases) {
+      const got = r.redact(c.input)
+      if (got !== c.want) assert.fail(`case "${c.name}": ${firstDifference(got, c.want)}`)
+      const again = r.redact(c.want)
+      if (again !== c.want) assert.fail(`case "${c.name}", second pass: ${firstDifference(again, c.want)}`)
+    }
+  })
+
+  it("declares a context group, a trigger, and a lower-case fold trigger for each rule", () => {
+    assert.ok(CONTEXT_SHAPES.length > 0)
+    for (const c of CONTEXT_SHAPES) {
+      // One group: the context. A second group shifts the replacement.
+      assert.equal(new RegExp(`${c.pattern}|`).exec("")?.length, 2, `${c.name} has one group`)
+      assert.ok(c.triggers.length > 0, `${c.name} declares no prefilter trigger`)
+      for (const t of c.triggers) {
+        assert.ok(t.length > 0, `${c.name} declares an empty trigger`)
+        if (c.foldTriggers) assert.equal(t, t.toLowerCase(), `${c.name}: fold trigger ${t}`)
+      }
+    }
+  })
+
+  it("the cost prefilter never changes the result", () => {
+    const r = shapeOnly()
+    for (const input of [
+      "",
+      "Cookie: theme=dark",
+      `Set-Cookie: TOKEN=${SESSION_JWT}; path=/`,
+      `COOKIE:TOKEN=${SESSION_JWT}`,
+      `#HttpOnly_10.0.0.1\tFALSE\t/\tTRUE\t0\tTOKEN\t${SESSION_JWT}`,
+      `x-Csrf-TOKEN: ${CSRF_TOKEN}`,
+      `X-UPDATED-CSRF-TOKEN:${CSRF_TOKEN}`,
+      `csrf-token: ${CSRF_TOKEN}`,
+      `TOKEN=${SESSION_JWT}`,
+    ]) {
+      const unfiltered = redactContextShapes(input, false)
+      assert.equal(
+        contextShapeTriggerPresent(input) || unfiltered === input,
+        true,
+        `a context shape matched ${JSON.stringify(input)} but no trigger is present`,
+      )
+      assert.equal(r.redact(input), unfiltered, JSON.stringify(input))
+    }
+  })
+
+  it("masks the session values in the frame on the prism socket (control 1)", () => {
+    const written: string[] = []
+    const socket = {
+      write: (data: string) => {
+        written.push(data)
+        return true
+      },
+      end: () => {},
+    } as unknown as net.Socket
+    makeFrameWriter(socket, shapeOnly()).write({
+      type: "tool_result",
+      id: "call_1",
+      output: `< set-cookie: TOKEN=${SESSION_JWT}; path=/\r\n< x-csrf-token: ${CSRF_TOKEN}\r\n`,
+    })
+    const line = written.join("")
+    assert.ok(!line.includes(SESSION_JWT) && !line.includes(CSRF_TOKEN), line)
+    assert.equal(
+      JSON.parse(line.trimEnd()).output,
+      "< set-cookie: TOKEN=[redacted:unifi-token-cookie]; path=/\r\n" +
+        "< x-csrf-token: [redacted:csrf-token-header]\r\n",
+    )
+  })
+
+  // Each input passes the prefilter of a context shape and gives no match. A
+  // pattern that backtracks to the end of the line from each header name
+  // takes seconds on these inputs.
+  for (const [name, of] of [
+    ["one cookie header with many cookies", (n: number) => "Cookie:" + "a;".repeat(n / 2) + " xTOKEN="],
+    ["many cookie headers on one line", (n: number) => "cookie:a;".repeat(Math.floor(n / 9)) + "xTOKEN="],
+    ["many CSRF header names with no value", (n: number) => "X-CSRF-Token:\n".repeat(Math.floor(n / 14))],
+  ] as const) {
+    it(`processes 1 MiB of ${name} in less than 100 ms, and 8 MiB in less than 16 times that`, () => {
+      const r = shapeOnly()
+      const small = of(MIB)
+      assert.ok(r.redact(small) === small, "an input with no context shape was changed")
+      const smallMs = bestRedactMs(r, small)
+      const largeMs = bestRedactMs(r, of(8 * MIB))
+      assert.ok(smallMs < 100, `1 MiB took ${smallMs.toFixed(1)} ms`)
+      assert.ok(
+        largeMs < 16 * smallMs,
+        `1 MiB took ${smallMs.toFixed(2)} ms, 8 MiB took ${largeMs.toFixed(2)} ms`,
+      )
+    })
+  }
 })
 
 describe("#2589: redactFrame", () => {

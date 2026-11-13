@@ -22,9 +22,9 @@ type EnvAppender func(args []string, k, v string) []string
 //  2. cfg.RuntimeEnv — harness-specific runtime vars (e.g. the bash-tool
 //     timeout) emitted as-is.
 //
-//  3. cfg.UniFi — UNIFI_API_KEY_FILE and UNIFI_HOST, for a session that
-//     gets the UniFi API key (uniFiEnv). Emitted last, so a profile-level
-//     var of the same name cannot replace them.
+//  3. cfg.UniFi — UNIFI_PASSWORD_FILE, UNIFI_USERNAME, and UNIFI_HOST, for
+//     a session that gets the UniFi credential (uniFiEnv). Emitted last, so
+//     a profile-level var of the same name cannot replace them.
 //
 // The caller is responsible for any additional env vars that are
 // mode-specific (e.g. NIX_CONFIG, TERM, COLORTERM, KUBECACHEDIR, PRISM_*
@@ -53,8 +53,8 @@ func AppendStandardEnv(args []string, cfg Config, appender EnvAppender) []string
 }
 
 // uniFiEnv returns the UniFi variables of cfg in sorted order, or nil when
-// the session does not get the key. A session of a repo outside
-// nx.programs.prism.unifi.repos gets neither variable.
+// the session does not get the credential. A session of a repo outside
+// nx.programs.prism.unifi.repos gets no UniFi variable.
 func uniFiEnv(cfg Config) [][2]string {
 	vars := cfg.UniFi.EnvVars()
 	keys := make([]string, 0, len(vars))

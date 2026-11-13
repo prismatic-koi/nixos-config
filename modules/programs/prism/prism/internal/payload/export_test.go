@@ -7,19 +7,35 @@ package payload
 // tests need a way to run the shape layer WITHOUT the prefilter and compare.
 
 // RedactShapesNoPrefilterForTest applies the shape layer directly, skipping
-// the prefilter of both passes. A result that differs from Redact's shape
+// the prefilter of each pass. A result that differs from Redact's shape
 // layer means a trigger is not a necessary substring of its pattern.
 func RedactShapesNoPrefilterForTest(s string) string {
-	return combinedShapeRE.ReplaceAllStringFunc(redactPrivateKeyBlocks(s), func(m string) string {
+	s = combinedShapeRE.ReplaceAllStringFunc(redactPrivateKeyBlocks(s), func(m string) string {
 		return RedactionMarker(shapeNameFor(m))
 	})
+	return redactContextShapes(s, false)
 }
 
-// ShapeTriggerPresentForTest reports whether the prefilter of either pass
+// ShapeTriggerPresentForTest reports whether the prefilter of any pass
 // fires.
 func ShapeTriggerPresentForTest(s string) bool {
-	return privateKeyTriggerPresent(s) || shapeTriggerPresent(s)
+	if privateKeyTriggerPresent(s) || shapeTriggerPresent(s) {
+		return true
+	}
+	for i := range contextShapes {
+		if contextShapes[i].triggerPresent(s) {
+			return true
+		}
+	}
+	return false
 }
+
+// RedactContextShapesForTest runs the context shapes alone, with the
+// prefilter.
+func RedactContextShapesForTest(s string) string { return redactContextShapes(s, true) }
+
+// ContainsFoldASCIIForTest is containsFoldASCII.
+func ContainsFoldASCIIForTest(s, t string) bool { return containsFoldASCII(s, t) }
 
 // RedactPrivateKeyBlocksForTest runs the private-key pass alone.
 func RedactPrivateKeyBlocksForTest(s string) string { return redactPrivateKeyBlocks(s) }

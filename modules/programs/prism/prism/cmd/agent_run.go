@@ -812,8 +812,8 @@ func logAgentRunWarning(logFile *os.File, format string, args ...any) {
 	}
 }
 
-// uniFiDelivery returns the UniFi API key delivery of a bwrap or sandbox-exec
-// session (unifi.ForSession, issue #3472). The session name comes from the
+// uniFiDelivery returns the UniFi credential delivery of a bwrap or
+// sandbox-exec session (unifi.ForSession, issue #3472). The session name comes from the
 // pane command line, the worktree and the role from agent_status, and the
 // repo list from unifi.json, all on the host. Each warning goes to stderr and
 // to the agent-run log.

@@ -2151,7 +2151,8 @@ export function redactLine(line: string): string {
 //      (CREDENTIAL_FILE_ENV_NAMES).
 //   2. SHAPE matching (secondary). Well-known credential shapes, for a secret
 //      that is not in this process's environment. Defence in depth; it never
-//      replaces layer 1.
+//      replaces layer 1. A context shape (CONTEXT_SHAPES) masks a value by
+//      the cookie name or the header name in front of it.
 //
 // Parity with Go
 // --------------
@@ -2162,8 +2163,9 @@ export function redactLine(line: string): string {
 //
 // Cost
 // ----
-// At most three linear passes: one alternation of literal values, the
-// private-key pass, and one alternation of the other shapes. The private-key
+// At most six linear passes: one alternation of literal values, the
+// private-key pass, one alternation of the other shapes, and one regexp for
+// each context shape. The private-key
 // pass stops at the first BEGIN line with no END line after it, so its worst
 // case is one scan from that line to the end of the input. See
 // redactPrivateKeyBlocks. The Cost section of docs/secret-redaction.md gives
@@ -2252,7 +2254,7 @@ export const CREDENTIAL_ENV_NAME_SUFFIXES: readonly string[] = [
  * Mirrors payload.CredentialFileEnvNames().
  */
 export const CREDENTIAL_FILE_ENV_NAMES: Readonly<Record<string, string>> = {
-  UNIFI_API_KEY_FILE: "UNIFI_API_KEY",
+  UNIFI_PASSWORD_FILE: "UNIFI_PASSWORD",
 }
 
 /**
@@ -2376,6 +2378,93 @@ export const PRIVATE_KEY_SHAPE: {
   begin: String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----`,
   end: String.raw`-----END [A-Z ]*PRIVATE KEY-----`,
   triggers: ["-----BEGIN "],
+}
+
+/**
+ * Context shapes (issue #3476), in match order. A context shape masks a value
+ * by the cookie name or the header name in front of it. The value has a
+ * generic body: the TOKEN cookie of UniFi OS is a JWT, and its CSRF token is
+ * a UUID. A JWT or a UUID in any other context stays.
+ *
+ * Group 1 of a pattern is the context, and it stays in the output. The rest
+ * of the match is the value, and the marker replaces it. The value starts
+ * with a letter or a digit and holds only token characters, so a shell
+ * expression or a string literal after the name stays, and a marker stays
+ * too. A header name
+ * matches with no regard to ASCII case through [Xx] classes, so the pattern
+ * needs no flag. The cookie name TOKEN is case-sensitive, as cookie names
+ * are. V8 backtracks, so each pattern must be linear in V8: in the cookie
+ * pattern, a cookie before TOKEN holds no ':', so a scan from one header name
+ * stops at the colon of the next one. The lazy `??` takes the first TOKEN of
+ * the line.
+ *
+ * When `foldTriggers` is true, each trigger is lower case, and the prefilter
+ * matches it with no regard to ASCII case.
+ *
+ * The strings are byte-identical to contextShapes in
+ * internal/payload/redact.go, and the parity tests compare them.
+ */
+export const CONTEXT_SHAPES: ReadonlyArray<{
+  readonly name: string
+  readonly pattern: string
+  readonly triggers: readonly string[]
+  readonly foldTriggers: boolean
+}> = [
+  {
+    name: "unifi-token-cookie",
+    pattern: String.raw`([Cc][Oo][Oo][Kk][Ii][Ee]:(?:[^:\r\n]*?;)??[ \t]*TOKEN=)[A-Za-z0-9][A-Za-z0-9._~+/=-]*`,
+    triggers: ["TOKEN="],
+    foldTriggers: false,
+  },
+  {
+    name: "unifi-token-cookie-jar",
+    pattern: String.raw`(\t(?:TRUE|FALSE)\t[0-9]+\tTOKEN\t)[A-Za-z0-9][A-Za-z0-9._~+/=-]*`,
+    triggers: ["\tTOKEN\t"],
+    foldTriggers: false,
+  },
+  {
+    name: "csrf-token-header",
+    pattern: String.raw`([Xx]-(?:[Uu][Pp][Dd][Aa][Tt][Ee][Dd]-)?[Cc][Ss][Rr][Ff]-[Tt][Oo][Kk][Ee][Nn]:[ \t]*)[A-Za-z0-9][A-Za-z0-9._~+/=-]*`,
+    triggers: ["csrf-token:"],
+    foldTriggers: true,
+  },
+]
+
+// Without the `u` flag, the `i` flag folds an ASCII letter only to an ASCII
+// letter, the same as an [Xx] class. So the fold prefilter is sound.
+const CONTEXT_SHAPE_PASSES: ReadonlyArray<{
+  readonly re: RegExp
+  readonly marker: string
+  readonly present: (s: string) => boolean
+}> = CONTEXT_SHAPES.map((c) => {
+  const fold = new RegExp(c.triggers.map(escapeRegExpLiteral).join("|"), "i")
+  return {
+    re: new RegExp(c.pattern, "g"),
+    marker: redactionMarker(c.name),
+    present: c.foldTriggers
+      ? (s: string) => fold.test(s)
+      : (s: string) => anyTriggerPresent(s, c.triggers),
+  }
+})
+
+/**
+ * Run each context shape. With `prefilter` false, each pass runs also when
+ * none of its triggers is present; the tests use that to prove the
+ * prefilter sound.
+ */
+export function redactContextShapes(s: string, prefilter = true): string {
+  let out = s
+  for (const c of CONTEXT_SHAPE_PASSES) {
+    if (prefilter && !c.present(out)) continue
+    c.re.lastIndex = 0
+    out = out.replace(c.re, (_m, context: string) => context + c.marker)
+  }
+  return out
+}
+
+/** Reports whether the prefilter of any context shape fires for `s`. */
+export function contextShapeTriggerPresent(s: string): boolean {
+  return CONTEXT_SHAPE_PASSES.some((c) => c.present(s))
 }
 
 const PRIVATE_KEY_BEGIN = new RegExp(PRIVATE_KEY_SHAPE.begin, "g")
@@ -2583,7 +2672,7 @@ export function makeSecretRedactor(
       shapeRe.lastIndex = 0
       out = out.replace(shapeRe, (m) => redactionMarker(shapeNameFor(m)))
     }
-    return out
+    return redactContextShapes(out)
   }
 
   const walk = (

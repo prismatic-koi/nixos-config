@@ -365,21 +365,54 @@ prism gives pi one `--skill <path>` for each skill of the repo of the session (i
 - A change to a repo skill takes effect after a home-manager switch, at the next start of a session.
 - `spawn_inputs.skills_manifest_hash` (`skills.ComputeManifest`) covers the global skills directory only. The repo skills of a session depend only on its repo and on `repo-skills.json`, and the legs of an `--abtest` run share both.
 
-## UniFi API key
+## UniFi credential
 
-<!-- doclint-ignore: ~/.config/prism/unifi.json -->
+<!-- doclint-ignore: ~/.config/prism/unifi.json, repo-skills/unifi, unifi.nix, stat/health -->
+<!--
+  repo-skills/unifi and unifi.nix are under modules/programs/prism, outside
+  the prism subtree that the nix build sandbox copies in. stat/health is a
+  UniFi API endpoint, not a file.
+-->
 
-A session of a repo in `nx.programs.prism.unifi.repos` gets the UniFi API key as a read-only file (issue #3472). The default list is `home-ops`, `nixos-config`, `hass-config`, and `obsidian`. The session gets two variables: `UNIFI_API_KEY_FILE` holds the path of the decrypted `unifi_api_key` secret, and `UNIFI_HOST` holds the value of the `unifi_host` secret. No variable holds the key.
+A session of a repo in `nx.programs.prism.unifi.repos` gets the UniFi credential (issues #3472 and #3476). The credential is the password of a local UniFi OS user with "Network View Only" and "Control Plane View Only". The default list is `home-ops`, `nixos-config`, `hass-config`, and `obsidian`. The session gets three variables:
 
-- The repo list and the two secret paths come only from `~/.config/prism/unifi.json`. The prism NixOS module renders that file from the option. The Go source holds no repo list.
+- `UNIFI_PASSWORD_FILE` holds the path of the decrypted `unifi_password` secret. No variable holds the password.
+- `UNIFI_USERNAME` holds the value of `nx.programs.prism.unifi.username`. The default is `agent-readonly`.
+- `UNIFI_HOST` holds the value of the `unifi_host` secret: the host name of a reverse proxy in front of the controller. The proxy has a valid certificate, so each command verifies TLS, with no `-k`. The redactor does not mask the host name, because it is not a credential. The repo is public, so no file names the host.
+
+The credential is a password, not an API key. Only an admin can create an API key, and an admin key can write. The Integration API (`/proxy/network/integration/v1`, header `X-API-KEY`) accepts only an API key, so no session uses it.
+
+- The repo list, the username, and the two secret paths come only from `~/.config/prism/unifi.json`. The prism NixOS module renders that file from the options. The Go source holds no repo list.
+- Each repo in the list also gets the repo skill `repo-skills/unifi` through `nx.programs.prism.repoSkills`. `unifi.nix` derives these entries from the same option, so the repo list is declared in one place.
 - The repo comes from `projecttrust.Policy.SessionProject`, the repo identity of the project-trust decision. `unifi.ForSession` does the lookup. So the root session of `obsidian`, a project with no worktrees, matches by its bare name and its project directory.
-- The coordinator, the workers, and the investigators of a listed repo get the key. The five review roles do not get it: a review agent reviews a diff on a read-only worktree, and has no use for the UniFi API. A fallback reviewer has the role of the agent that it replaces. An investigator answers questions about the live system, and the key gives read access only.
-- `unifi.ForSession` reads the key file and the host file on the host. If a file is missing, or the key holds a value that the redactor cannot mask (`payload.UsableSecretValue`), the session gets neither variable. The session starts, and the agent-run log gives the reason. No warning holds a secret value.
-- In `bwrap` and `sandbox-exec` mode, `prism agent-run` sets `Config.UniFi` (`uniFiDelivery`). `bwrap` binds the key file read-only at the path that `UNIFI_API_KEY_FILE` holds (`bwrapUniFiAPIKeyBind`). Its Dst is a mount point, so a write, an unlink, and a rename onto it fail. No other bind exposes `/run/secrets` or `/run/secrets.d`. If the bind cannot resolve the path, `BuildArgs` sets no UniFi variable either. The `sandbox-exec` profile admits a read of the `unifi_api_key` name in `secrets.d`, and only for a session with a delivery (`collectSecretsDAllowlistNames`). The write deny on `secrets.d` has no exception.
-- In `host` mode, `agentPaneEnvVars` and `agentOnlyPaneEnvVars` put the two variables in the pane env, and write each warning to the agent-run log. **Known limit — host mode (permanent).** A `host` session has no filesystem isolation, so a `host` session of any repo can read the sops path. In `host` mode, prism controls the two variables only.
-- The argv of `bwrap` and of `sandbox-exec` holds the two paths and the host value, not the key value. The redactor reads the key file, so controls 1, 2, and 3 mask the key as `[redacted:UNIFI_API_KEY]`. See "Credential files" in `secret-redaction.md`.
+- The coordinator, the workers, and the investigators of a listed repo get the credential. The five review roles do not get it: a review agent reviews a diff on a read-only worktree, and has no use for the UniFi API. A fallback reviewer has the role of the agent that it replaces. An investigator answers questions about the live system, and the user has read access only.
+- `unifi.ForSession` reads the password file and the host file on the host. If a file is missing, if the password holds a value that the redactor cannot mask (`payload.UsableSecretValue`), or if the username is empty or holds a space or a control character, the session gets no UniFi variable. The session starts, and the agent-run log gives the reason. No warning holds a secret value.
+- In `bwrap` and `sandbox-exec` mode, `prism agent-run` sets `Config.UniFi` (`uniFiDelivery`). `bwrap` binds the password file read-only at the path that `UNIFI_PASSWORD_FILE` holds (`bwrapUniFiPasswordBind`). Its Dst is a mount point, so a write, an unlink, and a rename onto it fail. No other bind exposes `/run/secrets` or `/run/secrets.d`. If the bind cannot resolve the path, `BuildArgs` sets no UniFi variable either. The `sandbox-exec` profile admits a read of the `unifi_password` name in `secrets.d`, and only for a session with a delivery (`collectSecretsDAllowlistNames`). The write deny on `secrets.d` has no exception.
+- In `host` mode, `agentPaneEnvVars` and `agentOnlyPaneEnvVars` put the three variables in the pane env, and write each warning to the agent-run log. **Known limit — host mode (permanent).** A `host` session has no filesystem isolation, so a `host` session of any repo can read the sops path. In `host` mode, prism controls the variables only.
+- The argv of `bwrap` and of `sandbox-exec` holds the two paths, the username, and the host value, not the password. The redactor reads the password file, so controls 1, 2, and 3 mask the password as `[redacted:UNIFI_PASSWORD]`. See "Credential files" in `secret-redaction.md`.
+- A login gives a session token in the `TOKEN` cookie and a CSRF token in the `X-CSRF-Token` header. The context shapes of the redactor mask both values. See "Context shapes" in `secret-redaction.md`.
 - No sandbox can read or write `~/.config/prism/unifi.json`. `StandardSandboxMounts` does not bind it, and `generateProfile` does not grant its path.
-- A change to the option takes effect after a home-manager switch, at the next start of a session.
+- A change to the options takes effect after a home-manager switch, at the next start of a session.
+
+### Check after a deployment
+
+Do this check after a home-manager switch, from a new `home-ops` session. The check logs in, reads `stat/health`, and logs out. The expected result is `200` for each of the three requests. If TLS verification fails, the check fails. Do not add `-k`.
+
+```sh
+U="${TMPDIR:-/tmp}/unifi" S=/proxy/network/api/s/default
+mkdir -p -m 700 "$U"
+jq -n --rawfile p "$UNIFI_PASSWORD_FILE" --arg u "$UNIFI_USERNAME" \
+  '{username: $u, password: ($p | rtrimstr("\n")), remember: false}' |
+  curl -s -o /dev/null -w '%{http_code}\n' -c "$U/jar" -D "$U/headers" \
+    -H 'Content-Type: application/json' --data-binary @- "https://$UNIFI_HOST/api/auth/login"
+grep -i '^x-csrf-token:' "$U/headers" | cut -d' ' -f2 | tr -d '\r' > "$U/csrf"
+rm "$U/headers"
+curl -s -o /dev/null -w '%{http_code}\n' -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" \
+  "https://$UNIFI_HOST$S/stat/health"
+curl -s -o /dev/null -w '%{http_code}\n' -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" \
+  -X POST "https://$UNIFI_HOST/api/auth/logout"
+rm -rf "$U"
+```
 
 ## Checkin scope
 

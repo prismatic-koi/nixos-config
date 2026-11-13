@@ -7,9 +7,7 @@
   options = {
     nx.programs.prism.repoSkills = lib.mkOption {
       type = lib.types.attrsOf (lib.types.listOf lib.types.path);
-      default = {
-        nixos-config = [ ./repo-skills/site-theming ];
-      };
+      default = { };
       example = lib.literalExpression ''
         {
           nixos-config = [ ./repo-skills/site-theming ];
@@ -21,6 +19,12 @@
         name. Each value is a list of skill directories, as nix paths. A
         session of the repo gets these skills. A session of another repo does
         not get them, and does not see their names in its context.
+
+        The prism modules define entries of this option, not a default, so
+        the definitions merge: this module gives site-theming to
+        nixos-config, and unifi.nix gives the unifi skill to each repo in
+        nx.programs.prism.unifi.repos. A definition in a host config adds
+        to these entries.
 
         prism starts every pi of a session of the repo with one
         --skill <store-path> for each skill: the coordinator, the workers,
@@ -48,6 +52,8 @@
   };
 
   config = lib.mkIf config.nx.programs.prism.enable {
+    nx.programs.prism.repoSkills.nixos-config = [ ./repo-skills/site-theming ];
+
     # ~/.config/prism/ is persisted on impermanence systems by profiles.nix,
     # so this module declares the file alone. builtins.toJSON copies each
     # path to the nix store, and the store path in the file text keeps the

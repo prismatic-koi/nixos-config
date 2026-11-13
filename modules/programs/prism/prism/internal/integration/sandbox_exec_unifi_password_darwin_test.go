@@ -2,35 +2,38 @@
 
 package integration_test
 
-// sandbox_exec_unifi_api_key_darwin_test.go — integration coverage for the
-// UniFi API key carve-out in the secrets.d allowlist (issue #3472).
+// sandbox_exec_unifi_password_darwin_test.go — integration coverage for the
+// UniFi password carve-out in the secrets.d allowlist (issues #3472 and
+// #3476).
 //
-// A session of a repo in nx.programs.prism.unifi.repos gets the key as a
-// file: UNIFI_API_KEY_FILE holds the stable sops path, and the agent reads
-// the file in-sandbox. The carve-out adds one name, unifi_api_key, derived
-// from Config.UniFi.APIKeyPath. internal/unifi leaves that field empty for a
+// A session of a repo in nx.programs.prism.unifi.repos gets the password as
+// a file: UNIFI_PASSWORD_FILE holds the stable sops path, and the agent reads
+// the file in-sandbox. The carve-out adds one name, unifi_password, derived
+// from Config.UniFi.PasswordPath. internal/unifi leaves that field empty for a
 // session of any other repo and for a review role.
 //
 // This file proves, with a real /usr/bin/sandbox-exec run, that:
 //
-//  1. TestSandboxExecUniFiAPIKey_ReadableWhenDelivered — the key is
+//  1. TestSandboxExecUniFiPassword_ReadableWhenDelivered — the password is
 //     readable in-sandbox through its stable symlink, while github_token in
 //     the same generation dir stays denied.
-//  2. TestSandboxExecUniFiAPIKey_ExceptionIsLoadBearing — the paired
+//  2. TestSandboxExecUniFiPassword_ExceptionIsLoadBearing — the paired
 //     negative: strip the exception and the same read fails.
-//  3. TestSandboxExecUniFiAPIKey_DeniedWithNoDelivery — a Manager with no
+//  3. TestSandboxExecUniFiPassword_DeniedWithNoDelivery — a Manager with no
 //     delivery (another repo, or a review role) cannot read the same file.
-//  4. TestSandboxExecUniFiAPIKey_WriteDeleteReplaceDenied — the session
-//     cannot write, delete, or replace the key file or its stable symlink.
-//  5. TestSandboxExecUniFiAPIKey_WriteWorksWithWriteGrant — the paired
+//  4. TestSandboxExecUniFiPassword_WriteDeleteReplaceDenied — the session
+//     cannot write, delete, or replace the password file or its stable
+//     symlink.
+//  5. TestSandboxExecUniFiPassword_WriteWorksWithWriteGrant — the paired
 //     negative of (4): with a write grant appended, the same write works.
 //
 // The tests run against a FAKE secrets.d tree under the per-user TMPDIR. The
 // production deny regexes are anchored at /var/folders, where the per-user
 // TMPDIR is, so the real rules cover the fake tree with no profile mutation.
 //
-// Secret hygiene: the fake key is a sentinel. No test in this file reads a
-// real credential. A read of the key discards its content in-sandbox, except
+// Secret hygiene: the fake password is a sentinel. No test in this file reads
+// a real credential. A read of the password discards its content in-sandbox,
+// except
 // in (1), which checks the sentinel.
 //
 // See docs/sandbox-exec-testing.md for the convention.
@@ -48,21 +51,21 @@ import (
 )
 
 const (
-	// fakeUniFiSentinel is the content of the fake key file. It is not a
+	// fakeUniFiSentinel is the content of the fake password file. It is not a
 	// credential and matches no credential shape.
-	fakeUniFiSentinel = "prism-3472-unifi-sentinel"
+	fakeUniFiSentinel = "prism-3476-unifi-sentinel"
 
-	uniFiAPIKeySecretName = "unifi_api_key"
+	uniFiPasswordSecretName = "unifi_password"
 )
 
 // setupFakeUniFiSecret builds a fake sops layout under the per-user TMPDIR:
 //
-//	<base>/secrets.d/<counter>/unifi_api_key  (sentinel content)
+//	<base>/secrets.d/<counter>/unifi_password (sentinel content)
 //	<base>/secrets.d/<counter>/github_token   (denied control)
-//	<base>/stable/unifi_api_key               → the counter path
+//	<base>/stable/unifi_password              → the counter path
 //
 // and returns the base, the concrete path, the stable symlink path (the
-// shape UNIFI_API_KEY_FILE holds), and the denied control path. Skips when
+// shape UNIFI_PASSWORD_FILE holds), and the denied control path. Skips when
 // the TMPDIR is not under /var/folders.
 func setupFakeUniFiSecret(t *testing.T) (base, concrete, stablePath, deniedPath string) {
 	t.Helper()
@@ -88,9 +91,9 @@ func setupFakeUniFiSecret(t *testing.T) (base, concrete, stablePath, deniedPath 
 	if err := os.MkdirAll(counterDir, 0o700); err != nil {
 		t.Fatalf("create fake counter dir: %v", err)
 	}
-	concrete = filepath.Join(counterDir, uniFiAPIKeySecretName)
+	concrete = filepath.Join(counterDir, uniFiPasswordSecretName)
 	if err := os.WriteFile(concrete, []byte(fakeUniFiSentinel+"\n"), 0o400); err != nil {
-		t.Fatalf("write fake unifi key: %v", err)
+		t.Fatalf("write fake unifi password: %v", err)
 	}
 	deniedPath = filepath.Join(counterDir, "github_token")
 	if err := os.WriteFile(deniedPath, []byte("ghp_fake-3472-denied"), 0o600); err != nil {
@@ -100,16 +103,16 @@ func setupFakeUniFiSecret(t *testing.T) (base, concrete, stablePath, deniedPath 
 	if err := os.MkdirAll(stableDir, 0o700); err != nil {
 		t.Fatalf("create fake stable symlink dir: %v", err)
 	}
-	stablePath = filepath.Join(stableDir, uniFiAPIKeySecretName)
+	stablePath = filepath.Join(stableDir, uniFiPasswordSecretName)
 	if err := os.Symlink(concrete, stablePath); err != nil {
-		t.Fatalf("symlink stable unifi key: %v", err)
+		t.Fatalf("symlink stable unifi password: %v", err)
 	}
 	return base, concrete, stablePath, deniedPath
 }
 
 // newUniFiProfileManager is newGrafanaProfileManager with a UniFi delivery in
-// place of the grafana path. An empty keyPath gives no delivery.
-func newUniFiProfileManager(t *testing.T, keyPath string) *container.Manager {
+// place of the grafana path. An empty passwordPath gives no delivery.
+func newUniFiProfileManager(t *testing.T, passwordPath string) *container.Manager {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	home, err := os.UserHomeDir()
@@ -126,8 +129,8 @@ func newUniFiProfileManager(t *testing.T, keyPath string) *container.Manager {
 		t.Fatalf("MkdirTemp(wrap) for BareRoot: %v", err)
 	}
 	var d unifi.Delivery
-	if keyPath != "" {
-		d = unifi.Delivery{APIKeyPath: keyPath, Host: "10.0.0.1"}
+	if passwordPath != "" {
+		d = unifi.Delivery{PasswordPath: passwordPath, Username: "synthetic-agent-user", Host: "10.0.0.1"}
 	}
 	return container.New(container.Config{
 		SessionName:  "integ-sandbox-exec-unifi-test",
@@ -140,9 +143,9 @@ func newUniFiProfileManager(t *testing.T, keyPath string) *container.Manager {
 	})
 }
 
-const uniFiExceptionRegex = `/secrets\.d/[0-9]+/` + uniFiAPIKeySecretName + `$`
+const uniFiExceptionRegex = `/secrets\.d/[0-9]+/` + uniFiPasswordSecretName + `$`
 
-func TestSandboxExecUniFiAPIKey_ReadableWhenDelivered(t *testing.T) {
+func TestSandboxExecUniFiPassword_ReadableWhenDelivered(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
@@ -153,16 +156,16 @@ func TestSandboxExecUniFiAPIKey_ReadableWhenDelivered(t *testing.T) {
 	m := newUniFiProfileManager(t, stablePath)
 	prepared, _ := preparePositiveProfile(t, m)
 	if !strings.Contains(prepared.content, uniFiExceptionRegex) {
-		t.Fatalf("profile carries no unifi_api_key exception — the generator did not derive it from Config.UniFi.\nProfile:\n%s", prepared.content)
+		t.Fatalf("profile carries no unifi_password exception — the generator did not derive it from Config.UniFi.\nProfile:\n%s", prepared.content)
 	}
 	profilePath := writeAugmentedPositiveProfile(t, prepared)
 
 	out, runErr := exec.Command(sandboxExecPath, "-f", profilePath,
 		nixBash, "-c", `cat "$0"`, stablePath).CombinedOutput()
 	if runErr != nil {
-		t.Errorf("in-sandbox read of the key file failed under the production profile.\nExit: %v\nOutput: %s", runErr, out)
+		t.Errorf("in-sandbox read of the password file failed under the production profile.\nExit: %v\nOutput: %s", runErr, out)
 	} else if strings.TrimSpace(string(out)) != fakeUniFiSentinel {
-		t.Errorf("key read exited 0 but the sentinel is missing.\nOutput: %s", out)
+		t.Errorf("password read exited 0 but the sentinel is missing.\nOutput: %s", out)
 	}
 
 	runErr, errOut := sandboxCatDiscard(profilePath, nixBash, deniedPath)
@@ -173,7 +176,7 @@ func TestSandboxExecUniFiAPIKey_ReadableWhenDelivered(t *testing.T) {
 	}
 }
 
-func TestSandboxExecUniFiAPIKey_ExceptionIsLoadBearing(t *testing.T) {
+func TestSandboxExecUniFiPassword_ExceptionIsLoadBearing(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
@@ -186,11 +189,11 @@ func TestSandboxExecUniFiAPIKey_ExceptionIsLoadBearing(t *testing.T) {
 		return strings.ReplaceAll(p, uniFiExceptionRegex, `/secrets\.d/[0-9]+/prism-3472-disabled$`)
 	})
 	if runErr, out := sandboxCatDiscard(mutatedPath, nixBash, stablePath); runErr == nil {
-		t.Errorf("in-sandbox read of the key file succeeded WITHOUT its exception — the positive test is a no-op.\nOutput: %s", out)
+		t.Errorf("in-sandbox read of the password file succeeded WITHOUT its exception — the positive test is a no-op.\nOutput: %s", out)
 	}
 }
 
-func TestSandboxExecUniFiAPIKey_DeniedWithNoDelivery(t *testing.T) {
+func TestSandboxExecUniFiPassword_DeniedWithNoDelivery(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
@@ -200,8 +203,8 @@ func TestSandboxExecUniFiAPIKey_DeniedWithNoDelivery(t *testing.T) {
 
 	m := newUniFiProfileManager(t, "")
 	prepared, _ := preparePositiveProfile(t, m)
-	if strings.Contains(prepared.content, uniFiAPIKeySecretName) {
-		t.Fatalf("profile mentions %s with no delivery.\nProfile:\n%s", uniFiAPIKeySecretName, prepared.content)
+	if strings.Contains(prepared.content, uniFiPasswordSecretName) {
+		t.Fatalf("profile mentions %s with no delivery.\nProfile:\n%s", uniFiPasswordSecretName, prepared.content)
 	}
 	profilePath := writeAugmentedPositiveProfile(t, prepared)
 	for _, p := range []string{stablePath, concrete} {
@@ -214,8 +217,8 @@ func TestSandboxExecUniFiAPIKey_DeniedWithNoDelivery(t *testing.T) {
 	}
 }
 
-// uniFiWriteScripts are the writes that a session must not do to the key
-// file. Each script fails as a whole when one step fails.
+// uniFiWriteScripts are the writes that a session must not do to the
+// password file. Each script fails as a whole when one step fails.
 func uniFiWriteScripts(base, concrete, stablePath string) map[string]string {
 	forged := filepath.Join(base, "forged")
 	return map[string]string{
@@ -227,7 +230,7 @@ func uniFiWriteScripts(base, concrete, stablePath string) map[string]string {
 	}
 }
 
-func TestSandboxExecUniFiAPIKey_WriteDeleteReplaceDenied(t *testing.T) {
+func TestSandboxExecUniFiPassword_WriteDeleteReplaceDenied(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
@@ -249,7 +252,7 @@ func TestSandboxExecUniFiAPIKey_WriteDeleteReplaceDenied(t *testing.T) {
 		}
 	}
 	if data, err := os.ReadFile(concrete); err != nil || string(data) != fakeUniFiSentinel+"\n" {
-		t.Errorf("the key file on the host changed (err=%v)", err)
+		t.Errorf("the password file on the host changed (err=%v)", err)
 	}
 	if target, err := os.Readlink(stablePath); err != nil || target != concrete {
 		t.Errorf("the stable symlink on the host changed: %q %v", target, err)
@@ -260,7 +263,7 @@ func TestSandboxExecUniFiAPIKey_WriteDeleteReplaceDenied(t *testing.T) {
 // fake tree wins over every earlier rule, so the same writes work. Thus a
 // denied write above is the effect of the production profile, and the
 // harness can see a write that succeeds.
-func TestSandboxExecUniFiAPIKey_WriteWorksWithWriteGrant(t *testing.T) {
+func TestSandboxExecUniFiPassword_WriteWorksWithWriteGrant(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}

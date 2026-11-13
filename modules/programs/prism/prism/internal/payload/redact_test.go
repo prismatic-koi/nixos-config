@@ -27,6 +27,13 @@ const (
 	syntheticOpenRouterKey = "SYNTHETIC-OPENROUTER-VALUE-22222222"
 )
 
+// Synthetic UniFi OS session values for the context shapes: a JWT for the
+// TOKEN cookie, and a UUID for the CSRF token.
+const (
+	syntheticSessionJWT = "eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+	syntheticCSRFToken  = "00000000-0000-4000-8000-000000003476"
+)
+
 func TestRedact_ValueLayerReplacesWithNamedMarker(t *testing.T) {
 	r := payload.NewRedactor(map[string]string{
 		"GITHUB_TOKEN": syntheticGitHubToken,
@@ -477,6 +484,78 @@ func TestRedact_PrivateKeyPassCostIsNotQuadratic(t *testing.T) {
 	}
 }
 
+// TestRedact_ContextShapeCostIsNotQuadratic is the context shape form of the
+// tests above. Each input passes the prefilter of a context shape, and no
+// input gives a match. The input is 1 MiB, not 8 MiB: a context shape has no
+// literal prefix, so RE2 runs at about 12 MB/s, and much slower under -race.
+// A quadratic pass takes minutes on 1 MiB.
+func TestRedact_ContextShapeCostIsNotQuadratic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping cost bound in -short mode")
+	}
+	r := payload.NewShapeOnlyRedactor()
+	const size = 1 << 20
+	for name, in := range map[string]string{
+		"one cookie header with many cookies":  "Cookie:" + strings.Repeat("a;", size/2) + " xTOKEN=",
+		"many cookie headers on one line":      strings.Repeat("cookie:a;", size/9) + "xTOKEN=",
+		"many CSRF header names with no value": strings.Repeat("X-CSRF-Token:\n", size/14),
+		"many tabs before no jar line":         strings.Repeat("\tTRUE\t0\t", size/9) + "\tTOKEN\t",
+	} {
+		const budget = 10 * time.Second
+		start := time.Now()
+		got := r.Redact(in)
+		elapsed := time.Since(start)
+		if got != in {
+			t.Errorf("%s: an input with no context shape was changed", name)
+		}
+		if elapsed > budget {
+			t.Errorf("%s: Redact of %d bytes took %s, over the %s budget — suspect a super-linear implementation",
+				name, len(in), elapsed, budget)
+		}
+	}
+}
+
+func TestContainsFoldASCII(t *testing.T) {
+	for _, tc := range []struct {
+		s, sub string
+		want   bool
+	}{
+		{"X-CSRF-Token: ", "csrf-token:", true},
+		{"x-csrf-token:\t", "csrf-token:", true},
+		{"x-cSrF-tOkEn:", "csrf-token:", true},
+		{"csrf-token", "csrf-token:", false},
+		{"csrf_token:", "csrf-token:", false},
+		// U+017F folds to s in Unicode, but not in an [Ss] class.
+		{"c\u017frf-token:", "csrf-token:", false},
+		{"", "csrf-token:", false},
+		{"abc", "", true},
+	} {
+		if got := payload.ContainsFoldASCIIForTest(tc.s, tc.sub); got != tc.want {
+			t.Errorf("containsFoldASCII(%q, %q) = %v, want %v", tc.s, tc.sub, got, tc.want)
+		}
+	}
+}
+
+func TestContextShapes_DeclareTriggersAndOneContextGroup(t *testing.T) {
+	shapes := payload.ContextShapes()
+	if len(shapes) == 0 {
+		t.Fatal("no context shape")
+	}
+	for _, s := range shapes {
+		if re := regexp.MustCompile(s.Pattern); re.NumSubexp() != 1 {
+			t.Errorf("context shape %q has %d groups, want 1: the context", s.Name, re.NumSubexp())
+		}
+		if len(s.Triggers) == 0 {
+			t.Errorf("context shape %q declares no prefilter trigger", s.Name)
+		}
+		for _, trig := range s.Triggers {
+			if trig == "" || (s.FoldTriggers && trig != strings.ToLower(trig)) {
+				t.Errorf("context shape %q: trigger %q is empty, or is a fold trigger that is not lower case", s.Name, trig)
+			}
+		}
+	}
+}
+
 func BenchmarkRedact_NoMatch(b *testing.B) {
 	r := payload.NewRedactor(map[string]string{"GITHUB_TOKEN": syntheticGitHubToken})
 	in := strings.Repeat("ok  github.com/prismatic-koi/prism/internal/db\t0.412s\n", 2000)
@@ -525,6 +604,14 @@ func shapeCorpus() []string {
 		"key ATATT3" + strings.Repeat("G", 50) + " end",
 		"head\n-----BEGIN OPENSSH PRIVATE KEY-----\nc3ludGhldGlj\n-----END OPENSSH PRIVATE KEY-----\ntail",
 		"two ghp_" + strings.Repeat("A", 36) + " and AIza" + strings.Repeat("F", 35),
+		"Set-Cookie: TOKEN=" + syntheticSessionJWT + "; path=/",
+		"Cookie: a=b; TOKEN=" + syntheticSessionJWT,
+		"COOKIE:TOKEN=" + syntheticSessionJWT,
+		"#HttpOnly_10.0.0.1\tFALSE\t/\tTRUE\t0\tTOKEN\t" + syntheticSessionJWT,
+		"x-Csrf-TOKEN: " + syntheticCSRFToken,
+		"X-UPDATED-CSRF-TOKEN:" + syntheticCSRFToken,
+		"TOKEN=" + syntheticSessionJWT,
+		"csrf-token: " + syntheticCSRFToken,
 		"x\n-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n",
 		"token glpat-" + strings.Repeat("H", 20) + "-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGlj\n-----END RSA PRIVATE KEY-----",
 		"-----BEGIN A PRIVATE KEY-----BEGIN B PRIVATE KEY-----\nc3ludGhldGlj\n-----END B PRIVATE KEY-----",

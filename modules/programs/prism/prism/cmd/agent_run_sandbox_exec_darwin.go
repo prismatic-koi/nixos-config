@@ -263,9 +263,9 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		AgentRunLogPath:   agentRunLogPath,
 		WorktreeReadOnly:  worktreeReadOnly,
 		ReviewDiffDir:     reviewDiffDir,
-		// The profile admits a read of the key file only when this is
+		// The profile admits a read of the password file only when this is
 		// enabled (collectSecretsDAllowlistNames), and AppendSandboxEnvVarsKV
-		// below sets the two UniFi variables from it.
+		// below sets the UniFi variables from it.
 		UniFi: uniFiDelivery(sessionName, agentRole, worktree, cfg, logFile),
 	}
 
