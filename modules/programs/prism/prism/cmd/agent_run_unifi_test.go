@@ -1,11 +1,11 @@
 package cmd
 
 // agent_run_unifi_test.go — `prism agent-run` (bwrap and sandbox-exec) sets
-// the UniFi API key delivery of the session on the container config (issue
-// #3472). The decision is unit-tested in internal/unifi, and its effect at
+// the UniFi credential delivery of the session on the container config
+// (issue #3472). The decision is unit-tested in internal/unifi, and its effect at
 // the isolator boundary in internal/container. This file pins the wiring.
 //
-// SECURITY: the key value is synthetic.
+// SECURITY: the password value is synthetic.
 
 import (
 	"os"
@@ -22,14 +22,14 @@ import (
 
 func TestUniFiDelivery_ForTheRepoOfTheSession(t *testing.T) {
 	l := projecttrusttest.New(t)
-	keyPath, hostPath := unifitest.Secrets(t, unifitest.Key, unifitest.Host)
-	unifitest.WriteFile(t, l.ConfigDir, []string{"home-ops"}, keyPath, hostPath)
+	passwordPath, hostPath := unifitest.Secrets(t, unifitest.Password, unifitest.Host)
+	unifitest.WriteFile(t, l.ConfigDir, []string{"home-ops"}, passwordPath, hostPath)
 	homeOps := projecttrusttest.Worktree(t, l.Code, "home-ops", "main")
 	other := projecttrusttest.Worktree(t, l.Code, "other-repo", "main")
 	cfg := config.Config{ProjectLocations: []string{l.Code}}
 	logFile, logPath := tempAgentRunLog(t)
 
-	want := unifi.Delivery{APIKeyPath: keyPath, Host: unifitest.Host}
+	want := unifi.Delivery{PasswordPath: passwordPath, Username: unifitest.Username, Host: unifitest.Host}
 	if got := uniFiDelivery("home-ops@main", "worker", homeOps, cfg, logFile); got != want {
 		t.Errorf("home-ops worker: %+v, want %+v", got, want)
 	}
@@ -47,14 +47,14 @@ func TestUniFiDelivery_ForTheRepoOfTheSession(t *testing.T) {
 }
 
 // A secret that is missing gives no delivery, and the agent-run log states
-// the reason. The log holds no key value.
+// the reason. The log holds no password value.
 func TestUniFiDelivery_MissingSecretIsLogged(t *testing.T) {
 	l := projecttrusttest.New(t)
-	keyPath, hostPath := unifitest.Secrets(t, unifitest.Key, unifitest.Host)
+	passwordPath, hostPath := unifitest.Secrets(t, unifitest.Password, unifitest.Host)
 	if err := os.Remove(hostPath); err != nil {
 		t.Fatal(err)
 	}
-	unifitest.WriteFile(t, l.ConfigDir, []string{"home-ops"}, keyPath, hostPath)
+	unifitest.WriteFile(t, l.ConfigDir, []string{"home-ops"}, passwordPath, hostPath)
 	wt := projecttrusttest.Worktree(t, l.Code, "home-ops", "main")
 	logFile, logPath := tempAgentRunLog(t)
 
@@ -66,19 +66,19 @@ func TestUniFiDelivery_MissingSecretIsLogged(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := string(data)
-	for _, want := range []string{"[agent-run] warning: ", hostPath, "UNIFI_API_KEY_FILE", "UNIFI_HOST"} {
+	for _, want := range []string{"[agent-run] warning: ", hostPath, "UNIFI_PASSWORD_FILE", "UNIFI_USERNAME", "UNIFI_HOST"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("agent-run log = %q, want it to hold %q", log, want)
 		}
 	}
-	if strings.Contains(log, unifitest.Key) {
-		t.Error("the agent-run log holds the key value")
+	if strings.Contains(log, unifitest.Password) {
+		t.Error("the agent-run log holds the password value")
 	}
 }
 
 // TestAgentRunDispatchPathsSetUniFiDelivery is a source guard. Both
 // sandboxed dispatch paths must set Config.UniFi from uniFiDelivery, or a
-// session of a listed repo starts with no key. The sandbox-exec file is
+// session of a listed repo starts with no credential. The sandbox-exec file is
 // Darwin-only, so it is read as text.
 func TestAgentRunDispatchPathsSetUniFiDelivery(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)

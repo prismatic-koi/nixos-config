@@ -1,0 +1,176 @@
+{
+  "description": "Context shape cases for the shape layer (issue #3476). The Go suite (redact_parity_test.go) and the pi extension suite (prism.test.ts) run each input through a redactor with no credential values, and compare the output with want. Thus the two outputs are identical. An input or a want is a list of segments. A segment is a string, or {\"repeat\": s, \"count\": n} for n copies of s. All values are synthetic.",
+  "cases": [
+    {
+      "name": "Set-Cookie header line",
+      "input": [
+        "Set-Cookie: TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY; path=/; samesite=strict; secure; httponly"
+      ],
+      "want": [
+        "Set-Cookie: TOKEN=[redacted:unifi-token-cookie]; path=/; samesite=strict; secure; httponly"
+      ]
+    },
+    {
+      "name": "curl -i output with HTTP/2 lower-case header names",
+      "input": [
+        "HTTP/2 200\r\nset-cookie: TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY; path=/\r\nx-csrf-token: 00000000-0000-4000-8000-000000003476\r\n\r\n"
+      ],
+      "want": [
+        "HTTP/2 200\r\nset-cookie: TOKEN=[redacted:unifi-token-cookie]; path=/\r\nx-csrf-token: [redacted:csrf-token-header]\r\n\r\n"
+      ]
+    },
+    {
+      "name": "Cookie request header in curl -v output",
+      "input": [
+        "> Cookie: TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY\r\n> x-csrf-token: 00000000-0000-4000-8000-000000003476\r\n"
+      ],
+      "want": [
+        "> Cookie: TOKEN=[redacted:unifi-token-cookie]\r\n> x-csrf-token: [redacted:csrf-token-header]\r\n"
+      ]
+    },
+    {
+      "name": "TOKEN after another cookie",
+      "input": [
+        "Cookie: theme=dark; TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY; lang=en"
+      ],
+      "want": [
+        "Cookie: theme=dark; TOKEN=[redacted:unifi-token-cookie]; lang=en"
+      ]
+    },
+    {
+      "name": "upper-case header name",
+      "input": [
+        "COOKIE: TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+      ],
+      "want": [
+        "COOKIE: TOKEN=[redacted:unifi-token-cookie]"
+      ]
+    },
+    {
+      "name": "curl cookie jar",
+      "input": [
+        "# Netscape HTTP Cookie File\n#HttpOnly_10.0.0.1\tFALSE\t/\tTRUE\t0\tTOKEN\teyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY\n"
+      ],
+      "want": [
+        "# Netscape HTTP Cookie File\n#HttpOnly_10.0.0.1\tFALSE\t/\tTRUE\t0\tTOKEN\t[redacted:unifi-token-cookie-jar]\n"
+      ]
+    },
+    {
+      "name": "X-CSRF-Token header line",
+      "input": [
+        "X-CSRF-Token: 00000000-0000-4000-8000-000000003476"
+      ],
+      "want": [
+        "X-CSRF-Token: [redacted:csrf-token-header]"
+      ]
+    },
+    {
+      "name": "X-Updated-CSRF-Token header line in curl -v output",
+      "input": [
+        "< X-Updated-CSRF-Token: 00000000-0000-4000-8000-000000003476\r\n"
+      ],
+      "want": [
+        "< X-Updated-CSRF-Token: [redacted:csrf-token-header]\r\n"
+      ]
+    },
+    {
+      "name": "mixed-case header name with no space",
+      "input": [
+        "x-Csrf-TOKEN:00000000-0000-4000-8000-000000003476"
+      ],
+      "want": [
+        "x-Csrf-TOKEN:[redacted:csrf-token-header]"
+      ]
+    },
+    {
+      "name": "JWT with no context stays",
+      "input": [
+        "eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+      ],
+      "want": [
+        "eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+      ]
+    },
+    {
+      "name": "UUID with no context stays",
+      "input": [
+        "request id 00000000-0000-4000-8000-000000003476"
+      ],
+      "want": [
+        "request id 00000000-0000-4000-8000-000000003476"
+      ]
+    },
+    {
+      "name": "TOKEN assignment outside a cookie header stays",
+      "input": [
+        "TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+      ],
+      "want": [
+        "TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+      ]
+    },
+    {
+      "name": "JWT in an Authorization header stays",
+      "input": [
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+      ],
+      "want": [
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+      ]
+    },
+    {
+      "name": "cookie with a name that ends in TOKEN stays",
+      "input": [
+        "Cookie: XSRF-TOKEN=00000000-0000-4000-8000-000000003476"
+      ],
+      "want": [
+        "Cookie: XSRF-TOKEN=00000000-0000-4000-8000-000000003476"
+      ]
+    },
+    {
+      "name": "empty TOKEN cookie stays",
+      "input": [
+        "Set-Cookie: TOKEN=; Max-Age=0; path=/"
+      ],
+      "want": [
+        "Set-Cookie: TOKEN=; Max-Age=0; path=/"
+      ]
+    },
+    {
+      "name": "cookie jar line of another cookie stays",
+      "input": [
+        "10.0.0.1\tFALSE\t/\tTRUE\t0\tSESSION\teyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+      ],
+      "want": [
+        "10.0.0.1\tFALSE\t/\tTRUE\t0\tSESSION\teyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+      ]
+    },
+    {
+      "name": "UUID in a JSON body stays",
+      "input": [
+        "{\"_id\":\"00000000-0000-4000-8000-000000003476\",\"name\":\"default\"}"
+      ],
+      "want": [
+        "{\"_id\":\"00000000-0000-4000-8000-000000003476\",\"name\":\"default\"}"
+      ]
+    },
+    {
+      "name": "limit: a cookie with a colon before TOKEN stops the cookie rule",
+      "input": [
+        "Cookie: a=b:c; TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+      ],
+      "want": [
+        "Cookie: a=b:c; TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
+      ]
+    },
+    {
+      "name": "a second pass changes nothing",
+      "input": [
+        "Cookie: TOKEN=[redacted:unifi-token-cookie]\nX-CSRF-Token: [redacted:csrf-token-header]\n\tTRUE\t0\tTOKEN\t[redacted:unifi-token-cookie-jar]"
+      ],
+      "want": [
+        "Cookie: TOKEN=[redacted:unifi-token-cookie]\nX-CSRF-Token: [redacted:csrf-token-header]\n\tTRUE\t0\tTOKEN\t[redacted:unifi-token-cookie-jar]"
+      ]
+    }
+  ]
+}

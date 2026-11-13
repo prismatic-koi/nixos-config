@@ -240,15 +240,15 @@ integration test coverage exists for:
   configure it, denied when they do not, with `github_token` in the same
   generation dir denied in both cases, plus the paired negative that strips
   the exception. See `sandbox_exec_grafana_config_darwin_test.go`.
-- **The unifi_api_key carve-out** — the one name #3472 adds to that
+- **The unifi_password carve-out** — the one name #3472 adds to that
   allowlist, derived from `Config.UniFi` (the path prism sets as
-  `UNIFI_API_KEY_FILE` for a session of a repo in
+  `UNIFI_PASSWORD_FILE` for a session of a repo in
   `nx.programs.prism.unifi.repos`): readable in-sandbox with a delivery,
   denied with none, with `github_token` in the same generation dir denied,
   plus the paired negative that strips the exception. A write, an unlink,
-  and a rename of the key file and of its stable symlink fail. The paired
-  negative of that test appends a write grant, and the write then works.
-  See `sandbox_exec_unifi_api_key_darwin_test.go`.
+  and a rename of the password file and of its stable symlink fail. The
+  paired negative of that test appends a write grant, and the write then
+  works. See `sandbox_exec_unifi_password_darwin_test.go`.
 - **The worktree path deny** — the final deny (section 21b) on unlink and
   create of the worktree and of every ancestor of it, `BareRoot` included.
   Under the production profile, a write inside the worktree works, and a

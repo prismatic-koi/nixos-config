@@ -190,8 +190,8 @@ jobs:
   #
   # Selector scope: -run is scoped to the two carve-out test families named
   # in issue #2749 (TestSandboxExecGitLabToken_* and
-  # TestSandboxExecGrafanaConfig_*), plus TestSandboxExecUniFiAPIKey_*
-  # (#3472, the unifi_api_key carve-out), TestSandboxExecWorktreeEntry_*
+  # TestSandboxExecGrafanaConfig_*), plus TestSandboxExecUniFiPassword_*
+  # (#3472, the unifi_password carve-out), TestSandboxExecWorktreeEntry_*
   # (#3061, the section-21b worktree path deny),
   # TestSandboxExecContainerCLI_* (#3065, the section-21c podman and
   # docker exec deny), TestSandboxExecContainerSocket_* (#3066, the
@@ -263,7 +263,7 @@ jobs:
           authToken: ${{ secrets.CACHIX_TOKEN }}
           extraPullNames: nix-community
           name: lucidph3nx-nixos-config
-      - name: go test ./internal/integration -run '^TestSandboxExec(GitLabToken|GrafanaConfig|UniFiAPIKey|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)' -race
+      - name: go test ./internal/integration -run '^TestSandboxExec(GitLabToken|GrafanaConfig|UniFiPassword|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)' -race
         if: steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism
         # Run inside `nix shell` so bash, coreutils, and git resolve to
@@ -283,7 +283,7 @@ jobs:
         run: |
           set -o pipefail
           nix shell --print-build-logs nixpkgs#bash nixpkgs#coreutils nixpkgs#git \
-            --command bash -c 'TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"; export TMPDIR; go test -v ./internal/integration/ -run "^TestSandboxExec(GitLabToken|GrafanaConfig|UniFiAPIKey|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)" -race' 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
+            --command bash -c 'TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"; export TMPDIR; go test -v ./internal/integration/ -run "^TestSandboxExec(GitLabToken|GrafanaConfig|UniFiPassword|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)" -race' 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
       # A SKIP must never read as a PASS (this was a review blocker on the
       # parent issue). go test exits 0 even when every selected test
       # skips (e.g. the /var/folders TMPDIR guard tripping on a runner
@@ -303,10 +303,10 @@ jobs:
             exit 1
           fi
 
-          run_count=$(grep -cE '^=== RUN   TestSandboxExec(GitLabToken|GrafanaConfig|UniFiAPIKey|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)' /tmp/go-test-macos-sandbox-exec.log || true)
-          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec(GitLabToken|GrafanaConfig|UniFiAPIKey|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
+          run_count=$(grep -cE '^=== RUN   TestSandboxExec(GitLabToken|GrafanaConfig|UniFiPassword|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)' /tmp/go-test-macos-sandbox-exec.log || true)
+          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec(GitLabToken|GrafanaConfig|UniFiPassword|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
 
-          echo "TestSandboxExec(GitLabToken|GrafanaConfig|UniFiAPIKey|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)* tests run: ${run_count:-0}"
+          echo "TestSandboxExec(GitLabToken|GrafanaConfig|UniFiPassword|PIAgentDir|WorktreeEntry|WorktreeReadOnly|ContainerCLI|ContainerSocket|SessionTmp|GitWriteScope|PipeSecret|RunDir|ReviewDiff|SessionWorkDirNode|SessionAboveRoot|DetachedProcess)* tests run: ${run_count:-0}"
           if [ -n "$skip_lines" ]; then
             echo "::error::one or more selected tests reported SKIP - a skip must not read as a pass:"
             echo "$skip_lines"
@@ -460,7 +460,7 @@ jobs:
           sudo ln -sf "$nix_bash/bin/bash" /usr/bin/sh
           export CGO_ENABLED=0
           nix shell --print-build-logs nixpkgs#coreutils nixpkgs#util-linux nixpkgs#go \
-            --command go test -v ./internal/container/ ./internal/integration/ ./internal/sidecar/ -run '^(TestBwrapBaseline_|TestBwrapBareReadOnly_|TestBwrapUsageStateDir_|TestBwrapReviewDiffDir_|TestBwrapPIAgentDir_|TestBwrapGoCacheDirs_|TestBwrapUniFiAPIKey_|TestBwrapWorktreeReadOnly_|TestBwrapUsrBinEnv_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)' 2>&1 | tee /tmp/go-test-bwrap-live.log
+            --command go test -v ./internal/container/ ./internal/integration/ ./internal/sidecar/ -run '^(TestBwrapBaseline_|TestBwrapBareReadOnly_|TestBwrapUsageStateDir_|TestBwrapReviewDiffDir_|TestBwrapPIAgentDir_|TestBwrapGoCacheDirs_|TestBwrapUniFiPassword_|TestBwrapWorktreeReadOnly_|TestBwrapUsrBinEnv_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)' 2>&1 | tee /tmp/go-test-bwrap-live.log
       - name: Guard against SKIP-as-PASS and a zero-test run
         if: always() && steps.changes.outputs.go == 'true'
         run: |
@@ -468,7 +468,7 @@ jobs:
             echo "::error::go test log not found - likely the test step did not run" >&2
             exit 1
           fi
-          sel='^(TestBwrapBaseline_|TestBwrapBareReadOnly_|TestBwrapUsageStateDir_|TestBwrapReviewDiffDir_|TestBwrapPIAgentDir_|TestBwrapGoCacheDirs_|TestBwrapUniFiAPIKey_|TestBwrapWorktreeReadOnly_|TestBwrapUsrBinEnv_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)'
+          sel='^(TestBwrapBaseline_|TestBwrapBareReadOnly_|TestBwrapUsageStateDir_|TestBwrapReviewDiffDir_|TestBwrapPIAgentDir_|TestBwrapGoCacheDirs_|TestBwrapUniFiPassword_|TestBwrapWorktreeReadOnly_|TestBwrapUsrBinEnv_|TestBwrapAgentRlimitNofile$|TestRunStartupStdio_|TestStdio_)'
           run_count=$(grep -E '^=== RUN   Test' /tmp/go-test-bwrap-live.log | awk '{print $3}' | grep -cE "$sel" || true)
           skip_lines=$(grep -E '^\s*--- SKIP:|^=== SKIP|    [^ ].*_test\.go:[0-9]+: skipping' /tmp/go-test-bwrap-live.log || true)
           echo "live bwrap tests run: ${run_count:-0}"
@@ -694,10 +694,11 @@ jobs:
               - '.github/workflows/pr-gate.yml'
               - 'flake.lock'
               - 'overlays/default.nix'
-              # prism.test.ts runs the private-key case file of the Go
-              # redactor. A PR that changes only the case file must run the
-              # extension tests.
+              # prism.test.ts runs the private-key and context shape case
+              # files of the Go redactor. A PR that changes only a case file
+              # must run the extension tests.
               - 'modules/programs/prism/prism/internal/payload/testdata/private-key-cases.json'
+              - 'modules/programs/prism/prism/internal/payload/testdata/context-shape-cases.json'
       - uses: cachix/install-nix-action@v31
         if: steps.changes.outputs.ext == 'true'
         with:

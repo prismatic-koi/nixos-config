@@ -22,12 +22,13 @@
 //  2. SHAPE matching (secondary). A small set of well-known credential shapes
 //     covers the case where the secret is not in the environment of the
 //     capturing process. This layer is defence in depth. It never replaces
-//     layer 1.
+//     layer 1. A context shape (contextShapes) masks a value by the cookie
+//     name or the header name in front of it.
 //
 // Cost
 // ----
 //
-// Redact runs at most three linear passes over the input:
+// Redact runs at most six linear passes over the input:
 //
 //   - strings.Replacer builds a trie once, at Redactor construction time, and
 //     walks the input once. The walk depth is bounded by the longest secret,
@@ -37,6 +38,7 @@
 //     redactPrivateKeyBlocks.
 //   - The other shapes are one combined RE2 regexp. RE2 is linear in the
 //     input with no backtracking.
+//   - Each context shape is one RE2 regexp.
 //
 // No pass is quadratic in the size of a tool_result payload.
 //
@@ -216,11 +218,11 @@ func CredentialEnvNameSuffixes() []string { return slices.Clone(credentialEnvNam
 // that the variable names, and uses the content as the credential value. The
 // marker names the credential, not the path variable.
 const (
-	// UniFiAPIKeyName is the marker name of the UniFi API key.
-	UniFiAPIKeyName = "UNIFI_API_KEY"
+	// UniFiPasswordName is the marker name of the UniFi password.
+	UniFiPasswordName = "UNIFI_PASSWORD"
 
-	// UniFiAPIKeyFileEnvName holds the path of the UniFi API key file.
-	UniFiAPIKeyFileEnvName = "UNIFI_API_KEY_FILE"
+	// UniFiPasswordFileEnvName holds the path of the UniFi password file.
+	UniFiPasswordFileEnvName = "UNIFI_PASSWORD_FILE"
 )
 
 // MaxCredentialFileSize is the largest file, in bytes, that ReadSecretFile
@@ -233,7 +235,7 @@ const MaxCredentialFileSize = 4096
 // credential in the file. Keep it in step with CREDENTIAL_FILE_ENV_NAMES in
 // the pi extension.
 var credentialFileEnvNames = map[string]string{
-	UniFiAPIKeyFileEnvName: UniFiAPIKeyName,
+	UniFiPasswordFileEnvName: UniFiPasswordName,
 }
 
 // CredentialFileEnvNames returns a copy of the credential file registry: the
@@ -509,6 +511,145 @@ func CredentialShapePatterns() map[string]string {
 	return out
 }
 
+// Context shapes (issue #3476).
+//
+// A context shape masks a value by the cookie name or the header name in
+// front of it. The value has a generic body: the TOKEN cookie of UniFi OS is
+// a JWT, and its CSRF token is a UUID. A JWT or a UUID in any other context
+// stays, for the reason in the comment on credentialShape.
+//
+// Group 1 of a pattern is the context, and it stays in the output. The rest
+// of the match is the value, and the marker replaces it. A header name
+// matches with no regard to ASCII case through [Xx] classes, so the pattern
+// needs no flag in either regexp dialect. The cookie name TOKEN is
+// case-sensitive, as cookie names are.
+//
+// The strings are byte-identical to CONTEXT_SHAPES in the pi extension, and
+// the parity tests compare them. V8 backtracks, so each pattern must also be
+// linear in V8. In the cookie pattern, a cookie before TOKEN holds no ':'. A
+// scan from one header name thus stops at the colon of the next one.
+type contextShape struct {
+	name    string
+	pattern string
+	// triggers are the prefilter literals, as for credentialShape. When
+	// fold is true, each trigger is lower case, and the prefilter matches it
+	// with no regard to ASCII case.
+	triggers []string
+	fold     bool
+
+	re          *regexp.Regexp
+	replacement string
+}
+
+var contextShapes = func() []contextShape {
+	out := []contextShape{
+		{
+			// A Cookie: or a Set-Cookie: header line.
+			name:     "unifi-token-cookie",
+			pattern:  `([Cc][Oo][Oo][Kk][Ii][Ee]:(?:[^:\r\n]*?;)?[ \t]*TOKEN=)[^; \t\r\n]+`,
+			triggers: []string{"TOKEN="},
+		},
+		{
+			// A line of a curl cookie jar (Netscape format): the secure
+			// flag, the expiry, the name, and the value, with a tab
+			// between each two.
+			name:     "unifi-token-cookie-jar",
+			pattern:  `(\t(?:TRUE|FALSE)\t[0-9]+\tTOKEN\t)[^ \t\r\n]+`,
+			triggers: []string{"\tTOKEN\t"},
+		},
+		{
+			// An X-CSRF-Token: or an X-Updated-CSRF-Token: header line.
+			name:     "csrf-token-header",
+			pattern:  `([Xx]-(?:[Uu][Pp][Dd][Aa][Tt][Ee][Dd]-)?[Cc][Ss][Rr][Ff]-[Tt][Oo][Kk][Ee][Nn]:[ \t]*)[^ \t\r\n]+`,
+			triggers: []string{"csrf-token:"},
+			fold:     true,
+		},
+	}
+	for i := range out {
+		out[i].re = regexp.MustCompile(out[i].pattern)
+		out[i].replacement = "${1}" + RedactionMarker(out[i].name)
+	}
+	return out
+}()
+
+func (c *contextShape) triggerPresent(s string) bool {
+	if !c.fold {
+		return anyTriggerPresent(s, c.triggers)
+	}
+	for _, t := range c.triggers {
+		if containsFoldASCII(s, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsFoldASCII reports whether s holds the lower-case literal t, with no
+// regard to the case of an ASCII letter. It folds no other character, the
+// same as an [Xx] class.
+func containsFoldASCII(s, t string) bool {
+	if t == "" {
+		return true
+	}
+	first := t[0]
+	firstUpper := first
+	if 'a' <= first && first <= 'z' {
+		firstUpper = first - ('a' - 'A')
+	}
+	for i := 0; i+len(t) <= len(s); i++ {
+		if c := s[i]; c != first && c != firstUpper {
+			continue
+		}
+		j := 1
+		for j < len(t) {
+			c := s[i+j]
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != t[j] {
+				break
+			}
+			j++
+		}
+		if j == len(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactContextShapes runs each context shape whose prefilter fires.
+func redactContextShapes(s string, prefilter bool) string {
+	for i := range contextShapes {
+		c := &contextShapes[i]
+		if prefilter && !c.triggerPresent(s) {
+			continue
+		}
+		s = c.re.ReplaceAllString(s, c.replacement)
+	}
+	return s
+}
+
+// ContextShape is one context shape rule. See contextShapes.
+type ContextShape struct {
+	Name    string
+	Pattern string
+	// Triggers are the prefilter literals.
+	Triggers []string
+	// FoldTriggers reports whether the prefilter matches Triggers with no
+	// regard to ASCII case.
+	FoldTriggers bool
+}
+
+// ContextShapes returns the context shape rules, in match order.
+func ContextShapes() []ContextShape {
+	out := make([]ContextShape, 0, len(contextShapes))
+	for _, c := range contextShapes {
+		out = append(out, ContextShape{Name: c.name, Pattern: c.pattern, Triggers: slices.Clone(c.triggers), FoldTriggers: c.fold})
+	}
+	return out
+}
+
 // shapeNameFor attributes a combined-regexp match back to a shape name.
 // It returns "credential" when no individual rule claims the match, which
 // cannot happen for a match the combined regexp produced but keeps the
@@ -750,7 +891,7 @@ func (r *Redactor) Redact(s string) string {
 			return RedactionMarker(shapeNameFor(m))
 		})
 	}
-	return s
+	return redactContextShapes(s, true)
 }
 
 // RedactJSON redacts a JSON document, one scalar at a time.

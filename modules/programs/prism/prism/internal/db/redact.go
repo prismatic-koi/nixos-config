@@ -50,17 +50,18 @@ func newProcessRedactor() *payload.Redactor {
 }
 
 // HostCredentialFiles returns the credential files that this host gives to
-// sessions as a file, keyed by marker name: today the UniFi API key in
-// unifi.json (issue #3472). The value layer of a host process reads them for
-// every session, whatever its repo: a host-mode session of any repo can read
-// the key file, so control 2 must know the value in all of them. A file that
-// cannot be read gives no value, and the shape layer still runs.
+// sessions as a file, keyed by marker name: today the UniFi password in
+// unifi.json (issues #3472 and #3476). The value layer of a host process
+// reads them for every session, whatever its repo: a host-mode session of any
+// repo can read the password file, so control 2 must know the value in all of
+// them. A file that cannot be read gives no value, and the shape layer still
+// runs.
 func HostCredentialFiles() map[string]string {
 	u, err := config.LoadUniFi()
-	if err != nil || u.APIKeyPath == "" {
+	if err != nil || u.PasswordPath == "" {
 		return nil
 	}
-	return map[string]string{payload.UniFiAPIKeyName: u.APIKeyPath}
+	return map[string]string{payload.UniFiPasswordName: u.PasswordPath}
 }
 
 // SetRedactor overrides the redactor this DB handle applies at write time.

@@ -1,6 +1,6 @@
 # Secret redaction in the capture path
 
-<!-- doclint-ignore: prism.ts, makeFrameWriter, truncateString, redactToolResult -->
+<!-- doclint-ignore: prism.ts, makeFrameWriter, truncateString, redactToolResult, CONTEXT_SHAPES -->
 <!-- doclint-ignore: structuredContent, structuredContent.output, tool_execution_end, tool_execution_update -->
 <!--
   The tokens above are cross-boundary references to the pi extension at
@@ -122,9 +122,9 @@ it.
 
 prism gives some credentials to a session as a file. The session gets the
 path of the file in a variable, and no variable holds the value. Today the
-only such credential is the UniFi API key (issue #3472):
-`UNIFI_API_KEY_FILE` holds the path, and the marker is
-`[redacted:UNIFI_API_KEY]`.
+only such credential is the UniFi password (issues #3472 and #3476):
+`UNIFI_PASSWORD_FILE` holds the path, and the marker is
+`[redacted:UNIFI_PASSWORD]`.
 
 The value layer cannot learn such a value from the environment. So the
 registry has a third part, `CredentialFileEnvNames`. It maps each path
@@ -139,20 +139,21 @@ bytes). It removes the surrounding whitespace. The content then goes
 through the same over-redaction guards as a variable value. A file that
 the redactor cannot read gives no value.
 
-The three controls learn the key in these ways:
+The three controls learn the password in these ways:
 
-| Control | Process | How it learns the key |
+| Control | Process | How it learns the password |
 |---|---|---|
-| 1 and 3 | The pi extension in the session | The file that `UNIFI_API_KEY_FILE` names. |
-| 2 | The sidecar, and each other host process that writes `prism.db` | The path in `~/.config/prism/unifi.json` (`db.HostCredentialFiles`). The sidecar has no `UNIFI_API_KEY_FILE`. |
+| 1 and 3 | The pi extension in the session | The file that `UNIFI_PASSWORD_FILE` names. |
+| 2 | The sidecar, and each other host process that writes `prism.db` | The path in `~/.config/prism/unifi.json` (`db.HostCredentialFiles`). The sidecar has no `UNIFI_PASSWORD_FILE`. |
 
-Control 2 knows the key in every session, whatever its repo. Controls 1
-and 3 know the key only in a session that gets `UNIFI_API_KEY_FILE`. This
-is a limit of host mode: a host-mode session of another repo can read the
-sops path, and then only control 2 masks the key.
+Control 2 knows the password in every session, whatever its repo. Controls
+1 and 3 know the password only in a session that gets
+`UNIFI_PASSWORD_FILE`. This is a limit of host mode: a host-mode session of
+another repo can read the sops path, and then only control 2 masks the
+password.
 
-prism does not give the key to a session when the key file holds a value
-that the value layer cannot mask (`payload.UsableSecretValue`).
+prism does not give the password to a session when the password file holds
+a value that the value layer cannot mask (`payload.UsableSecretValue`).
 
 ### Layer 2 — shape matching (secondary)
 
@@ -163,14 +164,16 @@ Each shape is anchored on a distinctive issuer prefix: `ghp_`, `github_pat_`,
 `glpat-`, `sk-ant-`, `sk-or-v1-`, `sk-proj-`, `xoxb-`, `AKIA`, `AIza`,
 `ATATT3`, and the BEGIN line of a PEM private-key block.
 
-The shape layer has two passes, in this order:
+The shape layer has three parts, in this order:
 
 1. The private-key pass replaces each PEM private-key block. A block starts
    at a line that matches `-----BEGIN [A-Z ]*PRIVATE KEY-----`. It stops at
    the first line after it that matches `-----END [A-Z ]*PRIVATE KEY-----`.
    Both implementations call the pass `redactPrivateKeyBlocks`.
-2. The combined pass runs all other shapes as one regular expression.
-   `CredentialShapeNames` lists them in match order.
+2. The combined pass runs the issuer-prefix shapes as one regular
+   expression. `CredentialShapeNames` lists them in match order.
+3. The context shapes run one regular expression each. See
+   [Context shapes](#context-shapes).
 
 The private-key pass runs first because some token shapes accept `-`, for
 example `glpat-[A-Za-z0-9_-]{20,255}`. In one combined expression, the
@@ -181,6 +184,38 @@ A token inside a block is part of the block, so the block marker replaces it.
 A shape with a generic body — a bare base64 run, a JWT — is deliberately
 absent. Its false-positive rate would corrupt more output than the rule
 protects.
+
+#### Context shapes
+
+A context shape masks a value by the cookie name or the header name in front
+of it (issue #3476). The value can have a generic body, because the name
+anchors the match. The name stays in the output, and the marker replaces the
+value only. A JWT or a UUID in any other context stays.
+
+| Rule (marker name) | Context | Example output |
+|---|---|---|
+| `unifi-token-cookie` | The `TOKEN` cookie in a `Cookie:` or a `Set-Cookie:` header line. `TOKEN` can follow other cookies of the line. | `Set-Cookie: TOKEN=[redacted:unifi-token-cookie]; path=/` |
+| `unifi-token-cookie-jar` | The `TOKEN` line of a curl cookie jar (Netscape format). | `...\tTRUE\t0\tTOKEN\t[redacted:unifi-token-cookie-jar]` |
+| `csrf-token-header` | An `X-CSRF-Token:` or an `X-Updated-CSRF-Token:` header line. | `x-csrf-token: [redacted:csrf-token-header]` |
+
+The `TOKEN` cookie holds the session token of UniFi OS, a JWT. The CSRF
+header holds a UUID. A header name matches with no regard to ASCII case.
+The patterns use `[Xx]` classes for this, so they need no regexp flag in
+either dialect. The cookie name `TOKEN` is case-sensitive, as cookie names
+are. Group 1 of each pattern is the context.
+
+The rules have these limits:
+
+- A cookie with a `:` in its value, before `TOKEN` on the same line, stops
+  the cookie rule. This limit keeps the pattern linear in V8: a scan from one
+  header name stops at the colon of the next one.
+- A session value in another context is not masked. Examples are the
+  verbose log of curl (`curl -v`) and a header that a script prints as JSON.
+  The `unifi` repo skill tells the agent not to print headers.
+
+`internal/payload/testdata/context-shape-cases.json` holds the output that
+both implementations must give. The two regexp engines must agree on each
+pattern, so the Go suite and `prism.test.ts` run each case.
 
 ## The marker
 
@@ -215,7 +250,7 @@ Output that carries no credential value is written unchanged, byte for byte.
 
 ## Cost
 
-`Redact` makes at most three linear passes over the input:
+`Redact` makes at most six linear passes over the input:
 
 - The value layer is one `strings.Replacer`. It builds its trie once, at
   construction time, and walks the input once. Walk depth is bounded by the
@@ -228,11 +263,13 @@ Output that carries no credential value is written unchanged, byte for byte.
   scan for an END line, from the first BEGIN line to the end of the input.
 - The combined pass is one RE2 regular expression. RE2 is linear in the input
   and does not backtrack.
+- Each of the three context shapes is one RE2 regular expression.
 
 Each pass of the shape layer runs behind a literal prefilter. Every shape
 declares a set of trigger substrings — `ghp_`, `sk-ant-`, `-----BEGIN `, and
 so on — of which at least one must be present for the pattern to match at
-all. When none is present, which is the overwhelmingly common case, the shape
+all. The trigger of `csrf-token-header` matches with no regard to ASCII
+case, the same as its pattern. When none is present, which is the overwhelmingly common case, the shape
 layer skips the pass and only the literal scans run. Measured on this repo, that takes
 the throughput from about 8 MB/s to about 365 MB/s.
 
@@ -245,8 +282,10 @@ and you must add its triggers, on both sides.
 No pass is quadratic in the size of a `tool_result` payload.
 `TestRedact_LargePayloadCostIsNotQuadratic` and
 `TestRedact_PrivateKeyPassCostIsNotQuadratic` bound the wall-clock cost of one
-call on 8 MiB, which separates a linear implementation from a quadratic one
-without depending on the speed of the machine.
+call on 8 MiB. `TestRedact_ContextShapeCostIsNotQuadratic` bounds it on
+1 MiB, because a context shape has no literal prefix and RE2 runs at about
+12 MB/s on it. Each bound separates a linear implementation from a
+quadratic one without depending on the speed of the machine.
 
 The private-key pass gives the same output as the lazy expression
 `-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`.
@@ -255,8 +294,10 @@ does not use the lazy expression, because V8 backtracks. In V8, each BEGIN line
 with no END line after it starts a scan to the end of the input, so the cost of
 the lazy expression is quadratic.
 
-The TypeScript side runs the same three passes per scalar, and its private-key
-pass stops at the same point. Thus its worst case is also one scan for an END
+The TypeScript side runs the same passes per scalar, and its private-key
+pass stops at the same point. V8 backtracks, so each context shape is
+written to be linear in V8 also. The extension tests assert a bound of
+100 ms for 1 MiB of each adversarial cookie and CSRF input. Thus its worst case is also one scan for an END
 line, from the first BEGIN line to the end of the scalar.
 
 Control 1 runs on the full `content` of a tool result, before its 8 KiB byte
@@ -363,7 +404,7 @@ prism scrub-secrets --json      # machine-readable report
 The command reads the credential values out of its own environment, so run it
 from a shell that carries the same credentials the agents had. It also reads
 the credential files of the host config (`db.HostCredentialFiles`), so it
-knows the UniFi API key with no variable set. Values the
+knows the UniFi password with no variable set. Values the
 environment does not hold are still covered by the shape layer; the command
 prints a warning on stderr when the value layer is empty.
 
@@ -440,7 +481,15 @@ it separately, and rotate any credential you believe reached it.
 - Do not put the private-key shape back into the combined pass. A token shape
   that accepts `-` then consumes the dashes of a BEGIN line again.
 - Do not add a shape with a generic body. Precision beats recall here: a
-  control that mangles ordinary output gets switched off.
+  control that mangles ordinary output gets switched off. A value with a
+  generic body is a context shape: anchor the rule on the cookie name or the
+  header name, and keep the name in group 1.
+- If you change a context shape, change `contextShapes` in
+  `internal/payload/redact.go` and `CONTEXT_SHAPES` in the extension, and add
+  a case to `internal/payload/testdata/context-shape-cases.json`.
+  `TestRedactorParityWithExtension_ContextShapes` compares the two rule
+  lists. Each pattern must be linear in V8: add an adversarial input for the
+  rule to the cost tests of both suites.
 - Never apply a shape to a serialised JSON document. Use `RedactJSON` on the
   Go side and `redactFrame` in the extension. See the scalar-at-a-time section
   above for what goes wrong.
