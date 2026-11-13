@@ -46,24 +46,29 @@ and tell the user. A review agent does not get these variables.
 
 ## Steps
 
-Each bash command starts in a new shell. Start each command with these
-variables:
+Each bash command starts in a new shell. Keep the cookie jar and the CSRF
+file in a directory that is unique to this session. Make it with `mktemp -d`,
+as in step 1. Do not use a fixed name such as `${TMPDIR:-/tmp}/unifi`: two
+host-mode sessions share `/tmp`, and they then use the same files.
 
-```sh
-U="${TMPDIR:-/tmp}/unifi" S=/proxy/network/api/s/default V=/proxy/network/v2/api/site/default
-```
-
-1. Log in. The command keeps the cookie jar and the CSRF token in `$U`, and
-   prints only the HTTP status. The expected result is `200`.
+1. Make the directory and log in. The command prints the path of the
+   directory, and then the HTTP status. The expected status is `200`.
 
    ```sh
-   mkdir -p -m 700 "$U"
+   U="$(mktemp -d "${TMPDIR:-/tmp}/unifi.XXXXXXXX")" && echo "$U"
    jq -n --rawfile p "$UNIFI_PASSWORD_FILE" --arg u "$UNIFI_USERNAME" \
      '{username: $u, password: ($p | rtrimstr("\n")), remember: false}' |
      curl -s -o /dev/null -w '%{http_code}\n' -c "$U/jar" -D "$U/headers" \
        -H 'Content-Type: application/json' --data-binary @- "https://$UNIFI_HOST/api/auth/login"
    grep -i '^x-csrf-token:' "$U/headers" | cut -d' ' -f2 | tr -d '\r' > "$U/csrf"
    rm "$U/headers"
+   ```
+
+   Start each later command with these variables. Write the path that step 1
+   printed in place of `<dir>`:
+
+   ```sh
+   U=<dir> S=/proxy/network/api/s/default V=/proxy/network/v2/api/site/default
    ```
 
 2. Send a request with the cookie and the CSRF header. A response of a `$S`
@@ -74,7 +79,8 @@ U="${TMPDIR:-/tmp}/unifi" S=/proxy/network/api/s/default V=/proxy/network/v2/api
      "https://$UNIFI_HOST$S/stat/sta" | jq '.data[] | {mac, hostname, ip, sw_port, assoc_time}'
    ```
 
-   For an endpoint that takes a JSON body, add the body:
+   For an endpoint that takes a JSON body, add the body. "Request bodies"
+   below gives the body of each endpoint.
 
    ```sh
    curl -s -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" -H 'Content-Type: application/json' \
@@ -83,13 +89,37 @@ U="${TMPDIR:-/tmp}/unifi" S=/proxy/network/api/s/default V=/proxy/network/v2/api
 
    If a request returns 401, log in again.
 
-3. Log out, and delete the cookie jar.
+3. Log out, and delete the directory.
 
    ```sh
    curl -s -o /dev/null -w '%{http_code}\n' -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" \
      -X POST "https://$UNIFI_HOST/api/auth/logout"
    rm -rf "$U"
    ```
+
+## Request bodies
+
+The tests of #3473 and #3476 used the `stat/sitedpi` body. The coordinator
+tested the `system-log/all` and `traffic-flows` bodies on 2026-11-14. Each
+request returned HTTP 200.
+
+| Request | Body |
+|---|---|
+| `POST $S/stat/sitedpi` | `{"type":"by_app"}` |
+| `POST $V/system-log/all` | `{"pageNumber":0,"pageSize":20,"timestampFrom":0,"timestampTo":9999999999999}` |
+| `POST $V/traffic-flows` | `{"pageNumber":0,"pageSize":20}` |
+
+`timestampFrom` and `timestampTo` are milliseconds since the epoch. The body
+in the table covers all time. Set the two values to the time window that you
+need. This example reads the system log of the last hour. Start it with the
+variables of step 1.
+
+```sh
+now=$(($(date +%s) * 1000))
+curl -s -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" -H 'Content-Type: application/json' \
+  --data "{\"pageNumber\":0,\"pageSize\":20,\"timestampFrom\":$((now - 3600000)),\"timestampTo\":$now}" \
+  "https://$UNIFI_HOST$V/system-log/all" | jq
+```
 
 ## Endpoints that work
 
@@ -107,14 +137,11 @@ U="${TMPDIR:-/tmp}/unifi" S=/proxy/network/api/s/default V=/proxy/network/v2/api
 | `GET $S/rest/wlanconf` | 200 | Read the Wi-Fi networks. |
 | `GET $V/clients/active` | 200 | List the current clients in the v2 form. |
 | `GET $V/firewall-policies` | 200 | Find the policy that allows or blocks traffic. |
-| `POST $V/system-log/all` with a paged body | 200 | Read the recent system log, in place of `stat/event` and `stat/alarm`. |
-| `POST $V/traffic-flows` with a paged body | 200 | Read the recent traffic flows. |
+| `POST $V/system-log/all` with the body in "Request bodies" | 200 | Read the system log of a time window, in place of `stat/event` and `stat/alarm`. |
+| `POST $V/traffic-flows` with the body in "Request bodies" | 200 | Read the recent traffic flows. |
 | `GET $S/rest/portconf` | 200, no rows | Read the switch port profiles. |
 | `GET $S/stat/routing` | 200, no rows | Read the routes. |
 | `POST $S/stat/report/hourly.site`, `5minutes.ap`, `archive.speedtest` | 200, no rows. The tests sent no time range. No test verified that the request needs one. | Read statistics over time and speed test results. |
-
-The tests of `system-log/all` and `traffic-flows` used a paged JSON body.
-This skill does not record the fields of that body.
 
 ## Requests that do not work
 

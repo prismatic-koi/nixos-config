@@ -16,6 +16,8 @@ package db
 
 import (
 	"os"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/prismatic-koi/prism/internal/config"
@@ -49,19 +51,32 @@ func newProcessRedactor() *payload.Redactor {
 	return payload.NewRedactorFromEnvironAndFiles(os.Environ(), HostCredentialFiles())
 }
 
-// HostCredentialFiles returns the credential files that this host gives to
-// sessions as a file, keyed by marker name: today the UniFi password in
-// unifi.json (issues #3472 and #3476). The value layer of a host process
-// reads them for every session, whatever its repo: a host-mode session of any
-// repo can read the password file, so control 2 must know the value in all of
-// them. A file that cannot be read gives no value, and the shape layer still
-// runs.
-func HostCredentialFiles() map[string]string {
-	u, err := config.LoadUniFi()
-	if err != nil || u.PasswordPath == "" {
+// HostCredentialFiles returns the file variables of each agent credential in
+// agent-credentials.json: the path and the marker name. The value layer of a
+// host process reads them for every session, whatever its repo: a host-mode
+// session of any repo can read the files, so control 2 must know the values
+// in all of them. A file that cannot be read gives no value, and the shape
+// layer still runs. The result is in the order of the paths.
+func HostCredentialFiles() []payload.CredentialFile {
+	creds, err := config.LoadAgentCredentials()
+	if err != nil {
 		return nil
 	}
-	return map[string]string{payload.UniFiPasswordName: u.PasswordPath}
+	var out []payload.CredentialFile
+	for _, c := range creds {
+		for _, f := range c.Files {
+			if f.Path != "" && payload.IsCredentialFileName(f.Marker) {
+				out = append(out, payload.CredentialFile{Marker: f.Marker, Path: f.Path})
+			}
+		}
+	}
+	slices.SortFunc(out, func(a, b payload.CredentialFile) int {
+		if c := strings.Compare(a.Path, b.Path); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Marker, b.Marker)
+	})
+	return slices.Compact(out)
 }
 
 // SetRedactor overrides the redactor this DB handle applies at write time.

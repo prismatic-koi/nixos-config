@@ -33,9 +33,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/agentcred"
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/rundir"
-	"github.com/prismatic-koi/prism/internal/unifi"
 	"github.com/prismatic-koi/prism/internal/usage"
 )
 
@@ -325,15 +325,15 @@ type Config struct {
 	// inline from AgentEnvVars to emit its --ro-bind.
 	GrafanaConfigPath string
 
-	// UniFi is the UniFi credential delivery of the session (internal/unifi,
-	// issues #3472 and #3476). `prism agent-run` sets it on the host from
-	// unifi.json and the repo identity of the session. The zero value gives
-	// nothing. When it is enabled, bwrap binds the password file read-only,
-	// the sandbox-exec profile admits a read of its secrets.d name, and both
-	// isolators set UNIFI_PASSWORD_FILE, UNIFI_USERNAME, and UNIFI_HOST
+	// AgentCredentials is the agent credential delivery of the session
+	// (internal/agentcred). `prism agent-run` sets it on the host from
+	// agent-credentials.json and the repo identity of the session. The zero
+	// value gives nothing. bwrap binds each file of a credential read-only,
+	// the sandbox-exec profile admits a read of the secrets.d name of each
+	// file, and both isolators set the variables of each credential
 	// (AppendStandardEnv, AppendSandboxEnvVarsKV). No argv and no variable
-	// holds the password.
-	UniFi unifi.Delivery
+	// holds the content of a file variable.
+	AgentCredentials agentcred.Delivery
 
 	// InitialPrompt is the initial prompt to deliver to the agent at startup.
 	// When non-empty, it is appended to the agent command as

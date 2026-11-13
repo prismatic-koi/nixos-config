@@ -10,7 +10,8 @@ package payload_test
 //
 // The test reads the TypeScript source and compares the seven things that
 // must agree: the exact env-var names, the name prefixes, the name suffixes,
-// the credential file registry, the shape rules of the combined pass (name AND
+// the credential file registry variable (its name and the pattern of an
+// entry), the shape rules of the combined pass (name AND
 // pattern — the pattern strings are deliberately written to be
 // byte-identical in both dialects), the private-key shape (name, BEGIN
 // and END patterns, and triggers), and the context shapes (name, pattern,
@@ -21,7 +22,9 @@ package payload_test
 // sides must give. This file runs the cases against Go, and prism.test.ts
 // runs the same file against the extension. testdata/context-shape-cases.json
 // does the same for the context shapes: the two regexp engines must give the
-// same match for the same pattern.
+// same match for the same pattern. testdata/credential-files-cases.json
+// holds the registry that both sides must parse from each value of the
+// registry variable.
 //
 // The nix build sandbox copies in only modules/programs/prism/prism, so the
 // extension source is absent there and the source tests skip. They run in the
@@ -31,7 +34,6 @@ package payload_test
 import (
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -49,6 +51,10 @@ const extensionSourcePath = "../../../pi/extensions/prism.ts"
 
 // extensionTestSourcePath is the test suite of the pi extension.
 const extensionTestSourcePath = "../../../pi/extensions/prism.test.ts"
+
+// extensionCredentialFileTestSourcePath is the credential file test suite of
+// the pi extension.
+const extensionCredentialFileTestSourcePath = "../../../pi/extensions/prism.credential-file-redaction.test.ts"
 
 // privateKeyCasesPath is the private-key case file that both suites run.
 const privateKeyCasesPath = "testdata/private-key-cases.json"
@@ -130,25 +136,26 @@ func TestRedactorParityWithExtension_EnvNameRegistry(t *testing.T) {
 		stringArrayLiteral(t, src, "CREDENTIAL_ENV_NAME_SUFFIXES"))
 }
 
-// TestRedactorParityWithExtension_CredentialFileRegistry compares the path
-// variables whose file the value layer reads, and the marker name of each
-// (issue #3472). If one side drops an entry, that side leaves the credential
-// in the output.
+// TestRedactorParityWithExtension_CredentialFileRegistry compares the
+// registry variable of the credential files: its name and the pattern of a
+// VAR and a MARKER. prism sets the variable in the session, and each side
+// reads the file of each listed variable. If the two sides read different
+// names, one side leaves the credential in the output. The shared case file
+// (TestParseCredentialFiles_SharedCases) compares the parse itself.
 func TestRedactorParityWithExtension_CredentialFileRegistry(t *testing.T) {
 	src := readExtensionSource(t)
-	block := regexp.MustCompile(`(?s)export const CREDENTIAL_FILE_ENV_NAMES[^=]*=\s*\{(.*?)\n\}`).FindStringSubmatch(src)
-	if block == nil {
-		t.Fatal("could not find CREDENTIAL_FILE_ENV_NAMES in the extension source")
-	}
-	ts := map[string]string{}
-	for _, m := range regexp.MustCompile(`(?m)^\s*([A-Z0-9_]+):\s*"([^"]+)",?\s*$`).FindAllStringSubmatch(block[1], -1) {
-		ts[m[1]] = m[2]
-	}
-	if len(ts) == 0 {
-		t.Fatal("CREDENTIAL_FILE_ENV_NAMES parsed to zero entries")
-	}
-	if goSide := payload.CredentialFileEnvNames(); !maps.Equal(goSide, ts) {
-		t.Errorf("credential file registry drifted between Go and the pi extension:\n  Go: %v\n  TS: %v", goSide, ts)
+	for _, tc := range []struct{ constName, goValue, form string }{
+		{"CREDENTIAL_FILES_ENV_NAME", payload.CredentialFilesEnvName, `"([^"]*)"`},
+		{"CREDENTIAL_FILE_NAME_PATTERN", payload.CredentialFileNamePattern, "String\\.raw`([^`]*)`"},
+	} {
+		m := regexp.MustCompile(`export const ` + tc.constName + `\s*=\s*` + tc.form).FindStringSubmatch(src)
+		if m == nil {
+			t.Errorf("could not find %s in the extension source", tc.constName)
+			continue
+		}
+		if m[1] != tc.goValue {
+			t.Errorf("%s drifted: Go %q, TS %q", tc.constName, tc.goValue, m[1])
+		}
 	}
 }
 
@@ -412,10 +419,14 @@ func TestRedactorParityWithExtension_ContextShapeCases(t *testing.T) {
 // TestRedactorParityWithExtension_ExtensionRunsTheCaseFiles is a source
 // guard. A case file proves parity only while both suites run it.
 func TestRedactorParityWithExtension_ExtensionRunsTheCaseFiles(t *testing.T) {
-	src := readExtensionFile(t, extensionTestSourcePath)
-	for _, p := range []string{privateKeyCasesPath, contextShapeCasesPath} {
-		if want := filepath.Base(p); !strings.Contains(src, want) {
-			t.Errorf("prism.test.ts no longer reads %s — the parity check of that file is gone from the extension side", want)
+	for _, tc := range []struct{ testSource, casePath string }{
+		{extensionTestSourcePath, privateKeyCasesPath},
+		{extensionTestSourcePath, contextShapeCasesPath},
+		{extensionCredentialFileTestSourcePath, credentialFilesCasesPath},
+	} {
+		src := readExtensionFile(t, tc.testSource)
+		if want := filepath.Base(tc.casePath); !strings.Contains(src, want) {
+			t.Errorf("%s no longer reads %s — the parity check of that file is gone from the extension side", filepath.Base(tc.testSource), want)
 		}
 	}
 }

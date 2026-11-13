@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/agentcred"
 	"github.com/prismatic-koi/prism/internal/authz"
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
@@ -23,7 +24,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/rundir"
 	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/tmux"
-	"github.com/prismatic-koi/prism/internal/unifi"
 )
 
 // testDBPath overrides dbPath() during tests. Set via SetTestDBPath.
@@ -1049,17 +1049,17 @@ func hostHarnessEnvVars(sockPath, sessionName string) map[string]string {
 	return envs
 }
 
-// hostUniFiEnvVars returns UNIFI_PASSWORD_FILE, UNIFI_USERNAME, and
-// UNIFI_HOST for a host-mode session that gets the UniFi credential
-// (unifi.ForSession, issue #3472), or nil. Host mode has no filesystem isolation, so these variables are the only
-// control: a host-mode session of any repo can read the sops path. Each
-// warning goes to the agent-run log of the session.
-func hostUniFiEnvVars(sessionName, role, worktree string) map[string]string {
+// hostAgentCredentialEnvVars returns the variables of the agent credentials
+// of a host-mode session (agentcred.ForSession), or nil. Host mode has no
+// filesystem isolation, so these variables are the only control: a host-mode
+// session of any repo can read the sops path. Each warning goes to the
+// agent-run log of the session.
+func hostAgentCredentialEnvVars(sessionName, role, worktree string) map[string]string {
 	if sessionName == "" {
 		return nil
 	}
 	warn := func(msg string) { logHostWarning(Opts{SessionName: sessionName}, msg) }
-	return unifi.ForSession(sessionName, role, worktree, config.LoadFresh(), warn).EnvVars()
+	return agentcred.ForSession(sessionName, role, worktree, config.LoadFresh(), warn).EnvVars()
 }
 
 // mergeEnvVars returns the union of maps, or nil when it is empty. A later
@@ -1104,10 +1104,10 @@ func agentPaneEnvVars(opts Opts) map[string]string {
 		// we must inject PRISM_HARNESS_PIPE so the PI extension can find the
 		// sidecar Unix socket. bwrap and sandbox-exec set this via their own
 		// paths; only inject here for host mode. The same holds for the
-		// UniFi variables.
+		// agent credential variables.
 		return mergeEnvVars(
 			hostHarnessEnvVars(opts.HarnessPipeSockPath, opts.SessionName),
-			hostUniFiEnvVars(opts.SessionName, opts.Agent, opts.Worktree),
+			hostAgentCredentialEnvVars(opts.SessionName, opts.Agent, opts.Worktree),
 		)
 	}
 	if opts.Prompt == "" {

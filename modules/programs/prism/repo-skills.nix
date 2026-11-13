@@ -22,9 +22,9 @@
 
         The prism modules define entries of this option, not a default, so
         the definitions merge: this module gives site-theming to
-        nixos-config, and unifi.nix gives the unifi skill to each repo in
-        nx.programs.prism.unifi.repos. A definition in a host config adds
-        to these entries.
+        nixos-config, and agent-credentials.nix gives the skills of each
+        agent credential to the repos of that credential. A definition in a
+        host config adds to these entries.
 
         prism starts every pi of a session of the repo with one
         --skill <store-path> for each skill: the coordinator, the workers,
