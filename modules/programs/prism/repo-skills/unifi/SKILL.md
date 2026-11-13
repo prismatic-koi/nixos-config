@@ -9,7 +9,8 @@ Use the login-based API of UniFi OS. The session logs in as a local user
 with "Network View Only" and "Control Plane View Only". The session has
 these variables:
 
-- `UNIFI_HOST`: the address of the controller.
+- `UNIFI_HOST`: the host name of the controller. A reverse proxy with a
+  valid certificate serves it, so curl verifies TLS.
 - `UNIFI_USERNAME`: the local user.
 - `UNIFI_PASSWORD_FILE`: the path of the file that holds the password.
 
@@ -30,12 +31,18 @@ and tell the user. A review agent does not get these variables.
 4. Do not use `curl -v`, `--verbose`, `--trace`, `--trace-ascii`, `-i`,
    `--include`, or `-D -`. These options print headers, and the headers hold
    the session token.
-5. Use only the endpoints in this skill. Each one has a test result on this
+5. If curl cannot reach `$UNIFI_HOST`, or TLS verification fails, tell the
+   user and stop. Do not use an IP address in place of `$UNIFI_HOST`. Do not
+   add `-k` or `--insecure`.
+6. The redactor does not mask `UNIFI_HOST`. Do not copy output that shows
+   the host name into a commit, a PR, an issue, or a file in a public repo.
+   Write `$UNIFI_HOST` there.
+7. Use only the endpoints in this skill. Each one has a test result on this
    controller (#3473, #3476). Do not add an endpoint from community
    documentation. Some community endpoints do not exist on Network 11.
-6. Use the API for current state. For history, query Loki with
+8. Use the API for current state. For history, query Loki with
    `{job="unifi-syslog"}`. home-ops #4145 delivers this stream.
-7. Log out when the work is done.
+9. Log out when the work is done.
 
 ## Steps
 
@@ -53,7 +60,7 @@ U="${TMPDIR:-/tmp}/unifi" S=/proxy/network/api/s/default V=/proxy/network/v2/api
    mkdir -p -m 700 "$U"
    jq -n --rawfile p "$UNIFI_PASSWORD_FILE" --arg u "$UNIFI_USERNAME" \
      '{username: $u, password: ($p | rtrimstr("\n")), remember: false}' |
-     curl -sk -o /dev/null -w '%{http_code}\n' -c "$U/jar" -D "$U/headers" \
+     curl -s -o /dev/null -w '%{http_code}\n' -c "$U/jar" -D "$U/headers" \
        -H 'Content-Type: application/json' --data-binary @- "https://$UNIFI_HOST/api/auth/login"
    grep -i '^x-csrf-token:' "$U/headers" | cut -d' ' -f2 | tr -d '\r' > "$U/csrf"
    rm "$U/headers"
@@ -63,14 +70,14 @@ U="${TMPDIR:-/tmp}/unifi" S=/proxy/network/api/s/default V=/proxy/network/v2/api
    endpoint holds its rows in `.data`.
 
    ```sh
-   curl -sk -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" \
+   curl -s -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" \
      "https://$UNIFI_HOST$S/stat/sta" | jq '.data[] | {mac, hostname, ip, sw_port, assoc_time}'
    ```
 
    For an endpoint that takes a JSON body, add the body:
 
    ```sh
-   curl -sk -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" -H 'Content-Type: application/json' \
+   curl -s -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" -H 'Content-Type: application/json' \
      --data '{"type":"by_app"}' "https://$UNIFI_HOST$S/stat/sitedpi" | jq '.data'
    ```
 
@@ -79,7 +86,7 @@ U="${TMPDIR:-/tmp}/unifi" S=/proxy/network/api/s/default V=/proxy/network/v2/api
 3. Log out, and delete the cookie jar.
 
    ```sh
-   curl -sk -o /dev/null -w '%{http_code}\n' -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" \
+   curl -s -o /dev/null -w '%{http_code}\n' -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" \
      -X POST "https://$UNIFI_HOST/api/auth/logout"
    rm -rf "$U"
    ```

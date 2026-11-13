@@ -378,7 +378,7 @@ A session of a repo in `nx.programs.prism.unifi.repos` gets the UniFi credential
 
 - `UNIFI_PASSWORD_FILE` holds the path of the decrypted `unifi_password` secret. No variable holds the password.
 - `UNIFI_USERNAME` holds the value of `nx.programs.prism.unifi.username`. The default is `agent-readonly`.
-- `UNIFI_HOST` holds the value of the `unifi_host` secret.
+- `UNIFI_HOST` holds the value of the `unifi_host` secret: the host name of a reverse proxy in front of the controller. The proxy has a valid certificate, so each command verifies TLS, with no `-k`. The redactor does not mask the host name, because it is not a credential. The repo is public, so no file names the host.
 
 The credential is a password, not an API key. Only an admin can create an API key, and an admin key can write. The Integration API (`/proxy/network/integration/v1`, header `X-API-KEY`) accepts only an API key, so no session uses it.
 
@@ -396,20 +396,20 @@ The credential is a password, not an API key. Only an admin can create an API ke
 
 ### Check after a deployment
 
-Do this check after a home-manager switch, from a new `home-ops` session. The check logs in, reads `stat/health`, and logs out. The expected result is `200` for each of the three requests.
+Do this check after a home-manager switch, from a new `home-ops` session. The check logs in, reads `stat/health`, and logs out. The expected result is `200` for each of the three requests. If TLS verification fails, the check fails. Do not add `-k`.
 
 ```sh
 U="${TMPDIR:-/tmp}/unifi" S=/proxy/network/api/s/default
 mkdir -p -m 700 "$U"
 jq -n --rawfile p "$UNIFI_PASSWORD_FILE" --arg u "$UNIFI_USERNAME" \
   '{username: $u, password: ($p | rtrimstr("\n")), remember: false}' |
-  curl -sk -o /dev/null -w '%{http_code}\n' -c "$U/jar" -D "$U/headers" \
+  curl -s -o /dev/null -w '%{http_code}\n' -c "$U/jar" -D "$U/headers" \
     -H 'Content-Type: application/json' --data-binary @- "https://$UNIFI_HOST/api/auth/login"
 grep -i '^x-csrf-token:' "$U/headers" | cut -d' ' -f2 | tr -d '\r' > "$U/csrf"
 rm "$U/headers"
-curl -sk -o /dev/null -w '%{http_code}\n' -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" \
+curl -s -o /dev/null -w '%{http_code}\n' -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" \
   "https://$UNIFI_HOST$S/stat/health"
-curl -sk -o /dev/null -w '%{http_code}\n' -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" \
+curl -s -o /dev/null -w '%{http_code}\n' -b "$U/jar" -H "X-CSRF-Token: $(cat "$U/csrf")" \
   -X POST "https://$UNIFI_HOST/api/auth/logout"
 rm -rf "$U"
 ```
