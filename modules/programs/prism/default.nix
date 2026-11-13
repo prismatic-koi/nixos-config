@@ -323,6 +323,7 @@
     ./agent-credentials.nix
     ./checkin.nix
     ./container-tokens.nix
+    ./home-assistant.nix
     ./neovim
     ./pi.nix
     ./pi/grafana-secret.nix

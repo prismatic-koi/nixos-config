@@ -369,11 +369,14 @@ prism gives pi one `--skill <path>` for each skill of the repo of the session (i
 
 <!-- doclint-ignore: ~/.config/prism/agent-credentials.json, agent-credentials.nix, unifi.nix, home-automation.nix, repo-skills/unifi, stat/health, prism.ts -->
 <!-- doclint-ignore: UNIFI_PASSWORD_FILE, UNIFI_USERNAME, UNIFI_HOST, UNIFI_PASSWORD, unifi_password, unifi_host, hass_domain, EXAMPLE_TOKEN, sopsFile -->
+<!-- doclint-ignore: home-assistant.nix, repo-skills/home-assistant, greasemonkey.nix, HASS_TOKEN_FILE, HASS_DOMAIN, HASS_TOKEN, HASS_API_KEY, hass_agent_api_key, hass_api_key -->
 <!--
-  agent-credentials.nix, unifi.nix, home-automation.nix, repo-skills/unifi,
-  and prism.ts are outside the prism subtree that the nix build sandbox
-  copies in. The UNIFI_ names, the sops keys, and EXAMPLE_TOKEN are declared
-  in nix or are examples: the Go source holds no name of a credential.
+  agent-credentials.nix, unifi.nix, home-assistant.nix, home-automation.nix,
+  greasemonkey.nix, repo-skills/unifi, repo-skills/home-assistant, and
+  prism.ts are outside the prism subtree that the nix build sandbox copies
+  in. The UNIFI_ and HASS_ names, the sops keys, and EXAMPLE_TOKEN are
+  declared in nix or are examples: the Go source holds no name of a
+  credential.
   sopsFile is a sops-nix option.
   stat/health is a UniFi API endpoint, not a file.
 -->
@@ -447,6 +450,33 @@ curl -s -o /dev/null -w '%{http_code}\n' -b "$U/jar" -H "X-CSRF-Token: $(cat "$U
   -X POST "https://$UNIFI_HOST/api/auth/logout"
 rm -rf "$U"
 ```
+
+### Home Assistant credential
+
+The Home Assistant credential is the entry `home-assistant` (`home-assistant.nix`, issue #3478). The credential is a long-lived access token of a non-admin Home Assistant user. The token can read state and can call services. It cannot change the system config. The default repo list is `home-ops`, `nixos-config`, `hass-config`, and `obsidian`. A session of a listed repo gets two variables:
+
+- `HASS_TOKEN_FILE`, a file variable, holds the path of the decrypted `hass_agent_api_key` secret. The marker is `[redacted:HASS_TOKEN]`.
+- `HASS_DOMAIN`, a value variable, holds the value of the `hass_domain` secret: the host name of Home Assistant. The redactor does not mask the host name, because it is not a credential. The repo is public. `greasemonkey.nix` already names the host. Do not add the host name to another file.
+
+More rules:
+
+- `home-automation.nix` also declares `hass_domain`. That declaration sets the final `owner` and `mode`, so the secret keeps mode `0600` on Linux.
+- `home-automation.nix` also exports `HASS_API_KEY`, from the `hass_api_key` secret, to the login environment of the host. A `host` session can see it. This credential does not change that export.
+- Each repo in the list also gets the repo skill `repo-skills/home-assistant`, from the `skills` of the credential.
+- The skill gives the token to curl on stdin (`-H @-`), from the shell builtin `printf`. No process gets the token as an argument. On macOS, a `sandbox-exec` session can read the arguments of each process of the user (`kern.procargs2`), so a token in an argument of curl is open to the sessions of other repos.
+- The endpoint results in the skill are expected results. No test has used the token.
+
+#### Check after a deployment
+
+Do this check after a home-manager switch, from a new `home-ops` session.
+
+1. Run `printenv PRISM_CREDENTIAL_FILES`. Make sure that the output holds `HASS_TOKEN_FILE=HASS_TOKEN`.
+2. Run `cat "$HASS_TOKEN_FILE"`. Make sure that the output is `[redacted:HASS_TOKEN]`.
+3. Run step 1 of the `home-assistant` skill. The expected status is `200`.
+4. Send each other request in the tables of the skill, and compare the result with the expected result. Do not send `POST /api/events/<event_type>`, and do not send a write to `/api/states/<entity_id>`.
+5. If a result is different, correct the skill in a follow-up change.
+
+From a new session of a repo that is not in the list, run `printenv HASS_TOKEN_FILE`. The output must be empty.
 
 ## Checkin scope
 
