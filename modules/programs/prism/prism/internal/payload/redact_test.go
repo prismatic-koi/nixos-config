@@ -520,8 +520,8 @@ func TestContainsFoldASCII(t *testing.T) {
 		s, sub string
 		want   bool
 	}{
-		{"X-CSRF-Token: a", "csrf-token:", true},
-		{"x-csrf-token: a", "csrf-token:", true},
+		{"X-CSRF-Token: ", "csrf-token:", true},
+		{"x-csrf-token:\t", "csrf-token:", true},
 		{"x-cSrF-tOkEn:", "csrf-token:", true},
 		{"csrf-token", "csrf-token:", false},
 		{"csrf_token:", "csrf-token:", false},

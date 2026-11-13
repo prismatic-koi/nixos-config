@@ -563,7 +563,7 @@ var contextShapes = func() []contextShape {
 			triggers: []string{"\tTOKEN\t"},
 		},
 		{
-			// An X-CSRF-Token: or an X-Updated-CSRF-Token: header line.
+			// An X-CSRF-Token or an X-Updated-CSRF-Token header line.
 			name:     "csrf-token-header",
 			pattern:  `([Xx]-(?:[Uu][Pp][Dd][Aa][Tt][Ee][Dd]-)?[Cc][Ss][Rr][Ff]-[Tt][Oo][Kk][Ee][Nn]:[ \t]*)[A-Za-z0-9][A-Za-z0-9._~+/=-]*`,
 			triggers: []string{"csrf-token:"},

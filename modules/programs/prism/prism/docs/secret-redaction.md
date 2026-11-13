@@ -209,9 +209,9 @@ a token: letters, digits, and `._~+/=-`. Control 3 redacts the result of
 the `read` tool too. So a shell expression or a string literal after the
 name stays, for example `X-CSRF-Token: $(cat "$U/csrf")` in the `unifi`
 skill. A marker stays too, so a second pass changes nothing.
-`TestContextShapes_LeaveTheUniFiInstructionsUnchanged` runs the skill and
-the post-deploy check of `docs/invariants/session-lifecycle.md` through the shape
-layer.
+`TestContextShapes_LeaveTheUniFiInstructionsUnchanged` runs the skill, the
+post-deploy check of `docs/invariants/session-lifecycle.md`, `redact.go`,
+and `prism.ts` through the context shapes.
 
 The rules have these limits:
 

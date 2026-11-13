@@ -30,6 +30,10 @@ func ShapeTriggerPresentForTest(s string) bool {
 	return false
 }
 
+// RedactContextShapesForTest runs the context shapes alone, with the
+// prefilter.
+func RedactContextShapesForTest(s string) string { return redactContextShapes(s, true) }
+
 // ContainsFoldASCIIForTest is containsFoldASCII.
 func ContainsFoldASCIIForTest(s, t string) bool { return containsFoldASCII(s, t) }
 

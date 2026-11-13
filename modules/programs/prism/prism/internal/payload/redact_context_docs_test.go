@@ -10,22 +10,25 @@ import (
 )
 
 // TestContextShapes_LeaveTheUniFiInstructionsUnchanged runs the text that
-// tells an agent how to use the UniFi API through the shape layer (issue
-// #3476). Control 3 redacts the result of each tool, read included. If a
-// context shape matches a command in this text, the agent gets a broken
-// command, and can write the broken text back to the file.
+// tells an agent how to use the UniFi API, and the two files that hold the
+// shape rules, through the context shapes (issue #3476). Control 3 redacts the
+// result of each tool, read included. If a context shape matches a command
+// or a comment in this text, the agent gets broken text, an edit of it
+// fails, and the agent can write the broken text back to the file.
 //
-// The skill is outside the prism subtree, so the nix build sandbox does not
-// have it. The test then checks the doc only. secret-redaction.md is not in
-// the list: it shows a private-key block on purpose.
+// The skill and prism.ts are outside the prism subtree, so the nix build
+// sandbox does not have them. The test then checks the files of the subtree
+// only. The test files are not in the list: they hold session values on
+// purpose.
 func TestContextShapes_LeaveTheUniFiInstructionsUnchanged(t *testing.T) {
-	r := payload.NewShapeOnlyRedactor()
 	for _, tc := range []struct {
 		path     string
 		optional bool
 	}{
 		{"../../docs/invariants/session-lifecycle.md", false},
+		{"redact.go", false},
 		{"../../../repo-skills/unifi/SKILL.md", true},
+		{extensionSourcePath, true},
 	} {
 		b, err := os.ReadFile(tc.path)
 		if tc.optional && errors.Is(err, fs.ErrNotExist) {
@@ -35,8 +38,8 @@ func TestContextShapes_LeaveTheUniFiInstructionsUnchanged(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", tc.path, err)
 		}
-		if got := r.Redact(string(b)); got != string(b) {
-			t.Errorf("the shape layer changes %s: %s", tc.path, mismatch(got, string(b)))
+		if got := payload.RedactContextShapesForTest(string(b)); got != string(b) {
+			t.Errorf("the context shapes change %s: %s", tc.path, mismatch(got, string(b)))
 		}
 	}
 }

@@ -14,7 +14,7 @@ these variables:
 - `UNIFI_USERNAME`: the local user.
 - `UNIFI_PASSWORD_FILE`: the path of the file that holds the password.
 
-If `UNIFI_PASSWORD_FILE` is not set, this session has no UniFi access. Stop,
+If prism did not set `UNIFI_PASSWORD_FILE`, this session has no UniFi access. Stop,
 and tell the user. A review agent does not get these variables.
 
 ## Rules
