@@ -365,42 +365,76 @@ prism gives pi one `--skill <path>` for each skill of the repo of the session (i
 - A change to a repo skill takes effect after a home-manager switch, at the next start of a session.
 - `spawn_inputs.skills_manifest_hash` (`skills.ComputeManifest`) covers the global skills directory only. The repo skills of a session depend only on its repo and on `repo-skills.json`, and the legs of an `--abtest` run share both.
 
-## UniFi credential
+## Agent credentials
 
-<!-- doclint-ignore: ~/.config/prism/unifi.json, repo-skills/unifi, unifi.nix, stat/health -->
+<!-- doclint-ignore: ~/.config/prism/agent-credentials.json, agent-credentials.nix, unifi.nix, home-automation.nix, repo-skills/unifi, stat/health, prism.ts -->
+<!-- doclint-ignore: UNIFI_PASSWORD_FILE, UNIFI_USERNAME, UNIFI_HOST, UNIFI_PASSWORD, unifi_password, unifi_host, hass_domain, EXAMPLE_TOKEN, sopsFile -->
 <!--
-  repo-skills/unifi and unifi.nix are under modules/programs/prism, outside
-  the prism subtree that the nix build sandbox copies in. stat/health is a
-  UniFi API endpoint, not a file.
+  agent-credentials.nix, unifi.nix, home-automation.nix, repo-skills/unifi,
+  and prism.ts are outside the prism subtree that the nix build sandbox
+  copies in. The UNIFI_ names, the sops keys, and EXAMPLE_TOKEN are declared
+  in nix or are examples: the Go source holds no name of a credential.
+  sopsFile is a sops-nix option.
+  stat/health is a UniFi API endpoint, not a file.
 -->
 
-A session of a repo in `nx.programs.prism.unifi.repos` gets the UniFi credential (issues #3472 and #3476). The credential is the password of a local UniFi OS user with "Network View Only" and "Control Plane View Only". The default list is `home-ops`, `nixos-config`, `hass-config`, and `obsidian`. The session gets three variables:
+prism gives agent credentials to the agent sessions of a set of repos. Each credential is an entry of `nx.programs.prism.agentCredentials` (`agent-credentials.nix`). The Go source and the pi extension hold no name of a credential, no variable name, and no marker. The only exception is the context shapes of the UniFi OS session values (see "UniFi credential" below).
 
-- `UNIFI_PASSWORD_FILE` holds the path of the decrypted `unifi_password` secret. No variable holds the password.
-- `UNIFI_USERNAME` holds the value of `nx.programs.prism.unifi.username`. The default is `agent-readonly`.
-- `UNIFI_HOST` holds the value of the `unifi_host` secret: the host name of a reverse proxy in front of the controller. The proxy has a valid certificate, so each command verifies TLS, with no `-k`. The redactor does not mask the host name, because it is not a credential. The repo is public, so no file names the host.
+A credential declares:
+
+- `repos`: the repo directory names whose sessions get the credential.
+- `files`: the file variables. Each has a variable name, a sops file, a sops key, and a marker. The variable holds the path of the decrypted secret. No variable holds the content.
+- `values`: the value variables. Each has a variable name, a sops file, and a sops key. The variable holds the content of the decrypted secret. The redactor does not mask it, so a value variable is only for a value that is not a credential.
+- `literals`: the literal variables. Each has a variable name and a fixed string.
+- `skills`: the repo skills that each repo in `repos` gets, through `nx.programs.prism.repoSkills`.
+
+The rules:
+
+- The repo lists, the variables, and the secret paths come only from `~/.config/prism/agent-credentials.json`. The prism NixOS module renders that file from the option. The Go source holds no repo list.
+- The repo comes from `projecttrust.Policy.SessionProject`, the repo identity of the project-trust decision. `agentcred.ForSession` does the lookup. So the root session of `obsidian`, a project with no worktrees, matches by its bare name and its project directory.
+- The coordinator, the workers, and the investigators of a listed repo get the credential. The five review roles get no credential: a review agent reviews a diff on a read-only worktree. A fallback reviewer has the role of the agent that it replaces. An investigator answers questions about the live system.
+- `agentcred.ForSession` checks each credential on its own, on the host. The session gets no variable of a credential in these cases: a secret file is missing, a file variable holds a value that the redactor cannot mask (`payload.UsableSecretValue`: fewer than 8 characters, or a `$(` literal), or a value or a literal is not one token. The session gets the other credentials and starts. The agent-run log names the credential and the cause. No warning holds a secret value.
+- A session with a file variable also gets `PRISM_CREDENTIAL_FILES`, the list of its file variables and their markers. The redactor in the session reads this list, so controls 1, 2, and 3 mask the content of each file as `[redacted:<marker>]`. See "Credential files" in `secret-redaction.md`.
+- In `bwrap` and `sandbox-exec` mode, `prism agent-run` sets `Config.AgentCredentials` (`agentCredentialDelivery`). `bwrap` binds each file read-only at the path that its file variable holds (`bwrapCredentialBinds`). The Dst is a mount point, so a write, an unlink, and a rename onto it fail. No other bind exposes `/run/secrets` or `/run/secrets.d`. If a file of a credential does not resolve, `BuildArgs` drops that credential and its variables, and keeps the other credentials.
+- The `sandbox-exec` profile admits a read of the `secrets.d` name of each file variable, only for a session with a delivery (`collectSecretsDAllowlistNames`). prism reads a value file on the host, so a value file gets no exception. The write deny on `secrets.d` has no exception.
+- In `host` mode, `agentPaneEnvVars` and `agentOnlyPaneEnvVars` put the variables in the pane env, and write each warning to the agent-run log. **Known limit — host mode (permanent).** A `host` session has no filesystem isolation, so a `host` session of any repo can read the sops path. In `host` mode, prism controls the variables only.
+- The argv of `bwrap` and of `sandbox-exec` holds the paths, the values, and the literals. It does not hold the content of a file variable.
+- The nix evaluation fails if two credentials declare one variable name, or if a variable name does not match `[A-Z][A-Z0-9_]*` or starts with `PRISM_`. The message names each credential. For a file that nix did not render, `agentcred.ForSession` drops two credentials of one session that declare one name, and its warning names both.
+- Two credentials can use one sops key, and another module can declare the same key, for example `hass_domain` in `home-automation.nix`. The declarations merge, and the evaluation does not fail. The `sopsFile` must be the same. prism sets `owner` and `mode` at default priority, so the declaration of the other module sets the final value.
+- No sandbox can read or write `~/.config/prism/agent-credentials.json`. `StandardSandboxMounts` does not bind it, and `generateProfile` does not grant its path.
+- A change to the option takes effect after a home-manager switch, at the next start of a session.
+
+### Add a credential
+
+1. Add the secret to a sops file. Do not decrypt the file in an agent session.
+2. Add an entry to `nx.programs.prism.agentCredentials` in a nix module, as `unifi.nix` does. Give the repos and the variables.
+3. Use a file variable for each value that is a credential. Give it a marker, for example `EXAMPLE_TOKEN`. The value must hold 8 characters or more.
+4. Use a value variable or a literal variable only for a value that is not a credential, for example a host name or a user name.
+5. If the agent needs instructions, write a repo skill under `repo-skills/`, and add it to `skills`.
+6. Run `nix eval` for each machine config that enables prism. Make sure that `agent-credentials.json` holds the credential, and that each sops secret has the expected `owner` and `mode`.
+7. Do not edit the Go source or `prism.ts`.
+
+After a home-manager switch, start a new session of a listed repo. Make sure that the session has the variables, and that `cat` of a file variable shows the marker.
+
+### UniFi credential
+
+The UniFi credential is the entry `unifi` (`unifi.nix`, issues #3472 and #3476). The credential is the password of a local UniFi OS user with "Network View Only" and "Control Plane View Only". The default repo list is `home-ops`, `nixos-config`, `hass-config`, and `obsidian`. A session of a listed repo gets three variables:
+
+- `UNIFI_PASSWORD_FILE`, a file variable, holds the path of the decrypted `unifi_password` secret. The marker is `[redacted:UNIFI_PASSWORD]`.
+- `UNIFI_USERNAME`, a literal variable, holds the name of the user. The default is `agent-readonly`.
+- `UNIFI_HOST`, a value variable, holds the value of the `unifi_host` secret: the host name of a reverse proxy in front of the controller. The proxy has a valid certificate, so each command verifies TLS, with no `-k`. The redactor does not mask the host name, because it is not a credential. The repo is public, so no file names the host.
 
 The credential is a password, not an API key. Only an admin can create an API key, and an admin key can write. The Integration API (`/proxy/network/integration/v1`, header `X-API-KEY`) accepts only an API key, so no session uses it.
 
-- The repo list, the username, and the two secret paths come only from `~/.config/prism/unifi.json`. The prism NixOS module renders that file from the options. The Go source holds no repo list.
-- Each repo in the list also gets the repo skill `repo-skills/unifi` through `nx.programs.prism.repoSkills`. `unifi.nix` derives these entries from the same option, so the repo list is declared in one place.
-- The repo comes from `projecttrust.Policy.SessionProject`, the repo identity of the project-trust decision. `unifi.ForSession` does the lookup. So the root session of `obsidian`, a project with no worktrees, matches by its bare name and its project directory.
-- The coordinator, the workers, and the investigators of a listed repo get the credential. The five review roles do not get it: a review agent reviews a diff on a read-only worktree, and has no use for the UniFi API. A fallback reviewer has the role of the agent that it replaces. An investigator answers questions about the live system, and the user has read access only.
-- `unifi.ForSession` reads the password file and the host file on the host. If a file is missing, if the password holds a value that the redactor cannot mask (`payload.UsableSecretValue`), or if the username is empty or holds a space or a control character, the session gets no UniFi variable. The session starts, and the agent-run log gives the reason. No warning holds a secret value.
-- In `bwrap` and `sandbox-exec` mode, `prism agent-run` sets `Config.UniFi` (`uniFiDelivery`). `bwrap` binds the password file read-only at the path that `UNIFI_PASSWORD_FILE` holds (`bwrapUniFiPasswordBind`). Its Dst is a mount point, so a write, an unlink, and a rename onto it fail. No other bind exposes `/run/secrets` or `/run/secrets.d`. If the bind cannot resolve the path, `BuildArgs` sets no UniFi variable either. The `sandbox-exec` profile admits a read of the `unifi_password` name in `secrets.d`, and only for a session with a delivery (`collectSecretsDAllowlistNames`). The write deny on `secrets.d` has no exception.
-- In `host` mode, `agentPaneEnvVars` and `agentOnlyPaneEnvVars` put the three variables in the pane env, and write each warning to the agent-run log. **Known limit — host mode (permanent).** A `host` session has no filesystem isolation, so a `host` session of any repo can read the sops path. In `host` mode, prism controls the variables only.
-- The argv of `bwrap` and of `sandbox-exec` holds the two paths, the username, and the host value, not the password. The redactor reads the password file, so controls 1, 2, and 3 mask the password as `[redacted:UNIFI_PASSWORD]`. See "Credential files" in `secret-redaction.md`.
-- A login gives a session token in the `TOKEN` cookie and a CSRF token in the `X-CSRF-Token` header. The context shapes of the redactor mask both values. See "Context shapes" in `secret-redaction.md`.
-- No sandbox can read or write `~/.config/prism/unifi.json`. `StandardSandboxMounts` does not bind it, and `generateProfile` does not grant its path.
-- A change to the options takes effect after a home-manager switch, at the next start of a session.
+- Each repo in the list also gets the repo skill `repo-skills/unifi`, from the `skills` of the credential.
+- A login gives a session token in the `TOKEN` cookie and a CSRF token in the `X-CSRF-Token` header. The context shapes of the redactor mask both values. These shape rules are specific to UniFi OS. They are not part of the agent credential mechanism. See "Context shapes" in `secret-redaction.md`.
 
-### Check after a deployment
+#### Check after a deployment
 
 Do this check after a home-manager switch, from a new `home-ops` session. The check logs in, reads `stat/health`, and logs out. The expected result is `200` for each of the three requests. If TLS verification fails, the check fails. Do not add `-k`.
 
 ```sh
-U="${TMPDIR:-/tmp}/unifi" S=/proxy/network/api/s/default
-mkdir -p -m 700 "$U"
+U="$(mktemp -d "${TMPDIR:-/tmp}/unifi.XXXXXXXX")" S=/proxy/network/api/s/default
 jq -n --rawfile p "$UNIFI_PASSWORD_FILE" --arg u "$UNIFI_USERNAME" \
   '{username: $u, password: ($p | rtrimstr("\n")), remember: false}' |
   curl -s -o /dev/null -w '%{http_code}\n' -c "$U/jar" -D "$U/headers" \

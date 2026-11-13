@@ -66,6 +66,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/agentcred"
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
@@ -78,7 +79,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/rundir"
 	"github.com/prismatic-koi/prism/internal/session"
-	"github.com/prismatic-koi/prism/internal/unifi"
 )
 
 // errAgentRunNoStatus is the error a registered AgentRun handler returns
@@ -420,7 +420,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		HarnessSessionID:      harnessSessionID,
 		WorktreeReadOnly:      opts.WorktreeReadOnly,
 		ReviewDiffDir:         opts.ReviewDiffDir,
-		UniFi:                 uniFiDelivery(sessionName, agentRole, worktree, cfg, logFile),
+		AgentCredentials:      agentCredentialDelivery(sessionName, agentRole, worktree, cfg, logFile),
 	}
 
 	// PI-harness: populate PI-specific config fields from the active profile slot.
@@ -812,13 +812,13 @@ func logAgentRunWarning(logFile *os.File, format string, args ...any) {
 	}
 }
 
-// uniFiDelivery returns the UniFi credential delivery of a bwrap or
-// sandbox-exec session (unifi.ForSession, issue #3472). The session name comes from the
-// pane command line, the worktree and the role from agent_status, and the
-// repo list from unifi.json, all on the host. Each warning goes to stderr and
-// to the agent-run log.
-func uniFiDelivery(sessionName, agentRole, worktree string, cfg config.Config, logFile *os.File) unifi.Delivery {
-	return unifi.ForSession(sessionName, agentRole, worktree, cfg, func(msg string) {
+// agentCredentialDelivery returns the agent credential delivery of a bwrap
+// or sandbox-exec session (agentcred.ForSession). The session name comes from
+// the pane command line, the worktree and the role from agent_status, and the
+// repo lists from agent-credentials.json, all on the host. Each warning goes
+// to stderr and to the agent-run log.
+func agentCredentialDelivery(sessionName, agentRole, worktree string, cfg config.Config, logFile *os.File) agentcred.Delivery {
+	return agentcred.ForSession(sessionName, agentRole, worktree, cfg, func(msg string) {
 		logAgentRunWarning(logFile, "%s", msg)
 	})
 }

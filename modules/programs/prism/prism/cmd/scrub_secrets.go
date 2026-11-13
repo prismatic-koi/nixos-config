@@ -57,7 +57,7 @@ Matching has two layers. The value layer replaces the exact value of every
 credential environment variable in this process's environment, so run the
 command from a shell that carries the same credentials the agents had. It
 also replaces the value of each credential that prism gives to sessions as a
-file, for example the UniFi password named in ~/.config/prism/unifi.json. The
+file: each file variable in ~/.config/prism/agent-credentials.json. The
 shape layer replaces well-known credential shapes and always runs.
 
 A redacted value becomes a marker naming what was removed, for example

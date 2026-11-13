@@ -185,14 +185,16 @@ It moved there because `internal/payload` is a stdlib-only leaf package, which i
 
 `TestRedactorParityWithExtension_EnvNameRegistry` fails if you edit only one of the two. See `modules/programs/prism/prism/docs/secret-redaction.md` for the full control.
 
-**When you give a session a credential as a file** (the variable holds the path, as `UNIFI_PASSWORD_FILE` does, #3472), no variable holds the value. Then edit these places in the same change:
+**When you give a session a credential as a file**, or as a value from a sops file, add an entry to `nx.programs.prism.agentCredentials` (`modules/programs/prism/agent-credentials.nix`). Do not edit the Go source or `prism.ts`: they hold no name of a credential, no variable name, and no marker. `modules/programs/prism/unifi.nix` is the example. The entry gives:
 
-1. `credentialFileEnvNames` in `internal/payload/redact.go`: the path variable, mapped to the marker name.
-2. `CREDENTIAL_FILE_ENV_NAMES` in `prism.ts`. `TestRedactorParityWithExtension_CredentialFileRegistry` fails if you edit only one of the two.
-3. `db.HostCredentialFiles` in `internal/db/redact.go`, so that the sidecar, which has no path variable, knows the value for control 2.
-4. The isolators: a read-only bwrap bind of the file and a sandbox-exec `secrets.d` exception (`collectSecretsDAllowlistNames`), only for a session that gets the variable. The UniFi password does this with `bwrapUniFiPasswordBind` and `Config.UniFi`.
+1. `repos`: the repos whose sessions get the credential.
+2. `files`: a file variable for each value that is a credential, with a sops file, a sops key, and a marker. The session gets the path. The redactor masks the content as `[redacted:<marker>]`, because prism sets `PRISM_CREDENTIAL_FILES` in the session, and `db.HostCredentialFiles` reads each file for control 2. bwrap binds the file read-only, and the sandbox-exec profile admits a read of its `secrets.d` name.
+3. `values` and `literals`: the variables that are not credentials, for example a host name or a user name. The redactor does not mask them.
+4. `skills`: a repo skill for the repos, if the agent needs instructions.
 
-See "Credential files" in `secret-redaction.md`.
+Then run `nix eval` for each machine config that enables prism, and check `agent-credentials.json` and the `owner` and `mode` of each sops secret. The nix evaluation fails if two credentials declare one variable name. The steps and the rules are in "Agent credentials" in `docs/invariants/session-lifecycle.md`. The redaction is in "Credential files" in `secret-redaction.md`.
+
+The tests of the mechanism use synthetic names. The live tests are `TestBwrapCredentialFile_*` (the `go-tests-bwrap-live` job) and `TestSandboxExecCredentialFile_*` (the `go-tests-macos-sandbox-exec` job). If you rename them, change the `-run` selectors of the two jobs.
 
 ## The git stash incident (#2202)
 

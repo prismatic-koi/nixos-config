@@ -1,6 +1,7 @@
 # Secret redaction in the capture path
 
 <!-- doclint-ignore: prism.ts, makeFrameWriter, truncateString, redactToolResult, CONTEXT_SHAPES -->
+<!-- doclint-ignore: UNIFI_PASSWORD_FILE, UNIFI_HOST, ~/.config/prism/agent-credentials.json, parseCredentialFiles, CREDENTIAL_FILE_NAME_PATTERN, prism.credential-file-redaction.test.ts -->
 <!-- doclint-ignore: structuredContent, structuredContent.output, tool_execution_end, tool_execution_update -->
 <!--
   The tokens above are cross-boundary references to the pi extension at
@@ -11,6 +12,9 @@
   they do not resolve there. Same situation as the AGENTS.md annotation in
   doclint.md. They are load-bearing references, not drift: this doc
   specifies a control whose primary half lives in that file.
+  UNIFI_PASSWORD_FILE and UNIFI_HOST are declared in
+  modules/programs/prism/unifi.nix, and agent-credentials.nix renders
+  agent-credentials.json. The Go source holds no name of a credential.
 -->
 
 Issue #2589.
@@ -120,18 +124,34 @@ it.
 
 #### Credential files
 
-prism gives some credentials to a session as a file. The session gets the
-path of the file in a variable, and no variable holds the value. Today the
-only such credential is the UniFi password (issues #3472 and #3476):
-`UNIFI_PASSWORD_FILE` holds the path, and the marker is
+prism gives some credentials to a session as a file
+(`nx.programs.prism.agentCredentials`, see "Agent credentials" in
+`docs/invariants/session-lifecycle.md`). A file variable of the credential holds
+the path of the file, and no variable holds the value. The UniFi password is
+an example: `UNIFI_PASSWORD_FILE` holds the path, and the marker is
 `[redacted:UNIFI_PASSWORD]`.
 
-The value layer cannot learn such a value from the environment. So the
-registry has a third part, `CredentialFileEnvNames`. It maps each path
-variable to the marker name of the credential in the file. For each path
-variable in the environment, the redactor reads the file and adds its
-content to the value layer. The path variable itself is not a credential
-name, so the output keeps the path.
+The value layer cannot learn such a value from the environment. The registry
+of the credential files is data, not code: neither `redact.go` nor
+`prism.ts` holds the name of a credential. A session with a file variable
+also gets `PRISM_CREDENTIAL_FILES` (`CredentialFilesEnvName`). It lists each
+file variable of the session and its marker name, as comma-separated
+`VAR=MARKER` entries, for example `UNIFI_PASSWORD_FILE=UNIFI_PASSWORD`.
+`internal/agentcred` writes the value (`EncodeCredentialFiles`).
+
+The pi extension runs in the sandbox and cannot read
+`~/.config/prism/agent-credentials.json`, so this variable is how controls 1
+and 3 learn the list. A variable is the delivery that already reaches each
+isolation mode: `prism agent-run` sets it in a `bwrap` or `sandbox-exec`
+session, and the pane env sets it in a `host` session, next to the file
+variables themselves.
+
+For each entry, the redactor reads the file that VAR names and adds its
+content to the value layer under MARKER. Each VAR and each MARKER must match
+`CredentialFileNamePattern`. The redactor skips an entry that does not match,
+and the first entry for a VAR wins (`ParseCredentialFiles`). The registry
+variable and each file variable are not credential names, so the output
+keeps the list and the path.
 
 The redactor reads a file with `ReadSecretFile`. It refuses a path that is
 not a regular file, and a file larger than `MaxCredentialFileSize` (4096
@@ -139,21 +159,24 @@ bytes). It removes the surrounding whitespace. The content then goes
 through the same over-redaction guards as a variable value. A file that
 the redactor cannot read gives no value.
 
-The three controls learn the password in these ways:
+The three controls learn a credential file in these ways:
 
-| Control | Process | How it learns the password |
+| Control | Process | How it learns the file |
 |---|---|---|
-| 1 and 3 | The pi extension in the session | The file that `UNIFI_PASSWORD_FILE` names. |
-| 2 | The sidecar, and each other host process that writes `prism.db` | The path in `~/.config/prism/unifi.json` (`db.HostCredentialFiles`). The sidecar has no `UNIFI_PASSWORD_FILE`. |
+| 1 and 3 | The pi extension in the session | `PRISM_CREDENTIAL_FILES` and the file variables of the session. |
+| 2 | The sidecar, and each other host process that writes `prism.db` | Each file variable of each credential in `~/.config/prism/agent-credentials.json` (`db.HostCredentialFiles`). The sidecar has no file variable. |
 
-Control 2 knows the password in every session, whatever its repo. Controls
-1 and 3 know the password only in a session that gets
-`UNIFI_PASSWORD_FILE`. This is a limit of host mode: a host-mode session of
-another repo can read the sops path, and then only control 2 masks the
-password.
+Control 2 knows each credential file in every session, whatever its repo.
+Controls 1 and 3 know a file only in a session that gets its credential.
+This is a limit of host mode: a host-mode session of another repo can read
+the sops path, and then only control 2 masks the value.
 
-prism does not give the password to a session when the password file holds
-a value that the value layer cannot mask (`payload.UsableSecretValue`).
+prism does not give a credential to a session when one of its files holds a
+value that the value layer cannot mask (`payload.UsableSecretValue`).
+
+A value variable of a credential holds the content of a secret file, for
+example `UNIFI_HOST`. The redactor does not mask it, because it is not a
+credential. Use a value variable only for such a value.
 
 ### Layer 2 — shape matching (secondary)
 
@@ -417,7 +440,7 @@ prism scrub-secrets --json      # machine-readable report
 The command reads the credential values out of its own environment, so run it
 from a shell that carries the same credentials the agents had. It also reads
 the credential files of the host config (`db.HostCredentialFiles`), so it
-knows the UniFi password with no variable set. Values the
+knows the value of each agent credential file with no variable set. Values the
 environment does not hold are still covered by the shape layer; the command
 prints a warning on stderr when the value layer is empty.
 
@@ -472,16 +495,23 @@ it separately, and rotate any credential you believe reached it.
   2. `CREDENTIAL_ENV_NAMES` in the extension.
 
   `TestRedactorParityWithExtension_EnvNameRegistry` fails if you edit only one
-  of the two. To add a credential that a session gets as a file, edit
-  `credentialFileEnvNames` in `internal/payload/redact.go` and
-  `CREDENTIAL_FILE_ENV_NAMES` in the extension instead.
-  `TestRedactorParityWithExtension_CredentialFileRegistry` fails if you edit
-  only one of the two. A host process knows the value only when
-  `db.HostCredentialFiles` names the file. Do NOT try to add to `CredentialEnvNames` — it is a read-only
+  of the two. Do NOT try to add to `CredentialEnvNames` — it is a read-only
   accessor over the computed union of those lists, not a list itself. Same for
   `credentialForwardEnvKeys` in `internal/container/credentials.go`, which is a
   derived copy; turning it back into a literal breaks the derivation and a
   credential added there is injected into every sandbox but never redacted.
+- To give a credential to a session as a file, add an entry to
+  `nx.programs.prism.agentCredentials`. Do not edit `redact.go` or the
+  extension: neither holds the name of a credential. The steps are in "Agent
+  credentials" in `docs/invariants/session-lifecycle.md`.
+- If you change the format of `PRISM_CREDENTIAL_FILES`, change
+  `ParseCredentialFiles` and `CredentialFileNamePattern` in
+  `internal/payload/redact.go`, `parseCredentialFiles` and
+  `CREDENTIAL_FILE_NAME_PATTERN` in the extension, and
+  `internal/payload/testdata/credential-files-cases.json`.
+  `TestRedactorParityWithExtension_CredentialFileRegistry` compares the
+  variable name and the pattern. The Go suite and
+  `prism.credential-file-redaction.test.ts` run each case of the file.
 - Keep the shape patterns byte-identical between the two implementations. They
   are written to be valid and equivalent in both RE2 and the JavaScript
   dialect, which is what lets the parity test compare them directly. This

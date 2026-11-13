@@ -17,7 +17,7 @@
 //     exact match on that value has near-zero false positives: a regex for
 //     `ghp_*` guesses, an exact value match knows. For a credential that a
 //     session gets as a file, the redactor reads the file
-//     (credentialFileEnvNames).
+//     (CredentialFilesEnvName).
 //
 //  2. SHAPE matching (secondary). A small set of well-known credential shapes
 //     covers the case where the secret is not in the environment of the
@@ -209,21 +209,35 @@ func CredentialEnvPrefixes() []string { return slices.Clone(credentialEnvPrefixe
 // is deliberately not covered.
 func CredentialEnvNameSuffixes() []string { return slices.Clone(credentialEnvNameSuffixes) }
 
-// Credential file registry (issue #3472).
+// Credential file registry (nx.programs.prism.agentCredentials).
 //
 // prism gives some credentials to a session as a file. The session gets the
 // PATH of the file in an environment variable, and no variable holds the
 // value. So the value layer cannot learn such a value from the environment.
-// For each variable in credentialFileEnvNames, the redactor reads the file
-// that the variable names, and uses the content as the credential value. The
-// marker names the credential, not the path variable.
+//
+// The registry is data, not code. The session gets one more variable,
+// CredentialFilesEnvName, that lists each path variable of the session and
+// the marker name of its credential (EncodeCredentialFiles). The redactor
+// reads the file that each listed variable names, and uses the content as
+// the credential value. The marker names the credential, not the path
+// variable. The pi extension parses the same variable with the same rules
+// (CREDENTIAL_FILES_ENV_NAME, parseCredentialFiles).
 const (
-	// UniFiPasswordName is the marker name of the UniFi password.
-	UniFiPasswordName = "UNIFI_PASSWORD"
+	// CredentialFilesEnvName lists the credential files of a session, as
+	// comma-separated VAR=MARKER entries.
+	CredentialFilesEnvName = "PRISM_CREDENTIAL_FILES"
 
-	// UniFiPasswordFileEnvName holds the path of the UniFi password file.
-	UniFiPasswordFileEnvName = "UNIFI_PASSWORD_FILE"
+	// CredentialFileNamePattern is the pattern of each VAR and each MARKER
+	// of an entry. An entry that does not match is skipped. The string is
+	// byte-identical to CREDENTIAL_FILE_NAME_PATTERN in the pi extension.
+	CredentialFileNamePattern = `^[A-Z][A-Z0-9_]*$`
 )
+
+var credentialFileNameRE = regexp.MustCompile(CredentialFileNamePattern)
+
+// IsCredentialFileName reports whether s can be the VAR or the MARKER of an
+// entry of CredentialFilesEnvName.
+func IsCredentialFileName(s string) bool { return credentialFileNameRE.MatchString(s) }
 
 // MaxCredentialFileSize is the largest file, in bytes, that ReadSecretFile
 // reads. A credential file holds one token. A larger file is not a
@@ -231,16 +245,45 @@ const (
 // memory because a variable names it.
 const MaxCredentialFileSize = 4096
 
-// credentialFileEnvNames maps each path variable to the marker name of the
-// credential in the file. Keep it in step with CREDENTIAL_FILE_ENV_NAMES in
-// the pi extension.
-var credentialFileEnvNames = map[string]string{
-	UniFiPasswordFileEnvName: UniFiPasswordName,
+// CredentialFile is a file that holds a credential, and the marker name of
+// the credential.
+type CredentialFile struct {
+	Marker string
+	Path   string
 }
 
-// CredentialFileEnvNames returns a copy of the credential file registry: the
-// path variable name, mapped to the marker name of the credential.
-func CredentialFileEnvNames() map[string]string { return maps.Clone(credentialFileEnvNames) }
+// EncodeCredentialFiles returns the value of CredentialFilesEnvName for
+// registry, which maps each path variable to its marker name. The entries are
+// in the order of the variable names. An entry that IsCredentialFileName
+// refuses is left out, so the result always parses back to the same map.
+func EncodeCredentialFiles(registry map[string]string) string {
+	entries := make([]string, 0, len(registry))
+	for _, name := range slices.Sorted(maps.Keys(registry)) {
+		if marker := registry[name]; IsCredentialFileName(name) && IsCredentialFileName(marker) {
+			entries = append(entries, name+"="+marker)
+		}
+	}
+	return strings.Join(entries, ",")
+}
+
+// ParseCredentialFiles parses a value of CredentialFilesEnvName. It maps each
+// path variable to its marker name. It skips an entry with no "=", and an
+// entry whose VAR or MARKER IsCredentialFileName refuses. When two entries
+// name the same VAR, the first entry wins. testdata/credential-files-cases.json
+// holds the cases that the pi extension must parse in the same way.
+func ParseCredentialFiles(value string) map[string]string {
+	out := map[string]string{}
+	for _, entry := range strings.Split(value, ",") {
+		name, marker, ok := strings.Cut(entry, "=")
+		if !ok || !IsCredentialFileName(name) || !IsCredentialFileName(marker) {
+			continue
+		}
+		if _, seen := out[name]; !seen {
+			out[name] = marker
+		}
+	}
+	return out
+}
 
 // ReadSecretFile reads a one-value secret file and returns its content with
 // surrounding whitespace removed. It refuses a path that is not a regular
@@ -712,39 +755,41 @@ func NewRedactor(secrets map[string]string) *Redactor {
 
 // NewRedactorFromEnviron builds a Redactor from an `os.Environ`-shaped slice
 // of `NAME=VALUE` strings. Only names that IsCredentialEnvName accepts are
-// read. For each name in CredentialFileEnvNames, it also reads the file that
-// the variable names (see NewRedactorFromEnvironAndFiles).
+// read. For each path variable that CredentialFilesEnvName lists, it also
+// reads the file that the variable names (see NewRedactorFromEnvironAndFiles).
 func NewRedactorFromEnviron(environ []string) *Redactor {
 	return NewRedactorFromEnvironAndFiles(environ, nil)
 }
 
 // NewRedactorFromEnvironAndFiles is NewRedactorFromEnviron with more
-// credential files. files maps a marker name to the path of a file that
-// holds the credential. A host process uses it for a credential that it
-// gives to sessions as a file, so that it knows the value also when no
-// variable of its own environment names the file.
+// credential files. A host process uses files for a credential that it gives
+// to sessions as a file, so that it knows the value also when no variable of
+// its own environment names the file.
 //
 // A file that ReadSecretFile refuses gives no value. The value of each file
 // goes through the same guards as an environment value.
-func NewRedactorFromEnvironAndFiles(environ []string, files map[string]string) *Redactor {
+func NewRedactorFromEnvironAndFiles(environ []string, files []CredentialFile) *Redactor {
 	var named []namedSecret
+	env := make(map[string]string, len(environ))
 	for _, kv := range environ {
 		name, value, ok := strings.Cut(kv, "=")
 		if !ok {
 			continue
 		}
+		env[name] = value
 		if IsCredentialEnvName(name) {
 			named = append(named, namedSecret{name: name, value: value})
 		}
-		if marker, ok := credentialFileEnvNames[name]; ok {
-			if v, err := ReadSecretFile(value); err == nil {
-				named = append(named, namedSecret{name: marker, value: v})
-			}
+	}
+	all := slices.Clone(files)
+	for name, marker := range ParseCredentialFiles(env[CredentialFilesEnvName]) {
+		if path, ok := env[name]; ok {
+			all = append(all, CredentialFile{Marker: marker, Path: path})
 		}
 	}
-	for marker, path := range files {
-		if v, err := ReadSecretFile(path); err == nil {
-			named = append(named, namedSecret{name: marker, value: v})
+	for _, f := range all {
+		if v, err := ReadSecretFile(f.Path); err == nil {
+			named = append(named, namedSecret{name: f.Marker, value: v})
 		}
 	}
 	return newRedactor(named)

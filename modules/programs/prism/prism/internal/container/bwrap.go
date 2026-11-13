@@ -16,7 +16,6 @@ import (
 	"sync"
 
 	"github.com/prismatic-koi/prism/internal/config"
-	"github.com/prismatic-koi/prism/internal/unifi"
 )
 
 // bwrapIsolator implements Isolator using bubblewrap (bwrap). It satisfies the
@@ -558,15 +557,13 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		}
 	}
 
-	// ── UniFi password file (RO, EvalSymlinks, Src≠Dst, conditional) ────────
-	// See bwrapUniFiPasswordBind (issue #3472). With no bind, the session gets
-	// no UniFi variable either (AppendStandardEnv below reads cfg.UniFi), so
-	// UNIFI_PASSWORD_FILE never names a file that the sandbox does not have.
-	uniFiBind := bwrapUniFiPasswordBind(cfg.UniFi.PasswordPath)
-	if uniFiBind == nil {
-		cfg.UniFi = unifi.Delivery{}
-	}
-	args = append(args, uniFiBind...)
+	// ── Agent credential files (RO, EvalSymlinks, Src≠Dst, conditional) ─────
+	// See bwrapCredentialBinds. A credential with no bind gets no variable
+	// either (AppendStandardEnv below reads cfg.AgentCredentials), so a file
+	// variable never names a file that the sandbox does not have.
+	var credentialBinds []string
+	cfg.AgentCredentials, credentialBinds = bwrapCredentialBinds(cfg.AgentCredentials)
+	args = append(args, credentialBinds...)
 
 	// AWS SSO cache, AWS CLI cache, kube config, the bun transpiler cache,
 	// and the clipboard staging dir are emitted earlier in this function via

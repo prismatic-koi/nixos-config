@@ -240,15 +240,17 @@ integration test coverage exists for:
   configure it, denied when they do not, with `github_token` in the same
   generation dir denied in both cases, plus the paired negative that strips
   the exception. See `sandbox_exec_grafana_config_darwin_test.go`.
-- **The unifi_password carve-out** — the one name #3472 adds to that
-  allowlist, derived from `Config.UniFi` (the path prism sets as
-  `UNIFI_PASSWORD_FILE` for a session of a repo in
-  `nx.programs.prism.unifi.repos`): readable in-sandbox with a delivery,
-  denied with none, with `github_token` in the same generation dir denied,
-  plus the paired negative that strips the exception. A write, an unlink,
-  and a rename of the password file and of its stable symlink fail. The
-  paired negative of that test appends a write grant, and the write then
-  works. See `sandbox_exec_unifi_password_darwin_test.go`.
+- **The agent credential file carve-out** — one name for each file
+  variable of each agent credential that the session gets, derived from
+  `Config.AgentCredentials` (internal/agentcred delivers a credential only
+  to a session of a repo in its repo list, and never to a review role). With
+  a delivery of two credentials, each delivered file is readable in-sandbox,
+  and `github_token` and the file of an undelivered credential in the same
+  generation dir stay denied. With no delivery, each file is denied. The
+  paired negative strips the exceptions. A write, an unlink, and a rename of
+  each delivered file and of its stable symlink fail. The paired negative of
+  that test appends a write grant, and the write then works. See
+  `sandbox_exec_credential_file_darwin_test.go`.
 - **The worktree path deny** — the final deny (section 21b) on unlink and
   create of the worktree and of every ancestor of it, `BareRoot` included.
   Under the production profile, a write inside the worktree works, and a

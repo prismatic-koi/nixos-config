@@ -1,4 +1,4 @@
-package unifi_test
+package agentcred_test
 
 import (
 	"os"
@@ -11,8 +11,9 @@ import (
 var suiteStateRoot string
 
 // TestMain keeps the suite away from the real prism config of the host:
-// ForSession reads config.json and unifi.json under XDG_CONFIG_HOME, and a
-// host-mode session inherits the real value (issue #3146).
+// ForSession reads config.json and agent-credentials.json under
+// XDG_CONFIG_HOME, and a host-mode session inherits the real value (issue
+// #3146).
 func TestMain(m *testing.M) {
 	var restore func()
 	suiteStateRoot, restore = stateguardtest.IsolateSuite()

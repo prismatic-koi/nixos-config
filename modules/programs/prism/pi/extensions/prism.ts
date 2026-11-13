@@ -2148,7 +2148,7 @@ export function redactLine(line: string): string {
 //      every credential environment variable, so an exact match knows what a
 //      regex could only guess. Near-zero false positives. For a credential
 //      that the session gets as a file, the redactor reads the file
-//      (CREDENTIAL_FILE_ENV_NAMES).
+//      (CREDENTIAL_FILES_ENV_NAME).
 //   2. SHAPE matching (secondary). Well-known credential shapes, for a secret
 //      that is not in this process's environment. Defence in depth; it never
 //      replaces layer 1. A context shape (CONTEXT_SHAPES) masks a value by
@@ -2247,14 +2247,44 @@ export const CREDENTIAL_ENV_NAME_SUFFIXES: readonly string[] = [
 ]
 
 /**
- * Credential files (issue #3472). prism gives some credentials to a session
- * as a file: the variable holds the PATH, and no variable holds the value. For
- * each path variable here, the value layer reads the file that the variable
- * names, and the marker carries the credential name on the right.
- * Mirrors payload.CredentialFileEnvNames().
+ * Credential files (nx.programs.prism.agentCredentials). prism gives some
+ * credentials to a session as a file: a path variable holds the PATH, and no
+ * variable holds the value. This extension cannot read the prism config, so
+ * prism lists the path variables of the session in this variable, as
+ * comma-separated VAR=MARKER entries. For each entry, the value layer reads
+ * the file that VAR names, and the marker carries MARKER.
+ * Mirrors payload.CredentialFilesEnvName.
  */
-export const CREDENTIAL_FILE_ENV_NAMES: Readonly<Record<string, string>> = {
-  UNIFI_PASSWORD_FILE: "UNIFI_PASSWORD",
+export const CREDENTIAL_FILES_ENV_NAME = "PRISM_CREDENTIAL_FILES"
+
+/**
+ * The pattern of each VAR and each MARKER of an entry. An entry that does not
+ * match is skipped. Byte-identical to payload.CredentialFileNamePattern.
+ */
+export const CREDENTIAL_FILE_NAME_PATTERN = String.raw`^[A-Z][A-Z0-9_]*$`
+
+const credentialFileNameRe = new RegExp(CREDENTIAL_FILE_NAME_PATTERN)
+
+/**
+ * Parse a value of CREDENTIAL_FILES_ENV_NAME into a map of each path variable
+ * to its marker name. Skip an entry with no "=", and an entry whose VAR or
+ * MARKER does not match CREDENTIAL_FILE_NAME_PATTERN. When two entries name
+ * the same VAR, the first entry wins. Mirrors payload.ParseCredentialFiles;
+ * internal/payload/testdata/credential-files-cases.json holds the cases that
+ * both must parse in the same way.
+ */
+export function parseCredentialFiles(value: string | undefined): Map<string, string> {
+  const out = new Map<string, string>()
+  if (typeof value !== "string") return out
+  for (const entry of value.split(",")) {
+    const eq = entry.indexOf("=")
+    if (eq < 0) continue
+    const name = entry.slice(0, eq)
+    const marker = entry.slice(eq + 1)
+    if (!credentialFileNameRe.test(name) || !credentialFileNameRe.test(marker)) continue
+    if (!out.has(name)) out.set(name, marker)
+  }
+  return out
 }
 
 /**
@@ -2610,7 +2640,7 @@ export interface SecretRedactor {
  * Build a redactor from an environment map.
  *
  * The value layer reads each variable that isCredentialEnvName accepts, and
- * the file that each variable of CREDENTIAL_FILE_ENV_NAMES names.
+ * the file that each path variable of CREDENTIAL_FILES_ENV_NAME names.
  * `readFile` reads such a file; tests pass their own.
  *
  * Values are filtered before they reach the value layer: see
@@ -2629,13 +2659,12 @@ export function makeSecretRedactor(
     const value = env[name]
     if (typeof value !== "string") continue
     if (isCredentialEnvName(name)) named.push([name, value])
-    const marker = Object.hasOwn(CREDENTIAL_FILE_ENV_NAMES, name)
-      ? CREDENTIAL_FILE_ENV_NAMES[name]
-      : undefined
-    if (marker !== undefined) {
-      const fileValue = readFile(value)
-      if (fileValue !== undefined) named.push([marker, fileValue])
-    }
+  }
+  for (const [name, marker] of parseCredentialFiles(env[CREDENTIAL_FILES_ENV_NAME])) {
+    const filePath = Object.hasOwn(env, name) ? env[name] : undefined
+    if (typeof filePath !== "string") continue
+    const fileValue = readFile(filePath)
+    if (fileValue !== undefined) named.push([marker, fileValue])
   }
   // The order of payload.newRedactor: by name, then by value.
   named.sort(([an, av], [bn, bv]) =>

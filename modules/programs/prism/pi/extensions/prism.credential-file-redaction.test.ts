@@ -1,13 +1,13 @@
-// Tests for the credential files of the value layer (issue #3472).
+// Tests for the credential files of the value layer
+// (nx.programs.prism.agentCredentials).
 //
-// A session of a repo in nx.programs.prism.unifi.repos gets the UniFi password
-// as a file. UNIFI_PASSWORD_FILE holds the path, and no variable holds the
-// password. The value layer reads the file, so controls 1, 2, and 3 mask the
-// password. The
-// end-to-end test through the pi runtime is in
-// prism.tool-result-redaction.test.ts.
+// prism gives some credentials to a session as a file. A path variable holds
+// the path, no variable holds the value, and PRISM_CREDENTIAL_FILES lists each
+// path variable with the marker name of its credential. The value layer reads
+// each listed file, so controls 1, 2, and 3 mask the value. The end-to-end
+// test through the pi runtime is in prism.tool-result-redaction.test.ts.
 //
-// Every credential value in this file is synthetic.
+// Every name and every credential value in this file is synthetic.
 //
 // Run with: tsx --test prism.credential-file-redaction.test.ts
 
@@ -19,40 +19,61 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 import {
-  CREDENTIAL_FILE_ENV_NAMES,
+  CREDENTIAL_FILES_ENV_NAME,
   CREDENTIAL_FILE_MAX_BYTES,
   isCredentialEnvName,
   makeFrameWriter,
   makeSecretRedactor,
+  parseCredentialFiles,
   readCredentialFile,
   redactToolResult,
   REDACTION_MIN_VALUE_LENGTH,
 } from "./prism.ts"
 
-const PASSWORD = "synthetic-unifi-password-0123456789abcdef"
-const MARKER = "[redacted:UNIFI_PASSWORD]"
+const PASSWORD = "synthetic-credential-file-password-0123456789abcdef"
+const PASSWORD_ENV = "EXAMPLE_PASSWORD_FILE"
+const MARKER = "[redacted:EXAMPLE_PASSWORD]"
+const REGISTRY = { [CREDENTIAL_FILES_ENV_NAME]: `${PASSWORD_ENV}=EXAMPLE_PASSWORD` }
+
+// The Go suite runs the same file (redact_credential_file_test.go), so a pass
+// on both sides means the two parse each value in the same way.
+const CREDENTIAL_FILES_CASES_PATH = path.join(
+  __dirname,
+  "../../prism/internal/payload/testdata/credential-files-cases.json",
+)
 
 function tempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "prism-3472-"))
+  return fs.mkdtempSync(path.join(os.tmpdir(), "prism-credential-file-"))
 }
 
-function passwordFile(dir: string, content: string, name = "unifi_password"): string {
+function passwordFile(dir: string, content: string, name = "example_password"): string {
   const p = path.join(dir, name)
   fs.writeFileSync(p, content, { mode: 0o400 })
   return p
 }
 
-describe("#3472: the credential file registry", () => {
-  it("maps UNIFI_PASSWORD_FILE to the UNIFI_PASSWORD marker", () => {
-    assert.deepEqual({ ...CREDENTIAL_FILE_ENV_NAMES }, { UNIFI_PASSWORD_FILE: "UNIFI_PASSWORD" })
+describe("the credential file registry variable", () => {
+  it("parses each value of the shared case file as the Go redactor does", () => {
+    const file = JSON.parse(fs.readFileSync(CREDENTIAL_FILES_CASES_PATH, "utf8")) as {
+      cases: Array<{ name: string; value: string; want: Record<string, string> }>
+    }
+    assert.ok(file.cases.length > 0, "the case file holds no cases")
+    for (const c of file.cases) {
+      assert.deepEqual(Object.fromEntries(parseCredentialFiles(c.value)), c.want, c.name)
+    }
   })
 
-  it("does not treat the path variable as a credential", () => {
-    assert.equal(isCredentialEnvName("UNIFI_PASSWORD_FILE"), false)
+  it("gives an empty registry when the variable is not set", () => {
+    assert.equal(parseCredentialFiles(undefined).size, 0)
+  })
+
+  it("is not a credential name, and neither is a path variable", () => {
+    assert.equal(isCredentialEnvName(CREDENTIAL_FILES_ENV_NAME), false)
+    assert.equal(isCredentialEnvName(PASSWORD_ENV), false)
   })
 })
 
-describe("#3472: readCredentialFile", () => {
+describe("readCredentialFile", () => {
   it("returns the content without surrounding whitespace", () => {
     const dir = tempDir()
     try {
@@ -78,30 +99,42 @@ describe("#3472: readCredentialFile", () => {
   })
 })
 
-describe("#3472: the value layer reads the file that UNIFI_PASSWORD_FILE names", () => {
-  it("masks the password in the output of cat, env, and printenv", () => {
+describe("the value layer reads the file of each listed path variable", () => {
+  it("masks the value in the output of cat, env, and printenv", () => {
     const dir = tempDir()
     try {
       const file = passwordFile(dir, `${PASSWORD}\n`)
-      const r = makeSecretRedactor({ UNIFI_PASSWORD_FILE: file, PATH: "/bin" })
+      const r = makeSecretRedactor({ ...REGISTRY, [PASSWORD_ENV]: file, PATH: "/bin" })
       assert.equal(r.valueCount, 1)
-      // cat "$UNIFI_PASSWORD_FILE"
+      // cat "$EXAMPLE_PASSWORD_FILE"
       assert.equal(r.redact(`${PASSWORD}\n`), `${MARKER}\n`)
-      // env, and printenv, after the agent copies the password into a variable.
+      // env, and printenv, after the agent copies the value into a variable.
       assert.equal(
-        r.redact(`PATH=/bin\nK=${PASSWORD}\nUNIFI_PASSWORD_FILE=${file}\n`),
-        `PATH=/bin\nK=${MARKER}\nUNIFI_PASSWORD_FILE=${file}\n`,
+        r.redact(`PATH=/bin\nK=${PASSWORD}\n${PASSWORD_ENV}=${file}\n`),
+        `PATH=/bin\nK=${MARKER}\n${PASSWORD_ENV}=${file}\n`,
       )
-      assert.equal(r.redact(`${PASSWORD}\n`), `${MARKER}\n`)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it("masks the password in the tool result that pi keeps (control 3)", () => {
+  it("gives each listed file its own marker", () => {
+    const second = "synthetic-second-credential-token-fedcba9876"
+    const r = makeSecretRedactor(
+      {
+        [CREDENTIAL_FILES_ENV_NAME]: `${PASSWORD_ENV}=EXAMPLE_PASSWORD,SECOND_TOKEN_FILE=SECOND_TOKEN`,
+        [PASSWORD_ENV]: "/first",
+        SECOND_TOKEN_FILE: "/second",
+      },
+      (p) => (p === "/first" ? PASSWORD : p === "/second" ? second : undefined),
+    )
+    assert.equal(r.redact(`${PASSWORD} ${second}`), `${MARKER} [redacted:SECOND_TOKEN]`)
+  })
+
+  it("masks the value in the tool result that pi keeps (control 3)", () => {
     const dir = tempDir()
     try {
-      const r = makeSecretRedactor({ UNIFI_PASSWORD_FILE: passwordFile(dir, PASSWORD) })
+      const r = makeSecretRedactor({ ...REGISTRY, [PASSWORD_ENV]: passwordFile(dir, PASSWORD) })
       assert.deepEqual(
         redactToolResult(
           {
@@ -120,7 +153,7 @@ describe("#3472: the value layer reads the file that UNIFI_PASSWORD_FILE names",
     }
   })
 
-  it("masks the password in the frame on the prism socket (control 1)", () => {
+  it("masks the value in the frame on the prism socket (control 1)", () => {
     const dir = tempDir()
     try {
       const written: string[] = []
@@ -133,12 +166,12 @@ describe("#3472: the value layer reads the file that UNIFI_PASSWORD_FILE names",
       } as unknown as net.Socket
       const writer = makeFrameWriter(
         socket,
-        makeSecretRedactor({ UNIFI_PASSWORD_FILE: passwordFile(dir, PASSWORD) }),
+        makeSecretRedactor({ ...REGISTRY, [PASSWORD_ENV]: passwordFile(dir, PASSWORD) }),
       )
-      const body = (p: string) => `{"username":"agent-readonly","password":"${p}","remember":false}`
+      const body = (p: string) => `{"username":"agent","password":"${p}","remember":false}`
       writer.write({ type: "tool_result", id: "call_1", output: body(PASSWORD) })
       const line = written.join("")
-      assert.ok(!line.includes(PASSWORD), "the password reached the socket")
+      assert.ok(!line.includes(PASSWORD), "the value reached the socket")
       assert.equal(JSON.parse(line.trimEnd()).output, body(MARKER))
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -147,34 +180,41 @@ describe("#3472: the value layer reads the file that UNIFI_PASSWORD_FILE names",
 
   it("reads the file through the readFile argument", () => {
     const seen: string[] = []
-    const r = makeSecretRedactor({ UNIFI_PASSWORD_FILE: "/run/secrets/unifi_password" }, (p) => {
+    const r = makeSecretRedactor({ ...REGISTRY, [PASSWORD_ENV]: "/run/secrets/example_password" }, (p) => {
       seen.push(p)
       return PASSWORD
     })
-    assert.deepEqual(seen, ["/run/secrets/unifi_password"])
+    assert.deepEqual(seen, ["/run/secrets/example_password"])
     assert.equal(r.redact(PASSWORD), MARKER)
   })
 
   it("names the lexicographically first name when a variable holds the same value", () => {
-    const r = makeSecretRedactor({ ZULU_TOKEN: PASSWORD, UNIFI_PASSWORD_FILE: "x" }, () => PASSWORD)
+    const r = makeSecretRedactor({ ...REGISTRY, ZULU_TOKEN: PASSWORD, [PASSWORD_ENV]: "x" }, () => PASSWORD)
     assert.equal(r.redact(PASSWORD), MARKER)
-    const s = makeSecretRedactor({ ALPHA_TOKEN: PASSWORD, UNIFI_PASSWORD_FILE: "x" }, () => PASSWORD)
+    const s = makeSecretRedactor({ ...REGISTRY, ALPHA_TOKEN: PASSWORD, [PASSWORD_ENV]: "x" }, () => PASSWORD)
     assert.equal(s.redact(PASSWORD), "[redacted:ALPHA_TOKEN]")
   })
 
-  it("reads no file when the variable is not set", () => {
-    let calls = 0
-    const r = makeSecretRedactor({ PATH: "/bin" }, () => {
-      calls++
-      return PASSWORD
+  for (const [name, env] of [
+    ["the registry is not set", { [PASSWORD_ENV]: "/x", PATH: "/bin" }],
+    ["the registry names another variable", { [CREDENTIAL_FILES_ENV_NAME]: "OTHER_FILE=OTHER", [PASSWORD_ENV]: "/x" }],
+    ["the registry entry is not a name", { [CREDENTIAL_FILES_ENV_NAME]: `${PASSWORD_ENV}=bad marker`, [PASSWORD_ENV]: "/x" }],
+    ["the listed variable is not set", { ...REGISTRY }],
+  ] as const) {
+    it(`reads no file when ${name}`, () => {
+      let calls = 0
+      const r = makeSecretRedactor({ ...env }, () => {
+        calls++
+        return PASSWORD
+      })
+      assert.equal(calls, 0)
+      assert.equal(r.valueCount, 0)
+      assert.equal(r.redact(PASSWORD), PASSWORD)
     })
-    assert.equal(calls, 0)
-    assert.equal(r.valueCount, 0)
-    assert.equal(r.redact(PASSWORD), PASSWORD)
-  })
+  }
 })
 
-describe("#3472: an empty or short password file does not over-redact", () => {
+describe("an empty or short credential file does not over-redact", () => {
   const ordinary = "abc1234 abc ok\nlisting a b c 1 2 3 4\n"
 
   for (const [name, content] of [
@@ -183,10 +223,10 @@ describe("#3472: an empty or short password file does not over-redact", () => {
     ["short", "a".repeat(REDACTION_MIN_VALUE_LENGTH - 1) + "\n"],
     ["short and common", "abc1234"],
   ] as const) {
-    it(`leaves ordinary output unchanged for a password file that is ${name}`, () => {
+    it(`leaves ordinary output unchanged for a credential file that is ${name}`, () => {
       const dir = tempDir()
       try {
-        const r = makeSecretRedactor({ UNIFI_PASSWORD_FILE: passwordFile(dir, content) })
+        const r = makeSecretRedactor({ ...REGISTRY, [PASSWORD_ENV]: passwordFile(dir, content) })
         assert.equal(r.valueCount, 0)
         assert.equal(r.redact(ordinary), ordinary)
         assert.equal(redactToolResult({ content: [{ type: "text", text: ordinary }] }, r), undefined)
@@ -196,8 +236,11 @@ describe("#3472: an empty or short password file does not over-redact", () => {
     })
   }
 
-  it("leaves ordinary output unchanged for a password file that is missing", () => {
-    const r = makeSecretRedactor({ UNIFI_PASSWORD_FILE: path.join(os.tmpdir(), "prism-3472-missing") })
+  it("leaves ordinary output unchanged for a credential file that is missing", () => {
+    const r = makeSecretRedactor({
+      ...REGISTRY,
+      [PASSWORD_ENV]: path.join(os.tmpdir(), "prism-credential-file-missing"),
+    })
     assert.equal(r.valueCount, 0)
     assert.equal(r.redact(ordinary), ordinary)
   })

@@ -320,6 +320,7 @@
   };
 
   imports = [
+    ./agent-credentials.nix
     ./checkin.nix
     ./container-tokens.nix
     ./neovim

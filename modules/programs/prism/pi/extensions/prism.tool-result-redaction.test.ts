@@ -561,14 +561,14 @@ describe("#3420: end to end through the installed pi runtime", () => {
   })
 })
 
-// Issue #3472: the session gets the UniFi password as a file. No variable
-// holds the password, so the value layer must read the file that
-// UNIFI_PASSWORD_FILE names. Issue #3476: the context shapes mask the session
-// values of a UniFi OS login.
-describe("#3472: end to end, the UniFi password file and the session values", () => {
+// An agent credential gives the session a secret as a file. No variable holds
+// the value, so the value layer must read the file that PRISM_CREDENTIAL_FILES
+// lists. Issue #3476: the context shapes mask the session values of a UniFi OS
+// login. The credential names here are synthetic.
+describe("end to end, a credential file and the UniFi OS session values", () => {
   it("gives the model and the transcript the marker for cat, env, and printenv", async () => {
-    const UNIFI_PASSWORD = "synthetic-unifi-password-e2e-0123456789abcdef"
-    const UNIFI_MARKER = "[redacted:UNIFI_PASSWORD]"
+    const FILE_SECRET = "synthetic-credential-file-e2e-0123456789abcdef"
+    const FILE_MARKER = "[redacted:EXAMPLE_PASSWORD]"
     const SESSION_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY"
     const CSRF_TOKEN = "00000000-0000-4000-8000-000000003476"
     const piRoot = path.join(piInstallRoot(), "lib/node_modules/pi-monorepo")
@@ -579,16 +579,16 @@ describe("#3472: end to end, the UniFi password file and the session values", ()
       ).href
     )
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-3472-"))
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-credential-file-"))
     try {
-      const passwordFile = path.join(dir, "unifi_password")
-      fs.writeFileSync(passwordFile, `${UNIFI_PASSWORD}\n`, { mode: 0o400 })
+      const passwordFile = path.join(dir, "example_password")
+      fs.writeFileSync(passwordFile, `${FILE_SECRET}\n`, { mode: 0o400 })
       const loginFile = path.join(dir, "login-output")
       fs.writeFileSync(
         loginFile,
         `set-cookie: TOKEN=${SESSION_JWT}; path=/; secure; httponly\r\n` +
           `x-csrf-token: ${CSRF_TOKEN}\r\n` +
-          `#HttpOnly_10.0.0.1\tFALSE\t/\tTRUE\t0\tTOKEN\t${SESSION_JWT}\n`,
+          `#HttpOnly_host.example.invalid\tFALSE\t/\tTRUE\t0\tTOKEN\t${SESSION_JWT}\n`,
       )
 
       let modelSaw: TranscriptMessage[] = []
@@ -596,17 +596,17 @@ describe("#3472: end to end, the UniFi password file and the session values", ()
       provider.setResponses([
         faux.fauxAssistantMessage(
           [
-            faux.fauxToolCall("bash", { command: 'cat "$UNIFI_PASSWORD_FILE"' }, { id: "cat" }),
+            faux.fauxToolCall("bash", { command: 'cat "$EXAMPLE_PASSWORD_FILE"' }, { id: "cat" }),
             faux.fauxToolCall("bash", { command: "env" }, { id: "env" }),
             faux.fauxToolCall("bash", { command: "printenv" }, { id: "printenv" }),
             faux.fauxToolCall(
               "bash",
-              { command: 'K="$(cat "$UNIFI_PASSWORD_FILE")" env' },
+              { command: 'K="$(cat "$EXAMPLE_PASSWORD_FILE")" env' },
               { id: "env-copy" },
             ),
             faux.fauxToolCall(
               "bash",
-              { command: 'K="$(cat "$UNIFI_PASSWORD_FILE")" printenv K' },
+              { command: 'K="$(cat "$EXAMPLE_PASSWORD_FILE")" printenv K' },
               { id: "printenv-copy" },
             ),
             faux.fauxToolCall(
@@ -624,7 +624,12 @@ describe("#3472: end to end, the UniFi password file and the session values", ()
       ])
 
       let sessionFile = ""
-      await withEnv({ ...PRISM_SESSION_ENV, UNIFI_PASSWORD_FILE: passwordFile }, async () => {
+      const sessionEnv = {
+        ...PRISM_SESSION_ENV,
+        PRISM_CREDENTIAL_FILES: "EXAMPLE_PASSWORD_FILE=EXAMPLE_PASSWORD",
+        EXAMPLE_PASSWORD_FILE: passwordFile,
+      }
+      await withEnv(sessionEnv, async () => {
         const modelRuntime = await sdk.ModelRuntime.create({
           authPath: path.join(dir, "auth.json"),
           modelsPath: null,
@@ -671,28 +676,28 @@ describe("#3472: end to end, the UniFi password file and the session values", ()
       assert.equal(results.length, 6, JSON.stringify(modelSaw.map((m) => m.role)))
       const saw = (id: string) => JSON.stringify(results.find((r) => r.toolCallId === id)?.content)
       assert.deepEqual(results.find((r) => r.toolCallId === "cat")?.content, [
-        text(`${UNIFI_MARKER}\n`),
+        text(`${FILE_MARKER}\n`),
       ])
-      assert.ok(saw("env").includes(`UNIFI_PASSWORD_FILE=${passwordFile}`), saw("env"))
-      assert.ok(saw("printenv").includes(`UNIFI_PASSWORD_FILE=${passwordFile}`), saw("printenv"))
-      assert.ok(saw("env-copy").includes(`K=${UNIFI_MARKER}`), saw("env-copy"))
+      assert.ok(saw("env").includes(`EXAMPLE_PASSWORD_FILE=${passwordFile}`), saw("env"))
+      assert.ok(saw("printenv").includes(`EXAMPLE_PASSWORD_FILE=${passwordFile}`), saw("printenv"))
+      assert.ok(saw("env-copy").includes(`K=${FILE_MARKER}`), saw("env-copy"))
       assert.deepEqual(results.find((r) => r.toolCallId === "printenv-copy")?.content, [
-        text(`${UNIFI_MARKER}\n`),
+        text(`${FILE_MARKER}\n`),
       ])
       assert.deepEqual(results.find((r) => r.toolCallId === "session")?.content, [
         text(
           "set-cookie: TOKEN=[redacted:unifi-token-cookie]; path=/; secure; httponly\r\n" +
             "x-csrf-token: [redacted:csrf-token-header]\r\n" +
-            "#HttpOnly_10.0.0.1\tFALSE\t/\tTRUE\t0\tTOKEN\t[redacted:unifi-token-cookie-jar]\n",
+            "#HttpOnly_host.example.invalid\tFALSE\t/\tTRUE\t0\tTOKEN\t[redacted:unifi-token-cookie-jar]\n",
         ),
       ])
-      for (const secret of [UNIFI_PASSWORD, SESSION_JWT, CSRF_TOKEN]) {
+      for (const secret of [FILE_SECRET, SESSION_JWT, CSRF_TOKEN]) {
         assert.ok(!JSON.stringify(modelSaw).includes(secret), "a secret is in the model context")
       }
 
       assert.ok(sessionFile, "the session wrote no transcript file")
       const transcript = fs.readFileSync(sessionFile, "utf8")
-      for (const secret of [UNIFI_PASSWORD, SESSION_JWT, CSRF_TOKEN]) {
+      for (const secret of [FILE_SECRET, SESSION_JWT, CSRF_TOKEN]) {
         assert.ok(!transcript.includes(secret), "a secret is in the transcript")
       }
     } finally {

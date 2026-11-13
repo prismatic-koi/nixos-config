@@ -1,43 +1,56 @@
 package session
 
-// unifi_test.go — the UniFi variables in the agent pane env of a host-mode
-// session (issue #3472). Host mode has no filesystem isolation, so the
-// variables are the only control. bwrap and sandbox-exec panes carry no
-// UniFi variable: `prism agent-run` sets them in the sandbox.
+// agent_credentials_test.go — the agent credential variables in the agent
+// pane env of a host-mode session. Host mode has no filesystem isolation, so
+// the variables are the only control. bwrap and sandbox-exec panes carry no
+// credential variable: `prism agent-run` sets them in the sandbox.
 //
-// SECURITY: the password value is synthetic.
+// SECURITY: every name and value is synthetic.
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/prismatic-koi/prism/internal/agentcred/agentcredtest"
+	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/payload"
 	"github.com/prismatic-koi/prism/internal/projecttrust/projecttrusttest"
-	"github.com/prismatic-koi/prism/internal/unifi/unifitest"
 )
 
-var uniFiTestRepos = []string{"home-ops", "nixos-config", "hass-config", "obsidian"}
+var credentialTestRepos = []string{"home-ops", "nixos-config", "hass-config", "obsidian"}
 
-func assertNoUniFiVars(t *testing.T, envs map[string]string) {
+var credentialTestEnvNames = []string{agentcredtest.PasswordFileEnv, agentcredtest.HostEnv, agentcredtest.UsernameEnv, payload.CredentialFilesEnvName}
+
+func assertNoCredentialVars(t *testing.T, envs map[string]string) {
 	t.Helper()
 	for k, v := range envs {
-		if strings.HasPrefix(k, "UNIFI_") {
+		if slices.Contains(credentialTestEnvNames, k) {
 			t.Errorf("pane env has %s", k)
 		}
-		if strings.Contains(v, unifitest.Password) {
+		if strings.Contains(v, agentcredtest.Password) {
 			t.Errorf("pane env %s holds the password value", k)
 		}
 	}
 }
 
-func TestPaneEnvVars_UniFi(t *testing.T) {
+func TestPaneEnvVars_AgentCredentials(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	l := projecttrusttest.New(t)
-	passwordPath, hostPath := unifitest.Secrets(t, unifitest.Password, unifitest.Host)
-	unifitest.WriteFile(t, l.ConfigDir, uniFiTestRepos, passwordPath, hostPath)
+	passwordPath, hostPath := agentcredtest.ExampleSecrets(t)
+	agentcredtest.WriteFile(t, l.ConfigDir, map[string]config.AgentCredential{
+		agentcredtest.Name: agentcredtest.Example(credentialTestRepos, passwordPath, hostPath),
+	})
 	homeOps := projecttrusttest.Worktree(t, l.Code, "home-ops", "main")
 	hass := projecttrusttest.Worktree(t, l.Code, "hass-config", "main")
 	other := projecttrusttest.Worktree(t, l.Code, "other-repo", "main")
+	want := map[string]string{
+		agentcredtest.PasswordFileEnv:  passwordPath,
+		agentcredtest.UsernameEnv:      agentcredtest.Username,
+		agentcredtest.HostEnv:          agentcredtest.Host,
+		payload.CredentialFilesEnvName: agentcredtest.PasswordFileEnv + "=" + agentcredtest.PasswordMarker,
+	}
 
 	cases := []struct {
 		name, session, agent, worktree string
@@ -69,15 +82,16 @@ func TestPaneEnvVars_UniFi(t *testing.T) {
 				}, mode)
 				for layout, envs := range map[string]map[string]string{"full": full, "agent-only": agentOnly} {
 					if !tc.want || mode != "host" {
-						assertNoUniFiVars(t, envs)
+						assertNoCredentialVars(t, envs)
 						continue
 					}
-					if envs["UNIFI_PASSWORD_FILE"] != passwordPath || envs["UNIFI_USERNAME"] != unifitest.Username || envs["UNIFI_HOST"] != unifitest.Host {
-						t.Errorf("%s layout: UNIFI_PASSWORD_FILE=%q UNIFI_USERNAME=%q UNIFI_HOST=%q, want %q, %q, and %q",
-							layout, envs["UNIFI_PASSWORD_FILE"], envs["UNIFI_USERNAME"], envs["UNIFI_HOST"], passwordPath, unifitest.Username, unifitest.Host)
+					for k, v := range want {
+						if envs[k] != v {
+							t.Errorf("%s layout: %s = %q, want %q", layout, k, envs[k], v)
+						}
 					}
 					for k, v := range envs {
-						if strings.Contains(v, unifitest.Password) {
+						if strings.Contains(v, agentcredtest.Password) {
 							t.Errorf("%s layout: %s holds the password value", layout, k)
 						}
 					}
@@ -87,21 +101,24 @@ func TestPaneEnvVars_UniFi(t *testing.T) {
 	}
 }
 
-// A host-mode session whose password file is missing starts with no UniFi
-// variable, and the agent-run log gives the reason.
-func TestPaneEnvVars_UniFiMissingSecretIsLogged(t *testing.T) {
+// A host-mode session whose credential file is missing starts with no
+// variable of that credential, and the agent-run log names the credential
+// and the cause.
+func TestPaneEnvVars_AgentCredentialMissingSecretIsLogged(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	l := projecttrusttest.New(t)
-	passwordPath, hostPath := unifitest.Secrets(t, unifitest.Password, unifitest.Host)
+	passwordPath, hostPath := agentcredtest.ExampleSecrets(t)
 	if err := os.Remove(passwordPath); err != nil {
 		t.Fatal(err)
 	}
-	unifitest.WriteFile(t, l.ConfigDir, uniFiTestRepos, passwordPath, hostPath)
+	agentcredtest.WriteFile(t, l.ConfigDir, map[string]config.AgentCredential{
+		agentcredtest.Name: agentcredtest.Example(credentialTestRepos, passwordPath, hostPath),
+	})
 	wt := projecttrusttest.Worktree(t, l.Code, "home-ops", "main")
 	const name = "home-ops@main"
 
 	envs := agentPaneEnvVars(Opts{SessionName: name, Agent: "worker", Worktree: wt, IsolationMode: "host"})
-	assertNoUniFiVars(t, envs)
+	assertNoCredentialVars(t, envs)
 
 	logPath, err := AgentRunLogPath(name)
 	if err != nil {
@@ -111,7 +128,7 @@ func TestPaneEnvVars_UniFiMissingSecretIsLogged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read agent-run log: %v", err)
 	}
-	for _, want := range []string{"[prism] warning: ", passwordPath, "UNIFI_PASSWORD_FILE"} {
+	for _, want := range []string{"[prism] warning: ", "agent credential " + agentcredtest.Name + ":", passwordPath, agentcredtest.PasswordFileEnv} {
 		if !strings.Contains(string(log), want) {
 			t.Errorf("agent-run log = %q, want it to hold %q", log, want)
 		}
