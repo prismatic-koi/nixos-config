@@ -204,11 +204,24 @@ The patterns use `[Xx]` classes for this, so they need no regexp flag in
 either dialect. The cookie name `TOKEN` is case-sensitive, as cookie names
 are. Group 1 of each pattern is the context.
 
+The value starts with a letter or a digit, and holds only the characters of
+a token: letters, digits, and `._~+/=-`. Control 3 redacts the result of
+the `read` tool too. So a shell expression or a string literal after the
+name stays, for example `X-CSRF-Token: $(cat "$U/csrf")` in the `unifi`
+skill. A marker stays too, so a second pass changes nothing.
+`TestContextShapes_LeaveTheUniFiInstructionsUnchanged` runs the skill and
+the post-deploy check of `docs/invariants/session-lifecycle.md` through the shape
+layer.
+
 The rules have these limits:
 
 - A cookie with a `:` in its value, before `TOKEN` on the same line, stops
   the cookie rule. This limit keeps the pattern linear in V8: a scan from one
   header name stops at the colon of the next one.
+- The cookie rule masks the first `TOKEN` of a line. A second `TOKEN` on the
+  same line stays. A curl cookie jar holds one `TOKEN`, so curl sends one.
+- A quoted value stays, for example `TOKEN="..."`. UniFi OS does not quote
+  the value.
 - A session value in another context is not masked. Examples are the
   verbose log of curl (`curl -v`) and a header that a script prints as JSON.
   The `unifi` repo skill tells the agent not to print headers.
@@ -295,8 +308,8 @@ with no END line after it starts a scan to the end of the input, so the cost of
 the lazy expression is quadratic.
 
 The TypeScript side runs the same passes per scalar, and its private-key
-pass stops at the same point. V8 backtracks, so each context shape is
-written to be linear in V8 also. The extension tests assert a bound of
+pass stops at the same point. V8 backtracks, so the pattern of each context
+shape is linear in V8 also. The extension tests assert a bound of
 100 ms for 1 MiB of each adversarial cookie and CSRF input. Thus its worst case is also one scan for an END
 line, from the first BEGIN line to the end of the scalar.
 

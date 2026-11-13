@@ -132,8 +132,8 @@ func TestRedactorParityWithExtension_EnvNameRegistry(t *testing.T) {
 
 // TestRedactorParityWithExtension_CredentialFileRegistry compares the path
 // variables whose file the value layer reads, and the marker name of each
-// (issue #3472). If one side drops an entry, that side leaves the key in the
-// output.
+// (issue #3472). If one side drops an entry, that side leaves the credential
+// in the output.
 func TestRedactorParityWithExtension_CredentialFileRegistry(t *testing.T) {
 	src := readExtensionSource(t)
 	block := regexp.MustCompile(`(?s)export const CREDENTIAL_FILE_ENV_NAMES[^=]*=\s*\{(.*?)\n\}`).FindStringSubmatch(src)

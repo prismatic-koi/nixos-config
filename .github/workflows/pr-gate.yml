@@ -86,6 +86,10 @@ jobs:
               - '**/go.mod'
               - '**/go.sum'
               - '.github/workflows/pr-gate.yml'
+              # internal/payload/redact_context_docs_test.go runs the unifi
+              # repo skill through the redactor. A PR that changes only the
+              # skill must run that test.
+              - 'modules/programs/prism/repo-skills/unifi/**'
               # internal/usage/refresh.go is a hand-maintained mirror of the
               # anthropic-oauth extension, and refresh_mirror_test.go is the
               # drift guard. A port that changes only TypeScript is exactly

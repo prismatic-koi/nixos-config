@@ -171,6 +171,69 @@
       "want": [
         "Cookie: TOKEN=[redacted:unifi-token-cookie]\nX-CSRF-Token: [redacted:csrf-token-header]\n\tTRUE\t0\tTOKEN\t[redacted:unifi-token-cookie-jar]"
       ]
+    },
+    {
+      "name": "a shell expression after the CSRF header name stays",
+      "input": [
+        "-H \"X-CSRF-Token: $(cat \"$U/csrf\")\""
+      ],
+      "want": [
+        "-H \"X-CSRF-Token: $(cat \"$U/csrf\")\""
+      ]
+    },
+    {
+      "name": "a grep for the CSRF header name stays",
+      "input": [
+        "grep -i '^x-csrf-token:' \"$U/headers\" | cut -d' ' -f2"
+      ],
+      "want": [
+        "grep -i '^x-csrf-token:' \"$U/headers\" | cut -d' ' -f2"
+      ]
+    },
+    {
+      "name": "a string literal after the cookie name stays",
+      "input": [
+        "\"Set-Cookie: TOKEN=\" + syntheticSessionJWT"
+      ],
+      "want": [
+        "\"Set-Cookie: TOKEN=\" + syntheticSessionJWT"
+      ]
+    },
+    {
+      "name": "a shell variable after the cookie name stays",
+      "input": [
+        "Cookie: TOKEN=${T}"
+      ],
+      "want": [
+        "Cookie: TOKEN=${T}"
+      ]
+    },
+    {
+      "name": "an escape after the CSRF header name stays",
+      "input": [
+        "strings.Repeat(\"X-CSRF-Token:\\n\", 4)"
+      ],
+      "want": [
+        "strings.Repeat(\"X-CSRF-Token:\\n\", 4)"
+      ]
+    },
+    {
+      "name": "limit: a second TOKEN cookie on the same line stays",
+      "input": [
+        "Cookie: TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY; TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzZWNvbmQiOnRydWV9.c3ludGhldGljLTM0NzYtMg"
+      ],
+      "want": [
+        "Cookie: TOKEN=[redacted:unifi-token-cookie]; TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzZWNvbmQiOnRydWV9.c3ludGhldGljLTM0NzYtMg"
+      ]
+    },
+    {
+      "name": "limit: a quoted cookie value stays",
+      "input": [
+        "Cookie: TOKEN=\"eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY\""
+      ],
+      "want": [
+        "Cookie: TOKEN=\"eyJhbGciOiJIUzI1NiJ9.eyJzeW50aGV0aWMiOnRydWV9.c3ludGhldGljLTM0NzY\""
+      ]
     }
   ]
 }

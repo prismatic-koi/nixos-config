@@ -2387,12 +2387,16 @@ export const PRIVATE_KEY_SHAPE: {
  * a UUID. A JWT or a UUID in any other context stays.
  *
  * Group 1 of a pattern is the context, and it stays in the output. The rest
- * of the match is the value, and the marker replaces it. A header name
+ * of the match is the value, and the marker replaces it. The value starts
+ * with a letter or a digit and holds only token characters, so a shell
+ * expression or a string literal after the name stays, and a marker stays
+ * too. A header name
  * matches with no regard to ASCII case through [Xx] classes, so the pattern
  * needs no flag. The cookie name TOKEN is case-sensitive, as cookie names
  * are. V8 backtracks, so each pattern must be linear in V8: in the cookie
  * pattern, a cookie before TOKEN holds no ':', so a scan from one header name
- * stops at the colon of the next one.
+ * stops at the colon of the next one. The lazy `??` takes the first TOKEN of
+ * the line.
  *
  * When `foldTriggers` is true, each trigger is lower case, and the prefilter
  * matches it with no regard to ASCII case.
@@ -2408,19 +2412,19 @@ export const CONTEXT_SHAPES: ReadonlyArray<{
 }> = [
   {
     name: "unifi-token-cookie",
-    pattern: String.raw`([Cc][Oo][Oo][Kk][Ii][Ee]:(?:[^:\r\n]*?;)?[ \t]*TOKEN=)[^; \t\r\n]+`,
+    pattern: String.raw`([Cc][Oo][Oo][Kk][Ii][Ee]:(?:[^:\r\n]*?;)??[ \t]*TOKEN=)[A-Za-z0-9][A-Za-z0-9._~+/=-]*`,
     triggers: ["TOKEN="],
     foldTriggers: false,
   },
   {
     name: "unifi-token-cookie-jar",
-    pattern: String.raw`(\t(?:TRUE|FALSE)\t[0-9]+\tTOKEN\t)[^ \t\r\n]+`,
+    pattern: String.raw`(\t(?:TRUE|FALSE)\t[0-9]+\tTOKEN\t)[A-Za-z0-9][A-Za-z0-9._~+/=-]*`,
     triggers: ["\tTOKEN\t"],
     foldTriggers: false,
   },
   {
     name: "csrf-token-header",
-    pattern: String.raw`([Xx]-(?:[Uu][Pp][Dd][Aa][Tt][Ee][Dd]-)?[Cc][Ss][Rr][Ff]-[Tt][Oo][Kk][Ee][Nn]:[ \t]*)[^ \t\r\n]+`,
+    pattern: String.raw`([Xx]-(?:[Uu][Pp][Dd][Aa][Tt][Ee][Dd]-)?[Cc][Ss][Rr][Ff]-[Tt][Oo][Kk][Ee][Nn]:[ \t]*)[A-Za-z0-9][A-Za-z0-9._~+/=-]*`,
     triggers: ["csrf-token:"],
     foldTriggers: true,
   },

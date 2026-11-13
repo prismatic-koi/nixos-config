@@ -24,9 +24,9 @@ and tell the user. A review agent does not get these variables.
 2. Do not send POST, PUT, or DELETE to `rest/*`. Do not send a request to
    `cmd/*`. The controller refuses a write from this account with 403. Do
    not rely on that.
-3. Do not print the password, the response headers, or the cookie jar. Do
-   not put the password on a command line. Read the file inside the command,
-   as in step 1.
+3. Do not print the password, the response headers, the cookie jar, or the
+   CSRF file `$U/csrf`. Do not put the password on a command line. Read the
+   file inside the command, as in step 1.
 4. Do not use `curl -v`, `--verbose`, `--trace`, `--trace-ascii`, `-i`,
    `--include`, or `-D -`. These options print headers, and the headers hold
    the session token.
@@ -104,7 +104,7 @@ U="${TMPDIR:-/tmp}/unifi" S=/proxy/network/api/s/default V=/proxy/network/v2/api
 | `POST $V/traffic-flows` with a paged body | 200 | Read the recent traffic flows. |
 | `GET $S/rest/portconf` | 200, no rows | Read the switch port profiles. |
 | `GET $S/stat/routing` | 200, no rows | Read the routes. |
-| `POST $S/stat/report/hourly.site`, `5minutes.ap`, `archive.speedtest` | 200, no rows. The tests sent no time range. It is not verified that the request needs one. | Read statistics over time and speed test results. |
+| `POST $S/stat/report/hourly.site`, `5minutes.ap`, `archive.speedtest` | 200, no rows. The tests sent no time range. No test verified that the request needs one. | Read statistics over time and speed test results. |
 
 The tests of `system-log/all` and `traffic-flows` used a paged JSON body.
 This skill does not record the fields of that body.

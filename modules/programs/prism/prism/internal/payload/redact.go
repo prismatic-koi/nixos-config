@@ -519,7 +519,11 @@ func CredentialShapePatterns() map[string]string {
 // stays, for the reason in the comment on credentialShape.
 //
 // Group 1 of a pattern is the context, and it stays in the output. The rest
-// of the match is the value, and the marker replaces it. A header name
+// of the match is the value, and the marker replaces it. The value starts
+// with a letter or a digit and holds only token characters. So a shell
+// expression or a string literal after the name stays, for example
+// `X-CSRF-Token: $(cat f)` in a skill that an agent reads, and a marker
+// stays too. A header name
 // matches with no regard to ASCII case through [Xx] classes, so the pattern
 // needs no flag in either regexp dialect. The cookie name TOKEN is
 // case-sensitive, as cookie names are.
@@ -527,7 +531,8 @@ func CredentialShapePatterns() map[string]string {
 // The strings are byte-identical to CONTEXT_SHAPES in the pi extension, and
 // the parity tests compare them. V8 backtracks, so each pattern must also be
 // linear in V8. In the cookie pattern, a cookie before TOKEN holds no ':'. A
-// scan from one header name thus stops at the colon of the next one.
+// scan from one header name thus stops at the colon of the next one. The
+// lazy `??` takes the first TOKEN of the line.
 type contextShape struct {
 	name    string
 	pattern string
@@ -546,7 +551,7 @@ var contextShapes = func() []contextShape {
 		{
 			// A Cookie: or a Set-Cookie: header line.
 			name:     "unifi-token-cookie",
-			pattern:  `([Cc][Oo][Oo][Kk][Ii][Ee]:(?:[^:\r\n]*?;)?[ \t]*TOKEN=)[^; \t\r\n]+`,
+			pattern:  `([Cc][Oo][Oo][Kk][Ii][Ee]:(?:[^:\r\n]*?;)??[ \t]*TOKEN=)[A-Za-z0-9][A-Za-z0-9._~+/=-]*`,
 			triggers: []string{"TOKEN="},
 		},
 		{
@@ -554,13 +559,13 @@ var contextShapes = func() []contextShape {
 			// flag, the expiry, the name, and the value, with a tab
 			// between each two.
 			name:     "unifi-token-cookie-jar",
-			pattern:  `(\t(?:TRUE|FALSE)\t[0-9]+\tTOKEN\t)[^ \t\r\n]+`,
+			pattern:  `(\t(?:TRUE|FALSE)\t[0-9]+\tTOKEN\t)[A-Za-z0-9][A-Za-z0-9._~+/=-]*`,
 			triggers: []string{"\tTOKEN\t"},
 		},
 		{
 			// An X-CSRF-Token: or an X-Updated-CSRF-Token: header line.
 			name:     "csrf-token-header",
-			pattern:  `([Xx]-(?:[Uu][Pp][Dd][Aa][Tt][Ee][Dd]-)?[Cc][Ss][Rr][Ff]-[Tt][Oo][Kk][Ee][Nn]:[ \t]*)[^ \t\r\n]+`,
+			pattern:  `([Xx]-(?:[Uu][Pp][Dd][Aa][Tt][Ee][Dd]-)?[Cc][Ss][Rr][Ff]-[Tt][Oo][Kk][Ee][Nn]:[ \t]*)[A-Za-z0-9][A-Za-z0-9._~+/=-]*`,
 			triggers: []string{"csrf-token:"},
 			fold:     true,
 		},
