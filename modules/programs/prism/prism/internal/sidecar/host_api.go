@@ -1372,7 +1372,7 @@ func (s *Sidecar) hostAPIRoutes() http.Handler {
 		// buffered:true signal from the target sidecar is discarded when the
 		// child exits 0 — which is exactly the sandboxed-caller silent-success
 		// class this endpoint fixes.
-		args := []string{"prompt", req.Session, "--prompt", req.Prompt, "--json"}
+		args := []string{"prompt", req.Session, "--prompt", req.Prompt, "--deliver-as", deliverAs, "--json"}
 		s.logger().Printf("sidecar: host-API /prompt: prism prompt --json %s <omitted>", req.Session)
 
 		// Per-endpoint timeout: 5 min. `prism prompt` writes one bus event and
