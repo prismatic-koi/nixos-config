@@ -65,7 +65,7 @@ One `workitem update` call can set the sprint, points, priority, and labels toge
 
 ## Reading output
 
-- `--output json` does not print the data. It prints a YAML summary. The line `stdout:` under `output_files` names a temp file. Read the JSON from that file. A script that expects data on stdout fails.
+- In `twg` 1.4 and later, `--output json` prints the JSON data on stdout. It prints no YAML summary. To get the YAML summary, add `--output-summary`. The line `stdout:` under `output_files` then names a temp file that holds the JSON. In `twg` 1.3, the YAML summary was the default.
 - A query returns at most 100 tickets. If the summary shows `hasNextPage: true`, pass `nextCursor` back with `--after`.
 - In query data and `get --full` data, ticket fields are at the top level of each issue, not under a `fields` key. A multi-key `get` wraps each ticket as `items[].data`.
 - After a successful `update`, the output is `Updated KEY:` and a line for each field. A failure prints a JSON error with `error.code` and `error.message`. Read the message, because many failures share one code.
