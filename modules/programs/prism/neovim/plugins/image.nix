@@ -25,6 +25,18 @@
             		kitty_method = "normal",
             	},
             })
+
+            -- image.nvim opens the tmux output as a tty path without a shell_error check.
+            -- A dead tmux server then creates a stray file. See 3rd/image.nvim lua/image/utils/tmux.lua.
+            local image_tmux = require("image/utils/tmux")
+            local get_pane_tty = image_tmux.get_pane_tty
+            image_tmux.get_pane_tty = function()
+            	local tty = get_pane_tty()
+            	if vim.v.shell_error ~= 0 or type(tty) ~= "string" or tty:sub(1, 5) ~= "/dev/" then
+            		return nil
+            	end
+            	return tty
+            end
           '';
       }
     ];
