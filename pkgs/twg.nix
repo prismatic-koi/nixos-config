@@ -6,25 +6,25 @@
 }:
 
 let
-  version = "1.3.6";
+  version = "1.4.4";
   # SRI form of the hashes in
-  # https://teamwork-graph.atlassian.com/cli/SHA256SUMS-v1.3.6
+  # https://teamwork-graph.atlassian.com/cli/SHA256SUMS-v1.4.4
   sources = {
     aarch64-darwin = {
       platform = "darwin-arm64";
-      hash = "sha256-d0Nbt2ALAx9hNQVtzdOkfNqGYnn7vnGJBrRG17RxTGc=";
+      hash = "sha256-o0Jw7gesinAdurP4vmaaxkDldf3IV1jVxWhGl1p9zuw=";
     };
     x86_64-darwin = {
       platform = "darwin-x64";
-      hash = "sha256-4LSIGMcKpHWkqKgXZd6y5uqpR6llzc43vrTIjpTeoOM=";
+      hash = "sha256-xggXMIhqTJIDd/oXwOLWdPpQ7GpLTTeev7LveMRUvr0=";
     };
     x86_64-linux = {
       platform = "linux-x64";
-      hash = "sha256-rI71zfo2G68f8F0dD4dER8yVYuYg3Zqv3u9awpE6N3g=";
+      hash = "sha256-Nqk7CtABHYCQnMAFCAkcNN8D3QvxZE/e1nv5Tyyf/Ac=";
     };
     aarch64-linux = {
       platform = "linux-arm64";
-      hash = "sha256-qGvDqmE2YjA3fWoRoWNVAeoWKyNu9IGoCjN/zZOhL1U=";
+      hash = "sha256-TattT7yU5FD8eeZhrEhha6EJm0AHfe3FUNTRBeHLg8w=";
     };
   };
   source =
