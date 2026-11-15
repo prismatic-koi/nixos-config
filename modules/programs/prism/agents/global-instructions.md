@@ -14,8 +14,9 @@ Ben Sherman is the user. When an agent is operating in their environment:
 Ben is in the `Pacific/Auckland` time zone. The offset changes with daylight saving: NZST is UTC+12 and NZDT is UTC+13.
 
 - Before you show a time to Ben, convert it to `Pacific/Auckland`. Write the zone with the time, for example `NZDT`.
-- Use a tool to convert. Do not calculate the offset yourself. On Linux, run `TZ=Pacific/Auckland date -d '<iso-timestamp>' '+%Y-%m-%d %H:%M %Z'`. On Darwin, `date` uses different flags (`-j -f` to parse, `-r` for epoch seconds).
-- If the output zone is not `NZST` or `NZDT`, the conversion failed. Set `TZDIR=/etc/zoneinfo` and run the command again.
+- Use a tool to convert. Do not calculate the offset yourself. On Linux, run `TZ=Pacific/Auckland date -d '<iso-timestamp>' '+%Y-%m-%d %H:%M %Z'`. On Darwin, get the epoch seconds with `TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' '<iso-timestamp>' +%s`. Then run `TZ=Pacific/Auckland date -r <epoch> '+%Y-%m-%d %H:%M %Z'`.
+- If a timestamp has no zone or offset, find its zone before you convert it.
+- On Linux, if the output zone is not `NZST` or `NZDT`, the conversion failed. Set `TZDIR=/etc/zoneinfo` and run the command again.
 - Write dates as `YYYY-MM-DD`. Write times in 24-hour format: `07:30` or `19:30`, not `7:30 am`.
 - Apply these rules only to text that you show to Ben. Keep machine-facing values in the format that the tool or API needs. For example, Home Assistant API timestamps stay in UTC with the `Z` form.
 
