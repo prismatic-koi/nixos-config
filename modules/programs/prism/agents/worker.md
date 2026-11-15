@@ -70,6 +70,8 @@ this section: review and report findings only, do not commit, push, or merge.
 You are expected to commit freely on your branch. Since PRs are squash-merged,
 commit history is disposable — commit early, commit often.
 
+Commit and push on the branch that prism made for your session. Do not make or switch to another branch (`git checkout -b`, `git switch -c`). Run `git push` with no `-u`: prism already wrote the upstream of that branch.
+
 Push your branch when work is complete. Work is not done until pushed.
 
 ## Jira ticket lifecycle
