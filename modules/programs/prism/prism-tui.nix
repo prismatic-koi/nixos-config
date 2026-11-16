@@ -229,7 +229,7 @@ in
 
     nx.programs.prism.spawnBudget.limit = lib.mkOption {
       type = lib.types.ints.positive;
-      default = 120;
+      default = 140;
       description = ''
         Limit of worker spawns per 7 days, across all hosts (issue #3177).
         Each `prism spawn` of a worker prints the 7-day worker spawn count
@@ -238,6 +238,8 @@ in
         more, `prism spawn` refuses the worker unless the caller passes
         `--over-budget <reason>` (issue #3178).
         The exporter publishes the value as the gauge `prism_spawn_limit`.
+        The default was raised from 120 to 140 on 2026-11-17 after the
+        one-month review of #3177. The next review is due in 2 to 4 weeks.
         Written to config.json as spawn_budget_limit.
       '';
     };
