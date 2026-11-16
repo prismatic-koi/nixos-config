@@ -301,9 +301,9 @@ const (
 const DefaultContainerHostLimit = 4
 
 // DefaultSpawnBudgetLimit is the compiled-in default of SpawnBudgetLimit:
-// 120 worker spawns per 7 days. The Nix option
+// 140 worker spawns per 7 days. The Nix option
 // nx.programs.prism.spawnBudget.limit carries the same default.
-const DefaultSpawnBudgetLimit = 120
+const DefaultSpawnBudgetLimit = 140
 
 // defaults returns the compiled-in fallback Config (gruvbox-dark palette,
 // standard paths). These values are used whenever no config file is found.

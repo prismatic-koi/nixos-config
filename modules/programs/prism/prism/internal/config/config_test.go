@@ -279,7 +279,7 @@ func TestContainerHostLimit(t *testing.T) {
 	}
 }
 
-// TestSpawnBudgetSettings verifies the default limit of 120, an explicit
+// TestSpawnBudgetSettings verifies the default limit of 140, an explicit
 // limit, the fallback for a limit below 1, and the Prometheus URL, which
 // has no compiled-in value (issue #3177).
 func TestSpawnBudgetSettings(t *testing.T) {
@@ -288,11 +288,11 @@ func TestSpawnBudgetSettings(t *testing.T) {
 		wantLimit int
 		wantURL   string
 	}{
-		{`{}`, 120, ""},
+		{`{}`, 140, ""},
 		{`{"spawn_budget_limit": 80}`, 80, ""},
-		{`{"spawn_budget_limit": 0}`, 120, ""},
-		{`{"spawn_budget_limit": -3}`, 120, ""},
-		{`{"spawn_budget_prometheus_url": "http://prom.example:9090"}`, 120, "http://prom.example:9090"},
+		{`{"spawn_budget_limit": 0}`, 140, ""},
+		{`{"spawn_budget_limit": -3}`, 140, ""},
+		{`{"spawn_budget_prometheus_url": "http://prom.example:9090"}`, 140, "http://prom.example:9090"},
 	}
 	for _, tc := range cases {
 		cfgPath := filepath.Join(t.TempDir(), "config.json")
@@ -308,8 +308,8 @@ func TestSpawnBudgetSettings(t *testing.T) {
 			t.Errorf("%s: SpawnBudgetPrometheusURL = %q, want %q", tc.raw, cfg.SpawnBudgetPrometheusURL, tc.wantURL)
 		}
 	}
-	if config.DefaultSpawnBudgetLimit != 120 {
-		t.Errorf("DefaultSpawnBudgetLimit = %d, want 120", config.DefaultSpawnBudgetLimit)
+	if config.DefaultSpawnBudgetLimit != 140 {
+		t.Errorf("DefaultSpawnBudgetLimit = %d, want 140", config.DefaultSpawnBudgetLimit)
 	}
 }
 

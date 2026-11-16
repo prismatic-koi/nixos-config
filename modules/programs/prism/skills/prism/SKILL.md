@@ -165,7 +165,7 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 
 Each `prism spawn` of a worker prints one line on stderr that starts with `spawn budget:`. A spawn of a coordinator, an investigator, or a review agent prints no line.
 
-- The line gives the count of worker spawns in the last 7 days, in all repos, and the limit. The limit is `nx.programs.prism.spawnBudget.limit` (default 120).
+- The line gives the count of worker spawns in the last 7 days, in all repos, and the limit. The limit is `nx.programs.prism.spawnBudget.limit` (default 140).
 - The count is the higher of two values: the fleet-wide count from Prometheus (all hosts) and the count in the local prism database (this host).
 - At 95% of the limit or more, the line tells the user to finish the current work and stop for the day.
 - At the limit or more, `prism spawn` refuses the worker and exits non-zero. The message gives the count, the limit, and the `--over-budget` flag. `prism spawn --over-budget <reason>` starts the worker anyway. Prism logs each override and counts it in `prism_spawn_overrides_total{repo}`. An empty reason is refused. Under the limit the flag has no effect. Review agents, investigators, and coordinators are never refused. Do not use `--over-budget` without the approval of the user.
