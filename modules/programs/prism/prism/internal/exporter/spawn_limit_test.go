@@ -69,7 +69,7 @@ func TestExporter_SpawnLimitGauge_ReportsTheSettingOnEveryScrape(t *testing.T) {
 	}
 }
 
-func TestExporter_SpawnLimitGauge_DefaultsTo120(t *testing.T) {
+func TestExporter_SpawnLimitGauge_DefaultsToTheCompiledInDefault(t *testing.T) {
 	h := spawnLimitHarness(t, nil)
 	got, ok := h.scrape(h.exp).Value(exporter.MetricSpawnLimit, nil)
 	if !ok || got != float64(config.DefaultSpawnBudgetLimit) {
