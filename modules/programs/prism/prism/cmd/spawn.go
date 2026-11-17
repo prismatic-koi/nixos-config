@@ -431,10 +431,17 @@ func init() {
 // current code).
 func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.IsolationMode, error) {
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
+	return resolveIsolationFlag(isolationFlag, cmd.Flags().Changed("isolation"), cfg)
+}
 
+// resolveIsolationFlag is resolveIsolationMode for an --isolation value
+// that the caller already read. prism switch and prism launch use it, so
+// their errors for an unknown mode and for a platform mode are the errors
+// of prism spawn.
+func resolveIsolationFlag(isolationFlag string, changed bool, cfg config.Config) (config.IsolationMode, error) {
 	mode, err := container.Resolve(container.ResolveInput{
 		IsolationFlag:        isolationFlag,
-		IsolationFlagChanged: cmd.Flags().Changed("isolation"),
+		IsolationFlagChanged: changed,
 		ConfigDefault:        cfg.DefaultIsolationMode,
 	})
 	if err != nil {

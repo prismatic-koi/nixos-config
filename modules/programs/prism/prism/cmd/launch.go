@@ -17,12 +17,14 @@ package cmd
 //	--in-terminal  attach in the current terminal instead of spawning a new kitty window
 //	--path <dir>   open the context switcher targeted at this directory (bypasses dashboard)
 //	--fresh        start a new session without --continue (used with --path)
+//	--isolation    isolation mode of the session that --path opens (needs --path)
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"syscall"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -35,6 +37,7 @@ var (
 	launchInTerminal bool
 	launchPath       string
 	launchFresh      bool
+	launchIsolation  string
 )
 
 // execStart starts the given *exec.Cmd without waiting for it (mirrors
@@ -58,9 +61,13 @@ func init() {
 	launchCmd.Flags().BoolVar(&launchInTerminal, "in-terminal", false, "attach in the current terminal")
 	launchCmd.Flags().StringVar(&launchPath, "path", "", "open context switcher at this directory (bypasses dashboard)")
 	launchCmd.Flags().BoolVar(&launchFresh, "fresh", false, "start a new session without --continue")
+	launchCmd.Flags().StringVar(&launchIsolation, "isolation", "", "Isolation mode of the session that --path opens: "+isolationSwitchHelp+". Needs --path")
 }
 
 func runLaunch(_ *cobra.Command, _ []string) error {
+	if launchIsolation != "" && launchPath == "" {
+		return errors.New("prism launch: --isolation needs --path. The dashboard starts no session, so it has no isolation mode")
+	}
 	// --path: bypass the dashboard and open the context switcher at the given
 	// directory. This preserves the existing UX for project-specific keybindings
 	// (e.g. ALT+o → Obsidian, ALT+n → nixos-config, zsh ^o).
@@ -145,10 +152,15 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 // targeted at launchPath, bypassing the dashboard. Preserves the previous
 // behaviour for keybindings like ALT+o (Obsidian) and ALT+n (nixos-config).
 func runLaunchWithPath() error {
-	switcherCmd := "prism switch --path " + launchPath
-	if launchFresh {
-		switcherCmd += " --fresh"
+	// prism switch runs in a popup that closes when it exits, so the user
+	// does not see its error. Refuse a bad --isolation value here, before a
+	// session or a popup starts.
+	if launchIsolation != "" {
+		if _, err := resolveIsolationFlag(launchIsolation, true, config.Load()); err != nil {
+			return err
+		}
 	}
+	switcherCmd := launchSwitcherCmd(launchPath, launchFresh, launchIsolation)
 
 	inTmux := os.Getenv("TMUX") != ""
 
@@ -182,14 +194,16 @@ func runLaunchWithPath() error {
 		if err := ensureScratchpad(); err != nil {
 			return err
 		}
+		// tmux parses the hook command, and then the shell parses the popup
+		// command, so switcherCmd takes a second layer of quotes.
 		_, _ = tmux.Run("set-hook", "-t", "scratchpad", "client-attached",
-			"run-shell 'sleep 0.1' ; display-popup -w 80% -h 80% -E '"+switcherCmd+"' ; set-hook -u client-attached",
+			"run-shell 'sleep 0.1' ; display-popup -w 80% -h 80% -E "+shellQuote(switcherCmd)+" ; set-hook -u client-attached",
 		)
 		tmuxBin, err := exec.LookPath(tmux.TmuxBin)
 		if err != nil {
 			tmuxBin = tmux.TmuxBin
 		}
-		return syscall.Exec(tmuxBin, []string{tmux.TmuxBin, "new-session", "-As", "scratchpad"}, os.Environ())
+		return syscallExec(tmuxBin, []string{tmux.TmuxBin, "new-session", "-As", "scratchpad"}, os.Environ())
 
 	default:
 		kittyBin := config.Load().KittyBin
@@ -203,6 +217,24 @@ func runLaunchWithPath() error {
 			";", "run-shell", "sleep 0.2",
 			";", "display-popup", "-w", "80%", "-h", "80%", "-E", switcherCmd,
 		)
-		return cmd.Start()
+		return execStart(cmd)
 	}
+}
+
+// launchSwitcherCmd is the prism switch command that the popup of prism
+// launch --path runs. A shell runs it, so each value is in shell quotes.
+func launchSwitcherCmd(path string, fresh bool, isolation string) string {
+	parts := []string{"prism", "switch", "--path", shellQuote(path)}
+	if fresh {
+		parts = append(parts, "--fresh")
+	}
+	if isolation != "" {
+		parts = append(parts, "--isolation", shellQuote(isolation))
+	}
+	return strings.Join(parts, " ")
+}
+
+// shellQuote wraps s in single quotes, escaping any single quotes within.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

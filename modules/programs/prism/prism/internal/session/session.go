@@ -96,6 +96,11 @@ type Opts struct {
 	// Valid values: "bwrap", "sandbox-exec", "host" (see
 	// config.ValidIsolationModes).
 	IsolationMode string
+	// ExplicitIsolation is true when IsolationMode comes from the --isolation
+	// flag of prism switch or prism launch. Then prism switch does not apply
+	// project_isolation_overrides, and it does not attach to a running
+	// session in another mode. session.Create does not read it.
+	ExplicitIsolation bool
 	// PluginHostPath is the host-side path to the agent plugin file.
 	// Empty string = no plugin. Retained for back-compat; no current
 	// isolation mode consumes it.

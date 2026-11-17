@@ -123,14 +123,15 @@ type enumFlagKey struct {
 // agent-context generator. Do not duplicate these lists elsewhere.
 var enumFlagRegistry = map[enumFlagKey]flagEnumMeta{
 	{commandUse: "spawn", flagName: "isolation"}: {
-		values: func() []string {
-			// Share the exact same slice as the runtime validation path.
-			s := make([]string, len(config.ValidIsolationModes))
-			for i, m := range config.ValidIsolationModes {
-				s[i] = string(m)
-			}
-			return s
-		}(),
+		values:        isolationModeValues(),
+		defaultSource: "~/.config/prism/config.json",
+	},
+	{commandUse: "switch", flagName: "isolation"}: {
+		values:        isolationModeValues(),
+		defaultSource: "~/.config/prism/config.json",
+	},
+	{commandUse: "launch", flagName: "isolation"}: {
+		values:        isolationModeValues(),
 		defaultSource: "~/.config/prism/config.json",
 	},
 	{commandUse: containerRunUse, flagName: "mount"}: {
@@ -140,15 +141,19 @@ var enumFlagRegistry = map[enumFlagKey]flagEnumMeta{
 		values: prismcontainer.MountModes,
 	},
 	{commandUse: "sidecar", flagName: "isolation-mode"}: {
-		values: func() []string {
-			s := make([]string, len(config.ValidIsolationModes))
-			for i, m := range config.ValidIsolationModes {
-				s[i] = string(m)
-			}
-			return s
-		}(),
+		values:        isolationModeValues(),
 		defaultSource: "~/.config/prism/config.json",
 	},
+}
+
+// isolationModeValues returns config.ValidIsolationModes, the list that the
+// runtime validation uses, as strings.
+func isolationModeValues() []string {
+	s := make([]string, len(config.ValidIsolationModes))
+	for i, m := range config.ValidIsolationModes {
+		s[i] = string(m)
+	}
+	return s
 }
 
 // flagDefaultSourceRegistry carries override default_source annotations for
@@ -167,7 +172,8 @@ var precedenceRules = map[string][]string{
 		"profiles.json default field (lowest)",
 	},
 	"isolation": {
-		"--isolation flag on prism spawn",
+		"--isolation flag on prism spawn, prism switch, or prism launch",
+		"~/.config/prism/config.json project_isolation_overrides entry for the path (prism switch and prism launch; prism spawn does not read it)",
 		"~/.config/prism/config.json default_isolation_mode field",
 		"compiled-in default (host)",
 	},

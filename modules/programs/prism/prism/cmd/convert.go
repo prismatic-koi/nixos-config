@@ -236,7 +236,7 @@ func restartAfterConvert(res convertResult, converted bool) error {
 // convertStartSession starts the session of dir with no client, as prism
 // switch starts it. Tests replace it.
 var convertStartSession = func(dir, projectRoot string) error {
-	s, err := loadSwitchSetup(false)
+	s, err := loadSwitchSetup(false, "")
 	if err != nil {
 		return fmt.Errorf("start a session after the conversion: %w", err)
 	}

@@ -46,9 +46,15 @@ const killSidecarTimeout = 2 * time.Second
 //
 // pf may be nil; the AgentEnvVars injection is a no-op when pf is nil.
 //
+// An explicit --isolation flag (opts.ExplicitIsolation) takes precedence
+// over the override, so opts is then left unchanged.
+//
 // The caller is responsible for passing a non-nil opts pointer. Logging is
 // done to stderr at info level when an override fires.
 func applyPathIsolationOverride(path string, cfg config.Config, opts *session.Opts, isoCaps container.Capabilities, pf *config.ProfilesFile) {
+	if opts.ExplicitIsolation {
+		return
+	}
 	override := cfg.IsolationOverrideForPath(path)
 	if override == "" {
 		return
@@ -134,6 +140,9 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		if d == nil {
 			// No DB — can't determine liveness. Treat as live:
 			// attach without touching anything.
+			if err := checkRunningIsolation(sessionName, nil, opts); err != nil {
+				return err
+			}
 			if opts.Headless {
 				return nil
 			}
@@ -159,6 +168,9 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		}
 		if isLive {
 			// Live session — attach without touching DB state.
+			if err := checkRunningIsolation(sessionName, st, opts); err != nil {
+				return err
+			}
 			if opts.Headless {
 				return nil
 			}
@@ -242,6 +254,31 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	}
 
 	return session.Attach(sessionName)
+}
+
+// checkRunningIsolation returns an error when opts.ExplicitIsolation is set
+// and the running session sessionName does not run in opts.IsolationMode.
+// st is the agent_status row of the session, or nil when prism cannot read
+// it. A session whose mode prism cannot read is refused too: an attach must
+// not give the user a mode other than the one that the user selected.
+func checkRunningIsolation(sessionName string, st *db.Status, opts session.Opts) error {
+	if !opts.ExplicitIsolation || opts.Layout != session.LayoutFull {
+		return nil
+	}
+	current := ""
+	if st != nil {
+		current = st.IsolationMode
+	}
+	if current == opts.IsolationMode {
+		return nil
+	}
+	advice := fmt.Sprintf("Close the session first (prism close --session %s --keep-worktree), then run the command again.", sessionName)
+	if current == "" {
+		return fmt.Errorf("prism switch %q: the session already runs, and prism cannot read its isolation mode. prism does not attach with --isolation %s. %s",
+			sessionName, opts.IsolationMode, advice)
+	}
+	return fmt.Errorf("prism switch %q: the session already runs in isolation mode %q, not %q. %s",
+		sessionName, current, opts.IsolationMode, advice)
 }
 
 // switchSidecarStopTimeout is the SIGTERM wait, and then the SIGKILL wait,
@@ -374,16 +411,28 @@ type switchSetup struct {
 	opts    session.Opts
 }
 
-// loadSwitchSetup reads the switchSetup of prism switch. prism convert uses
-// it to start the session of the new worktree.
-func loadSwitchSetup(fresh bool) (switchSetup, error) {
-	cfg := config.Load()
+// loadSwitchConfig returns the config of prism switch. config.Load caches
+// the first read, so tests replace this function.
+var loadSwitchConfig = func() config.Config { return config.Load() }
 
-	// Derive the effective isolation mode from config via registry.Resolve.
-	// switch has no --isolation flag — the machine default is used.
-	isoMode, isoErr := container.Resolve(container.ResolveInput{
-		ConfigDefault: cfg.DefaultIsolationMode,
-	})
+// loadSwitchSetup reads the switchSetup of prism switch. prism convert uses
+// it to start the session of the new worktree. isolation is the value of
+// --isolation, or "" when the flag is not set.
+func loadSwitchSetup(fresh bool, isolation string) (switchSetup, error) {
+	cfg := loadSwitchConfig()
+
+	// Without --isolation, the mode is the machine default, and
+	// applyPathIsolationOverride can change it for each path. The flag gets
+	// the validation and the platform check of prism spawn.
+	var isoMode config.IsolationMode
+	var isoErr error
+	if isolation != "" {
+		isoMode, isoErr = resolveIsolationFlag(isolation, true, cfg)
+	} else {
+		isoMode, isoErr = container.Resolve(container.ResolveInput{
+			ConfigDefault: cfg.DefaultIsolationMode,
+		})
+	}
 	if isoErr != nil {
 		return switchSetup{}, isoErr
 	}
@@ -454,11 +503,12 @@ func loadSwitchSetup(fresh bool) (switchSetup, error) {
 	// harnessFlag was validated above so the error is unreachable.
 	switchHarness, _ := harness.New(switchHarnessName, "", nil, "", "")
 	opts := session.Opts{
-		Fresh:          fresh,
-		IsolationMode:  string(isoMode),
-		PluginHostPath: cfg.SidecarPluginPath,
-		RuntimeEnvVars: switchHarness.RuntimeEnv(),
-		HarnessName:    switchHarnessName,
+		Fresh:             fresh,
+		IsolationMode:     string(isoMode),
+		ExplicitIsolation: isolation != "",
+		PluginHostPath:    cfg.SidecarPluginPath,
+		RuntimeEnvVars:    switchHarness.RuntimeEnv(),
+		HarnessName:       switchHarnessName,
 		// PIExtensionDir for host-mode pi launches. The container
 		// path appends --extension via container.PIInvocation, so this is
 		// load-bearing only for isolation=host — buildDirectAgentCmd skips
@@ -520,17 +570,24 @@ var switchCmd = &cobra.Command{
 	Short: "Context switcher — open or create a project session",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pathArg, _ := cmd.Flags().GetString("path")
+		isolation, _ := cmd.Flags().GetString("isolation")
 
 		// Inside a container: proxy the switch to the host sidecar.
 		// --path is the only flag that makes sense in this context.
 		if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+			// Do not forward --isolation, and do not drop it. A sandboxed
+			// caller must not select the mode of a session that the host
+			// starts, and a silent drop gives a mode the caller did not ask for.
+			if cmd.Flags().Changed("isolation") {
+				return errors.New("prism switch: --isolation is not available inside a sandbox. Run prism switch without --isolation, or run it on the host")
+			}
 			return proxyToHostAPI(apiURL, "/switch", map[string]any{
 				"session": pathArg, // host resolves path → session name
 			}, nil)
 		}
 
 		fresh, _ := cmd.Flags().GetBool("fresh")
-		setup, err := loadSwitchSetup(fresh)
+		setup, err := loadSwitchSetup(fresh, isolation)
 		if err != nil {
 			return err
 		}
@@ -588,9 +645,18 @@ var switchCmd = &cobra.Command{
 	},
 }
 
+// isolationSwitchHelp is the part of the --isolation help that prism switch
+// and prism launch share.
+const isolationSwitchHelp = "bwrap, sandbox-exec, or host " +
+	"(default: project_isolation_overrides, then default_isolation_mode, from ~/.config/prism/config.json). " +
+	"Takes precedence over project_isolation_overrides. If the session already runs in another mode, the command does not attach"
+
+const switchIsolationHelp = "Isolation mode of a new session: " + isolationSwitchHelp + ". Not available inside a sandbox"
+
 func init() {
 	switchCmd.Flags().String("path", "", "Open a specific path directly (skip picker)")
 	switchCmd.Flags().Bool("fresh", false, "Start a fresh harness session, ignoring any stored session ID")
+	switchCmd.Flags().String("isolation", "", switchIsolationHelp)
 	rootCmd.AddCommand(switchCmd)
 }
 

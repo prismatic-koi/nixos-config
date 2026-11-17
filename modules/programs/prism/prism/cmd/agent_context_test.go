@@ -8,8 +8,8 @@ package cmd
 //  2. TestAgentContextSchemaValidation — the emitted JSON unmarshals cleanly
 //     into the typed AgentContextDocument struct so future flag additions
 //     can't silently break the shape.
-//  3. TestAgentContextIsolationFlagIsEnum — the spawn --isolation flag has
-//     type "enum" and a non-empty values array.
+//  3. TestAgentContextIsolationFlagIsEnum — the --isolation flag of spawn,
+//     switch, and launch has type "enum" and a non-empty values array.
 //  4. TestAgentContextMissingProfilesFile — when profiles.json is absent,
 //     available_profiles is [] (not null, not an error).
 //  5. TestAgentContextPrecedenceKeys — the precedence map includes at least
@@ -21,6 +21,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -117,8 +118,9 @@ func TestAgentContextSchemaValidation(t *testing.T) {
 	}
 }
 
-// TestAgentContextIsolationFlagIsEnum verifies that spawn's --isolation flag
-// is documented as type "enum" with the exact values from config.ValidIsolationModes.
+// TestAgentContextIsolationFlagIsEnum verifies that the --isolation flag of
+// spawn, switch, and launch is documented as type "enum" with the exact
+// values from config.ValidIsolationModes.
 func TestAgentContextIsolationFlagIsEnum(t *testing.T) {
 	out := captureStdout(t, func() {
 		if err := runAgentContext(agentContextCmd, nil); err != nil {
@@ -131,43 +133,36 @@ func TestAgentContextIsolationFlagIsEnum(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
 	}
 
-	spawnMeta, ok := doc.Commands["spawn"]
-	if !ok {
-		t.Fatal("spawn command missing from output")
-	}
-
-	isolationFlag, ok := spawnMeta.Flags["--isolation"]
-	if !ok {
-		t.Fatal("spawn --isolation flag missing from output")
-	}
-
-	if isolationFlag.Type != "enum" {
-		t.Errorf("spawn --isolation type = %q, want %q", isolationFlag.Type, "enum")
-	}
-
-	if len(isolationFlag.Values) == 0 {
-		t.Fatal("spawn --isolation values must not be empty")
-	}
-
-	// Verify the values exactly match config.ValidIsolationModes.
-	want := make([]string, len(config.ValidIsolationModes))
-	for i, m := range config.ValidIsolationModes {
-		want[i] = string(m)
-	}
-	got := isolationFlag.Values
-	if len(got) != len(want) {
-		t.Errorf("spawn --isolation values: got %v, want %v", got, want)
-	} else {
-		for i := range want {
-			if got[i] != want[i] {
-				t.Errorf("spawn --isolation values[%d]: got %q, want %q", i, got[i], want[i])
-			}
+	for _, command := range []string{"spawn", "switch", "launch"} {
+		meta, ok := doc.Commands[command]
+		if !ok {
+			t.Errorf("%s command missing from output", command)
+			continue
 		}
-	}
 
-	// The default_source should reference the config file.
-	if isolationFlag.DefaultSource == "" {
-		t.Error("spawn --isolation default_source should be set")
+		isolationFlag, ok := meta.Flags["--isolation"]
+		if !ok {
+			t.Errorf("%s --isolation flag missing from output", command)
+			continue
+		}
+
+		if isolationFlag.Type != "enum" {
+			t.Errorf("%s --isolation type = %q, want %q", command, isolationFlag.Type, "enum")
+		}
+
+		// Verify the values exactly match config.ValidIsolationModes.
+		want := make([]string, len(config.ValidIsolationModes))
+		for i, m := range config.ValidIsolationModes {
+			want[i] = string(m)
+		}
+		if got := isolationFlag.Values; !slices.Equal(got, want) {
+			t.Errorf("%s --isolation values: got %v, want %v", command, got, want)
+		}
+
+		// The default_source should reference the config file.
+		if isolationFlag.DefaultSource == "" {
+			t.Errorf("%s --isolation default_source should be set", command)
+		}
 	}
 }
 
