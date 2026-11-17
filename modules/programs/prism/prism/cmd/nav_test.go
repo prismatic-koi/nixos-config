@@ -75,11 +75,6 @@ func withNavSpy(t *testing.T, sessionName, clientName string) string {
 	return logFile
 }
 
-// shellQuote wraps s in single quotes, escaping any single quotes within.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
 // seedNavDB opens a fresh DB at a temp path, seeds two "running" sessions,
 // and overrides openNavDB to return that DB. Both sessions are registered so
 // that the nav resolver has two entries and can pick a target distinct from

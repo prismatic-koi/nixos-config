@@ -44,6 +44,7 @@ func resetLaunchFlags(t *testing.T) {
 		launchInTerminal = false
 		launchPath = ""
 		launchFresh = false
+		launchIsolation = ""
 	})
 }
 

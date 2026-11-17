@@ -183,9 +183,9 @@ type ResolveInput struct {
 //  2. DB isolation_mode column (from a restored session row).
 //  3. ConfigDefault (cfg.DefaultIsolationMode; compiled-in default: "host").
 //
-// Cites: cmd/spawn.go:resolveIsolationMode; cmd/switch.go, cmd/pr.go,
-//
-//	cmd/review.go, cmd/restore.go (ConfigDefault path).
+// Cites: cmd/spawn.go:resolveIsolationFlag (spawn, and switch and launch
+// with --isolation); cmd/switch.go, cmd/pr.go, cmd/review.go,
+// cmd/restore.go (ConfigDefault path).
 func Resolve(input ResolveInput) (config.IsolationMode, error) {
 	// 1. --isolation flag.
 	if input.IsolationFlagChanged && input.IsolationFlag != "" {
