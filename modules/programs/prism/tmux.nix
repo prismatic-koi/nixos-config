@@ -219,7 +219,7 @@ in
               set -g menu-border-style 'bg=${neutrals.background_0} fg=${roles.secondary}'
               set -g status-left-style 'bg=${neutrals.background_1} fg=${roles.secondary}'
               set -g status-right-style 'bg=${neutrals.background_1} fg=${roles.primary}'
-              # for kitty images in image.nvim
+              # for kitty images (unicode placeholders) in snacks.nvim
               set -gq allow-passthrough on
               # sensible debugging behavior
               set -g remain-on-exit on

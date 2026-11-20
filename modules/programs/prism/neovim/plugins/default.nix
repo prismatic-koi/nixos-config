@@ -7,7 +7,6 @@
     ./conform.nix
     ./copilot.nix
     ./gitsigns.nix
-    ./image.nix
     ./leap.nix
     ./markdown-preview.nix
     ./lualine.nix
@@ -18,6 +17,7 @@
     ./obsidian.nix
     ./oil.nix
     ./otter.nix
+    ./snacks-image.nix
     ./telescope.nix
     ./theme-catpuccin.nix
     ./theme-edge.nix
