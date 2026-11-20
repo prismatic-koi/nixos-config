@@ -86,10 +86,10 @@
           	-- Preserve existing metadata first (including existing 'created' if it exists)
           	if note.metadata ~= nil and not vim.tbl_isempty(note.metadata) then
           		for k, v in pairs(note.metadata) do
-          			-- Only copy if it's not 'modified', which we explicitly set above
-          			-- and also ensure we don't overwrite 'created' if it already exists
-          			-- and this isn't a new note.
-          			if k ~= "modified" then
+          			-- Skip 'modified', which we set above.
+          			-- Skip 'id': obsidian.nvim keeps the note ID in metadata, but the
+          			-- vault does not need it. Without the key, the file name is the ID.
+          			if k ~= "modified" and k ~= "id" then
           				out[k] = v
           			end
           		end
