@@ -91,7 +91,7 @@
             SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
             # Add bitwarden-cli to PATH
-            export PATH="${pkgs.bitwarden-cli}/bin:$PATH"
+            export PATH="${config.nx.programs.bitwarden.cliPackage}/bin:$PATH"
 
             # Default to macOS-specific tools if not overridden
             # Escape spaces in path for shlex.split() compatibility
@@ -146,7 +146,7 @@
         else
           ''
             # Linux: use rofi as default dmenu
-            export PATH="${pkgs.bitwarden-cli}/bin:$PATH"
+            export PATH="${config.nx.programs.bitwarden.cliPackage}/bin:$PATH"
 
             # Load Bitwarden password from sops secret if available and not
             # already set. Mirrors the Darwin branch above — needed because
@@ -400,7 +400,7 @@
               Type = "oneshot";
               # Use a wrapper script to properly pass the password from the secret file
               ExecStart = pkgs.writeShellScript "bitwarden-prefetch-wrapper" ''
-                export PATH="${pkgs.bitwarden-cli}/bin:$PATH"
+                export PATH="${config.nx.programs.bitwarden.cliPackage}/bin:$PATH"
                 export BITWARDEN_PASSWORD="$(cat ${config.sops.secrets.bitwarden_password.path})"
                 exec ${bitwarden-prefetch}/bin/bitwarden-prefetch
               '';
@@ -527,7 +527,7 @@
             config = {
               ProgramArguments = [
                 "${pkgs.writeShellScript "bitwarden-prefetch-wrapper" ''
-                  export PATH="${pkgs.bitwarden-cli}/bin:$PATH"
+                  export PATH="${config.nx.programs.bitwarden.cliPackage}/bin:$PATH"
                   export BITWARDEN_PASSWORD="$(cat ${
                     config.home-manager.users.${config.nx.username}.sops.secrets.bitwarden_password.path
                   })"
@@ -563,7 +563,7 @@
 
           # Add bitwarden-cli to packages so it's available globally
           home.packages = [
-            pkgs.bitwarden-cli
+            config.nx.programs.bitwarden.cliPackage
           ];
         };
       })
