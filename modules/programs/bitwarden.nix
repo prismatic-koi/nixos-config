@@ -11,10 +11,33 @@
   lib,
   ...
 }:
+let
+  # api.bitwarden.com resolves to a Fastly us-eu POP map. From NZ the IPv4
+  # TCP connect takes about 290 ms, which is more than the 250 ms default
+  # happy-eyeballs attempt timeout of Node. Node then stops the connect and
+  # `bw` fails with FetchError ETIMEDOUT. Keep happy eyeballs on, and give
+  # each address attempt more time.
+  bitwarden-cli-wrapped = pkgs.symlinkJoin {
+    name = "bitwarden-cli-${pkgs.bitwarden-cli.version}";
+    inherit (pkgs.bitwarden-cli) version meta;
+    paths = [ pkgs.bitwarden-cli ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      wrapProgram $out/bin/bw \
+        --prefix NODE_OPTIONS " " "--network-family-autoselection-attempt-timeout=1000"
+    '';
+  };
+in
 {
   options = {
     nx.programs.bitwarden.enable = lib.mkEnableOption "enables bitwarden-desktop" // {
       default = true;
+    };
+    nx.programs.bitwarden.cliPackage = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      default = bitwarden-cli-wrapped;
+      description = "The wrapped bitwarden-cli package. Use this, not pkgs.bitwarden-cli, for every `bw` call.";
     };
   };
   config = lib.mkIf config.nx.programs.bitwarden.enable {
@@ -24,9 +47,9 @@
         ...
       }:
       {
-        home.packages = with pkgs; [
-          bitwarden-desktop
-          bitwarden-cli
+        home.packages = [
+          pkgs.bitwarden-desktop
+          bitwarden-cli-wrapped
         ];
         home.persistence."/persist" = {
           directories = [
