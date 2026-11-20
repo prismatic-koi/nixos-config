@@ -144,6 +144,17 @@
           	end,
           }
 
+          -- obsidian.nvim turns its UI off when it finds render-markdown.nvim on the
+          -- runtime path. That plugin does not draw checkboxes or bullets here, so hide it.
+          local obsidian_api = require("obsidian.api")
+          local get_plugin_info = obsidian_api.get_plugin_info
+          obsidian_api.get_plugin_info = function(name)
+          	if name == "render-markdown.nvim" then
+          		return nil
+          	end
+          	return get_plugin_info(name)
+          end
+
           require("obsidian").setup({
           	workspaces = {
           		{
