@@ -17,6 +17,7 @@
     ./obsidian.nix
     ./oil.nix
     ./otter.nix
+    ./render-markdown.nix
     ./snacks-image.nix
     ./telescope.nix
     ./theme-catpuccin.nix
