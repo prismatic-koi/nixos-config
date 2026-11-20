@@ -23,6 +23,7 @@
             		preset = "none",
             		style = "full",
             		cell = "padded",
+            		head = "RenderMarkdownTableRow",
             	},
             	quote = { enabled = true },
             	anti_conceal = { enabled = true },
