@@ -41,6 +41,9 @@
             	paragraph = { enabled = false },
             	sign = { enabled = false },
             	yaml = { enabled = false },
+            	-- The plugin default is 3, which hides the replacement character of a concealed
+            	-- extmark. obsidian.nvim checkboxes and bullets need level 2 to show their symbol.
+            	win_options = { conceallevel = { rendered = 2 } },
             })
           '';
       }
