@@ -6,14 +6,14 @@
   coreutils,
 }:
 
-# flate v0.7.3 pin: this must move in lockstep with the home-ops CI pin.
+# flate v0.8.0 pin: this must move in lockstep with the home-ops CI pin.
 # Do not put this derivation on any automated update surface (e.g.
 # nix-update / renovate) — the version is intentionally hand-pinned to
-# match home-ops (hand-pinned to 0.7.3, the version home-ops CI uses).
+# match home-ops (hand-pinned to 0.8.0, the version home-ops CI uses).
 let
-  version = "0.7.3";
+  version = "0.8.0";
 in
-# go.mod declares `go 1.27.0` (unchanged at v0.7.3). The pinned nixpkgs
+# go.mod declares `go 1.27.0` (unchanged at v0.8.0). The pinned nixpkgs
 # default buildGoModule is pinned to go 1.26.7, which is too old to build this module;
 # buildGoLatestModule (go 1.27.1) is the newest toolchain available in
 # the pinned nixpkgs that satisfies the requirement.
@@ -25,10 +25,10 @@ buildGoLatestModule {
     owner = "home-operations";
     repo = "flate";
     rev = "v${version}";
-    hash = "sha256-sm22CX+3B7roECyNz5v9yLaqlTPZN7GWMcNthBn5IpY=";
+    hash = "sha256-5RmeAjozWNSWkPI1KQRhUcVKYRrtArnr86pKBSFT4HU=";
   };
 
-  vendorHash = "sha256-TyYkEU+UbN2B+rj0D3QxwEOGpwLKwHW9jZT/kitPYn8=";
+  vendorHash = "sha256-8MwEycLWR5E6nC83Kwz8R3h6sMxj3+2pxnFGFZ3I4YA=";
 
   subPackages = [ "cmd/flate" ];
 
@@ -40,7 +40,7 @@ buildGoLatestModule {
 
   # flate embeds Helm and Kustomize rendering as Go libraries (helm.sh/
   # helm/v4, fluxcd/pkg/kustomize, etc.) rather than shelling out to the
-  # `helm` / `kustomize` binaries — confirmed by grepping the v0.7.3
+  # `helm` / `kustomize` binaries — confirmed by grepping the v0.8.0
   # source tree for os/exec: no non-test code imports it, so flate
   # starts no external binary. No PATH injection is
   # needed here — makeWrapper is used below only to install the three
