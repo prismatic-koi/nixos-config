@@ -187,6 +187,12 @@ tag pair:
 </follow_ups>
 ```
 
+**Timing.** Write a `<follow_ups>` section only in your final handoff turn.
+That turn comes after the review passes and you push the last commit. Do not
+write the section in a turn that starts `prism review`, waits for the review
+result, or runs `prism escalate`. Prism drops the section in those turns. If
+you found something in an earlier turn, put it in the final section.
+
 - **Section absent or empty** (including whitespace-only) — the coordinator
   gets the existing generic finish message. No behaviour change.
 - **Section present and non-empty** — the coordinator's notification carries
