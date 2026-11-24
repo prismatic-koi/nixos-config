@@ -10,7 +10,14 @@
           ''
             -- Only pipe tables, block quotes, and callouts are on. Every other part is off
             -- by name, so a plugin update that adds a default cannot turn it back on.
-            -- obsidian.nvim draws checkboxes, bullets, and links through its own ui block.
+            -- obsidian.nvim draws checkboxes and bullets through its own ui block.
+            -- Wikilinks are the one link part that is on here. The pipe table sizes a cell
+            -- from its own marks only, so a wikilink that obsidian.nvim concealed broke the row.
+            -- obsidian.nvim skips wikilinks in its ui (see obsidian.nix).
+            -- The inline link renderer is switched off below, so other links stay as before.
+            require("render-markdown.render.inline.link").setup = function()
+            	return false
+            end
             require("render-markdown").setup({
             	enabled = true,
             	completions = {
@@ -37,7 +44,16 @@
             	indent = { enabled = false },
             	inline_highlight = { enabled = false },
             	latex = { enabled = false },
-            	link = { enabled = false },
+            	link = {
+            		enabled = true,
+            		footnote = { enabled = false },
+            		wiki = {
+            			enabled = true,
+            			-- No icon, so the text matches the old obsidian.nvim look.
+            			icon = "",
+            			scope_highlight = "ObsidianRefText",
+            		},
+            	},
             	paragraph = { enabled = false },
             	sign = { enabled = false },
             	yaml = { enabled = false },
