@@ -155,6 +155,22 @@
           	return get_plugin_info(name)
           end
 
+          -- render-markdown.nvim draws wikilinks, so its pipe tables count their width. The
+          -- obsidian.nvim ui is the only parse_refs.extract caller that passes lexical = true
+          -- and no row, so it is the only one that stops seeing wikilinks. Navigation, search,
+          -- and the rename code (which passes no opts) keep them.
+          local parse_refs = require("obsidian.parse.refs")
+          local extract_refs = parse_refs.extract
+          parse_refs.extract = function(line, opts)
+          	local refs = extract_refs(line, opts)
+          	if not (opts and opts.lexical and opts.row == nil) then
+          		return refs
+          	end
+          	return vim.tbl_filter(function(ref)
+          		return ref.kind ~= "wiki"
+          	end, refs)
+          end
+
           require("obsidian").setup({
           	workspaces = {
           		{
