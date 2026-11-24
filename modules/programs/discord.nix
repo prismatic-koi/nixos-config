@@ -11,11 +11,14 @@
     };
   };
   config = lib.mkIf config.nx.programs.discord.enable {
-    home-manager.users.${config.nx.username} = {
+    home-manager.users.${config.nx.username} = hm: {
       programs.discord = {
         enable = true;
         package = pkgs.discord;
       };
+      # Discord replaces the settings.json symlink with a regular file at runtime.
+      home.file."${hm.config.xdg.configHome}/${hm.config.programs.discord.configName}/settings.json".force =
+        true;
       home.persistence."/persist" = {
         directories = [
           ".config/discord"
