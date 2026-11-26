@@ -45,6 +45,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/checkstate"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/forge"
+	"github.com/prismatic-koi/prism/internal/ghout"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
@@ -201,7 +202,7 @@ func resolveRepo(database *db.DB, sessionName string) string {
 	cmd := exec.CommandContext(ctx, "gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
 	cmd.Dir = worktree
 	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	out, err := ghout.Run(cmd)
 	if err != nil {
 		log.Printf("[mergequeue] cannot resolve repo for session %q from worktree %q: gh repo view: %v: %s — watcher will not start",
 			sessionName, worktree, err, strings.TrimSpace(string(out)))
@@ -1072,5 +1073,5 @@ func execGH(ctx context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", args...)
-	return cmd.CombinedOutput()
+	return ghout.Run(cmd)
 }

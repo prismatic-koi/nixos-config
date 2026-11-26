@@ -29,6 +29,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/checkstate"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/forge"
+	"github.com/prismatic-koi/prism/internal/ghout"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/review"
@@ -708,7 +709,7 @@ func probeInitialState(pr int) (initialStateDecision, error) {
 	viewCmd := exec.CommandContext(ctx, "gh", "pr", "view", fmt.Sprintf("%d", pr),
 		"--json", "state,number,title,mergedAt,mergeStateStatus,reviewDecision,baseRefName,statusCheckRollup")
 	viewCmd.Env = env
-	prOut, err := viewCmd.CombinedOutput()
+	prOut, err := ghout.Run(viewCmd)
 	if err != nil {
 		return initialStateDecision{}, fmt.Errorf("PR #%d not found or gh CLI error: %s", pr, strings.TrimSpace(string(prOut)))
 	}
@@ -888,7 +889,7 @@ func probeBranchProtection(baseRef string) (bool, []string, int, error) {
 	run := func(ctx context.Context, args ...string) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "gh", args...)
 		cmd.Env = env
-		return cmd.CombinedOutput()
+		return ghout.Run(cmd)
 	}
 	res, err := branchprotect.Probe(ctx, run,
 		fmt.Sprintf("repos/{owner}/{repo}/branches/%s/protection", baseRef),
